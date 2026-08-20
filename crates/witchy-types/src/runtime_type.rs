@@ -492,6 +492,16 @@ fn collect_runtime_type_shape_inner(
                 )?;
             }
         }
+        Type::Slice(elem) => {
+            collect_runtime_type_shape(
+                elem,
+                catalog,
+                module,
+                identities,
+                drafts,
+                visiting,
+            )?;
+        }
         Type::Fn(parameters, result, _) => {
             for parameter in parameters {
                 collect_runtime_type_shape(

@@ -203,6 +203,7 @@ fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
             }
         }
         Type::Qualified(_, inner) => collect_anon_union_heads_type(inner, out),
+        Type::Slice(inner) => collect_anon_union_heads_type(inner, out),
     }
 }
 

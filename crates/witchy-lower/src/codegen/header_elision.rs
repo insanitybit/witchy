@@ -503,6 +503,7 @@ fn type_contains(ty: &Type, candidate: &Type) -> bool {
             type_contains(base, candidate)
                 || fields.iter().any(|(_, field)| type_contains(field, candidate))
         }
+        Type::Slice(inner) => type_contains(inner, candidate),
         Type::Qualified(_, inner) => type_contains(inner, candidate),
     }
 }

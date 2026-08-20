@@ -1997,6 +1997,7 @@ pub fn type_str(t: &Type) -> String {
         Type::Qualified(TypeQual::BorrowMut(life), inner) => {
             format!("&'{life} mut {}", type_str(inner))
         }
+        Type::Slice(elem) => format!("[{}]", type_str(elem)),
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
         // (RFC-0081) Canonical existential rendering: `dyn Render`,
         // `dyn Convert(Int, String)`. Re-parses to the same node (idempotent).
@@ -2251,6 +2252,7 @@ fn canon_type(ty: &mut Type) {
             }
             canon_type(result);
         }
+        Type::Slice(inner) => canon_type(inner),
         Type::Qualified(qualifier, inner) => {
             if let TypeQual::LegacyBorrow(lifetime) = qualifier {
                 *qualifier = TypeQual::Borrow(lifetime.clone());
@@ -3087,6 +3089,7 @@ fn rewrite_reference_type(
             rewrite_reference_type(result, local_nominals);
         }
         Type::Qualified(_, inner) => rewrite_reference_type(inner, local_nominals),
+        Type::Slice(inner) => rewrite_reference_type(inner, local_nominals),
     }
 }
 

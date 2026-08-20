@@ -229,11 +229,17 @@ impl RuntimeCallableParameterIdentity {
     }
 
     pub(crate) fn value(identity: RuntimeTypeIdentity) -> Self {
-        Self { identity, authority: false }
+        Self {
+            identity,
+            authority: false,
+        }
     }
 
     pub(crate) fn authority(identity: RuntimeTypeIdentity) -> Self {
-        Self { identity, authority: true }
+        Self {
+            identity,
+            authority: true,
+        }
     }
 }
 
@@ -247,8 +253,8 @@ impl RuntimeLifetimeNormalizer {
         if let Some(id) = self.by_name.get(name) {
             return Ok(*id);
         }
-        let id = u32::try_from(self.by_name.len())
-            .map_err(|_| RuntimeTypeError::TooManyDescriptors)?;
+        let id =
+            u32::try_from(self.by_name.len()).map_err(|_| RuntimeTypeError::TooManyDescriptors)?;
         self.by_name.insert(name.to_string(), id);
         Ok(id)
     }
@@ -261,9 +267,7 @@ impl RuntimeLifetimeNormalizer {
             AccessQualifier::Frozen => RuntimeAccessQualifier::Frozen,
             AccessQualifier::Unique => RuntimeAccessQualifier::Unique,
             AccessQualifier::LocalUnique => RuntimeAccessQualifier::LocalUnique,
-            AccessQualifier::Borrow(lifetime) => {
-                RuntimeAccessQualifier::Borrow(self.id(lifetime)?)
-            }
+            AccessQualifier::Borrow(lifetime) => RuntimeAccessQualifier::Borrow(self.id(lifetime)?),
             AccessQualifier::BorrowMut(lifetime) => {
                 RuntimeAccessQualifier::BorrowMut(self.id(lifetime)?)
             }
@@ -339,7 +343,13 @@ impl RuntimeCallableAccessIdentity {
                 })
             })
             .collect::<Result<_, RuntimeTypeError>>()?;
-        Ok(Self { authority, callable_qualifiers, parameters, result, borrow_relations })
+        Ok(Self {
+            authority,
+            callable_qualifiers,
+            parameters,
+            result,
+            borrow_relations,
+        })
     }
 }
 
@@ -360,7 +370,10 @@ fn qualifier_sites(
             current = inner;
         }
         if !qualifiers.is_empty() {
-            sites.push(RuntimeQualifierSite { path: path.clone(), qualifiers });
+            sites.push(RuntimeQualifierSite {
+                path: path.clone(),
+                qualifiers,
+            });
         }
         match current {
             Type::Named(_, arguments) => {
@@ -369,6 +382,11 @@ fn qualifier_sites(
                     visit(argument, path, lifetimes, sites)?;
                     path.pop();
                 }
+            }
+            Type::Slice(elem) => {
+                path.push(RuntimeQualifierPathStep::TypeArgument(0));
+                visit(elem, path, lifetimes, sites)?;
+                path.pop();
             }
             Type::Tuple(items) => {
                 for (index, item) in items.iter().enumerate() {
@@ -420,9 +438,7 @@ fn runtime_projection(projection: &LoanProjection) -> RuntimeLoanProjection {
             .steps
             .iter()
             .map(|step| match step {
-                LoanProjectionStep::Field(name) => {
-                    RuntimeLoanProjectionStep::Field(name.clone())
-                }
+                LoanProjectionStep::Field(name) => RuntimeLoanProjectionStep::Field(name.clone()),
                 LoanProjectionStep::Tuple(index) => RuntimeLoanProjectionStep::Tuple(*index),
                 LoanProjectionStep::Index(index) => RuntimeLoanProjectionStep::Index(*index),
                 LoanProjectionStep::AnyIndex => RuntimeLoanProjectionStep::AnyIndex,
@@ -490,7 +506,9 @@ pub enum RuntimeTypeIdentity {
     /// `Authority` parameter. Direct runtime descriptors for capabilities stay
     /// forbidden.
     #[non_exhaustive]
-    Capability { authority: RuntimeCapabilityIdentity },
+    Capability {
+        authority: RuntimeCapabilityIdentity,
+    },
 }
 
 impl RuntimeTypeIdentity {
@@ -528,8 +546,7 @@ impl RuntimeTypeIdentity {
             result,
             conventions,
             access: Box::new(RuntimeCallableAccessIdentity::from_checked(
-                signature,
-                resolve,
+                signature, resolve,
             )?),
         })
     }
@@ -613,6 +630,10 @@ impl RuntimeTypeIdentity {
                 })?,
                 arguments: convert_arguments(args, resolve, allow_capability)?,
             }),
+            Type::Slice(elem) => {
+                let element_identity = Self::from_resolved_type_inner(elem, resolve, allow_capability)?;
+                Ok(Self::List(Box::new(element_identity)))
+            }
             Type::Named(name, args) => {
                 if capability_type(name) {
                     if allow_capability {
@@ -680,9 +701,7 @@ fn convert_arguments(
     allow_capability: bool,
 ) -> Result<Vec<RuntimeTypeIdentity>, RuntimeTypeError> {
     args.iter()
-        .map(|arg| {
-            RuntimeTypeIdentity::from_resolved_type_inner(arg, resolve, allow_capability)
-        })
+        .map(|arg| RuntimeTypeIdentity::from_resolved_type_inner(arg, resolve, allow_capability))
         .collect()
 }
 
@@ -723,9 +742,7 @@ fn convert_union(
     for (tag, arity) in variants {
         let payloads = args[at..at + arity]
             .iter()
-            .map(|ty| {
-                RuntimeTypeIdentity::from_resolved_type_inner(ty, resolve, allow_capability)
-            })
+            .map(|ty| RuntimeTypeIdentity::from_resolved_type_inner(ty, resolve, allow_capability))
             .collect::<Result<_, _>>()?;
         converted.push(UnionVariantIdentity { tag, payloads });
         at += arity;
@@ -742,7 +759,7 @@ pub(super) fn primitive(name: &str, arity: usize) -> Option<PrimitiveType> {
         "Int" => Some(PrimitiveType::Int),
         "Float" => Some(PrimitiveType::Float),
         "Duration" => Some(PrimitiveType::Duration),
-        "String" => Some(PrimitiveType::String),
+        "String" | "str" => Some(PrimitiveType::String),
         "Bytes" => Some(PrimitiveType::Bytes),
         "Bool" => Some(PrimitiveType::Bool),
         "Nil" | "()" => Some(PrimitiveType::Unit),

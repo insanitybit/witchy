@@ -212,6 +212,7 @@ fn type_carries_reference(ty: &Type) -> bool {
             _,
         ) => true,
         Type::Qualified(_, inner) => type_carries_reference(inner),
+        Type::Slice(inner) => type_carries_reference(inner),
         Type::Named(_, args) | Type::Dyn(_, args) => args.iter().any(type_carries_reference),
         Type::Tuple(items) => items.iter().any(type_carries_reference),
         Type::RecordCompose { base, fields } => {

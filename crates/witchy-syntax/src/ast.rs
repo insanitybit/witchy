@@ -20,7 +20,10 @@ pub fn is_render_intrinsic(name: &str) -> bool {
     crate::intrinsics::is_render(name)
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     /// The performance mode declared at the top of the file (`mode opt`), or empty
@@ -76,7 +79,10 @@ pub struct Module {
     pub linked_entry: Option<String>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Function(Function),
@@ -92,11 +98,18 @@ pub enum Item {
     /// A module-level constant: `let MAX = 100`. Inlined at its use sites by
     /// `crate::consts` before type-checking/codegen, so later stages never see
     /// this variant.
-    Const { name: String, value: Expr },
+    Const {
+        name: String,
+        value: Expr,
+    },
     /// A type alias: `type Id = Int` or `type Pair(a) = (a, a)`. Expanded to its target everywhere by
     /// `crate::aliases` before type-checking/codegen, so later stages never see
     /// this variant.
-    TypeAlias { name: String, params: Vec<String>, ty: Type },
+    TypeAlias {
+        name: String,
+        params: Vec<String>,
+        ty: Type,
+    },
     /// `comptime:` — a block executed AT COMPILE TIME with no capabilities
     /// (deterministic by construction); everything it prints is parsed as
     /// witchy source and appended to the module as ADDITIVE items before
@@ -106,7 +119,10 @@ pub enum Item {
     Comptime(Block),
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerItemSyntax {
     /// Deterministic opaque identity used by compiler-generated calls. It is a
@@ -120,7 +136,10 @@ pub struct CompilerItemSyntax {
     pub definition_line: u32,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerExprSyntax {
     pub handle: String,
@@ -128,7 +147,10 @@ pub struct CompilerExprSyntax {
     pub definition_line: u32,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerTypeSyntax {
     pub handle: String,
@@ -141,7 +163,10 @@ pub struct CompilerTypeSyntax {
     pub runtime_identity: bool,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerPatternSyntax {
     pub handle: String,
@@ -149,7 +174,10 @@ pub struct CompilerPatternSyntax {
     pub definition_line: u32,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerStmtSyntax {
     pub handle: String,
@@ -157,7 +185,10 @@ pub struct CompilerStmtSyntax {
     pub definition_line: u32,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerBlockSyntax {
     pub handle: String,
@@ -168,7 +199,10 @@ pub struct CompilerBlockSyntax {
 /// A trait declaration: named method signatures (no bodies). The receiver is the
 /// first parameter, conventionally named `self`, whose type is the implementing
 /// type at each `impl`.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitDef {
     pub name: String,
@@ -182,7 +216,10 @@ pub struct TraitDef {
     pub methods: Vec<MethodSig>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MethodSig {
     pub name: String,
@@ -197,7 +234,10 @@ pub struct MethodSig {
 /// (`trait_name` is `None`). Each method is a full function whose first parameter
 /// (`self`) stands for a value of `type_name`. Inherent methods are dispatched by
 /// receiver type just like trait methods, but belong to no trait.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDef {
     pub origin: ImplOrigin,
@@ -219,7 +259,10 @@ pub struct ImplDef {
     pub methods: Vec<Function>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImplOrigin {
     Source,
@@ -227,7 +270,10 @@ pub enum ImplOrigin {
 }
 
 /// A sum type: `type Event { Click(Int, Int) Closed }`.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
     pub name: String,
@@ -299,7 +345,10 @@ pub struct TypeDef {
     pub public_state_derived: bool,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct Variant {
     pub name: String,
@@ -324,7 +373,10 @@ impl PartialEq for Variant {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct Function {
     /// Source line of the declaration keyword. Compiler-generated functions use
@@ -375,7 +427,10 @@ impl PartialEq for Function {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
@@ -395,7 +450,10 @@ pub struct Param {
 /// Hylo-style parameter passing conventions (mutable value semantics).
 /// `let` borrows immutably (default), `var` mutates in place and writes back,
 /// `own` consumes (takes ownership / moves the value in).
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Convention {
     /// The default (no keyword): an owned value, observably immutable to the
@@ -420,11 +478,16 @@ impl Convention {
 }
 
 /// Types are parsed but not yet checked. `Named("Result", [Int, Error])`.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Named(String, Vec<Type>),
     Tuple(Vec<Type>),
+    /// A dynamically-sized slice type: `[T]`.
+    Slice(Box<Type>),
     /// (RFC-0098) A type-position structural-record spread retained until
     /// aliases and generic arguments are resolved. Alias normalization replaces
     /// this with the ordinary shape-keyed [`Type::Named`] anonymous record; it
@@ -474,7 +537,9 @@ pub fn effective_type_params<'a>(
 
 /// Whether a nominal parameter spelling denotes a lifetime rather than a type.
 pub fn is_lifetime_param(parameter: &str) -> bool {
-    parameter.strip_prefix('\'').is_some_and(|name| !name.is_empty())
+    parameter
+        .strip_prefix('\'')
+        .is_some_and(|name| !name.is_empty())
 }
 
 /// The bare lifetime name carried by a nominal parameter spelling.
@@ -520,6 +585,7 @@ pub fn effective_type_def_params(definition: &TypeDef) -> Vec<String> {
 fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
     match ty {
         Type::Qualified(_, inner) => collect_effective_type_params(inner, parameters),
+        Type::Slice(elem) => collect_effective_type_params(elem, parameters),
         Type::Tuple(items) => {
             for item in items {
                 collect_effective_type_params(item, parameters);
@@ -546,6 +612,7 @@ fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
             if arguments.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)
                 && !name.contains('.')
+                && name != "str"
             {
                 if !parameters.contains(name) {
                     parameters.push(name.clone());
@@ -562,7 +629,10 @@ fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
 /// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,
 /// RFC-0083/RFC-0122 reference access). Not `Copy`: reference qualifiers carry
 /// a lifetime name.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeQual {
     /// `frozen` — deeply immutable; sharing is safe, mutation is a check-time error.
@@ -632,7 +702,10 @@ impl Type {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
@@ -648,13 +721,19 @@ pub struct Block {
 
 /// A `region:` / `region -> T:` annotation. The optional type guarantees the
 /// copy-out shape at check time instead of inferring it from the tail.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAnn {
     pub ty: Option<Type>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `let x = e` or `var x = e`, optionally ascribed: `let x: T = e`.
@@ -697,7 +776,10 @@ pub enum Stmt {
     Expr(Expr),
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Int(i64),
@@ -712,7 +794,10 @@ pub enum Expr {
     /// A bare lowercase identifier — a variable or function reference.
     Var(String),
     /// A call to a named function: `f(a, b)`.
-    Call { name: String, args: Vec<Expr> },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
     /// (RFC-0056) A *direct* call whose arguments carry keyword labels:
     /// `substring(s, start: 2, end: 7)`. A positional argument has label `None`;
     /// a labeled one carries `Some(param_name)`. Produced by the parser ONLY when
@@ -725,7 +810,10 @@ pub enum Expr {
     /// (parity by construction). Labels are a property of the *declaration*, not of
     /// a function value: only calls with a statically-known callee (or method
     /// calls, once UFCS resolution assigns one) may carry them.
-    LabeledCall { name: String, args: Vec<(Option<String>, Expr)> },
+    LabeledCall {
+        name: String,
+        args: Vec<(Option<String>, Expr)>,
+    },
     /// (RFC-0113) A method call whose arguments carry keyword labels:
     /// `value.method(label: arg, ...)`. Labels bind against the resolved method
     /// declaration's non-receiver parameters, and are rewritten once trait/UFCS
@@ -747,21 +835,40 @@ pub enum Expr {
     },
     /// Application of an arbitrary expression that evaluates to a function:
     /// `make_adder(3)(4)`, `(fn(x){x})(1)`. (A bare-name call is `Call`.)
-    Apply { func: Box<Expr>, args: Vec<Expr> },
+    Apply {
+        func: Box<Expr>,
+        args: Vec<Expr>,
+    },
     /// A constructor application: `Click(x, y)` or nullary `Closed`.
-    Ctor { name: String, args: Vec<Expr> },
+    Ctor {
+        name: String,
+        args: Vec<Expr>,
+    },
     /// An anonymous tagged-union injection: `.NotFound` or `.BadPort(70000)`.
     /// The concrete union type is supplied by an expected type at check time.
-    AnonCtor { tag: String, args: Vec<Expr> },
-    Unary { op: UnOp, expr: Box<Expr> },
+    AnonCtor {
+        tag: String,
+        args: Vec<Expr>,
+    },
+    Unary {
+        op: UnOp,
+        expr: Box<Expr>,
+    },
     /// Record field access: `point.x`. (Module-qualified calls `mod.func(...)`
     /// are parsed as `Call`, not `Field`.)
-    Field { base: Box<Expr>, field: String },
+    Field {
+        base: Box<Expr>,
+        field: String,
+    },
     /// An anonymous function (closure): `fn(x: Int): x + 1`. Captures the
     /// environment it is created in. `ret` is the optional declared return type
     /// (`fn(x: Int) -> Bool: ...`); when present it makes the closure a `?`
     /// boundary with that exact `Result`/`Option` type.
-    Lambda { params: Vec<Param>, body: Block, ret: Option<Type> },
+    Lambda {
+        params: Vec<Param>,
+        body: Block,
+        ret: Option<Type>,
+    },
     /// Record update: a new record like `p` with the named fields replaced. `p`
     /// is not mutated. `name` is `Some(Point)` when produced by lowering the
     /// surface spread form `Point(x: 5, ..p)`, and `None` for internal updates
@@ -787,7 +894,10 @@ pub enum Expr {
     /// `e as T` — a capability *narrowing* ascription: re-type a capability to a
     /// subset of its rights (`net as Net[Connect]`). Checked statically (the
     /// target rights must be a subset of the source's); identity at runtime.
-    As { expr: Box<Expr>, ty: Type },
+    As {
+        expr: Box<Expr>,
+        ty: Type,
+    },
     /// Compiler-owned RFC-0081 existential construction. The source `as dyn
     /// Trait` expression is replaced only after type checking has selected one
     /// closed witness. `witness` indexes the accompanying backend-neutral
@@ -824,7 +934,11 @@ pub enum Expr {
         /// `own` behavior without re-resolving a trait declaration.
         conventions: Vec<Convention>,
     },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     If {
         cond: Box<Expr>,
         then_block: Block,
@@ -898,7 +1012,10 @@ pub enum Expr {
     },
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
@@ -923,7 +1040,10 @@ pub enum UnOp {
     Await,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
@@ -952,7 +1072,10 @@ pub enum BinOp {
     Shr,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     /// Source line for the arm pattern. Used by the formatter for comment
@@ -969,7 +1092,10 @@ impl PartialEq for MatchArm {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Wildcard,
@@ -977,10 +1103,16 @@ pub enum Pattern {
     Int(i64),
     Str(String),
     Bool(bool),
-    Ctor { name: String, args: Vec<Pattern> },
+    Ctor {
+        name: String,
+        args: Vec<Pattern>,
+    },
     /// An anonymous tagged-union pattern: `.NotFound` or `.BadPort(p)`.
     /// The scrutinee type supplies the closed tag set during type checking.
-    AnonCtor { tag: String, args: Vec<Pattern> },
+    AnonCtor {
+        tag: String,
+        args: Vec<Pattern>,
+    },
     Tuple(Vec<Pattern>),
     /// A list pattern. `elems` are matched positionally against the front of the
     /// list. `rest` controls the tail: `None` requires an exact-length match
@@ -1000,7 +1132,11 @@ pub enum Pattern {
     /// guard-desugar) so exhaustiveness can reason about it — though the
     /// classifier still treats ranges as refutable (no numeric-coverage
     /// analysis), so a range match still needs a final `_`/binding arm.
-    IntRange { lo: i64, hi: i64, inclusive: bool },
+    IntRange {
+        lo: i64,
+        hi: i64,
+        inclusive: bool,
+    },
     /// An or-pattern (RFC-0052): `p1 | p2 | …`, a real AST node usable at any
     /// depth (`Some(1 | 2)`, `[1 | 2, ..rest]`). Every alternative must bind the
     /// same names at the same types (the checker enforces binding-consistency).
@@ -1033,7 +1169,10 @@ pub fn pattern_binds(p: &Pattern, out: &mut Vec<String>) {
                 pattern_binds(first, out);
             }
         }
-        Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) | Pattern::Duration(_)
+        Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
         | Pattern::IntRange { .. } => {}
     }
 }
@@ -1044,6 +1183,7 @@ pub fn pattern_binds(p: &Pattern, out: &mut Vec<String>) {
 pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
     match t {
         Type::Qualified(_, inner) => collect_type_names(inner, out),
+        Type::Slice(elem) => collect_type_names(elem, out),
         Type::Named(name, args) => {
             if !is_lifetime_param(name) {
                 out.extend([name.clone()]);
@@ -1125,7 +1265,11 @@ pub fn anon_record_field_names(name: &str) -> Option<Vec<String>> {
         }
         fields.push(String::from_utf8(bytes).ok()?);
     }
-    if pos == name.len() { Some(fields) } else { None }
+    if pos == name.len() {
+        Some(fields)
+    } else {
+        None
+    }
 }
 
 /// Generic compiler-owned record declaration backing one anonymous shape.
@@ -1214,10 +1358,12 @@ pub fn custom_partial_eq_types(module: &Module) -> HashSet<String> {
 pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
     match t {
         Type::Qualified(_, inner) => collect_type_vars(inner, out),
+        Type::Slice(elem) => collect_type_vars(elem, out),
         Type::Named(name, args) => {
             if args.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)
                 && !name.contains('.')
+                && name != "str"
                 && !out.iter().any(|v| v == name)
             {
                 out.push(name.clone());

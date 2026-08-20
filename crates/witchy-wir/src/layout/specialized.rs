@@ -369,6 +369,7 @@ impl LayoutPath {
             Type::Fn(..) => "<function>".to_owned(),
             Type::Dyn(name, _) => format!("dyn {name}"),
             Type::RecordCompose { .. } => "<record composition>".to_owned(),
+            Type::Slice(_) => "<slice>".to_owned(),
         };
         Self(vec![PathSegment::Root(name)])
     }
@@ -415,14 +416,40 @@ impl fmt::Display for LayoutPath {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutError {
-    UnresolvedType { path: LayoutPath, name: String },
-    ResolvedTypeMismatch { path: LayoutPath, expected: String, actual: String },
-    TypeArgumentCount { path: LayoutPath, expected: usize, actual: usize },
-    UnsupportedType { path: LayoutPath, reason: &'static str },
-    NotPackedRecord { path: LayoutPath, name: String },
-    CapabilityDefinition { path: LayoutPath, name: String },
-    InvalidClosedSum { path: LayoutPath, name: String },
-    InlineNominalCycle { path: LayoutPath, definition: String },
+    UnresolvedType {
+        path: LayoutPath,
+        name: String,
+    },
+    ResolvedTypeMismatch {
+        path: LayoutPath,
+        expected: String,
+        actual: String,
+    },
+    TypeArgumentCount {
+        path: LayoutPath,
+        expected: usize,
+        actual: usize,
+    },
+    UnsupportedType {
+        path: LayoutPath,
+        reason: &'static str,
+    },
+    NotPackedRecord {
+        path: LayoutPath,
+        name: String,
+    },
+    CapabilityDefinition {
+        path: LayoutPath,
+        name: String,
+    },
+    InvalidClosedSum {
+        path: LayoutPath,
+        name: String,
+    },
+    InlineNominalCycle {
+        path: LayoutPath,
+        definition: String,
+    },
     ReferenceNotInline {
         path: LayoutPath,
         kind: ReferenceKind,
@@ -431,12 +458,22 @@ pub enum LayoutError {
     UnknownLayout(LayoutId),
     DynamicInlineField(LayoutId),
     ArithmeticOverflow,
-    UnsupportedSchema { found: u32 },
-    Decode { offset: usize, reason: &'static str },
-    TrailingBytes { offset: usize },
+    UnsupportedSchema {
+        found: u32,
+    },
+    Decode {
+        offset: usize,
+        reason: &'static str,
+    },
+    TrailingBytes {
+        offset: usize,
+    },
     NonCanonicalEncoding,
     DescriptorInvariant(&'static str),
-    DigestMismatch { expected: LayoutId, actual: LayoutId },
+    DigestMismatch {
+        expected: LayoutId,
+        actual: LayoutId,
+    },
     DigestCollision(LayoutId),
 }
 
@@ -446,27 +483,53 @@ impl fmt::Display for LayoutError {
             Self::UnresolvedType { path, name } => {
                 write!(formatter, "{path}: unresolved closed layout type `{name}`")
             }
-            Self::ResolvedTypeMismatch { path, expected, actual } => {
-                write!(formatter, "{path}: resolver returned `{actual}` for `{expected}`")
+            Self::ResolvedTypeMismatch {
+                path,
+                expected,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "{path}: resolver returned `{actual}` for `{expected}`"
+                )
             }
-            Self::TypeArgumentCount { path, expected, actual } => {
-                write!(formatter, "{path}: expected {expected} closed type arguments, got {actual}")
+            Self::TypeArgumentCount {
+                path,
+                expected,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "{path}: expected {expected} closed type arguments, got {actual}"
+                )
             }
             Self::UnsupportedType { path, reason } => write!(formatter, "{path}: {reason}"),
             Self::NotPackedRecord { path, name } => {
-                write!(formatter, "{path}: `{name}` is not a one-variant packed record")
+                write!(
+                    formatter,
+                    "{path}: `{name}` is not a one-variant packed record"
+                )
             }
             Self::CapabilityDefinition { path, name } => {
-                write!(formatter, "{path}: capability `{name}` requires reference-safe storage")
+                write!(
+                    formatter,
+                    "{path}: capability `{name}` requires reference-safe storage"
+                )
             }
             Self::InvalidClosedSum { path, name } => {
                 write!(formatter, "{path}: `{name}` is not a non-empty closed sum")
             }
             Self::InlineNominalCycle { path, definition } => {
-                write!(formatter, "{path}: inline layout cycle re-enters `{definition}`")
+                write!(
+                    formatter,
+                    "{path}: inline layout cycle re-enters `{definition}`"
+                )
             }
             Self::ReferenceNotInline { path, kind, class } => {
-                write!(formatter, "{path}: {kind:?} is {class:?} and cannot be stored inline")
+                write!(
+                    formatter,
+                    "{path}: {kind:?} is {class:?} and cannot be stored inline"
+                )
             }
             Self::UnknownLayout(id) => write!(formatter, "unknown child layout `{id}`"),
             Self::DynamicInlineField(id) => {
@@ -487,7 +550,10 @@ impl fmt::Display for LayoutError {
                 write!(formatter, "invalid layout descriptor: {reason}")
             }
             Self::DigestMismatch { expected, actual } => {
-                write!(formatter, "layout digest mismatch: expected {expected}, got {actual}")
+                write!(
+                    formatter,
+                    "layout digest mismatch: expected {expected}, got {actual}"
+                )
             }
             Self::DigestCollision(id) => write!(formatter, "layout digest collision for `{id}`"),
         }
@@ -535,7 +601,9 @@ impl LayoutInterner {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (LayoutId, &LayoutDescriptor)> {
-        self.descriptors.iter().map(|(id, descriptor)| (*id, descriptor))
+        self.descriptors
+            .iter()
+            .map(|(id, descriptor)| (*id, descriptor))
     }
 
     /// Resolve and intern one complete closed logical type. Nominal children are
@@ -560,11 +628,7 @@ impl LayoutInterner {
         Ok(descriptor)
     }
 
-    pub fn validate_canonical(
-        &self,
-        expected: LayoutId,
-        bytes: &[u8],
-    ) -> Result<(), LayoutError> {
+    pub fn validate_canonical(&self, expected: LayoutId, bytes: &[u8]) -> Result<(), LayoutError> {
         let descriptor = self.decode_canonical(bytes)?;
         let actual = descriptor.layout_id();
         if actual != expected {
@@ -623,13 +687,17 @@ impl LayoutInterner {
             }
             Type::Fn(..) => Err(reference_error(path, ReferenceKind::Function)),
             Type::Dyn(..) => Err(reference_error(path, ReferenceKind::GcReference)),
+            Type::Slice(..) => Err(reference_error(path, ReferenceKind::BorrowedView)),
             Type::RecordCompose { .. } => Err(LayoutError::UnsupportedType {
                 path: path.clone(),
                 reason: "structural record composition must be normalized before layout",
             }),
             Type::Named(name, arguments) => {
                 let resolved = resolver.resolve_named(name, arguments).ok_or_else(|| {
-                    LayoutError::UnresolvedType { path: path.clone(), name: name.clone() }
+                    LayoutError::UnresolvedType {
+                        path: path.clone(),
+                        name: name.clone(),
+                    }
                 })?;
                 match resolved {
                     ResolvedNamed::Scalar(scalar) => {
@@ -793,7 +861,9 @@ impl LayoutInterner {
 
     fn validate_descriptor(&self, descriptor: &LayoutDescriptor) -> Result<(), LayoutError> {
         if descriptor.schema_version != LAYOUT_SCHEMA_VERSION {
-            return Err(LayoutError::UnsupportedSchema { found: descriptor.schema_version });
+            return Err(LayoutError::UnsupportedSchema {
+                found: descriptor.schema_version,
+            });
         }
         validate_descriptor_item_counts(descriptor)?;
         if descriptor.alignment == 0 || !descriptor.alignment.is_power_of_two() {
@@ -951,6 +1021,7 @@ fn substitute_type(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
                 .map(|(name, field)| (name.clone(), substitute_type(field, bindings)))
                 .collect(),
         },
+        Type::Slice(inner) => Type::Slice(Box::new(substitute_type(inner, bindings))),
     }
 }
 
@@ -1003,7 +1074,8 @@ fn build_descriptor<'a>(
             })
         }
         LayoutKind::PackedList { element, rc } => {
-            let element_descriptor = lookup(*element).ok_or(LayoutError::UnknownLayout(*element))?;
+            let element_descriptor =
+                lookup(*element).ok_or(LayoutError::UnknownLayout(*element))?;
             let element_size = match element_descriptor.size {
                 LayoutSize::Fixed(size) => size,
                 LayoutSize::Dynamic { .. } => {
@@ -1020,12 +1092,24 @@ fn build_descriptor<'a>(
             Ok(LayoutDescriptor {
                 schema_version: LAYOUT_SCHEMA_VERSION,
                 kind: kind.clone(),
-                size: LayoutSize::Dynamic { base: data_offset, stride },
+                size: LayoutSize::Dynamic {
+                    base: data_offset,
+                    stride,
+                },
                 alignment,
                 fields: vec![
-                    LayoutField { offset: 0, kind: FieldKind::Scalar(ScalarKind::U32) },
-                    LayoutField { offset: 4, kind: FieldKind::Scalar(ScalarKind::U32) },
-                    LayoutField { offset: data_offset, kind: FieldKind::Inline(*element) },
+                    LayoutField {
+                        offset: 0,
+                        kind: FieldKind::Scalar(ScalarKind::U32),
+                    },
+                    LayoutField {
+                        offset: 4,
+                        kind: FieldKind::Scalar(ScalarKind::U32),
+                    },
+                    LayoutField {
+                        offset: data_offset,
+                        kind: FieldKind::Inline(*element),
+                    },
                 ],
                 variants: Vec::new(),
                 ownership: vec![OwnershipPosition::RootBuffer],
@@ -1081,7 +1165,10 @@ fn build_descriptor<'a>(
                 kind: kind.clone(),
                 size: LayoutSize::Fixed(size),
                 alignment,
-                fields: vec![LayoutField { offset: 0, kind: FieldKind::Scalar(tag) }],
+                fields: vec![LayoutField {
+                    offset: 0,
+                    kind: FieldKind::Scalar(tag),
+                }],
                 variants: variant_layouts,
                 ownership: Vec::new(),
                 header: HeaderLayout::None,
@@ -1113,7 +1200,9 @@ fn aggregate_fields<'a>(
             LayoutSize::Dynamic { .. } => return Err(LayoutError::DynamicInlineField(*child)),
         };
         offset = align_up(offset, descriptor.alignment)?;
-        let field_offset = base.checked_add(offset).ok_or(LayoutError::ArithmeticOverflow)?;
+        let field_offset = base
+            .checked_add(offset)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
         fields.push(LayoutField {
             offset: field_offset,
             kind: match descriptor.kind {
@@ -1121,7 +1210,9 @@ fn aggregate_fields<'a>(
                 _ => FieldKind::Inline(*child),
             },
         });
-        offset = offset.checked_add(size).ok_or(LayoutError::ArithmeticOverflow)?;
+        offset = offset
+            .checked_add(size)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
         alignment = alignment.max(descriptor.alignment);
     }
     Ok((fields, align_up(offset, alignment)?, alignment))
@@ -1142,7 +1233,9 @@ fn align_up(value: u32, alignment: u32) -> Result<u32, LayoutError> {
 fn tag_kind(variants: usize) -> Result<ScalarKind, LayoutError> {
     let maximum = variants
         .checked_sub(1)
-        .ok_or(LayoutError::DescriptorInvariant("closed sum has no variants"))?;
+        .ok_or(LayoutError::DescriptorInvariant(
+            "closed sum has no variants",
+        ))?;
     if maximum <= u8::MAX as usize {
         Ok(ScalarKind::Tag8)
     } else if maximum <= u16::MAX as usize {
@@ -1357,10 +1450,14 @@ impl<'a> Decoder<'a> {
     }
 
     fn byte(&mut self) -> Result<u8, LayoutError> {
-        let byte = self.input.get(self.offset).copied().ok_or(LayoutError::Decode {
-            offset: self.offset,
-            reason: "unexpected end of descriptor",
-        })?;
+        let byte = self
+            .input
+            .get(self.offset)
+            .copied()
+            .ok_or(LayoutError::Decode {
+                offset: self.offset,
+                reason: "unexpected end of descriptor",
+            })?;
         self.offset += 1;
         Ok(byte)
     }
@@ -1370,10 +1467,13 @@ impl<'a> Decoder<'a> {
             offset: self.offset,
             reason: "descriptor offset overflow",
         })?;
-        let bytes = self.input.get(self.offset..end).ok_or(LayoutError::Decode {
-            offset: self.offset,
-            reason: "unexpected end of descriptor",
-        })?;
+        let bytes = self
+            .input
+            .get(self.offset..end)
+            .ok_or(LayoutError::Decode {
+                offset: self.offset,
+                reason: "unexpected end of descriptor",
+            })?;
         self.offset = end;
         Ok(bytes)
     }
@@ -1420,7 +1520,10 @@ impl<'a> Decoder<'a> {
             5 => Ok(ScalarKind::Tag8),
             6 => Ok(ScalarKind::Tag16),
             7 => Ok(ScalarKind::Tag32),
-            _ => Err(LayoutError::Decode { offset, reason: "unknown scalar kind" }),
+            _ => Err(LayoutError::Decode {
+                offset,
+                reason: "unknown scalar kind",
+            }),
         }
     }
 
@@ -1429,7 +1532,10 @@ impl<'a> Decoder<'a> {
         match self.byte()? {
             0 => Ok(RcHeader::Required),
             1 => Ok(RcHeader::Elided),
-            _ => Err(LayoutError::Decode { offset, reason: "unknown RC header kind" }),
+            _ => Err(LayoutError::Decode {
+                offset,
+                reason: "unknown RC header kind",
+            }),
         }
     }
 
@@ -1462,9 +1568,16 @@ impl<'a> Decoder<'a> {
         let offset = self.offset;
         match self.byte()? {
             0 => Ok(LayoutKind::Scalar(self.scalar()?)),
-            1 => Ok(LayoutKind::Tuple { fields: self.ids()? }),
-            2 => Ok(LayoutKind::PackedRecord { fields: self.ids()? }),
-            3 => Ok(LayoutKind::PackedList { element: self.id()?, rc: self.rc()? }),
+            1 => Ok(LayoutKind::Tuple {
+                fields: self.ids()?,
+            }),
+            2 => Ok(LayoutKind::PackedRecord {
+                fields: self.ids()?,
+            }),
+            3 => Ok(LayoutKind::PackedList {
+                element: self.id()?,
+                rc: self.rc()?,
+            }),
             4 => {
                 let count = self.len()?;
                 let mut variants = Vec::with_capacity(count.min(self.input.len()));
@@ -1473,7 +1586,10 @@ impl<'a> Decoder<'a> {
                 }
                 Ok(LayoutKind::ClosedSum { variants })
             }
-            _ => Err(LayoutError::Decode { offset, reason: "unknown layout kind" }),
+            _ => Err(LayoutError::Decode {
+                offset,
+                reason: "unknown layout kind",
+            }),
         }
     }
 
@@ -1496,7 +1612,10 @@ impl<'a> Decoder<'a> {
                 element: self.id()?,
                 stride: self.u32()?,
             }),
-            _ => Err(LayoutError::Decode { offset, reason: "unknown operation shape" }),
+            _ => Err(LayoutError::Decode {
+                offset,
+                reason: "unknown operation shape",
+            }),
         }
     }
 
@@ -1505,7 +1624,10 @@ impl<'a> Decoder<'a> {
         let size_offset = self.offset;
         let size = match self.byte()? {
             0 => LayoutSize::Fixed(self.u32()?),
-            1 => LayoutSize::Dynamic { base: self.u32()?, stride: self.u32()? },
+            1 => LayoutSize::Dynamic {
+                base: self.u32()?,
+                stride: self.u32()?,
+            },
             _ => {
                 return Err(LayoutError::Decode {
                     offset: size_offset,
@@ -1588,36 +1710,42 @@ fn decode_descriptor(bytes: &[u8]) -> Result<LayoutDescriptor, LayoutError> {
     let mut decoder = Decoder::new(bytes);
     let magic = decoder.bytes(LAYOUT_MAGIC.len())?;
     if magic != LAYOUT_MAGIC {
-        return Err(LayoutError::Decode { offset: 0, reason: "invalid layout magic" });
+        return Err(LayoutError::Decode {
+            offset: 0,
+            reason: "invalid layout magic",
+        });
     }
     let schema_version = decoder.u32()?;
     if schema_version != LAYOUT_SCHEMA_VERSION {
-        return Err(LayoutError::UnsupportedSchema { found: schema_version });
+        return Err(LayoutError::UnsupportedSchema {
+            found: schema_version,
+        });
     }
     let descriptor = decoder.descriptor(schema_version)?;
     if decoder.offset != bytes.len() {
-        return Err(LayoutError::TrailingBytes { offset: decoder.offset });
+        return Err(LayoutError::TrailingBytes {
+            offset: decoder.offset,
+        });
     }
     Ok(descriptor)
 }
 
 fn sha256(input: &[u8]) -> [u8; 32] {
     const INITIAL: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
     const ROUND: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
-        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
-        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
 
     let bit_len = (input.len() as u64).wrapping_mul(8);
@@ -1737,7 +1865,12 @@ mod tests {
 
         let missing = LayoutId::from_bytes([9; 32]);
         assert_eq!(
-            build_descriptor(LayoutKind::Tuple { fields: vec![missing] }, |_| None),
+            build_descriptor(
+                LayoutKind::Tuple {
+                    fields: vec![missing]
+                },
+                |_| None
+            ),
             Err(LayoutError::UnknownLayout(missing))
         );
     }

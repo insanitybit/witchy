@@ -98,6 +98,7 @@ fn type_mentions_self(t: &ast::Type) -> bool {
             type_mentions_self(base) || fields.iter().any(|(_, ty)| type_mentions_self(ty))
         }
         ast::Type::Qualified(_, inner) => type_mentions_self(inner),
+        ast::Type::Slice(inner) => type_mentions_self(inner),
     }
 }
 
@@ -130,7 +131,10 @@ impl<'a> ExistentialCheck<'a> {
                 self.visit_type(ty)?;
             }
         }
-        block.stmts.iter().try_for_each(|stmt| self.visit_stmt(stmt))
+        block
+            .stmts
+            .iter()
+            .try_for_each(|stmt| self.visit_stmt(stmt))
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), TypeError> {
@@ -220,20 +224,31 @@ impl<'a> ExistentialCheck<'a> {
             }
             Expr::RecordUpdate { base, fields, .. } => {
                 self.visit_expr(base)?;
-                fields.iter().try_for_each(|(_, value)| self.visit_expr(value))
+                fields
+                    .iter()
+                    .try_for_each(|(_, value)| self.visit_expr(value))
             }
             Expr::Record { fields, spread, .. } => {
-                fields.iter().try_for_each(|(_, value)| self.visit_expr(value))?;
+                fields
+                    .iter()
+                    .try_for_each(|(_, value)| self.visit_expr(value))?;
                 if let Some(base) = spread {
                     self.visit_expr(base)?;
                 }
                 Ok(())
             }
-            Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Range {
+                lo: lhs, hi: rhs, ..
+            } => {
                 self.visit_expr(lhs)?;
                 self.visit_expr(rhs)
             }
-            Expr::If { cond, then_block, else_block } => {
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 self.visit_expr(cond)?;
                 self.visit_block(then_block)?;
                 if let Some(block) = else_block {
@@ -264,7 +279,9 @@ impl<'a> ExistentialCheck<'a> {
                 self.visit_expr(base)?;
                 self.visit_expr(index)
             }
-            Expr::WhileLet { scrutinee, body, .. } => {
+            Expr::WhileLet {
+                scrutinee, body, ..
+            } => {
                 self.visit_expr(scrutinee)?;
                 self.visit_block(body)
             }
@@ -277,11 +294,11 @@ impl<'a> ExistentialCheck<'a> {
             // (v1 exclusion) A dyn directly wrapped in a borrow. `frozen` /
             // `unique` wrapping stays legal (the Qualified arm below).
             ast::Type::Qualified(
-                ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+                ast::TypeQual::Borrow(_)
+                | ast::TypeQual::LegacyBorrow(_)
+                | ast::TypeQual::BorrowMut(_),
                 inner,
-            )
-                if matches!(inner.unqualified(), ast::Type::Dyn(..)) =>
-            {
+            ) if matches!(inner.unqualified(), ast::Type::Dyn(..)) => {
                 let ast::Type::Dyn(name, _) = inner.unqualified() else {
                     unreachable!("guard matched Dyn");
                 };
@@ -291,6 +308,7 @@ impl<'a> ExistentialCheck<'a> {
                 ))
             }
             ast::Type::Qualified(_, inner) => self.visit_type(inner),
+            ast::Type::Slice(inner) => self.visit_type(inner),
             ast::Type::Tuple(items) => items.iter().try_for_each(|i| self.visit_type(i)),
             ast::Type::Fn(params, ret, _) => {
                 params.iter().try_for_each(|p| self.visit_type(p))?;
@@ -424,7 +442,11 @@ fn method_safety_violations(
     if !has_receiver {
         out.push(format!("method `{}` has no receiver", method.name));
     }
-    let value_params = if has_receiver { &method.params[1..] } else { &method.params[..] };
+    let value_params = if has_receiver {
+        &method.params[1..]
+    } else {
+        &method.params[..]
+    };
 
     // Rule 2: no method-local type parameters — every type variable in the
     // non-receiver parameters and the return must be one of the trait's own.
@@ -461,10 +483,12 @@ fn method_safety_violations(
     let self_in_params = value_params
         .iter()
         .any(|p| p.ty.as_ref().is_some_and(type_mentions_self));
-    let self_nested_in_ret =
-        !bare_self_ret && method.ret.as_ref().is_some_and(type_mentions_self);
+    let self_nested_in_ret = !bare_self_ret && method.ret.as_ref().is_some_and(type_mentions_self);
     if self_in_params || self_nested_in_ret {
-        out.push(format!("method `{}` mentions `Self` outside the receiver", method.name));
+        out.push(format!(
+            "method `{}` mentions `Self` outside the receiver",
+            method.name
+        ));
     }
 
     // Rule 5 (v1): no result borrowed from the hidden receiver.

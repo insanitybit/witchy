@@ -6,7 +6,10 @@
 
 use crate::ast::{Block, Expr, Function, Item, MatchArm, Param, Pattern, Stmt, Type};
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourcePosition {
     /// One-based source line. Zero means the producer had no location.
@@ -15,7 +18,10 @@ pub struct SourcePosition {
     pub column: u32,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSpan {
     pub module: String,
@@ -27,13 +33,22 @@ impl SourceSpan {
     pub fn line(module: impl Into<String>, line: u32) -> Self {
         Self {
             module: module.into(),
-            start: SourcePosition { line, column: if line == 0 { 0 } else { 1 } },
-            end: SourcePosition { line, column: if line == 0 { 0 } else { 1 } },
+            start: SourcePosition {
+                line,
+                column: if line == 0 { 0 } else { 1 },
+            },
+            end: SourcePosition {
+                line,
+                column: if line == 0 { 0 } else { 1 },
+            },
         }
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyntaxCategory {
     Item,
@@ -46,7 +61,10 @@ pub enum SyntaxCategory {
 
 /// One syntax hole crossed while producing a generated node. Outer holes come
 /// first, making nested expansion traces deterministic without message parsing.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoleOrigin {
     pub category: SyntaxCategory,
@@ -54,7 +72,10 @@ pub struct HoleOrigin {
     pub invocation: SourceSpan,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpansionOrigin {
     pub definition: SourceSpan,
@@ -62,7 +83,10 @@ pub struct ExpansionOrigin {
     pub hole_ancestry: Vec<HoleOrigin>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GeneratedNodeId {
     /// The source module performing expansion, not a source-text fingerprint.
@@ -73,7 +97,10 @@ pub struct GeneratedNodeId {
 
 /// Structural address in the expanded AST. `path` is empty for an item root;
 /// nested-node producers append deterministic child ordinals as they walk.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedNodePath {
     pub item: u32,
@@ -81,7 +108,10 @@ pub struct GeneratedNodePath {
     pub category: SyntaxCategory,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedNodeOrigin {
     pub id: GeneratedNodeId,
@@ -95,7 +125,10 @@ pub struct GeneratedNodeOrigin {
 /// `tag` is the canonical definition-site name selected by the linker. The
 /// invocation and hole spans remain source metadata only; semantic consumers
 /// derive identities from checked generated values rather than line numbers.
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaggedLiteralOrigin {
     pub id: GeneratedNodeId,
@@ -106,7 +139,10 @@ pub struct TaggedLiteralOrigin {
     pub holes: Vec<SourceSpan>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OriginTable {
     nodes: Vec<GeneratedNodeOrigin>,
@@ -172,7 +208,11 @@ impl OriginTable {
         let item_number = item_index(item_position);
         let id = self.record(
             module,
-            GeneratedNodePath { item: item_number, path: Vec::new(), category: SyntaxCategory::Item },
+            GeneratedNodePath {
+                item: item_number,
+                path: Vec::new(),
+                category: SyntaxCategory::Item,
+            },
             origin.clone(),
         );
         let mut children = 0;
@@ -187,7 +227,11 @@ impl OriginTable {
         origin: ExpansionOrigin,
     ) -> GeneratedNodeId {
         let id = self.allocate_id(module);
-        self.nodes.push(GeneratedNodeOrigin { id: id.clone(), node, origin });
+        self.nodes.push(GeneratedNodeOrigin {
+            id: id.clone(),
+            node,
+            origin,
+        });
         id
     }
 
@@ -216,8 +260,13 @@ impl OriginTable {
 
     fn allocate_id(&mut self, module: &str) -> GeneratedNodeId {
         let next = self.next_ordinals.entry(module.to_string()).or_default();
-        let id = GeneratedNodeId { module: module.to_string(), ordinal: *next };
-        *next = (*next).checked_add(1).expect("generated-origin ordinal overflow");
+        let id = GeneratedNodeId {
+            module: module.to_string(),
+            ordinal: *next,
+        };
+        *next = (*next)
+            .checked_add(1)
+            .expect("generated-origin ordinal overflow");
         id
     }
 
@@ -248,7 +297,9 @@ impl OriginTable {
         let old = std::mem::take(&mut self.nodes);
         let mut remapped = Vec::new();
         for entry in old {
-            let Some(targets) = mapping.get(entry.node.item as usize) else { continue };
+            let Some(targets) = mapping.get(entry.node.item as usize) else {
+                continue;
+            };
             for (copy, target) in targets.iter().enumerate() {
                 let mut moved = entry.clone();
                 moved.node.item = item_index(*target);
@@ -300,7 +351,9 @@ impl OriginTable {
         }
 
         for (source_item, (source_id, origin)) in roots {
-            let Some(targets) = mapping.get(source_item as usize) else { continue };
+            let Some(targets) = mapping.get(source_item as usize) else {
+                continue;
+            };
             for (copy, target) in targets.iter().copied().enumerate() {
                 let Some(item) = lowered_items.get(target) else {
                     return Err(format!(
@@ -323,14 +376,7 @@ impl OriginTable {
                     origin: origin.clone(),
                 });
                 let mut children = 0;
-                record_item_children(
-                    self,
-                    module,
-                    item_number,
-                    item,
-                    &mut children,
-                    &origin,
-                );
+                record_item_children(self, module, item_number, item, &mut children, &origin);
             }
         }
         Ok(())
@@ -352,7 +398,9 @@ impl OriginTable {
 fn child_path(parent: &[u32], next: &mut u32) -> Vec<u32> {
     let mut path = parent.to_vec();
     path.push(*next);
-    *next = next.checked_add(1).expect("generated-origin child ordinal overflow");
+    *next = next
+        .checked_add(1)
+        .expect("generated-origin child ordinal overflow");
     path
 }
 
@@ -364,7 +412,15 @@ fn record_node(
     category: SyntaxCategory,
     origin: &ExpansionOrigin,
 ) {
-    table.record(module, GeneratedNodePath { item, path, category }, origin.clone());
+    table.record(
+        module,
+        GeneratedNodePath {
+            item,
+            path,
+            category,
+        },
+        origin.clone(),
+    );
 }
 
 fn record_item_children(
@@ -376,7 +432,9 @@ fn record_item_children(
     origin: &ExpansionOrigin,
 ) {
     match item {
-        Item::Function(function) => record_function(table, module, item_index, &[], function, next, origin),
+        Item::Function(function) => {
+            record_function(table, module, item_index, &[], function, next, origin)
+        }
         Item::Type(def) => {
             for variant in &def.variants {
                 for ty in &variant.fields {
@@ -432,7 +490,15 @@ fn record_item_children(
     }
 }
 
-fn record_function(table: &mut OriginTable, module: &str, item: u32, path: &[u32], function: &Function, next: &mut u32, origin: &ExpansionOrigin) {
+fn record_function(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    function: &Function,
+    next: &mut u32,
+    origin: &ExpansionOrigin,
+) {
     for param in &function.params {
         let child = child_path(path, next);
         record_param(table, module, item, &child, param, origin);
@@ -451,7 +517,14 @@ fn record_function(table: &mut OriginTable, module: &str, item: u32, path: &[u32
     record_block(table, module, item, &child, &function.body, origin);
 }
 
-fn record_param(table: &mut OriginTable, module: &str, item: u32, path: &[u32], param: &Param, origin: &ExpansionOrigin) {
+fn record_param(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    param: &Param,
+    origin: &ExpansionOrigin,
+) {
     if let Some(ty) = &param.ty {
         let mut next = 0;
         let child = child_path(path, &mut next);
@@ -464,12 +537,29 @@ fn record_param(table: &mut OriginTable, module: &str, item: u32, path: &[u32], 
     }
 }
 
-fn record_type(table: &mut OriginTable, module: &str, item: u32, path: &[u32], ty: &Type, origin: &ExpansionOrigin) {
-    record_node(table, module, item, path.to_vec(), SyntaxCategory::Type, origin);
+fn record_type(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    ty: &Type,
+    origin: &ExpansionOrigin,
+) {
+    record_node(
+        table,
+        module,
+        item,
+        path.to_vec(),
+        SyntaxCategory::Type,
+        origin,
+    );
     let mut next = 0;
     match ty {
         Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
-            for ty in args { let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
+            for ty in args {
+                let child = child_path(path, &mut next);
+                record_type(table, module, item, &child, ty, origin);
+            }
         }
         Type::RecordCompose { base, fields } => {
             let child = child_path(path, &mut next);
@@ -480,41 +570,124 @@ fn record_type(table: &mut OriginTable, module: &str, item: u32, path: &[u32], t
             }
         }
         Type::Fn(params, ret, _) => {
-            for ty in params { let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
-            let child = child_path(path, &mut next); record_type(table, module, item, &child, ret, origin);
+            for ty in params {
+                let child = child_path(path, &mut next);
+                record_type(table, module, item, &child, ty, origin);
+            }
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, ret, origin);
         }
-        Type::Qualified(_, inner) => { let child = child_path(path, &mut next); record_type(table, module, item, &child, inner, origin); }
+        Type::Qualified(_, inner) => {
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, inner, origin);
+        }
+        Type::Slice(inner) => {
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, inner, origin);
+        }
     }
 }
 
-fn record_block(table: &mut OriginTable, module: &str, item: u32, path: &[u32], block: &Block, origin: &ExpansionOrigin) {
-    record_node(table, module, item, path.to_vec(), SyntaxCategory::Block, origin);
+fn record_block(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    block: &Block,
+    origin: &ExpansionOrigin,
+) {
+    record_node(
+        table,
+        module,
+        item,
+        path.to_vec(),
+        SyntaxCategory::Block,
+        origin,
+    );
     let mut next = 0;
-    for stmt in &block.stmts { let child = child_path(path, &mut next); record_stmt(table, module, item, &child, stmt, origin); }
+    for stmt in &block.stmts {
+        let child = child_path(path, &mut next);
+        record_stmt(table, module, item, &child, stmt, origin);
+    }
 }
 
-fn record_stmt(table: &mut OriginTable, module: &str, item: u32, path: &[u32], stmt: &Stmt, origin: &ExpansionOrigin) {
-    record_node(table, module, item, path.to_vec(), SyntaxCategory::Statement, origin);
+fn record_stmt(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    stmt: &Stmt,
+    origin: &ExpansionOrigin,
+) {
+    record_node(
+        table,
+        module,
+        item,
+        path.to_vec(),
+        SyntaxCategory::Statement,
+        origin,
+    );
     let mut next = 0;
     match stmt {
         Stmt::Let { ty, value, .. } => {
-            if let Some(ty) = ty { let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
-            let child = child_path(path, &mut next); record_expr(table, module, item, &child, value, origin);
+            if let Some(ty) = ty {
+                let child = child_path(path, &mut next);
+                record_type(table, module, item, &child, ty, origin);
+            }
+            let child = child_path(path, &mut next);
+            record_expr(table, module, item, &child, value, origin);
         }
-        Stmt::Assign { value, .. } | Stmt::Yield(value) | Stmt::Expr(value) => { let child = child_path(path, &mut next); record_expr(table, module, item, &child, value, origin); }
-        Stmt::LetPattern { pattern, value } => { let child = child_path(path, &mut next); record_pattern(table, module, item, &child, pattern, origin); let child = child_path(path, &mut next); record_expr(table, module, item, &child, value, origin); }
-        Stmt::Return(Some(value)) => { let child = child_path(path, &mut next); record_expr(table, module, item, &child, value, origin); }
+        Stmt::Assign { value, .. } | Stmt::Yield(value) | Stmt::Expr(value) => {
+            let child = child_path(path, &mut next);
+            record_expr(table, module, item, &child, value, origin);
+        }
+        Stmt::LetPattern { pattern, value } => {
+            let child = child_path(path, &mut next);
+            record_pattern(table, module, item, &child, pattern, origin);
+            let child = child_path(path, &mut next);
+            record_expr(table, module, item, &child, value, origin);
+        }
+        Stmt::Return(Some(value)) => {
+            let child = child_path(path, &mut next);
+            record_expr(table, module, item, &child, value, origin);
+        }
         Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
     }
 }
 
-fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], expr: &Expr, origin: &ExpansionOrigin) {
-    record_node(table, module, item, path.to_vec(), SyntaxCategory::Expr, origin);
+fn record_expr(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    expr: &Expr,
+    origin: &ExpansionOrigin,
+) {
+    record_node(
+        table,
+        module,
+        item,
+        path.to_vec(),
+        SyntaxCategory::Expr,
+        origin,
+    );
     let mut next = 0;
     match expr {
-        Expr::List(values) | Expr::Tuple(values) => for value in values { record_expr_child(table, module, item, path, &mut next, value, origin); },
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => for arg in args { record_expr_child(table, module, item, path, &mut next, arg, origin); },
-        Expr::LabeledCall { args, .. } => for (_, arg) in args { record_expr_child(table, module, item, path, &mut next, arg, origin); },
+        Expr::List(values) | Expr::Tuple(values) => {
+            for value in values {
+                record_expr_child(table, module, item, path, &mut next, value, origin);
+            }
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            for arg in args {
+                record_expr_child(table, module, item, path, &mut next, arg, origin);
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, arg) in args {
+                record_expr_child(table, module, item, path, &mut next, arg, origin);
+            }
+        }
         Expr::LabeledMethodCall { receiver, args, .. } => {
             record_expr_child(table, module, item, path, &mut next, receiver, origin);
             for (_, arg) in args {
@@ -527,12 +700,44 @@ fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], e
                 record_expr_child(table, module, item, path, &mut next, arg, origin);
             }
         }
-        Expr::Apply { func, args } => { record_expr_child(table, module, item, path, &mut next, func, origin); for arg in args { record_expr_child(table, module, item, path, &mut next, arg, origin); } }
-        Expr::Unary { expr, .. } | Expr::Try(expr) => record_expr_child(table, module, item, path, &mut next, expr, origin),
-        Expr::Field { base, .. } => record_expr_child(table, module, item, path, &mut next, base, origin),
-        Expr::Lambda { params, body, ret } => { for param in params { let child = child_path(path, &mut next); record_param(table, module, item, &child, param, origin); } if let Some(ret) = ret { let child = child_path(path, &mut next); record_type(table, module, item, &child, ret, origin); } let child = child_path(path, &mut next); record_block(table, module, item, &child, body, origin); }
-        Expr::RecordUpdate { base, fields, .. } => { record_expr_child(table, module, item, path, &mut next, base, origin); for (_, value) in fields { record_expr_child(table, module, item, path, &mut next, value, origin); } }
-        Expr::Record { fields, spread, .. } => { for (_, value) in fields { record_expr_child(table, module, item, path, &mut next, value, origin); } if let Some(spread) = spread { record_expr_child(table, module, item, path, &mut next, spread, origin); } }
+        Expr::Apply { func, args } => {
+            record_expr_child(table, module, item, path, &mut next, func, origin);
+            for arg in args {
+                record_expr_child(table, module, item, path, &mut next, arg, origin);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) => {
+            record_expr_child(table, module, item, path, &mut next, expr, origin)
+        }
+        Expr::Field { base, .. } => {
+            record_expr_child(table, module, item, path, &mut next, base, origin)
+        }
+        Expr::Lambda { params, body, ret } => {
+            for param in params {
+                let child = child_path(path, &mut next);
+                record_param(table, module, item, &child, param, origin);
+            }
+            if let Some(ret) = ret {
+                let child = child_path(path, &mut next);
+                record_type(table, module, item, &child, ret, origin);
+            }
+            let child = child_path(path, &mut next);
+            record_block(table, module, item, &child, body, origin);
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            record_expr_child(table, module, item, path, &mut next, base, origin);
+            for (_, value) in fields {
+                record_expr_child(table, module, item, path, &mut next, value, origin);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                record_expr_child(table, module, item, path, &mut next, value, origin);
+            }
+            if let Some(spread) = spread {
+                record_expr_child(table, module, item, path, &mut next, spread, origin);
+            }
+        }
         Expr::As { expr, ty }
         | Expr::ExistentialPack { expr, ty, .. }
         | Expr::ExistentialUpcast { expr, ty } => {
@@ -540,7 +745,13 @@ fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], e
             let child = child_path(path, &mut next);
             record_type(table, module, item, &child, ty, origin);
         }
-        Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+        Expr::ExistentialCall {
+            receiver,
+            args,
+            ty,
+            result,
+            ..
+        } => {
             record_expr_child(table, module, item, path, &mut next, receiver, origin);
             for arg in args {
                 record_expr_child(table, module, item, path, &mut next, arg, origin);
@@ -550,37 +761,144 @@ fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], e
             let child = child_path(path, &mut next);
             record_type(table, module, item, &child, result, origin);
         }
-        Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => { record_expr_child(table, module, item, path, &mut next, lhs, origin); record_expr_child(table, module, item, path, &mut next, rhs, origin); }
-        Expr::If { cond, then_block, else_block } => { record_expr_child(table, module, item, path, &mut next, cond, origin); let child = child_path(path, &mut next); record_block(table, module, item, &child, then_block, origin); if let Some(block) = else_block { let child = child_path(path, &mut next); record_block(table, module, item, &child, block, origin); } }
-        Expr::Match { scrutinee, arms } => { record_expr_child(table, module, item, path, &mut next, scrutinee, origin); for arm in arms { let child = child_path(path, &mut next); record_arm(table, module, item, &child, arm, origin); } }
-        Expr::Block(block) => { let child = child_path(path, &mut next); record_block(table, module, item, &child, block, origin); }
-        Expr::While { cond, body } => { record_expr_child(table, module, item, path, &mut next, cond, origin); let child = child_path(path, &mut next); record_block(table, module, item, &child, body, origin); }
-        Expr::For { iter, body, .. } => { record_expr_child(table, module, item, path, &mut next, iter, origin); let child = child_path(path, &mut next); record_block(table, module, item, &child, body, origin); }
-        Expr::Index { base, index } => { record_expr_child(table, module, item, path, &mut next, base, origin); record_expr_child(table, module, item, path, &mut next, index, origin); }
-        Expr::WhileLet { pattern, scrutinee, body } => { let child = child_path(path, &mut next); record_pattern(table, module, item, &child, pattern, origin); record_expr_child(table, module, item, path, &mut next, scrutinee, origin); let child = child_path(path, &mut next); record_block(table, module, item, &child, body, origin); }
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Range {
+            lo: lhs, hi: rhs, ..
+        } => {
+            record_expr_child(table, module, item, path, &mut next, lhs, origin);
+            record_expr_child(table, module, item, path, &mut next, rhs, origin);
+        }
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            record_expr_child(table, module, item, path, &mut next, cond, origin);
+            let child = child_path(path, &mut next);
+            record_block(table, module, item, &child, then_block, origin);
+            if let Some(block) = else_block {
+                let child = child_path(path, &mut next);
+                record_block(table, module, item, &child, block, origin);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            record_expr_child(table, module, item, path, &mut next, scrutinee, origin);
+            for arm in arms {
+                let child = child_path(path, &mut next);
+                record_arm(table, module, item, &child, arm, origin);
+            }
+        }
+        Expr::Block(block) => {
+            let child = child_path(path, &mut next);
+            record_block(table, module, item, &child, block, origin);
+        }
+        Expr::While { cond, body } => {
+            record_expr_child(table, module, item, path, &mut next, cond, origin);
+            let child = child_path(path, &mut next);
+            record_block(table, module, item, &child, body, origin);
+        }
+        Expr::For { iter, body, .. } => {
+            record_expr_child(table, module, item, path, &mut next, iter, origin);
+            let child = child_path(path, &mut next);
+            record_block(table, module, item, &child, body, origin);
+        }
+        Expr::Index { base, index } => {
+            record_expr_child(table, module, item, path, &mut next, base, origin);
+            record_expr_child(table, module, item, path, &mut next, index, origin);
+        }
+        Expr::WhileLet {
+            pattern,
+            scrutinee,
+            body,
+        } => {
+            let child = child_path(path, &mut next);
+            record_pattern(table, module, item, &child, pattern, origin);
+            record_expr_child(table, module, item, path, &mut next, scrutinee, origin);
+            let child = child_path(path, &mut next);
+            record_block(table, module, item, &child, body, origin);
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
     }
 }
 
-fn record_expr_child(table: &mut OriginTable, module: &str, item: u32, parent: &[u32], next: &mut u32, expr: &Expr, origin: &ExpansionOrigin) {
+fn record_expr_child(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    parent: &[u32],
+    next: &mut u32,
+    expr: &Expr,
+    origin: &ExpansionOrigin,
+) {
     let child = child_path(parent, next);
     record_expr(table, module, item, &child, expr, origin);
 }
 
-fn record_arm(table: &mut OriginTable, module: &str, item: u32, path: &[u32], arm: &MatchArm, origin: &ExpansionOrigin) {
+fn record_arm(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    arm: &MatchArm,
+    origin: &ExpansionOrigin,
+) {
     let mut next = 0;
-    let child = child_path(path, &mut next); record_pattern(table, module, item, &child, &arm.pattern, origin);
-    if let Some(guard) = &arm.guard { let child = child_path(path, &mut next); record_expr(table, module, item, &child, guard, origin); }
-    let child = child_path(path, &mut next); record_expr(table, module, item, &child, &arm.body, origin);
+    let child = child_path(path, &mut next);
+    record_pattern(table, module, item, &child, &arm.pattern, origin);
+    if let Some(guard) = &arm.guard {
+        let child = child_path(path, &mut next);
+        record_expr(table, module, item, &child, guard, origin);
+    }
+    let child = child_path(path, &mut next);
+    record_expr(table, module, item, &child, &arm.body, origin);
 }
 
-fn record_pattern(table: &mut OriginTable, module: &str, item: u32, path: &[u32], pattern: &Pattern, origin: &ExpansionOrigin) {
-    record_node(table, module, item, path.to_vec(), SyntaxCategory::Pattern, origin);
+fn record_pattern(
+    table: &mut OriginTable,
+    module: &str,
+    item: u32,
+    path: &[u32],
+    pattern: &Pattern,
+    origin: &ExpansionOrigin,
+) {
+    record_node(
+        table,
+        module,
+        item,
+        path.to_vec(),
+        SyntaxCategory::Pattern,
+        origin,
+    );
     let mut next = 0;
     match pattern {
-        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => for pattern in args { let child = child_path(path, &mut next); record_pattern(table, module, item, &child, pattern, origin); },
-        Pattern::List { elems, .. } => for pattern in elems { let child = child_path(path, &mut next); record_pattern(table, module, item, &child, pattern, origin); },
-        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
+        Pattern::Ctor { args, .. }
+        | Pattern::AnonCtor { args, .. }
+        | Pattern::Tuple(args)
+        | Pattern::Or(args) => {
+            for pattern in args {
+                let child = child_path(path, &mut next);
+                record_pattern(table, module, item, &child, pattern, origin);
+            }
+        }
+        Pattern::List { elems, .. } => {
+            for pattern in elems {
+                let child = child_path(path, &mut next);
+                record_pattern(table, module, item, &child, pattern, origin);
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_)
+        | Pattern::Duration(_)
+        | Pattern::IntRange { .. } => {}
     }
 }
 
@@ -662,36 +980,58 @@ mod tests {
         table.record_item_tree("generated", 0, &module.items[0], trace("generated", 2, 7));
 
         assert!(table.origin_for_item(0).is_some());
-        assert!(table.nodes.iter().any(|node| node.node.category == SyntaxCategory::Block));
-        assert!(table.nodes.iter().any(|node| node.node.category == SyntaxCategory::Statement));
-        assert!(table.nodes.iter().any(|node| node.node.category == SyntaxCategory::Expr));
-        assert!(table.nodes.iter().any(|node| node.node.category == SyntaxCategory::Type));
+        assert!(table
+            .nodes
+            .iter()
+            .any(|node| node.node.category == SyntaxCategory::Block));
+        assert!(table
+            .nodes
+            .iter()
+            .any(|node| node.node.category == SyntaxCategory::Statement));
+        assert!(table
+            .nodes
+            .iter()
+            .any(|node| node.node.category == SyntaxCategory::Expr));
+        assert!(table
+            .nodes
+            .iter()
+            .any(|node| node.node.category == SyntaxCategory::Type));
         let mut next = 0;
         record_pattern(
             &mut table,
             "generated",
             0,
             &child_path(&[], &mut next),
-            &Pattern::Ctor { name: "Pair".into(), args: vec![Pattern::Var("x".into())] },
+            &Pattern::Ctor {
+                name: "Pair".into(),
+                args: vec![Pattern::Var("x".into())],
+            },
             &trace("generated", 2, 7),
         );
-        assert!(table.nodes.iter().any(|node| node.node.category == SyntaxCategory::Pattern));
+        assert!(table
+            .nodes
+            .iter()
+            .any(|node| node.node.category == SyntaxCategory::Pattern));
 
         let nested = table
             .nodes
             .iter()
             .find(|node| node.node.category == SyntaxCategory::Expr && !node.node.path.is_empty())
             .expect("nested expression origin");
-        assert_eq!(table.origin_for_node(&nested.node).expect("lookup by path").id, nested.id);
+        assert_eq!(
+            table
+                .origin_for_node(&nested.node)
+                .expect("lookup by path")
+                .id,
+            nested.id
+        );
         assert_eq!(nested.origin.invocation.start.line, 7);
     }
 
     #[test]
     fn rebuilding_item_trees_replaces_stale_paths_after_fanout() {
-        let source = crate::parser::parse_module(
-            "fn generated(x: Int) -> Int:\n    x + 1\n",
-        )
-        .expect("source item parses");
+        let source = crate::parser::parse_module("fn generated(x: Int) -> Int:\n    x + 1\n")
+            .expect("source item parses");
         let lowered = crate::parser::parse_module(
             "fn helper(x: Int, target: Int) -> Option(Int):\n    Some(x + target)\n\nfn generated(x: Int) -> Iter(Int):\n    iter.from_gen(fn(target: Int): helper(x, target))\n",
         )

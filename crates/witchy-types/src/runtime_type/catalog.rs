@@ -40,7 +40,11 @@ impl PackageCoordinate {
                 "package `{name}@{version}` has an empty registry identity"
             )));
         }
-        Ok(Self { source, name, version })
+        Ok(Self {
+            source,
+            name,
+            version,
+        })
     }
 
     pub fn source(&self) -> &PackageSource {
@@ -77,7 +81,10 @@ impl ModuleLoadIdentity {
                 "loaded module has an empty logical module path".to_string(),
             ));
         }
-        Ok(Self { package, module_path })
+        Ok(Self {
+            package,
+            module_path,
+        })
     }
 
     pub fn package(&self) -> &PackageCoordinate {
@@ -115,9 +122,7 @@ pub struct AuthenticatedModuleOwners {
 }
 
 impl AuthenticatedModuleOwners {
-    pub fn from_loader_assignments<A>(
-        assignments: A,
-    ) -> Result<Self, RuntimeTypeError>
+    pub fn from_loader_assignments<A>(assignments: A) -> Result<Self, RuntimeTypeError>
     where
         A: IntoIterator<Item = (String, ModuleLoadIdentity)>,
     {
@@ -157,8 +162,13 @@ impl AuthenticatedModuleOwners {
             }
             loaded.insert(module);
         }
-        if let Some(module) = loaded.iter().find(|module| !self.owners.contains_key(*module)) {
-            return Err(RuntimeTypeError::MissingModuleOwner { module: module.to_string() });
+        if let Some(module) = loaded
+            .iter()
+            .find(|module| !self.owners.contains_key(*module))
+        {
+            return Err(RuntimeTypeError::MissingModuleOwner {
+                module: module.to_string(),
+            });
         }
         Ok(())
     }
@@ -203,7 +213,12 @@ impl DeclarationIdentity {
                 "declaration name is empty".to_string(),
             ));
         }
-        Ok(Self { package, module, kind, name })
+        Ok(Self {
+            package,
+            module,
+            kind,
+            name,
+        })
     }
 
     pub fn package(&self) -> &PackageCoordinate {
@@ -244,11 +259,12 @@ impl RuntimeDeclarationCatalog {
     ) -> Result<Self, RuntimeTypeError> {
         let mut catalog = Self::default();
         for declaration in &declarations.declarations {
-            let owner = module_owners.owners.get(&declaration.source_module).ok_or_else(|| {
-                RuntimeTypeError::MissingModuleOwner {
+            let owner = module_owners
+                .owners
+                .get(&declaration.source_module)
+                .ok_or_else(|| RuntimeTypeError::MissingModuleOwner {
                     module: declaration.source_module.clone(),
-                }
-            })?;
+                })?;
             let kind = match declaration.kind {
                 ResolvedDeclarationKind::Type => DeclarationKind::Type,
                 ResolvedDeclarationKind::Trait => DeclarationKind::Trait,
@@ -320,9 +336,7 @@ impl RuntimeDeclarationCatalog {
     }
 
     pub fn type_identity(&self, ty: &Type) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
-        RuntimeTypeIdentity::from_resolved_type(ty, &|name, kind| {
-            self.resolve(name, kind).cloned()
-        })
+        RuntimeTypeIdentity::from_resolved_type(ty, &|name, kind| self.resolve(name, kind).cloned())
     }
 
     /// Resolve a checked callable while retaining authority-bearing parameter
@@ -337,8 +351,10 @@ impl RuntimeDeclarationCatalog {
             &|name, kind| self.resolve(name, kind).cloned(),
             &|ty| match self.capability_free_type_identity(ty, module) {
                 Ok(_) => Ok(false),
-                Err(RuntimeTypeError::CapabilityType(_)
-                | RuntimeTypeError::CapabilityRetained { .. }) => Ok(true),
+                Err(
+                    RuntimeTypeError::CapabilityType(_)
+                    | RuntimeTypeError::CapabilityRetained { .. },
+                ) => Ok(true),
                 Err(error) => Err(error),
             },
         )
@@ -355,7 +371,9 @@ impl RuntimeDeclarationCatalog {
     ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
         let mut definitions = BTreeMap::new();
         for item in &module.items {
-            let Item::Type(definition) = item else { continue };
+            let Item::Type(definition) = item else {
+                continue;
+            };
             let Some(identity) = self.resolve(&definition.name, DeclarationKind::Type) else {
                 continue;
             };
@@ -383,14 +401,12 @@ fn validate_capability_free_type(
     path: &[String],
 ) -> Result<(), RuntimeTypeError> {
     match ty {
-        Type::Qualified(_, inner) => validate_capability_free_type(
-            inner,
-            catalog,
-            definitions,
-            bindings,
-            visiting,
-            path,
-        ),
+        Type::Qualified(_, inner) => {
+            validate_capability_free_type(inner, catalog, definitions, bindings, visiting, path)
+        }
+        Type::Slice(inner) => {
+            validate_capability_free_type(inner, catalog, definitions, bindings, visiting, path)
+        }
         Type::Tuple(items) => {
             for (index, item) in items.iter().enumerate() {
                 let mut child_path = path.to_vec();
@@ -415,14 +431,7 @@ fn validate_capability_free_type(
             path: path.to_vec(),
         }),
         Type::RecordCompose { base, fields } => {
-            validate_capability_free_type(
-                base,
-                catalog,
-                definitions,
-                bindings,
-                visiting,
-                path,
-            )?;
+            validate_capability_free_type(base, catalog, definitions, bindings, visiting, path)?;
             for (name, field) in fields {
                 let mut child_path = path.to_vec();
                 child_path.push(name.clone());
@@ -531,9 +540,7 @@ fn validate_capability_free_type(
                 witchy_syntax::ast::effective_nominal_type_def_params(definition);
             let instantiated_args = if nominal_parameters.len() == instantiated_args.len() {
                 let mut runtime_arguments = Vec::new();
-                for (parameter, argument) in
-                    nominal_parameters.iter().zip(instantiated_args)
-                {
+                for (parameter, argument) in nominal_parameters.iter().zip(instantiated_args) {
                     if witchy_syntax::ast::is_lifetime_param(parameter) {
                         if !super::is_runtime_lifetime_argument(&argument) {
                             let mut child_path = path.to_vec();
@@ -642,13 +649,12 @@ pub(super) fn instantiate_runtime_type(ty: &Type, bindings: &BTreeMap<String, Ty
             qualifier.clone(),
             Box::new(instantiate_runtime_type(inner, bindings)),
         ),
+        Type::Slice(elem) => Type::Slice(Box::new(instantiate_runtime_type(elem, bindings))),
         Type::RecordCompose { base, fields } => Type::RecordCompose {
             base: Box::new(instantiate_runtime_type(base, bindings)),
             fields: fields
                 .iter()
-                .map(|(name, field)| {
-                    (name.clone(), instantiate_runtime_type(field, bindings))
-                })
+                .map(|(name, field)| (name.clone(), instantiate_runtime_type(field, bindings)))
                 .collect(),
         },
     }

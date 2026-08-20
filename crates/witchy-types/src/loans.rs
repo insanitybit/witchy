@@ -53,6 +53,7 @@ fn type_contains_explicit_reference_relation(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_contains_explicit_reference_relation(inner),
+        Type::Slice(inner) => type_contains_explicit_reference_relation(inner),
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => arguments
             .iter()
             .any(type_contains_explicit_reference_relation),
@@ -1422,6 +1423,7 @@ fn type_mentions_view(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_view(inner),
+        Type::Slice(inner) => type_mentions_view(inner),
         Type::Named(_, args) | Type::Tuple(args) => args.iter().any(type_mentions_view),
         Type::Dyn(_, args) => args.iter().any(type_mentions_view),
         Type::RecordCompose { base, fields } => {
@@ -1439,10 +1441,12 @@ fn type_has_generic_leaf(ty: &Type) -> bool {
         Type::Named(name, arguments) => {
             (arguments.is_empty()
                 && !name.contains('.')
+                && name != "str"
                 && name.chars().next().is_some_and(char::is_lowercase))
                 || arguments.iter().any(type_has_generic_leaf)
         }
         Type::Qualified(_, inner) => type_has_generic_leaf(inner),
+        Type::Slice(inner) => type_has_generic_leaf(inner),
         Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(type_has_generic_leaf),
         Type::Fn(parameters, result, _) => {
             parameters.iter().any(type_has_generic_leaf) || type_has_generic_leaf(result)
@@ -1635,6 +1639,7 @@ fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError>
             validate_nested_fn_borrows(ret, context)
         }
         Type::Qualified(_, inner) => validate_nested_fn_borrows(inner, context),
+        Type::Slice(inner) => validate_nested_fn_borrows(inner, context),
         Type::Named(_, args) | Type::Tuple(args) => {
             for arg in args {
                 validate_nested_fn_borrows(arg, context)?;

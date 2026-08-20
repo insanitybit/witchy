@@ -9,9 +9,9 @@
 
 mod tests {
     #[allow(unused_imports)]
-    use witchy_types::typeck::{check, check_str, gc_cap_aggregate_names};
-    #[allow(unused_imports)]
     use witchy_syntax::ast::{self, Block, Expr, Item, Stmt};
+    #[allow(unused_imports)]
+    use witchy_types::typeck::{check, check_str, gc_cap_aggregate_names};
 
     #[test]
     fn anonymous_union_injection_uses_expected_type() {
@@ -21,19 +21,21 @@ mod tests {
         .expect("expected type supplies the anonymous union shape");
 
         let bare = check_str("fn f():\n    .BadPort(70000)\n").unwrap_err();
-        assert!(bare.contains("needs an expected anonymous union type"), "{bare}");
+        assert!(
+            bare.contains("needs an expected anonymous union type"),
+            "{bare}"
+        );
 
-        let wrong_tag = check_str(
-            "fn f() -> .[BadPort(Int) | NotFound]:\n    .Timeout\n"
-        )
-        .unwrap_err();
+        let wrong_tag =
+            check_str("fn f() -> .[BadPort(Int) | NotFound]:\n    .Timeout\n").unwrap_err();
         assert!(wrong_tag.contains("has no tag `.Timeout`"), "{wrong_tag}");
 
-        let wrong_arity = check_str(
-            "fn f() -> .[BadPort(Int) | NotFound]:\n    .BadPort\n"
-        )
-        .unwrap_err();
-        assert!(wrong_arity.contains("takes 1 payload value"), "{wrong_arity}");
+        let wrong_arity =
+            check_str("fn f() -> .[BadPort(Int) | NotFound]:\n    .BadPort\n").unwrap_err();
+        assert!(
+            wrong_arity.contains("takes 1 payload value"),
+            "{wrong_arity}"
+        );
     }
 
     #[test]
@@ -43,10 +45,8 @@ mod tests {
         )
         .expect("anonymous union patterns check against their scrutinee");
 
-        check_str(
-            "fn only(e: .[Only(Int)]) -> Int:\n    let .Only(n) = e\n    n\n"
-        )
-        .expect("a single-tag anonymous union pattern is irrefutable");
+        check_str("fn only(e: .[Only(Int)]) -> Int:\n    let .Only(n) = e\n    n\n")
+            .expect("a single-tag anonymous union pattern is irrefutable");
 
         let wrong_tag = check_str(
             "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .Timeout -> \"timeout\"\n        _ -> \"other\"\n"
@@ -58,13 +58,19 @@ mod tests {
             "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .BadPort -> \"bad\"\n        _ -> \"other\"\n"
         )
         .unwrap_err();
-        assert!(wrong_arity.contains("takes 1 payload pattern"), "{wrong_arity}");
+        assert!(
+            wrong_arity.contains("takes 1 payload pattern"),
+            "{wrong_arity}"
+        );
 
         let missing = check_str(
             "fn describe(e: .[BadPort(Int) | NotFound]) -> String:\n    match e:\n        .BadPort(p) -> \"${p}\"\n"
         )
         .unwrap_err();
-        assert!(missing.contains("non-exhaustive match") && missing.contains("`.NotFound`"), "{missing}");
+        assert!(
+            missing.contains("non-exhaustive match") && missing.contains("`.NotFound`"),
+            "{missing}"
+        );
     }
 
     #[test]
@@ -93,22 +99,20 @@ mod tests {
 
     #[test]
     fn structural_types_reject_capabilities_at_every_depth() {
-        let union = check_str(
-            "fn bad(net: Net) -> .[Got(Net) | Missing]:\n    .Got(net)\n"
-        )
-        .unwrap_err();
-        assert!(union.contains("anonymous union") && union.contains("Net"), "{union}");
+        let union =
+            check_str("fn bad(net: Net) -> .[Got(Net) | Missing]:\n    .Got(net)\n").unwrap_err();
+        assert!(
+            union.contains("anonymous union") && union.contains("Net"),
+            "{union}"
+        );
 
-        let record = check_str(
-            "fn read(r: .{net: Net}) -> Int:\n    0\n"
-        )
-        .unwrap_err();
-        assert!(record.contains("anonymous record") && record.contains("Net"), "{record}");
+        let record = check_str("fn read(r: .{net: Net}) -> Int:\n    0\n").unwrap_err();
+        assert!(
+            record.contains("anonymous record") && record.contains("Net"),
+            "{record}"
+        );
 
-        let inferred_record = check_str(
-            "fn capture(net: Net):\n    .{net: net}\n"
-        )
-        .unwrap_err();
+        let inferred_record = check_str("fn capture(net: Net):\n    .{net: net}\n").unwrap_err();
         assert!(
             inferred_record.contains("anonymous record") && inferred_record.contains("Net"),
             "{inferred_record}"
@@ -175,7 +179,7 @@ mod tests {
         );
 
         let inherent_impl = check_resolved(
-            "type Row = .{x: Int}\nimpl Row:\n    fn label(self) -> String:\n        \"row\"\n"
+            "type Row = .{x: Int}\nimpl Row:\n    fn label(self) -> String:\n        \"row\"\n",
         )
         .unwrap_err();
         assert!(
@@ -211,7 +215,10 @@ mod tests {
             "type Plain:\n    a: Int\n\ntype Bad2 packed:\n    p: Plain\n\nfn main(console: Console):\n    console.print(\"hi\")\n"
         )
         .unwrap_err();
-        assert!(nested.contains("packed") && nested.contains("`p`"), "{nested}");
+        assert!(
+            nested.contains("packed") && nested.contains("`p`"),
+            "{nested}"
+        );
     }
 
     #[test]
@@ -225,13 +232,19 @@ mod tests {
         .is_ok());
         // A grantable cap carrying a host capability directly is rejected.
         let direct = check_str("grantable capability Bad:\n    net: Net[Connect]\n").unwrap_err();
-        assert!(direct.contains("BARE") && direct.contains("Net"), "{direct}");
+        assert!(
+            direct.contains("BARE") && direct.contains("Net"),
+            "{direct}"
+        );
         // ... and transitively, through a nested user cap that wraps a host cap.
         let transitive = check_str(
             "capability Inner:\n    net: Net[Connect]\n\ngrantable capability Bad2:\n    inner: Inner\n"
         )
         .unwrap_err();
-        assert!(transitive.contains("BARE") && transitive.contains("Net"), "{transitive}");
+        assert!(
+            transitive.contains("BARE") && transitive.contains("Net"),
+            "{transitive}"
+        );
     }
 
     #[test]
@@ -267,14 +280,18 @@ mod tests {
             "type Config:\n    Config(Int)\n\npub fn export_step(c: Config, input: String) -> String:\n    input\n"
         )
         .unwrap_err();
-        assert!(err.contains("export_step") && err.contains("grantable"), "{err}");
+        assert!(
+            err.contains("export_step") && err.contains("grantable"),
+            "{err}"
+        );
         // A migrated host capability such as `File` is not a grantable UI cap and
         // has no export-wrapper minting ABI in RFC-0005 Stage 2.
-        let file = check_str(
-            "pub fn export_step(f: File, input: String) -> String:\n    input\n"
-        )
-        .unwrap_err();
-        assert!(file.contains("export_step") && file.contains("File") && file.contains("grantable"), "{file}");
+        let file = check_str("pub fn export_step(f: File, input: String) -> String:\n    input\n")
+            .unwrap_err();
+        assert!(
+            file.contains("export_step") && file.contains("File") && file.contains("grantable"),
+            "{file}"
+        );
         // A plain single-String export is unaffected.
         assert!(check_str("pub fn export_step(input: String) -> String:\n    input\n").is_ok());
     }
@@ -302,13 +319,19 @@ mod tests {
             "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    console.print(\"hi\")\n",
         )
         .unwrap_err();
-        assert!(var_let.contains("frozen") && var_let.contains("var"), "{var_let}");
+        assert!(
+            var_let.contains("frozen") && var_let.contains("var"),
+            "{var_let}"
+        );
 
         // A mutator shape (`var` first + self-typed return) so RFC-0064's row-3
         // check passes and the frozen/convention conflict is what surfaces.
         let var_param =
             check_str("fn f(var xs: frozen List(Int)) -> List(Int):\n    xs\n").unwrap_err();
-        assert!(var_param.contains("frozen") && var_param.contains("mutable"), "{var_param}");
+        assert!(
+            var_param.contains("frozen") && var_param.contains("mutable"),
+            "{var_param}"
+        );
 
         let own_param =
             check_str("fn f(own xs: frozen List(Int)) -> Int:\n    list.length(xs)\n").unwrap_err();
@@ -337,7 +360,10 @@ mod tests {
             "mode opt\n\nfn bad(let xs: let('a) List(Int)) -> View(List(Int), 'b):\n    xs\n",
         )
         .expect_err("an unrelated output lifetime must not permit the escape");
-        assert!(unrelated.contains("cannot be returned") || unrelated.contains("no parameter"), "{unrelated}");
+        assert!(
+            unrelated.contains("cannot be returned") || unrelated.contains("no parameter"),
+            "{unrelated}"
+        );
 
         let owned = check_str("fn bad(let xs: List(Int)) -> List(Int):\n    xs\n")
             .expect_err("an ordinary explicit borrow still cannot escape");
@@ -354,57 +380,47 @@ mod tests {
             "mode opt\n\ntype Pair(a, 'left, 'right):\n    Pair(View(a, 'left), View(a, 'right))\n\nfn inspect(let pair: let('left) Pair(Int, 'left, 'right), let owner: let('right) Int) -> Int:\n    0\n",
         )
         .expect("single positional borrowed nominal preserves mixed type/lifetime kinds");
-        check_str(
-            "mode opt\n\ntype SameSpelling(a, 'a):\n    first: a\n    second: View(a, 'a)\n",
-        )
-        .expect("ordinary `a` and lifetime `'a` occupy distinct kinds");
+        check_str("mode opt\n\ntype SameSpelling(a, 'a):\n    first: a\n    second: View(a, 'a)\n")
+            .expect("ordinary `a` and lifetime `'a` occupy distinct kinds");
     }
 
     #[test]
     fn borrowed_nominal_declaration_rejections_are_precise() {
-        let outside_opt = check_str(
-            "type Parser('a):\n    input: View(Bytes, 'a)\n",
-        )
-        .expect_err("borrowed nominal declarations require mode opt");
+        let outside_opt = check_str("type Parser('a):\n    input: View(Bytes, 'a)\n")
+            .expect_err("borrowed nominal declarations require mode opt");
         assert!(
             outside_opt.contains("explicit references and lifetime parameters")
                 && outside_opt.contains("only in `mode opt` files"),
             "{outside_opt}"
         );
 
-        let duplicate = check_str(
-            "mode opt\n\ntype Parser('a, 'a):\n    input: View(Bytes, 'a)\n",
-        )
-        .expect_err("duplicate lifetime parameters reject");
+        let duplicate = check_str("mode opt\n\ntype Parser('a, 'a):\n    input: View(Bytes, 'a)\n")
+            .expect_err("duplicate lifetime parameters reject");
         assert!(
-            duplicate.contains("lifetime parameter `'a` is declared more than once in type `Parser`")
+            duplicate
+                .contains("lifetime parameter `'a` is declared more than once in type `Parser`")
                 && duplicate.contains("lifetime parameter names must be unique"),
             "{duplicate}"
         );
 
-        let unbound_field = check_str(
-            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'other)\n",
-        )
-        .expect_err("field lifetime must be declared by the nominal head");
+        let unbound_field =
+            check_str("mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'other)\n")
+                .expect_err("field lifetime must be declared by the nominal head");
         assert!(
             unbound_field.contains("type `Parser` uses lifetime `'other` but does not declare it")
                 && unbound_field.contains("add `'other` to the nominal type parameters"),
             "{unbound_field}"
         );
 
-        let missing_head = check_str(
-            "mode opt\n\ntype Parser:\n    input: View(Bytes, 'a)\n",
-        )
-        .expect_err("a field lifetime cannot exist without a nominal binder");
+        let missing_head = check_str("mode opt\n\ntype Parser:\n    input: View(Bytes, 'a)\n")
+            .expect_err("a field lifetime cannot exist without a nominal binder");
         assert!(
             missing_head.contains("type `Parser` uses lifetime `'a` but does not declare it"),
             "{missing_head}"
         );
 
-        let unused = check_str(
-            "mode opt\n\ntype Parser('a):\n    offset: Int\n",
-        )
-        .expect_err("declared lifetimes must relate a field");
+        let unused = check_str("mode opt\n\ntype Parser('a):\n    offset: Int\n")
+            .expect_err("declared lifetimes must relate a field");
         assert!(
             unused.contains("declares lifetime parameter `'a` but no field uses it"),
             "{unused}"
@@ -474,8 +490,10 @@ mod tests {
         )
         .expect_err("a lifetime cannot instantiate List's type parameter");
         assert!(
-            ordinary_slot.contains("lifetime argument `'a` cannot be used in ordinary type position 1 of `List`")
-                || ordinary_slot.contains("lifetime argument `'a` cannot be used for ordinary type parameter"),
+            ordinary_slot.contains(
+                "lifetime argument `'a` cannot be used in ordinary type position 1 of `List`"
+            ) || ordinary_slot
+                .contains("lifetime argument `'a` cannot be used for ordinary type parameter"),
             "{ordinary_slot}"
         );
 
@@ -484,8 +502,9 @@ mod tests {
         )
         .expect_err("an ordinary type cannot instantiate a lifetime parameter");
         assert!(
-            lifetime_slot.contains("type `Parser` expects a lifetime argument for parameter `'a` at position 1")
-                && lifetime_slot.contains("got ordinary type `Int`"),
+            lifetime_slot.contains(
+                "type `Parser` expects a lifetime argument for parameter `'a` at position 1"
+            ) && lifetime_slot.contains("got ordinary type `Int`"),
             "{lifetime_slot}"
         );
 
@@ -568,10 +587,9 @@ mod tests {
 
     #[test]
     fn nested_function_lifetime_does_not_satisfy_an_outer_nominal_binder() {
-        let error = check_str(
-            "mode opt\n\ntype Phantom('a):\n    callback: fn(View(String, 'a)) -> Int\n",
-        )
-        .expect_err("nested callable lifetimes are independently quantified");
+        let error =
+            check_str("mode opt\n\ntype Phantom('a):\n    callback: fn(View(String, 'a)) -> Int\n")
+                .expect_err("nested callable lifetimes are independently quantified");
         assert!(
             error.contains("type `Phantom` declares lifetime parameter `'a` but no field uses it"),
             "{error}"
@@ -797,10 +815,8 @@ mod tests {
             "{result}"
         );
 
-        check_str(
-            "fn outer() -> Int:\n    let value = 7\n    let f = fn(): value\n    0\n",
-        )
-        .expect("ordinary scalar closure captures remain valid");
+        check_str("fn outer() -> Int:\n    let value = 7\n    let f = fn(): value\n    0\n")
+            .expect("ordinary scalar closure captures remain valid");
     }
 
     #[test]
@@ -855,11 +871,9 @@ mod tests {
             ("Dir", "Dir[Read]"),
             ("BuildOut", "BuildOut"),
         ] {
-            let source = format!(
-                "mode opt\n\nfn bad(let value: let('a) {ty}) -> Int:\n    0\n"
-            );
-            let direct = check_str(&source)
-                .expect_err("ordinary lifetimes cannot borrow capabilities");
+            let source = format!("mode opt\n\nfn bad(let value: let('a) {ty}) -> Int:\n    0\n");
+            let direct =
+                check_str(&source).expect_err("ordinary lifetimes cannot borrow capabilities");
             assert!(
                 direct.contains(&format!("names capability `{name}` as an ordinary owner"))
                     && direct.contains("lease-bearing API"),
@@ -877,10 +891,8 @@ mod tests {
             "{branded}"
         );
 
-        let field = check_str(
-            "mode opt\n\ntype Holder('a):\n    dir: View(Dir[Read], 'a)\n",
-        )
-        .expect_err("borrowed nominal fields cannot invent a capability lease");
+        let field = check_str("mode opt\n\ntype Holder('a):\n    dir: View(Dir[Read], 'a)\n")
+            .expect_err("borrowed nominal fields cannot invent a capability lease");
         assert!(
             field.contains("names capability `Dir` as an ordinary owner")
                 && field.contains("ordinary lifetime cannot extend capability authority"),
@@ -915,20 +927,19 @@ mod tests {
     fn local_unique_cannot_be_a_return_type() {
         // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
         // so it cannot be returned.
-        let ret =
-            check_str("fn f() -> local unique List(Int):\n    [1, 2]\n").unwrap_err();
-        assert!(ret.contains("local unique") && ret.contains("escape"), "{ret}");
+        let ret = check_str("fn f() -> local unique List(Int):\n    [1, 2]\n").unwrap_err();
+        assert!(
+            ret.contains("local unique") && ret.contains("escape"),
+            "{ret}"
+        );
         // `unique` (returnable) is fine.
-        check_str("fn f() -> unique List(Int):\n    [1, 2]\n")
-            .expect("a unique return is valid");
+        check_str("fn f() -> unique List(Int):\n    [1, 2]\n").expect("a unique return is valid");
         check_str(
             "fn build() -> unique List(Int):\n    [1]\n\nfn forward() -> unique List(Int):\n    build()\n",
         )
         .expect("a direct unique result forwards its capacity token");
-        let unproved = check_str(
-            "fn bad(xs: List(Int)) -> unique List(Int):\n    xs\n",
-        )
-        .expect_err("an arbitrary shared value cannot claim a unique result token");
+        let unproved = check_str("fn bad(xs: List(Int)) -> unique List(Int):\n    xs\n")
+            .expect_err("an arbitrary shared value cannot claim a unique result token");
         assert!(unproved.contains("capacity-token proof"), "{unproved}");
 
         check_str(
@@ -940,7 +951,10 @@ mod tests {
             "fn choose(flag: Bool) -> unique List(Int):\n    if flag:\n        [1]\n    else:\n        [2]\n",
         )
         .expect_err("a control-flow tail must not receive a fabricated zero token");
-        assert!(control_tail.contains("capacity-token proof"), "{control_tail}");
+        assert!(
+            control_tail.contains("capacity-token proof"),
+            "{control_tail}"
+        );
 
         let method = check_str(
             "type Holder:\n    values: List(Int)\n\nimpl Holder:\n    fn expose(let self: Holder) -> unique List(Int):\n        self.values\n",
@@ -968,53 +982,80 @@ mod tests {
         let field = check_str("type Wrap:\n    Wrap(Flarb)\n").unwrap_err();
         assert!(field.contains("unknown type `Flarb`"), "{field}");
         // Recursive, generic, and Option-typed fields remain valid.
-        check_str("type Tree:\n    Leaf\n    Node(Tree, Int, Tree)\n").expect("recursive type is valid");
+        check_str("type Tree:\n    Leaf\n    Node(Tree, Int, Tree)\n")
+            .expect("recursive type is valid");
         check_str("type Box:\n    Box(a)\n").expect("generic type is valid");
     }
 
     #[test]
     fn type_argument_arity_is_checked() {
         let scalar = check_str("fn f(x: Int(String)) -> Int:\n    x\n").unwrap_err();
-        assert!(scalar.contains("type `Int` expects 0 type argument(s) but got 1"), "{scalar}");
+        assert!(
+            scalar.contains("type `Int` expects 0 type argument(s) but got 1"),
+            "{scalar}"
+        );
 
         let missing_list = check_str("fn f(xs: List) -> Int:\n    0\n").unwrap_err();
-        assert!(missing_list.contains("type `List` expects 1 type argument(s) but got 0"), "{missing_list}");
+        assert!(
+            missing_list.contains("type `List` expects 1 type argument(s) but got 0"),
+            "{missing_list}"
+        );
 
         let extra_list = check_str("fn f(xs: List(Int, String)) -> Int:\n    0\n").unwrap_err();
-        assert!(extra_list.contains("type `List` expects 1 type argument(s) but got 2"), "{extra_list}");
+        assert!(
+            extra_list.contains("type `List` expects 1 type argument(s) but got 2"),
+            "{extra_list}"
+        );
 
         let result = check_str("fn f(r: Result(Int)) -> Int:\n    0\n").unwrap_err();
-        assert!(result.contains("type `Result` expects 2 type argument(s) but got 1"), "{result}");
+        assert!(
+            result.contains("type `Result` expects 2 type argument(s) but got 1"),
+            "{result}"
+        );
 
         let dict = check_str("fn f(d: Dict(String, Int, Bool)) -> Int:\n    0\n").unwrap_err();
-        assert!(dict.contains("type `Dict` expects 2 type argument(s) but got 3"), "{dict}");
+        assert!(
+            dict.contains("type `Dict` expects 2 type argument(s) but got 3"),
+            "{dict}"
+        );
 
-        let user_missing = check_str("type Pair(a, b):\n    Pair(a, b)\nfn f(p: Pair(Int)) -> Int:\n    0\n")
-            .unwrap_err();
+        let user_missing =
+            check_str("type Pair(a, b):\n    Pair(a, b)\nfn f(p: Pair(Int)) -> Int:\n    0\n")
+                .unwrap_err();
         assert!(
             user_missing.contains("type `Pair` expects 2 type argument(s) but got 1"),
             "{user_missing}"
         );
 
-        let user_extra = check_str("type Box:\n    Box(a)\nfn f(b: Box(Int, String)) -> Int:\n    0\n")
-            .unwrap_err();
+        let user_extra =
+            check_str("type Box:\n    Box(a)\nfn f(b: Box(Int, String)) -> Int:\n    0\n")
+                .unwrap_err();
         assert!(
             user_extra.contains("type `Box` expects 1 type argument(s) but got 2"),
             "{user_extra}"
         );
 
-        let local = check_str("fn main(console: Console):\n    let xs: List = []\n    console.print(\"bad\")\n")
-            .unwrap_err();
-        assert!(local.contains("type `List` expects 1 type argument(s) but got 0"), "{local}");
+        let local = check_str(
+            "fn main(console: Console):\n    let xs: List = []\n    console.print(\"bad\")\n",
+        )
+        .unwrap_err();
+        assert!(
+            local.contains("type `List` expects 1 type argument(s) but got 0"),
+            "{local}"
+        );
 
-        check_str("fn f(xs: List(Int), r: Result(Int, String), d: Dict(String, Int)) -> Int:\n    0\n")
-            .expect("valid builtin generic arities pass");
+        check_str(
+            "fn f(xs: List(Int), r: Result(Int, String), d: Dict(String, Int)) -> Int:\n    0\n",
+        )
+        .expect("valid builtin generic arities pass");
         check_str("type Pair(a, b):\n    Pair(a, b)\nfn f(p: Pair(Int, String)) -> Int:\n    0\n")
             .expect("valid explicit ADT arity passes");
         check_str("type Box:\n    Box(a)\nfn f(b: Box(Int)) -> Int:\n    0\n")
             .expect("valid inferred ADT arity passes");
-        check_str("fn f(dir: Dir[Read], file: File[Read, Write], net: Net[Connect]) -> Int:\n    0\n")
-            .expect("capability right markers are not ordinary type arguments");
+        check_str(
+            "fn f(dir: Dir[Read], file: File[Read, Write], net: Net[Connect]) -> Int:\n    0\n",
+        )
+        .expect("capability right markers are not ordinary type arguments");
     }
 
     #[test]
@@ -1023,7 +1064,10 @@ mod tests {
             "type Box:\n    Box(Int)\nimpl Missing for Box:\n    fn label(self) -> String:\n        \"x\"\n",
         )
         .unwrap_err();
-        assert!(impl_head.contains("unknown trait `Missing` in impl head"), "{impl_head}");
+        assert!(
+            impl_head.contains("unknown trait `Missing` in impl head"),
+            "{impl_head}"
+        );
 
         let supertrait = check_str("trait Local: Missing:\n    fn f(self) -> Int\n").unwrap_err();
         assert!(
@@ -1099,8 +1143,10 @@ mod tests {
             "{where_extra}"
         );
 
-        let impl_trait = check_str("trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: impl From) -> Int:\n    0\n")
-            .unwrap_err();
+        let impl_trait = check_str(
+            "trait From(a):\n    fn from(x: a) -> Self\n\nfn f(x: impl From) -> Int:\n    0\n",
+        )
+        .unwrap_err();
         assert!(
             impl_trait.contains("trait `From` expects 1 type argument(s) but got 0")
                 && impl_trait.contains("impl-trait parameter of function `f`"),
@@ -1168,7 +1214,10 @@ fn wrapper() -> Result(Int, AppError):
             "type R:\n    R(Int)\ntrait Ranked:\n    fn compare(self, other: Self) -> Int\n    fn greater(self, other: Self) -> Bool:\n        compare(self, other) > 0\nimpl Ranked for R:\n    fn greater(self, other: R) -> Bool:\n        true\n",
         )
         .unwrap_err();
-        assert!(missing.contains("missing required method `compare`"), "{missing}");
+        assert!(
+            missing.contains("missing required method `compare`"),
+            "{missing}"
+        );
 
         let wrong_ret = check_str(
             "type R:\n    R(Int)\ntrait Label:\n    fn label(self) -> String\nimpl Label for R:\n    fn label(self) -> Int:\n        1\n",
@@ -1184,7 +1233,9 @@ fn wrapper() -> Result(Int, AppError):
         )
         .unwrap_err();
         assert!(
-            wrong_param.contains("method `combine` parameter 2 has type `Int`, but the trait requires `R`"),
+            wrong_param.contains(
+                "method `combine` parameter 2 has type `Int`, but the trait requires `R`"
+            ),
             "{wrong_param}"
         );
 
@@ -1283,13 +1334,21 @@ fn wrapper() -> Result(Int, AppError):
             .expect("a build step taking build caps is valid");
         // A runtime capability in `build` is rejected — the build sandbox grants
         // only build-time authority.
-        let err = check_str("fn build(out: BuildOut, net: Net):\n    out.write_out(\"x\", \"y\")\n")
-            .expect_err("a runtime cap in build must be rejected");
-        assert!(err.contains("build step may only take build-time capabilities"), "{err}");
+        let err =
+            check_str("fn build(out: BuildOut, net: Net):\n    out.write_out(\"x\", \"y\")\n")
+                .expect_err("a runtime cap in build must be rejected");
+        assert!(
+            err.contains("build step may only take build-time capabilities"),
+            "{err}"
+        );
         // And `main` may not take a build capability.
-        let err = check_str("fn main(console: Console, out: BuildOut):\n    console.print(\"no\")\n")
-            .expect_err("a build cap in main must be rejected");
-        assert!(err.contains("`main` may only take host capabilities"), "{err}");
+        let err =
+            check_str("fn main(console: Console, out: BuildOut):\n    console.print(\"no\")\n")
+                .expect_err("a build cap in main must be rejected");
+        assert!(
+            err.contains("`main` may only take host capabilities"),
+            "{err}"
+        );
         // A `build` function with no build cap is an ordinary function, not the
         // entrypoint, so it isn't subject to the build-signature rule.
         check_str("fn build(x: Int) -> Int:\n    x + 1\n")
@@ -1300,11 +1359,16 @@ fn wrapper() -> Result(Int, AppError):
     fn duplicate_top_level_functions_are_rejected() {
         // Two functions with the same name silently overwrote each other; now it's
         // a check-time error that names the function and (unlinked) the lines.
-        let err = check_str("fn g(x: Int) -> Int:\n    1\nfn g(x: Int) -> Int:\n    2\n").unwrap_err();
-        assert!(err.contains("function `g` is defined more than once"), "{err}");
+        let err =
+            check_str("fn g(x: Int) -> Int:\n    1\nfn g(x: Int) -> Int:\n    2\n").unwrap_err();
+        assert!(
+            err.contains("function `g` is defined more than once"),
+            "{err}"
+        );
         assert!(err.contains("lines 1 and 3"), "{err}");
         // Distinct names are fine.
-        check_str("fn a() -> Int:\n    1\nfn b() -> Int:\n    2\n").expect("distinct names are valid");
+        check_str("fn a() -> Int:\n    1\nfn b() -> Int:\n    2\n")
+            .expect("distinct names are valid");
         // Methods with the same name on different types are dispatched by receiver,
         // not duplicates — they must still type-check.
         let methods = "type A:\n    A\ntype B:\n    B\nimpl A:\n    fn tag(self) -> Int:\n        1\nimpl B:\n    fn tag(self) -> Int:\n        2\n";
@@ -1354,19 +1418,28 @@ fn has_optional_id() -> Option(Bool):
     fn duplicate_parameter_names_are_rejected() {
         let top = check_str("fn pick(x: Int, x: Int) -> Int:\n    x\n")
             .expect_err("duplicate function parameters must be rejected");
-        assert!(top.contains("parameter `x`") && top.contains("function `pick`"), "{top}");
+        assert!(
+            top.contains("parameter `x`") && top.contains("function `pick`"),
+            "{top}"
+        );
 
         let lambda = check_str(
             "fn main(console: Console):\n    let f = fn(x: Int, x: Int): x\n    console.print(\"bad\")\n",
         )
         .expect_err("duplicate lambda parameters must be rejected");
-        assert!(lambda.contains("parameter `x`") && lambda.contains("lambda"), "{lambda}");
+        assert!(
+            lambda.contains("parameter `x`") && lambda.contains("lambda"),
+            "{lambda}"
+        );
 
         let method = check_str(
             "type Box:\n    Box(Int)\nimpl Box:\n    fn bad(self, x: Int, x: Int) -> Int:\n        x\n",
         )
         .expect_err("duplicate method parameters must be rejected");
-        assert!(method.contains("parameter `x`") && method.contains("method `bad`"), "{method}");
+        assert!(
+            method.contains("parameter `x`") && method.contains("method `bad`"),
+            "{method}"
+        );
 
         let trait_method = check_str("trait T:\n    fn bad(x: Int, x: Int) -> Int\n")
             .expect_err("duplicate trait method parameters must be rejected");
@@ -1407,12 +1480,16 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn callbacks(console: Console, xs: List(fn(File[Read]) -> String)):\n    console.print(\"x\")\n")
             .expect("direct List(fn) uses the typed GC function array representation");
 
-        check_str("fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n")
-            .expect("Result(File, _) uses a closed typed GC sum");
+        check_str(
+            "fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n",
+        )
+        .expect("Result(File, _) uses a closed typed GC sum");
 
         // Dict(String, File) — the value is slot-boxed.
-        let err = check_str("fn table(console: Console, d: Dict(String, File)):\n    console.print(\"x\")\n")
-            .expect_err("Dict(_, File) slot-boxes an externref value");
+        let err = check_str(
+            "fn table(console: Console, d: Dict(String, File)):\n    console.print(\"x\")\n",
+        )
+        .expect_err("Dict(_, File) slot-boxes an externref value");
         assert!(err.contains("File") && err.contains("Dict"), "got: {err}");
 
         check_str("capability Handle:\n    f: File\n    label: String\nfn relabel(h: Handle, label: String) -> Handle:\n    match h:\n        Handle(f, _) -> Handle(f, label)\n")
@@ -1451,21 +1528,29 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
             .expect("a closure capture of File uses a typed GC environment");
 
-        check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    console.print(\"x\")\n")
-            .expect("an inferred List(File) literal receives an externref-typed GC array");
+        check_str(
+            "fn main(console: Console, f: File):\n    let xs = [f]\n    console.print(\"x\")\n",
+        )
+        .expect("an inferred List(File) literal receives an externref-typed GC array");
 
         check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    console.print(\"x\")\n")
             .expect("an inferred concrete File tuple uses typed GC-struct storage");
 
         let err = check_str("fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let pair = id((f, 1))\n    console.print(\"x\")\n")
             .expect_err("a capability tuple cannot instantiate the scalar generic ABI");
-        assert!(err.contains("generic") && err.contains("File"), "got: {err}");
+        assert!(
+            err.contains("generic") && err.contains("File"),
+            "got: {err}"
+        );
 
-        check_str("fn collect(console: Console, xs: List((File, Int))):\n    console.print(\"x\")\n")
-            .expect("a list of capability tuples uses a typed GC array");
+        check_str(
+            "fn collect(console: Console, xs: List((File, Int))):\n    console.print(\"x\")\n",
+        )
+        .expect("a list of capability tuples uses a typed GC array");
 
-        let err = check_str("fn main(console: Console, f: File):\n    console.print(\"${(f, 1)}\")\n")
-            .expect_err("rendering a capability tuple must remain forbidden");
+        let err =
+            check_str("fn main(console: Console, f: File):\n    console.print(\"${(f, 1)}\")\n")
+                .expect_err("rendering a capability tuple must remain forbidden");
         assert!(err.contains("render") && err.contains("File"), "got: {err}");
 
         let err = check_str("fn main(console: Console, f: File):\n    let pair = region -> (File, Int):\n        (f, 1)\n    console.print(\"x\")\n")
@@ -1496,7 +1581,10 @@ fn has_optional_id() -> Option(Bool):
 
         let err = check_str("type Pixel packed:\n    Pixel(Int)\ntype Box:\n    Box\nimpl Box:\n    fn pixels(self) -> List(Pixel):\n        []\n")
             .expect_err("impl method return types reject packed-list boundaries");
-        assert!(err.contains("pixels") && err.contains("packed"), "got: {err}");
+        assert!(
+            err.contains("pixels") && err.contains("packed"),
+            "got: {err}"
+        );
 
         check_str("fn id(x: (File, Int)) -> (File, Int):\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let pair = local((f, 1))\n    console.print(\"x\")\n")
             .expect("a concrete capability tuple crosses the typed indirect-call ABI");
@@ -1506,7 +1594,10 @@ fn has_optional_id() -> Option(Bool):
 
         let err = check_str("fn main(console: Console, f: File):\n    let d = dict.__insert(dict.new(), \"cfg\", f)\n    console.print(\"x\")\n")
             .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
-        assert!(err.contains("generic") && err.contains("File"), "got: {err}");
+        assert!(
+            err.contains("generic") && err.contains("File"),
+            "got: {err}"
+        );
 
         check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b: Box(File) = Box(f)\n    console.print(\"x\")\n")
             .expect("a closed generic user aggregate instantiated with File receives a GC layout");
@@ -1517,8 +1608,10 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn collect(console: Console, xs: List(Secret)):\n    console.print(\"x\")\n")
             .expect("List(Secret) uses an externref-typed GC array");
 
-        check_str("fn maybe_dir(console: Console, out: Option(Dir[Write])):\n    console.print(\"x\")\n")
-            .expect("Dir is externref-backed this stage, so direct nullable Option(Dir) is allowed");
+        check_str(
+            "fn maybe_dir(console: Console, out: Option(Dir[Write])):\n    console.print(\"x\")\n",
+        )
+        .expect("Dir is externref-backed this stage, so direct nullable Option(Dir) is allowed");
 
         let branded_dir = r#"
 capability ConfigDir from Dir[Read]
@@ -1632,12 +1725,9 @@ fn load(o: Outer, name: String) -> String:
             "import vm\n\nfn reader(dir: Dir, input: Bytes) -> Bytes:\n    input\n\nfn invoke(dir: Dir, input: Bytes) -> Bytes:\n    vm.with_dir(dir, reader, input)\n\nfn main(console: Console):\n    console.print(\"ok\")\n",
         )
         .expect("parse isolated worker callback");
-        let module = witchy_syntax::linker::link(
-            vec![("main".to_string(), entry)],
-            "main",
-            no_comptime,
-        )
-        .expect("link bundled vm module");
+        let module =
+            witchy_syntax::linker::link(vec![("main".to_string(), entry)], "main", no_comptime)
+                .expect("link bundled vm module");
         check(&module).expect("the dedicated Dir callback adapter is type-safe");
     }
 
@@ -1683,9 +1773,8 @@ type Sum:
             ("Secret", "Secret"),
         ];
         for (ty, label) in cases {
-            let src = format!(
-                "fn hold(x: {ty}):\n    let later = fn():\n        let captured = x\n"
-            );
+            let src =
+                format!("fn hold(x: {ty}):\n    let later = fn():\n        let captured = x\n");
             check_str(&src).unwrap_or_else(|error| {
                 panic!("{ty} ({label}) should typecheck in a typed closure environment: {error}")
             });
@@ -1718,10 +1807,8 @@ fn hold(vault: Vault):
             check_str(&format!("fn hold(x: {ty}):\n    let captured = x\n"))
                 .unwrap_or_else(|error| panic!("{ty} should have typed GC storage: {error}"));
         }
-        let error = check_str(
-            "fn hold(x: Dict(String, fn(Int) -> Int)):\n    let captured = x\n",
-        )
-        .expect_err("Dict function storage remains reject-first");
+        let error = check_str("fn hold(x: Dict(String, fn(Int) -> Int)):\n    let captured = x\n")
+            .expect_err("Dict function storage remains reject-first");
         assert!(
             error.contains("Dict") && error.contains("function"),
             "Dict produced the wrong storage diagnostic: {error}"
@@ -1778,16 +1865,24 @@ fn hold(vault: Vault):
             "fn risky() -> Result(Int, String):\n    Err(\"boom\")\nfn main(console: Console) -> Result(Int, String):\n    let v = risky()?\n    Ok(v)\n",
         )
         .unwrap_err();
-        assert!(bad.contains("`main` returns `Result(Int, String)`"), "{bad}");
+        assert!(
+            bad.contains("`main` returns `Result(Int, String)`"),
+            "{bad}"
+        );
         assert!(bad.contains("exit code"), "{bad}");
         // `Option` is the same trap (a dropped `None`).
-        let bad_opt = check_str("fn main(console: Console) -> Option(Int):\n    None\n").unwrap_err();
-        assert!(bad_opt.contains("`main` returns `Option(Int)`"), "{bad_opt}");
+        let bad_opt =
+            check_str("fn main(console: Console) -> Option(Int):\n    None\n").unwrap_err();
+        assert!(
+            bad_opt.contains("`main` returns `Option(Int)`"),
+            "{bad_opt}"
+        );
         // Plain value returns are NOT rejected — the value sink surfaces them: an
         // `Int` exit code, a printed `Float`, an explicit `Nil`, and no annotation
         // (implicit Nil) all pass. (The `Float`-returning main is a tested feature.)
         check_str("fn main(console: Console) -> Int:\n    0\n").expect("Int exit code is valid");
-        check_str("import math\nfn main() -> Float:\n    math.sqrt(4.0)\n").expect("Float main is valid");
+        check_str("import math\nfn main() -> Float:\n    math.sqrt(4.0)\n")
+            .expect("Float main is valid");
         check_str("fn main(console: Console) -> Nil:\n    console.print(\"x\")\n")
             .expect("explicit Nil is valid");
         check_str("fn main(console: Console):\n    console.print(\"x\")\n")
@@ -1797,8 +1892,9 @@ fn hold(vault: Vault):
     #[test]
     fn unknown_stdlib_function_suggests_import() {
         // Calling an unimported stdlib function points at the module to import.
-        let err = check_str("fn main(console: Console):\n    console.print(\"${minimum([1], 0)}\")\n")
-            .expect_err("minimum is unimported");
+        let err =
+            check_str("fn main(console: Console):\n    console.print(\"${minimum([1], 0)}\")\n")
+                .expect_err("minimum is unimported");
         assert!(err.contains("import cmp"), "{err}");
         // A genuine typo (no stdlib match) gets no misleading hint.
         let typo = check_str("fn main(console: Console):\n    frobnicate()\n")
@@ -1819,7 +1915,10 @@ fn hold(vault: Vault):
         let err = check_str("fn main(console: Console):\n    console.print(json.stringify(5))\n")
             .expect_err("json is unimported");
         assert!(err.contains("import json"), "{err}");
-        assert!(!err.contains("method call"), "should not mention method resolution: {err}");
+        assert!(
+            !err.contains("method call"),
+            "should not mention method resolution: {err}"
+        );
     }
 
     #[test]
@@ -1839,20 +1938,29 @@ fn hold(vault: Vault):
         let err = check_str("type Foo:\n    Foo(Int)\nfn main(console: Console):\n    console.print(\"${Foo(1) < Foo(2)}\")\n")
             .expect_err("Foo has no Ord");
         assert!(err.contains("Ord"), "{err}");
-        assert!(!err.contains("`less`") && !err.contains("`last`"), "should not leak desugar/typo: {err}");
+        assert!(
+            !err.contains("`less`") && !err.contains("`last`"),
+            "should not leak desugar/typo: {err}"
+        );
     }
 
     #[test]
     fn derive_eq_ord_rejects_float_fields() {
         let eq = check_str("import cmp\n\ntype Reading derive(PartialEq, Eq):\n    value: Float\n")
             .expect_err("Float is not Eq");
-        assert!(eq.contains("derive(Eq)") && eq.contains("Float is not Eq"), "{eq}");
+        assert!(
+            eq.contains("derive(Eq)") && eq.contains("Float is not Eq"),
+            "{eq}"
+        );
 
         let ord = check_str(
             "import cmp\n\ntype Reading derive(PartialEq, PartialOrd, Ord):\n    value: Float\n",
         )
         .expect_err("Float is not Ord");
-        assert!(ord.contains("derive(Ord)") && ord.contains("Float is not Ord"), "{ord}");
+        assert!(
+            ord.contains("derive(Ord)") && ord.contains("Float is not Ord"),
+            "{ord}"
+        );
 
         check_str("import cmp\n\ntype Reading derive(PartialEq, PartialOrd):\n    value: Float\n")
             .expect("Float supports partial equality and partial ordering");
@@ -1866,11 +1974,21 @@ fn hold(vault: Vault):
         check_str("type Marker:\n\nfn absurd(m: Marker) -> Int:\n    match m:\n\nfn main(console: Console):\n    console.print(\"ok\")\n")
             .expect("empty match over an uninhabited fieldless type is exhaustive");
 
-        let value = check_str("type Marker:\n\nfn main(console: Console):\n    console.print(\"${Marker()}\")\n")
-            .expect_err("a fieldless type has no constructor");
+        let value = check_str(
+            "type Marker:\n\nfn main(console: Console):\n    console.print(\"${Marker()}\")\n",
+        )
+        .expect_err("a fieldless type has no constructor");
         assert!(value.contains("type `Marker` is not a value"), "{value}");
 
-        for derive_name in ["Show", "PartialEq", "Eq", "PartialOrd", "Ord", "Reflect", "Deserialize"] {
+        for derive_name in [
+            "Show",
+            "PartialEq",
+            "Eq",
+            "PartialOrd",
+            "Ord",
+            "Reflect",
+            "Deserialize",
+        ] {
             let src = format!("type Marker derive({derive_name}):\n\nfn main(console: Console):\n    console.print(\"ok\")\n");
             let err = check_str(&src).expect_err("built-in derives reject fieldless types");
             assert!(
@@ -1887,19 +2005,24 @@ fn hold(vault: Vault):
         // op lowering refuses `connect`/`read` on Console before they become host
         // calls. Authority is per-kind and (with no capability constructors)
         // unforgeable — the heart of witchy's confinement guarantee.
-        let net = check_str(r#"
+        let net = check_str(
+            r#"
 fn f(c: Console) -> Nil:
     c.connect("host")
-"#).unwrap_err();
+"#,
+        )
+        .unwrap_err();
         assert!(
             net.contains("no method `connect` on `Console`"),
             "expected a receiver-aware cap-op rejection, got: {net}"
         );
-        let dir = check_str(r#"
+        let dir = check_str(
+            r#"
 fn f(c: Console) -> String:
     c.read("/etc/passwd")
-"#)
-            .unwrap_err();
+"#,
+        )
+        .unwrap_err();
         assert!(
             dir.contains("no method `read` on `Console`"),
             "expected a receiver-aware cap-op rejection, got: {dir}"
@@ -1958,18 +2081,27 @@ fn main(console: Console):
     fn rejects_ordering_on_non_primitives() {
         // These would type-check under bare unification but crash at runtime, so
         // the checker rejects them up front.
-        assert!(check_str(r#"
+        assert!(check_str(
+            r#"
 fn f(a: Bool, b: Bool) -> Bool:
     (a < b)
-"#).is_err());
-        assert!(check_str(r#"
+"#
+        )
+        .is_err());
+        assert!(check_str(
+            r#"
 fn f(a: List(Int), b: List(Int)) -> Bool:
     (a < b)
-"#).is_err());
-        assert!(check_str(r#"
+"#
+        )
+        .is_err());
+        assert!(check_str(
+            r#"
 fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
     (a < b)
-"#).is_err());
+"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -1987,10 +2119,8 @@ fn main(console: Console):
 
     #[test]
     fn record_spread_base_must_match_named_record() {
-        check_str(
-            "type P:\n    x: Int\n    y: Int\nfn f(p: P) -> P:\n    P(x: 5, ..p)\n",
-        )
-        .expect("same-type record spread remains valid");
+        check_str("type P:\n    x: Int\n    y: Int\nfn f(p: P) -> P:\n    P(x: 5, ..p)\n")
+            .expect("same-type record spread remains valid");
 
         let err = check_str(
             "type P:\n    x: Int\n    y: Int\n\
@@ -1998,7 +2128,10 @@ fn main(console: Console):
              fn f(big: Big) -> P:\n    P(x: 5, ..big)\n",
         )
         .expect_err("record spread base must have the named record type");
-        assert!(err.contains("requires a `P` base") && err.contains("found `Big`"), "{err}");
+        assert!(
+            err.contains("requires a `P` base") && err.contains("found `Big`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2030,10 +2163,15 @@ fn bad(p: Point) -> Point:
     #[test]
     fn named_field_record_construction() {
         // A missing field (no spread to supply it) is rejected.
-        let miss = check_str("type Point:\n    x: Int\n    y: Int\nfn a() -> Point:\n    Point(x: 1)\n").unwrap_err();
+        let miss =
+            check_str("type Point:\n    x: Int\n    y: Int\nfn a() -> Point:\n    Point(x: 1)\n")
+                .unwrap_err();
         assert!(miss.contains("missing field `y`"), "{miss}");
         // An unknown field name is rejected.
-        let unknown = check_str("type Point:\n    x: Int\nfn a(p: Point) -> Point:\n    Point(nope: 1, ..p)\n").unwrap_err();
+        let unknown = check_str(
+            "type Point:\n    x: Int\nfn a(p: Point) -> Point:\n    Point(nope: 1, ..p)\n",
+        )
+        .unwrap_err();
         assert!(unknown.contains("no field `nope`"), "{unknown}");
         // A name that isn't a record type is rejected.
         let notrec = check_str("fn a() -> Int:\n    Nope(x: 1)\n").unwrap_err();
@@ -2174,7 +2312,10 @@ fn f(b: Bool) -> Int:
         true -> 1
 "#;
         let e = check_str(src).unwrap_err();
-        assert!(e.contains("non-exhaustive") && e.contains("Bool"), "got: {e}");
+        assert!(
+            e.contains("non-exhaustive") && e.contains("Bool"),
+            "got: {e}"
+        );
     }
 
     #[test]
@@ -2231,7 +2372,10 @@ fn leak(s: String) -> Nil:
     print(s, s)
 "#;
         let e = check_str(src).unwrap_err();
-        assert!(e.contains("method-only") && e.contains("console.print"), "got: {e}");
+        assert!(
+            e.contains("method-only") && e.contains("console.print"),
+            "got: {e}"
+        );
     }
 
     #[test]
@@ -2295,8 +2439,7 @@ fn reader(dir: Dir, input: Bytes) -> Bytes:
 fn demo(dir: Dir):
     consume(reader)
 "#;
-        check_str(higher_order_dir)
-            .expect("Dir-bearing function values use the typed closure ABI");
+        check_str(higher_order_dir).expect("Dir-bearing function values use the typed closure ABI");
     }
 
     #[test]
@@ -2392,22 +2535,34 @@ fn main():
         // ... but it cannot `listen`.
         let err = check_str("fn f(net: Net[Connect]):\n    net.listen(\"0.0.0.0:80\")\n")
             .expect_err("Net[Connect] must not listen");
-        assert!(err.contains("`listen` needs `Listen`") && err.contains("Net[Connect]"), "got: {err}");
+        assert!(
+            err.contains("`listen` needs `Listen`") && err.contains("Net[Connect]"),
+            "got: {err}"
+        );
         // A listen-only handle accepts inbound.
         check_str("fn f(console: Console, net: Net[Listen]):\n    let l = net.listen(\"0.0.0.0:80\")\n    console.print(\"ok\")\n")
             .expect("Net[Listen] can listen");
         // ... but it cannot dial out (`connect` or its total sibling `try_connect`).
         let err = check_str("fn f(net: Net[Listen]):\n    net.connect(\"example.com:443\")\n")
             .expect_err("Net[Listen] must not connect");
-        assert!(err.contains("`connect` needs `Connect`") && err.contains("Net[Listen]"), "got: {err}");
+        assert!(
+            err.contains("`connect` needs `Connect`") && err.contains("Net[Listen]"),
+            "got: {err}"
+        );
         let err = check_str("fn f(net: Net[Listen]):\n    net.try_connect(\"example.com:443\")\n")
             .expect_err("Net[Listen] must not try_connect");
-        assert!(err.contains("`try_connect` needs `Connect`") && err.contains("Net[Listen]"), "got: {err}");
+        assert!(
+            err.contains("`try_connect` needs `Connect`") && err.contains("Net[Listen]"),
+            "got: {err}"
+        );
         // The transport axis attenuates independently: `connect`/`listen` are TCP-only,
         // so a UDP-only handle (full verbs, no TCP) cannot dial.
         let err = check_str("fn f(net: Net[Udp]):\n    net.connect(\"example.com:443\")\n")
             .expect_err("Net[Udp] must not connect (TCP-only op)");
-        assert!(err.contains("only implemented over `Tcp`") && err.contains("Net[Udp]"), "got: {err}");
+        assert!(
+            err.contains("only implemented over `Tcp`") && err.contains("Net[Udp]"),
+            "got: {err}"
+        );
         // `as` drops `Net` verbs but can never add them (mirrors the File slice).
         check_str("fn main(console: Console, net: Net):\n    let dial = net as Net[Connect]\n    console.print(\"ok\")\n")
             .expect("`as` can drop Net to Connect-only");
@@ -2431,10 +2586,16 @@ fn main():
         // ... but it cannot `write`, `append`, or `make_dir` (all `Write` verbs).
         let err = check_str("fn f(d: Dir[Read]):\n    d.write(\"a.txt\", \"x\")\n")
             .expect_err("Dir[Read] must not write");
-        assert!(err.contains("`write` needs `Write`") && err.contains("Dir[Read]"), "got: {err}");
+        assert!(
+            err.contains("`write` needs `Write`") && err.contains("Dir[Read]"),
+            "got: {err}"
+        );
         let err = check_str("fn f(d: Dir[Read]):\n    d.make_dir(\"sub\")\n")
             .expect_err("Dir[Read] must not make_dir");
-        assert!(err.contains("`make_dir` needs `Write`") && err.contains("Dir[Read]"), "got: {err}");
+        assert!(
+            err.contains("`make_dir` needs `Write`") && err.contains("Dir[Read]"),
+            "got: {err}"
+        );
         // A write-only handle writes ...
         check_str("fn f(d: Dir[Write]):\n    d.write(\"a.txt\", \"x\")\n")
             .expect("Dir[Write] can write");
@@ -2442,10 +2603,16 @@ fn main():
         // the File slice never asserted.
         let err = check_str("fn f(d: Dir[Write]):\n    d.read(\"a.txt\")\n")
             .expect_err("Dir[Write] must not read");
-        assert!(err.contains("`read` needs `Read`") && err.contains("Dir[Write]"), "got: {err}");
+        assert!(
+            err.contains("`read` needs `Read`") && err.contains("Dir[Write]"),
+            "got: {err}"
+        );
         let err = check_str("fn f(d: Dir[Write]):\n    d.list()\n")
             .expect_err("Dir[Write] must not list");
-        assert!(err.contains("`list` needs `Read`") && err.contains("Dir[Write]"), "got: {err}");
+        assert!(
+            err.contains("`list` needs `Read`") && err.contains("Dir[Write]"),
+            "got: {err}"
+        );
         // `as` drops Dir rights but never adds them.
         check_str("fn main(console: Console, d: Dir):\n    let ro = d as Dir[Read]\n    console.print(\"ok\")\n")
             .expect("`as` can drop Dir to Read-only");
@@ -2582,13 +2749,21 @@ fn main():
             "fn f(t: (Bool, Bool)) -> Int:\n    match t:\n        (true, true) -> 1\n        (true, false) -> 2\n        (false, true) -> 3\n",
         )
         .unwrap_err();
-        assert!(tup.contains("non-exhaustive") && tup.contains("tuple"), "{tup}");
+        assert!(
+            tup.contains("non-exhaustive") && tup.contains("tuple"),
+            "{tup}"
+        );
         // A single-arm Int-tuple literal match: Int is open, so it needs a catch-all.
-        let ints = check_str("fn f(t: (Int, Int)) -> Int:\n    match t:\n        (3, 4) -> 1\n").unwrap_err();
+        let ints = check_str("fn f(t: (Int, Int)) -> Int:\n    match t:\n        (3, 4) -> 1\n")
+            .unwrap_err();
         assert!(ints.contains("non-exhaustive"), "{ints}");
         // A list match covering only `[]` misses every non-empty list.
-        let lst = check_str("fn f(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n").unwrap_err();
-        assert!(lst.contains("non-exhaustive") && lst.contains("list"), "{lst}");
+        let lst =
+            check_str("fn f(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n").unwrap_err();
+        assert!(
+            lst.contains("non-exhaustive") && lst.contains("list"),
+            "{lst}"
+        );
         // Fully covered tuple / list matches pass.
         check_str(
             "fn f(t: (Bool, Bool)) -> Int:\n    match t:\n        (true, true) -> 1\n        (true, false) -> 2\n        (false, true) -> 3\n        (false, false) -> 4\n",
@@ -2607,13 +2782,18 @@ fn main():
             "type H:\n    run: fn(Int) -> Int\nfn add1(x: Int) -> Int:\n    x + 1\nfn f() -> Bool:\n    H(add1) == H(add1)\n",
         )
         .unwrap_err();
-        assert!(rec.contains("not defined on function types") && rec.contains("H"), "{rec}");
+        assert!(
+            rec.contains("not defined on function types") && rec.contains("H"),
+            "{rec}"
+        );
         let en = check_str(
             "type W:\n    Func(fn(Int) -> Int)\nfn add1(x: Int) -> Int:\n    x + 1\nfn f() -> Bool:\n    Func(add1) == Func(add1)\n",
         )
         .unwrap_err();
         assert!(en.contains("not defined on function types"), "{en}");
-        let cap = check_str("type Hold:\n    c: Console\nfn f(a: Hold, b: Hold) -> Bool:\n    a == b\n").unwrap_err();
+        let cap =
+            check_str("type Hold:\n    c: Console\nfn f(a: Hold, b: Hold) -> Bool:\n    a == b\n")
+                .unwrap_err();
         assert!(cap.contains("not defined on capability types"), "{cap}");
         // A plain data record still compares.
         check_str("type P:\n    x: Int\n    y: Int\nfn f(a: P, b: P) -> Bool:\n    a == b\n")
@@ -2624,13 +2804,17 @@ fn main():
     fn body_let_ascription_binds_the_enclosing_type_parameter() {
         // (BUG-308) `let out: List(a) = xs` refines the fn's generic `a` rather than
         // pinning it to a distinct concrete `Named("a")`.
-        check_str("fn firsts(xs: List(a), k: Int) -> List(a):\n    let out: List(a) = xs\n    out\n")
-            .expect("a body ascription unifies with the generic parameter");
+        check_str(
+            "fn firsts(xs: List(a), k: Int) -> List(a):\n    let out: List(a) = xs\n    out\n",
+        )
+        .expect("a body ascription unifies with the generic parameter");
         // A concrete ascription is unaffected.
         check_str("fn g(xs: List(Int)) -> List(Int):\n    let out: List(Int) = xs\n    out\n")
             .expect("a concrete ascription still works");
         // A *different* letter is still, correctly, a distinct parameter (pins `a`).
-        let err = check_str("fn firsts(xs: List(a)) -> List(a):\n    let out: List(b) = xs\n    out\n").unwrap_err();
+        let err =
+            check_str("fn firsts(xs: List(a)) -> List(a):\n    let out: List(b) = xs\n    out\n")
+                .unwrap_err();
         assert!(err.contains("isn't generic"), "{err}");
     }
 
@@ -2641,37 +2825,56 @@ fn main():
         let ty = check_str("type T:\n    A\ntype T:\n    B\n").unwrap_err();
         assert!(ty.contains("type `T` is defined more than once"), "{ty}");
         let identical = check_str("type T:\n    A\ntype T:\n    A\n").unwrap_err();
-        assert!(identical.contains("type `T` is defined more than once"), "{identical}");
+        assert!(
+            identical.contains("type `T` is defined more than once"),
+            "{identical}"
+        );
         let type_param = check_str("type Pair(a, a):\n    Pair(a, a)\n").unwrap_err();
         assert!(
             type_param.contains("type parameter `a` is declared more than once in type `Pair`"),
             "{type_param}"
         );
-        let trait_param = check_str("trait Codec(a, a):\n    fn encode(self) -> String\n").unwrap_err();
+        let trait_param =
+            check_str("trait Codec(a, a):\n    fn encode(self) -> String\n").unwrap_err();
         assert!(
             trait_param.contains("type parameter `a` is declared more than once in trait `Codec`"),
             "{trait_param}"
         );
         let konst = check_str("let ANSWER = 1\nlet ANSWER = 2\nfn main(console: Console):\n    console.print(\"${ANSWER}\")\n")
             .unwrap_err();
-        assert!(konst.contains("constant `ANSWER` is defined more than once"), "{konst}");
-        let alias = check_str("type Id = Int\ntype Id = String\nfn f(x: Id) -> Id:\n    x\n").unwrap_err();
-        assert!(alias.contains("type alias `Id` is defined more than once"), "{alias}");
+        assert!(
+            konst.contains("constant `ANSWER` is defined more than once"),
+            "{konst}"
+        );
+        let alias =
+            check_str("type Id = Int\ntype Id = String\nfn f(x: Id) -> Id:\n    x\n").unwrap_err();
+        assert!(
+            alias.contains("type alias `Id` is defined more than once"),
+            "{alias}"
+        );
         let alias_param = check_str("type Pair(a, a) = (a, a)\n").unwrap_err();
         assert!(
-            alias_param.contains("type parameter `a` is declared more than once in type alias `Pair`"),
+            alias_param
+                .contains("type parameter `a` is declared more than once in type alias `Pair`"),
             "{alias_param}"
         );
         let alias_unbound_param = check_str("type Bad(a) = (a, b)\n").unwrap_err();
         assert!(
-            alias_unbound_param.contains("type alias `Bad` uses type parameter `b` but does not declare it"),
+            alias_unbound_param
+                .contains("type alias `Bad` uses type parameter `b` but does not declare it"),
             "{alias_unbound_param}"
         );
         let alias_type = check_str("type Id = Int\ntype Id:\n    Id(String)\n").unwrap_err();
-        assert!(alias_type.contains("type `Id` conflicts with type alias `Id`"), "{alias_type}");
+        assert!(
+            alias_type.contains("type `Id` conflicts with type alias `Id`"),
+            "{alias_type}"
+        );
         let fields = check_str("type Point:\n    x: Int\n    x: String\nfn main(console: Console):\n    console.print(\"ok\")\n")
             .unwrap_err();
-        assert!(fields.contains("field `x` is declared more than once in type `Point`"), "{fields}");
+        assert!(
+            fields.contains("field `x` is declared more than once in type `Point`"),
+            "{fields}"
+        );
         let cap_fields =
             check_str("capability Store:\n    dir: Dir[Read]\n    dir: String\nfn main(console: Console):\n    console.print(\"ok\")\n")
                 .unwrap_err();
@@ -2687,9 +2890,16 @@ fn main():
             "type Box:\n    Box(Int)\nimpl Box:\n    fn value(self) -> Int:\n        1\n    fn value(self) -> Int:\n        2\n",
         )
         .unwrap_err();
-        assert!(meth.contains("method `value` is defined more than once"), "{meth}");
-        let trait_dup = check_str("trait Two:\n    fn m(self) -> Int\n    fn m(self) -> Int\n").unwrap_err();
-        assert!(trait_dup.contains("method `m` is declared more than once"), "{trait_dup}");
+        assert!(
+            meth.contains("method `value` is defined more than once"),
+            "{meth}"
+        );
+        let trait_dup =
+            check_str("trait Two:\n    fn m(self) -> Int\n    fn m(self) -> Int\n").unwrap_err();
+        assert!(
+            trait_dup.contains("method `m` is declared more than once"),
+            "{trait_dup}"
+        );
         let impl_head = check_str(
             "type Box:\n    Box(Int)\ntrait Label:\n    fn label(self) -> String\nimpl Label for Box:\n    fn label(self) -> String:\n        \"first\"\nimpl Label for Box:\n    fn label(self) -> String:\n        \"second\"\n",
         )
@@ -2715,7 +2925,8 @@ fn main():
             "dict.contains_key(d, key)",
             "dict.__remove(d, key)",
         ] {
-            let src = format!("fn f(d: Dict(k, v), key: k, fallback: v) -> v:\n    {op}\n    fallback\n");
+            let src =
+                format!("fn f(d: Dict(k, v), key: k, fallback: v) -> v:\n    {op}\n    fallback\n");
             let err = check_str(&src).unwrap_err();
             assert!(err.contains("requires `k: Eq`"), "{op}: {err}");
         }
@@ -2842,7 +3053,8 @@ fn main():
         // lowering". The leading `impl` forces that here; a real CLI program always
         // links std (which needs lowering), so BOTH backends run this check on
         // every program (verified: even a std-free `f()` discard errors on both).
-        const LOWER: &str = "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
+        const LOWER: &str =
+            "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
 
         // ANY non-`Nil` free call (not only mutators) whose result is discarded.
         let nonmut_free = check_str(&format!(
@@ -2878,8 +3090,14 @@ fn main():
              fn main(console: Console):\n    let p = Point(1, 2)\n    let n = p.describe()\n    console.print(\"${n}\")\n",
         )
         .expect_err("a plain function is not a method");
-        assert!(err.contains("on `Point`"), "must name the receiver type Point: {err}");
-        assert!(!err.contains("`Bool`"), "must not leak the Bool placeholder: {err}");
+        assert!(
+            err.contains("on `Point`"),
+            "must name the receiver type Point: {err}"
+        );
+        assert!(
+            !err.contains("`Bool`"),
+            "must not leak the Bool placeholder: {err}"
+        );
     }
 
     // The builtin-receiver diagnostic and the "real owner-module method still
@@ -2898,7 +3116,10 @@ fn main():
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
         .expect_err("dyn over an undeclared trait");
-        assert!(err.contains("unknown trait `Render` in `dyn Render`"), "{err}");
+        assert!(
+            err.contains("unknown trait `Render` in `dyn Render`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3314,8 +3535,7 @@ fn main():
             ))
             .expect_err("an absent existential operation must fail at check time");
             assert!(
-                error.contains(method)
-                    && (error.contains("Render") || error.contains("trait")),
+                error.contains(method) && (error.contains("Render") || error.contains("trait")),
                 "method `.{method}` unexpectedly exposed an existential fallback: {error}"
             );
         }
@@ -3342,7 +3562,10 @@ fn main():
              \x20   console.print(\"hi\")\n",
         )
         .expect_err("a body let-annotation is validated");
-        assert!(err.contains("unknown trait `Missing` in `dyn Missing`"), "{err}");
+        assert!(
+            err.contains("unknown trait `Missing` in `dyn Missing`"),
+            "{err}"
+        );
 
         // Lambda parameter position.
         let err = check_str(
@@ -3351,7 +3574,10 @@ fn main():
              \x20   console.print(\"hi\")\n",
         )
         .expect_err("a lambda parameter type is validated");
-        assert!(err.contains("unknown trait `Missing` in `dyn Missing`"), "{err}");
+        assert!(
+            err.contains("unknown trait `Missing` in `dyn Missing`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3370,9 +3596,9 @@ fn main():
         )
         .expect_err("browser code must not call server-only code");
         assert!(
-            cross_call.contains("browser") &&
-                cross_call.contains("server-only") &&
-                cross_call.contains("load_secret"),
+            cross_call.contains("browser")
+                && cross_call.contains("server-only")
+                && cross_call.contains("load_secret"),
             "{cross_call}",
         );
 
@@ -3382,9 +3608,9 @@ fn main():
         )
         .expect_err("shared code must not retain a browser-only function value");
         assert!(
-            shared_reference.contains("shared") &&
-                shared_reference.contains("browser-only") &&
-                shared_reference.contains("browser_api"),
+            shared_reference.contains("shared")
+                && shared_reference.contains("browser-only")
+                && shared_reference.contains("browser_api"),
             "{shared_reference}",
         );
 
@@ -3393,7 +3619,9 @@ fn main():
              fn apply(callback: fn() -> Int) -> Int:\n    callback()\n\n\
              @browser\nfn render() -> Int:\n    apply(browser_api)\n",
         )
-        .expect("a shared higher-order helper preserves availability checked at the reference site");
+        .expect(
+            "a shared higher-order helper preserves availability checked at the reference site",
+        );
 
         let method_body = check_str(
             "@browser\nfn browser_api() -> Int:\n    1\n\n\
@@ -3403,19 +3631,17 @@ fn main():
         )
         .expect_err("lowered shared methods must not call target-only functions");
         assert!(
-            method_body.contains("shared") &&
-                method_body.contains("browser-only") &&
-                method_body.contains("browser_api"),
+            method_body.contains("shared")
+                && method_body.contains("browser-only")
+                && method_body.contains("browser_api"),
             "{method_body}",
         );
     }
 
     #[test]
     fn target_availability_rejects_conflicting_annotations() {
-        let error = check_str(
-            "@browser\n@server\nfn impossible() -> Int:\n    1\n",
-        )
-        .expect_err("one function cannot belong to conflicting targets");
+        let error = check_str("@browser\n@server\nfn impossible() -> Int:\n    1\n")
+            .expect_err("one function cannot belong to conflicting targets");
         assert!(error.contains("conflicting target availability"), "{error}");
     }
 
@@ -3512,5 +3738,30 @@ fn main():
             "mode opt\n\ntype Pair:\n    left: String\n    right: String\n\nfn main():\n    var pair = Pair(\"left\", \"right\")\n    let parent = &mut pair\n    let left = &mut parent.left\n    *left = \"updated\"\n    *parent.right = \"other\"\n",
         )
         .expect("a child exclusive reborrow ends at its final use, restoring the parent place");
+    }
+
+    #[test]
+    fn slice_and_str_reference_types_pass_typeck() {
+        check_str(
+            "mode opt\n\nfn identity_str(s: &'a str) -> &'a str:\n    s\n\nfn identity_slice(xs: &'a [Int]) -> &'a [Int]:\n    xs\n\nfn mut_slice(xs: &'a mut [String]) -> &'a mut [String]:\n    xs\n",
+        )
+        .expect("&'a str and &'a [T] reference signatures should pass typecheck");
+    }
+
+    #[test]
+    fn bare_slice_and_str_rejected_by_typeck() {
+        let err_slice = check_str("mode opt\n\nfn process(xs: [Int]) -> Int:\n    0\n")
+            .expect_err("bare [Int] must be rejected");
+        assert!(
+            err_slice.contains("slice type `[Int]` cannot appear as a bare value"),
+            "{err_slice}"
+        );
+
+        let err_str = check_str("mode opt\n\nfn process(s: str) -> Int:\n    0\n")
+            .expect_err("bare str must be rejected");
+        assert!(
+            err_str.contains("string slice `str` cannot appear as a bare value"),
+            "{err_str}"
+        );
     }
 }

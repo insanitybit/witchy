@@ -498,6 +498,14 @@ impl BorrowRelationCatalog {
                         })
                 })
                 .collect(),
+            Type::Slice(elem) => self
+                .slots_with(elem, lifetimes, types, active_nominals)
+                .into_iter()
+                .map(|mut slot| {
+                    slot.projection = slot.projection.prefixed(LoanProjectionStep::AnyIndex);
+                    slot
+                })
+                .collect(),
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => self
                 .slots_with(&arguments[0], lifetimes, types, active_nominals)
                 .into_iter()
@@ -765,6 +773,7 @@ fn coarse_borrow_slots(
                     collect(argument, substitutions, found);
                 }
             }
+            Type::Slice(elem) => collect(elem, substitutions, found),
             Type::RecordCompose { base, fields } => {
                 collect(base, substitutions, found);
                 for (_, field) in fields {
@@ -792,6 +801,7 @@ fn coarse_borrow_slots(
 fn type_node_count(ty: &Type) -> usize {
     let children = match ty {
         Type::Qualified(_, inner) => type_node_count(inner),
+        Type::Slice(inner) => type_node_count(inner),
         Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments
             .iter()
             .fold(0usize, |count, argument| count.saturating_add(type_node_count(argument))),
@@ -840,6 +850,11 @@ fn substitute_borrow_slot_type_with(
             qualifier.clone(),
             Box::new(substitute_borrow_slot_type_with(inner, substitutions, active)),
         ),
+        Type::Slice(inner) => Type::Slice(Box::new(substitute_borrow_slot_type_with(
+            inner,
+            substitutions,
+            active,
+        ))),
         Type::Tuple(items) => Type::Tuple(
             items
                 .iter()
@@ -1583,6 +1598,10 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
                         self.ty(field);
                     }
                 }
+                Type::Slice(elem) => {
+                    self.tag(7);
+                    self.ty(elem);
+                }
             }
         }
 
@@ -1722,9 +1741,10 @@ pub fn ownership_state_class(
             Ok(Some(OwnershipStateClass::LayoutDependent { children: states }))
         }
         Type::Fn(_, _, _) | Type::Dyn(_, _) => Ok(Some(OwnershipStateClass::GcReference)),
+        Type::Slice(inner) => ownership_state_class(inner),
         Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
             "Int" | "Float" | "Duration" | "Bool" | "Nil" | "()" => Ok(None),
-            "String" | "Bytes" | "__Msg" => {
+            "String" | "str" | "Bytes" | "__Msg" => {
                 Ok(Some(OwnershipStateClass::LinearMemoryObject))
             }
             _ if CapabilityKind::from_name(name).is_some() => {
@@ -1965,6 +1985,12 @@ fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
                 conventions,
             )
         }
+        Type::Slice(declared_elem) => {
+            let Type::Slice(resolved_elem) = resolved.unqualified() else {
+                return resolved.clone();
+            };
+            Type::Slice(Box::new(apply_declared_contract(declared_elem, resolved_elem)))
+        }
         Type::RecordCompose { .. } => resolved.clone(),
     }
 }
@@ -1974,6 +2000,7 @@ fn type_has_qualifier(ty: &Type, predicate: impl Copy + Fn(&TypeQual) -> bool) -
         Type::Qualified(qualifier, inner) => {
             predicate(qualifier) || type_has_qualifier(inner, predicate)
         }
+        Type::Slice(inner) => type_has_qualifier(inner, predicate),
         Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
             arguments
                 .iter()
@@ -2002,6 +2029,7 @@ fn type_has_ownership_qualifier(ty: &Type) -> bool {
             _,
         ) => true,
         Type::Qualified(TypeQual::Frozen, inner) => type_has_ownership_qualifier(inner),
+        Type::Slice(inner) => type_has_ownership_qualifier(inner),
         Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
             arguments.iter().any(type_has_ownership_qualifier)
         }
@@ -2304,6 +2332,14 @@ impl AccessFlow {
                     Ok(Self::None)
                 } else {
                     Ok(Self::Named { name: name.clone(), arguments, dynamic: true })
+                }
+            }
+            Type::Slice(elem) => {
+                let argument = Self::from_type_with_catalog(elem, catalog)?;
+                if matches!(argument, Self::None) {
+                    Ok(Self::None)
+                } else {
+                    Ok(Self::Named { name: "Slice".into(), arguments: vec![argument], dynamic: false })
                 }
             }
             Type::Qualified(_, _) => unreachable!("unqualified removes every qualifier"),
@@ -2842,6 +2878,7 @@ impl<'a> AccessVerifier<'a> {
                 qualifier.clone(),
                 Box::new(Self::substitute_type(inner, substitutions)),
             ),
+            Type::Slice(elem) => Type::Slice(Box::new(Self::substitute_type(elem, substitutions))),
             Type::RecordCompose { base, fields } => Type::RecordCompose {
                 base: Box::new(Self::substitute_type(base, substitutions)),
                 fields: fields
@@ -3547,6 +3584,7 @@ impl<'a> AccessVerifier<'a> {
                 };
                 let element_type = value_type.and_then(|ty| match ty.unqualified() {
                     Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
+                    Type::Slice(elem) => Some(elem.as_ref()),
                     _ => None,
                 });
                 for pattern in elems {
@@ -4184,6 +4222,7 @@ impl<'a> AccessVerifier<'a> {
                     .as_ref()
                     .and_then(|ty| match ty.unqualified() {
                         Type::Named(_, arguments) if arguments.len() == 1 => arguments.first(),
+                        Type::Slice(elem) => Some(elem.as_ref()),
                         _ => None,
                     })
                     .map(|element| self.flow_from_type(element))

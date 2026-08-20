@@ -63,6 +63,7 @@ pub fn is_capability_type_name(name: &str) -> bool {
 fn build_caps_in(ty: &Type, out: &mut CapSet) {
     match ty {
         Type::Qualified(_, inner) => build_caps_in(inner, out),
+        Type::Slice(inner) => build_caps_in(inner, out),
         Type::Named(name, args) => {
             if let Some(b) = build_cap(name) {
                 out.entry(b).or_default();
@@ -96,7 +97,9 @@ fn full_rights(cap: &str) -> Rights {
 /// Map a bracketed marker to its canonical right name, or `None` if it isn't a
 /// recognized right for that capability.
 fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
-    CapabilityKind::from_name(cap)?.right(marker).map(CapabilityRight::name)
+    CapabilityKind::from_name(cap)?
+        .right(marker)
+        .map(CapabilityRight::name)
 }
 
 /// Whether the concrete address `target` (`host:port`) is admitted by an
@@ -165,14 +168,20 @@ fn ipv4_in_cidr(ip: std::net::Ipv4Addr, base: std::net::Ipv4Addr, bits: u8) -> b
     if bits == 0 {
         return true;
     }
-    let mask = if bits == 32 { u32::MAX } else { !((1u32 << (32 - bits)) - 1) };
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        !((1u32 << (32 - bits)) - 1)
+    };
     (u32::from(ip) & mask) == (u32::from(base) & mask)
 }
 
 /// Strip a single pair of surrounding brackets (`[::1]` → `::1`), the standard way to
 /// write an IPv6 host so `host:port` splitting on the last colon is unambiguous.
 fn strip_brackets(h: &str) -> &str {
-    h.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(h)
+    h.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(h)
 }
 
 fn parse_ipv6_cidr(s: &str) -> Option<(std::net::Ipv6Addr, u8)> {
@@ -186,7 +195,11 @@ fn ipv6_in_cidr(ip: std::net::Ipv6Addr, base: std::net::Ipv6Addr, bits: u8) -> b
     if bits == 0 {
         return true;
     }
-    let mask: u128 = if bits == 128 { u128::MAX } else { !((1u128 << (128 - bits)) - 1) };
+    let mask: u128 = if bits == 128 {
+        u128::MAX
+    } else {
+        !((1u128 << (128 - bits)) - 1)
+    };
     (u128::from(ip) & mask) == (u128::from(base) & mask)
 }
 
@@ -199,7 +212,10 @@ pub fn net_allows(allow: &[String], target: &str) -> bool {
     if net_denied(allow, target) {
         return false;
     }
-    allow.iter().filter(|p| !p.starts_with('!')).any(|p| address_admits(p, target))
+    allow
+        .iter()
+        .filter(|p| !p.starts_with('!'))
+        .any(|p| address_admits(p, target))
 }
 
 /// Whether any `!`-DENY entry in `allow` matches `target`. Deny is monotone and
@@ -207,7 +223,10 @@ pub fn net_allows(allow: &[String], target: &str) -> bool {
 /// allowlisted hostname — so this is consulted both here and by `resolve_admitted`
 /// on the resolved IPs of a name-allowlisted destination (the SSRF/rebinding floor).
 fn net_denied(allow: &[String], target: &str) -> bool {
-    allow.iter().filter_map(|p| p.strip_prefix('!')).any(|d| address_admits(d, target))
+    allow
+        .iter()
+        .filter_map(|p| p.strip_prefix('!'))
+        .any(|d| address_admits(d, target))
 }
 
 /// Narrow `allow` to the `\n`-joined `patterns` of a `NetPolicy` (`net.only` /
@@ -280,7 +299,11 @@ pub use witchy_cap_model::bears_rights_markers;
 /// CI decides, so a revealable and a sealed secret no longer render identically.
 /// Defined once so the prompt and the gate cannot drift on the wording.
 pub fn secret_reveal_suffix(sealed: bool) -> &'static str {
-    if sealed { " (sealed)" } else { " (revealable)" }
+    if sealed {
+        " (sealed)"
+    } else {
+        " (revealable)"
+    }
 }
 
 /// Whether `secret`'s bytes are the host's signing key (the `--signing-key` seed).
@@ -312,7 +335,10 @@ pub fn secret_is_signing_key(signing_key: Option<&[u8]>, secret: &[u8]) -> bool 
 /// capabilities with no resources — there is no "empty" `Secret` to hand over.
 /// Returns `None` when every parameter is grantable. Shared by the run paths so
 /// the interpreter and the compiled backend can never drift on this.
-pub fn unmintable_main_cap(main_params: &[witchy_syntax::ast::Param], has_signing_key: bool) -> Option<String> {
+pub fn unmintable_main_cap(
+    main_params: &[witchy_syntax::ast::Param],
+    has_signing_key: bool,
+) -> Option<String> {
     let binds_secret = main_params
         .iter()
         .any(|p| matches!(&p.ty, Some(witchy_syntax::ast::Type::Named(n, _)) if n == "Secret"));
@@ -368,7 +394,8 @@ pub fn resolve_admitted_typed(
     addr: &str,
 ) -> Result<Vec<std::net::SocketAddr>, AdmitFailure> {
     use std::net::ToSocketAddrs;
-    let denied = || AdmitFailure::Denied(format!("`{addr}` is not permitted by this Net capability"));
+    let denied =
+        || AdmitFailure::Denied(format!("`{addr}` is not permitted by this Net capability"));
     // Whether the address STRING itself is allowlisted (an exact `host:port` or a
     // literal-IP pattern). The capability denial takes precedence over any DNS
     // failure, so a disallowed host reports "not permitted", never a resolver leak.
@@ -393,8 +420,10 @@ pub fn resolve_admitted_typed(
                 // `localhost`/an attacker-controlled name resolving to 127.0.0.1
                 // (or any RFC-1918 / metadata address) would connect despite the
                 // deny, defeating the SSRF/rebinding floor.
-                let not_denied: Vec<std::net::SocketAddr> =
-                    resolved.into_iter().filter(|sa| !net_denied(allow, &sa.to_string())).collect();
+                let not_denied: Vec<std::net::SocketAddr> = resolved
+                    .into_iter()
+                    .filter(|sa| !net_denied(allow, &sa.to_string()))
+                    .collect();
                 if not_denied.is_empty() {
                     Err(denied())
                 } else {
@@ -406,9 +435,9 @@ pub fn resolve_admitted_typed(
         }
         // Could not resolve. A genuine dial failure only if the name was allowed;
         // otherwise it is a capability denial (don't leak the resolver error).
-        Err(e) if name_ok => {
-            Err(AdmitFailure::Unresolved(format!("`{addr}` could not be resolved: {e}")))
-        }
+        Err(e) if name_ok => Err(AdmitFailure::Unresolved(format!(
+            "`{addr}` could not be resolved: {e}"
+        ))),
         Err(_) => Err(denied()),
     }
 }
@@ -433,7 +462,10 @@ fn rights_from_args(cap: &'static str, args: &[Type]) -> Rights {
         if !NET_VERB_RIGHTS.iter().any(|right| r.contains(right.name())) {
             r.extend(NET_VERB_RIGHTS.iter().map(|right| right.name()));
         }
-        if !NET_TRANSPORT_RIGHTS.iter().any(|right| r.contains(right.name())) {
+        if !NET_TRANSPORT_RIGHTS
+            .iter()
+            .any(|right| r.contains(right.name()))
+        {
             r.extend(NET_TRANSPORT_RIGHTS.iter().map(|right| right.name()));
         }
     }
@@ -455,6 +487,7 @@ fn merge_into(dst: &mut CapSet, src: &CapSet) {
 fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
     match ty {
         Type::Qualified(_, inner) => caps_in(inner, taint, out),
+        Type::Slice(inner) => caps_in(inner, taint, out),
         Type::Named(name, args) => {
             if let Some(h) = host_cap(name) {
                 out.entry(h).or_default().extend(rights_from_args(h, args));
@@ -531,10 +564,7 @@ fn taint_map(module: &Module) -> HashMap<String, CapSet> {
 /// one-field type wrapping exactly one host capability (directly or via another
 /// brand). The brand name is reported as a refinement of the bare capability —
 /// authority-equivalent to it, but carrying the program's intent.
-fn brand_map(
-    module: &Module,
-    taint: &HashMap<String, CapSet>,
-) -> HashMap<String, &'static str> {
+fn brand_map(module: &Module, taint: &HashMap<String, CapSet>) -> HashMap<String, &'static str> {
     let mut brands = HashMap::new();
     for item in &module.items {
         if let Item::Type(t) = item {
@@ -683,7 +713,10 @@ pub fn show_cap(name: &str, rights: &Rights) -> String {
         // `{Connect, Tcp, Udp, Uds}` prints as `Net[Connect]`, not the verbose
         // transport list. (Mirrors `NetRights`' Display in the type checker.)
         let mut parts: Vec<&str> = Vec::new();
-        if !NET_VERB_RIGHTS.iter().all(|right| rights.contains(right.name())) {
+        if !NET_VERB_RIGHTS
+            .iter()
+            .all(|right| rights.contains(right.name()))
+        {
             parts.extend(
                 NET_VERB_RIGHTS
                     .iter()
@@ -691,7 +724,10 @@ pub fn show_cap(name: &str, rights: &Rights) -> String {
                     .filter(|right| rights.contains(right)),
             );
         }
-        if !NET_TRANSPORT_RIGHTS.iter().all(|right| rights.contains(right.name())) {
+        if !NET_TRANSPORT_RIGHTS
+            .iter()
+            .all(|right| rights.contains(right.name()))
+        {
             parts.extend(
                 NET_TRANSPORT_RIGHTS
                     .iter()
@@ -828,7 +864,10 @@ pub fn analyze(module: &Module) -> Footprint {
             }
         }
     }
-    let brands = entries.iter().flat_map(|e| e.brands.iter().cloned()).collect();
+    let brands = entries
+        .iter()
+        .flat_map(|e| e.brands.iter().cloned())
+        .collect();
     // The build axis: the build capabilities the `build` entrypoint demands,
     // computed identically over its signature (§4.1). Build caps can only appear
     // there (the signature checks enforce it), so this never overlaps `total`.
@@ -876,7 +915,10 @@ mod dir_policy_tests {
     // disjoint refinement admits nothing. (The `false` = the entry is a file.)
     #[test]
     fn dir_ext_policy_admits_and_intersects() {
-        assert!(dir_admits("", "anything.bin", false), "empty policy is unrestricted");
+        assert!(
+            dir_admits("", "anything.bin", false),
+            "empty policy is unrestricted"
+        );
         assert!(dir_admits("ext:.txt", "notes.txt", false));
         assert!(!dir_admits("ext:.txt", "secret.key", false));
         assert_eq!(dir_only("", "ext:.txt"), "ext:.txt");
@@ -884,7 +926,10 @@ mod dir_policy_tests {
         // disjoint intersection -> admits nothing (file OR dir)
         let none = dir_only("ext:.txt", "ext:.md");
         assert!(!dir_admits(&none, "x.txt", false) && !dir_admits(&none, "x.md", false));
-        assert!(!dir_admits(&none, "sub", true), "the deny-all sentinel denies dirs too");
+        assert!(
+            !dir_admits(&none, "sub", true),
+            "the deny-all sentinel denies dirs too"
+        );
     }
 
     // RFC-0011: the `kind:` dimension gates by entry type, AND-composed with `ext:`.
@@ -897,12 +942,21 @@ mod dir_policy_tests {
         assert!(dir_admits("kind:dir", "sub", true));
         assert!(!dir_admits("kind:dir", "notes.txt", false));
         // An `ext`-only policy never restricts directory traversal (backward-compat).
-        assert!(dir_admits("ext:.txt", "sub", true), "ext gates files, not dirs");
+        assert!(
+            dir_admits("ext:.txt", "sub", true),
+            "ext gates files, not dirs"
+        );
         // Cross-dimension AND: `only(files()).only(ext(".txt"))`.
         let both = dir_only("kind:file", "ext:.txt");
         assert!(dir_admits(&both, "notes.txt", false), ".txt file admitted");
-        assert!(!dir_admits(&both, "notes.md", false), "non-.txt file denied");
-        assert!(!dir_admits(&both, "sub", true), "directory denied by kind:file");
+        assert!(
+            !dir_admits(&both, "notes.md", false),
+            "non-.txt file denied"
+        );
+        assert!(
+            !dir_admits(&both, "sub", true),
+            "directory denied by kind:file"
+        );
     }
 }
 
@@ -921,16 +975,26 @@ mod grantable_footprint_tests {
         .unwrap();
         let fp_with = analyze(&with);
         assert!(fp_with.user_caps.contains("UiRoot"));
-        assert!(!fp_with.total.contains_key("UiRoot"), "a bare cap carries no host authority");
+        assert!(
+            !fp_with.total.contains_key("UiRoot"),
+            "a bare cap carries no host authority"
+        );
 
         // Requiring a grantable cap a prior version did not is a widening; dropping
         // it is a safe narrowing.
-        let without = parse_module("fn main(console: Console):\n    console.print(\"ok\")\n").unwrap();
+        let without =
+            parse_module("fn main(console: Console):\n    console.print(\"ok\")\n").unwrap();
         let fp_without = analyze(&without);
         let widened = diff(&fp_without, &fp_with);
         assert!(widened.user_caps_added.contains("UiRoot"));
-        assert!(widened.widened(), "a newly-required grantable cap widens the footprint");
-        assert!(!diff(&fp_with, &fp_without).widened(), "dropping it is a narrowing");
+        assert!(
+            widened.widened(),
+            "a newly-required grantable cap widens the footprint"
+        );
+        assert!(
+            !diff(&fp_with, &fp_without).widened(),
+            "dropping it is a narrowing"
+        );
     }
 }
 
@@ -967,17 +1031,31 @@ mod net_only_tests {
     #[test]
     fn private_ranges_deny_internal_addresses() {
         let ranges = [
-            "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-            "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8",
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "100.64.0.0/10",
+            "0.0.0.0/8",
         ];
         // Allow-all base, then deny the private ranges — the `net.deny(private())` shape.
         let mut allow = vec!["0.0.0.0/0:*".to_string()];
         allow.extend(ranges.iter().map(|c| format!("!{c}:*")));
         for internal in [
-            "127.0.0.1:443", "10.1.2.3:443", "172.16.5.5:443", "172.31.0.1:443",
-            "192.168.1.1:443", "169.254.169.254:80", "100.64.0.1:443", "0.1.2.3:443",
+            "127.0.0.1:443",
+            "10.1.2.3:443",
+            "172.16.5.5:443",
+            "172.31.0.1:443",
+            "192.168.1.1:443",
+            "169.254.169.254:80",
+            "100.64.0.1:443",
+            "0.1.2.3:443",
         ] {
-            assert!(!net_allows(&allow, internal), "{internal} should be denied by confine.private()");
+            assert!(
+                !net_allows(&allow, internal),
+                "{internal} should be denied by confine.private()"
+            );
         }
         // Public addresses remain reachable.
         assert!(net_allows(&allow, "8.8.8.8:443"));
@@ -995,11 +1073,22 @@ mod net_only_tests {
         for c in ["::1/128", "fe80::/10", "fc00::/7"] {
             allow.push(format!("!{c}:*"));
         }
-        for internal in ["[::1]:443", "[fe80::1]:80", "[fc00::1]:443", "[fdff:ffff::1]:443"] {
-            assert!(!net_allows(&allow, internal), "{internal} should be denied by confine.private()");
+        for internal in [
+            "[::1]:443",
+            "[fe80::1]:80",
+            "[fc00::1]:443",
+            "[fdff:ffff::1]:443",
+        ] {
+            assert!(
+                !net_allows(&allow, internal),
+                "{internal} should be denied by confine.private()"
+            );
         }
         // Public IPv6 (Google + Cloudflare DNS) stays reachable.
-        assert!(net_allows(&allow, "[2001:4860:4860::8888]:443"), "public IPv6 stays reachable");
+        assert!(
+            net_allows(&allow, "[2001:4860:4860::8888]:443"),
+            "public IPv6 stays reachable"
+        );
         assert!(net_allows(&allow, "[2606:4700:4700::1111]:443"));
         // Directly: the CIDR host-match, bracketed and not.
         assert!(address_admits("fc00::/7:*", "[fd12:3456::1]:443"));
@@ -1011,7 +1100,10 @@ mod net_only_tests {
     fn only_rejects_a_pattern_outside_the_current_set() {
         let granted = vec!["10.0.0.5:6379".to_string()];
         // Can't widen a single host to the whole block.
-        assert_eq!(net_only(&granted, "10.0.0.0/8:*"), Err("10.0.0.0/8:*".to_string()));
+        assert_eq!(
+            net_only(&granted, "10.0.0.0/8:*"),
+            Err("10.0.0.0/8:*".to_string())
+        );
     }
 
     #[test]
@@ -1042,7 +1134,10 @@ mod resolve_admitted_tests {
         ];
         let err = resolve_admitted(&allow, "localhost:0")
             .expect_err("all resolved loopback IPs are deny-matched → must be refused");
-        assert!(err.contains("not permitted"), "expected a capability denial, got: {err}");
+        assert!(
+            err.contains("not permitted"),
+            "expected a capability denial, got: {err}"
+        );
     }
 
     // The deny floor only subtracts the denied IPs; if a name resolves to at least

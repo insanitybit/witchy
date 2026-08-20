@@ -10,7 +10,11 @@
 
 // Mirror the binary crate's lint posture (these collapse-suggestions hurt the
 // readability of the nested capability/pattern checks).
-#![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::items_after_test_module
+)]
 #![deny(unsafe_code)]
 
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
@@ -27,10 +31,10 @@ pub mod stats;
 // RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
 pub use witchy_caps::capabilities;
 pub mod artifact;
-#[cfg(feature = "native")]
-pub mod trusted_exe;
 #[cfg(test)]
 mod capabilities_tests;
+#[cfg(feature = "native")]
+pub mod trusted_exe;
 // RFC-0018: runtime values + the capability host live in `witchy-runtime`
 // (wasm-safe); the wasmtime sandbox `runtime` is native-only.
 #[cfg(feature = "native")]
@@ -152,21 +156,20 @@ pub fn resolve_std_only_checked(
             .collect::<Result<Vec<_>, _>>()?,
     );
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)?;
-    witchy_interp::pipeline::link_checked_authenticated(modules, "main", owners)
-        .map_err(Into::into)
+    witchy_interp::pipeline::link_checked_authenticated(modules, "main", owners).map_err(Into::into)
 }
 
 fn resolve_std_modules(
     src: &str,
 ) -> Result<Vec<(String, witchy_syntax::ast::Module)>, ResolveStdError> {
     use std::collections::{HashSet, VecDeque};
-    let entry = witchy_syntax::parser::parse_module(src).map_err(|error| {
-        ResolveStdError::Parse {
+    let entry =
+        witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
             module: "main".to_string(),
             error,
-        }
-    })?;
-    let mut modules: Vec<(String, witchy_syntax::ast::Module)> = vec![("main".to_string(), entry.clone())];
+        })?;
+    let mut modules: Vec<(String, witchy_syntax::ast::Module)> =
+        vec![("main".to_string(), entry.clone())];
     let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
     let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::from([entry]);
     while let Some(module) = queue.pop_front() {
@@ -198,15 +201,16 @@ fn resolve_std_modules(
 /// entry module's `main` unqualified and qualifies its other functions with the
 /// entry stem; linked-in modules carry a different prefix.
 pub fn is_entry_function(name: &str, entry_stem: &str) -> bool {
-    name == "main"
-        || name.starts_with("main::<")
-        || name.starts_with(&format!("{entry_stem}."))
+    name == "main" || name.starts_with("main::<") || name.starts_with(&format!("{entry_stem}."))
 }
 
 /// Enforce the source file's declared performance mode after linking and type
 /// checking. This lives in the wasm-safe library so CLI, LSP, and browser
 /// compilation apply one contract.
-pub fn enforce_performance_modes(linked: &witchy_syntax::ast::Module, entry_stem: &str) -> Result<(), String> {
+pub fn enforce_performance_modes(
+    linked: &witchy_syntax::ast::Module,
+    entry_stem: &str,
+) -> Result<(), String> {
     let source_modes: Vec<&str> = linked
         .modes
         .iter()
@@ -248,13 +252,7 @@ pub fn enforce_performance_modes(linked: &witchy_syntax::ast::Module, entry_stem
         errors.push(format!(
             "error: in `{}` (line {}): `{}` cannot satisfy the no-copy `var` \
              contract of `{}` — {} [mode {}]\n  {}",
-            miss.function,
-            miss.line,
-            miss.var,
-            miss.callee,
-            miss.reason,
-            mode_names,
-            advice,
+            miss.function, miss.line, miss.var, miss.callee, miss.reason, mode_names, advice,
         ));
     }
 
@@ -271,12 +269,16 @@ pub fn enforce_performance_modes(linked: &witchy_syntax::ast::Module, entry_stem
     }
 
     for item in &linked.items {
-        let witchy_syntax::ast::Item::Function(function) = item else { continue };
+        let witchy_syntax::ast::Item::Function(function) = item else {
+            continue;
+        };
         if !is_entry_function(&function.name, entry_stem) {
             continue;
         }
         for param in &function.params {
-            if param.convention == witchy_syntax::ast::Convention::Let && ownership_relevant(&param.ty) {
+            if param.convention == witchy_syntax::ast::Convention::Let
+                && ownership_relevant(&param.ty)
+            {
                 errors.push(format!(
                     "error: in `{}`: parameter `{}` has no ownership convention — \
                      `mode {}` requires an explicit `let` (read-only borrow), `own` \
@@ -287,7 +289,11 @@ pub fn enforce_performance_modes(linked: &witchy_syntax::ast::Module, entry_stem
         }
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 /// Whether an ownership convention changes generated code for this parameter.
@@ -309,6 +315,7 @@ fn ownership_relevant_type(ty: &witchy_syntax::ast::Type) -> bool {
         // (RFC-0081) A dyn value is a heap value, so its convention matters.
         witchy_syntax::ast::Type::Dyn(_, _) => true,
         witchy_syntax::ast::Type::Fn(_, _, _) => false,
+        witchy_syntax::ast::Type::Slice(inner) => ownership_relevant_type(inner),
         witchy_syntax::ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
     }
 }
@@ -343,10 +350,8 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
 mod performance_mode_tests {
     #[test]
     fn browser_compile_exports_a_pure_bytes_entrypoint() {
-        let wasm = super::compile_source(
-            "pub fn export_echo(input: Bytes) -> Bytes:\n    input\n",
-        )
-        .expect("Bytes export compiles");
+        let wasm = super::compile_source("pub fn export_echo(input: Bytes) -> Bytes:\n    input\n")
+            .expect("Bytes export compiles");
         let mut exports = Vec::new();
         for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
             if let wasmparser::Payload::ExportSection(section) = payload.expect("parse wasm") {
@@ -383,7 +388,10 @@ fn main(console: Console):
         )
         .expect_err("mode opt must reject non-tail FIP recursion");
 
-        assert!(error.contains("functional-in-place contract failed"), "{error}");
+        assert!(
+            error.contains("functional-in-place contract failed"),
+            "{error}"
+        );
         assert!(error.contains("not in tail position"), "{error}");
     }
 
@@ -403,7 +411,10 @@ fn main(console: Console):
         )
         .expect_err("mode opt must reject an aliased no-copy receiver");
 
-        assert!(error.contains("no-copy `var` contract of `dict.insert`"), "{error}");
+        assert!(
+            error.contains("no-copy `var` contract of `dict.insert`"),
+            "{error}"
+        );
         assert!(error.contains("bound to a new name"), "{error}");
     }
 
@@ -423,7 +434,10 @@ fn main(console: Console):
         )
         .expect_err("place assignment must retain the discarded Dict contract");
 
-        assert!(error.contains("no-copy `var` contract of `dict.insert`"), "{error}");
+        assert!(
+            error.contains("no-copy `var` contract of `dict.insert`"),
+            "{error}"
+        );
         assert!(error.contains("bound to a new name"), "{error}");
     }
 
@@ -465,8 +479,11 @@ pub fn render_float(x: f64) -> String {
 /// `string.from_code` via the shared native registry — the same `char::from_u32`
 /// both backends use. Out-of-range/surrogate becomes U+FFFD.
 pub fn string_from_code(cp: i64) -> String {
-    native_str("string.from_code", witchy_runtime::value::NativeValue::Int(cp))
-        .unwrap_or_else(|_| "\u{FFFD}".to_string())
+    native_str(
+        "string.from_code",
+        witchy_runtime::value::NativeValue::Int(cp),
+    )
+    .unwrap_or_else(|_| "\u{FFFD}".to_string())
 }
 
 /// `encoding.*` via the shared native registry (hex/base64), selected by the
@@ -502,7 +519,8 @@ pub fn encoding(op: i32, input: &[u8]) -> Result<Vec<u8>, String> {
         Input::Bytes => NativeValue::Bytes(input.to_vec()),
         Input::LossyString => NativeValue::Str(String::from_utf8_lossy(input).into_owned()),
     };
-    let f = witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+    let f =
+        witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
     match f(&[arg]).map_err(|e| e.message)? {
         NativeValue::Str(s) => Ok(s.into_bytes()),
         NativeValue::Bytes(bytes) => Ok(bytes),
@@ -511,7 +529,8 @@ pub fn encoding(op: i32, input: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn native_str(name: &str, arg: witchy_runtime::value::NativeValue) -> Result<String, String> {
-    let f = witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+    let f =
+        witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
     match f(&[arg]).map_err(|e| e.message)? {
         witchy_runtime::value::NativeValue::Str(s) => Ok(s),
         _ => Err(format!("{name} did not return a String")),
@@ -519,9 +538,12 @@ fn native_str(name: &str, arg: witchy_runtime::value::NativeValue) -> Result<Str
 }
 
 fn native_call(name: &str, args: &[&str]) -> Result<witchy_runtime::value::NativeValue, String> {
-    let f = witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
-    let vals: Vec<witchy_runtime::value::NativeValue> =
-        args.iter().map(|s| witchy_runtime::value::NativeValue::Str(s.to_string())).collect();
+    let f =
+        witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+    let vals: Vec<witchy_runtime::value::NativeValue> = args
+        .iter()
+        .map(|s| witchy_runtime::value::NativeValue::Str(s.to_string()))
+        .collect();
     f(&vals).map_err(|e| e.message)
 }
 
@@ -554,7 +576,10 @@ pub fn hmac_sha256(key: &str, msg: &str) -> String {
 /// `regex.match_spans(pattern, text)` — the packed match-span string both backends
 /// share; the host shim stages it through `fill_pending` like the native runtime.
 pub fn regex_spans(pattern: &str, text: &str) -> String {
-    match native_call(witchy_syntax::intrinsics::REGEX_MATCH_SPANS, &[pattern, text]) {
+    match native_call(
+        witchy_syntax::intrinsics::REGEX_MATCH_SPANS,
+        &[pattern, text],
+    ) {
         Ok(witchy_runtime::value::NativeValue::Str(s)) => s,
         // The browser host calls this through the C-style wasm export, whose ABI
         // can only return bytes. Prefix host-visible errors with an impossible
@@ -621,10 +646,11 @@ mod fixture_sessions {
     impl FixtureSessionStore {
         pub fn open(&mut self, plan: &[u8]) -> Result<String, String> {
             let host = FixtureHost::from_plan_json(plan).map_err(|error| error.to_string())?;
-            let roots: serde_json::Value = serde_json::from_str(
-                &host.roots_json().map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| format!("fixture host returned invalid roots JSON: {error}"))?;
+            let roots: serde_json::Value =
+                serde_json::from_str(&host.roots_json().map_err(|error| error.to_string())?)
+                    .map_err(|error| {
+                        format!("fixture host returned invalid roots JSON: {error}")
+                    })?;
             let session = self.allocate_session()?;
             self.sessions.insert(session, host);
             Ok(serde_json::json!({
@@ -687,12 +713,10 @@ mod fixture_sessions {
             let request = br#"{"version":1,"request":{"operation":"argv"}}"#;
             assert!(store.invoke(first, request).unwrap().contains("browser"));
             assert!(store.invoke(second, request).unwrap().contains("browser"));
-            assert!(
-                store
-                    .invoke(u32::MAX, request)
-                    .expect_err("forged session must fail")
-                    .contains("unknown")
-            );
+            assert!(store
+                .invoke(u32::MAX, request)
+                .expect_err("forged session must fail")
+                .contains("unknown"));
 
             let transcript = store.finish(first, TestResult::Passed).unwrap();
             assert!(transcript.contains("\"result\":{\"kind\":\"passed\"}"));
@@ -709,9 +733,9 @@ mod fixture_sessions {
 /// map lookups instead of relying on `from_raw_parts`/manual deallocation.
 #[cfg(any(target_arch = "wasm32", test))]
 mod abi_buffers {
-    use std::collections::BTreeMap;
     #[cfg(target_arch = "wasm32")]
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
 
     #[derive(Default)]
     struct BufferStore {
@@ -726,7 +750,10 @@ mod abi_buffers {
             let mut bytes = bytes.into_boxed_slice();
             let ptr = bytes.as_mut_ptr();
             let old = self.live.insert(ptr as usize, bytes);
-            debug_assert!(old.is_none(), "two live boxes cannot have the same base address");
+            debug_assert!(
+                old.is_none(),
+                "two live boxes cannot have the same base address"
+            );
             ptr
         }
 
@@ -810,7 +837,10 @@ mod abi_buffers {
             let ptr = buffers.store(b"witchy".to_vec());
             assert_eq!(buffers.read(ptr, 6).as_deref(), Some(b"witchy".as_slice()));
             assert_eq!(buffers.read(ptr, 3).as_deref(), Some(b"wit".as_slice()));
-            assert!(buffers.read(ptr, 7).is_none(), "an oversized range must be rejected");
+            assert!(
+                buffers.read(ptr, 7).is_none(),
+                "an oversized range must be rejected"
+            );
             assert!(
                 buffers.read(std::ptr::dangling(), 1).is_none(),
                 "a forged base must be rejected"
@@ -823,8 +853,14 @@ mod abi_buffers {
         fn free_requires_exact_live_allocation() {
             let mut buffers = BufferStore::default();
             let ptr = buffers.allocate(8);
-            assert!(!buffers.free(ptr, 7), "a mismatched layout must not free the box");
-            assert!(buffers.read(ptr, 8).is_some(), "a rejected free must leave the allocation live");
+            assert!(
+                !buffers.free(ptr, 7),
+                "a mismatched layout must not free the box"
+            );
+            assert!(
+                buffers.read(ptr, 8).is_some(),
+                "a rejected free must leave the allocation live"
+            );
             assert!(buffers.free(ptr, 8));
             assert!(!buffers.free(ptr, 8), "a double free must be rejected");
             assert!(buffers.free(std::ptr::null_mut(), 0));
@@ -916,17 +952,11 @@ mod wasm_abi {
     /// response. Provider failures are successful protocol responses.
     #[cfg(feature = "browser-fixtures")]
     #[unsafe(no_mangle)]
-    pub extern "C" fn witchy_fixture_invoke(
-        session: u32,
-        ptr: *const u8,
-        len: usize,
-    ) -> *mut u8 {
+    pub extern "C" fn witchy_fixture_invoke(session: u32, ptr: *const u8, len: usize) -> *mut u8 {
         let Some(request) = abi_buffers::read(ptr, len) else {
             return pack_tagged(1, b"browser ABI rejected an invalid fixture request buffer");
         };
-        match FIXTURE_SESSIONS
-            .with(|sessions| sessions.borrow_mut().invoke(session, &request))
-        {
+        match FIXTURE_SESSIONS.with(|sessions| sessions.borrow_mut().invoke(session, &request)) {
             Ok(response) => pack_tagged(0, response.as_bytes()),
             Err(message) => pack_tagged(1, message.as_bytes()),
         }
@@ -967,9 +997,7 @@ mod wasm_abi {
             }
             _ => return pack_tagged(1, b"unknown fixture result status"),
         };
-        match FIXTURE_SESSIONS
-            .with(|sessions| sessions.borrow_mut().finish(session, result))
-        {
+        match FIXTURE_SESSIONS.with(|sessions| sessions.borrow_mut().finish(session, result)) {
             Ok(transcript) => pack_tagged(0, transcript.as_bytes()),
             Err(message) => pack_tagged(1, message.as_bytes()),
         }
@@ -1017,7 +1045,9 @@ mod wasm_abi {
     /// `crypto.sha256/sha512/sha3_256(op, input)` → `[u32 len][hex]`.
     #[unsafe(no_mangle)]
     pub extern "C" fn witchy_crypto_hash(op: i32, in_ptr: *const u8, in_len: usize) -> *mut u8 {
-        let Some(input) = text(in_ptr, in_len) else { return pack(&[]) };
+        let Some(input) = text(in_ptr, in_len) else {
+            return pack(&[]);
+        };
         pack(super::crypto_hash(op, &input).as_bytes())
     }
 
@@ -1061,11 +1091,9 @@ mod wasm_abi {
         s_ptr: *const u8,
         s_len: usize,
     ) -> i64 {
-        let (Some(pk), Some(message), Some(signature)) = (
-            text(pk_ptr, pk_len),
-            text(m_ptr, m_len),
-            text(s_ptr, s_len),
-        ) else {
+        let (Some(pk), Some(message), Some(signature)) =
+            (text(pk_ptr, pk_len), text(m_ptr, m_len), text(s_ptr, s_len))
+        else {
             return -4;
         };
         super::crypto_verify_status(op, &pk, &message, &signature)
@@ -1082,11 +1110,9 @@ mod wasm_abi {
         s_ptr: *const u8,
         s_len: usize,
     ) -> i32 {
-        let (Some(pk), Some(message), Some(signature)) = (
-            text(pk_ptr, pk_len),
-            text(m_ptr, m_len),
-            text(s_ptr, s_len),
-        ) else {
+        let (Some(pk), Some(message), Some(signature)) =
+            (text(pk_ptr, pk_len), text(m_ptr, m_len), text(s_ptr, s_len))
+        else {
             return 0;
         };
         (super::crypto_verify_status(op, &pk, &message, &signature) == 1) as i32

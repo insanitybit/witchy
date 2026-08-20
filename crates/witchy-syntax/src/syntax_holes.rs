@@ -281,6 +281,7 @@ fn substitute_type(ty: &mut Type, holes: &mut [Option<Type>]) -> Result<(), Stri
             substitute_type(ret, holes)
         }
         Type::Qualified(_, inner) => substitute_type(inner, holes),
+        Type::Slice(inner) => substitute_type(inner, holes),
     }
 }
 

@@ -1676,7 +1676,7 @@ impl GlamourCaptureCodecs {
                     items.len(),
                 ))
             }
-            Type::Fn(_, _, _) | Type::Dyn(_, _) => Err(island_metadata_error(format!(
+            Type::Slice(_) | Type::Fn(_, _, _) | Type::Dyn(_, _) => Err(island_metadata_error(format!(
                 "Glamour callback environment cannot persist `{type_source}`"
             ))),
             Type::RecordCompose { .. } => Err(island_metadata_error(

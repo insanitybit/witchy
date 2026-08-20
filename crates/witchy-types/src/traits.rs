@@ -205,6 +205,7 @@ fn instantiate_provided_trait_method_signature(
 fn subst_self(t: &Type, self_ty: &Type) -> Type {
     match t {
         Type::Qualified(q, inner) => Type::Qualified(q.clone(), Box::new(subst_self(inner, self_ty))),
+        Type::Slice(inner) => Type::Slice(Box::new(subst_self(inner, self_ty))),
         Type::Named(n, args) if n == "Self" && args.is_empty() => self_ty.clone(),
         Type::Named(n, args) => {
             Type::Named(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
@@ -1008,6 +1009,7 @@ fn display_type(t: &Type) -> String {
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(display_type).collect::<Vec<_>>().join(", "))
         }
+        Type::Slice(inner) => format!("[{}]", display_type(inner)),
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached trait diagnostics before records::lower normalized it"
         ),
@@ -1050,6 +1052,7 @@ pub(crate) fn impl_self_type(im: &ImplDef) -> Type {
 pub(crate) fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
     match t {
         Type::Qualified(q, inner) => Type::Qualified(q.clone(), Box::new(subst_trait_params(inner, vars))),
+        Type::Slice(inner) => Type::Slice(Box::new(subst_trait_params(inner, vars))),
         Type::Named(n, args) if args.is_empty() => {
             vars.get(n).cloned().unwrap_or_else(|| Type::Named(n.clone(), Vec::new()))
         }
@@ -1340,7 +1343,7 @@ fn refine_ast_scope_type(scope: &mut Scope<Type>, name: &str, refined: &Type) {
     let carries_arguments = match refined.unqualified() {
         Type::Named(_, args) => !args.is_empty(),
         Type::Dyn(_, args) => !args.is_empty(),
-        Type::Tuple(_) | Type::Fn(_, _, _) => true,
+        Type::Slice(_) | Type::Tuple(_) | Type::Fn(_, _, _) => true,
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached trait scope refinement before records::lower normalized it"
         ),
@@ -2842,7 +2845,7 @@ fn nominal_type_name(ty: &Type) -> Option<&str> {
         // (RFC-0081) A dyn type's head is a trait name, not a nominal type name;
         // it must never enter impl lookup by name.
         Type::Dyn(..) => None,
-        Type::Tuple(_) | Type::Fn(_, _, _) => None,
+        Type::Slice(_) | Type::Tuple(_) | Type::Fn(_, _, _) => None,
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached nominal trait lookup before records::lower normalized it"
         ),
@@ -3045,6 +3048,11 @@ fn type_key(t: &Type) -> String {
                 stack.push(Part::Char('>'));
                 push_items(&mut stack, items);
             }
+            Part::Ty(Type::Slice(elem)) => {
+                key.push_str("Slice<");
+                stack.push(Part::Char('>'));
+                stack.push(Part::Ty(elem));
+            }
             Part::Ty(Type::Fn(params, ret, conventions)) => {
                 key.push_str("fn[");
                 for convention in conventions {
@@ -3184,6 +3192,11 @@ fn specialization_type_key(
                     }
                     render(item, lifetimes, key);
                 }
+                key.push('>');
+            }
+            Type::Slice(elem) => {
+                key.push_str("Slice<");
+                render(elem, lifetimes, key);
                 key.push('>');
             }
             Type::Fn(parameters, result, conventions) => {
@@ -3968,6 +3981,7 @@ fn type_head_key(ty: &Type) -> Option<String> {
     match ty.unqualified() {
         Type::Named(name, _) => Some(name.clone()),
         Type::Tuple(items) => Some(format!("Tuple{}", items.len())),
+        Type::Slice(_) => Some("Slice".into()),
         // (RFC-0081) A dyn head is a trait name, not a nominal head key.
         Type::Dyn(..) => None,
         Type::Fn(_, _, _) => None,

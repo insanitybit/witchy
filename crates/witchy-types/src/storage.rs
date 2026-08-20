@@ -137,6 +137,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
     ) -> Option<ReferenceLeaf> {
         match ty {
             Type::Qualified(_, inner) => self.classify(inner, bindings, seen, functions),
+            Type::Slice(elem) => self.classify(elem, bindings, seen, functions),
             Type::RecordCompose { .. } => unreachable!(
                 "compiler invariant violated: structural record composition reached storage classification before records::lower normalized it"
             ),
@@ -266,6 +267,9 @@ impl<'a> ReferenceStorageClassifier<'a> {
     ) -> Option<String> {
         match ty {
             Type::Qualified(_, inner) => {
+                self.classify_stored_capability(inner, bindings, seen)
+            }
+            Type::Slice(inner) => {
                 self.classify_stored_capability(inner, bindings, seen)
             }
             Type::RecordCompose { .. } => unreachable!(
@@ -401,6 +405,7 @@ fn substitute(
             qualifier.clone(),
             Box::new(substitute(inner, bindings, resolving)),
         ),
+        Type::Slice(elem) => Type::Slice(Box::new(substitute(elem, bindings, resolving))),
         Type::Tuple(items) => {
             Type::Tuple(items.iter().map(|item| substitute(item, bindings, resolving)).collect())
         }
@@ -531,6 +536,9 @@ fn storage_dependencies<'a>(
 ) -> HashSet<String> {
     match ty {
         Type::Qualified(_, inner) => {
+            storage_dependencies(inner, defs, aliases, def_summaries, alias_summaries)
+        }
+        Type::Slice(inner) => {
             storage_dependencies(inner, defs, aliases, def_summaries, alias_summaries)
         }
         Type::Tuple(items) => items

@@ -12,8 +12,8 @@
 //! first).
 
 use crate::ast::{
-    anon_record_field_names, collect_type_names, synthetic_anon_record_def, Block, Expr,
-    Function, Item, MethodSig, Module, Stmt, Type,
+    anon_record_field_names, collect_type_names, synthetic_anon_record_def, Block, Expr, Function,
+    Item, MethodSig, Module, Stmt, Type,
 };
 use crate::intrinsics;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
@@ -64,7 +64,7 @@ fn dfs_cycle(
     state: &mut HashMap<String, u8>,
 ) -> Option<String> {
     match state.get(node) {
-        Some(2) => return None,    // already fully explored
+        Some(2) => return None,                   // already fully explored
         Some(1) => return Some(node.to_string()), // back edge: cycle
         _ => {}
     }
@@ -100,7 +100,10 @@ fn resolve_impl(
     expand_aliases: bool,
 ) -> Result<Module, String> {
     let map = resolved_map(&module)?;
-    let context = ResolveContext { aliases: &map, expand_aliases };
+    let context = ResolveContext {
+        aliases: &map,
+        expand_aliases,
+    };
     let mut shapes = HashSet::new();
     for alias in map.values() {
         collect_anon_shapes(&alias.ty, &mut shapes);
@@ -111,7 +114,9 @@ fn resolve_impl(
     }
 
     if drop_aliases {
-        module.items.retain(|it| !matches!(it, Item::TypeAlias { .. }));
+        module
+            .items
+            .retain(|it| !matches!(it, Item::TypeAlias { .. }));
     }
     let existing: HashSet<String> = module
         .items
@@ -156,7 +161,13 @@ pub(crate) fn resolved_map(module: &Module) -> Result<HashMap<String, Alias>, St
     let mut map: HashMap<String, Alias> = HashMap::new();
     for item in &module.items {
         if let Item::TypeAlias { name, params, ty } = item {
-            map.insert(name.clone(), Alias { params: params.clone(), ty: ty.clone() });
+            map.insert(
+                name.clone(),
+                Alias {
+                    params: params.clone(),
+                    ty: ty.clone(),
+                },
+            );
         }
     }
     if map.is_empty() {
@@ -171,7 +182,10 @@ pub(crate) fn resolved_map(module: &Module) -> Result<HashMap<String, Alias>, St
         let mut changed = false;
         for alias in map.values_mut() {
             let mut ignored = HashSet::new();
-            let context = ResolveContext { aliases: &snapshot, expand_aliases: true };
+            let context = ResolveContext {
+                aliases: &snapshot,
+                expand_aliases: true,
+            };
             changed |= resolve_type(&mut alias.ty, &context, &mut ignored)?;
         }
         if !changed {
@@ -229,7 +243,10 @@ pub(crate) fn resolve_type_aliases(
     map: &HashMap<String, Alias>,
 ) -> Result<bool, String> {
     let mut ignored = HashSet::new();
-    let context = ResolveContext { aliases: map, expand_aliases: true };
+    let context = ResolveContext {
+        aliases: map,
+        expand_aliases: true,
+    };
     resolve_type(ty, &context, &mut ignored)
 }
 
@@ -241,7 +258,10 @@ pub(crate) fn resolve_expr_aliases(expr: &mut Expr, module: &Module) -> Result<(
     let map = resolved_map(module)?;
     if !map.is_empty() {
         let mut ignored = HashSet::new();
-        let context = ResolveContext { aliases: &map, expand_aliases: true };
+        let context = ResolveContext {
+            aliases: &map,
+            expand_aliases: true,
+        };
         resolve_in_expr_with_origin(expr, &context, false, &mut ignored)?;
     }
     Ok(())
@@ -267,6 +287,9 @@ fn resolve_type_with_origin(
     let mut changed = match ty {
         Type::Qualified(_, inner) => {
             resolve_type_with_origin(inner, context, resolve_call_site_head, shapes)?
+        }
+        Type::Slice(elem) => {
+            resolve_type_with_origin(elem, context, resolve_call_site_head, shapes)?
         }
         Type::Named(name, args) => {
             let mut changed = false;
@@ -395,7 +418,10 @@ fn normalize_record_compose(
         }
     }
     merged.sort_by(|left, right| left.0.cmp(&right.0));
-    let names = merged.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    let names = merged
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
     let types = merged.into_iter().map(|(_, ty)| ty).collect();
     shapes.insert(names.clone());
     *ty = Type::Named(crate::ast::anon_record_type_name(&names), types);
@@ -429,6 +455,7 @@ fn collect_anon_shapes(ty: &Type, out: &mut HashSet<Vec<String>>) {
             }
             collect_anon_shapes(result, out);
         }
+        Type::Slice(elem) => collect_anon_shapes(elem, out),
         Type::Qualified(_, inner) => collect_anon_shapes(inner, out),
     }
 }
@@ -436,6 +463,7 @@ fn collect_anon_shapes(ty: &Type, out: &mut HashSet<Vec<String>>) {
 fn substitute_alias_params(ty: &mut Type, subst: &HashMap<String, Type>) -> bool {
     match ty {
         Type::Qualified(_, inner) => substitute_alias_params(inner, subst),
+        Type::Slice(elem) => substitute_alias_params(elem, subst),
         Type::Named(name, args) => {
             if args.is_empty() {
                 if let Some(target) = subst.get(name) {
@@ -642,15 +670,19 @@ fn resolve_in_expr_with_origin(
             }
             resolve_in_block_with_origin(body, map, resolve_call_site_head, shapes)?;
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => {
             for x in xs {
                 resolve_in_expr_with_origin(x, map, resolve_call_site_head, shapes)?;
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. }
-        | Expr::AnonCtor { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             for a in args {
                 resolve_in_expr_with_origin(a, map, resolve_call_site_head, shapes)?;
             }
@@ -690,7 +722,13 @@ fn resolve_in_expr_with_origin(
             resolve_in_expr_with_origin(expr, map, resolve_call_site_head, shapes)?;
             resolve_type_with_origin(ty, map, resolve_call_site_head, shapes)?;
         }
-        Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+        Expr::ExistentialCall {
+            receiver,
+            args,
+            ty,
+            result,
+            ..
+        } => {
             resolve_in_expr_with_origin(receiver, map, resolve_call_site_head, shapes)?;
             for arg in args {
                 resolve_in_expr_with_origin(arg, map, resolve_call_site_head, shapes)?;
@@ -701,7 +739,11 @@ fn resolve_in_expr_with_origin(
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
             resolve_in_expr_with_origin(expr, map, resolve_call_site_head, shapes)?
         }
-        Expr::RecordUpdate { name: _, base, fields } => {
+        Expr::RecordUpdate {
+            name: _,
+            base,
+            fields,
+        } => {
             resolve_in_expr_with_origin(base, map, resolve_call_site_head, shapes)?;
             for (_, v) in fields {
                 resolve_in_expr_with_origin(v, map, resolve_call_site_head, shapes)?;
@@ -727,11 +769,17 @@ fn resolve_in_expr_with_origin(
             resolve_in_expr_with_origin(base, map, resolve_call_site_head, shapes)?;
             resolve_in_expr_with_origin(index, map, resolve_call_site_head, shapes)?;
         }
-        Expr::WhileLet { scrutinee, body, .. } => {
+        Expr::WhileLet {
+            scrutinee, body, ..
+        } => {
             resolve_in_expr_with_origin(scrutinee, map, resolve_call_site_head, shapes)?;
             resolve_in_block_with_origin(body, map, resolve_call_site_head, shapes)?;
         }
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             resolve_in_expr_with_origin(cond, map, resolve_call_site_head, shapes)?;
             resolve_in_block_with_origin(then_block, map, resolve_call_site_head, shapes)?;
             if let Some(b) = else_block {
@@ -752,12 +800,7 @@ fn resolve_in_expr_with_origin(
                 if let Some(g) = &mut arm.guard {
                     resolve_in_expr_with_origin(g, map, resolve_call_site_head, shapes)?;
                 }
-                resolve_in_expr_with_origin(
-                    &mut arm.body,
-                    map,
-                    resolve_call_site_head,
-                    shapes,
-                )?;
+                resolve_in_expr_with_origin(&mut arm.body, map, resolve_call_site_head, shapes)?;
             }
         }
         Expr::Block(b) => {
@@ -817,9 +860,13 @@ mod tests {
     fn expands_alias_in_signature_and_chains() {
         // `type Meters = Int`, `type Distance = Meters` — both expand to Int, and
         // no alias item survives.
-        let src = "type Meters = Int\ntype Distance = Meters\nfn far(d: Distance) -> Meters:\n    d\n";
+        let src =
+            "type Meters = Int\ntype Distance = Meters\nfn far(d: Distance) -> Meters:\n    d\n";
         let m = resolve(crate::parser::parse_module(src).expect("parse")).expect("resolve");
-        assert!(!m.items.iter().any(|it| matches!(it, Item::TypeAlias { .. })));
+        assert!(!m
+            .items
+            .iter()
+            .any(|it| matches!(it, Item::TypeAlias { .. })));
         let f = m
             .items
             .iter()
@@ -845,7 +892,8 @@ mod tests {
         // `type Id = Int` written inside a body — a `let` ascription, a lambda
         // parameter and return type — must all expand to `Int`, not stay `Id`
         // (which the checker would reject as an unknown type).
-        let src = "type Id = Int\nfn main():\n    let x: Id = 5\n    let f = fn(n: Id) -> Id: n\n    x\n";
+        let src =
+            "type Id = Int\nfn main():\n    let x: Id = 5\n    let f = fn(n: Id) -> Id: n\n    x\n";
         let m = resolve(crate::parser::parse_module(src).expect("parse")).expect("resolve");
         let f = m
             .items
@@ -863,7 +911,10 @@ mod tests {
         }
         // `let f = fn(n: Id) -> Id: n` — lambda parameter and return expand.
         match &f.body.stmts[1] {
-            Stmt::Let { value: Expr::Lambda { params, ret, .. }, .. } => {
+            Stmt::Let {
+                value: Expr::Lambda { params, ret, .. },
+                ..
+            } => {
                 assert_eq!(params[0].ty.as_ref(), Some(&int));
                 assert_eq!(ret.as_ref(), Some(&int));
             }
@@ -948,7 +999,10 @@ mod tests {
             f.params[0].ty,
             Some(Type::Named(
                 "List".into(),
-                vec![Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])]
+                vec![Type::Named(
+                    "List".into(),
+                    vec![Type::Named("Int".into(), vec![])]
+                )]
             ))
         );
     }
@@ -960,7 +1014,10 @@ mod tests {
         // unknown type. A generic alias is just transparent substitution.
         let src = "type Pair(a) = (a, a)\ntype Rows(a) = List(Pair(a))\nfn first(p: Pair(Int), rows: Rows(String)) -> Int:\n    p.0\n";
         let m = resolve(crate::parser::parse_module(src).expect("parse")).expect("resolve");
-        assert!(!m.items.iter().any(|it| matches!(it, Item::TypeAlias { .. })));
+        assert!(!m
+            .items
+            .iter()
+            .any(|it| matches!(it, Item::TypeAlias { .. })));
         let f = m
             .items
             .iter()
@@ -971,7 +1028,10 @@ mod tests {
             .expect("function");
         assert_eq!(
             f.params[0].ty,
-            Some(Type::Tuple(vec![Type::Named("Int".into(), vec![]), Type::Named("Int".into(), vec![])]))
+            Some(Type::Tuple(vec![
+                Type::Named("Int".into(), vec![]),
+                Type::Named("Int".into(), vec![])
+            ]))
         );
         assert_eq!(
             f.params[1].ty,
@@ -1016,10 +1076,9 @@ type Extended = .{..Base, b: String}
 fn keep_alias(value: Id, extended: Extended) -> Id:
     value
 "#;
-        let module = normalize_record_compositions(
-            crate::parser::parse_module(src).expect("parse"),
-        )
-        .expect("normalize compositions");
+        let module =
+            normalize_record_compositions(crate::parser::parse_module(src).expect("parse"))
+                .expect("normalize compositions");
         let function = module
             .items
             .iter()
@@ -1029,9 +1088,15 @@ fn keep_alias(value: Id, extended: Extended) -> Id:
             })
             .expect("function");
 
-        assert_eq!(function.params[0].ty, Some(Type::Named("Id".into(), vec![])));
+        assert_eq!(
+            function.params[0].ty,
+            Some(Type::Named("Id".into(), vec![]))
+        );
         assert_eq!(function.ret, Some(Type::Named("Id".into(), vec![])));
-        assert_eq!(function.params[1].ty, Some(Type::Named("Extended".into(), vec![])));
+        assert_eq!(
+            function.params[1].ty,
+            Some(Type::Named("Extended".into(), vec![]))
+        );
 
         let extended = module
             .items
@@ -1050,10 +1115,9 @@ fn keep_alias(value: Id, extended: Extended) -> Id:
 fn inspect(value: frozen .{..Base, b: String}):
     ()
 "#;
-        let module = normalize_record_compositions(
-            crate::parser::parse_module(src).expect("parse"),
-        )
-        .expect("normalize qualified composition");
+        let module =
+            normalize_record_compositions(crate::parser::parse_module(src).expect("parse"))
+                .expect("normalize qualified composition");
         let function = module
             .items
             .iter()
@@ -1104,10 +1168,9 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
             .expect("function");
         assert_eq!(function.params[0].ty, function.ret);
 
-        let conflict = crate::parser::parse_module(
-            "type Base = .{a: Int}\ntype Bad = .{..Base, a: String}\n",
-        )
-        .expect("parse");
+        let conflict =
+            crate::parser::parse_module("type Base = .{a: Int}\ntype Bad = .{..Base, a: String}\n")
+                .expect("parse");
         let error = resolve(conflict).expect_err("conflicting duplicate fails");
         assert!(error.contains("field `a` has conflicting types"), "{error}");
         assert!(error.contains("base provides `Int`"), "{error}");
@@ -1116,15 +1179,16 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
 
     #[test]
     fn record_composition_rejects_non_record_bases_and_tracks_cycles() {
-        let invalid = crate::parser::parse_module("type Bad = .{..Int, a: Int}\n")
-            .expect("parse");
+        let invalid = crate::parser::parse_module("type Bad = .{..Int, a: Int}\n").expect("parse");
         let error = resolve(invalid).expect_err("non-record base fails");
-        assert!(error.contains("type spread requires an anonymous record shape"), "{error}");
+        assert!(
+            error.contains("type spread requires an anonymous record shape"),
+            "{error}"
+        );
 
-        let cycle = crate::parser::parse_module(
-            "type A = .{..B, a: Int}\ntype B = .{..A, b: Int}\n",
-        )
-        .expect("parse");
+        let cycle =
+            crate::parser::parse_module("type A = .{..B, a: Int}\ntype B = .{..A, b: Int}\n")
+                .expect("parse");
         assert!(find_cycle(&cycle).is_some());
     }
 }

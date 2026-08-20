@@ -63,22 +63,35 @@ impl BorrowedShellCatalog {
     fn from_module(module: &Module) -> Self {
         let mut catalog = Self::default();
         for item in &module.items {
-            let Item::Type(definition) = item else { continue };
-            if !definition.params.iter().any(|parameter| is_lifetime_param(parameter)) {
+            let Item::Type(definition) = item else {
+                continue;
+            };
+            if !definition
+                .params
+                .iter()
+                .any(|parameter| is_lifetime_param(parameter))
+            {
                 continue;
             }
             catalog.types.insert(definition.name.clone());
-            catalog
-                .constructors
-                .extend(definition.variants.iter().map(|variant| variant.name.clone()));
+            catalog.constructors.extend(
+                definition
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.clone()),
+            );
         }
         catalog
     }
 
     fn type_is_borrowed(&self, ty: &Type) -> bool {
         match ty {
-            Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
+            Type::Qualified(
+                TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
+                _,
+            ) => true,
             Type::Qualified(_, inner) => self.type_is_borrowed(inner),
+            Type::Slice(inner) => self.type_is_borrowed(inner),
             Type::Named(name, arguments) => {
                 if is_lifetime_param(name) {
                     return false;
@@ -119,7 +132,11 @@ pub(crate) fn lower_with_item_mapping(
         .flat_map(|item| match item {
             Item::Function(function) => {
                 let mut names = Vec::new();
-                if function.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
+                if function
+                    .ret
+                    .as_ref()
+                    .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                {
                     names.push(function.name.clone());
                 }
                 if function
@@ -136,7 +153,11 @@ pub(crate) fn lower_with_item_mapping(
                 .iter()
                 .flat_map(|method| {
                     let mut names = Vec::new();
-                    if method.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
+                    if method
+                        .ret
+                        .as_ref()
+                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                    {
                         names.push(format!("@method:{}", method.name));
                     }
                     if method
@@ -171,7 +192,11 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
     for item in &checked.module().items {
         match item {
             Item::Function(function) => {
-                if function.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
+                if function
+                    .ret
+                    .as_ref()
+                    .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                {
                     known_view_fns.insert(function.name.clone());
                 }
                 if function
@@ -184,7 +209,11 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
             }
             Item::Impl(definition) => {
                 for method in &definition.methods {
-                    if method.ret.as_ref().is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)) {
+                    if method
+                        .ret
+                        .as_ref()
+                        .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+                    {
                         known_view_fns.insert(format!("@method:{}", method.name));
                     }
                     if method
@@ -234,16 +263,15 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
                 let mut methods = Vec::with_capacity(im.methods.len());
                 for method in std::mem::take(&mut im.methods) {
                     if method.is_async {
-                        let (entry, mut segs) =
-                            lower_async_fn_with(
-                                method,
-                                false,
-                                &mut counter,
-                                &mut state_counter,
-                                Some(self_ty.clone()),
-                                &known_view_fns,
-                                &borrowed_shells,
-                            )?;
+                        let (entry, mut segs) = lower_async_fn_with(
+                            method,
+                            false,
+                            &mut counter,
+                            &mut state_counter,
+                            Some(self_ty.clone()),
+                            &known_view_fns,
+                            &borrowed_shells,
+                        )?;
                         methods.push(entry);
                         lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
                     } else {
@@ -285,21 +313,19 @@ pub(crate) fn validate_source(
         match item {
             Item::Function(function) if function.is_async => {
                 validate_async_source(function, function.name == "main", None, &borrowed_shells)
-                    .map_err(|message| crate::source_check::SourceValidationError::new(
-                        item_index, message,
-                    ))?;
+                    .map_err(|message| {
+                        crate::source_check::SourceValidationError::new(item_index, message)
+                    })?;
             }
             Item::Impl(definition) => {
-                let self_ty = Type::Named(
-                    definition.type_name.clone(),
-                    definition.target_args.clone(),
-                );
+                let self_ty =
+                    Type::Named(definition.type_name.clone(), definition.target_args.clone());
                 for method in &definition.methods {
                     if method.is_async {
                         validate_async_source(method, false, Some(&self_ty), &borrowed_shells)
-                            .map_err(|message| crate::source_check::SourceValidationError::new(
-                                item_index, message,
-                            ))?;
+                            .map_err(|message| {
+                                crate::source_check::SourceValidationError::new(item_index, message)
+                            })?;
                     }
                 }
             }
@@ -330,12 +356,10 @@ fn validate_async_source(
             function.name,
         ));
     }
-    if is_entry
-        && declared_ret.is_some_and(|ret| {
-            !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
-                && !matches!(ret.unqualified(), Type::Tuple(types) if types.is_empty())
-        })
-    {
+    if is_entry && declared_ret.is_some_and(|ret| {
+        !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
+            && !matches!(ret.unqualified(), Type::Tuple(types) if types.is_empty())
+    }) {
         let ret = crate::format::type_str(declared_ret.expect("checked above"));
         return Err(format!(
             "async fn `main` returns `{ret}`, but the async executor drives `Task(())` and \
@@ -349,7 +373,9 @@ fn validate_async_statements(statements: &[Stmt], name: &str) -> Result<(), Stri
     for statement in statements {
         match statement {
             Stmt::Yield(_) => {
-                return Err(format!("async fn `{name}`: `yield` is not allowed in an async fn"));
+                return Err(format!(
+                    "async fn `{name}`: `yield` is not allowed in an async fn"
+                ));
             }
             Stmt::Break | Stmt::Continue => {
                 return Err(format!(
@@ -367,8 +393,16 @@ fn validate_async_statements(statements: &[Stmt], name: &str) -> Result<(), Stri
 
 fn validate_async_tail(expr: &Expr, name: &str) -> Result<(), String> {
     match expr {
-        Expr::If { then_block, else_block, .. } => {
-            if then_block.region.is_some() || else_block.as_ref().is_some_and(|block| block.region.is_some()) {
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            if then_block.region.is_some()
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block.region.is_some())
+            {
                 return Err(format!(
                     "async fn `{name}`: `region:` in an async tail branch is not yet supported"
                 ));
@@ -418,18 +452,18 @@ fn callable_returns_view(
     borrowed_shells: &BorrowedShellCatalog,
 ) -> bool {
     match value {
-        Expr::Var(name) => view_fns.contains(name)
-            || scope
-                .iter()
-                .rev()
-                .find(|local| local.name == *name)
-                .is_some_and(|local| local.returns_view),
+        Expr::Var(name) => {
+            view_fns.contains(name)
+                || scope
+                    .iter()
+                    .rev()
+                    .find(|local| local.name == *name)
+                    .is_some_and(|local| local.returns_view)
+        }
         Expr::As { ty, .. } => type_is_view_callable(ty, borrowed_shells),
         Expr::Lambda { ret: Some(ret), .. } => borrowed_shells.type_is_borrowed(ret),
         Expr::Call { name, .. } => view_fns.contains(&format!("@callable:{name}")),
-        Expr::MethodCall { method, .. } => {
-            view_fns.contains(&format!("@callable-method:{method}"))
-        }
+        Expr::MethodCall { method, .. } => view_fns.contains(&format!("@callable-method:{method}")),
         _ => false,
     }
 }
@@ -446,24 +480,28 @@ fn result_is_borrowed_view(
             .rev()
             .find(|local| local.name == *name)
             .is_some_and(|local| local.borrowed_view),
-        Expr::Call { name, .. } => view_fns.contains(name)
-            || scope
-                .iter()
-                .rev()
-                .find(|local| local.name == *name)
-                .is_some_and(|local| local.returns_view),
-        Expr::MethodCall { method, .. } => view_fns.contains(&format!("@method:{method}")),
-        Expr::Apply { func, .. } => {
-            callable_returns_view(func, scope, view_fns, borrowed_shells)
+        Expr::Call { name, .. } => {
+            view_fns.contains(name)
+                || scope
+                    .iter()
+                    .rev()
+                    .find(|local| local.name == *name)
+                    .is_some_and(|local| local.returns_view)
         }
+        Expr::MethodCall { method, .. } => view_fns.contains(&format!("@method:{method}")),
+        Expr::Apply { func, .. } => callable_returns_view(func, scope, view_fns, borrowed_shells),
         Expr::As { ty, .. } => borrowed_shells.type_is_borrowed(ty),
         Expr::Ctor { name, args } => {
             borrowed_shells.constructors.contains(name)
-                || args.iter().any(|arg| {
-                    result_is_borrowed_view(arg, scope, view_fns, borrowed_shells)
-                })
+                || args
+                    .iter()
+                    .any(|arg| result_is_borrowed_view(arg, scope, view_fns, borrowed_shells))
         }
-        Expr::Record { name, fields, spread } => {
+        Expr::Record {
+            name,
+            fields,
+            spread,
+        } => {
             borrowed_shells.types.contains(name)
                 || fields.iter().any(|(_, value)| {
                     result_is_borrowed_view(value, scope, view_fns, borrowed_shells)
@@ -481,11 +519,13 @@ fn result_is_borrowed_view(
                     result_is_borrowed_view(value, scope, view_fns, borrowed_shells)
                 })
         }
-        Expr::If { then_block, else_block, .. } => {
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
             block_tail_expr(then_block)
-                .is_some_and(|tail| {
-                    result_is_borrowed_view(tail, scope, view_fns, borrowed_shells)
-                })
+                .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns, borrowed_shells))
                 || else_block
                     .as_ref()
                     .and_then(block_tail_expr)
@@ -495,13 +535,9 @@ fn result_is_borrowed_view(
         }
         Expr::Match { arms, .. } => arms
             .iter()
-            .any(|arm| {
-                result_is_borrowed_view(&arm.body, scope, view_fns, borrowed_shells)
-            }),
+            .any(|arm| result_is_borrowed_view(&arm.body, scope, view_fns, borrowed_shells)),
         Expr::Block(block) => block_tail_expr(block)
-            .is_some_and(|tail| {
-                result_is_borrowed_view(tail, scope, view_fns, borrowed_shells)
-            }),
+            .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns, borrowed_shells)),
         _ => false,
     }
 }
@@ -609,9 +645,20 @@ impl<'a> Ctx<'a> {
         };
         let line = line_at(lines, 0);
         let rest_lines = remaining_lines(lines);
-        let cont = Continuation { rest, rest_lines, scope, tail, line };
+        let cont = Continuation {
+            rest,
+            rest_lines,
+            scope,
+            tail,
+            line,
+        };
         match head {
-            Stmt::Let { name, value, mutable, ty } => {
+            Stmt::Let {
+                name,
+                value,
+                mutable,
+                ty,
+            } => {
                 if let Some(inner) = as_await(value) {
                     reject_await(inner, &self.fname)?;
                     // `let x = E.await` — suspend, then continue with `x` bound.
@@ -653,7 +700,10 @@ impl<'a> Ctx<'a> {
                                 self.borrowed_shells,
                             ),
                     });
-                    let cont2 = Continuation { scope: &scope2, ..cont };
+                    let cont2 = Continuation {
+                        scope: &scope2,
+                        ..cont
+                    };
                     Ok(prefix_stmt_at(
                         head.clone(),
                         self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?,
@@ -674,7 +724,10 @@ impl<'a> Ctx<'a> {
                     name: tmp.clone(),
                     ty: None,
                     mutable: false,
-                    value: Expr::Unary { op: UnOp::Await, expr: Box::new(inner) },
+                    value: Expr::Unary {
+                        op: UnOp::Await,
+                        expr: Box::new(inner),
+                    },
                 });
                 new_stmts.push(Stmt::LetPattern {
                     pattern: pattern.clone(),
@@ -693,12 +746,8 @@ impl<'a> Ctx<'a> {
                 // source carries a loan relation, conservatively keep that
                 // relation on every bound value; the later typed loan gate can
                 // become more precise without this lowering accepting a shell.
-                let binds_borrowed = result_is_borrowed_view(
-                    value,
-                    scope,
-                    self.view_fns,
-                    self.borrowed_shells,
-                );
+                let binds_borrowed =
+                    result_is_borrowed_view(value, scope, self.view_fns, self.borrowed_shells);
                 let mut binds = Vec::new();
                 pattern_binds(pattern, &mut binds);
                 let mut scope2 = scope.to_vec();
@@ -711,7 +760,10 @@ impl<'a> Ctx<'a> {
                         returns_view: false,
                     });
                 }
-                let cont2 = Continuation { scope: &scope2, ..cont };
+                let cont2 = Continuation {
+                    scope: &scope2,
+                    ..cont
+                };
                 Ok(prefix_stmt_at(
                     head.clone(),
                     self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?,
@@ -726,20 +778,15 @@ impl<'a> Ctx<'a> {
                 // carried across a later await / loop-back it rides a parameter.
                 let mut scope2 = scope.to_vec();
                 if let Some(local) = scope2.iter_mut().rev().find(|local| local.name == *name) {
-                    local.borrowed_view = result_is_borrowed_view(
-                        value,
-                        scope,
-                        self.view_fns,
-                        self.borrowed_shells,
-                    );
-                    local.returns_view = callable_returns_view(
-                        value,
-                        scope,
-                        self.view_fns,
-                        self.borrowed_shells,
-                    );
+                    local.borrowed_view =
+                        result_is_borrowed_view(value, scope, self.view_fns, self.borrowed_shells);
+                    local.returns_view =
+                        callable_returns_view(value, scope, self.view_fns, self.borrowed_shells);
                 }
-                let cont2 = Continuation { scope: &scope2, ..cont };
+                let cont2 = Continuation {
+                    scope: &scope2,
+                    ..cont
+                };
                 Ok(prefix_stmt_at(
                     head.clone(),
                     self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?,
@@ -765,18 +812,15 @@ impl<'a> Ctx<'a> {
     fn end(&self, tail: &Tail) -> Expr {
         match tail {
             Tail::Return => call("task.ready_unit", vec![]),
-            Tail::Loop { seg, carried } => {
-                call(seg, carried.iter().map(|l| Expr::Var(l.name.clone())).collect())
-            }
+            Tail::Loop { seg, carried } => call(
+                seg,
+                carried.iter().map(|l| Expr::Var(l.name.clone())).collect(),
+            ),
         }
     }
 
     /// A `Stmt::Expr` — the workhorse: bare awaits, loops, tail values, effects.
-    fn expr_stmt(
-        &mut self,
-        e: &Expr,
-        cont: Continuation<'_>,
-    ) -> Result<Expr, String> {
+    fn expr_stmt(&mut self, e: &Expr, cont: Continuation<'_>) -> Result<Expr, String> {
         let is_last = cont.rest.is_empty();
         // A loop whose body (or receiver) drives the executor.
         if let Expr::For { var, iter, body } = e {
@@ -784,14 +828,7 @@ impl<'a> Ctx<'a> {
                 return self.lower_for_await(var, src, body, cont);
             } else if block_contains_await(body) {
                 if let Expr::Range { lo, hi, inclusive } = iter.as_ref() {
-                    return self.lower_range_for(
-                        var,
-                        lo,
-                        hi,
-                        *inclusive,
-                        body,
-                        cont,
-                    );
+                    return self.lower_range_for(var, lo, hi, *inclusive, body, cont);
                 }
                 let loop_future = self.lower_for(var, iter, body, cont.scope)?;
                 return self.sequence_loop(loop_future, vec![], cont);
@@ -855,7 +892,10 @@ impl<'a> Ctx<'a> {
         }
         let rebind_count = rebind.len();
         let mut cont_stmts = rebind;
-        let cont2 = Continuation { scope: &cont_scope, ..cont };
+        let cont2 = Continuation {
+            scope: &cont_scope,
+            ..cont
+        };
         let cont_expr = self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?;
         cont_stmts.push(Stmt::Expr(cont_expr));
         let n = cont_stmts.len();
@@ -874,7 +914,13 @@ impl<'a> Ctx<'a> {
             borrowed_view: false,
             returns_view: false,
         };
-        self.lift_suspend(RawTask(loop_future), Some(bind), cont_block, cont.scope, cont.line)
+        self.lift_suspend(
+            RawTask(loop_future),
+            Some(bind),
+            cont_block,
+            cont.scope,
+            cont.line,
+        )
     }
 
     /// The sequence's tail expression under `tail`. For `Tail::Return`: `await E`
@@ -887,13 +933,15 @@ impl<'a> Ctx<'a> {
             reject_await(inner, &self.fname)?;
             return match tail {
                 Tail::Return => Ok(inner.clone()),
-                Tail::Loop { .. } => {
-                    Ok(and_then(inner.clone(), self.fresh_tmp(), self.end(tail)))
-                }
+                Tail::Loop { .. } => Ok(and_then(inner.clone(), self.fresh_tmp(), self.end(tail))),
             };
         }
         match e {
-            Expr::If { cond, then_block, else_block } => {
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 if contains_await(cond) {
                     return Err(self.err("`await` in an `if` condition is not yet supported"));
                 }
@@ -917,9 +965,9 @@ impl<'a> Ctx<'a> {
                     then_block: tail_block_at(then_f, first_line(&then_block.lines)),
                     else_block: Some(tail_block_at(
                         else_f,
-                        else_block.as_ref().map_or(first_line(&then_block.lines), |b| {
-                            first_line(&b.lines)
-                        }),
+                        else_block
+                            .as_ref()
+                            .map_or(first_line(&then_block.lines), |b| first_line(&b.lines)),
                     )),
                 })
             }
@@ -949,11 +997,16 @@ impl<'a> Ctx<'a> {
                         body: self.tail_expr(&a.body, &scope2, tail)?,
                     });
                 }
-                Ok(Expr::Match { scrutinee: scrutinee.clone(), arms: new_arms })
+                Ok(Expr::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms: new_arms,
+                })
             }
             Expr::Block(b) => {
                 if b.region.is_some() {
-                    return Err(self.err("`region:` in an async tail expression is not yet supported"));
+                    return Err(
+                        self.err("`region:` in an async tail expression is not yet supported")
+                    );
                 }
                 self.go(&b.stmts, &b.lines, scope, tail)
             }
@@ -1008,9 +1061,18 @@ impl<'a> Ctx<'a> {
         if let Some(b) = &bind {
             cont_scope.push(b.clone());
         }
-        let cont2 = Continuation { scope: &cont_scope, ..cont };
+        let cont2 = Continuation {
+            scope: &cont_scope,
+            ..cont
+        };
         let cont_expr = self.go(cont2.rest, cont2.rest_lines, cont2.scope, cont2.tail)?;
-        self.lift_suspend(inner, bind, cont_expr, cont.scope, next_line(cont.rest_lines, cont.line))
+        self.lift_suspend(
+            inner,
+            bind,
+            cont_expr,
+            cont.scope,
+            next_line(cont.rest_lines, cont.line),
+        )
     }
 
     /// Lift `cont_expr` (the continuation) to a top-level segment function whose
@@ -1113,7 +1175,11 @@ impl<'a> Ctx<'a> {
             returns_view: false,
         });
         let body_future = self.go(&body.stmts, &body.lines, &scope2, &Tail::Return)?;
-        let body_nil = and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
+        let body_nil = and_then(
+            body_future,
+            self.fresh_tmp(),
+            call("task.ready_unit", vec![]),
+        );
         let f = Expr::Lambda {
             params: vec![Param {
                 name: var.to_string(),
@@ -1185,7 +1251,11 @@ impl<'a> Ctx<'a> {
         };
         let loop_expr = Expr::While {
             cond: Box::new(condition),
-            body: Block { stmts: loop_stmts, lines: loop_lines, region: None },
+            body: Block {
+                stmts: loop_stmts,
+                lines: loop_lines,
+                region: None,
+            },
         };
 
         let mut statements = Vec::with_capacity(cont.rest.len() + 3);
@@ -1232,7 +1302,10 @@ impl<'a> Ctx<'a> {
             // normal exit so every branch of the loop segment has that result.
             let exit = self.go(cont.rest, cont.rest_lines, cont.scope, cont.tail)?;
             let (entry, _) = self.build_loop_seg(
-                LoopHeader::Recv { src: src.clone(), var: var.to_string() },
+                LoopHeader::Recv {
+                    src: src.clone(),
+                    var: var.to_string(),
+                },
                 body,
                 cont.scope,
                 false,
@@ -1243,7 +1316,10 @@ impl<'a> Ctx<'a> {
         // Folding receive loop.
         let want_accs = !(cont.rest.is_empty() && matches!(cont.tail, Tail::Return));
         let (entry, accs) = self.build_loop_seg(
-            LoopHeader::Recv { src: src.clone(), var: var.to_string() },
+            LoopHeader::Recv {
+                src: src.clone(),
+                var: var.to_string(),
+            },
             body,
             cont.scope,
             want_accs,
@@ -1313,8 +1389,11 @@ impl<'a> Ctx<'a> {
             probe.extend(crate::suspension::free_bindings(continuation));
         }
         let probe: HashSet<String> = probe.into_iter().collect();
-        let carried: Vec<Local> =
-            scope.iter().filter(|l| probe.contains(&l.name)).cloned().collect();
+        let carried: Vec<Local> = scope
+            .iter()
+            .filter(|l| probe.contains(&l.name))
+            .cloned()
+            .collect();
 
         let accs: Vec<Local> = if want_accs {
             carried.iter().filter(|l| l.mutable).cloned().collect()
@@ -1323,7 +1402,10 @@ impl<'a> Ctx<'a> {
         };
 
         let seg_name = self.fresh_seg();
-        let loop_tail = Tail::Loop { seg: seg_name.clone(), carried: carried.clone() };
+        let loop_tail = Tail::Loop {
+            seg: seg_name.clone(),
+            carried: carried.clone(),
+        };
         let exit = continuation.unwrap_or_else(|| self.loop_exit(&accs));
 
         // Loop-segment parameters: the carried columns (`own` for mutable ones).
@@ -1365,13 +1447,18 @@ impl<'a> Ctx<'a> {
                     },
                     MatchArm {
                         line: 0,
-                        pattern: Pattern::Ctor { name: "None".to_string(), args: vec![] },
+                        pattern: Pattern::Ctor {
+                            name: "None".to_string(),
+                            args: vec![],
+                        },
                         guard: None,
                         body: exit,
                     },
                 ];
-                let recv_match =
-                    Expr::Match { scrutinee: Box::new(Expr::Var(o.clone())), arms: recv_arms };
+                let recv_match = Expr::Match {
+                    scrutinee: Box::new(Expr::Var(o.clone())),
+                    arms: recv_arms,
+                };
                 // recv-segment: fn recv(carried…, o) = match o { Some(x)->body; None->exit }
                 let mut recv_params: Vec<Param> = carried.iter().map(local_to_param).collect();
                 recv_params.push(Param {
@@ -1408,7 +1495,10 @@ impl<'a> Ctx<'a> {
                     body: tail_block_at(call(&recv_name, recv_args), first_line(&body.lines)),
                     ret: None,
                 };
-                call("task.and_then", vec![call("chan.recv", vec![src.clone()]), recv_lambda])
+                call(
+                    "task.and_then",
+                    vec![call("chan.recv", vec![src.clone()]), recv_lambda],
+                )
             }
         };
 
@@ -1427,7 +1517,10 @@ impl<'a> Ctx<'a> {
             is_async: false,
         });
 
-        let entry = call(&seg_name, carried.iter().map(|l| Expr::Var(l.name.clone())).collect());
+        let entry = call(
+            &seg_name,
+            carried.iter().map(|l| Expr::Var(l.name.clone())).collect(),
+        );
         Ok((entry, accs))
     }
 
@@ -1455,17 +1548,28 @@ fn lower_async_fn(
     view_fns: &HashSet<String>,
     borrowed_shells: &BorrowedShellCatalog,
 ) -> Result<(Function, Vec<Function>), String> {
-    lower_async_fn_with(f, is_entry, counter, state_counter, None, view_fns, borrowed_shells)
+    lower_async_fn_with(
+        f,
+        is_entry,
+        counter,
+        state_counter,
+        None,
+        view_fns,
+        borrowed_shells,
+    )
 }
 
 fn resolved_async_parameter_type<'a>(
     parameter: &'a Param,
     self_ty: Option<&'a Type>,
 ) -> Option<&'a Type> {
-    parameter
-        .ty
-        .as_ref()
-        .or_else(|| if parameter.name == "self" { self_ty } else { None })
+    parameter.ty.as_ref().or_else(|| {
+        if parameter.name == "self" {
+            self_ty
+        } else {
+            None
+        }
+    })
 }
 
 /// As [`lower_async_fn`], with an optional receiver type for a method's `self`
@@ -1495,14 +1599,10 @@ fn lower_async_fn_with(
             f.name,
         ));
     }
-    if is_entry
-        && declared_ret
-            .as_ref()
-            .is_some_and(|ret| {
-                !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
-                && !matches!(ret.unqualified(), Type::Tuple(ts) if ts.is_empty())
-            })
-    {
+    if is_entry && declared_ret.as_ref().is_some_and(|ret| {
+        !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
+            && !matches!(ret.unqualified(), Type::Tuple(ts) if ts.is_empty())
+    }) {
         let ret = crate::format::type_str(declared_ret.as_ref().unwrap());
         return Err(format!(
             "async fn `main` returns `{ret}`, but the async executor drives `Task(())` and \
@@ -1521,7 +1621,9 @@ fn lower_async_fn_with(
             _ => None,
         })
         .unwrap_or_else(|| f.name.clone());
-    segment_attributes.push(crate::suspension::source_callable_attribute(&source_callable));
+    segment_attributes.push(crate::suspension::source_callable_attribute(
+        &source_callable,
+    ));
     let mut ctx = Ctx {
         fname: f.name.clone(),
         counter,
@@ -1662,7 +1764,15 @@ fn live_locals(expr: &Expr, scope: &[Local], skip: Option<&str>) -> Vec<Local> {
 
 /// Turn a function name into a valid identifier fragment for a segment name.
 fn sanitize(name: &str) -> String {
-    name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect()
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// An awaited `Task` expression, or a raw already-`Task` expression (a lowered
@@ -1688,7 +1798,11 @@ fn for_iter_list(iter: &Expr) -> Expr {
     match iter {
         Expr::Range { lo, hi, inclusive } => {
             let hi_expr = if *inclusive {
-                Expr::Binary { op: BinOp::Add, lhs: hi.clone(), rhs: Box::new(Expr::Int(1)) }
+                Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: hi.clone(),
+                    rhs: Box::new(Expr::Int(1)),
+                }
             } else {
                 (**hi).clone()
             };
@@ -1712,7 +1826,10 @@ fn as_recv_stream(e: &Expr) -> Option<&Expr> {
 /// `await E` -> `Some(&E)`, else None.
 fn as_await(e: &Expr) -> Option<&Expr> {
     match e {
-        Expr::Unary { op: UnOp::Await, expr } => Some(expr),
+        Expr::Unary {
+            op: UnOp::Await,
+            expr,
+        } => Some(expr),
         _ => None,
     }
 }
@@ -1735,7 +1852,9 @@ fn reject_await(e: &Expr, fname: &str) -> Result<(), String> {
 /// an `Expr` variant later forces this to be revisited.
 fn contains_await(e: &Expr) -> bool {
     match e {
-        Expr::Unary { op: UnOp::Await, .. } => true,
+        Expr::Unary {
+            op: UnOp::Await, ..
+        } => true,
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Duration(_)
@@ -1743,12 +1862,12 @@ fn contains_await(e: &Expr) -> bool {
         | Expr::Bool(_)
         | Expr::Var(_)
         | Expr::TaggedLit { .. } => false,
-        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
+        Expr::Unary { expr, .. }
+        | Expr::Field { base: expr, .. }
+        | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
-        | Expr::ExistentialUpcast { expr, .. } => {
-            contains_await(expr)
-        }
+        | Expr::ExistentialUpcast { expr, .. } => contains_await(expr),
         Expr::ExistentialCall { receiver, args, .. } => {
             contains_await(receiver) || args.iter().any(contains_await)
         }
@@ -1756,25 +1875,31 @@ fn contains_await(e: &Expr) -> bool {
         Expr::Binary { lhs, rhs, .. } => contains_await(lhs) || contains_await(rhs),
         Expr::Range { lo, hi, .. } => contains_await(lo) || contains_await(hi),
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(contains_await),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. }
-        | Expr::AnonCtor { args, .. } => args.iter().any(contains_await),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            args.iter().any(contains_await)
+        }
         Expr::LabeledCall { args, .. } => args.iter().any(|(_, a)| contains_await(a)),
         Expr::LabeledMethodCall { receiver, args, .. } => {
-            contains_await(receiver)
-                || args.iter().any(|(_, a)| contains_await(a))
+            contains_await(receiver) || args.iter().any(|(_, a)| contains_await(a))
         }
         Expr::MethodCall { receiver, args, .. } => {
             contains_await(receiver) || args.iter().any(contains_await)
         }
         Expr::Apply { func, args } => contains_await(func) || args.iter().any(contains_await),
-        Expr::RecordUpdate { name: _, base, fields } => {
-            contains_await(base) || fields.iter().any(|(_, v)| contains_await(v))
-        }
+        Expr::RecordUpdate {
+            name: _,
+            base,
+            fields,
+        } => contains_await(base) || fields.iter().any(|(_, v)| contains_await(v)),
         Expr::Record { fields, spread, .. } => {
             fields.iter().any(|(_, v)| contains_await(v))
                 || spread.as_ref().is_some_and(|s| contains_await(s))
         }
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             contains_await(cond)
                 || block_contains_await(then_block)
                 || else_block.as_ref().is_some_and(block_contains_await)
@@ -1788,9 +1913,9 @@ fn contains_await(e: &Expr) -> bool {
         Expr::Block(b) => block_contains_await(b),
         Expr::While { cond, body } => contains_await(cond) || block_contains_await(body),
         Expr::For { iter, body, .. } => contains_await(iter) || block_contains_await(body),
-        Expr::WhileLet { scrutinee, body, .. } => {
-            contains_await(scrutinee) || block_contains_await(body)
-        }
+        Expr::WhileLet {
+            scrutinee, body, ..
+        } => contains_await(scrutinee) || block_contains_await(body),
         Expr::Lambda { body, .. } => block_contains_await(body),
     }
 }
@@ -1829,7 +1954,11 @@ fn stmt_contains_return(statement: &Stmt) -> bool {
 
 fn expr_contains_return(expression: &Expr) -> bool {
     match expression {
-        Expr::If { then_block, else_block, .. } => {
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
             block_contains_return(then_block)
                 || else_block.as_ref().is_some_and(block_contains_return)
         }
@@ -1848,7 +1977,12 @@ fn expr_contains_return(expression: &Expr) -> bool {
 /// `task.and_then(inner, fn(own bind): k)`.
 fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
     let lambda = Expr::Lambda {
-        params: vec![Param { name: bind, ty: None, convention: Convention::Own, default: None }],
+        params: vec![Param {
+            name: bind,
+            ty: None,
+            convention: Convention::Own,
+            default: None,
+        }],
         body: tail_block(k),
         ret: None,
     };
@@ -1866,7 +2000,10 @@ fn prefix_stmt_at(head: Stmt, k: Expr, head_line: u32, tail_line: u32) -> Expr {
 }
 
 fn call(name: &str, args: Vec<Expr>) -> Expr {
-    Expr::Call { name: name.to_string(), args }
+    Expr::Call {
+        name: name.to_string(),
+        args,
+    }
 }
 
 /// A single-expression block (the body shape for a function/branch whose value is
@@ -1876,7 +2013,11 @@ fn tail_block(e: Expr) -> Block {
 }
 
 fn tail_block_at(e: Expr, line: u32) -> Block {
-    Block { stmts: vec![Stmt::Expr(e)], lines: vec![line], region: None }
+    Block {
+        stmts: vec![Stmt::Expr(e)],
+        lines: vec![line],
+        region: None,
+    }
 }
 
 fn line_at(lines: &[u32], idx: usize) -> u32 {
@@ -1900,8 +2041,7 @@ mod tests {
     use super::*;
 
     fn lower_module(module: Module) -> Result<Module, String> {
-        let checked = crate::source_check::check(module)
-            .map_err(|error| error.to_string())?;
+        let checked = crate::source_check::check(module).map_err(|error| error.to_string())?;
         let checked = crate::generators::lower(checked)?;
         lower(checked).map(AsyncLoweredModule::into_module)
     }
@@ -1931,7 +2071,10 @@ mod tests {
         );
 
         assert_eq!(
-            slots.iter().map(|slot| (slot.name.as_str(), slot.mutable)).collect::<Vec<_>>(),
+            slots
+                .iter()
+                .map(|slot| (slot.name.as_str(), slot.mutable))
+                .collect::<Vec<_>>(),
             [("n", false), ("sum", true)],
         );
     }
@@ -1978,7 +2121,10 @@ mod tests {
         assert_eq!(mapping[0], vec![0]);
         assert_eq!(mapping[2], vec![2]);
         assert_eq!(mapping[1][0], 1);
-        assert!(mapping[1].len() > 1, "an await must lift at least one segment");
+        assert!(
+            mapping[1].len() > 1,
+            "an await must lift at least one segment"
+        );
         let lowered_item_count = lowered.into_module().items.len();
         assert!(mapping[1][1..]
             .iter()
@@ -1994,14 +2140,18 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Function(function) => crate::suspension::frame_state(function)
-                    .map(|state| (state, function)),
+                Item::Function(function) => {
+                    crate::suspension::frame_state(function).map(|state| (state, function))
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
         states.sort_by_key(|(state, _)| *state);
 
-        assert_eq!(states.iter().map(|(state, _)| *state).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert_eq!(
+            states.iter().map(|(state, _)| *state).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
         assert!(states[0]
             .1
             .attributes
@@ -2040,7 +2190,10 @@ mod tests {
             })
             .expect("await produces a continuation segment");
         assert!(
-            segment.params.iter().any(|parameter| parameter.name == "stepper"),
+            segment
+                .params
+                .iter()
+                .any(|parameter| parameter.name == "stepper"),
             "the frame must carry the local callable used after suspension: {:?}",
             segment.params,
         );
@@ -2050,7 +2203,8 @@ mod tests {
     fn lowering_rejects_value_returning_async_main() {
         let source = "async fn main(console: Console) -> Int:\n    1\n";
         let module = crate::parser::parse_module(source).expect("parse async main");
-        let error = lower_module(module).expect_err("the executor cannot surface an async root value");
+        let error =
+            lower_module(module).expect_err("the executor cannot surface an async root value");
 
         assert!(error.contains("async fn `main` returns `Int`"), "{error}");
         assert!(error.contains("Task(())"), "{error}");
@@ -2084,32 +2238,50 @@ mod tests {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
         let error = lower_module(module).expect_err("a view cannot be carried through a segment");
-        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
-        assert!(error.contains("materialize a direct view with `.owned()`"), "{error}");
+        assert!(
+            error.contains("borrowed value `w` remains live across `await`"),
+            "{error}"
+        );
+        assert!(
+            error.contains("materialize a direct view with `.owned()`"),
+            "{error}"
+        );
     }
 
     #[test]
     fn lowering_preserves_a_view_relation_through_a_function_value() {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = view\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
-        let module = crate::parser::parse_module(source).expect("parse indirect borrowed async body");
+        let module =
+            crate::parser::parse_module(source).expect("parse indirect borrowed async body");
         let error = lower_module(module).expect_err("an indirect view cannot cross a segment");
-        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
+        assert!(
+            error.contains("borrowed value `w` remains live across `await`"),
+            "{error}"
+        );
     }
 
     #[test]
     fn lowering_preserves_a_view_relation_through_a_returned_function_value() {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nfn make() -> fn(View(String, 'a)) -> View(String, 'a):\n    view\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = make()\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse returned callable");
-        let error = lower_module(module).expect_err("a returned callable's view cannot cross a segment");
-        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
+        let error =
+            lower_module(module).expect_err("a returned callable's view cannot cross a segment");
+        assert!(
+            error.contains("borrowed value `w` remains live across `await`"),
+            "{error}"
+        );
     }
 
     #[test]
     fn lowering_tracks_a_view_returning_method_across_await() {
         let source = "mode opt\n\ntype Holder:\n    text: String\n\nimpl Holder:\n    fn view(self: let('a) Holder) -> View(String, 'a):\n        self.text\n\nasync fn bad(console: Console):\n    let holder = Holder(\"x\")\n    let w = holder.view()\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse method borrowed async body");
-        let error = lower_module(module).expect_err("a method-returned view cannot cross a segment");
-        assert!(error.contains("borrowed value `w` remains live across `await`"), "{error}");
+        let error =
+            lower_module(module).expect_err("a method-returned view cannot cross a segment");
+        assert!(
+            error.contains("borrowed value `w` remains live across `await`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2125,7 +2297,8 @@ mod tests {
 
     #[test]
     fn lowering_rejects_exclusive_reference_async_signatures() {
-        let source = "mode opt\n\nasync fn bad(input: &'a mut String) -> Nil:\n    task.done(0).await\n";
+        let source =
+            "mode opt\n\nasync fn bad(input: &'a mut String) -> Nil:\n    task.done(0).await\n";
         let module = crate::parser::parse_module(source).expect("parse exclusive async signature");
         let error = lower_module(module)
             .expect_err("an exclusive reference cannot cross an async boundary");
@@ -2155,7 +2328,10 @@ mod tests {
         let error = lower_module(module)
             .expect_err("a lifetime-bearing constructor result cannot cross suspension");
 
-        assert!(error.contains("borrowed value `holder` remains live across `await`"), "{error}");
+        assert!(
+            error.contains("borrowed value `holder` remains live across `await`"),
+            "{error}"
+        );
         assert!(error.contains("before building the shell"), "{error}");
     }
 
@@ -2166,7 +2342,10 @@ mod tests {
         let error = lower_module(module)
             .expect_err("an aggregate containing a borrowed shell cannot cross suspension");
 
-        assert!(error.contains("borrowed value `nested` remains live across `await`"), "{error}");
+        assert!(
+            error.contains("borrowed value `nested` remains live across `await`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2193,10 +2372,15 @@ mod tests {
         assert!(!rendered.contains("list.range_between"), "{rendered}");
         assert!(!rendered.contains("task.for_each"), "{rendered}");
         assert!(
-            lowered.items.iter().filter_map(|item| match item {
-                Item::Function(function) => crate::suspension::frame_state(function),
-                _ => None,
-            }).count() >= 3,
+            lowered
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Function(function) => crate::suspension::frame_state(function),
+                    _ => None,
+                })
+                .count()
+                >= 3,
             "entry, range loop, and await continuation must all be named frame states: {rendered}",
         );
     }
@@ -2230,18 +2414,20 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(functions.len() >= 2, "an await must produce a lifted segment");
-        assert!(functions
+        assert!(
+            functions.len() >= 2,
+            "an await must produce a lifted segment"
+        );
+        assert!(functions.iter().all(|function| function
+            .attributes
             .iter()
-            .all(|function| function.attributes.iter().any(|attribute| attribute == "browser")));
+            .any(|attribute| attribute == "browser")));
         assert!(functions.iter().all(|function| {
             function.name == "browser_value"
                 || function
                     .attributes
                     .iter()
-                    .any(|attribute| {
-                        attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE
-                    })
+                    .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE)
         }));
     }
 }

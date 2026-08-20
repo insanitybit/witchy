@@ -6,10 +6,10 @@
 //! fn-ref walk. Behavior is unchanged.
 
 use super::EqShape;
+use foldhash::{HashMap, HashSet};
 use witchy_syntax::ast::{Block, Expr, Stmt, Type};
 use witchy_syntax::intrinsics;
 use witchy_syntax::lambda_scan::collect_pattern_vars;
-use foldhash::{HashMap, HashSet};
 
 /// If `ty` is a bare type-parameter (lowercase, argument-less name), return it.
 /// Pin type variables in `ty` by structurally matching it against a resolved
@@ -38,7 +38,9 @@ pub(super) fn unify_type_vars(ty: &Type, shape: &EqShape, subst: &mut HashMap<St
 fn bare_type_var(ty: &Type) -> Option<String> {
     match ty {
         Type::Named(n, args)
-            if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.') =>
+            if args.is_empty()
+                && n.chars().next().is_some_and(|c| c.is_lowercase())
+                && !n.contains('.') =>
         {
             Some(n.clone())
         }
@@ -79,10 +81,13 @@ pub(crate) fn list_param_of_var(params: &[witchy_syntax::ast::Param], tv: &str) 
 
 /// The index of the first parameter typed `fn(..) -> tv` (a function returning
 /// the given type-var `tv`).
-pub(crate) fn fn_param_returning_var(params: &[witchy_syntax::ast::Param], tv: &str) -> Option<usize> {
-    params.iter().position(|p| {
-        matches!(&p.ty, Some(Type::Fn(_, ret, _)) if bare_type_var(ret).as_deref() == Some(tv))
-    })
+pub(crate) fn fn_param_returning_var(
+    params: &[witchy_syntax::ast::Param],
+    tv: &str,
+) -> Option<usize> {
+    params.iter().position(
+        |p| matches!(&p.ty, Some(Type::Fn(_, ret, _)) if bare_type_var(ret).as_deref() == Some(tv)),
+    )
 }
 
 /// Variables eligible for IN-PLACE push (`xs = push(xs, e)` appends into
@@ -98,8 +103,12 @@ pub(crate) fn fn_param_returning_var(params: &[witchy_syntax::ast::Param], tv: &
 pub(crate) fn type_has_var(t: &Type) -> bool {
     match t {
         Type::Qualified(_, inner) => type_has_var(inner),
+        Type::Slice(inner) => type_has_var(inner),
         Type::Named(n, args) => {
-            (args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.'))
+            (args.is_empty()
+                && n.chars().next().is_some_and(|c| c.is_lowercase())
+                && !n.contains('.')
+                && n != "str")
                 || args.iter().any(type_has_var)
         }
         Type::Dyn(_, args) => args.iter().any(type_has_var),
@@ -171,9 +180,7 @@ impl DevirtScan {
             Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
                 args.iter().for_each(|a| self.walk_expr(a))
             }
-            Expr::LabeledCall { args, .. } => {
-                args.iter().for_each(|(_, a)| self.walk_expr(a))
-            }
+            Expr::LabeledCall { args, .. } => args.iter().for_each(|(_, a)| self.walk_expr(a)),
             Expr::LabeledMethodCall { receiver, args, .. } => {
                 self.walk_expr(receiver);
                 args.iter().for_each(|(_, a)| self.walk_expr(a))
@@ -194,9 +201,7 @@ impl DevirtScan {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
-            | Expr::ExistentialUpcast { expr, .. } => {
-                self.walk_expr(expr)
-            }
+            | Expr::ExistentialUpcast { expr, .. } => self.walk_expr(expr),
             Expr::Field { base, .. } => self.walk_expr(base),
             Expr::Lambda { params, body, .. } => {
                 for p in params {
@@ -204,7 +209,11 @@ impl DevirtScan {
                 }
                 self.walk_block(body);
             }
-            Expr::RecordUpdate { name: _, base, fields } => {
+            Expr::RecordUpdate {
+                name: _,
+                base,
+                fields,
+            } => {
                 self.walk_expr(base);
                 fields.iter().for_each(|(_, v)| self.walk_expr(v));
             }
@@ -215,12 +224,21 @@ impl DevirtScan {
                 }
             }
             Expr::Binary { lhs, rhs, .. }
-            | Expr::Index { base: lhs, index: rhs }
-            | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            | Expr::Index {
+                base: lhs,
+                index: rhs,
+            }
+            | Expr::Range {
+                lo: lhs, hi: rhs, ..
+            } => {
                 self.walk_expr(lhs);
                 self.walk_expr(rhs);
             }
-            Expr::If { cond, then_block, else_block } => {
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 self.walk_expr(cond);
                 self.walk_block(then_block);
                 if let Some(eb) = else_block {
@@ -247,7 +265,11 @@ impl DevirtScan {
                 self.walk_expr(iter);
                 self.walk_block(body);
             }
-            Expr::WhileLet { pattern, scrutinee, body } => {
+            Expr::WhileLet {
+                pattern,
+                scrutinee,
+                body,
+            } => {
                 collect_pattern_vars(pattern, &mut self.other_bind);
                 self.walk_expr(scrutinee);
                 self.walk_block(body);
@@ -259,7 +281,11 @@ impl DevirtScan {
 pub(super) fn collect_devirt_eligible(body: &Block) -> HashSet<String> {
     let mut s = DevirtScan::default();
     s.walk_block(body);
-    let DevirtScan { let_bind, other_bind, reassigned } = s;
+    let DevirtScan {
+        let_bind,
+        other_bind,
+        reassigned,
+    } = s;
     let_bind
         .into_iter()
         .filter(|(n, c)| *c == 1 && !other_bind.contains(n) && !reassigned.contains(n))
@@ -284,7 +310,13 @@ pub(super) fn collect_devirt_eligible(body: &Block) -> HashSet<String> {
 /// (OOB), so it is rejected. Conservative everywhere — any deviation keeps the checked
 /// access. Gated on `bounds-elide`; off ⇒ None ⇒ the access keeps its trap guard (the
 /// de-opt reference the differential sweep compares against).
-pub(super) fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool, body: &Block) -> Option<(String, String)> {
+pub(super) fn bounds_elide_pair(
+    var: &str,
+    lo: &Expr,
+    hi: &Expr,
+    inclusive: bool,
+    body: &Block,
+) -> Option<(String, String)> {
     if inclusive || !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
         return None;
     }
@@ -293,16 +325,20 @@ pub(super) fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool
         _ => return None,
     }
     let xs = match hi {
-        Expr::Call { name, args } if name == intrinsics::LIST_LENGTH && args.len() == 1 => match &args[0] {
-            Expr::Var(x) => x.clone(),
-            _ => return None,
-        },
+        Expr::Call { name, args } if name == intrinsics::LIST_LENGTH && args.len() == 1 => {
+            match &args[0] {
+                Expr::Var(x) => x.clone(),
+                _ => return None,
+            }
+        }
         _ => return None,
     };
     let mut scan = DevirtScan::default();
     scan.walk_block(body);
     let stable = |n: &str| {
-        !scan.let_bind.contains_key(n) && !scan.other_bind.contains(n) && !scan.reassigned.contains(n)
+        !scan.let_bind.contains_key(n)
+            && !scan.other_bind.contains(n)
+            && !scan.reassigned.contains(n)
     };
     (stable(&xs) && stable(var)).then_some((var.to_string(), xs))
 }
@@ -310,9 +346,9 @@ pub(super) fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool
 pub(crate) fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
     for stmt in &b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
-                collect_fn_refs_expr(value, out)
-            }
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. } => collect_fn_refs_expr(value, out),
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_fn_refs_expr(e, out),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -370,10 +406,12 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
         | Expr::ExistentialUpcast { expr, .. }
-        | Expr::Field { base: expr, .. } => {
-            collect_fn_refs_expr(expr, out)
-        }
-        Expr::RecordUpdate { name: _, base, fields } => {
+        | Expr::Field { base: expr, .. } => collect_fn_refs_expr(expr, out),
+        Expr::RecordUpdate {
+            name: _,
+            base,
+            fields,
+        } => {
             collect_fn_refs_expr(base, out);
             for (_, v) in fields {
                 collect_fn_refs_expr(v, out);
@@ -383,7 +421,11 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_fn_refs_expr(lhs, out);
             collect_fn_refs_expr(rhs, out);
         }
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             collect_fn_refs_expr(cond, out);
             collect_fn_refs_block(then_block, out);
             if let Some(b) = else_block {

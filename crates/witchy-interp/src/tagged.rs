@@ -40,9 +40,9 @@
 //! compile the same expanded AST. `Expr::TaggedLit` is therefore UNREACHABLE
 //! after this pass; typeck, the interpreter, and both codegen backends panic on it.
 
+use std::cell::{Cell, RefCell};
 use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Stmt, Type};
 use witchy_syntax::origin::{OriginTable, SourcePosition, SourceSpan};
-use std::cell::{Cell, RefCell};
 
 // foldhash (not SipHash): keys are module/tag names, compiler-internal and
 // never attacker-controlled — matching the interpreter's own FxHashMap
@@ -94,8 +94,7 @@ pub fn expand(
     // reaches before linking — which is what keeps the
     // comptime program free of the consumer's own tagged literals (else linking
     // it would re-enter this pass forever; see linker.rs and `expand_one`).
-    let by_name: HashMap<&str, &Module> =
-        siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
+    let by_name: HashMap<&str, &Module> = siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
     let mut tag_origins = HashMap::new();
     let mut ambiguous_tags = HashMap::new();
     record_tag_origins(
@@ -245,8 +244,8 @@ fn record_tag_origins(
 }
 
 fn expansion_site(ctx: &Context, tag: &str, invocation_line: u32) -> String {
-    let display_tag = witchy_syntax::linker::definition_site_tag_target(tag)
-        .map_or(tag, |(_, name)| name);
+    let display_tag =
+        witchy_syntax::linker::definition_site_tag_target(tag).map_or(tag, |(_, name)| name);
     let invocation = if invocation_line == 0 {
         format!("module `{}`: tagged literal `{display_tag}`", ctx.name)
     } else {
@@ -310,7 +309,14 @@ fn walk_expr_depth(
         *expr = hole_expr;
         return Ok(());
     }
-    if let Expr::TaggedLit { tag, parts, holes, hole_spans, line } = expr {
+    if let Expr::TaggedLit {
+        tag,
+        parts,
+        holes,
+        hole_spans,
+        line,
+    } = expr
+    {
         if depth >= MAX_TAG_DEPTH {
             return Err(format!(
                 "{} expanded past the \
@@ -415,7 +421,11 @@ fn walk_children(
         Expr::Unary { expr, .. } => recur(expr)?,
         Expr::Field { base, .. } => recur(base)?,
         Expr::Lambda { body, .. } => walk_block_depth(body, ctx, depth, ancestry)?,
-        Expr::RecordUpdate { name: _, base, fields } => {
+        Expr::RecordUpdate {
+            name: _,
+            base,
+            fields,
+        } => {
             recur(base)?;
             for (_, v) in fields {
                 recur(v)?;
@@ -431,8 +441,7 @@ fn walk_children(
         }
         Expr::Try(e) => recur(e)?,
         Expr::As { expr, .. } => recur(expr)?,
-        Expr::ExistentialPack { expr, .. }
-        | Expr::ExistentialUpcast { expr, .. } => recur(expr)?,
+        Expr::ExistentialPack { expr, .. } | Expr::ExistentialUpcast { expr, .. } => recur(expr)?,
         Expr::ExistentialCall { receiver, args, .. } => {
             recur(receiver)?;
             for arg in args {
@@ -443,7 +452,11 @@ fn walk_children(
             recur(lhs)?;
             recur(rhs)?;
         }
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             recur(cond)?;
             walk_block_depth(then_block, ctx, depth, ancestry)?;
             if let Some(b) = else_block {
@@ -476,7 +489,9 @@ fn walk_children(
             recur(base)?;
             recur(index)?;
         }
-        Expr::WhileLet { scrutinee, body, .. } => {
+        Expr::WhileLet {
+            scrutinee, body, ..
+        } => {
             recur(scrutinee)?;
             walk_block_depth(body, ctx, depth, ancestry)?;
         }
@@ -514,10 +529,7 @@ fn walk_block_depth(
     Ok(())
 }
 
-fn validate_tag<'a>(
-    ctx: &'a Context,
-    tag: &str,
-) -> Result<(&'a Function, TagOrigin), String> {
+fn validate_tag<'a>(ctx: &'a Context, tag: &str) -> Result<(&'a Function, TagOrigin), String> {
     if let Some(modules) = ctx.ambiguous_tags.get(tag) {
         return Err(format!(
             "is ambiguous across directly imported modules: {}",
@@ -538,14 +550,13 @@ fn validate_tag<'a>(
 }
 
 fn tag_function<'a>(ctx: &'a Context, tag: &str) -> Option<(&'a Function, TagOrigin)> {
-    let (module_name, name, recorded_origin) = if let Some((module, name)) =
-        witchy_syntax::linker::definition_site_tag_target(tag)
-    {
-        (module.to_string(), name, None)
-    } else {
-        let origin = ctx.tag_origins.get(tag)?.clone();
-        (origin.module.clone(), tag, Some(origin))
-    };
+    let (module_name, name, recorded_origin) =
+        if let Some((module, name)) = witchy_syntax::linker::definition_site_tag_target(tag) {
+            (module.to_string(), name, None)
+        } else {
+            let origin = ctx.tag_origins.get(tag)?.clone();
+            (origin.module.clone(), tag, Some(origin))
+        };
     if witchy_syntax::linker::STD_MODULES.contains(&module_name.as_str()) {
         return None;
     }
@@ -553,12 +564,15 @@ fn tag_function<'a>(ctx: &'a Context, tag: &str) -> Option<(&'a Function, TagOri
         .definition_modules
         .iter()
         .find(|(candidate, _)| candidate == &module_name)?;
-    let (index, function) = module.items.iter().enumerate().find_map(|(index, item)| {
-        match item {
-            Item::Function(function) if function.name == name => Some((index, function)),
-            _ => None,
-        }
-    })?;
+    let (index, function) =
+        module
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| match item {
+                Item::Function(function) if function.name == name => Some((index, function)),
+                _ => None,
+            })?;
     let origin = recorded_origin.unwrap_or_else(|| TagOrigin {
         module: module_name,
         definition_line: module
@@ -577,7 +591,11 @@ fn is_expr_syntax_type(ty: &Type) -> bool {
         Type::Named(name, args) => {
             args.is_empty() && (name == "ExprSyntax" || name == "meta.ExprSyntax")
         }
-        Type::Dyn(_, _) | Type::Tuple(_) | Type::Fn(_, _, _) | Type::RecordCompose { .. } => false,
+        Type::Slice(_)
+        | Type::Dyn(_, _)
+        | Type::Tuple(_)
+        | Type::Fn(_, _, _)
+        | Type::RecordCompose { .. } => false,
     }
 }
 
@@ -595,9 +613,12 @@ fn expand_one(
 ) -> Result<(Expr, String, String, TagOrigin), String> {
     let where_ = || expansion_site_with_trace(ctx, tag, invocation_line, ancestry);
     let invocation = ctx.fresh_invocation.get();
-    let next_invocation = invocation
-        .checked_add(1)
-        .ok_or_else(|| format!("{}: fresh identifier invocation counter overflowed", where_()))?;
+    let next_invocation = invocation.checked_add(1).ok_or_else(|| {
+        format!(
+            "{}: fresh identifier invocation counter overflowed",
+            where_()
+        )
+    })?;
     ctx.fresh_invocation.set(next_invocation);
     let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
 
@@ -607,17 +628,14 @@ fn expand_one(
     // the tag returns. This is the hygiene split (RFC-0006): the tag never sees —
     // and so cannot mangle or capture — the author's hole expression.
     let markers: Vec<String> = (0..holes.len()).map(hole_marker).collect();
-    let (selected_tag, definition_origin) = validate_tag(ctx, tag)
-        .map_err(|reason| format!("{}: tag `{tag}` {reason}", where_()))?;
+    let (selected_tag, definition_origin) =
+        validate_tag(ctx, tag).map_err(|reason| format!("{}: tag `{tag}` {reason}", where_()))?;
     let canonical_tag = format!("{}.{}", definition_origin.module, selected_tag.name);
     let tag_name = selected_tag.name.clone();
     let mut tag_args = vec![str_list(parts), str_list(&markers)];
     match selected_tag.params.len() {
         2 => {}
-        3 => tag_args.push(Expr::Str(format!(
-            "{}:{}",
-            ctx.name, invocation_line
-        ))),
+        3 => tag_args.push(Expr::Str(format!("{}:{}", ctx.name, invocation_line))),
         count => {
             return Err(format!(
                 "{}: tag `{tag}` must accept `(parts, holes)` or `(parts, holes, origin)`, found {count} parameters",
@@ -711,9 +729,11 @@ fn expand_one(
                     if keep.contains(&(module_name.clone(), trait_.name.clone())) =>
                 {
                     for method in &trait_.methods {
-                        if method.default.as_ref().is_some_and(
-                            crate::reachability::block_contains_tagged_literal,
-                        ) {
+                        if method
+                            .default
+                            .as_ref()
+                            .is_some_and(crate::reachability::block_contains_tagged_literal)
+                        {
                             return Err(format!(
                                 "{}: tag evaluator trait default `{}.{}` contains a tagged literal; nested tags must be returned as expression syntax",
                                 where_(),
@@ -768,23 +788,20 @@ fn expand_one(
             let original_index = item_index;
             item_index += 1;
             match item {
-            Item::Function(function) => {
-                keep.contains(&(module_name.clone(), function.name.clone()))
+                Item::Function(function) => {
+                    keep.contains(&(module_name.clone(), function.name.clone()))
+                }
+                Item::Type(ty) => keep.contains(&(module_name.clone(), ty.name.clone())),
+                Item::TypeAlias { name, .. } => keep.contains(&(module_name.clone(), name.clone())),
+                Item::Trait(trait_) => keep.contains(&(module_name.clone(), trait_.name.clone())),
+                Item::Impl(_) => keep.contains(&(
+                    module_name.clone(),
+                    crate::reachability::impl_item_identity(original_index),
+                )),
+                Item::Const { name, .. } => keep.contains(&(module_name.clone(), name.clone())),
+                Item::Comptime(_) => false,
             }
-            Item::Type(ty) => keep.contains(&(module_name.clone(), ty.name.clone())),
-            Item::TypeAlias { name, .. } => keep.contains(&(module_name.clone(), name.clone())),
-            Item::Trait(trait_) => {
-                keep.contains(&(module_name.clone(), trait_.name.clone()))
-            }
-            Item::Impl(_) => keep.contains(&(
-                module_name.clone(),
-                crate::reachability::impl_item_identity(original_index),
-            )),
-            Item::Const { name, .. } => {
-                keep.contains(&(module_name.clone(), name.clone()))
-            }
-            Item::Comptime(_) => false,
-        }});
+        });
         if !module_has_reachable_items {
             module.imports.clear();
             module.from_imports.clear();
@@ -800,16 +817,14 @@ fn expand_one(
                     return true;
                 }
                 names.retain(|name| {
-                    crate::reachability::module_item_identity(
-                        &ctx.definition_modules,
-                        source,
-                        name,
-                    )
-                    .is_some_and(|identity| keep.contains(&(source.clone(), identity)))
+                    crate::reachability::module_item_identity(&ctx.definition_modules, source, name)
+                        .is_some_and(|identity| keep.contains(&(source.clone(), identity)))
                 });
                 !names.is_empty()
             });
-            module.compiler_type_syntax.retain(|syntax| !syntax.runtime_identity);
+            module
+                .compiler_type_syntax
+                .retain(|syntax| !syntax.runtime_identity);
         }
         module.import_lines.clear();
         module.item_lines.clear();
@@ -840,11 +855,7 @@ fn expand_one(
             linked_entry: None,
         },
     ));
-    let linked = witchy_syntax::linker::link(
-        modules,
-        &entry_module,
-        expand_tag_program,
-    )
+    let linked = witchy_syntax::linker::link(modules, &entry_module, expand_tag_program)
         .map_err(|e| format!("{}: {e}", where_()))?;
     witchy_types::typeck::check_comptime(&linked).map_err(|e| format!("{}: {e}", where_()))?;
     let crate::interpreter::ComptimeOutputs {
@@ -876,34 +887,37 @@ fn expand_one(
     )
     .map_err(|e| format!("{}: {e}", where_()))?;
     if !item_output.is_empty() {
-        return Err(format!("{}: a tagged literal may emit one expression, not items", where_()));
+        return Err(format!(
+            "{}: a tagged literal may emit one expression, not items",
+            where_()
+        ));
     }
     let mut e = {
-            if !lines.is_empty() {
-                return Err(format!(
-                    "{}: a typed tag produced unexpected source output",
-                    where_()
-                ));
+        if !lines.is_empty() {
+            return Err(format!(
+                "{}: a typed tag produced unexpected source output",
+                where_()
+            ));
+        }
+        if expr_output.len() != 1 {
+            return Err(format!(
+                "{}: a typed tag must emit exactly one expression, emitted {}",
+                where_(),
+                expr_output.len()
+            ));
+        }
+        match expr_output.pop().expect("one expression emission") {
+            crate::interpreter::ComptimeExprEmission::Syntax(expr) => {
+                let mut expr = *expr;
+                witchy_syntax::linker::mark_definition_site_expr(
+                    &mut expr,
+                    &definition_origin.module,
+                    &ctx.definition_modules,
+                )
+                .map_err(|error| format!("{}: {error}", where_()))?;
+                expr
             }
-            if expr_output.len() != 1 {
-                return Err(format!(
-                    "{}: a typed tag must emit exactly one expression, emitted {}",
-                    where_(),
-                    expr_output.len()
-                ));
-            }
-            match expr_output.pop().expect("one expression emission") {
-                crate::interpreter::ComptimeExprEmission::Syntax(expr) => {
-                    let mut expr = *expr;
-                    witchy_syntax::linker::mark_definition_site_expr(
-                        &mut expr,
-                        &definition_origin.module,
-                        &ctx.definition_modules,
-                    )
-                    .map_err(|error| format!("{}: {error}", where_()))?;
-                    expr
-                }
-            }
+        }
     };
 
     // Parse each hole's ORIGINAL source ONCE, into an expression carrying the
@@ -940,7 +954,9 @@ fn expand_one(
 /// (`tag-hyphen`), so tag-splice import seeding must gate on this.
 fn is_module_ident(name: &str) -> bool {
     let mut chars = name.chars();
-    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -1055,8 +1071,10 @@ fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
     wrapped.push('\n');
     let parsed = witchy_syntax::parser::parse_module(&wrapped)
         .map_err(|e| format!("does not parse as an expression: {e}"))?;
-    let Some(Item::Function(f)) =
-        parsed.items.into_iter().find(|it| matches!(it, Item::Function(f) if f.name == "__tagsplice"))
+    let Some(Item::Function(f)) = parsed
+        .items
+        .into_iter()
+        .find(|it| matches!(it, Item::Function(f) if f.name == "__tagsplice"))
     else {
         return Err("did not yield an expression".to_string());
     };
@@ -1092,11 +1110,7 @@ fn parse_hole(
     }
 }
 
-fn wrap_hole_origin(
-    hole: Expr,
-    index: usize,
-    (line, column): (u32, u32),
-) -> Expr {
+fn wrap_hole_origin(hole: Expr, index: usize, (line, column): (u32, u32)) -> Expr {
     Expr::Block(Block {
         stmts: vec![
             Stmt::Expr(Expr::Call {
@@ -1115,7 +1129,9 @@ fn wrap_hole_origin(
 }
 
 fn take_hole_origin(expr: &mut Expr) -> Option<(Expr, usize, u32, u32)> {
-    let Expr::Block(block) = expr else { return None };
+    let Expr::Block(block) = expr else {
+        return None;
+    };
     let [Stmt::Expr(Expr::Call { name, args }), Stmt::Expr(_)] = block.stmts.as_slice() else {
         return None;
     };
@@ -1212,7 +1228,11 @@ fn substitute_holes_children(
         Expr::Unary { expr, .. } => substitute_holes(expr, holes, where_)?,
         Expr::Field { base, .. } => substitute_holes(base, holes, where_)?,
         Expr::Lambda { body, .. } => substitute_holes_block(body, holes, where_)?,
-        Expr::RecordUpdate { name: _, base, fields } => {
+        Expr::RecordUpdate {
+            name: _,
+            base,
+            fields,
+        } => {
             substitute_holes(base, holes, where_)?;
             for (_, v) in fields {
                 substitute_holes(v, holes, where_)?;
@@ -1228,8 +1248,9 @@ fn substitute_holes_children(
         }
         Expr::Try(e) => substitute_holes(e, holes, where_)?,
         Expr::As { expr, .. } => substitute_holes(expr, holes, where_)?,
-        Expr::ExistentialPack { expr, .. }
-        | Expr::ExistentialUpcast { expr, .. } => substitute_holes(expr, holes, where_)?,
+        Expr::ExistentialPack { expr, .. } | Expr::ExistentialUpcast { expr, .. } => {
+            substitute_holes(expr, holes, where_)?
+        }
         Expr::ExistentialCall { receiver, args, .. } => {
             substitute_holes(receiver, holes, where_)?;
             for arg in args {
@@ -1240,7 +1261,11 @@ fn substitute_holes_children(
             substitute_holes(lhs, holes, where_)?;
             substitute_holes(rhs, holes, where_)?;
         }
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             substitute_holes(cond, holes, where_)?;
             substitute_holes_block(then_block, holes, where_)?;
             if let Some(b) = else_block {
@@ -1273,7 +1298,9 @@ fn substitute_holes_children(
             substitute_holes(base, holes, where_)?;
             substitute_holes(index, holes, where_)?;
         }
-        Expr::WhileLet { scrutinee, body, .. } => {
+        Expr::WhileLet {
+            scrutinee, body, ..
+        } => {
             substitute_holes(scrutinee, holes, where_)?;
             substitute_holes_block(body, holes, where_)?;
         }
@@ -1327,10 +1354,7 @@ mod tests {
         );
         // An escaped quote does not close the string, so its trailing newline stays
         // content, and the newline after the real closing quote is structural.
-        assert_eq!(
-            reindent_body("\"a\\\"\nb\"\nc"),
-            "\"a\\\"\nb\"\n    c"
-        );
+        assert_eq!(reindent_body("\"a\\\"\nb\"\nc"), "\"a\\\"\nb\"\n    c");
     }
 
     #[test]

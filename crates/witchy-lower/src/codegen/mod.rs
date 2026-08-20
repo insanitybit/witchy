@@ -713,6 +713,7 @@ fn rc_leaf_bias(t: &Type) -> Option<i32> {
         // (RFC-0081) A dyn value's representation is unresolved here; disable
         // ownership-sensitive extraction like an unresolved generic shape.
         Type::Dyn(_, _) => None,
+        Type::Slice(_) => Some(-1),
         Type::Tuple(_) => Some(0),
         Type::Fn(_, _, _) => Some(-1),
         Type::Named(name, args)
@@ -1913,6 +1914,7 @@ impl<'types> Codegen<'types> {
                     .collect::<Vec<_>>()
                     .join(";")
             ),
+            Type::Slice(inner) => format!("S[{}]", self.gc_lookup_type_key(inner)),
             Type::Tuple(items) => format!(
                 "T[{}]",
                 items
@@ -2157,6 +2159,7 @@ impl<'types> Codegen<'types> {
                     self.collect_unit_gc_ids_type(arg, ids);
                 }
             }
+            Type::Slice(inner) => self.collect_unit_gc_ids_type(inner, ids),
             Type::Fn(params, result, _) => {
                 for param in params {
                     self.collect_unit_gc_ids_type(param, ids);
@@ -3517,6 +3520,7 @@ impl<'types> Codegen<'types> {
                     })
                     .collect(),
             },
+            Type::Slice(inner) => Type::Slice(Box::new(Self::substitute_pattern_type(inner, bindings))),
         }
     }
 
@@ -10472,6 +10476,7 @@ impl<'types> Codegen<'types> {
                     mentions(base, name)
                         || fields.iter().any(|(_, field)| mentions(field, name))
                 }
+                Type::Slice(inner) => mentions(inner, name),
             }
         }
         self.adt_variants
@@ -10608,7 +10613,7 @@ impl<'types> Codegen<'types> {
                 .map(|t| self.eq_shape_of_type_rec(t, subst, visiting))
                 .collect::<Option<Vec<_>>>()
                 .map(EqShape::Tuple),
-            Type::Fn(..) => None,
+            Type::Slice(_) | Type::Fn(..) => None,
             Type::RecordCompose { .. } => unreachable!(
                 "compiler invariant violated: record composition must be normalized before Wasm equality-shape lowering"
             ),

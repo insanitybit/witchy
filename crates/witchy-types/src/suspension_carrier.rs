@@ -116,10 +116,22 @@ pub enum ScalarTransition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExecutorRejection {
     NoSuspensionStates,
-    BoxedState { function: String },
-    NonScalarLane { function: String, slot: String, lane: CarrierLane },
-    NonIntegerChannel { channel: String, message: String },
-    UnsupportedTransition { function: String, detail: String },
+    BoxedState {
+        function: String,
+    },
+    NonScalarLane {
+        function: String,
+        slot: String,
+        lane: CarrierLane,
+    },
+    NonIntegerChannel {
+        channel: String,
+        message: String,
+    },
+    UnsupportedTransition {
+        function: String,
+        detail: String,
+    },
 }
 
 impl SuspensionCarrierCatalog {
@@ -128,8 +140,12 @@ impl SuspensionCarrierCatalog {
         let mut states = Vec::new();
 
         for item in &typed.module().items {
-            let Item::Function(function) = item else { continue };
-            let Some(source_state) = frame_state(function) else { continue };
+            let Item::Function(function) = item else {
+                continue;
+            };
+            let Some(source_state) = frame_state(function) else {
+                continue;
+            };
             let kind = state_kind(function).ok_or_else(|| {
                 format!(
                     "compiler suspension state {source_state} on `{}` has neither entry nor segment marker",
@@ -157,7 +173,8 @@ impl SuspensionCarrierCatalog {
                         .cloned()
                         .or_else(|| parameter.ty.clone())
                         .unwrap_or_else(|| Type::Named("__Unknown".into(), Vec::new()));
-                    let lanes = direct_lanes(&ty, &definitions, &HashMap::new(), &mut HashSet::new());
+                    let lanes =
+                        direct_lanes(&ty, &definitions, &HashMap::new(), &mut HashSet::new());
                     CarrierSlot {
                         name: parameter.name.clone(),
                         convention: parameter.convention,
@@ -176,7 +193,11 @@ impl SuspensionCarrierCatalog {
             });
         }
 
-        let max_lane_width = states.iter().map(CarrierState::lane_width).max().unwrap_or(0);
+        let max_lane_width = states
+            .iter()
+            .map(CarrierState::lane_width)
+            .max()
+            .unwrap_or(0);
         let state_ids: HashMap<String, usize> = states
             .iter()
             .map(|state| (state.function.clone(), state.id))
@@ -189,12 +210,19 @@ impl SuspensionCarrierCatalog {
                     _ => None,
                 });
                 let function = function.ok_or_else(|| {
-                    format!("carrier state `{}` has no typed function body", state.function)
+                    format!(
+                        "carrier state `{}` has no typed function body",
+                        state.function
+                    )
                 })?;
                 scalar_transitions_for_function(function, &state_ids)
             })
             .collect();
-        Ok(Self { states, max_lane_width, scalar_transitions })
+        Ok(Self {
+            states,
+            max_lane_width,
+            scalar_transitions,
+        })
     }
 
     pub fn states(&self) -> &[CarrierState] {
@@ -214,9 +242,7 @@ impl SuspensionCarrierCatalog {
     /// per-task columns are integer lanes. Channel endpoints are checked from the
     /// finalized state-slot types, so `Sender(String)` cannot qualify merely
     /// because its runtime channel id is an integer wrapper.
-    pub fn scalar_executor_plan(
-        &self,
-    ) -> Result<ScalarExecutorPlan, ScalarExecutorRejection> {
+    pub fn scalar_executor_plan(&self) -> Result<ScalarExecutorPlan, ScalarExecutorRejection> {
         if self.states.is_empty() {
             return Err(ScalarExecutorRejection::NoSuspensionStates);
         }
@@ -256,12 +282,13 @@ impl SuspensionCarrierCatalog {
             .iter()
             .enumerate()
             .map(|(state_index, state)| {
-                let transitions = self.scalar_transitions[state_index]
-                    .clone()
-                    .map_err(|detail| ScalarExecutorRejection::UnsupportedTransition {
-                        function: state.function.clone(),
-                        detail,
-                    })?;
+                let transitions =
+                    self.scalar_transitions[state_index]
+                        .clone()
+                        .map_err(|detail| ScalarExecutorRejection::UnsupportedTransition {
+                            function: state.function.clone(),
+                            detail,
+                        })?;
                 let mut lane_start = 0;
                 let slots = state
                     .slots
@@ -336,9 +363,8 @@ fn scalar_transitions_for_function(
     function: &Function,
     state_ids: &HashMap<String, usize>,
 ) -> Result<Vec<ScalarTransition>, String> {
-    let terminal = terminal_block_expr(&function.body).ok_or_else(|| {
-        "state body has no terminal expression".to_string()
-    })?;
+    let terminal = terminal_block_expr(&function.body)
+        .ok_or_else(|| "state body has no terminal expression".to_string())?;
     let mut transitions = Vec::new();
     collect_scalar_transitions(terminal, state_ids, &mut transitions)?;
     if transitions.is_empty() {
@@ -367,17 +393,23 @@ fn collect_scalar_transitions(
                 .ok_or_else(|| "terminal block has no value expression".to_string())?;
             collect_scalar_transitions(terminal, state_ids, transitions)
         }
-        ast::Expr::If { then_block, else_block: Some(else_block), .. } => {
-            let then_terminal = terminal_block_expr(then_block)
-                .ok_or_else(|| "suspension-state `if` then-branch has no terminal value".to_string())?;
-            let else_terminal = terminal_block_expr(else_block)
-                .ok_or_else(|| "suspension-state `if` else-branch has no terminal value".to_string())?;
+        ast::Expr::If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } => {
+            let then_terminal = terminal_block_expr(then_block).ok_or_else(|| {
+                "suspension-state `if` then-branch has no terminal value".to_string()
+            })?;
+            let else_terminal = terminal_block_expr(else_block).ok_or_else(|| {
+                "suspension-state `if` else-branch has no terminal value".to_string()
+            })?;
             collect_scalar_transitions(then_terminal, state_ids, transitions)?;
             collect_scalar_transitions(else_terminal, state_ids, transitions)
         }
-        ast::Expr::If { else_block: None, .. } => {
-            Err("suspension-state `if` is missing an else transition".into())
-        }
+        ast::Expr::If {
+            else_block: None, ..
+        } => Err("suspension-state `if` is missing an else transition".into()),
         ast::Expr::Match { arms, .. } if !arms.is_empty() => {
             for arm in arms {
                 collect_scalar_transitions(&arm.body, state_ids, transitions)?;
@@ -394,7 +426,9 @@ fn collect_scalar_transitions(
         }
         ast::Expr::Call { name, args } if state_ids.contains_key(name) => {
             let _ = args;
-            transitions.push(ScalarTransition::Jump { target: state_ids[name] });
+            transitions.push(ScalarTransition::Jump {
+                target: state_ids[name],
+            });
             Ok(())
         }
         ast::Expr::Call { name, args } if call_family(name, "task.run") && args.len() == 1 => {
@@ -408,9 +442,7 @@ fn collect_scalar_transitions(
                 .ok_or_else(|| "`task.lazy` lambda has no terminal task".to_string())?;
             collect_scalar_transitions(terminal, state_ids, transitions)
         }
-        ast::Expr::Call { name, args }
-            if call_family(name, "task.and_then") && args.len() == 2 =>
-        {
+        ast::Expr::Call { name, args } if call_family(name, "task.and_then") && args.len() == 2 => {
             let resume = continuation_state(&args[1], state_ids)?;
             collect_task_expression(&args[0], Some(resume), state_ids, transitions)
         }
@@ -420,9 +452,7 @@ fn collect_scalar_transitions(
             transitions.push(ScalarTransition::Done);
             Ok(())
         }
-        ast::Expr::Call { name, .. } => {
-            Err(format!("unsupported terminal task call `{name}`"))
-        }
+        ast::Expr::Call { name, .. } => Err(format!("unsupported terminal task call `{name}`")),
         other => Err(format!("unsupported terminal state expression `{other:?}`")),
     }
 }
@@ -456,9 +486,8 @@ fn collect_task_expression(
         let continuation = continuation_state(&args[1], state_ids)?;
         return collect_task_expression(&args[0], Some(continuation), state_ids, transitions);
     }
-    let resume = resume.ok_or_else(|| {
-        format!("effect task `{name}` has no compiler-owned resume state")
-    })?;
+    let resume =
+        resume.ok_or_else(|| format!("effect task `{name}` has no compiler-owned resume state"))?;
     let transition = if call_family(name, "chan.channel") {
         ScalarTransition::ChannelOpen { resume }
     } else if call_family(name, "chan.send") {
@@ -497,20 +526,21 @@ fn continuation_state(
         .ok_or_else(|| format!("continuation does not tail-call a compiler state: `{terminal:?}`"))
 }
 
-fn task_entry_state(
-    expression: &ast::Expr,
-    state_ids: &HashMap<String, usize>,
-) -> Option<usize> {
+fn task_entry_state(expression: &ast::Expr, state_ids: &HashMap<String, usize>) -> Option<usize> {
     match expression {
-        ast::Expr::Block(block) => terminal_block_expr(block)
-            .and_then(|terminal| task_entry_state(terminal, state_ids)),
+        ast::Expr::Block(block) => {
+            terminal_block_expr(block).and_then(|terminal| task_entry_state(terminal, state_ids))
+        }
         ast::Expr::Call { name, .. } => state_ids.get(name).copied(),
         _ => None,
     }
 }
 
 fn call_family(name: &str, family: &str) -> bool {
-    name == family || name.strip_prefix(family).is_some_and(|suffix| suffix.starts_with("__"))
+    name == family
+        || name
+            .strip_prefix(family)
+            .is_some_and(|suffix| suffix.starts_with("__"))
 }
 
 fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
@@ -535,6 +565,7 @@ fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
                 .iter()
                 .find_map(|(_, field)| non_integer_channel(field))
         }),
+        Type::Slice(elem) => non_integer_channel(elem),
         Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
 }
@@ -557,9 +588,17 @@ fn convention_tag(convention: Convention) -> u8 {
 }
 
 fn state_kind(function: &Function) -> Option<CarrierStateKind> {
-    if function.attributes.iter().any(|attribute| attribute == FRAME_ENTRY_ATTRIBUTE) {
+    if function
+        .attributes
+        .iter()
+        .any(|attribute| attribute == FRAME_ENTRY_ATTRIBUTE)
+    {
         Some(CarrierStateKind::Entry)
-    } else if function.attributes.iter().any(|attribute| attribute == FRAME_FUNCTION_ATTRIBUTE) {
+    } else if function
+        .attributes
+        .iter()
+        .any(|attribute| attribute == FRAME_FUNCTION_ATTRIBUTE)
+    {
         Some(CarrierStateKind::Segment)
     } else {
         None
@@ -610,7 +649,7 @@ fn direct_lanes(
         Type::Named(name, arguments) => {
             flatten_nominal(name, arguments, definitions, substitutions, visiting)
         }
-        Type::Fn(_, _, _) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
+        Type::Slice(..) | Type::Fn(_, _, _) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
     }
 }
 
@@ -679,7 +718,9 @@ fn flatten_sum(
     for index in 0..width {
         let mut lane = None;
         for fields in &variants {
-            let Some(field) = fields.get(index) else { continue };
+            let Some(field) = fields.get(index) else {
+                continue;
+            };
             if lane.is_some_and(|existing| existing != *field) {
                 return None;
             }
@@ -700,12 +741,16 @@ mod tests {
             "type Id:\n    Id(Int)\n\nfn entry(id: Id, n: Int) -> Nil:\n    ()\n\nfn resume(own id: Id, own n: Int) -> Nil:\n    ()\n",
         )
         .expect("carrier fixture parses");
-        let Item::Function(entry) = &mut module.items[1] else { panic!("entry") };
+        let Item::Function(entry) = &mut module.items[1] else {
+            panic!("entry")
+        };
         entry.attributes.push(FRAME_ENTRY_ATTRIBUTE.into());
         entry
             .attributes
             .push(witchy_syntax::suspension::frame_state_attribute(4));
-        let Item::Function(segment) = &mut module.items[2] else { panic!("segment") };
+        let Item::Function(segment) = &mut module.items[2] else {
+            panic!("segment")
+        };
         segment.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
         segment
             .attributes
@@ -715,13 +760,23 @@ mod tests {
         let typed = crate::typeck::annotate_checked(module).expect("fixture type checks");
         let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("carrier catalog");
 
-        assert_eq!(catalog.states().iter().map(|state| state.id).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(
+            catalog
+                .states()
+                .iter()
+                .map(|state| state.id)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
         assert!(catalog.is_wholly_direct());
         assert_eq!(catalog.max_lane_width(), 2);
         assert_eq!(catalog.states()[0].kind, CarrierStateKind::Entry);
         assert_eq!(catalog.states()[1].kind, CarrierStateKind::Segment);
         assert_eq!(catalog.states()[1].slots[0].convention, Convention::Own);
-        assert_eq!(catalog.states()[1].slots[0].lanes, Some(vec![CarrierLane::I64]));
+        assert_eq!(
+            catalog.states()[1].slots[0].lanes,
+            Some(vec![CarrierLane::I64])
+        );
         assert_eq!(catalog.canonical_bytes()[0], 2);
         assert_eq!(catalog.canonical_bytes(), catalog.canonical_bytes());
 
@@ -755,12 +810,16 @@ mod tests {
             "type Maybe(a):\n    None\n    Some(a)\n\nfn entry(console: Console) -> Nil:\n    ()\n\nfn resume(console: Console, own value: Maybe(Int)) -> Nil:\n    ()\n",
         )
         .expect("mixed carrier fixture parses");
-        let Item::Function(entry) = &mut module.items[1] else { panic!("entry") };
+        let Item::Function(entry) = &mut module.items[1] else {
+            panic!("entry")
+        };
         entry.attributes.push(FRAME_ENTRY_ATTRIBUTE.into());
         entry
             .attributes
             .push(witchy_syntax::suspension::frame_state_attribute(0));
-        let Item::Function(segment) = &mut module.items[2] else { panic!("segment") };
+        let Item::Function(segment) = &mut module.items[2] else {
+            panic!("segment")
+        };
         segment.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
         segment
             .attributes
@@ -771,12 +830,17 @@ mod tests {
 
         assert!(catalog.is_wholly_direct());
         assert_eq!(catalog.max_lane_width(), 3);
-        assert_eq!(catalog.states()[0].slots[0].lanes, Some(vec![CarrierLane::ExternRef]));
+        assert_eq!(
+            catalog.states()[0].slots[0].lanes,
+            Some(vec![CarrierLane::ExternRef])
+        );
         assert_eq!(
             catalog.states()[1].slots[1].lanes,
             Some(vec![CarrierLane::I64, CarrierLane::I64]),
         );
-        let scalar = catalog.scalar_executor_plan().expect("scalar mixed-lane plan");
+        let scalar = catalog
+            .scalar_executor_plan()
+            .expect("scalar mixed-lane plan");
         assert_eq!(scalar.state_count, 2);
         assert_eq!(scalar.max_lane_width, 3);
         assert_eq!(scalar.states[1].slots[0].lane_start, 0);
@@ -786,10 +850,9 @@ mod tests {
 
     #[test]
     fn scalar_executor_qualification_rejects_float_and_non_integer_channels() {
-        let mut float_module = witchy_syntax::parser::parse_module(
-            "fn resume(value: Float) -> Nil:\n    ()\n",
-        )
-        .expect("float fixture parses");
+        let mut float_module =
+            witchy_syntax::parser::parse_module("fn resume(value: Float) -> Nil:\n    ()\n")
+                .expect("float fixture parses");
         let Item::Function(float_state) = &mut float_module.items[0] else {
             panic!("float state")
         };
@@ -797,10 +860,10 @@ mod tests {
         float_state
             .attributes
             .push(witchy_syntax::suspension::frame_state_attribute(0));
-        let float_typed = crate::typeck::annotate_checked(float_module)
-            .expect("float fixture type checks");
-        let float_catalog = SuspensionCarrierCatalog::from_typed(&float_typed)
-            .expect("float catalog");
+        let float_typed =
+            crate::typeck::annotate_checked(float_module).expect("float fixture type checks");
+        let float_catalog =
+            SuspensionCarrierCatalog::from_typed(&float_typed).expect("float catalog");
         assert_eq!(
             float_catalog.scalar_executor_plan(),
             Err(ScalarExecutorRejection::NonScalarLane {
@@ -817,14 +880,16 @@ mod tests {
         let Item::Function(channel_state) = &mut channel_module.items[1] else {
             panic!("channel state")
         };
-        channel_state.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        channel_state
+            .attributes
+            .push(FRAME_FUNCTION_ATTRIBUTE.into());
         channel_state
             .attributes
             .push(witchy_syntax::suspension::frame_state_attribute(0));
-        let channel_typed = crate::typeck::annotate_checked(channel_module)
-            .expect("channel fixture type checks");
-        let channel_catalog = SuspensionCarrierCatalog::from_typed(&channel_typed)
-            .expect("channel catalog");
+        let channel_typed =
+            crate::typeck::annotate_checked(channel_module).expect("channel fixture type checks");
+        let channel_catalog =
+            SuspensionCarrierCatalog::from_typed(&channel_typed).expect("channel catalog");
         assert!(channel_catalog.is_wholly_direct());
         assert_eq!(
             channel_catalog.scalar_executor_plan(),

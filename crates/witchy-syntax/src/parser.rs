@@ -1425,6 +1425,11 @@ impl Parser {
         if self.eat(&Tok::DotLBracket) {
             return self.anon_union_type();
         }
+        if self.eat(&Tok::LBracket) {
+            let elem = self.ty()?;
+            self.expect(&Tok::RBracket)?;
+            return Ok(Type::Slice(Box::new(elem)));
+        }
         if self.eat(&Tok::LParen) {
             let mut types = Vec::new();
             while !self.at(&Tok::RParen) {

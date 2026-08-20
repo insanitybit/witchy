@@ -93,7 +93,10 @@ pub(crate) fn type_info_expr(t: &TypeDef) -> Expr {
         name: "meta.TypeInfo".into(),
         args: vec![
             s(&t.name),
-            Expr::Ctor { name: kind.into(), args: Vec::new() },
+            Expr::Ctor {
+                name: kind.into(),
+                args: Vec::new(),
+            },
             str_list(&t.params),
             Expr::List(fields),
             Expr::List(variants),
@@ -110,13 +113,19 @@ fn type_expr(t: &Type) -> Expr {
         // even though the runtime value still has the viewed inner shape. Keeping
         // it structured lets generators distinguish `View(T, 'left)` from
         // `View(T, 'right)` without treating either lifetime as a runtime type.
-        Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), inner) => Expr::Ctor {
-            name: "meta.TReference".into(),
-            args: vec![Expr::Str("shared".into()), type_expr(inner), s(lifetime)],
-        },
+        Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), inner) => {
+            Expr::Ctor {
+                name: "meta.TReference".into(),
+                args: vec![Expr::Str("shared".into()), type_expr(inner), s(lifetime)],
+            }
+        }
         Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => Expr::Ctor {
             name: "meta.TReference".into(),
-            args: vec![Expr::Str("mut".into()), type_expr(inner), Expr::Str(lifetime.clone())],
+            args: vec![
+                Expr::Str("mut".into()),
+                type_expr(inner),
+                Expr::Str(lifetime.clone()),
+            ],
         },
         Type::Qualified(q, inner) => Expr::Ctor {
             name: "meta.TQualified".into(),
@@ -138,6 +147,13 @@ fn type_expr(t: &Type) -> Expr {
         Type::RecordCompose { .. } => Expr::Ctor {
             name: "meta.TNamed".into(),
             args: vec![s(&crate::format::type_str(t)), Expr::List(Vec::new())],
+        },
+        Type::Slice(elem) => Expr::Ctor {
+            name: "meta.TNamed".into(),
+            args: vec![
+                s(&crate::format::type_str(t)),
+                Expr::List(vec![type_expr(elem)]),
+            ],
         },
         Type::Tuple(ts) => Expr::Ctor {
             name: "meta.TTuple".into(),
@@ -196,10 +212,7 @@ mod tests {
 
     #[test]
     fn normalized_typeinfo_includes_mixed_explicit_and_inferred_params() {
-        let definition = parsed_type(
-            "type Mixed(a):\n    first: a\n    second: b\n",
-            "Mixed",
-        );
+        let definition = parsed_type("type Mixed(a):\n    first: a\n    second: b\n", "Mixed");
         let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
             .expect("normalize reflected type");
         assert_eq!(normalized.params, ["a", "b"]);
@@ -216,8 +229,12 @@ mod tests {
         assert_eq!(normalized.params, ["a", "'left", "'right", "b"]);
 
         let info = type_info_expr(&normalized);
-        let Expr::Ctor { args, .. } = info else { panic!("expected TypeInfo constructor") };
-        let Expr::List(parameters) = &args[2] else { panic!("expected parameter list") };
+        let Expr::Ctor { args, .. } = info else {
+            panic!("expected TypeInfo constructor")
+        };
+        let Expr::List(parameters) = &args[2] else {
+            panic!("expected parameter list")
+        };
         assert_eq!(
             parameters,
             &vec![
@@ -227,11 +244,19 @@ mod tests {
                 Expr::Str("b".into()),
             ]
         );
-        let Expr::List(fields) = &args[3] else { panic!("expected reflected fields") };
-        let Expr::Ctor { args: first_field, .. } = &fields[0] else {
+        let Expr::List(fields) = &args[3] else {
+            panic!("expected reflected fields")
+        };
+        let Expr::Ctor {
+            args: first_field, ..
+        } = &fields[0]
+        else {
             panic!("expected first reflected field")
         };
-        let Expr::Ctor { name, args: borrow, .. } = &first_field[1] else {
+        let Expr::Ctor {
+            name, args: borrow, ..
+        } = &first_field[1]
+        else {
             panic!("expected structured borrowed field relation")
         };
         assert_eq!(name, "meta.TReference");

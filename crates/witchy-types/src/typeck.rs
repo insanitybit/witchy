@@ -413,7 +413,7 @@ fn at_loc(e: TypeError, line: u32, func: &str, home: &str) -> TypeError {
 /// names and their zero-arity/right-bearing shapes come from
 /// `witchy-cap-model`.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "List", "Option",
+    "Int", "Float", "Duration", "String", "str", "Bytes", "__Msg", "Bool", "Nil", "List", "Option",
     "Result", "Dict",
 ];
 
@@ -427,7 +427,7 @@ fn builtin_type_arity(name: &str) -> Option<usize> {
     match name {
         "List" | "Option" | "Set" | "Iter" => Some(1),
         "Result" | "Dict" => Some(2),
-        "Int" | "Float" | "Duration" | "String" | "Bytes" | "__Msg" | "Bool" | "Nil"
+        "Int" | "Float" | "Duration" | "String" | "str" | "Bytes" | "__Msg" | "Bool" | "Nil"
         | "Ordering" => Some(0),
         _ => None,
     }
@@ -552,6 +552,7 @@ fn collect_parameter_lifetime_binders(t: &ast::Type, lifetimes: &mut HashSet<Str
             collect_parameter_lifetime_binders(inner, lifetimes);
         }
         ast::Type::Qualified(_, inner) => collect_parameter_lifetime_binders(inner, lifetimes),
+        ast::Type::Slice(inner) => collect_parameter_lifetime_binders(inner, lifetimes),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             for argument in arguments {
                 collect_parameter_lifetime_binders(argument, lifetimes);
@@ -596,6 +597,12 @@ fn validate_nominal_lifetime_uses(
             )
         }
         ast::Type::Qualified(_, inner) => validate_nominal_lifetime_uses(
+            inner,
+            lifetimes,
+            context,
+            borrowed_qualifiers_must_be_bound,
+        ),
+        ast::Type::Slice(inner) => validate_nominal_lifetime_uses(
             inner,
             lifetimes,
             context,
@@ -675,6 +682,7 @@ fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
             collect_declared_lifetime_uses(inner, used);
         }
         ast::Type::Qualified(_, inner) => collect_declared_lifetime_uses(inner, used),
+        ast::Type::Slice(inner) => collect_declared_lifetime_uses(inner, used),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             for argument in arguments {
                 if let Some(lifetime) = lifetime_argument_name(argument) {
@@ -703,6 +711,7 @@ fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
             _,
         ) => true,
         ast::Type::Qualified(_, inner) => type_contains_nominal_lifetime_relation(inner),
+        ast::Type::Slice(inner) => type_contains_nominal_lifetime_relation(inner),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             arguments.iter().any(|argument| {
                 lifetime_argument_name(argument).is_some()
@@ -731,6 +740,7 @@ fn type_contains_explicit_reference_relation(t: &ast::Type) -> bool {
             _,
         ) => true,
         ast::Type::Qualified(_, inner) => type_contains_explicit_reference_relation(inner),
+        ast::Type::Slice(inner) => type_contains_explicit_reference_relation(inner),
         ast::Type::Named(_, arguments)
         | ast::Type::Tuple(arguments)
         | ast::Type::Dyn(_, arguments) => arguments
@@ -762,6 +772,9 @@ fn borrowed_nominal_relation_name<'a>(
         ast::Type::Qualified(_, inner) => {
             borrowed_nominal_relation_name(inner, lifetime_nominals)
         }
+        ast::Type::Slice(inner) => {
+            borrowed_nominal_relation_name(inner, lifetime_nominals)
+        }
         ast::Type::Tuple(items) => items
             .iter()
             .find_map(|item| borrowed_nominal_relation_name(item, lifetime_nominals)),
@@ -791,6 +804,9 @@ fn reject_borrowed_nominal_containers(
 ) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => {
+            reject_borrowed_nominal_containers(inner, lifetime_nominals, context)
+        }
+        ast::Type::Slice(inner) => {
             reject_borrowed_nominal_containers(inner, lifetime_nominals, context)
         }
         ast::Type::Tuple(items) => items
@@ -1186,6 +1202,7 @@ fn type_mentions_reference_surface(ty: &ast::Type) -> bool {
             _,
         ) => true,
         ast::Type::Qualified(_, inner) => type_mentions_reference_surface(inner),
+        ast::Type::Slice(inner) => type_mentions_reference_surface(inner),
         ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
             arguments.iter().any(|argument| {
                 lifetime_argument_name(argument).is_some() || type_mentions_reference_surface(argument)
@@ -1213,6 +1230,9 @@ fn validate_type(
     match t {
         ast::Type::Qualified(_, inner) => {
             validate_type(inner, known, arities, nominal_parameters)
+        }
+        ast::Type::Slice(elem) => {
+            validate_type(elem, known, arities, nominal_parameters)
         }
         // (RFC-0081) The dyn head is a trait name validated by its own pass;
         // only the type arguments are ordinary types.
@@ -1363,6 +1383,7 @@ fn authority_taint_type(
 ) -> Option<String> {
     match ty {
         ast::Type::Qualified(_, inner) => authority_taint_type(inner, defs, seen),
+        ast::Type::Slice(inner) => authority_taint_type(inner, defs, seen),
         // (RFC-0081) A dyn value is never itself a capability; only its type
         // arguments can carry taint.
         ast::Type::Dyn(_, args) => args.iter().find_map(|a| authority_taint_type(a, defs, seen)),
@@ -1405,6 +1426,7 @@ fn reject_structural_authority_type(
 ) -> Result<(), TypeError> {
     match ty {
         ast::Type::Qualified(_, inner) => reject_structural_authority_type(inner, defs),
+        ast::Type::Slice(inner) => reject_structural_authority_type(inner, defs),
         ast::Type::Dyn(_, args) => {
             args.iter().try_for_each(|arg| reject_structural_authority_type(arg, defs))
         }
@@ -1467,6 +1489,7 @@ fn reject_borrowed_capability_views(
             reject_borrowed_capability_views(inner, storage)
         }
         ast::Type::Qualified(_, inner) => reject_borrowed_capability_views(inner, storage),
+        ast::Type::Slice(inner) => reject_borrowed_capability_views(inner, storage),
         ast::Type::Named(_, arguments)
         | ast::Type::Tuple(arguments)
         | ast::Type::Dyn(_, arguments) => arguments
@@ -1496,10 +1519,54 @@ fn validate_type_model(
     storage: &ReferenceStorageClassifier<'_>,
 ) -> Result<(), TypeError> {
     validate_type(t, known, arities, nominal_parameters)?;
+    reject_bare_unsized_types(t)?;
     reject_owned_qualifiers_inside_references(t)?;
     reject_contradictory_exclusive_reference_handle_qualifiers(t)?;
     reject_structural_authority_type(t, type_defs)?;
     reject_borrowed_capability_views(t, storage)
+}
+
+fn reject_bare_unsized_types(t: &ast::Type) -> Result<(), TypeError> {
+    fn visit(t: &ast::Type, under_reference: bool) -> Result<(), TypeError> {
+        match t {
+            ast::Type::Qualified(
+                ast::TypeQual::Borrow(_)
+                | ast::TypeQual::LegacyBorrow(_)
+                | ast::TypeQual::BorrowMut(_),
+                inner,
+            ) => visit(inner, true),
+            ast::Type::Qualified(_, inner) => visit(inner, under_reference),
+            ast::Type::Slice(elem) => {
+                if !under_reference {
+                    return terr(format!(
+                        "slice type `[{}]` cannot appear as a bare value; use a reference type like `&[{}]`",
+                        witchy_syntax::format::type_str(elem),
+                        witchy_syntax::format::type_str(elem)
+                    ));
+                }
+                visit(elem, false)
+            }
+            ast::Type::Named(name, args) => {
+                if name == "str" && !under_reference {
+                    return terr(
+                        "string slice `str` cannot appear as a bare value; use a reference type like `&str` or owned `String`".to_string()
+                    );
+                }
+                args.iter().try_for_each(|arg| visit(arg, false))
+            }
+            ast::Type::Tuple(items) => items.iter().try_for_each(|item| visit(item, false)),
+            ast::Type::Dyn(_, args) => args.iter().try_for_each(|arg| visit(arg, false)),
+            ast::Type::Fn(params, ret, _) => {
+                params.iter().try_for_each(|p| visit(p, false))?;
+                visit(ret, false)
+            }
+            ast::Type::RecordCompose { base, fields } => {
+                visit(base, false)?;
+                fields.iter().try_for_each(|(_, ty)| visit(ty, false))
+            }
+        }
+    }
+    visit(t, false)
 }
 
 /// `frozen`, `unique`, and `local unique` describe owned storage or a reference
@@ -1529,6 +1596,7 @@ fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeEr
                 visit(inner)
             }
             ast::Type::Qualified(_, inner) => visit(inner),
+            ast::Type::Slice(inner) => visit(inner),
             ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
                 arguments.iter().try_for_each(visit)
             }
@@ -1577,6 +1645,7 @@ fn reject_contradictory_exclusive_reference_handle_qualifiers(t: &ast::Type) -> 
         }
         match t {
             ast::Type::Qualified(_, inner) => visit(inner),
+            ast::Type::Slice(inner) => visit(inner),
             ast::Type::Named(_, arguments)
             | ast::Type::Tuple(arguments)
             | ast::Type::Dyn(_, arguments) => arguments.iter().try_for_each(visit),
@@ -2335,6 +2404,7 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
                     .find_map(|(_, ty)| packed_list_in_type(ty, packed_names))
             }),
         ast::Type::Qualified(_, inner) => packed_list_in_type(inner, packed_names),
+        ast::Type::Slice(elem) => packed_list_in_type(elem, packed_names),
     }
 }
 
@@ -2409,6 +2479,7 @@ fn transparent_externref_brand_field_cap(
 ) -> Option<String> {
     match t {
         ast::Type::Qualified(_, inner) => transparent_externref_brand_field_cap(inner, defs, seen),
+        ast::Type::Slice(inner) => transparent_externref_brand_field_cap(inner, defs, seen),
         ast::Type::Named(n, args) if args.is_empty() => transparent_externref_brand_cap(n, defs, seen),
         ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
         // (RFC-0081) A dyn type is never a transparent externref brand.
@@ -2486,6 +2557,9 @@ fn reject_cap_slot_boundary(
 ) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => {
+            reject_cap_slot_boundary(inner, _defs, storage, ctx, position)
+        }
+        ast::Type::Slice(inner) => {
             reject_cap_slot_boundary(inner, _defs, storage, ctx, position)
         }
         // (RFC-0081) A dyn value is not itself a capability slot; only its type
@@ -3097,6 +3171,7 @@ fn type_host_taint<'a>(
             args.iter().find_map(|a| type_host_taint(a, types, seen))
         }
         ast::Type::Qualified(_, inner) => type_host_taint(inner, types, seen),
+        ast::Type::Slice(inner) => type_host_taint(inner, types, seen),
         // (RFC-0081) A dyn value is never itself a capability; scan args only.
         ast::Type::Dyn(_, args) => args.iter().find_map(|a| type_host_taint(a, types, seen)),
         ast::Type::Tuple(ts) => ts.iter().find_map(|t| type_host_taint(t, types, seen)),
@@ -3960,6 +4035,10 @@ impl Checker {
             // (RFC-0025/0026) Ownership/immutability qualifiers are compile-time
             // contracts with no runtime type — lower to the inner type.
             ast::Type::Qualified(_, inner) => return self.to_ty(inner),
+            ast::Type::Slice(elem) => {
+                let inner = self.to_ty(elem);
+                return Ty::Named("Slice".into(), vec![inner]);
+            }
             ast::Type::Named(name, args) => (name, args),
             ast::Type::Tuple(ts) => {
                 if ts.is_empty() {
@@ -4000,6 +4079,7 @@ impl Checker {
         if args.is_empty()
             && name.chars().next().is_some_and(|c| c.is_lowercase())
             && !name.contains('.')
+            && name != "str"
             && self.current_typarams.contains_key(name.as_str())
         {
             return Ty::Var(self.current_typarams[name.as_str()]);
@@ -4013,6 +4093,10 @@ impl Checker {
     fn to_ty_generic(&mut self, t: &ast::Type, vars: &mut HashMap<String, Ty>) -> Ty {
         match t {
             ast::Type::Qualified(_, inner) => self.to_ty_generic(inner, vars),
+            ast::Type::Slice(elem) => {
+                let inner = self.to_ty_generic(elem, vars);
+                Ty::Named("Slice".into(), vec![inner])
+            }
             ast::Type::Tuple(ts) => {
                 if ts.is_empty() {
                     return Ty::Unit;
@@ -4044,6 +4128,7 @@ impl Checker {
                 if args.is_empty()
                     && name.chars().next().is_some_and(|c| c.is_lowercase())
                     && !name.contains('.')
+                    && name != "str"
                 {
                     if let Some(v) = vars.get(name.as_str()) {
                         return v.clone();
@@ -10582,6 +10667,7 @@ fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
     ) -> bool {
         match ty {
             ast::Type::Qualified(_, inner) => stores_parameter(inner, parameter, positions),
+            ast::Type::Slice(elem) => stores_parameter(elem, parameter, positions),
             ast::Type::Named(name, arguments) => {
                 if name == parameter && arguments.is_empty() {
                     return true;
@@ -10620,6 +10706,9 @@ fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
         match ty {
             ast::Type::Qualified(_, inner) => {
                 carries(inner, names, positions, local_parameters)
+            }
+            ast::Type::Slice(elem) => {
+                carries(elem, names, positions, local_parameters)
             }
             ast::Type::Named(name, arguments) => {
                 if local_parameters.contains(name) && arguments.is_empty() {

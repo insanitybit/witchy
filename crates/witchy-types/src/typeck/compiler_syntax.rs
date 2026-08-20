@@ -12,7 +12,7 @@
 use witchy_syntax::ast::{self, ImplOrigin, Item, Module};
 
 use super::{
-    anon_union_synthetic_variants, detect_entry_module, dequalify_home, diagnostic_callable_name,
+    anon_union_synthetic_variants, dequalify_home, detect_entry_module, diagnostic_callable_name,
     is_anon_record_synthetic_name, terr, TypeError,
 };
 
@@ -39,27 +39,29 @@ pub(super) fn compiler_syntax_allowed_module(module: &str) -> bool {
 }
 
 fn decl_module<'a>(name: &'a str, entry_module: &'a str) -> &'a str {
-    name.rsplit_once('.').map_or(entry_module, |(module, _)| module)
+    name.rsplit_once('.')
+        .map_or(entry_module, |(module, _)| module)
 }
 
 fn compiler_syntax_in_ast_type(t: &ast::Type) -> Option<&'static str> {
     match t {
         ast::Type::Qualified(_, inner) => compiler_syntax_in_ast_type(inner),
+        ast::Type::Slice(inner) => compiler_syntax_in_ast_type(inner),
         ast::Type::Tuple(items) => items.iter().find_map(compiler_syntax_in_ast_type),
         ast::Type::Fn(params, ret, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(compiler_syntax_in_ast_type),
         ast::Type::Dyn(_, args) => args.iter().find_map(compiler_syntax_in_ast_type),
-        ast::Type::RecordCompose { base, fields } => compiler_syntax_in_ast_type(base)
-            .or_else(|| {
+        ast::Type::RecordCompose { base, fields } => {
+            compiler_syntax_in_ast_type(base).or_else(|| {
                 fields
                     .iter()
                     .find_map(|(_, ty)| compiler_syntax_in_ast_type(ty))
-            }),
-        ast::Type::Named(name, args) => {
-            compiler_syntax_type_name(name).or_else(|| args.iter().find_map(compiler_syntax_in_ast_type))
+            })
         }
+        ast::Type::Named(name, args) => compiler_syntax_type_name(name)
+            .or_else(|| args.iter().find_map(compiler_syntax_in_ast_type)),
     }
 }
 
@@ -72,7 +74,11 @@ fn reject_runtime_compiler_syntax_ast_type(
         return Ok(());
     }
     if let Some(name) = compiler_syntax_in_ast_type(t) {
-        let module = if home_module.is_empty() { "this module" } else { home_module };
+        let module = if home_module.is_empty() {
+            "this module"
+        } else {
+            home_module
+        };
         return terr(format!(
             "compiler syntax type `{name}` is compile-time-only; `{context}` is in runtime module `{module}`. Use it only inside `comptime:`/`std/meta` helpers and pass generated items to `emit_item`"
         ));
@@ -94,7 +100,11 @@ pub(super) fn check_compiler_syntax_declarations(module: &Module) -> Result<(), 
                         reject_runtime_compiler_syntax_ast_type(
                             ty,
                             home,
-                            &format!("parameter `{}` of `{}`", p.name, diagnostic_callable_name(&f.name)),
+                            &format!(
+                                "parameter `{}` of `{}`",
+                                p.name,
+                                diagnostic_callable_name(&f.name)
+                            ),
                         )?;
                     }
                 }
@@ -110,10 +120,10 @@ pub(super) fn check_compiler_syntax_declarations(module: &Module) -> Result<(), 
                 let home = decl_module(&t.name, &entry_module);
                 for variant in &t.variants {
                     for (idx, field) in variant.fields.iter().enumerate() {
-                        let field_name = variant
-                            .field_names
-                            .get(idx)
-                            .map_or_else(|| format!("field {}", idx + 1), |name| format!("field `{name}`"));
+                        let field_name = variant.field_names.get(idx).map_or_else(
+                            || format!("field {}", idx + 1),
+                            |name| format!("field `{name}`"),
+                        );
                         reject_runtime_compiler_syntax_ast_type(
                             field,
                             home,
@@ -130,7 +140,10 @@ pub(super) fn check_compiler_syntax_declarations(module: &Module) -> Result<(), 
                             reject_runtime_compiler_syntax_ast_type(
                                 ty,
                                 home,
-                                &format!("parameter `{}` of trait method `{}`", p.name, method.name),
+                                &format!(
+                                    "parameter `{}` of trait method `{}`",
+                                    p.name, method.name
+                                ),
                             )?;
                         }
                     }
@@ -187,10 +200,14 @@ pub(super) fn is_compiler_generated_structural_impl(im: &ast::ImplDef) -> bool {
         .as_deref()
         .map(|name| name.rsplit('.').next().unwrap_or(name))
     {
-        Some("Reflect" | "PartialEq" | "Eq")
-            if is_anon_record_synthetic_name(&im.type_name) => true,
+        Some("Reflect" | "PartialEq" | "Eq") if is_anon_record_synthetic_name(&im.type_name) => {
+            true
+        }
         Some("Show" | "Reflect" | "PartialEq")
-            if anon_union_synthetic_variants(&im.type_name).is_some() => true,
+            if anon_union_synthetic_variants(&im.type_name).is_some() =>
+        {
+            true
+        }
         _ => false,
     }
 }

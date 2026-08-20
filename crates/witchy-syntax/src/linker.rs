@@ -198,6 +198,7 @@ pub fn call_site_type_source(name: &str, args: &[Type]) -> String {
     fn project(ty: &mut Type) {
         match ty {
             Type::Qualified(_, inner) => project(inner),
+            Type::Slice(elem) => project(elem),
             Type::Named(name, args) => {
                 if let Some(target) = call_site_type_target(name) {
                     *name = target.to_string();
@@ -317,6 +318,7 @@ fn type_mentions_reference(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_reference(inner),
+        Type::Slice(elem) => type_mentions_reference(elem),
         Type::Named(_, args) | Type::Tuple(args) | Type::Dyn(_, args) => {
             args.iter().any(type_mentions_reference)
         }
@@ -363,6 +365,7 @@ fn reference_bearing_type_names(modules: &[(String, Module)]) -> HashSet<String>
 fn type_mentions_named_reference(ty: &Type, bearing: &HashSet<String>) -> bool {
     match ty {
         Type::Qualified(_, inner) => type_mentions_named_reference(inner, bearing),
+        Type::Slice(elem) => type_mentions_named_reference(elem, bearing),
         Type::Named(name, args) => {
             bearing.contains(name) || args.iter().any(|arg| type_mentions_named_reference(arg, bearing))
         }
@@ -383,6 +386,7 @@ fn type_mentions_named_reference(ty: &Type, bearing: &HashSet<String>) -> bool {
 fn named_reference_type<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&'a str> {
     match ty {
         Type::Qualified(_, inner) => named_reference_type(inner, bearing),
+        Type::Slice(elem) => named_reference_type(elem, bearing),
         Type::Named(name, args) => bearing
             .contains(name)
             .then_some(name.as_str())
@@ -476,6 +480,7 @@ fn reference_bearing_trait_names(
 fn named_reference_trait<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&'a str> {
     match ty {
         Type::Qualified(_, inner) => named_reference_trait(inner, bearing),
+        Type::Slice(elem) => named_reference_trait(elem, bearing),
         Type::Dyn(name, args) => bearing
             .contains(name)
             .then_some(name.as_str())
@@ -1402,6 +1407,9 @@ fn canonicalize_generator_receiver_type(ty: &mut Type, local: &str, canonical: &
         }
         Type::Qualified(_, inner) => {
             canonicalize_generator_receiver_type(inner, local, canonical);
+        }
+        Type::Slice(elem) => {
+            canonicalize_generator_receiver_type(elem, local, canonical);
         }
     }
 }
@@ -4018,6 +4026,7 @@ fn check_reserved_type(
             check_reserved_type(module_name, ret, generated_anon_types)?;
         }
         Type::Qualified(_, inner) => check_reserved_type(module_name, inner, generated_anon_types)?,
+        Type::Slice(inner) => check_reserved_type(module_name, inner, generated_anon_types)?,
     }
     Ok(())
 }

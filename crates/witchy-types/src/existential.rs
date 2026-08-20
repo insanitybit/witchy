@@ -13,12 +13,11 @@ use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use witchy_syntax::{format, intrinsics};
 
 use crate::runtime_type::{
-    RuntimeDeclarationCatalog, RuntimeMethodArgumentDescriptor,
-    RuntimeMethodCapabilityDescriptor, RuntimeMethodDescriptor,
-    RuntimeMethodParameterDescriptor, RuntimeTypeError, RuntimeTypePlan, RuntimeTypeShape,
-    RuntimeTypeIdentity,
+    RuntimeDeclarationCatalog, RuntimeMethodArgumentDescriptor, RuntimeMethodCapabilityDescriptor,
+    RuntimeMethodDescriptor, RuntimeMethodParameterDescriptor, RuntimeTypeError,
+    RuntimeTypeIdentity, RuntimeTypePlan, RuntimeTypeShape,
 };
-use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
+use crate::typeck::{ty_to_ast, TypeTable, TypedModule};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
 
 type ExistentialRequest = (Type, Type);
@@ -68,7 +67,6 @@ impl PreparedExistentials {
     pub fn into_parts(self) -> (Module, TypeTable, WitnessPlan) {
         (self.module, self.table, self.witnesses)
     }
-
 }
 
 /// Lower every concrete-to-existential construction in one final typed module.
@@ -91,12 +89,7 @@ pub fn lower_explicit_packs_for_build(
     typed: TypedModule,
     catalog: &WitnessCatalog,
 ) -> Result<PreparedExistentials, String> {
-    lower_explicit_packs_inner(
-        typed,
-        catalog,
-        None,
-        ReannotationPolicy::BuildEntrypoint,
-    )
+    lower_explicit_packs_inner(typed, catalog, None, ReannotationPolicy::BuildEntrypoint)
 }
 
 pub fn lower_explicit_packs_with_runtime_types(
@@ -146,18 +139,20 @@ fn lower_explicit_packs_inner(
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
     let access_facts = crate::access::checked_facts(typed.module(), typed.table())
         .map_err(|error| error.to_string())?;
-    let dynamic_methods = collect_dynamic_method_definitions(
-        typed.module(),
-        runtime_catalog,
-        &access_facts,
-    )?;
+    let dynamic_methods =
+        collect_dynamic_method_definitions(typed.module(), runtime_catalog, &access_facts)?;
     let mut dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
     for method in &dynamic_methods {
         dynamic_types.push(method.receiver.clone());
-        dynamic_types.extend(method.parameters.iter().filter_map(|parameter| match parameter {
-            DynamicMethodParameterDefinition::Value(ty) => Some(ty.clone()),
-            DynamicMethodParameterDefinition::Capability(_) => None,
-        }));
+        dynamic_types.extend(
+            method
+                .parameters
+                .iter()
+                .filter_map(|parameter| match parameter {
+                    DynamicMethodParameterDefinition::Value(ty) => Some(ty.clone()),
+                    DynamicMethodParameterDefinition::Capability(_) => None,
+                }),
+        );
         dynamic_types.push(method.result.clone());
     }
     let mut runtime_types = match runtime_catalog {
@@ -199,18 +194,22 @@ fn lower_explicit_packs_inner(
     .map_err(|error| error.to_string())?;
     let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
-    let (module, table, result) = typed.rewrite_into_module(|table, module| {
-        rewrite_module(module, table, &witnesses)
-    });
+    let (module, table, result) =
+        typed.rewrite_into_module(|table, module| rewrite_module(module, table, &witnesses));
     result?;
-    Ok(PreparedExistentials { module, table, witnesses, runtime_types })
+    Ok(PreparedExistentials {
+        module,
+        table,
+        witnesses,
+        runtime_types,
+    })
 }
 
 mod dynamic;
 
 use dynamic::{
-    DynamicMethodParameterDefinition, collect_dynamic_method_definitions, collect_dynamic_types,
-    prepare_dynamic_methods, prepare_dynamic_trait_relations, rewrite_dynamic_module,
+    collect_dynamic_method_definitions, collect_dynamic_types, prepare_dynamic_methods,
+    prepare_dynamic_trait_relations, rewrite_dynamic_module, DynamicMethodParameterDefinition,
 };
 fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<ExistentialRequest>, String> {
     let Some((existential, concrete)) = table.existential_pack(expr) else {
@@ -219,11 +218,9 @@ fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<ExistentialRequ
     let existential = ty_to_ast(existential).ok_or_else(|| {
         "existential construction requires one fully resolved target type".to_string()
     })?;
-    let concrete = ty_to_ast(concrete)
-        .ok_or_else(|| {
-            "existential construction requires one fully resolved concrete payload type"
-                .to_string()
-        })?;
+    let concrete = ty_to_ast(concrete).ok_or_else(|| {
+        "existential construction requires one fully resolved concrete payload type".to_string()
+    })?;
     Ok(Some((
         existential.unqualified().clone(),
         concrete.unqualified().clone(),
@@ -246,10 +243,7 @@ fn upcast_request(table: &TypeTable, expr: &Expr) -> Result<Option<ExistentialRe
     )))
 }
 
-fn collect_requests(
-    module: &Module,
-    table: &TypeTable,
-) -> Result<CollectedRequests, String> {
+fn collect_requests(module: &Module, table: &TypeTable) -> Result<CollectedRequests, String> {
     let mut requests = Vec::new();
     let mut upcasts = Vec::new();
     visit_module_exprs::<String>(module, &mut |expr| {
@@ -281,6 +275,7 @@ fn type_contains_unresolved_variable(ty: &Type) -> bool {
                 || type_contains_unresolved_variable(result)
         }
         Type::Qualified(_, inner) => type_contains_unresolved_variable(inner),
+        Type::Slice(inner) => type_contains_unresolved_variable(inner),
         Type::RecordCompose { base, fields } => {
             type_contains_unresolved_variable(base)
                 || fields
@@ -354,11 +349,7 @@ fn rewrite_block(
     Ok(())
 }
 
-fn rewrite_expr(
-    expr: &mut Expr,
-    table: &TypeTable,
-    witnesses: &WitnessPlan,
-) -> Result<(), String> {
+fn rewrite_expr(expr: &mut Expr, table: &TypeTable, witnesses: &WitnessPlan) -> Result<(), String> {
     let request = pack_request(table, expr)?;
     let upcast = upcast_request(table, expr)?;
 
@@ -432,7 +423,11 @@ fn rewrite_expr(
             rewrite_expr(lhs, table, witnesses)?;
             rewrite_expr(rhs, table, witnesses)?;
         }
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             rewrite_expr(cond, table, witnesses)?;
             rewrite_block(then_block, table, witnesses)?;
             if let Some(else_block) = else_block {
@@ -464,7 +459,9 @@ fn rewrite_expr(
             rewrite_expr(base, table, witnesses)?;
             rewrite_expr(index, table, witnesses)?;
         }
-        Expr::WhileLet { scrutinee, body, .. } => {
+        Expr::WhileLet {
+            scrutinee, body, ..
+        } => {
             rewrite_expr(scrutinee, table, witnesses)?;
             rewrite_block(body, table, witnesses)?;
         }
@@ -510,7 +507,6 @@ fn rewrite_expr(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,10 +514,8 @@ mod tests {
 
     #[test]
     fn build_reannotation_preserves_the_internal_entrypoint_authority() {
-        let module = parser::parse_module(
-            "fn main(out: BuildOut):\n    0\n",
-        )
-        .expect("parse renamed build entrypoint");
+        let module = parser::parse_module("fn main(out: BuildOut):\n    0\n")
+            .expect("parse renamed build entrypoint");
         let catalog = WitnessCatalog::from_module(&module);
 
         let ordinary_error = match crate::typeck::annotate_checked(module.clone()) {
@@ -572,8 +566,8 @@ fn erase(value: Label) -> dyn Render:
         module
             .items
             .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
-        let prepared = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
-            .expect("lower pack");
+        let prepared =
+            lower_explicit_packs(crate::typeck::annotate(module), &catalog).expect("lower pack");
         assert_eq!(prepared.witnesses().witnesses.len(), 1);
         assert_eq!(prepared.witnesses().witnesses[0].id, 0);
 
@@ -605,8 +599,7 @@ fn erase(value: Label) -> dyn Render:
                 _ => None,
             })
             .expect("retyped erase function");
-        let [Stmt::Expr(pack @ Expr::ExistentialPack { .. })] =
-            function.body.stmts.as_slice()
+        let [Stmt::Expr(pack @ Expr::ExistentialPack { .. })] = function.body.stmts.as_slice()
         else {
             panic!("reannotation must preserve the compiler-owned pack");
         };

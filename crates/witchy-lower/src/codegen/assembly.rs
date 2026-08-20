@@ -120,6 +120,9 @@ fn collect_specialized_layout_requests(
                 collect_specialized_layout_requests(argument, resolver, requested);
             }
         }
+        Type::Slice(inner) => {
+            collect_specialized_layout_requests(inner, resolver, requested);
+        }
         Type::Tuple(fields) => {
             for field in fields {
                 collect_specialized_layout_requests(field, resolver, requested);
@@ -341,6 +344,7 @@ fn ast_type_mentions_compiler_syntax(ty: &Type) -> bool {
                 || args.iter().any(ast_type_mentions_compiler_syntax)
         }
         Type::Dyn(_, args) => args.iter().any(ast_type_mentions_compiler_syntax),
+        Type::Slice(inner) => ast_type_mentions_compiler_syntax(inner),
         Type::Tuple(items) => items.iter().any(ast_type_mentions_compiler_syntax),
         Type::Fn(params, ret, _) => {
             params.iter().any(ast_type_mentions_compiler_syntax)
@@ -388,6 +392,7 @@ fn collect_gc_tuple_type(
                 layouts.entry(shape).or_insert_with(|| items.clone());
             }
         }
+        Type::Slice(inner) => collect_gc_tuple_type(cg, inner, layouts),
         Type::Named(_, args) | Type::Dyn(_, args) => {
             for arg in args {
                 collect_gc_tuple_type(cg, arg, layouts);
@@ -619,6 +624,13 @@ fn type_has_planned_reference(
         // arguments may themselves contain references, but cannot determine
         // whether the envelope needs a typed reference container.
         Type::Dyn(_, _) => true,
+        Type::Slice(inner) => type_has_planned_reference(
+            cg,
+            inner,
+            storage,
+            nominals,
+            reference_lists,
+        ),
         Type::Tuple(items) => items.iter().any(|item| {
             type_has_planned_reference(
                 cg,
@@ -798,6 +810,16 @@ fn collect_gc_type_plans(
                 reference_lists,
             );
         }
+        Type::Slice(inner) => {
+            collect_gc_type_plans(
+                cg,
+                inner,
+                defs,
+                storage,
+                nominals,
+                reference_lists,
+            );
+        }
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: record composition must be normalized before Wasm layout planning"
         ),
@@ -929,6 +951,7 @@ fn collect_direct_suspension_type(
                 }
             }
         }
+        Type::Slice(inner) => collect_direct_suspension_type(cg, inner, defs, seen, types),
         Type::Fn(_, _, _) | Type::Dyn(_, _) => {}
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: record composition must be normalized before Wasm suspension planning"

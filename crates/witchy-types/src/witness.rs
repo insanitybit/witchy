@@ -115,7 +115,9 @@ impl WitnessCatalog {
             .traits
             .iter()
             .find(|definition| definition.name == *trait_name)
-            .ok_or_else(|| format!("runtime trait query references unknown trait `{trait_name}`"))?;
+            .ok_or_else(|| {
+                format!("runtime trait query references unknown trait `{trait_name}`")
+            })?;
         if definition.typarams.len() != trait_args.len() {
             return Err(format!(
                 "trait `{trait_name}` expects {} type argument(s), got {}",
@@ -123,9 +125,7 @@ impl WitnessCatalog {
                 trait_args.len()
             ));
         }
-        if trait_args.iter().any(has_free_type_variable)
-            || has_free_type_variable(concrete)
-        {
+        if trait_args.iter().any(has_free_type_variable) || has_free_type_variable(concrete) {
             return Err("runtime trait queries must be fully substituted".to_string());
         }
         let impls = self.impls.iter().collect::<Vec<_>>();
@@ -301,7 +301,11 @@ pub(crate) fn layout_from_catalog(
             .zip(owner_args.iter().cloned())
             .collect();
         for method in &definition.methods {
-            if method.params.first().is_none_or(|param| param.name != "self") {
+            if method
+                .params
+                .first()
+                .is_none_or(|param| param.name != "self")
+            {
                 return Err(format!(
                     "trait method `{}.{}` has no receiver and cannot occupy an existential slot",
                     definition.name, method.name
@@ -373,10 +377,7 @@ pub fn build_from_catalog_with_upcasts(
         .iter()
         .map(|definition| (definition.name.as_str(), definition))
         .collect();
-    let impls: Vec<&ImplDef> = catalog
-        .impls
-        .iter()
-        .collect();
+    let impls: Vec<&ImplDef> = catalog.impls.iter().collect();
 
     let mut entries = requests
         .into_iter()
@@ -448,8 +449,7 @@ pub fn build_from_catalog_with_upcasts(
                 type_key(&existential)
             ));
         }
-        let (implementation, bindings) =
-            resolve_impl(&impls, trait_name, trait_args, &concrete)?;
+        let (implementation, bindings) = resolve_impl(&impls, trait_name, trait_args, &concrete)?;
         let static_layout = layout_from_catalog(catalog, &existential)?;
         let mut slots = Vec::new();
         for dispatch in &static_layout.slots {
@@ -516,7 +516,10 @@ pub fn build_from_catalog_with_upcasts(
     }
     let mut upcasts = Vec::new();
     for (target, source) in upcast_requests {
-        for witness in witnesses.iter().filter(|witness| witness.existential == source) {
+        for witness in witnesses
+            .iter()
+            .filter(|witness| witness.existential == source)
+        {
             let target_witness = witnesses
                 .iter()
                 .find(|candidate| {
@@ -545,7 +548,10 @@ fn catalog_has_supertrait(catalog: &WitnessCatalog, child: &str, target: &str) -
     if child == target {
         return false;
     }
-    let Some(definition) = catalog.traits.iter().find(|definition| definition.name == child)
+    let Some(definition) = catalog
+        .traits
+        .iter()
+        .find(|definition| definition.name == child)
     else {
         return false;
     };
@@ -641,16 +647,19 @@ fn impl_bounds_hold(
     bindings: &HashMap<String, Type>,
     visiting: &mut HashSet<String>,
 ) -> bool {
-    candidate.bounds.iter().all(|(variable, trait_name, trait_args)| {
-        let Some(target) = bindings.get(variable) else {
-            return false;
-        };
-        let trait_args = trait_args
-            .iter()
-            .map(|arg| subst_trait_params(arg, bindings))
-            .collect::<Vec<_>>();
-        has_applicable_impl(impls, trait_name, &trait_args, target, visiting)
-    })
+    candidate
+        .bounds
+        .iter()
+        .all(|(variable, trait_name, trait_args)| {
+            let Some(target) = bindings.get(variable) else {
+                return false;
+            };
+            let trait_args = trait_args
+                .iter()
+                .map(|arg| subst_trait_params(arg, bindings))
+                .collect::<Vec<_>>();
+            has_applicable_impl(impls, trait_name, &trait_args, target, visiting)
+        })
 }
 
 fn has_applicable_impl(
@@ -662,7 +671,11 @@ fn has_applicable_impl(
 ) -> bool {
     let key = format!(
         "{trait_name}({}):{}",
-        trait_args.iter().map(type_key).collect::<Vec<_>>().join(","),
+        trait_args
+            .iter()
+            .map(type_key)
+            .collect::<Vec<_>>()
+            .join(","),
         type_key(concrete)
     );
     if !visiting.insert(key.clone()) {
@@ -701,7 +714,11 @@ fn slot(
     vars: &HashMap<String, Type>,
     bindings: &HashMap<String, Type>,
 ) -> Result<WitnessSlot, String> {
-    if method.params.first().is_none_or(|param| param.name != "self") {
+    if method
+        .params
+        .first()
+        .is_none_or(|param| param.name != "self")
+    {
         return Err(format!(
             "trait method `{}.{}` has no receiver and cannot occupy an existential witness slot",
             owner.name, method.name
@@ -768,6 +785,7 @@ fn type_key(ty: &Type) -> String {
             type_key(result)
         ),
         Type::Qualified(qualifier, inner) => format!("{qualifier:?}:{}", type_key(inner)),
+        Type::Slice(inner) => format!("[{}]", type_key(inner)),
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached witness type keys before records::lower normalized it"
         ),
@@ -779,7 +797,8 @@ fn has_free_type_variable(ty: &Type) -> bool {
         Type::Named(name, args) => {
             (args.is_empty()
                 && name.chars().next().is_some_and(char::is_lowercase)
-                && !name.contains('.'))
+                && !name.contains('.')
+                && name != "str")
                 || args.iter().any(has_free_type_variable)
         }
         Type::Dyn(_, args) | Type::Tuple(args) => args.iter().any(has_free_type_variable),
@@ -787,9 +806,9 @@ fn has_free_type_variable(ty: &Type) -> bool {
             params.iter().any(has_free_type_variable) || has_free_type_variable(result)
         }
         Type::Qualified(_, inner) => has_free_type_variable(inner),
+        Type::Slice(inner) => has_free_type_variable(inner),
         Type::RecordCompose { base, fields } => {
-            has_free_type_variable(base)
-                || fields.iter().any(|(_, ty)| has_free_type_variable(ty))
+            has_free_type_variable(base) || fields.iter().any(|(_, ty)| has_free_type_variable(ty))
         }
     }
 }
@@ -849,10 +868,7 @@ mod tests {
             [Type::Named("String".into(), Vec::new())]
         );
         assert_eq!(witness.slots[2].receiver, Convention::Var);
-        assert_eq!(
-            witness.slots[2].conventions,
-            [Convention::Let]
-        );
+        assert_eq!(witness.slots[2].conventions, [Convention::Let]);
         assert_eq!(
             layout
                 .slots
@@ -889,7 +905,9 @@ mod tests {
         let plan = build(&module, [(existential.clone(), concrete.clone())])
             .expect("unit-returning witness plan");
         let layout = layout(&module, &existential).expect("unit-returning layout");
-        let witness = plan.get(&existential, &concrete).expect("Notify for Label witness");
+        let witness = plan
+            .get(&existential, &concrete)
+            .expect("Notify for Label witness");
         assert_eq!(layout.slots[0].result, Type::Tuple(Vec::new()));
         assert_eq!(witness.slots[0].result, layout.slots[0].result);
     }
@@ -1008,10 +1026,7 @@ mod tests {
             )
             .expect("String witness");
 
-        assert_eq!(
-            int.slots[0].params,
-            [Type::Named("Int".into(), Vec::new())]
-        );
+        assert_eq!(int.slots[0].params, [Type::Named("Int".into(), Vec::new())]);
         assert_eq!(
             string.slots[0].params,
             [Type::Named("String".into(), Vec::new())]
@@ -1042,17 +1057,11 @@ mod tests {
         .expect("parse conditional impl");
         let existential = Type::Dyn("Render".into(), Vec::new());
         let boxed = |element: &str| {
-            Type::Named(
-                "Box".into(),
-                vec![Type::Named(element.into(), Vec::new())],
-            )
+            Type::Named("Box".into(), vec![Type::Named(element.into(), Vec::new())])
         };
 
-        let plan = build(
-            &module,
-            [(existential.clone(), boxed("HasShow"))],
-        )
-        .expect("satisfied bound selects witness");
+        let plan = build(&module, [(existential.clone(), boxed("HasShow"))])
+            .expect("satisfied bound selects witness");
         assert_eq!(plan.witnesses.len(), 1);
 
         let error = build(&module, [(existential, boxed("NoShow"))])
@@ -1176,14 +1185,8 @@ mod tests {
         let plan = build(
             &module,
             [(
-                Type::Dyn(
-                    "Tag".into(),
-                    vec![Type::Named("Int".into(), Vec::new())],
-                ),
-                Type::Named(
-                    "Box".into(),
-                    vec![Type::Named("String".into(), Vec::new())],
-                ),
+                Type::Dyn("Tag".into(), vec![Type::Named("Int".into(), Vec::new())]),
+                Type::Named("Box".into(), vec![Type::Named("String".into(), Vec::new())]),
             )],
         )
         .expect("same-spelled generic namespaces");
@@ -1212,10 +1215,7 @@ mod tests {
                     "Convert".into(),
                     vec![Type::Named("Int".into(), Vec::new())],
                 ),
-                Type::Named(
-                    "Box".into(),
-                    vec![Type::Named("String".into(), Vec::new())],
-                ),
+                Type::Named("Box".into(), vec![Type::Named("String".into(), Vec::new())]),
             )],
         )
         .expect("separate default-method generic namespaces");
@@ -1245,10 +1245,7 @@ mod tests {
                     "Convert".into(),
                     vec![Type::Named("Int".into(), Vec::new())],
                 ),
-                Type::Named(
-                    "Box".into(),
-                    vec![Type::Named("String".into(), Vec::new())],
-                ),
+                Type::Named("Box".into(), vec![Type::Named("String".into(), Vec::new())]),
             )],
         )
         .expect("provided-method generic namespaces");
@@ -1298,10 +1295,7 @@ mod tests {
              \x20       \"box\"\n",
         )
         .expect("parse");
-        let concrete = Type::Named(
-            "Box".into(),
-            vec![Type::Named("Int".into(), Vec::new())],
-        );
+        let concrete = Type::Named("Box".into(), vec![Type::Named("Int".into(), Vec::new())]);
         let plan = build(
             &module,
             [(Type::Dyn("Show".into(), Vec::new()), concrete.clone())],
@@ -1368,10 +1362,7 @@ mod tests {
             &module,
             [(
                 Type::Dyn("Show".into(), Vec::new()),
-                Type::Named(
-                    "Box".into(),
-                    vec![Type::Named("a".into(), Vec::new())],
-                ),
+                Type::Named("Box".into(), vec![Type::Named("a".into(), Vec::new())]),
             )],
         )
         .expect_err("open impl template is not a runtime witness");
@@ -1396,10 +1387,7 @@ mod tests {
              \x20       \"box\"\n",
         )
         .expect("parse");
-        let concrete = Type::Named(
-            "Box".into(),
-            vec![Type::Named("Int".into(), Vec::new())],
-        );
+        let concrete = Type::Named("Box".into(), vec![Type::Named("Int".into(), Vec::new())]);
         let plan = build(
             &module,
             [(Type::Dyn("Render".into(), Vec::new()), concrete)],

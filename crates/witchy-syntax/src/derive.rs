@@ -24,12 +24,15 @@ fn contains_concrete_float(ty: &Type) -> bool {
         Type::Tuple(slots) => slots.iter().any(contains_concrete_float),
         Type::RecordCompose { base, fields } => {
             contains_concrete_float(base)
-                || fields.iter().any(|(_, field)| contains_concrete_float(field))
+                || fields
+                    .iter()
+                    .any(|(_, field)| contains_concrete_float(field))
         }
         Type::Fn(params, ret, _) => {
             params.iter().any(contains_concrete_float) || contains_concrete_float(ret)
         }
         Type::Qualified(_, inner) => contains_concrete_float(inner),
+        Type::Slice(elem) => contains_concrete_float(elem),
         Type::Dyn(_, args) => args.iter().any(contains_concrete_float),
     }
 }
@@ -44,6 +47,7 @@ fn unsupported_deserialize_shape(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::Named(_, args) => args.iter().find_map(unsupported_deserialize_shape),
         Type::Tuple(_) => Some("tuple"),
+        Type::Slice(_) => Some("slice"),
         Type::RecordCompose { .. } => Some("unresolved structural record composition"),
         Type::Fn(_, _, _) => Some("function"),
         Type::Qualified(_, inner) => unsupported_deserialize_shape(inner),
@@ -65,7 +69,14 @@ fn unsupported_deserialize_field(t: &TypeDef) -> Option<(&str, &'static str)> {
 fn builtin_derive_on_fieldless_type(d: &str) -> bool {
     matches!(
         d,
-        "Show" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Reflect" | "Deserialize" | "PublicState"
+        "Show"
+            | "PartialEq"
+            | "Eq"
+            | "PartialOrd"
+            | "Ord"
+            | "Reflect"
+            | "Deserialize"
+            | "PublicState"
     )
 }
 
@@ -73,7 +84,11 @@ fn reject_borrowed_nominal_runtime_derives(
     definition: &TypeDef,
     derives: &[String],
 ) -> Result<(), String> {
-    if !definition.params.iter().any(|parameter| is_lifetime_param(parameter)) {
+    if !definition
+        .params
+        .iter()
+        .any(|parameter| is_lifetime_param(parameter))
+    {
         return Ok(());
     }
     if derives.iter().any(|derive| derive == "Reflect") {
@@ -188,7 +203,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 }
                 "PartialEq" => {
                     if !emitted_partial_eq {
-                        generated.push(derive_item_via_comptime("meta.derive_partial_eq", &derive_type));
+                        generated.push(derive_item_via_comptime(
+                            "meta.derive_partial_eq",
+                            &derive_type,
+                        ));
                         emitted_partial_eq = true;
                     }
                 }
@@ -200,25 +218,31 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                         ));
                     }
                     if !has_explicit_partial_eq && !emitted_partial_eq {
-                        generated.push(derive_item_via_comptime("meta.derive_partial_eq", &derive_type));
+                        generated.push(derive_item_via_comptime(
+                            "meta.derive_partial_eq",
+                            &derive_type,
+                        ));
                         emitted_partial_eq = true;
                     }
                     generated.push(derive_item_via_comptime("meta.derive_eq", &derive_type));
                 }
                 "PartialOrd" => {
-                    let is_record =
-                        derive_type.variants.len() == 1 && !derive_type.variants[0].field_names.is_empty();
+                    let is_record = derive_type.variants.len() == 1
+                        && !derive_type.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(PartialOrd) supports record types (one constructor with named fields)",
                             t.name
                         ));
                     }
-                    generated.push(derive_item_via_comptime("meta.derive_partial_ord", &derive_type));
+                    generated.push(derive_item_via_comptime(
+                        "meta.derive_partial_ord",
+                        &derive_type,
+                    ));
                 }
                 "Ord" => {
-                    let is_record =
-                        derive_type.variants.len() == 1 && !derive_type.variants[0].field_names.is_empty();
+                    let is_record = derive_type.variants.len() == 1
+                        && !derive_type.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(Ord) supports record types (one constructor with named fields)",
@@ -234,7 +258,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     generated.push(derive_item_via_comptime("meta.derive_ord", &derive_type));
                 }
                 "Reflect" => {
-                    generated.push(derive_item_via_comptime("meta.derive_reflect", &derive_type));
+                    generated.push(derive_item_via_comptime(
+                        "meta.derive_reflect",
+                        &derive_type,
+                    ));
                     needs_reflect = true;
                 }
                 // Decode only: reflection (json.value_of / stringify / Into(Json))
@@ -242,8 +269,8 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 // reconstruction is per-type (reflection is one-directional), so it is
                 // the one derive that remains.
                 "Deserialize" => {
-                    let is_record =
-                        derive_type.variants.len() == 1 && !derive_type.variants[0].field_names.is_empty();
+                    let is_record = derive_type.variants.len() == 1
+                        && !derive_type.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
                             "type `{}`: derive(Deserialize) supports record types (one constructor with named fields)",
@@ -256,11 +283,17 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name, shape, field
                         ));
                     }
-                    generated.push(derive_item_via_comptime("meta.derive_deserialize", &derive_type));
+                    generated.push(derive_item_via_comptime(
+                        "meta.derive_deserialize",
+                        &derive_type,
+                    ));
                     needs_deserialize = true;
                 }
                 "PublicState" => {
-                    generated.push(derive_item_via_comptime("meta.derive_public_state", &derive_type));
+                    generated.push(derive_item_via_comptime(
+                        "meta.derive_public_state",
+                        &derive_type,
+                    ));
                     needs_public_state = true;
                 }
                 // A user-defined derive: route to the witchy generator
@@ -269,21 +302,23 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 // derive this way; the per-trait codegen is no longer Rust-only.
                 other => {
                     let generator = format!("derive_{}", other.to_lowercase());
-                    generated.push(match user_derive_outputs
-                        .get(&generator)
-                        .copied()
-                        .unwrap_or(UserDeriveOutput::SourceString)
-                    {
-                        UserDeriveOutput::SourceString => {
-                            derive_source_via_comptime(&generator, &derive_type)
-                        }
-                        UserDeriveOutput::ItemSyntax => {
-                            derive_item_via_comptime(&generator, &derive_type)
-                        }
-                        UserDeriveOutput::ItemSyntaxList => {
-                            derive_items_via_comptime(&generator, &derive_type)
-                        }
-                    });
+                    generated.push(
+                        match user_derive_outputs
+                            .get(&generator)
+                            .copied()
+                            .unwrap_or(UserDeriveOutput::SourceString)
+                        {
+                            UserDeriveOutput::SourceString => {
+                                derive_source_via_comptime(&generator, &derive_type)
+                            }
+                            UserDeriveOutput::ItemSyntax => {
+                                derive_item_via_comptime(&generator, &derive_type)
+                            }
+                            UserDeriveOutput::ItemSyntaxList => {
+                                derive_items_via_comptime(&generator, &derive_type)
+                            }
+                        },
+                    );
                 }
             }
         }
@@ -402,10 +437,14 @@ mod borrowed_nominal_tests {
             "mode opt\n\nimport reflect\n\ntype Holder('a) derive(Reflect):\n    view: View(String, 'a)\n",
         )
         .expect("parse borrowed Reflect derive");
-        let error = expand(&mut module).expect_err("runtime reflection must reject a borrowed shell");
+        let error =
+            expand(&mut module).expect_err("runtime reflection must reject a borrowed shell");
 
         assert!(error.contains("derive(Reflect)"), "{error}");
-        assert!(error.contains("Compile-time TypeInfo reflection remains available"), "{error}");
+        assert!(
+            error.contains("Compile-time TypeInfo reflection remains available"),
+            "{error}"
+        );
         assert!(error.contains("module_types"), "{error}");
     }
 

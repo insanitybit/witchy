@@ -110,7 +110,7 @@ fn lerr<T>(message: impl Into<String>) -> Result<T, LinkError> {
 /// capability names come from `witchy-cap-model`, so syntax and typeck cannot
 /// silently disagree about the authority vocabulary.
 const AMBIENT_TYPES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "List", "Option",
+    "Int", "Float", "Duration", "String", "str", "Bytes", "__Msg", "Bool", "Nil", "List", "Option",
     "Result", "Dict",
     // `cmp.Ordering` is the comparison hierarchy's result type: derive- and
     // operator-generated code references it (and its variants) pervasively, and
@@ -542,6 +542,7 @@ fn type_mentions_reference(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_reference(inner),
+        Type::Slice(elem) => type_mentions_reference(elem),
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
             arguments.iter().any(type_mentions_reference)
         }
@@ -1061,6 +1062,7 @@ impl<'a> Scope<'a> {
     fn resolve_type(&self, ty: &mut Type) -> Result<(), LinkError> {
         match ty {
             Type::Qualified(_, inner) => self.resolve_type(inner),
+            Type::Slice(inner) => self.resolve_type(inner),
             Type::Tuple(ts) => ts.iter_mut().try_for_each(|t| self.resolve_type(t)),
             Type::RecordCompose { base, fields } => {
                 self.resolve_type(base)?;

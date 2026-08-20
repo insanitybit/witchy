@@ -66,10 +66,7 @@ impl SourceCheckError {
             .filter(|line| *line != 0);
         Self {
             message: error.message,
-            location: line.map(|line| SourceCheckLocation {
-                module: None,
-                line,
-            }),
+            location: line.map(|line| SourceCheckLocation { module: None, line }),
         }
     }
 }
@@ -89,7 +86,10 @@ pub(crate) struct SourceValidationError {
 
 impl SourceValidationError {
     pub(crate) fn new(item_index: usize, message: String) -> Self {
-        Self { item_index, message }
+        Self {
+            item_index,
+            message,
+        }
     }
 }
 
@@ -174,6 +174,9 @@ impl ResolvedSource {
                 crate::ast::Type::Qualified(_, inner) => {
                     restore_local_type_names(inner, prefix);
                 }
+                crate::ast::Type::Slice(inner) => {
+                    restore_local_type_names(inner, prefix);
+                }
             }
         }
 
@@ -236,7 +239,10 @@ impl SemanticallyCheckedSource {
 
     pub(crate) fn into_checked_modules(
         self,
-    ) -> (Vec<(String, SourceCheckedModule)>, crate::type_resolve::ResolvedDeclarations) {
+    ) -> (
+        Vec<(String, SourceCheckedModule)>,
+        crate::type_resolve::ResolvedDeclarations,
+    ) {
         let modules = self
             .resolved
             .modules
@@ -345,17 +351,13 @@ pub(crate) fn resolve_linked_source(
     for (name, module) in &modules {
         if let Some(constant) = crate::consts::find_cycle(module) {
             return Err(crate::linker::LinkError {
-                message: format!(
-                    "module `{name}`: constant `{constant}` is defined cyclically"
-                ),
+                message: format!("module `{name}`: constant `{constant}` is defined cyclically"),
                 location: None,
             });
         }
         if let Some(alias) = crate::aliases::find_cycle(module) {
             return Err(crate::linker::LinkError {
-                message: format!(
-                    "module `{name}`: type alias `{alias}` is defined cyclically"
-                ),
+                message: format!("module `{name}`: type alias `{alias}` is defined cyclically"),
                 location: None,
             });
         }
@@ -397,11 +399,12 @@ mod tests {
 
     #[test]
     fn generator_region_error_precedes_destructive_lowering() {
-        let module = parse(
-            "gen fn bad() -> Iter(Int):\n  region:\n    yield 1\n    0\n",
-        );
+        let module = parse("gen fn bad() -> Iter(Int):\n  region:\n    yield 1\n    0\n");
         let error = check(module).expect_err("source check must reject yield in region");
-        assert!(error.message.contains("cannot `yield` inside `region:`"), "{error}");
+        assert!(
+            error.message.contains("cannot `yield` inside `region:`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -417,7 +420,10 @@ mod tests {
     #[test]
     fn linked_source_rechecks_generated_generator_return_contract() {
         let error = resolve_linked_source(
-            vec![("main".into(), parse("gen fn emitted() -> Int:\n  yield 1\n"))],
+            vec![(
+                "main".into(),
+                parse("gen fn emitted() -> Int:\n  yield 1\n"),
+            )],
             &std::collections::HashSet::new(),
             "main",
             crate::linker::LinkMode::Production,
@@ -438,11 +444,12 @@ mod tests {
 
     #[test]
     fn async_tail_region_error_precedes_destructive_lowering() {
-        let module = parse(
-            "async fn bad() -> Int:\n  if true:\n    region:\n      1\n",
-        );
+        let module = parse("async fn bad() -> Int:\n  if true:\n    region:\n      1\n");
         let error = check(module).expect_err("source check must reject async tail region");
-        assert!(error.message.contains("`region:` in an async tail"), "{error}");
+        assert!(
+            error.message.contains("`region:` in an async tail"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -496,7 +503,11 @@ mod tests {
         .expect("linked source resolves");
         let resolved = &proof.modules()[0].1;
 
-        assert_eq!(resolved.items.len(), source_item_count, "proof must retain every item");
+        assert_eq!(
+            resolved.items.len(),
+            source_item_count,
+            "proof must retain every item"
+        );
         assert!(resolved.items.iter().any(|item| matches!(
             item,
             crate::ast::Item::TypeAlias { name, ty: crate::ast::Type::Named(target, _), .. }
@@ -516,12 +527,16 @@ mod tests {
             item,
             crate::ast::Item::Function(function) if function.is_async && function.name == "later"
         )));
-        let child_trait = resolved.items.iter().find_map(|item| match item {
-            crate::ast::Item::Trait(definition) if definition.name == "main.Child" => {
-                Some(definition)
-            }
-            _ => None,
-        }).expect("resolved Child trait");
+        let child_trait = resolved
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::ast::Item::Trait(definition) if definition.name == "main.Child" => {
+                    Some(definition)
+                }
+                _ => None,
+            })
+            .expect("resolved Child trait");
         assert_eq!(child_trait.supertraits, ["main.Base"]);
         assert_eq!(
             child_trait.methods[0].params[1].ty,
@@ -550,7 +565,10 @@ mod tests {
         let inherent = proof.method_owners().for_method("inherent");
         assert_eq!(inherent.len(), 1);
         assert_eq!(inherent[0].owner, "main.Widget");
-        assert_eq!(inherent[0].kind, crate::type_resolve::MethodOwnerKind::Inherent);
+        assert_eq!(
+            inherent[0].kind,
+            crate::type_resolve::MethodOwnerKind::Inherent
+        );
     }
 
     #[test]
@@ -563,9 +581,7 @@ mod tests {
             Ok(crate::origin::OriginTable::default())
         }
 
-        fn project(
-            source: &ResolvedSource,
-        ) -> Result<(), crate::linker::SourceLinkError> {
+        fn project(source: &ResolvedSource) -> Result<(), crate::linker::SourceLinkError> {
             source
                 .runtime_projection()
                 .map(|_| ())
@@ -599,19 +615,16 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
             if name != "main" {
                 return Ok(crate::origin::OriginTable::default());
             }
-            let mut generated = parse(
-                "fn identity(value: Int) -> Int:\n    value\n",
-            )
-            .items
-            .remove(0);
+            let mut generated = parse("fn identity(value: Int) -> Int:\n    value\n")
+                .items
+                .remove(0);
             let crate::ast::Item::Function(function) = &mut generated else {
                 unreachable!("fixture parses a function")
             };
             let fresh = "__witchy_fresh_6d61696e_0_value".to_string();
             function.params[0].name = fresh.clone();
             function.attributes.push(GENERATED_ITEM_ATTRIBUTE.into());
-            let crate::ast::Stmt::Expr(crate::ast::Expr::Var(result)) =
-                &mut function.body.stmts[0]
+            let crate::ast::Stmt::Expr(crate::ast::Expr::Var(result)) = &mut function.body.stmts[0]
             else {
                 unreachable!("fixture returns its parameter")
             };
@@ -621,9 +634,7 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
             Ok(crate::origin::OriginTable::default())
         }
 
-        fn project(
-            source: &ResolvedSource,
-        ) -> Result<(), crate::linker::SourceLinkError> {
+        fn project(source: &ResolvedSource) -> Result<(), crate::linker::SourceLinkError> {
             source
                 .runtime_projection()
                 .map(|_| ())
@@ -640,10 +651,12 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
         )
         .expect("typed generated fresh bindings retain compiler ownership");
 
-        let error = crate::parser::parse_module(
-            "@__compiler_generated_item\nfn forged():\n    ()\n",
-        )
-        .expect_err("source cannot forge the typed-item ownership marker");
-        assert!(error.message.contains("unknown declaration attribute"), "{error:?}");
+        let error =
+            crate::parser::parse_module("@__compiler_generated_item\nfn forged():\n    ()\n")
+                .expect_err("source cannot forge the typed-item ownership marker");
+        assert!(
+            error.message.contains("unknown declaration attribute"),
+            "{error:?}"
+        );
     }
 }
