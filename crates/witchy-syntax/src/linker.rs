@@ -3830,7 +3830,8 @@ fn check_reserved_item(
                 return reserved_name_error(module_name, "type", &im.type_name);
             }
             for method in &im.methods {
-                if is_reserved_user_identifier(&method.name) {
+                let generated_method = is_synthetic_source_line(Some(method.line));
+                if is_reserved_user_identifier(&method.name) && !generated_method {
                     return reserved_name_error(module_name, "method", &method.name);
                 }
                 check_reserved_function(module_name, method, generated_anon_types)?;
@@ -4557,6 +4558,15 @@ mod tests {
         );
 
         let err = link_main(
+            "type Point:\n    value: Int\n\nimpl Point:\n    fn hidden__method(self) -> Int:\n        self.value\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("method `hidden__method`") && err.contains("reserved for the compiler"),
+            "{err}"
+        );
+
+        let err = link_main(
             "fn main(console: Console):\n    let __target = 1\n    console.print(\"${__target}\")\n",
         )
         .unwrap_err();
@@ -4601,6 +4611,22 @@ mod tests {
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    for var n in xs:\n        n = n + 1\n    console.print(\"ok\")\n",
         )
         .expect("parser-generated for-var index names stay legal");
+    }
+
+    #[test]
+    fn compiler_generated_methods_retain_private_names() {
+        let mut module = crate::parser::parse_module(
+            "type Point:\n    value: Int\n\nimpl Point:\n    fn projected(self) -> Int:\n        self.value\n",
+        )
+        .expect("parse method fixture");
+        let Item::Impl(implementation) = &mut module.items[1] else {
+            panic!("fixture must contain an impl")
+        };
+        implementation.methods[0].name = "__dynamic_field".into();
+        implementation.methods[0].line = 0;
+
+        link(vec![("main".to_string(), module)], "main", noop_expand)
+            .expect("compiler-generated private method survives source-name validation");
     }
 
     #[test]
