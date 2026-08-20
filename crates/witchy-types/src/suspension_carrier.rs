@@ -43,6 +43,7 @@ pub struct CarrierSlot {
 pub struct CarrierState {
     pub id: usize,
     pub function: String,
+    pub source_callable: String,
     pub kind: CarrierStateKind,
     pub direct: bool,
     pub slots: Vec<CarrierSlot>,
@@ -76,6 +77,22 @@ pub struct SuspensionCarrierCatalog {
 pub struct ScalarExecutorPlan {
     pub state_count: usize,
     pub max_lane_width: usize,
+    pub states: Vec<ScalarExecutorState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarExecutorState {
+    pub id: usize,
+    pub function: String,
+    pub source_callable: String,
+    pub slots: Vec<ScalarExecutorSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarExecutorSlot {
+    pub name: String,
+    pub lane_start: usize,
+    pub lanes: Vec<CarrierLane>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +150,7 @@ impl SuspensionCarrierCatalog {
             states.push(CarrierState {
                 id,
                 function: function.name.clone(),
+                source_callable: witchy_syntax::suspension::source_callable_name(function),
                 kind,
                 direct,
                 slots,
@@ -197,9 +215,40 @@ impl SuspensionCarrierCatalog {
                 }
             }
         }
+        let states = self
+            .states
+            .iter()
+            .map(|state| {
+                let mut lane_start = 0;
+                let slots = state
+                    .slots
+                    .iter()
+                    .map(|slot| {
+                        let lanes = slot
+                            .lanes
+                            .clone()
+                            .expect("qualification rejected boxed frame slots");
+                        let planned = ScalarExecutorSlot {
+                            name: slot.name.clone(),
+                            lane_start,
+                            lanes,
+                        };
+                        lane_start += planned.lanes.len();
+                        planned
+                    })
+                    .collect();
+                ScalarExecutorState {
+                    id: state.id,
+                    function: state.function.clone(),
+                    source_callable: state.source_callable.clone(),
+                    slots,
+                }
+            })
+            .collect();
         Ok(ScalarExecutorPlan {
             state_count: self.states.len(),
             max_lane_width: self.max_lane_width,
+            states,
         })
     }
 
@@ -461,10 +510,12 @@ mod tests {
             SuspensionCarrierCatalog::from_typed(&boxed_typed).expect("boxed carrier catalog");
         assert!(!boxed.is_wholly_direct());
         assert!(!boxed.states()[1].direct);
-        assert_eq!(
-            catalog.scalar_executor_plan(),
-            Ok(ScalarExecutorPlan { state_count: 2, max_lane_width: 2 }),
-        );
+        let scalar = catalog.scalar_executor_plan().expect("scalar frame plan");
+        assert_eq!(scalar.state_count, 2);
+        assert_eq!(scalar.max_lane_width, 2);
+        assert_eq!(scalar.states[1].source_callable, "resume");
+        assert_eq!(scalar.states[1].slots[0].lane_start, 0);
+        assert_eq!(scalar.states[1].slots[1].lane_start, 1);
         assert_eq!(
             boxed.scalar_executor_plan(),
             Err(ScalarExecutorRejection::BoxedState {
@@ -500,10 +551,12 @@ mod tests {
             catalog.states()[1].slots[1].lanes,
             Some(vec![CarrierLane::I64, CarrierLane::I64]),
         );
-        assert_eq!(
-            catalog.scalar_executor_plan(),
-            Ok(ScalarExecutorPlan { state_count: 2, max_lane_width: 3 }),
-        );
+        let scalar = catalog.scalar_executor_plan().expect("scalar mixed-lane plan");
+        assert_eq!(scalar.state_count, 2);
+        assert_eq!(scalar.max_lane_width, 3);
+        assert_eq!(scalar.states[1].slots[0].lane_start, 0);
+        assert_eq!(scalar.states[1].slots[1].lane_start, 1);
+        assert_eq!(scalar.states[1].slots[1].lanes.len(), 2);
     }
 
     #[test]
