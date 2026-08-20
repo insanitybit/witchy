@@ -105,6 +105,43 @@ fn main(console: Console):
         );
     }
 
+    /// A list `for` generator evaluates its iterable on the first pull, carries
+    /// the current index in its frame, and executes each iteration effect once.
+    #[test]
+    fn generator_for_frame_is_lazy_and_does_not_replay_iteration_effects() {
+        let src = r#"import iter
+
+fn observed_values(console: Console) -> List(Int):
+    console.print("source")
+    [1, 2, 3]
+
+gen fn values(console: Console) -> Iter(Int):
+    for value in observed_values(console):
+        console.print("effect ${value}")
+        yield value * 10
+
+fn main(console: Console):
+    let unused = values(console)
+    console.print("made")
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = [
+            "made",
+            "source",
+            "effect 1",
+            "effect 2",
+            "effect 3",
+            "[10, 20, 30]",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

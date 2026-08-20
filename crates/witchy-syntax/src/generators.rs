@@ -66,13 +66,26 @@ pub fn lower(mut checked: SourceCheckedModule) -> Result<GeneratorsLoweredModule
     if !has_generator(checked.module()) {
         return Ok(GeneratorsLoweredModule::preserve(checked.into_module()));
     }
+    let function_returns = checked
+        .module()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => function
+                .ret
+                .clone()
+                .map(|ret| (function.name.clone(), ret)),
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
     let module = checked.module_mut();
     let mut items = Vec::with_capacity(module.items.len() + 1);
     let mut state_counter = 0usize;
     for item in std::mem::take(&mut module.items) {
         match item {
             Item::Function(f) if f.is_gen => {
-                let (helper, wrapper) = lower_gen(f, None, &mut state_counter)?;
+                let (helper, wrapper) =
+                    lower_gen(f, None, &function_returns, &mut state_counter)?;
                 items.push(Item::Function(wrapper));
                 items.push(Item::Function(helper));
             }
@@ -95,7 +108,7 @@ pub fn lower(mut checked: SourceCheckedModule) -> Result<GeneratorsLoweredModule
                 for method in std::mem::take(&mut im.methods) {
                     if method.is_gen {
                         let (helper, wrapper) =
-                            lower_gen(method, Some(&ctx), &mut state_counter)?;
+                            lower_gen(method, Some(&ctx), &function_returns, &mut state_counter)?;
                         items.push(Item::Function(helper));
                         methods.push(wrapper);
                     } else {
@@ -407,6 +420,7 @@ fn collect_direct_generator_names(
 fn lower_gen(
     f: Function,
     method: Option<&MethodCtx>,
+    function_returns: &std::collections::HashMap<String, Type>,
     state_counter: &mut usize,
 ) -> Result<(Function, Function), String> {
     let elem = iter_elem(&f.ret);
@@ -419,7 +433,7 @@ fn lower_gen(
         None => format!("__gen_{}", f.name),
     };
     let names = GeneratorNames::new(&f, entry_state);
-    let normalized = normalize_owned_generator(&f, &names);
+    let normalized = normalize_owned_generator(&f, &names, function_returns);
     if let Some(lowered) = lower_owned_loop_frame(
         &normalized,
         method,
@@ -549,7 +563,14 @@ fn lower_replay_fallback(
 /// Normalize accepted finite forms and the flagship seed-yield loop into the
 /// terminal-loop shapes handled by the owned frame lowerer. These synthetic
 /// bindings are part of the frame, so finishing a finite body cannot restart it.
-fn normalize_owned_generator(f: &Function, names: &GeneratorNames) -> Function {
+fn normalize_owned_generator(
+    f: &Function,
+    names: &GeneratorNames,
+    function_returns: &std::collections::HashMap<String, Type>,
+) -> Function {
+    if let Some(normalized) = normalize_terminal_for(f, names, function_returns) {
+        return normalized;
+    }
     if let Some(normalized) = normalize_prefix_yield_loop(f, names) {
         return normalized;
     }
@@ -563,6 +584,113 @@ fn normalize_owned_generator(f: &Function, names: &GeneratorNames) -> Function {
         return normalize_finite_one_shot(f, names);
     }
     f.clone()
+}
+
+/// Normalize a terminal list `for` into the same indexed owned-loop shape used
+/// by the backend. The list expression is an entry initializer, so constructing
+/// the generator stays lazy and later pulls resume from the captured index.
+fn normalize_terminal_for(
+    f: &Function,
+    names: &GeneratorNames,
+    function_returns: &std::collections::HashMap<String, Type>,
+) -> Option<Function> {
+    let (last, prelude) = f.body.stmts.split_last()?;
+    let Stmt::Expr(Expr::For { var, iter, body }) = last else { return None };
+    if !prelude.iter().all(|statement| matches!(statement, Stmt::Let { .. }))
+        || !block_has_any_yield(body)
+        || block_has_generator_loop_control_transfer(body)
+    {
+        return None;
+    }
+
+    let mut bindings = Vec::new();
+    for parameter in &f.params {
+        let ty = parameter.ty.clone()?;
+        bindings.push(GeneratorFrameBinding {
+            name: parameter.name.clone(),
+            ty,
+            mutable: parameter.convention.binds_mutable(),
+        });
+    }
+    for statement in prelude {
+        let Stmt::Let { name, ty, mutable, value } = statement else { unreachable!() };
+        let ty = ty
+            .clone()
+            .or_else(|| generator_frame_type_from_bindings(value, &bindings))?;
+        bindings.push(GeneratorFrameBinding {
+            name: name.clone(),
+            ty,
+            mutable: *mutable,
+        });
+    }
+    let list_ty = match iter.as_ref() {
+        Expr::Call { name, .. } => function_returns.get(name).cloned(),
+        value => generator_frame_type_from_bindings(value, &bindings),
+    }?;
+    let Type::Named(list_name, list_args) = &list_ty else { return None };
+    let [elem] = list_args.as_slice() else { return None };
+    if list_name != "List" {
+        return None;
+    }
+    let elem = elem.clone();
+
+    let list = names.name("for_list");
+    let index = names.name("for_index");
+    let mut statements = prelude.to_vec();
+    statements.push(Stmt::Let {
+        name: list.clone(),
+        ty: Some(list_ty),
+        mutable: false,
+        value: iter.as_ref().clone(),
+    });
+    statements.push(Stmt::Let {
+        name: index.clone(),
+        ty: Some(Type::Named("Int".into(), Vec::new())),
+        mutable: true,
+        value: Expr::Int(0),
+    });
+    let mut loop_statements = vec![
+        Stmt::Let {
+            name: var.clone(),
+            ty: Some(elem),
+            mutable: false,
+            value: Expr::Call {
+                name: crate::intrinsics::LIST_AT.into(),
+                args: vec![Expr::Var(list.clone()), Expr::Var(index.clone())],
+            },
+        },
+        Stmt::Assign {
+            name: index.clone(),
+            value: Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::Var(index.clone())),
+                rhs: Box::new(Expr::Int(1)),
+            },
+        },
+    ];
+    loop_statements.extend(body.stmts.clone());
+    statements.push(Stmt::Expr(Expr::While {
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Lt,
+            lhs: Box::new(Expr::Var(index)),
+            rhs: Box::new(Expr::Call {
+                name: crate::intrinsics::LIST_LENGTH.into(),
+                args: vec![Expr::Var(list)],
+            }),
+        }),
+        body: Block {
+            stmts: loop_statements,
+            lines: body.lines.clone(),
+            region: body.region.clone(),
+        },
+    }));
+    let mut normalized = f.clone();
+    normalized.body = Block {
+        stmts: statements,
+        lines: f.body.lines.clone(),
+        region: f.body.region.clone(),
+    };
+    Some(normalized)
 }
 
 fn leading_initializers(statements: &[Stmt]) -> usize {
@@ -2648,17 +2776,17 @@ mod target_availability_tests {
     }
 
     #[test]
-    fn residual_generator_cfg_preserves_the_existing_surface_during_migration() {
+    fn terminal_for_yield_uses_an_owned_indexed_frame() {
         let module = crate::parser::parse_module(
             "gen fn values() -> Iter(Int):\n    for value in [1, 2]:\n        yield value\n",
         )
         .expect("parse for-yield generator");
         let checked = crate::source_check::check(module).expect("source check");
-        let lowered = lower(checked)
-            .expect("the owned-frame migration must not narrow accepted generator syntax")
-            .into_module();
+        let lowered = lower(checked).expect("lower terminal for generator").into_module();
         let debug = format!("{lowered:?}");
-        assert!(debug.contains("iter.from_gen"), "the residual is removed only by its owned lowering: {debug}");
+        assert!(debug.contains("iter.unfold"), "terminal for needs an owned frame: {debug}");
+        assert!(!debug.contains("iter.from_gen"), "terminal for must not replay: {debug}");
+        assert!(debug.contains("for_index"), "the frame must carry its list index: {debug}");
     }
 
     #[test]
