@@ -7,7 +7,7 @@
 //! is simply absent and the VM fails to instantiate. There is no ambient
 //! authority anywhere.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use wasmtime::{
@@ -82,13 +82,56 @@ fn validate_layout_metadata(wasm: &[u8]) -> Result<()> {
 /// recompiling its WAT (the ~3 ms compile cost). Keyed by wasm content +
 /// wasmtime version, so it is transparent and self-invalidating. Best-effort:
 /// returns `None` if a cache directory can't be set up.
+const MAX_DEBUG_COMPILATION_CACHE_GENERATIONS: usize = 64;
+
+/// Wasmtime gives every debug executable mtime its own cache directory. Those
+/// generations can never be cache hits after the executable changes, but its
+/// asynchronous worker intentionally leaves their directories behind. Keep a
+/// small overlap for concurrently-running test binaries and remove older,
+/// unusable generations before configuring the cache.
+fn prune_stale_debug_compilation_cache_generations(cache_dir: &std::path::Path) {
+    let modules_dir = cache_dir.join("modules");
+    let Ok(entries) = std::fs::read_dir(modules_dir) else {
+        return;
+    };
+
+    let mut generations = entries
+        .flatten()
+        .filter_map(|entry| entry.file_type().ok()?.is_dir().then_some(entry))
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            // Wasmtime names debug namespaces
+            // `<compiler>-<version>-<executable-mtime-millis>`. Release
+            // namespaces do not have this numeric suffix and remain intact.
+            let (_, mtime_millis) = name.rsplit_once('-')?;
+            let mtime_millis = mtime_millis.parse::<u128>().ok()?;
+            Some((mtime_millis, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    generations.sort_unstable_by_key(|(mtime_millis, _)| std::cmp::Reverse(*mtime_millis));
+
+    for (_, stale) in generations.into_iter().skip(MAX_DEBUG_COMPILATION_CACHE_GENERATIONS) {
+        // The compilation cache is best-effort. A concurrent process can race
+        // this removal, in which case Wasmtime recompiles and atomically
+        // repopulates its own generation rather than affecting correctness.
+        let _ = std::fs::remove_dir_all(stale);
+    }
+}
+
 fn compilation_cache() -> Option<Cache> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
+    let cache_dir = base.join("witchy").join("wasm");
+    static PRUNED_DEBUG_COMPILATION_CACHE: OnceLock<()> = OnceLock::new();
+    PRUNED_DEBUG_COMPILATION_CACHE.get_or_init(|| {
+        prune_stale_debug_compilation_cache_generations(&cache_dir);
+    });
+
     let mut cfg = CacheConfig::new();
-    cfg.with_directory(base.join("witchy").join("wasm"));
+    cfg.with_directory(cache_dir);
     Cache::new(cfg).ok()
 }
 

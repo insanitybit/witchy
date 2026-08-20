@@ -192,6 +192,35 @@
         assert!(decode_optimized_wasm(&input_hash, &bad_magic).is_none(), "unknown cache formats must be ignored");
     }
 
+    #[test]
+    fn stale_debug_compilation_cache_generations_are_bounded_without_touching_release_cache() {
+        let cache = tempfile::tempdir().expect("cache directory");
+        let modules = cache.path().join("modules");
+        std::fs::create_dir_all(&modules).expect("modules directory");
+
+        for generation in 0..=MAX_DEBUG_COMPILATION_CACHE_GENERATIONS {
+            std::fs::create_dir(modules.join(format!("wasmtime--{generation}")))
+                .expect("debug generation");
+        }
+        std::fs::create_dir(modules.join("wasmtime-45.0.3"))
+            .expect("release generation");
+
+        prune_stale_debug_compilation_cache_generations(cache.path());
+
+        assert!(
+            !modules.join("wasmtime--0").exists(),
+            "the oldest debug generation is unusable after a rebuild"
+        );
+        assert!(modules.join(format!("wasmtime--{MAX_DEBUG_COMPILATION_CACHE_GENERATIONS}")).exists());
+        assert!(modules.join("wasmtime-45.0.3").exists(), "release cache remains reusable");
+        let debug_generations = std::fs::read_dir(&modules)
+            .expect("modules directory")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("wasmtime--"))
+            .count();
+        assert_eq!(debug_generations, MAX_DEBUG_COMPILATION_CACHE_GENERATIONS);
+    }
+
     const NULL_FILE_READ: &str = r#"
         (module
           (import "witchy" "file_read_len" (func $file_read_len (param externref) (result i32)))
