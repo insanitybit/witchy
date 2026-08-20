@@ -99,6 +99,17 @@ Implemented evidence:
 - Expanded bundled-module cache entries retain the lowered module and its
   `OriginTable` as one versioned artifact. Cold and warm links therefore expose
   identical generated-node provenance instead of dropping cached std origins.
+- Cold runtime projection restores module-local names throughout generic
+  structural-alias bodies before recursively linking the projection, so an
+  alias declaration and the aliases it composes re-enter the same namespace.
+  `resolved_generic_structural_aliases_survive_cold_runtime_projection` pins
+  that behavior without relying on a warm linker cache.
+- Functions produced through typed `emit_item` retain an internal typed-item
+  ownership marker while the cold projection is rebuilt. That unforgeable
+  marker preserves compiler-owned `meta.fresh` bindings across the recursive
+  source check; the source parser rejects attempts to spell the marker.
+  `typed_generated_fresh_bindings_survive_cold_runtime_projection` pins both
+  the generated-item path and the source-forgery rejection.
 - Synthetic derive blocks inherit the annotated type's item line as their
   invocation site, so derive-generated implementations retain source ancestry
   through comptime expansion and final lowering.
@@ -165,9 +176,9 @@ Implemented evidence:
 | Required contract | Status | Executable evidence |
 |---|---|---|
 | 1. Complete user semantics precede destructive lowering | **PROVEN** | `source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline` covers generator, async, region, and impl-method programs through the production checked resolver and both execution backends. |
-| 2. Compile-time items re-enter the same checker | **PROVEN** | The same matrix emits generator, async, and region-bearing bodies at compile time and executes their checked result on interpreter and compiled Wasm; `comptime_emitted_body_reenters_semantic_proof_before_source_lowering` pins the negative source-stage boundary. |
+| 2. Compile-time items re-enter the same checker | **PROVEN** | The same matrix emits generator, async, and region-bearing bodies at compile time and executes their checked result on interpreter and compiled Wasm; `comptime_emitted_body_reenters_semantic_proof_before_source_lowering` pins the negative source-stage boundary. `typed_generated_fresh_bindings_survive_cold_runtime_projection` proves a typed emitted item retains its unforgeable compiler-ownership marker and fresh binding through a cold recursive projection while source forgery remains rejected. |
 | 3. Destructive lowering and production sinks require proof | **PROVEN** | `destructive_source_lowerers_require_the_proof_wrapper`, `checked_link_does_not_recheck_the_lowered_projection`, and `compiler_generated_executable_is_checked_before_lowering` pin the typestate and generated-executable boundaries. |
-| 4. Resolution preserves source-only nodes | **PROVEN** | `linked_source_proof_retains_and_resolves_source_nodes`, `checked_link_rejects_resolved_signature_semantics_before_source_lowering`, and the checked generator impl-method matrix cover source-shaped local and imported resolution. |
+| 4. Resolution preserves source-only nodes | **PROVEN** | `linked_source_proof_retains_and_resolves_source_nodes`, `checked_link_rejects_resolved_signature_semantics_before_source_lowering`, and the checked generator impl-method matrix cover source-shaped local and imported resolution. `resolved_generic_structural_aliases_survive_cold_runtime_projection` proves recursive cold projection restores generic structural-alias declarations and references to one module-local namespace. |
 | 5. Lines and RFC-0080 ancestry survive both boundaries | **PROVEN** | `rfc0080_diagnostic_and_origin_ancestry_survive_the_checked_pipeline` checks persistent typed item/expression ancestry, both backends, and exact definition/invocation/nested-hole diagnostics. |
 
 ## Remaining migration
