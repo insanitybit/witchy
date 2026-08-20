@@ -4,6 +4,9 @@ use witchy::opt::OptSet;
 
 const MESSAGES: i64 = 1_000_000;
 const BASELINE_MESSAGES: i64 = 1_000;
+const AGGREGATE_BASELINE_MESSAGES: i64 = 100;
+const AGGREGATE_SUSTAINED_MESSAGES: i64 = 10_000;
+const WASMTIME_GC_BACKING_BYTES: usize = 65_536;
 const ACCEPTED_NS_PER_MESSAGE: f64 = 300.0;
 const MAX_LINEAR_ALLOCATIONS: i64 = 100;
 
@@ -19,6 +22,12 @@ fn benchmark_source(messages: i64) -> String {
     include_str!("../benchmarks/chan_throughput.witchy").replace(
         "producer(tx, 64000)",
         &format!("producer(tx, {messages})"),
+    )
+}
+
+fn aggregate_benchmark_source(messages: i64) -> String {
+    format!(
+        "mode opt\n\nimport chan\nfrom chan import Sender\n\ntype Packet:\n    Packet(Int, Int)\n\nasync fn producer(tx: Sender(Packet), n: Int) -> Nil:\n    var i = 0\n    while i < n:\n        chan.send(tx, Packet(i, i + 1)).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    var seen = 0\n    var sum = 0\n    while seen < {messages}:\n        let packet = chan.recv(rx).await\n        match packet:\n            Some(Packet(left, right)) ->\n                sum = sum + left + right\n                seen = seen + 1\n            None -> fail(\"channel closed before producer completed\")\n    chan.join(producer_handle).await\n    console.print(\"${{sum}}\")\n"
     )
 }
 
@@ -153,5 +162,49 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     assert!(
         median <= ACCEPTED_NS_PER_MESSAGE,
         "RFC-0129 scalar latency gate is {ACCEPTED_NS_PER_MESSAGE} ns/message; measured median {median} ns/message"
+    );
+}
+
+/// RFC-0129 row 4 GC-backed carrier evidence. A nominal aggregate message
+/// rejects scalar executor synthesis, so this matched compiled-Wasm run must
+/// exercise the fallback task scheduler without growing Wasmtime's GC backing
+/// heap as the message count increases.
+#[test]
+fn aggregate_channel_gc_heap_capacity_is_flat() {
+    witchy::opt::set_for_tests(Some(OptSet::all()));
+    let _reset_optimization_override = ResetOptimizationOverride;
+    let baseline_source = aggregate_benchmark_source(AGGREGATE_BASELINE_MESSAGES);
+    let sustained_source = aggregate_benchmark_source(AGGREGATE_SUSTAINED_MESSAGES);
+
+    let baseline = witchy::stats::compute_timed(&baseline_source)
+        .expect("execute aggregate channel baseline");
+    let sustained = witchy::stats::compute_timed(&sustained_source)
+        .expect("execute sustained aggregate channel run");
+    assert_eq!(
+        baseline.stats.output,
+        [(AGGREGATE_BASELINE_MESSAGES * AGGREGATE_BASELINE_MESSAGES).to_string()],
+        "aggregate baseline checksum"
+    );
+    assert_eq!(
+        sustained.stats.output,
+        [(AGGREGATE_SUSTAINED_MESSAGES * AGGREGATE_SUSTAINED_MESSAGES).to_string()],
+        "aggregate sustained checksum"
+    );
+    assert_eq!(
+        baseline.gc_heap_capacity_bytes, WASMTIME_GC_BACKING_BYTES,
+        "aggregate channels must exercise one Wasmtime GC backing page"
+    );
+    assert_eq!(
+        sustained.gc_heap_capacity_bytes,
+        baseline.gc_heap_capacity_bytes,
+        "Wasmtime GC backing capacity must remain flat across sustained aggregate traffic"
+    );
+    println!(
+        "aggregate channel baseline_messages={} sustained_messages={} baseline_gc_heap_capacity_bytes={} sustained_gc_heap_capacity_bytes={} sustained_execution_us={}",
+        AGGREGATE_BASELINE_MESSAGES,
+        AGGREGATE_SUSTAINED_MESSAGES,
+        baseline.gc_heap_capacity_bytes,
+        sustained.gc_heap_capacity_bytes,
+        sustained.execution_time_us,
     );
 }
