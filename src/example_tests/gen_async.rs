@@ -379,6 +379,39 @@ fn main(console: Console):
         );
     }
 
+    /// An unannotated local initialized by a direct function call takes its
+    /// declared return type into the owned frame. The call remains lazy and is
+    /// never repeated by later pulls.
+    #[test]
+    fn generator_inferred_call_prelude_is_lazy_and_runs_once() {
+        let src = r#"import iter
+
+fn observed_seed(console: Console) -> Int:
+    console.print("seed")
+    4
+
+gen fn values(console: Console) -> Iter(Int):
+    let start = observed_seed(console)
+    var i = start
+    while i < 6:
+        yield i
+        i = i + 1
+
+fn main(console: Console):
+    let unused = values(console)
+    console.print("made")
+    let result: List(Int) = iter.collect(values(console))
+    console.print("${result}")
+"#;
+        let expected = ["made", "seed", "[4, 5]"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled Wasm",
+        );
+    }
+
     /// Direct yield sites in one loop are distinct resume states. Each segment
     /// runs once, and the tail after the final yield runs before the next loop
     /// iteration begins.

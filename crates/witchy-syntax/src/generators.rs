@@ -441,6 +441,7 @@ fn lower_gen(
         entry_state,
         resume_state,
         &names,
+        function_returns,
     )? {
         return Ok(lowered);
     }
@@ -671,17 +672,14 @@ fn normalize_terminal_for(
         let Stmt::Let { name, ty, mutable, value } = statement else { unreachable!() };
         let ty = ty
             .clone()
-            .or_else(|| generator_frame_type_from_bindings(value, &bindings))?;
+            .or_else(|| generator_frame_type_from_context(value, &bindings, function_returns))?;
         bindings.push(GeneratorFrameBinding {
             name: name.clone(),
             ty,
             mutable: *mutable,
         });
     }
-    let list_ty = match iter.as_ref() {
-        Expr::Call { name, .. } => function_returns.get(name).cloned(),
-        value => generator_frame_type_from_bindings(value, &bindings),
-    }?;
+    let list_ty = generator_frame_type_from_context(iter, &bindings, function_returns)?;
     let Type::Named(list_name, list_args) = &list_ty else { return None };
     let [elem] = list_args.as_slice() else { return None };
     if list_name != "List" {
@@ -1391,6 +1389,7 @@ fn direct_loop_live_locals(
     body: &Block,
     yields: &[usize],
     entry_bindings: &[GeneratorFrameBinding],
+    function_returns: &std::collections::HashMap<String, Type>,
 ) -> Option<Vec<DirectLoopLocal>> {
     let mut type_environment = entry_bindings.to_vec();
     let mut live = Vec::new();
@@ -1404,7 +1403,13 @@ fn direct_loop_live_locals(
             } => {
                 let inferred = ty
                     .clone()
-                    .or_else(|| generator_frame_type_from_bindings(value, &type_environment))?;
+                    .or_else(|| {
+                        generator_frame_type_from_context(
+                            value,
+                            &type_environment,
+                            function_returns,
+                        )
+                    })?;
                 vec![GeneratorFrameBinding {
                     name: name.clone(),
                     ty: inferred,
@@ -1412,7 +1417,11 @@ fn direct_loop_live_locals(
                 }]
             }
             Stmt::LetPattern { pattern, value } => {
-                let value_ty = generator_frame_type_from_bindings(value, &type_environment)?;
+                let value_ty = generator_frame_type_from_context(
+                    value,
+                    &type_environment,
+                    function_returns,
+                )?;
                 generator_pattern_bindings(pattern, &value_ty)?
             }
             _ => continue,
@@ -1442,6 +1451,7 @@ fn branch_live_locals(
     before: &[Stmt],
     after: &[Stmt],
     entry_bindings: &[GeneratorFrameBinding],
+    function_returns: &std::collections::HashMap<String, Type>,
 ) -> Option<Vec<GeneratorFrameBinding>> {
     let after = Block { stmts: after.to_vec(), lines: Vec::new(), region: None };
     let mut environment = entry_bindings.to_vec();
@@ -1452,11 +1462,14 @@ fn branch_live_locals(
                 name: name.clone(),
                 ty: ty
                     .clone()
-                    .or_else(|| generator_frame_type_from_bindings(value, &environment))?,
+                    .or_else(|| {
+                        generator_frame_type_from_context(value, &environment, function_returns)
+                    })?,
                 mutable: *mutable,
             }],
             Stmt::LetPattern { pattern, value } => {
-                let value_ty = generator_frame_type_from_bindings(value, &environment)?;
+                let value_ty =
+                    generator_frame_type_from_context(value, &environment, function_returns)?;
                 generator_pattern_bindings(pattern, &value_ty)?
             }
             _ => continue,
@@ -1769,6 +1782,7 @@ fn lower_owned_loop_frame(
     entry_state: usize,
     resume_state: usize,
     names: &GeneratorNames,
+    function_returns: &std::collections::HashMap<String, Type>,
 ) -> Result<Option<(Function, Function)>, String> {
     let Some(elem) = iter_elem(&f.ret) else { return Ok(None) };
     let resume_name = names.name("resume_after_yield");
@@ -1876,7 +1890,9 @@ fn lower_owned_loop_frame(
             Stmt::Let { name, ty, mutable, value } => {
                 let Some(ty) = ty
                     .clone()
-                    .or_else(|| generator_frame_type_from_bindings(value, &bindings))
+                    .or_else(|| {
+                        generator_frame_type_from_context(value, &bindings, function_returns)
+                    })
                 else {
                     return Ok(None);
                 };
@@ -1905,7 +1921,9 @@ fn lower_owned_loop_frame(
     let direct_live_locals = if yields.is_empty() {
         Vec::new()
     } else {
-        let Some(live) = direct_loop_live_locals(body, &yields, &bindings) else {
+        let Some(live) =
+            direct_loop_live_locals(body, &yields, &bindings, function_returns)
+        else {
             return Ok(None);
         };
         live
@@ -1950,7 +1968,9 @@ fn lower_owned_loop_frame(
     let live_locals = if let Some(nested) = &nested_conditional {
         let mut after = nested.then_suffix.clone();
         after.extend(nested.outer_suffix.clone());
-        let Some(live) = branch_live_locals(&nested.then_prefix, &after, &bindings) else {
+        let Some(live) =
+            branch_live_locals(&nested.then_prefix, &after, &bindings, function_returns)
+        else {
             return Ok(None);
         };
         live
@@ -2695,11 +2715,13 @@ fn generator_frame_type(value: &Expr) -> Option<Type> {
     }
 }
 
-fn generator_frame_type_from_bindings(
+fn generator_frame_type_from_context(
     value: &Expr,
     bindings: &[GeneratorFrameBinding],
+    function_returns: &std::collections::HashMap<String, Type>,
 ) -> Option<Type> {
     match value {
+        Expr::Call { name, .. } => function_returns.get(name).cloned(),
         Expr::Var(name) => bindings
             .iter()
             .find(|binding| binding.name == *name)
@@ -2707,16 +2729,19 @@ fn generator_frame_type_from_bindings(
         Expr::Tuple(values) => Some(Type::Tuple(
             values
                 .iter()
-                .map(|value| generator_frame_type_from_bindings(value, bindings))
+                .map(|value| {
+                    generator_frame_type_from_context(value, bindings, function_returns)
+                })
                 .collect::<Option<Vec<_>>>()?,
         )),
         Expr::List(values) => {
-            let first = generator_frame_type_from_bindings(values.first()?, bindings)?;
+            let first =
+                generator_frame_type_from_context(values.first()?, bindings, function_returns)?;
             values
                 .iter()
                 .skip(1)
                 .all(|value| {
-                    generator_frame_type_from_bindings(value, bindings).as_ref()
+                    generator_frame_type_from_context(value, bindings, function_returns).as_ref()
                         == Some(&first)
                 })
                 .then(|| Type::Named("List".into(), vec![first]))
@@ -2730,7 +2755,9 @@ fn generator_frame_type_from_bindings(
             | BinOp::GtEq
             | BinOp::And
             | BinOp::Or => Some(Type::Named("Bool".into(), Vec::new())),
-            BinOp::Coalesce => generator_frame_type_from_bindings(rhs, bindings),
+            BinOp::Coalesce => {
+                generator_frame_type_from_context(rhs, bindings, function_returns)
+            }
             BinOp::Add
             | BinOp::Sub
             | BinOp::Mul
@@ -2742,15 +2769,15 @@ fn generator_frame_type_from_bindings(
             | BinOp::BitXor
             | BinOp::Shl
             | BinOp::Shr => {
-                let lhs = generator_frame_type_from_bindings(lhs, bindings)?;
-                let rhs = generator_frame_type_from_bindings(rhs, bindings)?;
+                let lhs = generator_frame_type_from_context(lhs, bindings, function_returns)?;
+                let rhs = generator_frame_type_from_context(rhs, bindings, function_returns)?;
                 (lhs == rhs).then_some(lhs)
             }
         },
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some(Type::Named("Bool".into(), Vec::new())),
             UnOp::Neg | UnOp::BitNot | UnOp::Move => {
-                generator_frame_type_from_bindings(expr, bindings)
+                generator_frame_type_from_context(expr, bindings, function_returns)
             }
             UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref | UnOp::Await => None,
         },
@@ -3151,6 +3178,19 @@ mod target_availability_tests {
         let debug = format!("{lowered:?}");
         assert!(!debug.contains("iter.from_gen"), "entry effects must not replay: {debug}");
         assert!(debug.contains("init"), "the entry effect must be retained: {debug}");
+    }
+
+    #[test]
+    fn inferred_call_result_in_terminal_loop_prelude_uses_the_owned_frame() {
+        let module = crate::parser::parse_module(
+            "fn seed() -> Int:\n    4\n\ngen fn values() -> Iter(Int):\n    let start = seed()\n    var i = start\n    while i < 6:\n        yield i\n        i = i + 1\n",
+        )
+        .expect("parse call-inferred prelude generator");
+        let checked = crate::source_check::check(module).expect("source check");
+        let lowered = lower(checked).expect("lower call-inferred prelude").into_module();
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("iter.from_gen"), "inferred call result must not replay: {debug}");
+        assert!(debug.contains("seed"), "the lazy call initializer must be retained: {debug}");
     }
 
     #[test]
