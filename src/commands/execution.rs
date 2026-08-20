@@ -408,6 +408,50 @@ pub(crate) fn run_checked_compiled(
     )
 }
 
+/// Run a generated test driver through its task-specific checked boundary.
+/// Unlike `run_checked_compiled`, this cannot accept or manufacture a general
+/// production `CheckedModule` from the post-link AST rewrite.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_checked_test_driver_compiled(
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+    dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
+    exec_allow: Option<Vec<String>>,
+    exec_child_paths: Vec<std::path::PathBuf>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<runtime::SecretGrant>,
+    user_cap_fields: Vec<Vec<String>>,
+    strict_dir: bool,
+    confinement: witchy_confinement::EnforcementMode,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let wasm = match codegen::compile_checked_test_driver_binary(checked) {
+        codegen::LoweringOutcome::Lowered(wasm) => wasm,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+    };
+    run_compiled(
+        checked.module(),
+        wasm,
+        dir_roots,
+        file_grants,
+        net_allow,
+        fetch_origins,
+        env_allow,
+        exec_allow,
+        exec_child_paths,
+        args,
+        signing_key,
+        named_secrets,
+        user_cap_fields,
+        strict_dir,
+        confinement,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_compiled(
     linked: &ast::Module,

@@ -140,6 +140,10 @@ Implemented evidence:
   drives handwritten and comptime-emitted generator, async, region, and impl
   method programs through the production checked resolver, then runs the same
   proof artifact on the interpreter and compiled Wasm backend.
+- Generated `witchy test` drivers receive a distinct
+  `CheckedTestDriverModule` proof. Its constructor admits only replacement of
+  the already checked program's ordinary `main`; it cannot mint the general
+  `CheckedModule` accepted by production sinks.
 - `rfc0080_diagnostic_and_origin_ancestry_survive_the_checked_pipeline` proves
   typed item and nested expression-hole ancestry remains queryable on the
   checked artifact, executes that artifact on both backends, and pins tagged
@@ -177,15 +181,15 @@ Implemented evidence:
 |---|---|---|
 | 1. Complete user semantics precede destructive lowering | **PROVEN** | `source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline` covers generator, async, region, and impl-method programs through the production checked resolver and both execution backends. |
 | 2. Compile-time items re-enter the same checker | **PROVEN** | The same matrix emits generator, async, and region-bearing bodies at compile time and executes their checked result on interpreter and compiled Wasm; `comptime_emitted_body_reenters_semantic_proof_before_source_lowering` pins the negative source-stage boundary. `typed_generated_fresh_bindings_survive_cold_runtime_projection` proves a typed emitted item retains its unforgeable compiler-ownership marker and fresh binding through a cold recursive projection while source forgery remains rejected. |
-| 3. Destructive lowering and production sinks require proof | **PROVEN** | `destructive_source_lowerers_require_the_proof_wrapper`, `checked_link_does_not_recheck_the_lowered_projection`, and `compiler_generated_executable_is_checked_before_lowering` pin the typestate and generated-executable boundaries. |
+| 3. Destructive lowering and production sinks require proof | **PROVEN** | `destructive_source_lowerers_require_the_proof_wrapper`, `checked_link_does_not_recheck_the_lowered_projection`, and `compiler_generated_executable_is_checked_before_lowering` pin the typestate and generated-executable boundaries. `test_driver_proof_allows_only_checked_entry_replacement` proves a post-link test driver cannot rewrite program bodies or mint the general production proof. |
 | 4. Resolution preserves source-only nodes | **PROVEN** | `linked_source_proof_retains_and_resolves_source_nodes`, `checked_link_rejects_resolved_signature_semantics_before_source_lowering`, and the checked generator impl-method matrix cover source-shaped local and imported resolution. `resolved_generic_structural_aliases_survive_cold_runtime_projection` proves recursive cold projection restores generic structural-alias declarations and references to one module-local namespace. |
 | 5. Lines and RFC-0080 ancestry survive both boundaries | **PROVEN** | `rfc0080_diagnostic_and_origin_ancestry_survive_the_checked_pipeline` checks persistent typed item/expression ancestry, both backends, and exact definition/invocation/nested-hole diagnostics. |
 
 ## Remaining migration
 
 None for the source-first production boundary. The explicitly enabled raw test
-feature and compiler-internal synthetic-module checker are outside the
-production boundary and remain as test infrastructure.
+feature remains test infrastructure. Production `witchy test` drivers use a
+separate entry-only proof and task-specific interpreter/codegen sinks.
 
 A labeled module call still requires its import to be present in parsed source;
 method labels remain rejected rather than being reinterpreted after an import

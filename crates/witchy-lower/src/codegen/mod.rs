@@ -60,6 +60,7 @@ pub use assembly::{
     assemble_checked_optimized_wir_module, compile_checked_build_module,
     compile_checked_development_module, compile_checked_glamour_island_binary,
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
+    compile_checked_test_driver_binary,
     CompiledDevelopmentModule, GlamourDevelopmentField, GlamourDevelopmentMetadata,
 };
 #[cfg(any(test, feature = "raw-module-test-api"))]

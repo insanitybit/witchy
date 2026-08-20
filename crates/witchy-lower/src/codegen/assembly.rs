@@ -2768,6 +2768,20 @@ pub fn compile_checked_module_binary(
     compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref(), None)
 }
 
+/// Compile a generated test driver that was proved to differ from its checked
+/// source program only at `main`. Keeping this boundary distinct prevents the
+/// post-link rewrite from impersonating a production `CheckedModule`.
+pub fn compile_checked_test_driver_binary(
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+) -> LoweringOutcome<Vec<u8>> {
+    compile_module_binary_mode(
+        checked.module(),
+        false,
+        checked.runtime_declaration_catalog(),
+        None,
+    )
+}
+
 /// Compile one compiler-synthesized Glamour island adapter against the exact
 /// linked and authenticated application module that selected it.
 pub fn compile_checked_glamour_island_binary(

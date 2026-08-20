@@ -41,6 +41,16 @@ pub struct CheckedEvaluationModule {
     runtime_catalog: RuntimeDeclarationCatalog,
 }
 
+/// A checked test executable derived from an already source-proved program by
+/// replacing only its `main` function. The distinct proof prevents a generated
+/// test driver from being passed to ordinary production sinks as a
+/// [`CheckedModule`].
+#[derive(Debug)]
+pub struct CheckedTestDriverModule {
+    module: Module,
+    runtime_catalog: Option<RuntimeDeclarationCatalog>,
+}
+
 impl CheckedEvaluationModule {
     pub fn module(&self) -> &Module {
         &self.module
@@ -48,6 +58,16 @@ impl CheckedEvaluationModule {
 
     pub fn runtime_declaration_catalog(&self) -> &RuntimeDeclarationCatalog {
         &self.runtime_catalog
+    }
+}
+
+impl CheckedTestDriverModule {
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
+    pub fn runtime_declaration_catalog(&self) -> Option<&RuntimeDeclarationCatalog> {
+        self.runtime_catalog.as_ref()
     }
 }
 
@@ -207,22 +227,57 @@ impl From<SourceLinkError> for PipelineError {
     }
 }
 
-/// Check a post-link compiler-synthesized runtime module.
+/// Check a compiler-generated test driver against its source-proved program.
 ///
-/// This is the boundary for modules whose source provenance was intentionally
-/// invalidated by compiler-owned AST construction, such as a generated test
-/// driver. It reruns the ordinary runtime checker and deliberately carries no
-/// source origins, declaration provenance, or authenticated module ownership.
-pub fn check_synthetic_module(module: Module) -> Result<CheckedModule, TypeError> {
+/// Test execution replaces `main` after linking so each discovered test can be
+/// called directly. Every other module field and item must remain identical to
+/// the checked authority. The result is deliberately not a [`CheckedModule`],
+/// so it can enter only the test-driver interpreter and codegen boundaries.
+pub fn check_test_driver_module(
+    authority: &CheckedModule,
+    module: Module,
+) -> Result<CheckedTestDriverModule, TypeError> {
+    fn without_entry(mut module: Module) -> Module {
+        module.items.retain(|item| {
+            !matches!(item, witchy_syntax::ast::Item::Function(function) if function.name == "main")
+        });
+        // Linked modules normally have no parallel source-line vector. A test
+        // driver is generated after linking and therefore owns no source line;
+        // compare the semantic module shape rather than stale display metadata.
+        module.item_lines.clear();
+        module
+    }
+
+    let entries = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "main" => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if entries.len() != 1
+        || entries[0].is_gen
+        || entries[0].is_async
+        || entries[0].comptime_only
+    {
+        return Err(TypeError {
+            message: "compiler test driver must define exactly one ordinary `main` function"
+                .to_string(),
+        });
+    }
+    if without_entry(module.clone()) != without_entry(authority.module().clone()) {
+        return Err(TypeError {
+            message: "compiler test driver may replace only the checked `main` function"
+                .to_string(),
+        });
+    }
     typeck::check(&module)?;
-    Ok(CheckedModule {
-        linked: LinkedModule {
-            module,
-            origins: OriginTable::default(),
-            module_names: Vec::new(),
-            declarations: ResolvedDeclarations::default(),
-        },
-        module_owners: None,
+    Ok(CheckedTestDriverModule {
+        module,
+        runtime_catalog: authority.runtime_declaration_catalog().ok(),
     })
 }
 
@@ -307,8 +362,8 @@ pub fn link_checked_authenticated(
 /// Link a test source graph under test syntax policy, then type-check it.
 ///
 /// This is intentionally task-shaped rather than exposing `LinkMode` through
-/// production front ends. Test-driver synthesis must recheck its transformed
-/// clone through [`check_synthetic_module`].
+/// production front ends. Test-driver synthesis must recheck its entry-only
+/// rewrite through [`check_test_driver_module`].
 pub fn link_checked_test_with_user_modules(
     modules: Vec<(String, Module)>,
     entry: &str,
@@ -404,6 +459,50 @@ mod tests {
         let into_linked = ["pub fn into_", "linked(self) -> LinkedModule"].concat();
         assert!(!source.contains(&into_module));
         assert!(!source.contains(&into_linked));
+    }
+
+    #[test]
+    fn test_driver_proof_allows_only_checked_entry_replacement() {
+        let checked = link_checked(
+            vec![(
+                "main".to_string(),
+                parse("fn helper() -> Int:\n  1\n\nfn main() -> Int:\n  helper()\n"),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("source-proved program");
+        let mut driver = checked.module().clone();
+        driver.items.retain(
+            |item| !matches!(item, witchy_syntax::ast::Item::Function(function) if function.name == "main"),
+        );
+        driver
+            .items
+            .extend(parse("fn main():\n  Nil\n").items);
+        check_test_driver_module(&checked, driver.clone())
+            .expect("an entry-only test driver is admitted");
+
+        let replacement = parse("fn helper() -> Int:\n  2\n");
+        let replacement_body = match &replacement.items[0] {
+            witchy_syntax::ast::Item::Function(function) => function.body.clone(),
+            _ => unreachable!("fixture parses a function"),
+        };
+        let helper = driver
+            .items
+            .iter_mut()
+            .find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function)
+                    if function.name.rsplit('.').next() == Some("helper") => Some(function),
+                _ => None,
+            })
+            .expect("linked helper remains present");
+        helper.body = replacement_body;
+        let error = check_test_driver_module(&checked, driver)
+            .expect_err("a generated driver cannot rewrite checked program bodies");
+        assert_eq!(
+            error.message,
+            "compiler test driver may replace only the checked `main` function"
+        );
     }
 
     #[test]

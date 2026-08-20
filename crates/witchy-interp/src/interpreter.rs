@@ -71,6 +71,7 @@ pub use runners::{
 #[cfg(feature = "test-fixtures")]
 pub use runners::{
     FixtureInterpreterOutcome, FixtureProgramResult, run_checked_module_fixtures,
+    run_checked_test_driver_fixtures,
 };
 #[cfg(all(
     feature = "test-fixtures",

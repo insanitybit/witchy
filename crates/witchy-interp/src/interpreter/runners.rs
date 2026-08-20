@@ -107,6 +107,24 @@ pub fn run_checked_module_fixtures(
     })
 }
 
+/// Run a generated test driver whose only admitted rewrite is its `main`
+/// function. This explicit boundary keeps the driver proof out of ordinary
+/// checked-program execution.
+#[cfg(feature = "test-fixtures")]
+pub fn run_checked_test_driver_fixtures(
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+    plan: FixturePlan,
+) -> Result<FixtureInterpreterOutcome, RuntimeError> {
+    let runtime_catalog = checked.runtime_declaration_catalog().cloned();
+    let module = checked.module().clone();
+    let host = FixtureHost::new(plan).map_err(|error| RuntimeError {
+        message: format!("invalid fixture plan: {error}"),
+    })?;
+    run_on_deep_stack(move || {
+        run_module_fixtures_inner(module, host, runtime_catalog)
+    })
+}
+
 #[cfg(feature = "test-fixtures")]
 fn run_module_fixtures_inner(
     module: Module,

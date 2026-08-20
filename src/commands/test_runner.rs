@@ -2,7 +2,7 @@
 //! validation, dependency-root resolution, and execution on the compiled
 //! backend. Extracted from the composition root.
 
-use crate::commands::execution::run_checked_compiled;
+use crate::commands::execution::run_checked_test_driver_compiled;
 use crate::{
     ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
     link_test_file, parser, run_wasm_test_bytes, runtime, typeck,
@@ -586,10 +586,10 @@ struct FixtureBackendOutcome {
 }
 
 fn run_interpreter_fixtures(
-    checked: &witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
     plan: &FixturePlan,
 ) -> Result<FixtureBackendOutcome, String> {
-    let outcome = interpreter::run_checked_module_fixtures(checked, plan.clone())
+    let outcome = interpreter::run_checked_test_driver_fixtures(checked, plan.clone())
         .map_err(|error| error.to_string())?;
     let (passed, output, error) = match outcome.result {
         interpreter::FixtureProgramResult::Passed { output, .. } => (true, output, None),
@@ -606,10 +606,10 @@ fn run_interpreter_fixtures(
 }
 
 fn run_wasm_fixtures(
-    checked: &witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
     plan: &FixturePlan,
 ) -> Result<FixtureBackendOutcome, String> {
-    let bytes = match codegen::compile_checked_module_binary(checked) {
+    let bytes = match codegen::compile_checked_test_driver_binary(checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
@@ -649,7 +649,7 @@ fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool 
 }
 
 fn run_fixture_test(
-    checked: &witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
     plan: &FixturePlan,
     backend: TestBackend,
 ) -> Result<FixtureBackendOutcome, String> {
@@ -804,7 +804,7 @@ fn run_tests_in_module(
             }
         }
         m.items.extend(driver.items);
-        let checked = witchy_types::pipeline::check_synthetic_module(m)
+        let checked = witchy_types::pipeline::check_test_driver_module(checked, m)
             .map_err(|error| error.to_string())?;
         // Run the test on the COMPILED WASM tier — the tier users ship — not the
         // interpreter oracle: a `witchy test` that passes must reflect the backend
@@ -840,7 +840,7 @@ fn run_tests_in_module(
             }
         } else if policy.integration {
             (
-                run_checked_compiled(
+                run_checked_test_driver_compiled(
                     &checked,
                     policy.grants.dir_roots.clone(),
                     Vec::new(),
@@ -862,7 +862,7 @@ fn run_tests_in_module(
             )
         } else {
             (
-                match codegen::compile_checked_module_binary(&checked) {
+                match codegen::compile_checked_test_driver_binary(&checked) {
                     codegen::LoweringOutcome::Lowered(bytes) => {
                         run_wasm_test_bytes(&bytes).map_err(|error| (error, Vec::new()))
                     }
