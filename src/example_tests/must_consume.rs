@@ -98,3 +98,76 @@ fn transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregat
     );
     assert!(aggregate.contains("must-consume value `batch`"), "{aggregate}");
 }
+
+#[test]
+fn transaction_resource_disposes_before_normal_and_error_exit_on_wasm() {
+    let source = r#"
+import transaction
+from transaction import CommitError
+
+fn validate(ok: Bool) -> Result(String, String):
+    if ok:
+        Ok("validated")
+    else:
+        Err("rejected")
+
+fn rollback_then_validate(ok: Bool) -> Result(String, String):
+    let original = transaction.rollback(transaction.begin("rollback-old", "rollback-new", 3))
+    let _validated = validate(ok)?
+    Ok(original)
+
+fn commit_or_conflict(actual_revision: Int) -> Result(String, CommitError):
+    let published = transaction.commit(transaction.begin("commit-old", "commit-new", 4), actual_revision)?
+    Ok(published)
+
+fn main(console: Console):
+    match rollback_then_validate(true):
+        Ok(value) -> console.print("normal:${value}")
+        Err(error) -> console.print("unexpected:${error}")
+    match rollback_then_validate(false):
+        Ok(value) -> console.print("unexpected:${value}")
+        Err(error) -> console.print("error:${error}")
+    match commit_or_conflict(4):
+        Ok(value) -> console.print("commit:${value}")
+        Err(_error) -> console.print("unexpected-conflict")
+    match commit_or_conflict(9):
+        Ok(value) -> console.print("unexpected:${value}")
+        Err(_error) -> console.print("conflict")
+"#;
+
+    let expected = vec![
+        "normal:rollback-old",
+        "error:rejected",
+        "commit:commit-new",
+        "conflict",
+    ];
+    assert_eq!(run_on_wasm(source), expected, "compiled Wasm normal and error exits");
+    assert_eq!(link_run(source), expected, "must obligations erase before backend execution");
+}
+
+#[test]
+fn transaction_resource_rejects_question_mark_exit_with_live_obligation() {
+    let error = must_error(
+        r#"
+import transaction
+
+fn validate(ok: Bool) -> Result(String, String):
+    if ok:
+        Ok("validated")
+    else:
+        Err("rejected")
+
+fn update(ok: Bool) -> Result(String, String):
+    let pending = transaction.begin("old", "new", 1)
+    let _validated = validate(ok)?
+    Ok(transaction.rollback(pending))
+
+fn main():
+    let _ = update(false)
+"#,
+    );
+    assert!(
+        error.contains("return leaves must-consume value `pending` undisposed"),
+        "{error}"
+    );
+}

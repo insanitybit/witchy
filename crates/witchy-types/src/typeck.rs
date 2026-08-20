@@ -8521,6 +8521,11 @@ impl Checker {
                         ))
                     }
                 };
+                // `?` has an implicit error-return edge after its operand has
+                // been evaluated. Check obligations at exactly that point: an
+                // `own` operand call has already discharged its argument, while
+                // every unrelated live resource would be abandoned on Err/None.
+                self.reject_all_live_must_before_return()?;
                 Ok(value_ty)
             }
             Expr::As { expr: payload, ty } => {

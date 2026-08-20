@@ -60,6 +60,27 @@
     }
 
     #[test]
+    fn must_consume_question_mark_checks_the_error_return_edge_after_call_effects() {
+        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn validate() -> Result(Int, String):\n    Err(\"invalid\")\n\nfn finish(own ticket: Ticket) -> Result(Int, String):\n    Err(\"finished\")\n\n";
+
+        let abandoned = check_source(&format!(
+            "{prelude}fn run() -> Result(Int, String):\n    let ticket = make()\n    let value = validate()?\n    Ok(value)\n\nfn main():\n    let _ = run()\n"
+        ))
+        .expect_err("the error edge of `?` may not abandon a live obligation");
+        assert!(
+            abandoned
+                .message
+                .contains("return leaves must-consume value `ticket` undisposed"),
+            "{abandoned:?}"
+        );
+
+        check_source(&format!(
+            "{prelude}fn run() -> Result(Int, String):\n    let ticket = make()\n    let value = finish(ticket)?\n    Ok(value)\n\nfn main():\n    let _ = run()\n"
+        ))
+        .expect("an own call discharges its obligation before `?` propagates its error");
+    }
+
+    #[test]
     fn must_consume_transfers_without_copying_and_propagates_through_aggregates() {
         let returned = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn forward() -> Ticket:\n    let ticket = make()\n    ticket\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(forward())\n";
         check_source(returned).expect("return and own-call boundaries transfer obligations");

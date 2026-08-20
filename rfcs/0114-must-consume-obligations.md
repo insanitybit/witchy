@@ -12,9 +12,10 @@ tracking: >
   own-call attempt semantics, suspension-frame transfer, and must-consume task
   handles have executable checker and compiled-Wasm coverage. The standard
   `transaction` resource now proves success, conflict, rollback, branch, move,
-  and aggregate behavior through the checker and compiled Wasm, plus rejection
-  when an early return would abandon the resource. The serialized workspace
-  matrix passed after both standard-library integrations merged.
+  aggregate, and `?`-propagated error behavior through the checker and compiled
+  Wasm, plus rejection when an explicit or `?` early return would abandon the
+  resource. The serialized workspace matrix passed after both standard-library
+  integrations merged.
 ---
 
 # RFC-0114: Must-consume obligations (linear resource handles)
@@ -199,6 +200,7 @@ this follows.
 - PROVEN: scope exit, overwrite, implicit copy, explicit transfer, return, and
   all-path branch joins enforce one live obligation per binding identity.
   Evidence: `must_consume_requires_disposition_on_every_path`,
+  `must_consume_question_mark_checks_the_error_return_edge_after_call_effects`,
   `must_consume_transfers_without_copying_and_propagates_through_aggregates`,
   `must_consume_own_calls_discharge_at_attempt_and_shadowing_keeps_binding_identity`,
   and `owned_function_values_transfer_must_consume_closure_captures`.
@@ -209,11 +211,13 @@ this follows.
 - PROVEN: the standard `transaction.Transaction` resource can only be finished
   by crossing an explicit `own` boundary. Its `commit` success and conflict,
   `rollback`, all-path branch, explicit move, implicit-copy rejection,
-  aggregate propagation, and early-return loss execute through the ordinary
-  checker and compiled-Wasm paths. Evidence:
-  `transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm`
-  and
-  `transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregate_paths`.
+  aggregate propagation, normal/error exit after disposition, own-call failure,
+  and explicit/`?` early-return loss execute through the ordinary checker and
+  compiled-Wasm paths. Evidence:
+  `transaction_resource_consumes_success_conflict_rollback_moves_aggregates_and_cfg_early_return_on_wasm`,
+  `transaction_resource_rejects_lifecycle_loss_on_scope_branch_move_and_aggregate_paths`,
+  `transaction_resource_disposes_before_normal_and_error_exit_on_wasm`, and
+  `transaction_resource_rejects_question_mark_exit_with_live_obligation`.
 - PROVEN: CFG joins exclude ownership state from terminating `if` branches and
   `match` arms, so a resource consumed before an early return remains available
   to a later fallthrough consumer. Every terminating path must still discharge
