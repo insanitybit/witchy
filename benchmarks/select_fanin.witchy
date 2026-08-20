@@ -25,11 +25,10 @@ fn expected_checksum(per_source: Int) -> Int:
     checksum
 
 async fn main(console: Console, clock: Clock):
-    let per_source = 2048
-    let (a_tx, a_rx) = chan.channel(per_source).await
-    let (b_tx, b_rx) = chan.channel(per_source).await
-    let a_handle = chan.spawn(produce(a_tx, 0, per_source)).await
-    let b_handle = chan.spawn(produce(b_tx, 1, per_source)).await
+    let (a_tx, a_rx) = chan.channel(2048).await
+    let (b_tx, b_rx) = chan.channel(2048).await
+    let a_handle = chan.spawn(produce(a_tx, 0, 2048)).await
+    let b_handle = chan.spawn(produce(b_tx, 1, 2048)).await
     chan.join(a_handle).await
     chan.join(b_handle).await
 
@@ -38,13 +37,13 @@ async fn main(console: Console, clock: Clock):
     var checksum = 0
     var order_ok = true
     let bench_t0 = clock.now_monotonic()
-    while seen_a + seen_b < per_source * 2:
+    while seen_a + seen_b < 4096:
         let selected = chan.select(a_rx, b_rx).await
         let (add_a, add_b, next_checksum, selected_ok) = match selected:
             First(value) ->
                 (1, 0, (checksum * 257 + value + 1) % 1000000007, seen_b == 0 && value == seen_a * 2)
             Second(value) ->
-                (0, 1, (checksum * 257 + value + 2) % 1000000007, seen_a == per_source && value == seen_b * 2 + 1)
+                (0, 1, (checksum * 257 + value + 2) % 1000000007, seen_a == 2048 && value == seen_b * 2 + 1)
             Closed -> (1, 0, checksum, false)
         seen_a = seen_a + add_a
         seen_b = seen_b + add_b
@@ -52,8 +51,8 @@ async fn main(console: Console, clock: Clock):
         order_ok = order_ok && selected_ok
     let bench_t1 = clock.now_monotonic()
 
-    let expected = expected_checksum(per_source)
-    if order_ok && seen_a == per_source && seen_b == per_source && checksum == expected:
+    let expected = expected_checksum(2048)
+    if order_ok && seen_a == 2048 && seen_b == 2048 && checksum == expected:
         console.print("count=${seen_a + seen_b} checksum=${checksum} order=ok")
     else:
         console.print("count=${seen_a + seen_b} checksum=${checksum} expected=${expected} order=bad")
