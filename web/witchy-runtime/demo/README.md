@@ -6,8 +6,8 @@ update in an actual browser**. It exercises the full glamour frontend stack
 
 - **RFC-0006** — the `html"…"` compile-time tagged literal that the counter's
   `view` is written with.
-- **RFC-0007** — `witchy-runtime.mjs`, the deny-all *pure-compute* WASM host.
-  These runes import only pure functions, so they instantiate; a rune that
+- **RFC-0007** — `witchy-runtime.mjs`, the *deny-all capability* WASM host.
+  These runes import only non-authority host functions, so they instantiate; a rune that
   touched Net/Dir/Clock would fail with a `LinkError` (deny-by-omission).
 - **RFC-0008** — `glamour-dom.mjs`, the capability-holding DOM shell that diffs
   a rune's VNode tree into the real DOM and marshals click events back as `Msg`
@@ -20,7 +20,7 @@ update in an actual browser**. It exercises the full glamour frontend stack
    rune (`export_step`), folds the model, and the differ patches the DOM. The
    buttons are tagged `data-action="inc"` / `data-action="dec"` and the count
    `<span>` is tagged `data-role="count"` so a test can find them.
-2. **Highlighter** — a pure syntax highlighter. We call its `export_render({src})`
+2. **Highlighter** — a data-only syntax highlighter. We call its `export_render({src})`
    through the shim's `callString` and render the returned VNode JSON into
    `#highlight` with `createElement` / `textContent` ONLY. The source includes a
    comment, a string, and a literal `<script>`; the `<script>` appears as inert,

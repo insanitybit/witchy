@@ -1,7 +1,7 @@
 # compute
 
 A few small numeric functions — `double`, recursive `fib`, and `fact` via
-`match` — summed and printed. The computations are pure (`pub`, no capabilities);
+`match` — summed and printed. The computations are data-only (`pub`, no capabilities);
 only `main` touches the `Console`, so the program runs identically interpreted,
 compiled, and inside the capability sandbox.
 

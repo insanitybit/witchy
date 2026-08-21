@@ -166,7 +166,7 @@ pub fn resolve_ips(host: &str) -> Vec<String> {
     ips
 }
 
-/// The browser shim has no DNS (pure-compute, deny-by-omission): resolution yields nothing.
+/// The browser shim has no DNS (deny-by-omission): resolution yields nothing.
 #[cfg(target_arch = "wasm32")]
 pub fn resolve_ips(_host: &str) -> Vec<String> {
     Vec::new()

@@ -17,14 +17,14 @@ maps the repository.
 - **pm** - the package-manager **client** ("cargo for witchy"): resolve, fetch,
   verify, add, build, run. It talks to coven over a small HTTP contract.
 
-- **glamour** - a capability-pure **frontend framework** (Model-View-Update).
-  Your app is a pure function from state to a `VNode` tree, and it emits effects
+- **glamour** - an empty-root-footprint **frontend framework** (Model-View-Update).
+  Your app computes a `VNode` tree from state, and it emits effects
   as inert `Cmd` *data*; a capability-holding host interprets them. The app
   itself holds no DOM, network, or storage authority - so a witchy UI has the
   same deny-by-default footprint story as any other witchy program.
 
-- **coven-web** - the **web console** for coven: a pure-witchy server plus a
-  thin host shell that holds the browser-side authority a pure-compute guest
+- **coven-web** - the **web console** for coven: a server implemented in Witchy plus a
+  thin host shell that holds the browser-side authority a zero-root-authority guest
   can't (network, session, credentials). It serves a glamour app same-origin
   with strict cross-origin isolation.
 

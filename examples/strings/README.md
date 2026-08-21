@@ -2,7 +2,7 @@
 
 Builds a greeting by concatenating string literals. Compiled to WASM, literals
 live in linear memory and `+` concatenates via a bump allocator. The building is
-pure (`pub`, no capabilities); only `main` touches the `Console`, so the program
+data-only (`pub`, no capabilities); only `main` touches the `Console`, so the program
 runs identically interpreted, compiled, and inside the capability sandbox.
 
 **Shows:** `String` concatenation, `pub` functions across modules, and in-rune

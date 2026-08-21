@@ -1,5 +1,5 @@
-// Minimal URL parsing - the witchy slice of Go's net/url. Pure and
-// capability-free, so it compiles to WASM. Handles
+// Minimal URL parsing - the witchy slice of Go's net/url. It has an empty root
+// capability footprint and compiles to WASM. Handles
 // `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme
 // (443 for https, else 80) and the path to "/".
 //

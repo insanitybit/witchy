@@ -144,7 +144,7 @@ to authority (glamour's `UiFetch` tokens are policy you can't forge).
 ## The shape of a witchy program
 
 Push effects to the edges. `main` receives capabilities and delegates;
-the middle of the program is pure functions over data (easy to test - no
+the middle of the program is data-only code (easy to test - no
 capabilities to fake); the leaves take exactly the capability they use,
 narrowed as far as it will go (`Dir[Read]`, not `Dir`). A signature without
 capability parameters rules out direct host authority, but an ordinary callback

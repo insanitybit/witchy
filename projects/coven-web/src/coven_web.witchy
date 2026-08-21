@@ -80,7 +80,7 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     // UTF-8-only and cannot serve binary; inlining also keeps the wasm riding along
     // with the renderer the parent already fetches same-origin and injects as TEXT,
     // so no new binary route or frame fetch is introduced — `connect-src 'none'`
-    // on the frame stays intact). It runs under the pure-compute host, footprint-empty.
+    // on the frame stays intact). It runs under the deny-all capability host, footprint-empty.
     app = app.get("/source-sandbox.js", h_asset(assets, "source-sandbox.js", "text/javascript; charset=utf-8"))
     app = app.get("/sandbox-frame", h_sandbox_frame())
     // A foreign-code COMPARTMENT renderer (RFC-0015): the d3-style "runes over time" chart.
@@ -870,7 +870,7 @@ fn csp_for(p: String) -> String:
 fn compartment_csp() -> String:
     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
 
-// The app shell is now ONE capability-pure glamour rune compiled to WASM and inlined into
+// The app shell is now ONE empty-root-footprint glamour rune compiled to WASM and inlined into
 // `app.js`; its host shell (glamour-dom.mjs) builds the DOM with createElement/textContent
 // ONLY — there is no HTML-string sink anywhere — so the app is XSS-immune by construction.
 // `trusted-types 'none'` keeps that browser-enforced: the shell creates NO Trusted Types
@@ -911,13 +911,13 @@ fn csp_connect_sources(host_connect: List(String), fetch_origins: List(String)) 
 //
 // `'wasm-unsafe-eval'` is added to `script-src` HERE — and ONLY here — so the
 // frame may instantiate the glamour syntax-highlighter WASM (RFC-0007's
-// pure-compute target). This is the RFC-0007-sanctioned tradeoff: the WASM runs
+// deny-all capability target). This is the RFC-0007-sanctioned tradeoff: the WASM runs
 // inside this CONTAINED sandbox (opaque origin + `connect-src 'none'`), never in
 // the trusted parent — `app_csp()` deliberately keeps NO `wasm-unsafe-eval`. The
 // wasm bytes are base64-INLINED into `source-sandbox.js` at build time, so they
 // ride along with the renderer the parent already fetches same-origin and injects
 // as TEXT; the frame itself never fetches anything (`connect-src 'none'` holds).
-// The highlighter rune's capability footprint is empty, and the pure-compute host
+// The highlighter rune's capability footprint is empty, and the deny-all capability host
 // denies every capability import, so the module is I/O-incapable by construction
 // even before the frame's network firewall.
 fn sandbox_csp() -> String:

@@ -1,4 +1,4 @@
-// money — pure helpers for formatting integer cents as dollar amounts. A library
+// money — data-only helpers for formatting integer cents as dollar amounts. A library
 // rune with no host capabilities, so depending on it grants no authority at all.
 
 // Format a non-negative cent amount as "$D.CC" (cents zero-padded to two digits).

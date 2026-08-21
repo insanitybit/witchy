@@ -3,7 +3,8 @@ use crate::{codegen, interpreter, parser};
 
     /// (RFC-0032) `vm.par_map(xs, f)` maps a capture-free function over a list. On the
     /// interpreter it is the sequential oracle; on the compiled backend it runs across
-    /// OS-thread VMs. Because results are collected by input index and `f` is pure, the
+    /// OS-thread VMs. Because results are collected by input index and `f` is a closed,
+    /// deterministic top-level function, the
     /// two backends produce identical output (parity by determinism).
     #[test]
     fn vm_par_map_backends_agree() {

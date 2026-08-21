@@ -1,6 +1,6 @@
 # Glamour
 
-Glamour is Witchy's experimental, capability-pure MVU UI substrate. It is not a
+Glamour is Witchy's experimental, empty-root-footprint MVU UI substrate. It is not a
 React clone and it is not production-ready browser infrastructure yet; it is the
 smallest proof that a Witchy application can describe a UI without holding DOM,
 network, storage, timer, or credential authority itself.

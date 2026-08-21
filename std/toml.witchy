@@ -1,4 +1,4 @@
-// toml - a TOML reader written in pure witchy (no native code). Two ways in:
+// toml - a TOML reader implemented in Witchy with no native code. Two ways in:
 // `toml.decode(text)` parses a whole document into a structured `Toml` tree (the
 // `json.decode` shape); or look individual values up by a `section.key` path with
 // `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and

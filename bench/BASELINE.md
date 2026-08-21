@@ -45,7 +45,7 @@ codegen quality; parallel actor drain available opt-in.
 
 ## Multi-core (RFC-0032) — `vm.par_map` across worker VMs
 
-A CPU-heavy pure function mapped over 16 elements, run in parallel. The witchy
+A CPU-heavy closed top-level function mapped over 16 elements, run in parallel. The witchy
 leg uses `vm.par_map`, which dispatches the elements to OS-thread worker VMs (one
 wasmtime instance per core, zero-authority); the Go leg uses goroutines + a
 `WaitGroup`. 10-core machine, compiled WASM tier, hyperfine.
@@ -58,4 +58,4 @@ Both saturate the cores (user time ~508 ms Go vs ~543 ms witchy). witchy's real
 multi-core is within 25% of Go's goroutines on CPU-bound parallel work; the gap is
 per-call worker-VM instantiation overhead (a future instance-pool lever). This is
 the first witchy workload to use more than one core — parity-preserving, because a
-pure function collected by input index yields the same result sequentially.
+data-only function collected by input index yields the same result sequentially.

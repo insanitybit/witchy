@@ -6,7 +6,7 @@
 // `connect-src 'none'` sandbox, never in the parent page.
 //
 // It highlights witchy source by running the glamour `highlighter` rune, compiled
-// to footprint-empty WASM, under the RFC-0007 pure-compute host (the bundled
+// to footprint-empty WASM, under the RFC-0007 deny-all capability host (the bundled
 // witchy-runtime shim, which implements only the non-capability "witchy" imports
 // and DENIES every capability import — a capability-using module simply fails to
 // instantiate). The rune returns a glamour VNode tree as JSON; we build the DOM
@@ -109,7 +109,7 @@ function b64ToBytes(b64) {
     return el;
   }
 
-  // Instantiate the highlighter WASM under the pure-compute host and render the
+  // Instantiate the highlighter WASM under the deny-all capability host and render the
   // source. Returns the out element's scrollHeight (for the parent's auto-size).
   async function renderSource(text) {
     ensureStyle();

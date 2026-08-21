@@ -153,7 +153,7 @@ fn full_lifecycle_publish_promote_add_use() {
     let out = fe.pm(&lib, &["promote", "acme/strkit", "0.1.0"], Some(&alice));
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
 
-    // Add the released library (pure — no capability widening, just vendored;
+    // Add the released library (empty footprint — no capability widening, just vendored;
     // fetched over HTTP, signature-verified + content-hashed).
     let out = fe.pm(&app, &["add", "acme/strkit"], None);
     assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
@@ -794,7 +794,7 @@ fn witchy_pm_publishes_with_trusted_token() {
 
 /// RFC-0008's final acceptance criterion — "the framework rune is published to
 /// coven as the proof" — end to end with the real `projects/glamour` source as
-/// the payload. The glamour view layer is a capability-pure (empty-footprint)
+/// the payload. The glamour view layer has an empty root footprint
 /// frontend rune (`VNode`/`Attr`/`Cmd` + the compile-time `html` tag); this test
 /// proves it DISTRIBUTES like any footprint-empty rune AND that its `html` tag
 /// works against a registry-fetched copy:
@@ -805,7 +805,7 @@ fn witchy_pm_publishes_with_trusted_token() {
 ///      that recomputed `runtime_footprint` is EMPTY (the publish body and the
 ///      `/coven/record` fetch both show `runtime_footprint` with no entries). That
 ///      machine-checked empty footprint IS the proof, not a claim.
-///   3. A PURE consumer app (no declared capabilities) `add`s the published
+///   3. An empty-footprint consumer app `add`s the published
 ///      glamour WITHOUT any `--allow-cap` consent — corroborating the empty
 ///      footprint, since an honestly-footprinted rune that demanded a capability
 ///      would gate. It then BUILDS and RUNS an app that `import`s the fetched
@@ -881,7 +881,7 @@ fn glamour_publishes_to_coven_empty_footprint_and_renders_through_html() {
          runtime_footprint: {record}"
     );
 
-    // (3) A PURE consumer app (no declared capabilities beyond Console) adds the
+    // (3) A consumer app whose only root capability is Console adds the
     // published glamour. A clean add with NO `--allow-cap` consent only succeeds
     // because the recomputed footprint is empty — an honest rune that demanded a
     // capability would gate (see

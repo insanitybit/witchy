@@ -1763,7 +1763,7 @@ fn main(console: Console):
 
 The core data modules - `list`, `string`, `dict`, `math`, `option`, `result`,
 `policy`, and `show` - are **the prelude**: always available, no import line needed
-(`xs.push(1)` and `dict.new()` work anywhere). Pure data operations belong to
+(`xs.push(1)` and `dict.new()` work anywhere). Data operations belong to
 their data type or its module - never bare globals; capability operations are
 **methods on the capability that carries the
 authority** (`console.print(msg)`, `dir.read(path)`, `clock.now()`) - the

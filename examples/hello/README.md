@@ -1,8 +1,8 @@
 # hello
 
-A first taste of witchy: pure functions, pattern matching, string
+A first taste of witchy: data-only functions, pattern matching, string
 interpolation, and capability-gated effects. `print` requires a `Console`
-capability, which only `main` is granted — the pure helpers `double` and
+capability, which only `main` is granted — the data-only helpers `double` and
 `classify` need none, so they run identically interpreted, compiled, and inside
 the capability sandbox.
 

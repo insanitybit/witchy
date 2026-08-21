@@ -3,7 +3,7 @@
 Classify an integer against a span instead of enumerating every value:
 `http_class` buckets an HTTP status code by its class, and `grade` maps a 0–100
 score to a letter. Both use `match` arms with `if` guards over the bounds. The
-classification is pure (`pub`, no capabilities); only `main` touches the
+classification is data-only (`pub`, no capabilities); only `main` touches the
 `Console`, so it runs identically interpreted, compiled, and inside the
 capability sandbox.
 

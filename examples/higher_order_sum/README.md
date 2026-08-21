@@ -3,7 +3,7 @@
 "Find the sum of all the squared odd numbers under 1000" — the higher-order
 functions example from Rust by Example, done two ways: an imperative loop and a
 functional pipeline over `std/list` (`map` / `take_while` / `filter` / `sum`).
-Both are pure (`pub`, no capabilities) and agree on every backend; only `main`
+Both are data-only (`pub`, no capabilities) and agree on every backend; only `main`
 touches the `Console`.
 
 **Shows:** higher-order functions, closures, `std/list` pipelines, `while`

@@ -599,7 +599,7 @@ fn dynamic_keyed_plan(old_keys: List(String), new_keys: List(String)) -> Result(
 
 // (RFC-0041) Emit a host slot: the host's `kind` renderer mounts a widget here (in the main
 // frame) and glamour never diffs into it. `data` is the payload (e.g. a runnable cell's
-// source). The rune stays pure — it only names the slot; the host owns the widget.
+// source). The rune stays data-only — it only names the slot; the host owns the widget.
 pub fn slot(kind: String, data: String) -> VNode(msg):
     Slot(kind, data)
 
@@ -2116,7 +2116,7 @@ type Program(auth, model, msg):
 pub fn program(authorize: fn(UiRoot) -> auth, initial: fn(Start) -> model, start: fn(auth, model) -> Cmd(msg), update: fn(auth, model, msg) -> (model, Cmd(msg)), render: fn(model) -> Ui(msg), subscriptions: fn(auth, model) -> Sub(msg)) -> Program(auth, model, msg):
     Program(authorize, initial, start, update, render, subscriptions)
 
-// A zero-ceremony program constructor for pure state machines without side effects (RFC-0136).
+// A zero-ceremony program constructor for data-only state machines without side effects (RFC-0136).
 pub fn simple_program(initial_model: model, update_fn: fn(model, msg) -> model, render_fn: fn(model) -> Ui(msg)) -> Program(Nil, model, msg):
     Program(fn(_root: UiRoot): Nil, fn(_start: Start): initial_model, fn(_auth: Nil, _model: model): NoCmd, fn(_auth: Nil, model: model, msg: msg): (update_fn(model, msg), NoCmd), render_fn, fn(_auth: Nil, _model: model): NoSub)
 
@@ -2369,7 +2369,7 @@ pub fn program_update(app: Program(auth, model, msg), auth: auth, model: model, 
 // the shell wraps the `(status, body)` response into and dispatches back. The rune
 // holds no `Net` — it only DESCRIBES the request; the capability-holding host shell
 // performs the fetch (attaching any session credential ITSELF) and feeds the result
-// back as that msg, exactly like the `After` timer. So `update` stays pure and the
+// back as that msg, exactly like the `After` timer. So `update` stays data-only and the
 // footprint stays empty, while the app still talks to a server.
 // (RFC-0039) The leading `UiFetch` is the unforgeable authority to construct
 // this fetch: a component without one CANNOT emit an HTTP effect. The token is
@@ -4983,7 +4983,7 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
 
 // ===========================================================================
 // The RUN-LOOP glue (RFC-0008's MVU loop, host-driven). The app author writes a
-// single pure `pub fn export_step(input: String) -> String` (the `export_`
+// single ordinary `pub fn export_step(input: String) -> String` (the `export_`
 // prefix marks it a JS-callable WASM export — see `is_string_export` in codegen).
 // The host calls it with `{"model": <model-json>}` (initial render) or
 // `{"model": <model-json>, "msg": <msg-json>}` (after an event). `step_with`

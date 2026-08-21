@@ -2,7 +2,7 @@
 // length table over the two line lists, then backtrack from the bottom-right
 // corner: a matching line is unchanged ("  "), otherwise we step in the
 // direction of the longer subsequence, emitting a deletion ("- ", only in old)
-// or an insertion ("+ ", only in new). Pure (Console only); identical on both
+// or an insertion ("+ ", only in new). Data-only apart from `main` (root footprint: `Console`); identical on both
 // backends. Run:  witchy examples/diff/src/diff.witchy
 
 import math

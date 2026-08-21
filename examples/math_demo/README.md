@@ -1,8 +1,9 @@
 # math_demo
 
 Calls the bundled `math` standard library — `max`, `abs`, `clamp`, `pow`, and
-`gcd`. Like every std module it is pure: importing it grants no authority, only
-computation.
+`gcd`. These operations are data-only, and importing `math` adds no root
+capability demand. That footprint fact is separate from a checked `pure fn`
+contract.
 
 **Shows:** importing a std module, calling module-qualified functions, and the
 `Console` capability.

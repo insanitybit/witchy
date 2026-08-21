@@ -159,8 +159,9 @@ a choice of backend.
 ## Determinism, tiered
 
 The lock's `determinism` field records what reproducibility the build can
-promise: `guaranteed` when every build step is pure (the capability model
-removes clocks, env, network, and randomness *by construction* unless granted),
+promise: `guaranteed` when every build step requests only deterministic build
+authority (the capability model removes clocks, env, network, and randomness
+*by construction* unless granted),
 and `pinned-only` once `BuildExec`/`BuildNet` enter. Deterministic steps are
 also *cached*: a content hash over the build source and its granted inputs keys
 the output, so an unchanged step never re-runs - while a step that touches the

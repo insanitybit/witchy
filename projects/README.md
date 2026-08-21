@@ -24,11 +24,11 @@ together — each dogfooding the language and its capability model.
 
 | Dir | Role | Depends on | Governing design |
 |---|---|---|---|
-| [`pm/`](pm/) | The package-manager **client** ("cargo for witchy") — resolve, fetch, verify, publish. Pure witchy. | coven (over the HTTP/wire contract) | [rfcs/package-manager.md](../rfcs/package-manager.md) |
-| [`coven/`](coven/) | The package **registry** — signed records, source-recomputed capability footprints, block-on-widening, two-phase stage→2FA-promote, TUF. Pure witchy. | witchy `compiler.footprint`, crypto, Dir | [rfcs/package-manager.md](../rfcs/package-manager.md), [spec/local-registry.md](../spec/local-registry.md) |
-| [`glamour/`](glamour/README.md) | A capability-pure **MVU frontend framework** — the app computes `VNode` data and emits effects as inert `Cmd` data; a capability-holding host interprets them. | witchy-WASM browser target | [rfcs/0006](../rfcs/0006-compile-time-tagged-literals.md), [0007](../rfcs/0007-witchy-wasm-browser-target.md), [0008](../rfcs/0008-frontend-framework-rune.md), [0039](../rfcs/0039-glamour-capability-safe-effects.md) |
+| [`pm/`](pm/) | The package-manager **client** ("cargo for witchy") — resolve, fetch, verify, publish. Implemented in Witchy. | coven (over the HTTP/wire contract) | [rfcs/package-manager.md](../rfcs/package-manager.md) |
+| [`coven/`](coven/) | The package **registry** — signed records, source-recomputed capability footprints, block-on-widening, two-phase stage→2FA-promote, TUF. Implemented in Witchy. | witchy `compiler.footprint`, crypto, Dir | [rfcs/package-manager.md](../rfcs/package-manager.md), [spec/local-registry.md](../spec/local-registry.md) |
+| [`glamour/`](glamour/README.md) | An empty-root-footprint **MVU frontend framework** — the app computes `VNode` data and emits effects as inert `Cmd` data; a capability-holding host interprets them. | witchy-WASM browser target | [rfcs/0006](../rfcs/0006-compile-time-tagged-literals.md), [0007](../rfcs/0007-witchy-wasm-browser-target.md), [0008](../rfcs/0008-frontend-framework-rune.md), [0039](../rfcs/0039-glamour-capability-safe-effects.md) |
 | [`glamour-server/`](glamour-server/README.md) | Optional capability-free **progressive action adapter** — checks Glamour form schemas, request bounds, encoding, and same-origin policy before invoking typed Witchy server callbacks. | glamour, witchy `std/server` | [RFC-0107](../rfcs/0107-glamour-next-generation-web-framework.md) |
-| [`coven-web/`](coven-web/) | The **web console** for coven — a pure-witchy server + a thin host shell holding browser authority; serves a glamour app same-origin. | coven (proxied), glamour, witchy server (std/server) | [projects/coven-web/SECURITY.md](coven-web/SECURITY.md), [RFC-0015](../rfcs/0015-secure-web-by-construction.md) |
+| [`coven-web/`](coven-web/) | The **web console** for coven — a server implemented in Witchy plus a thin host shell holding browser authority; serves a glamour app same-origin. | coven (proxied), glamour, witchy server (std/server) | [projects/coven-web/SECURITY.md](coven-web/SECURITY.md), [RFC-0015](../rfcs/0015-secure-web-by-construction.md) |
 | [`docs/`](docs/) | The documentation site — the book rendered as a Glamour app and as a typed zero-runtime `Site`. Its `witchy.toml` declares `book/src` as closed `StaticContent`; the static build records every input and emits 56 canonical routes. The runnable public bundle remains the RFC-0041 client path until RFC-0107 resumable islands replace its fresh mount. | glamour, markdown, declared book content | [rfcs/0041](../rfcs/0041-docs-as-a-glamour-app.md), [RFC-0107](../rfcs/0107-glamour-next-generation-web-framework.md) |
 
 ## How this differs from `examples/`
@@ -38,7 +38,7 @@ e2e-tested). `projects/` are the load-bearing applications the ecosystem itself
 runs on — the package manager, the registry, the framework, and the console —
 and they are where "witchy all the way down" is actually demonstrated. `pm` and
 `coven` are 0-non-witchy-LOC; the frontend components have a principled host
-shell in JS at the browser edge (DOM/network/credential APIs a pure-compute
+shell in JS at the browser edge (DOM/network/credential APIs a zero-root-authority
 guest cannot and must not hold).
 
 ## The two cross-component contracts

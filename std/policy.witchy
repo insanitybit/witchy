@@ -1,5 +1,5 @@
 // policy - typed capability refinement policies (RFC-0011, RFC-0057). A policy is a
-// pure value built by a type-associated constructor on the capability it belongs to,
+// inert value built by a type-associated constructor on the capability it belongs to,
 // then handed to that capability's refinement verb: `net.only(policy)` narrows a
 // `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The
 // constructors live under the capability's OWN type - `Net.tcp(…)`, `Dir.ext(…)` - so
@@ -10,7 +10,7 @@
 //     let lan = net.deny(Net.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block
 //     let log = dir.only(Dir.ext(".log"))               // only `.log` files
 //
-// These are pure value builders (empty capability footprint). A `NetPolicy` wraps the
+// These are data-only value builders with an empty root capability footprint. A `NetPolicy` wraps the
 // same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS
 // scheme is a connect-time choice on the address, not a property of the policy (RFC-0009).
 // The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.

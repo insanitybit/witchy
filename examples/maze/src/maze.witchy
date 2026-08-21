@@ -2,7 +2,7 @@
 // the start and `E` the exit. BFS explores outward from `S` a ring at a time, so
 // the first time it reaches `E` it has the shortest route; a `prev` Dict (keyed
 // by an encoded `row*width + col` position) records how each cell was reached, so
-// the route can be walked back and marked with `*`. Pure (Console only).
+// the route can be walked back and marked with `*`. Data-only apart from `main` (root footprint: `Console`).
 // Run:  witchy examples/maze/src/maze.witchy
 
 import dict

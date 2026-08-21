@@ -1,4 +1,4 @@
-// highlight — a shared, capability-PURE syntax highlighter for witchy + TOML
+// highlight — a shared, empty-root-footprint syntax highlighter for witchy + TOML
 // source, built on glamour (RFC-0008). It takes source TEXT and produces a
 // glamour `VNode` tree: the source is split into classed `<span>` runs by token
 // kind. Two languages share ONE token model and ONE renderer, so a single CSS

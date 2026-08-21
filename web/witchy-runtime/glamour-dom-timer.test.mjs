@@ -2,7 +2,7 @@
 // RFC-0008 EFFECTS-AS-DATA capstone test: prove the rune -> Cmd -> shell-performs
 // -> msg -> update loop end to end, HEADLESSLY, with a FAKE CLOCK.
 //
-// The `autocounter` rune is capability-pure: it CANNOT read a clock or arm a timer
+// The `autocounter` rune is empty-root-footprint: it CANNOT read a clock or arm a timer
 // (it holds no `Clock`). Its `update` only DESCRIBES the next tick by returning a
 // `Cmd` — `After(1000, Tick)`. The capability-HOLDING host shell
 // (glamour-dom.mjs) reads that description and performs it via an INJECTED timer.

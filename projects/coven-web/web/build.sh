@@ -5,7 +5,7 @@
 # Phase D), bundle the in-sandbox renderer -> dist/source-sandbox.js, and compile
 # the glamour highlighter rune -> dist/highlighter.wasm (WS-I/M6).
 #
-# The ENTIRE frontend is now one capability-pure glamour rune
+# The ENTIRE frontend is now one empty-root-footprint glamour rune
 # (projects/glamour/examples/coven_web_app) compiled to WASM; src/ is just the thin
 # host shell (the bootstrap + the session/WebAuthn/yank ports) that holds authority.
 set -euo pipefail
@@ -118,7 +118,7 @@ cp "$REPO/projects/glamour/examples/highlighter/src/highlighter.witchy" "$WORK/h
 ( cd "$WORK" && "$WITCHY" compile highlighter.witchy --out highlighter.wasm )
 
 # The in-sandbox renderer: bundle the entry (which imports the witchy-runtime
-# pure-compute shim) into a single self-contained IIFE, then base64-INLINE the
+# deny-all capability shim) into a single self-contained IIFE, then base64-INLINE the
 # highlighter WASM into it (replacing the `__HIGHLIGHTER_WASM_B64__` placeholder).
 # witchy's Dir `read` is UTF-8-only and cannot serve binary, and the frame is
 # `connect-src 'none'` so it cannot fetch — inlining puts the bytes where the

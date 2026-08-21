@@ -6,7 +6,7 @@ with exactly 3 live neighbours and survives with 2 or 3). A glider drifts down
 and to the right.
 
 **Shows:** nested `while` loops, `List(List(Bool))` grids, boolean logic, string
-building, and in-rune `test_*` functions. Pure (`Console` only), so it runs
+building, and in-rune `test_*` functions. Data-only apart from `main` (root footprint: `Console`), so it runs
 identically interpreted and compiled to WASM.
 
 ## Run

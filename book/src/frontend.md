@@ -1,19 +1,18 @@
 # Frontend Apps with Glamour
 
-witchy builds browser UIs the same way it builds everything else: as pure code
-with authority carried explicitly. The framework is **Glamour**, a
-capability-pure Model-View-Update (MVU) library - and this book you're reading
-is itself a Glamour app.
+witchy builds browser UIs with authority carried explicitly. The framework is
+**Glamour**, an empty-root-footprint Model-View-Update (MVU) library - and this
+book you're reading is itself a Glamour app.
 
 ## The shape of a Glamour app
 
-A Glamour app is three pure pieces plus a host that runs the effects:
+A Glamour app has three data-oriented pieces plus a host that runs the effects:
 
 - a **model** - your application state, an ordinary witchy value;
-- a **view** - a pure function from the model to a **`VNode`** tree. A view is
+- a **view** - an ordinary function from the model to a **`VNode`** tree. A view is
   *data*: you build `element`/`text`/`prop` nodes, and text is escaped by
   construction. A `<script>` in your data renders as inert text;
-- an **update** - a pure function from a message and the current model to the
+- an **update** - an ordinary function from a message and the current model to the
   next model, optionally returning **`Cmd`** values.
 
 A `Cmd` is an **inert description of an effect** - "make this HTTP request",
@@ -23,7 +22,7 @@ shell** interprets it. So the app holds no DOM, network, storage, or credential
 authority: a witchy UI has the same deny-by-default footprint story as any other
 witchy program.
 
-You can see both halves - a pure `VNode` render and a full live MVU counter whose
+You can see both halves - a data-only `VNode` render and a full live MVU counter whose
 network authority is denied - running right in the page in
 [Appendix: Recipes](appendix-recipes.md).
 
@@ -52,7 +51,7 @@ with deterministic class handles.
 
 A Glamour app compiles to the same witchy WebAssembly as any other program, and
 runs on the browser's own WebAssembly engine. The browser host starts with only
-pure-compute infrastructure imports; no authority is ambient. A module that
+non-capability infrastructure imports; no authority is ambient. A module that
 reaches for an unrequested capability can't instantiate. The page may
 explicitly opt into providers published by the browser menu. That is the same
 structural guarantee as the native sandbox, arrived at by omission rather than
@@ -143,9 +142,9 @@ under `web/dist/compartments/d3-runes-chart/`.
 
 Two shipped apps demonstrate the model end to end:
 
-- **Coven Web** - the web console for the package registry. It pairs a pure-witchy
-  server with a thin host shell that holds the browser-side authority a
-  pure-compute guest can't (network, session, credentials), and serves a Glamour
+- **Coven Web** - the web console for the package registry. It pairs a server
+  implemented in Witchy with a thin host shell that holds the browser-side authority a
+  zero-root-authority guest can't (network, session, credentials), and serves a Glamour
   app same-origin under strict cross-origin isolation.
 - **The docs app** - this book, rendered as a Glamour app that fetches each
   chapter and turns its code blocks into editable, runnable cells.

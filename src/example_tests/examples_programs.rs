@@ -1,10 +1,10 @@
 use crate::{interpreter, parser, typeck};
 
-/// Independent expected-value oracle for pure shipped examples. Backend parity
+/// Independent expected-value oracle for shipped data-oriented examples. Backend parity
 /// belongs to `example_sweeps`, which runs every example under each optimization
 /// configuration; repeating that sweep per row only hid this compact contract.
 #[test]
-fn pure_examples_match_golden_output() {
+fn data_oriented_examples_match_golden_output() {
     let cases: &[(&str, &[&str])] = &[
         (
             "examples/calc/src/calc.witchy",

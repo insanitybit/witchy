@@ -1,6 +1,6 @@
 // The witchy-book page boot (RFC-0041): mount the compiled docs app into the page, wiring the
 // browser's real fetch / history / DOM and the runnable-cell slot renderer. The witchy rune is
-// pure (capability-free); THIS glue holds the authority — exactly the shape the tested docs
+// empty-root-footprint; THIS glue holds the authority — exactly the shape the tested docs
 // driver (`web/witchy-runtime/glamour-docs.test.mjs`) uses, only with real globals instead of
 // injected fakes. So there is no server: the page fetches static content and runs snippets
 // client-side.

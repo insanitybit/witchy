@@ -2,7 +2,7 @@
 // (RFC-0008), the proving ground for coven-web's inline highlighter (PLAN WS-I/M6).
 // It takes witchy source TEXT and produces a glamour `VNode` tree: a `<pre><code>`
 // whose source is split into classed `<span>` runs by token kind. There are no
-// events — a highlighter is a pure render — so the rune emits no `on` bindings.
+// events — a highlighter is a data-only render — so the rune emits no `on` bindings.
 //
 // The tokenizer + renderer live in the shared `highlight` module
 // (projects/glamour/src/highlight.witchy), so the standalone rune and coven-web's

@@ -1,4 +1,4 @@
-# autocounter — the glamour EFFECTS-AS-DATA demo (RFC-0008). A capability-pure
+# autocounter — the glamour EFFECTS-AS-DATA demo (RFC-0008). An empty-root-footprint
 # rune whose count climbs once per second with NO user click: `update` returns the
 # DESCRIPTION `After(1000, Tick)`, and the JS DOM host shell
 # (web/witchy-runtime/glamour-dom.mjs) — which alone holds the timer authority —

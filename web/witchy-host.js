@@ -15,7 +15,7 @@ import {
 // in as `wasm`.
 //
 // It compiles a snippet to a wasm module (`witchy_compile`) and runs it, acting as
-// the capability host: `print` collects output; the pure helpers (float /
+// the capability host: `print` collects output; the non-authority helpers (float /
 // encoding / string_from_code / regex / crypto) delegate to the lib's exports so
 // they match the native backend byte-for-byte; every authority import traps (the
 // browser grants no capabilities).

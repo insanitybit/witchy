@@ -1,4 +1,4 @@
-// path - pure manipulation of '/'-separated path strings.
+// path - data-only manipulation of '/'-separated path strings.
 //
 // This is string surgery only - it never touches the filesystem (that is the
 // `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext

@@ -1,6 +1,6 @@
 // Imports the strutil library and calls it with a qualified name. The import
 // brings `shout` into scope but confers no authority; `main` (the root actor)
-// holds the Console and decides what to do with the library's pure result.
+// holds the Console and decides what to do with the library's data result.
 
 import strutil
 

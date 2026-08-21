@@ -78,7 +78,7 @@ hit the network, write a file, inspect the environment, or depend on the real
 clock. Effectful production functions may live beside the tests, but the runner
 doesn't grant them authority merely because they were linked into a test.
 
-Keeping effects at the edges leaves the program's core pure, so plain tests need
+Keeping effects at the edges leaves the program's core data-only, so plain tests need
 no host setup and can't accidentally exercise real authority. Unused effectful
 production functions are pruned from each synthesized test artifact; merely
 linking a function that mentions `Dir`, `Fetch`, or `Exec` doesn't grant it.

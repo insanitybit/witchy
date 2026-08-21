@@ -2,7 +2,7 @@
 
 A generic prelude `Result`: `Ok`/`Err` carry inferred type parameters that the
 checker tracks per use. `safe_div` returns `Err` on a zero divisor and `show`
-renders either case with `match`. The conversions are pure; only `main` touches
+renders either case with `match`. The conversions are data-only; only `main` touches
 the `Console`.
 
 **Shows:** standard `Result`, `match`, type-parameter inference,

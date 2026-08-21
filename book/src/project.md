@@ -125,9 +125,9 @@ it.
 
 ## Program shape
 
-We split the program into a pure core and a capability shell, audited its exact
+We split the program into a data-only core and a capability shell, audited its exact
 authority from the source, and ran it in a VM that can do precisely that and
-nothing more. That shape - pure middle, thin authorized edge, enforced boundary -
+nothing more. That shape - data-only middle, thin authorized edge, enforced boundary -
 is how witchy programs are meant to be built. The bigger the program, the more
 it pays off: the surface that can affect the world stays small and legible, and
 everything else is provably inert.

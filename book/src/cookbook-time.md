@@ -3,11 +3,11 @@
 witchy splits time into three concerns, and keeps them honest with the type
 system and the capability model:
 
-- **`duration`** is a span - three hours, thirty seconds. It's pure arithmetic
+- **`duration`** is a span - three hours, thirty seconds. It's data-only arithmetic
   and needs no authority.
 - **`time`** turns an instant (milliseconds since the Unix epoch) into a
   civil `DateTime` you can read fields off, and back. Constructing and
-  inspecting a `DateTime` is also pure.
+  inspecting a `DateTime` is also data-only.
 - **Reading the *current* time** is an *effect*, and so it requires the `Clock`
   capability. You can't call "now" without being handed a clock.
 

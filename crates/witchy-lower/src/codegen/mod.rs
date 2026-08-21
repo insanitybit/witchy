@@ -10929,7 +10929,7 @@ pub(crate) const STRING_EXPORT_PREFIX: &str = "export_";
 /// representation.
 /// Such a function gets a stable `(in_ptr, in_len) -> ptr` export wrapper
 /// (`__export_<name>`) plus the `__galloc` allocator, so a host (the browser
-/// pure-compute shim, the glamour DOM shell) can drive it across the WASM boundary
+/// deny-all capability shim, the glamour DOM shell) can drive it across the WASM boundary
 /// with a JSON string in and a JSON string out.
 ///
 /// The marker is the `export_` name PREFIX rather than the bare `(String)->String`

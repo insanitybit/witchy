@@ -1,4 +1,4 @@
-// `vm.par_map` runs eligible pure work across isolated worker VMs on the native
+// `vm.par_map` runs eligible ordinary work over data across isolated worker VMs on the native
 // compiled backend. Its callback is a bare top-level function over flat values;
 // the synchronous call pays worker startup and copy-in/copy-out boundary costs.
 //

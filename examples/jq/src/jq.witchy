@@ -1,7 +1,7 @@
 // jq — a tiny JSON query tool. It decodes a document and walks a dotted path into
 // it, where each segment is either an object key or (when it parses as a number)
 // an array index, then renders the selected value. A practical tour of std/json:
-// `decode`, `get` / `index`, and `encode`. Pure (Console only); identical on both
+// `decode`, `get` / `index`, and `encode`. Data-only apart from `main` (root footprint: `Console`); identical on both
 // backends. Run:  witchy examples/jq/src/jq.witchy
 
 from json import Json

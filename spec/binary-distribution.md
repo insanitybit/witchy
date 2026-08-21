@@ -57,7 +57,7 @@ trusted:  target/release/app                           host = embedded Witchy ru
   no launch section retain import-derived classification; malformed or unknown
   witchy launch metadata is rejected instead of silently ignored.
 - **Browser host.** Ship `app.wasm` + `web/witchy-host.js` as the loader. The
-  pure-compute JS host provides only infrastructure imports and omits every
+  deny-all capability JS host provides only infrastructure imports and omits every
   capability import, so a capability-using module fails to instantiate
   (deny-by-omission - see [`wasm-abi.md`](wasm-abi.md)).
 - **Trusted application executable.** `witchy --release build --target

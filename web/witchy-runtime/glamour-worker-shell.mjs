@@ -1,5 +1,5 @@
 // Capability-denied worker shell. It authenticates the content-addressed Wasm
-// bytes and grants the task only Witchy's pure String-to-String mechanics.
+// bytes and grants the task only Witchy's non-authority String-to-String mechanics.
 
 import { instantiate } from "./witchy-runtime.mjs";
 

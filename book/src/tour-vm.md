@@ -34,7 +34,8 @@ fn main(console: Console):
     console.print("${list.sum(squares)}")
 ```
 
-The result is collected **by input index** and `f` is pure. The
+The result is collected **by input index** and `f` is an eligible closed
+top-level function over data. The
 interpreter runs it sequentially, the compiled backend runs it across cores, and they
 produce the same ordered result.
 

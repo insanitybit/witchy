@@ -1,6 +1,6 @@
-// coven_test — unit tests for coven's pure logic. Run with `witchy test`.
+// coven_test — unit tests for coven's data-only logic. Run with `witchy test`.
 // The server lifecycle (publish -> promote -> add, TUF, trusted publishing) is
-// covered end-to-end by the Rust e2e suite; these lock the pure pieces:
+// covered end-to-end by the Rust e2e suite; these lock the data-only pieces:
 // name/version validation, and the derive(Json) round-trip the records rely on.
 
 import testing
@@ -232,7 +232,7 @@ fn test_second_factor_method_rejects_empty_string_and_missing_amr():
 // --- footprint recompute fails closed (BUG-422) ------------------------------
 // A source whose footprint cannot be computed (it does not compile) must be a hard
 // error, never a silently-empty footprint that trivially passes the under-declaration
-// gate. A valid pure library computes an empty footprint.
+// gate. A valid library with no root capability demand computes an empty footprint.
 fn test_computed_footprint_fails_closed_on_bad_source():
     match coven_footprint.computed_footprint([("src/x.witchy", "fn broken( ->")]):
         Ok(_caps) -> testing.assert(false, "a non-compiling source must not yield a footprint")
@@ -241,10 +241,10 @@ fn test_computed_footprint_fails_closed_on_bad_source():
                 coven_footprint.FootprintSourceDoesNotCompile(_detail) -> testing.assert(true, "an uncomputable footprint is a typed hard error")
                 _ -> testing.assert(false, "a non-compiling source should be FootprintSourceDoesNotCompile")
 
-fn test_computed_footprint_ok_for_pure_source():
+fn test_computed_footprint_ok_for_empty_footprint_source():
     match coven_footprint.computed_footprint([("src/x.witchy", "pub fn f(n: Int) -> Int:\n    n\n")]):
-        Ok(caps) -> testing.assert(caps.length() == 0, "a pure library has an empty footprint")
-        Err(e) -> testing.assert(false, "a valid pure source should compute: ${coven_footprint.footprint_error_message(e)}")
+        Ok(caps) -> testing.assert(caps.length() == 0, "the library should have an empty footprint")
+        Err(e) -> testing.assert(false, "a valid empty-footprint source should compute: ${coven_footprint.footprint_error_message(e)}")
 
 // --- encode (reflection) + derive(Deserialize) round-trip ------
 type Sample derive(Reflect, Deserialize):

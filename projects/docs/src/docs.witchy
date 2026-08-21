@@ -1,4 +1,4 @@
-// docs — The witchy Book as a glamour app (RFC-0041). A capability-PURE MVU app that
+// docs — The witchy Book as a glamour app (RFC-0041). An empty-root-footprint MVU app that
 // renders the book's Markdown pages (via std/markdown) with a sidebar DERIVED FROM
 // `SUMMARY.md`, routed client-side. Every fetch is the host shell's authority — the rune
 // holds no `Net`, only a `UiFetch` narrowed from the app-root `UiRoot` (RFC-0039/0040) — so
@@ -54,7 +54,7 @@ type Nav:
 // Parse `SUMMARY.md` into nav entries, PRESERVING its two-level structure: every
 // `[Title](slug.md)` link becomes an `Item` tagged with its indentation depth (so the sidebar
 // nests sub-pages under their chapter), and a `---` line becomes a `Divider`. Lines without a
-// Markdown link (the `# Summary` header, blanks) are skipped. Pure string surgery — no cap.
+// Markdown link (the `# Summary` header, blanks) are skipped. Data-only string surgery — no cap.
 fn parse_nav(summary: String) -> List(Nav):
     var out = []
     for line in summary.lines():

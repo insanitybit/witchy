@@ -5,7 +5,7 @@ A single, self-contained implementation plan spanning **both** halves of the ini
    migration), and
 2. the **coven-web** secure web frontend itself.
 
-Status: **WS-A through WS-I shipped and browser-verified.** The frontend is now ONE capability-pure
+Status: **WS-A through WS-I shipped and browser-verified.** The frontend is now ONE empty-root-footprint
 glamour WASM rune (`projects/glamour/examples/coven_web_app`, empty footprint), compiled and
 base64-inlined into `app.js`; the hand-written JS is just a thin host shell (the bootstrap + the
 session/WebAuthn/yank ports). All views are glamour — catalog with capability-aware search +
@@ -18,12 +18,12 @@ status: [RFC-0015](../../rfcs/0015-secure-web-by-construction.md). The workstrea
 original ordered plan, kept for the backend/stdlib history; everything needed to implement is inline.
 
 > **Design RFCs (2026-06-22).** WS-I is now specified across three proposed RFCs:
-> [RFC-0008 — A capability-pure frontend framework](../../rfcs/0008-frontend-framework-rune.md)
+> [RFC-0008 — An empty-root-footprint frontend framework](../../rfcs/0008-frontend-framework-rune.md)
 > (the MVU-over-`VNode` framework), which depends on
 > [RFC-0006 — Compile-time tagged literals](../../rfcs/0006-compile-time-tagged-literals.md)
 > (the typed, XSS-immune `html` ergonomics) and
 > [RFC-0007 — witchy-WASM in the browser](../../rfcs/0007-witchy-wasm-browser-target.md)
-> (the pure-compute browser target; **B5** below is its host-import shim). Build WS-I from those.
+> (the deny-all browser capability target; **B5** below is its host-import shim). Build WS-I from those.
 
 ---
 
@@ -45,7 +45,7 @@ TS** (unavoidable — Trusted Types / Perfect Types, sandboxed iframes, `Message
 Sanitizer are browser APIs). witchy-WASM enters later only in *contained* roles (sandbox renderer,
 client-side verifier), never as the trusted parent's DOM driver.
 
-**North star (later):** a witchy *frontend framework* shipped **as a rune** — a pure
+**North star (later):** a witchy *frontend framework* shipped **as a rune** — a data-only
 `view(state) -> VNode` / `update(state, msg) -> state` core with a **provably empty capability
 footprint** (coven's own analyzer proves it touches no Net/Dir/Clock), published *to coven itself*
 as the proof. coven-web is its proving ground.
@@ -226,7 +226,7 @@ HMAC, ECDSA P-256/384, Ed25519, AES-GCM, RSA, DRBG — and its `fips` feature is
 AWS-LC (C/asm), so a C toolchain/cmake (or a prebuilt) joins the build. Crypto sits **entirely
 host-side** (a Rust host import in `src/native.rs`, never compiled into guest WASM), so the WASM
 backend is unaffected. Private/signing keys stay host-minted, unforgeable `SigningKey`
-*capabilities*; hashing/verification stay pure (no capability).
+*capabilities*; hashing/verification request no root capability.
 
 Distinction to keep honest: *using FIPS-approved algorithms* (near-term goal) vs. formal **FIPS
 140-3 CMVP module validation** (separate/heavy; not in scope here).
@@ -313,14 +313,14 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
 *Depends on: WS-E (+ optionally WS-A for client-side verify).*
 - `/api/coven/snapshot` + `/timestamp` + `/rootpub`: TUF freshness (expiry/rollback), root-key
   fingerprint, per-record signature status. **Optional:** client-side ed25519 verification — the
-  first witchy-WASM-in-browser module (pure verify, no DOM; needs the WS-I host shim).
+  first witchy-WASM-in-browser module (data-only verification, no DOM; needs the WS-I host shim).
 - *Acceptance:* a tampered/rolled-back/expired state is visibly flagged.
 
 ### WS-H — Promote ("2FA to publish") write flow
 *Depends on: WS-A (crypto), WS-C (proxy POST), WS-D. v2.*
 - **B3:** `std/cookie` (parse `Cookie`; format `Set-Cookie` `__Host-`/`Secure`/`HttpOnly`/`SameSite=Strict`).
 - **B4:** WebAuthn second factor — prefer **ECDSA P-256 / ES256** (dominant FIDO2 algorithm, from
-  WS-A), Ed25519/EdDSA fallback; add a small **pure-witchy CBOR/COSE + authenticatorData/
+  WS-A), Ed25519/EdDSA fallback; add a small **implemented in Witchy CBOR/COSE + authenticatorData/
   clientDataJSON** parser (`std/webauthn.witchy`). (`crypto.hmac_sha256` enables TOTP as an
   alternative factor.)
 - Activate `sec_fetch_csrf`; add a POST allowlist (`promote`,`yank`) to the proxy. UI: maintainer
@@ -335,10 +335,10 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
 *Depends on: a clean WS-F render seam. Don't front-load; extract from real patterns.*
 - **Design:** specified in [RFC-0008](../../rfcs/0008-frontend-framework-rune.md), depending on
   [RFC-0006](../../rfcs/0006-compile-time-tagged-literals.md) (compile-time `html`) and
-  [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md) (the pure-compute browser target).
+  [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md) (the deny-all browser capability target).
 - **B5:** a **browser WASM host-import shim** (JS) implementing witchy's `"witchy"` import ABI
   (string-bridge + `encoding`; **deny** all capability imports → structurally I/O-incapable).
-- The framework: pure `view(state) -> VNode` / `update(state, msg) -> state` as a rune with a
+- The framework: data-only `view(state) -> VNode` / `update(state, msg) -> state` as a rune with a
   **provably empty footprint** (verified by coven's analyzer). A thin TS shell diffs `VNode` → DOM,
   marshals events back as `msg`. Migrate coven-web's sandbox highlighter, then renderer, onto it;
   publish the framework **to coven** as the proof.
@@ -438,7 +438,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
   COEP `require-corp`, CORP `same-origin` (strictest standard values) + DIP `isolate-and-require-corp`
   verified present on **all 7 route classes**; marked a HARD INVARIANT in `coven_web.witchy` and §5.3.
 - **2026-06-14 — WS-F (real sandboxed source viewer) done.** Drove a real anonymous publish to the
-  running coven (`demo/greeter` 1.0.0, pure `[]` footprint → staged with a real content hash + signed
+  running coven (`demo/greeter` 1.0.0, empty root footprint → staged with a real content hash + signed
   record + stored source; coven recomputes the footprint and rebuilds TUF on publish). Wired the
   version view to fetch the real `/api/coven/source` (graceful "unavailable" fallback for records
   without stored source). Verified in-browser: `demo/greeter@1.0.0` shows its real hash, real 128-hex
@@ -528,7 +528,7 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
     size.** Assertion verification needs to parse **binary** structures — `authenticatorData`
     (rpIdHash‖flags‖counter…) and, for registration, the CBOR `attestationObject` → COSE public key.
     witchy has **no binary/byte primitives** (strings are UTF-8; can't slice arbitrary bytes), so a
-    correct pure-witchy WebAuthn parser is blocked until byte primitives + a CBOR reader exist. The
+    correct implemented in Witchy WebAuthn parser is blocked until byte primitives + a CBOR reader exist. The
     crypto half (ES256 verify) is now done; the parsing half is a substantial, security-critical
     effort that should NOT be rushed. Interim: the promote flow already works with a trusted-string
     second factor (verified); upgrading it to real WebAuthn is the remaining work.

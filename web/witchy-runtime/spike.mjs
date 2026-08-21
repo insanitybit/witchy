@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // RFC-0007 spike: prove that a footprint-empty witchy rune, compiled to WASM,
-// runs under the pure-compute JS host (witchy-runtime.mjs) and produces output
+// runs under the deny-all capability JS host (witchy-runtime.mjs) and produces output
 // IDENTICAL to the native interpreter run — and that a capability-using rune is
 // structurally refused (deny-by-omission: missing-import LinkError).
 //
@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 
 const BIN = process.argv[2] || resolve(process.cwd(), "target/debug/witchy");
 
-// A pure-compute rune: arithmetic, recursion, string concat + interpolation,
+// An empty-root-footprint rune: arithmetic, recursion, string concat + interpolation,
 // and crypto.sha256. Its only host call is `print` (Console) — output, not
 // authority — so its capability footprint is empty.
 const PURE = `import crypto
@@ -55,7 +55,7 @@ const ok = (cond, msg) => {
 };
 
 try {
-  // --- 1. compile the pure rune to WASM ---
+  // --- 1. compile the empty-root-footprint rune to WASM ---
   const pureSrc = join(work, "pure.witchy");
   const pureWasm = join(work, "pure.wasm");
   writeFileSync(pureSrc, PURE);
@@ -67,7 +67,7 @@ try {
   // shim's per-line list (the shim trims trailing newlines per call).
   const nativeLines = native.replace(/\n+$/, "").split("\n");
 
-  // --- 3. run under the pure-compute shim ---
+  // --- 3. run under the deny-all capability shim ---
   const wasm = readFileSync(pureWasm);
   const { run } = await instantiate(wasm);
   const shimLines = run();

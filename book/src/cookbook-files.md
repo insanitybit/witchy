@@ -9,7 +9,7 @@ authority over a directory *subtree*, never the whole filesystem, and it carries
 rights that say what you may do inside it. You read files with `Dir[Read]`, write them
 with `Dir[Write]`, and take a full `Dir` when you need both.
 
-Unlike the pure examples in earlier chapters, these programs need a real `Dir`
+Unlike the data-only examples in earlier chapters, these programs need a real `Dir`
 to run - so the book type-checks them, and in the online edition the **Run**
 button executes them against a fresh *in-memory* `Dir`, one per run, seeded from
 a fixed fixture (it contains a `config.toml`, among other files). Nothing touches
@@ -62,7 +62,7 @@ principle as narrowing rights, applied to *reach* instead of *verb*.
 operations on top. `fs.ensure_dir(root, path)` creates a directory and any
 missing parents, and `fs.collect_files(root, path, rel, ext)` walks a subtree and
 returns the files matching an extension - the building block for a scanner or a
-build step. `path` (covered in the appendix) handles the pure string side:
+build step. `path` (covered in the appendix) handles the path-string side:
 joining, normalizing, and splitting paths without touching the disk at all.
 
 The division of labor is deliberate: `path` never needs a capability because it

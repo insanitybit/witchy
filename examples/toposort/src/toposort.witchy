@@ -2,7 +2,7 @@
 // must come before b". We repeatedly emit a node whose prerequisites are all
 // already emitted (Kahn's algorithm); if we get stuck with nodes remaining, the
 // graph has a cycle. The graph is just a node list and an edge list, so it stays
-// pure data — and pure (Console only), so it runs identically on both backends.
+// plain data. Its root footprint is Console only, so it runs identically on both backends.
 // Run:  witchy examples/toposort/src/toposort.witchy
 fn main(console: Console):
     let nodes = ["boot", "config", "db", "cache", "api", "web"]

@@ -3,7 +3,7 @@
 The `?` operator propagates errors: `e?` unwraps an `Ok`/`Some` to its value, or
 short-circuits — returning the `Err`/`None` straight out of the enclosing
 function, whose return type must match. `Result` and `Option` are standard
-prelude ADTs. The logic is pure (`pub`, no capabilities); only `main` touches
+prelude ADTs. The logic is data-only (`pub`, no capabilities); only `main` touches
 the `Console`.
 
 **Shows:** the `?` operator, standard generic `Result`, `match`, and

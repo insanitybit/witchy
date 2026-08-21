@@ -1,4 +1,4 @@
-// autocounter — the glamour EFFECTS-AS-DATA demo (RFC-0008). A capability-pure
+// autocounter — the glamour EFFECTS-AS-DATA demo (RFC-0008). An empty-root-footprint
 // rune that nonetheless makes a count climb on its own, once per second, with NO
 // user interaction. The trick is the whole point of RFC-0008's hard part: the rune
 // CANNOT read a clock or arm a timer — it holds no `Clock` capability — so it
@@ -32,7 +32,7 @@ type Msg derive(Reflect):
 fn view(count: Int) -> VNode(Msg):
     html"<div><button on:click=${Start}>start</button><span>${int_to_str(count)}</span></div>"
 
-// update: a pure match from (model, msg) to (model, Cmd). BOTH `Start` and `Tick`
+// update: a data-only match from (model, msg) to (model, Cmd). BOTH `Start` and `Tick`
 // increment the count AND return `glamour.after(timer, 1000, Tick)` — the description
 // of the next tick. (RFC-0039) Arming a timer requires a `UiTimer` token: a component
 // without one literally cannot schedule work. The rune still performs nothing; it only

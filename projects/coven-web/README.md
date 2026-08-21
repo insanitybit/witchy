@@ -8,7 +8,7 @@ source, provenance, release state, and capability footprints in one place.
 
 - **Status:** prototype/demo, not production-ready.
 - **Server:** `src/coven_web.witchy`, a Witchy `std/server` application.
-- **Frontend:** a capability-pure Glamour rune built into the web bundle.
+- **Frontend:** an empty-root-footprint Glamour rune built into the web bundle.
 - **Trusted shell:** small browser host code that owns browser authority and
   interprets the rune's inert `VNode` and `Cmd` data.
 - **Security model:** summarized in [`SECURITY.md`](SECURITY.md); detailed

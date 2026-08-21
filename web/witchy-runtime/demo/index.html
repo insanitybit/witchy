@@ -22,7 +22,7 @@
       background: #fbfbfd;
     }
     /* The counter rune renders <div><button>-</button><span>N</span><button>+</button></div>.
-       Give the controls room to breathe; styling is the SHELL's job (the rune is pure). */
+       Give the controls room to breathe; styling is the SHELL's job (the rune has an empty root footprint). */
     #counter button {
       font-size: 1.1rem;
       min-width: 2.5rem;
@@ -54,7 +54,7 @@
     #highlight span.num { color: #fab387; }
     /* The runecard rune emits <div class="rune-card"> nodes: a name heading, a
        version line, a row of capability badges (or the celebrated cap-none
-       state), and a provenance line. Styling is the SHELL's job; the rune is pure. */
+       state), and a provenance line. Styling is the SHELL's job; the rune has an empty root footprint. */
     .rune-card {
       border: 1px solid #d8d8e0;
       border-radius: 8px;
@@ -94,7 +94,7 @@
     /* The covenbrowser app: an INDEX of clickable rune cards and a DETAIL view
        (card + highlighted source + a back button). It reuses .rune-card / .cap-*
        above; these classes style the app chrome. Styling is the SHELL's job; the
-       rune is pure. */
+       rune has an empty root footprint. */
     #covenbrowser .coven-title { font-size: 1rem; margin: 0 0 0.5rem; }
     #covenbrowser .coven-index .rune-card { cursor: pointer; transition: border-color 0.1s; }
     #covenbrowser .coven-index .rune-card:hover { border-color: #7c6cf7; }
@@ -165,7 +165,7 @@
   <h1>witchy glamour — real-browser demo</h1>
   <p class="note">
     Two footprint-empty witchy runes, compiled to WASM, running under the
-    deny-all pure-compute host (RFC-0007) and the glamour DOM shell (RFC-0008).
+    deny-all capability host (RFC-0007) and the glamour DOM shell (RFC-0008).
     The runes <em>compute</em>; this page holds all the authority and acts.
   </p>
 
@@ -179,7 +179,7 @@
     </p>
   </div>
 
-  <h2>2. Highlighter (pure render; <code class="inline">&lt;script&gt;</code> stays inert text)</h2>
+  <h2>2. Highlighter (data-only render; <code class="inline">&lt;script&gt;</code> stays inert text)</h2>
   <div class="card">
     <div id="highlight" data-demo="highlight"><!-- VNode→DOM render here --></div>
     <p class="note">

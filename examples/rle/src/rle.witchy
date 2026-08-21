@@ -1,7 +1,7 @@
 // rle — run-length encoding and its inverse. A maximal run of one character is
 // written as its length followed by the character ("aaab" -> "3a1b"); decoding
 // reverses that. We verify the pair forms a true round-trip: decode(encode(s))
-// == s for every sample. Pure string processing (to_chars, char compare, repeat)
+// == s for every sample. Data-only string processing (to_chars, char compare, repeat)
 // over Console only, so it runs identically on both backends. Run:
 //   witchy examples/rle/src/rle.witchy
 

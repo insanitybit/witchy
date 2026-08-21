@@ -1,4 +1,4 @@
-// In-rune tests for `maze`'s pure grid helpers: locating a marker and reading a
+// In-rune tests for `maze`'s data-only grid helpers: locating a marker and reading a
 // cell glyph. The BFS itself is exercised by running the example. Run with
 // `witchy test examples/maze`.
 

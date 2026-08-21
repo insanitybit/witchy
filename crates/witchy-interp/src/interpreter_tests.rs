@@ -1387,7 +1387,7 @@ fn main(console: Console, net: Net, root: Dir):
 
     #[test]
     fn handlers_cannot_reach_the_network() {
-        // The capability guarantee: a pure handler has no Net, so even trying to
+        // The capability guarantee: this handler receives no Net, so even trying to
         // open a socket is a compile-time (type) error — it can't be written.
         let src = r#"
 import server

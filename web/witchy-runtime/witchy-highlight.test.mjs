@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// RFC-0041 Phase 0: the shared witchy highlighter is a PURE function, so it is unit-tested
+// RFC-0041 Phase 0: the shared witchy highlighter is a data-only function, so it is unit-tested
 // in Node with no DOM. Asserts keywords/types/strings/comments/numbers colour correctly, the
 // retired `restrict` verb is NOT painted as a builtin, and text is HTML-escaped.
 //

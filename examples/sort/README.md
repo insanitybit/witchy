@@ -2,7 +2,7 @@
 
 Sorts a list two ways with `list.sort_by` — a generic sort that takes an
 "is-less-than" closure, so the same call yields ascending or descending order
-depending on the comparator passed in. The rendering is pure (`pub`, no
+depending on the comparator passed in. The rendering is data-only (`pub`, no
 capabilities); only `main` touches the `Console`.
 
 **Shows:** generic `list.sort_by`, comparator closures, `list.map` plus

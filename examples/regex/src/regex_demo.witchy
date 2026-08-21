@@ -3,8 +3,8 @@
 // the preceding character), and the `^` / `$` anchors. The match is recursive:
 // `match_here` consumes the pattern and text together; `match_star` handles the
 // zero-or-more repetition. Every comparison is between two `list.at(..)` characters,
-// so it's a thorough both-backends exercise of content comparison. Pure (Console
-// only); identical interpreted and compiled. Run: witchy examples/regex/src/regex_demo.witchy
+// so it's a thorough both-backends exercise of content comparison. Root footprint:
+// Console only. Identical interpreted and compiled. Run: witchy examples/regex/src/regex_demo.witchy
 fn main(console: Console):
     for probe in cases():
         let (pattern, text) = probe

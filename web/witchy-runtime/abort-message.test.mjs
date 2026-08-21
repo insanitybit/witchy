@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// (RFC-0045) The pure-compute shim carries an abort's MESSAGE, not a bare trap. It
+// (RFC-0045) The deny-all capability shim carries an abort's MESSAGE, not a bare trap. It
 // links the always-linked, authority-free `__witchy_abort` import and renders the
 // shared DiagTemplate host-side, so a compiled abort throws a JS Error whose
 // `.message` is the SAME location-prefixed `runtime error` text the native host

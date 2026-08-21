@@ -1,6 +1,6 @@
 mode opt
 
-// A pure statistics helper. It is itself `mode opt` — and that is REQUIRED, not a
+// A data-only statistics helper. It is itself `mode opt` — and that is REQUIRED, not a
 // style choice: `main.witchy` is `mode opt`, and an `opt` module may only import
 // other `opt` modules. Delete the `mode opt` line above and the whole program
 // stops compiling. (The bundled std library is the one exemption.)

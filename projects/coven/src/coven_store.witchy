@@ -166,15 +166,15 @@ pub fn all_names(store: Dir) -> List(String):
                 out.push("${ns}/${nm}")
     out
 
-// The content digest of one signed-record payload. Pure (no capability), so the
-// snapshot's hashing fans out across cores via `vm.par_map`.
+// The content digest of one signed-record payload. This closed, data-only helper
+// has no root capability demand, so snapshot hashing can fan out across worker VMs.
 fn hash_payload(payload: String) -> String:
     "sha256:${crypto.sha256(payload)}"
 
 // Every current target as (name@version -> digest of its signed payload). The
 // snapshot sorts these keys to match the Rust BTreeMap's canonical ordering. Reading
 // the records is sequential I/O (it needs the `store` Dir), but the SHA-256 of each
-// payload is pure CPU, so we collect the payloads first and hash them in PARALLEL
+// payload is data-only CPU work, so we collect the payloads first and hash them in PARALLEL
 // across worker VMs — the snapshot of a large registry hashes on every core.
 pub fn all_target_digests(store: Dir) -> List((String, Json)):
     var keys = []

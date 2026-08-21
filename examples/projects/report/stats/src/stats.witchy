@@ -1,4 +1,4 @@
-// stats — pure integer statistics over a list, built on the std `list` module.
+// stats — data-only integer statistics over a list, built on the std `list` module.
 // A library rune with no host capabilities, so depending on it grants nothing.
 
 import list

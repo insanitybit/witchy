@@ -1,5 +1,5 @@
 // webauthn - server-side verification of a WebAuthn *assertion* (the credential
-// "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
+// "get" / second-factor ceremony), implemented in Witchy. ES256 (P-256, COSE alg -7) only.
 //
 // The browser hands every BINARY value to the server HEX-ENCODED (it holds them as
 // ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and

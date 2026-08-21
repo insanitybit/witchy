@@ -1,5 +1,5 @@
-// Uses the bundled `math` standard library. Like every std module it is pure —
-// importing it grants no authority, only computation.
+// Uses the bundled `math` standard library. These operations are data-only, and
+// importing `math` adds no root capability demand.
 
 import math
 

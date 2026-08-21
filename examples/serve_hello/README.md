@@ -1,10 +1,11 @@
 # serve_hello
 
-A capability-secure web server. Handlers are pure `fn(Request) -> Response` —
-they hold no `Net`/`Dir`/`Console`, so a handler literally cannot touch the
-network, filesystem, or console. Only `main` holds the `Net`, and it hands it to
-`serve` to listen, never to a handler. The router, path params, and middleware
-are axum-flavored; the capability sandbox is pure witchy.
+A capability-secure web server. The ordinary `fn(Request) -> Response` handlers
+are closed over request data and receive no `Net`/`Dir`/`Console`, so they cannot
+touch the network, filesystem, or console as written. Only `main` holds the
+`Net`, and it hands it to `serve` to listen, never to a handler. Use `pure fn`
+when an API needs a checked effect-free callable contract rather than this
+example's empty handler footprint.
 
 **Shows:** the `server` router, `get`/`post` routes, path params, an inline
 handler closure, and capability-confined request handling.

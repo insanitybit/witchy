@@ -4,7 +4,7 @@
 // drives the real loop: the initial route fetches a page's Markdown and renders it; the
 // sidebar lists the book's pages; clicking one navigates to its URL, fetches that page, and
 // renders it. The rune holds no Net — the host shell performs every fetch — so this proves
-// the docs SITE is a capability-pure witchy program (the dogfood), with authority at the edge.
+// the docs SITE is an empty-root-footprint witchy program (the dogfood), with authority at the edge.
 //
 // Usage:  node web/witchy-runtime/glamour-docs.test.mjs [path/to/witchy-binary]
 

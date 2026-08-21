@@ -2,7 +2,7 @@
 
 Uses the bundled `option` module: `first` returns the head of a list as an
 `Option(Int)` (or `None` when empty), and `option.unwrap_or` supplies a default.
-Pure (only `main` touches the `Console`), so it runs identically interpreted,
+Data-only (only `main` touches the `Console`), so it runs identically interpreted,
 compiled, and inside the capability sandbox.
 
 **Shows:** the `option` module, the `Option` type with `Some`/`None`, `match`

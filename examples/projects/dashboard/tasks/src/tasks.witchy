@@ -1,5 +1,5 @@
 // tasks — a dashboard widget: a one-line task-completion summary, rendered with
-// the shared `bars` base (a path dependency). Pure: no host capabilities.
+// the shared `bars` base (a path dependency). Data-only: no host capabilities.
 
 import bars
 

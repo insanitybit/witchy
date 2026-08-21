@@ -27,7 +27,7 @@ fn gate_blocks_capability_widening_then_allows_with_consent() {
     .unwrap();
     fe.publish_promote(&dir, "acme/netkit", "0.1.0");
 
-    // Adding it to a pure app must BLOCK and write nothing.
+    // Adding it to an empty-footprint app must BLOCK and write nothing.
     let out = fe.pm(&app, &["add", "acme/netkit"], None);
     assert!(!out.status.success(), "expected block, got success");
     assert!(stdout(&out).contains("BLOCKED"), "got: {}", stdout(&out));
@@ -48,7 +48,7 @@ fn gate_blocks_capability_widening_then_allows_with_consent() {
 }
 
 /// SEC-006: the gate covers the whole resolved CLOSURE, not just the direct rune. A
-/// rune with a pure public API (so its single-rune registry footprint shows nothing)
+/// rune with a capability-free public API (so its single-rune registry footprint shows nothing)
 /// that pulls a Net-demanding transitive dep must still BLOCK — otherwise a dep-of-a-dep
 /// silently widens the project's capability footprint. `--allow-cap` consents to the tree.
 #[test]
@@ -66,7 +66,7 @@ fn transitive_capability_widening_is_gated() {
     .unwrap();
     fe.publish_promote(&sneaky, "acme/sneaky", "1.0.0");
 
-    // An innocent-looking rune: PURE public API, but it depends on sneaky.
+    // An innocent-looking rune: CAPABILITY-FREE public API, but it depends on sneaky.
     let innocent = fe.lib("acme/innocent", "1.0.0", "pub fn greet(s: String) -> String:\n    \"hi \" + s\n");
     std::fs::write(
         innocent.join("witchy.toml"),
@@ -75,7 +75,7 @@ fn transitive_capability_widening_is_gated() {
     .unwrap();
     fe.publish_promote(&innocent, "acme/innocent", "1.0.0");
 
-    // Adding the pure-looking innocent must BLOCK on the transitive Net.
+    // Adding the capability-free-looking innocent must BLOCK on the transitive Net.
     let out = fe.pm(&app, &["add", "acme/innocent"], None);
     assert!(!out.status.success(), "a transitive Net must block the add");
     assert!(stdout(&out).contains("BLOCKED") && stdout(&out).contains("Net"), "transitive block: {}", stdout(&out));
@@ -112,7 +112,7 @@ fn transitive_dependency_add_pulls_the_closure() {
 
     // Adding http pulls url transitively into the vendored tree + the lock. http
     // demands Net, so the DIRECT add gates and needs `--allow-cap Net`; the
-    // transitive `url` (pure) is pulled by the consented direct add without
+    // transitive `url` (no root capability demand) is pulled by the consented direct add without
     // re-gating — consenting to a rune consents to its declared dependency tree.
     let out = fe.pm(&app, &["add", "acme/http", "--allow-cap", "Net"], None);
     assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
@@ -143,7 +143,7 @@ fn upgrade_that_widens_is_gated() {
     let fe = FrontEnd::new(&server, "upgrade");
     let app = fe.new_app();
 
-    // v1.0.0 of a logger: pure, no capabilities.
+    // v1.0.0 of a logger: empty root footprint.
     fe.published_lib("acme/logger", "1.0.0", "pub fn line(s: String) -> String:\n    s\n");
     let out = fe.pm(&app, &["add", "acme/logger"], None);
     assert!(out.status.success(), "add v1 failed: {}\n{}", stderr(&out), stdout(&out));

@@ -3,7 +3,7 @@
 A complete interpreter for the eight-instruction language. The tape is a list of
 integer cells with a moving data pointer; `[`/`]` are matched by scanning with a
 depth counter (no precomputed jump table). Output builds a string, turning each
-cell value into a character by indexing a literal of printable ASCII. Pure
+cell value into a character by indexing a literal of printable ASCII. Data-only
 (`pub`, `Console` only); identical on both backends.
 
 **Shows:** `while` loops, `if`/`else if` chains, list building, string indexing

@@ -1,4 +1,4 @@
-// In-rune tests for `minigrep`'s pure search functions (the capability-typed
+// In-rune tests for `minigrep`'s data-only search functions (the capability-typed
 // `main` is not exercised here). Result lists are rendered with interpolation
 // and compared as strings. Run with `witchy test examples/minigrep`.
 

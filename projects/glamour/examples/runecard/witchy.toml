@@ -3,7 +3,7 @@
 # rune's published metadata as JSON (name, version, declared `caps`, provenance),
 # it produces a glamour `VNode` card — a heading, version, a row of capability
 # BADGES (or the celebrated "no capabilities" state for an EMPTY footprint), and a
-# provenance line. There are no events (a card is a pure render), so it has no
+# provenance line. There are no events (a card is a data-only render), so it has no
 # `Msg` and emits no `on` bindings — every field flows through a `text(...)` node,
 # so a hostile registry `name` like `<script>` renders inert.
 #

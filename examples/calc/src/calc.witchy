@@ -1,7 +1,7 @@
 // calc — a tiny arithmetic evaluator: tokenize a string, parse it with operator
 // precedence (recursive descent), and evaluate the tree. A compact tour of
 // witchy's data side: recursive enums (`Token`, `Expr`), exhaustive pattern
-// matching, recursion, and `Result`-typed error handling — all pure (its
+// matching, recursion, and `Result`-typed error handling — all data-only (its
 // footprint is just `Console`). Run:  witchy examples/calc/src/calc.witchy
 
 import ascii

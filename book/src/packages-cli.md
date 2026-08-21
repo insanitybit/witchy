@@ -74,7 +74,7 @@ The lockfile records both capability axes for each rune:
   This is the baseline the widening gate compares against: these footprints are
   what you've *accepted*.
 - **`determinism`** - the build-reproducibility tier: `guaranteed` for a rune
-  whose build (if any) is pure, `pinned-only` once it uses `BuildExec`/`BuildNet`
+  whose build (if any) requests only deterministic build authority, `pinned-only` once it uses `BuildExec`/`BuildNet`
   (those outputs get content-hashed so rebuilds still pin).
 - **`provenance`** - where it came from (a path, or the registry record chain).
 

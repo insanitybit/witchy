@@ -8,7 +8,7 @@
 // We:
 //   1. compile the `highlighter` rune to WASM via the real `witchy` binary
 //      (with glamour as a sibling so the import resolves);
-//   2. call its `export_render({src})` export through the RFC-0007 pure-compute
+//   2. call its `export_render({src})` export through the RFC-0007 deny-all capability host
 //      host shim (web/witchy-runtime/witchy-runtime.mjs) — the rune is capability-
 //      denied, so it instantiates only because its footprint is empty;
 //   3. parse the returned VNode JSON and render it into a self-contained fake DOM
@@ -146,7 +146,7 @@ try {
   execFileSync(BIN, ["compile", join(work, "highlighter.witchy"), "--out", wasmPath], { cwd: work });
   const wasm = readFileSync(wasmPath);
 
-  // Instantiate under the pure-compute host — it links ONLY because the rune's
+  // Instantiate under the deny-all capability host — it links ONLY because the rune's
   // footprint is empty (a capability-using rune would fail with a LinkError here).
   const { callString } = await instantiate(wasm);
 

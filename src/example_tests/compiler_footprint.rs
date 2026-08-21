@@ -287,7 +287,7 @@ fn main(console: Console):
             ))
             .remove(0)
         };
-        // A pure function gaining a build-time BuildExec is a build-axis widening.
+        // An empty build footprint gaining BuildExec is a build-axis widening.
         let build = diff(
             "pub fn pure() -> Int:\\n    0\\n",
             "pub fn pure() -> Int:\\n    0\\npub fn build(e: BuildExec) -> Int:\\n    0\\n",
@@ -305,7 +305,7 @@ fn main(console: Console):
         assert!(runtime.contains("\"user_caps_removed\":[]"), "no-user-cap diff should have empty user_caps_removed: {runtime}");
     }
 
-    /// `std/semver` (pure witchy) parses `major.minor.patch`, matches the `^`/`~`/
+    /// `std/semver` (implemented in Witchy) parses `major.minor.patch`, matches the `^`/`~`/
     /// exact/`>=`/`*` constraints (rights matching the Rust resolver's semver),
     /// and picks the highest satisfying version — what dependency resolution needs.
     #[test]

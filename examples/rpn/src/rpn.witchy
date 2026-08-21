@@ -2,7 +2,7 @@
 // the recursive-descent `calc`. Tokens are whitespace-separated; a number is
 // pushed, an operator pops its two operands and pushes the result. Errors (stack
 // underflow, division by zero, an unknown token, a leftover stack) flow through
-// `Result`. Pure (Console only); identical on both backends. Run:
+// `Result`. Data-only apart from `main` (root footprint: `Console`); identical on both backends. Run:
 //   witchy examples/rpn/src/rpn.witchy
 
 // The evaluator's state: a stack of operands, or the first error encountered.

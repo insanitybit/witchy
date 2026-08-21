@@ -255,7 +255,7 @@ fn main(console: Console):
     /// COMPTIME REFLECTION (typeInfo, Phase 1 / Path 2a): a `comptime:` block reads
     /// its module's type structure via `module_types` and GENERATES a specialized
     /// `to_json` per record — direct field access, no runtime `Mirror`, written in
-    /// pure witchy. This is Zig-style comptime-over-types proven end-to-end, both
+    /// Witchy code. This is Zig-style comptime-over-types proven end-to-end, both
     /// backends (comptime runs at link time, so the generated code is identical).
     #[test]
     fn comptime_typeinfo_generates_specialized_to_json() {

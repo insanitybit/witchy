@@ -1,4 +1,4 @@
-// kv — parse and query "key = value" config text. Pure and Result-based: a
+// kv — parse and query "key = value" config text. Data-only and Result-based: a
 // lookup returns `Result(String, String)` (an Err naming a missing key), so
 // callers can compose lookups with the `?` operator. No host capabilities.
 

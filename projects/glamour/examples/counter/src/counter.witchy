@@ -1,6 +1,6 @@
-// counter — the canonical glamour MVU demo (RFC-0008). A capability-pure rune:
-// `Model = Int`, `Msg = Inc | Dec`, a pure `view` projecting the count to a
-// VNode tree, and a pure `update` folding a message into the next count. The rune
+// counter — the canonical glamour MVU demo (RFC-0008). An empty-root-footprint rune:
+// `Model = Int`, `Msg = Inc | Dec`, a data-only `view` projecting the count to a
+// VNode tree, and a data-only `update` folding a message into the next count. The rune
 // holds NO capability (no Net/Dir/Clock); the JS DOM host shell
 // (`web/witchy-runtime/glamour-dom.mjs`) diffs the VNode into the DOM and marshals
 // click events back as `Msg` values — events are data, the shell acts.
@@ -21,7 +21,7 @@ type Msg derive(Reflect):
     Inc
     Dec
 
-// view: a pure projection of the model to a VNode tree, written with glamour's
+// view: a data-only projection of the model to a VNode tree, written with glamour's
 // `html` tag — a COMPILE-TIME tagged literal (RFC-0006). The tag runs in the
 // compiler and splices `element`/`text`/`on` calls over the literal, so this is
 // exactly the hand-builder form but ergonomic: `on:click=${Dec}` becomes
@@ -32,7 +32,7 @@ type Msg derive(Reflect):
 fn view(count: Int) -> Ui(Msg):
     glamour.ui(jsx"<div><button on:click=${Dec}>-</button><span>${int_to_str(count)}</span><button on:click=${Inc}>+</button></div>")
 
-// update: a pure match from (model, msg) to (model, Cmd). No effects — the rune
+// update: a data-only match from (model, msg) to (model, Cmd). No effects — the rune
 // is capability-denied — so the command is always `NoCmd` here.
 fn update(_auth: Nil, count: Int, msg: Msg) -> (Int, Cmd(Msg)):
     match msg:

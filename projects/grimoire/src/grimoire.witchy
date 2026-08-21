@@ -909,7 +909,7 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
     else:
         (0, flags)
 
-// A deterministic build step is a pure function of its build source AND the inputs
+// A deterministic build step is a function of its build source AND the inputs
 // it reads. BUG-082: keying the cache on the build source alone would serve stale
 // output when a granted read INPUT (not the build.witchy) changes. Key on the build
 // source, the recursive contents of every granted `--read` input, and the grant

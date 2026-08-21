@@ -1,9 +1,9 @@
-//! RFC-0007 ("witchy-WASM in the browser: a pure-compute target") end-to-end test.
+//! RFC-0007 ("witchy-WASM in the browser: a deny-all capability target") end-to-end test.
 //!
 //! Drives the committed Node spike (`web/witchy-runtime/spike.mjs`), which:
 //!   1. compiles a footprint-EMPTY witchy rune to WASM via the real `witchy`
 //!      binary (`witchy compile … --out …`),
-//!   2. runs it under the pure-compute JS host (`web/witchy-runtime/witchy-runtime.mjs`)
+//!   2. runs it under the deny-all capability JS host (`web/witchy-runtime/witchy-runtime.mjs`)
 //!      and asserts the captured output equals the native interpreter run
 //!      (`witchy <file>`) byte-for-byte, and
 //!   3. proves a capability-using rune is structurally REFUSED — the missing
@@ -39,7 +39,7 @@ fn browser_abort_messages_match_runtime_oracles() {
 }
 
 /// RFC-0041 Phase 0: the shared witchy syntax highlighter (`web/witchy-highlight.js`) is a
-/// PURE `source -> HTML` function, so the committed Node test
+/// data-only `source -> HTML` function, so the committed Node test
 /// (`web/witchy-runtime/witchy-highlight.test.mjs`) exercises it with no DOM: keywords
 /// (incl. `capability`/`grantable`), Title-case types, strings + `${…}` interpolation,
 /// comments, duration numbers, that the RETIRED `restrict` verb is not painted as a builtin,
@@ -57,7 +57,7 @@ fn witchy_highlighter_colours_current_syntax() {
 /// RFC-0041 regression: docs-bundle asset/content URLs must resolve against the BUNDLE ROOT, not
 /// the current client route. Guards the bug where a chapter route `/p/<slug>` made a content
 /// fetch route-relative (`/p/content/...` → 404), breaking every page after a nav — and would
-/// have broken the GitHub Pages deploy the same way. The pure resolver (`web/docs-asset-url.js`)
+/// have broken the GitHub Pages deploy the same way. The data-only resolver (`web/docs-asset-url.js`)
 /// is unit-tested here because the FakeElement docs drivers can't simulate browser base-URL
 /// resolution (which is exactly where the bug lived).
 #[test]

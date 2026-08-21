@@ -266,10 +266,10 @@ A grantable capability enters through `main` (a CLI root, staged from a
 `[user_caps]` grant document) **or through an exported root entrypoint** - a
 `pub fn export_*(cap: UiRoot, input: String) -> String`. That is how a *browser*
 app receives its authority: it has no `main` and no `--grants` launch - the host
-shell drives it by calling that pure step function once per event - so the host
+shell drives it by calling that ordinary exported step function once per event - so the host
 mints the bare cap *into the export* each call (the browser mirror of a
-`[user_caps]` grant). The rune stays pure (it receives only the minted policy
-record and still emits inert effect descriptions), so a UI framework's authority
+`[user_caps]` grant). The rune retains an empty host-capability footprint (it
+receives only the minted policy record and still emits inert effect descriptions), so a UI framework's authority
 enters at its true root without the rune ever holding a real platform capability.
 
 ## Framework effect authority: capability-safe UI (Glamour)

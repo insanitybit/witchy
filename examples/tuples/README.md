@@ -2,7 +2,7 @@
 
 Tuples for multiple return values, destructuring, and element access. `pair.0`
 reads an element by position — the expression form of `let (a, b) = pair` — and
-chains through nesting (`grid.0.1`). The `divmod` helper is pure (`pub`); only
+chains through nesting (`grid.0.1`). The `divmod` helper is data-only (`pub`); only
 `main` touches the `Console`, so it runs identically interpreted, compiled, and
 inside the capability sandbox.
 

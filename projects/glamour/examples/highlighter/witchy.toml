@@ -1,7 +1,7 @@
 # highlighter — a witchy SOURCE-CODE syntax highlighter built on glamour
 # (RFC-0008). It takes witchy source TEXT and produces a glamour `VNode` tree:
 # a `<pre><code>` whose tokens are classed `<span class="kw|str|com|num">` runs,
-# with plain text for the rest. There are no events (a highlighter is a pure
+# with plain text for the rest. There are no events (a highlighter is a data-only
 # render), so it has no `Msg` and emits no `on` bindings — every token's text
 # flows through a `text(...)` node, so source like `<script>` renders inert.
 #

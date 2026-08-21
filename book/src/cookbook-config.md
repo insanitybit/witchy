@@ -4,8 +4,9 @@ Config parsing is a place authority leaks quietly. The library that reads your
 config file also wants to resolve includes, expand environment variables, and in
 a couple of famous cases instantiate an arbitrary class.
 
-witchy programs read configuration through the `toml` module, and it's pure
-string operations. It parses text you already hold, and it has no way to go get
+witchy programs read configuration through the `toml` module, which adds no
+root capability demand and uses only string operations. It parses text you
+already hold, and it has no way to go get
 more. It offers two levels of access: a quick path-based lookup for one-off
 values, and a typed decode for validating a whole document.
 

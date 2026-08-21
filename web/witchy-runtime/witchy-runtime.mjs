@@ -4,7 +4,7 @@
 // wasmtime host in `crates/witchy-runtime/src/runtime.rs`, with the capability
 // set fixed to empty.
 //
-// This is RFC-0007 ("witchy-WASM in the browser: a pure-compute target"). The
+// This is RFC-0007 ("witchy-WASM in the browser: a deny-all capability target"). The
 // containment guarantee is structural: witchyc TREE-SHAKES imports (a module
 // declares only the host functions it actually reaches — see spec/wasm-abi.md),
 // so a rune that touches Net/Dir/Clock/etc. imports a capability host function
@@ -21,7 +21,7 @@
 // observable byte (the parity rule of CLAUDE.md). See spec/wasm-abi.md.
 
 // The ABI version this shim implements. Bump in lockstep with a breaking change
-// to the `"witchy"` import surface (a renamed/re-signatured pure import, or a
+// to the `"witchy"` import surface (a renamed/re-signatured non-authority import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
 export const WITCHY_ABI_VERSION = 9;
 
@@ -211,7 +211,7 @@ function makeCryptoBackend(nodeCrypto) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure helpers that mirror src/native.rs byte-for-byte.
+// Non-authority helpers that mirror src/native.rs byte-for-byte.
 // ---------------------------------------------------------------------------
 
 const utf8 = new TextEncoder();
@@ -369,7 +369,7 @@ export function encodingOp(op, input /* Uint8Array */) {
 
 // regex.match_spans(pattern, text) -> "s,e;s,e;..." in CHARACTER indices (matches
 // src/native.rs::regexp::match_spans). JS RegExp is not RE2, but for the
-// pure-compute target it is the closest portable engine; documented in
+// deny-all capability target it is the closest portable engine; documented in
 // spec/wasm-abi.md as an approximation of the native `regex` crate.
 function matchSpans(pattern, text) {
   let re;
@@ -474,7 +474,7 @@ function runeHash(paths, contents) {
 
 // The opt-in capability import surfaces, one frozen list per family. Adding a
 // host function to a family requires listing it here first — the same explicit
-// classification the pure `WITCHY_BROWSER_IMPORTS` list enforces, so the
+// classification the non-authority `WITCHY_BROWSER_IMPORTS` list enforces, so the
 // playground host can never silently widen either.
 export const WITCHY_CLOCK_IMPORTS = Object.freeze(["now", "now_monotonic"]);
 export const WITCHY_CONSOLE_IMPORTS = Object.freeze(["console_read_len"]);
@@ -1772,7 +1772,7 @@ function makeFetchImports(grants, { readWstrText, stagePending }, fetchImpl) {
 
 /**
  * Instantiate a witchyc-compiled, footprint-empty WASM module under the
- * pure-compute host. Provides only the NON-capability `"witchy"` imports; a
+ * deny-all capability host. Provides only the NON-capability `"witchy"` imports; a
  * module that imports any capability fails to instantiate with a `LinkError`
  * (deny-by-omission). Returns `{ instance, output, run }`.
  *
@@ -1853,12 +1853,12 @@ export async function instantiate(wasmBytes, opts = {}) {
   // src/runtime.rs (read once, no time-of-check/use gap).
   let pending = null;
   // The pending List(String): staged by `dir_list_size`, drained by
-  // `write_pending_list`. Only the opt-in Dir host stages one; the pure host
+  // `write_pending_list`. Only the opt-in Dir host stages one; the deny-all host
   // leaves it null (its `write_pending_list` is a no-op). Mirrors
   // `VmState::pending_list`.
   let pendingList = null;
 
-  // The witchy import object — PURE functions only. No `dir_*`, `net_*`,
+  // The witchy import object — NON-AUTHORITY functions only. No `dir_*`, `net_*`,
   // `exec_run`, `now`, `env_*`, `secretstore_*`, `crypto_reveal_*`,
   // `build_*`, `compiler_*`, `crypto.sign`, `crypto.public_key`: those are
   // capabilities (or interpreter-only host services) and are DELIBERATELY ABSENT,
@@ -1908,7 +1908,7 @@ export async function instantiate(wasmBytes, opts = {}) {
     // identically here. It grants NO authority (it reads only the
     // string it is handed, returns nothing, and only terminates execution — an
     // ability the guest already has via `unreachable`), so, like `print`, the
-    // pure/deny-by-omission host may provide it; it MUST be present or every
+    // deny-by-omission host may provide it; it MUST be present or every
     // footprint-empty module that can abort would fail to instantiate.
     __witchy_abort(template, a, b, strPtr) {
       const s = strPtr !== 0 ? readWstrText(strPtr) : "";
@@ -1921,7 +1921,7 @@ export async function instantiate(wasmBytes, opts = {}) {
       throw new Error(`runtime error: ${location}${core}`);
     },
 
-    // --- the pending-buffer string-bridge (pure mechanics, no authority) ---
+    // --- the pending-buffer string-bridge (data-only mechanics, no authority) ---
     fill_pending(outPtr) {
       if (pending === null) throw new Error("witchy-runtime: fill_pending called with nothing staged");
       const bytes = pending;
@@ -1988,7 +1988,7 @@ export async function instantiate(wasmBytes, opts = {}) {
       return pending.length;
     },
 
-    // --- pure formatting / encoding ---
+    // --- data-only formatting / encoding ---
     float_to_str(x, outPtr) {
       return writeAt(utf8.encode(renderFloat(x)), outPtr);
     },
@@ -2004,7 +2004,7 @@ export async function instantiate(wasmBytes, opts = {}) {
       return pending.length;
     },
 
-    // --- pure crypto (mirrors src/runtime.rs host_* bridges) ---
+    // --- data-only crypto (mirrors src/runtime.rs host_* bridges) ---
     "crypto.sha256"(inPtr, outPtr) {
       writeAt(utf8.encode(toHex(crypto.sha256(readWstr(inPtr)))), outPtr);
     },
@@ -2062,7 +2062,7 @@ export async function instantiate(wasmBytes, opts = {}) {
   }
 
   // (RFC-0091) Merge in the EXPLICITLY-requested capability families. The
-  // default (no `opts.capabilities`) leaves `witchy` exactly the pure surface
+  // default (no `opts.capabilities`) leaves `witchy` exactly the non-authority surface
   // above — deny-by-omission is preserved. Each family's imports come from a
   // helper that also drift-checks against its frozen catalog, so an opt-in host
   // can never silently widen either.
@@ -2152,7 +2152,7 @@ export async function instantiate(wasmBytes, opts = {}) {
   //   3. write the header + bytes into guest memory,
   //   4. call `__export_f(ptr, len)` -> a pointer to a result String header,
   //   5. read `[i32 len][bytes]` back out as a JS string.
-  // Pure mechanics over guest memory — no capability, no authority.
+  // Data-only mechanics over guest memory — no capability, no authority.
   // The `heap` bump-allocator pointer, exported by every heap-using module as `__heap`. Its
   // value right after instantiation is the pristine base (the end of the data section, before
   // any allocation). A `String -> String` export is PURE — its input/working/output allocations

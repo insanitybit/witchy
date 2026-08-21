@@ -1,6 +1,6 @@
 // wrap — greedy word wrapping. Pack as many space-separated words as fit onto
 // each line within a column width, breaking before a word that would overflow.
-// A staple of text formatting, in a few lines of pure string handling. Pure
+// A staple of text formatting, in a few lines of data-only string handling. Data-only
 // (Console only); identical interpreted and compiled. Run:
 //   witchy examples/wrap/src/wrap.witchy
 fn main(console: Console):

@@ -70,7 +70,7 @@ type Model:
     Model(List(Rune), Int)
 
 // The navigation messages. `Show(i)` selects rune `i` (index -> detail); `Back`
-// clears the selection (detail -> index). Both are pure data the shell hands back
+// clears the selection (detail -> index). Both are plain data the shell hands back
 // to `update` — no live handlers in the view. (`Show`, not `Open`: `Open` would
 // collide with glamour's internal `HtmlTok.Open` constructor, which leaks into the
 // constructor namespace on `import glamour`.)

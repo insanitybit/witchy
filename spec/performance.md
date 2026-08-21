@@ -62,7 +62,7 @@ latency-bound programs where the folklore holds (a script making a few remote
 calls) are exactly the ones no one optimizes. So conditioning on "this is worth
 optimizing" selects *for* the CPU/allocation-bound case.
 
-witchy sharpens this further: its concurrency scheduler is in-language (the pure
+witchy sharpens this further: its concurrency scheduler is in-language (the
 deterministic executor of [RFC-0032](../rfcs/0032-multi-core-execution.md)),
 so poll/wakeup/state-machine overhead is visible witchy code on the hot path,
 not cost buried inside a native runtime. Per-event runtime cost is *more*

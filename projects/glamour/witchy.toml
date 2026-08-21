@@ -1,7 +1,7 @@
-# glamour — the view layer of witchy's capability-pure frontend framework
-# (RFC-0008). A pure MVU core: `view(state) -> VNode(msg)` projects state to a
+# glamour — the view layer of witchy's empty-root-footprint frontend framework
+# (RFC-0008). A data-oriented MVU core: `view(state) -> VNode(msg)` projects state to a
 # VNode tree (data, not side effects), an event is a `msg` VALUE carried by an
-# `On` attribute, and `update(state, msg) -> (state, Cmd(msg))` is a pure match.
+# `On` attribute, and `update(state, msg) -> (state, Cmd(msg))` is a data-only match.
 # The rune holds NO capability — no Net, no Dir, no Clock — and `witchy caps`
 # proves it. A capability-holding host shell (TypeScript today, RFC-0007's WASM
 # host tomorrow) diffs the tree into the real DOM and marshals events back as

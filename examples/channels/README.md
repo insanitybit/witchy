@@ -19,7 +19,7 @@ promises:
 | Example | API and capability boundary | Cost contract |
 |---|---|---|
 | [`cooperative_map.witchy`](src/cooperative_map.witchy) | `chan.par_map` takes an async callback, returns a `Task`, and may receive `Console` explicitly because every task stays in the caller's VM. | Cooperative scheduling and task/channel bookkeeping; no worker startup, serialization, or worker host boundary. |
-| [`worker_vm_map.witchy`](src/worker_vm_map.witchy) | `vm.par_map` takes a bare top-level pure function over flat values and returns synchronously. Capabilities do not cross implicitly; use a dedicated adapter such as `vm.with_dir` to grant exactly one `Dir`. | Native execution creates isolated worker VMs and copies inputs/results across their memories, so it is for substantial CPU work rather than tiny callbacks. |
+| [`worker_vm_map.witchy`](src/worker_vm_map.witchy) | `vm.par_map` takes a bare top-level ordinary function over data over flat values and returns synchronously. Capabilities do not cross implicitly; use a dedicated adapter such as `vm.with_dir` to grant exactly one `Dir`. | Native execution creates isolated worker VMs and copies inputs/results across their memories, so it is for substantial CPU work rather than tiny callbacks. |
 
 `tests/misc/rfc0129_cooperative_worker_boundary.rs` compiles both shapes and
 measures the structural boundary: the cooperative module imports zero worker

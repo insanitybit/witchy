@@ -2,7 +2,7 @@
 
 Integer matrices as a list of rows: `transpose`, `multiply` (the textbook triple
 loop — dot each row of A with each column of B), and an `identity`, printed with
-right-aligned columns. The math is pure (`pub`, no capabilities); only `main`
+right-aligned columns. The math is data-only (`pub`, no capabilities); only `main`
 touches the `Console`, so the program runs identically on both backends.
 
 **Shows:** nested `while` loops, `List(List(Int))`, `pub` functions across

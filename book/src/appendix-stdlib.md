@@ -27,7 +27,7 @@ always current - is
 | `dict` *(prelude)* | map operations over `Dict(k, v)` |
 | `set` | the `Set(a)` type - distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `"${s}"` interpolation or `show.say(console, s)` - both work identically on both backends and honor the elements' `Show`. |
 | `string` *(prelude)* | `split`, `lines`, `join`, `trim`, case, search, … |
-| `path` | path-*string* manipulation (join, normalize, base/dir/ext) - pure; the `Dir`-using half lives in `fs` |
+| `path` | path-*string* manipulation (join, normalize, base/dir/ext) with no root capability demand; the `Dir`-using half lives in `fs` |
 | `bytes` | the `Bytes` type - `from_string`/`to_string_lossy`, `from_list`, `length`, slicing; the binary counterpart to `String` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
 | `func` | function combinators - `identity`, `compose`, `flip`, `constant`, `on_key`, `first`/`second` |
@@ -71,7 +71,7 @@ to_ms` finds `duration.to_milliseconds`.
 | Module | What it gives you |
 |---|---|
 | `chan` | typed channels and the structured-concurrency ladder: `chan.scope` (a nursery that joins or cancels its children on exit - prefer it over a bare `spawn`), `chan.gather`, `chan.par_map` / `chan.par_reduce`, `chan.race`, `chan.select`, and `chan.cancel`. Each channel carries its own message type. |
-| `task` | the core task combinators `chan` builds on - `spawn`, `join`, `cancel` - over a pure-witchy deterministic executor |
+| `task` | the core task combinators `chan` builds on - `spawn`, `join`, `cancel` - over a deterministic executor implemented in Witchy |
 | `future` | `Future(a)` and the `await` surface |
 
 `vm` runs capture-free work across isolated worker cores (`vm.par_map`); its
@@ -89,11 +89,11 @@ These do real I/O, so their functions take capabilities:
 | `exec` | `Exec` - spawn a native subprocess (`exec.run`); the sharpest authority |
 | `crypto` | hashing, verification; signing needs a `Secret` |
 | `secretstore` | `SecretStore` - fetch a named host secret (`get`/`require`); reveal with `crypto` |
-| `show` | the `Show` trait (with blanket impls for the built-in containers) is pure; `say` (the Show-accepting `print`) takes a `Console`. `"${x}"` interpolation renders through `Show` too |
+| `show` | the `Show` trait has blanket impls for the built-in containers and adds no root capability demand; `say` (the Show-accepting `print`) takes a `Console`. `"${x}"` interpolation renders through `Show` too |
 
 ## Authentication and web identity
 
-Pure-witchy implementations of the standard web-auth protocols, built over
+Implementations of the standard web-auth protocols in Witchy, built over
 `crypto` / `http` / `json` - the machinery behind the coven registry's trusted
 publishing and social login.
 

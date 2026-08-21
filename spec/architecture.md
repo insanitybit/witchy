@@ -282,7 +282,7 @@ and (under the scheduler) epoch-based preemption at loop back-edges to reclaim
 a runaway guest.
 
 Concurrency lives *inside* that single VM. `async`/`await`, `spawn`, and
-channels lower to a cooperative executor written in pure witchy (`std/task`;
+channels lower to a cooperative executor implemented in Witchy (`std/task`;
 `std/chan` provides the channel surface), so concurrent tasks share one linear
 memory and one capability grant rather than running as separate VMs - and because
 the scheduler is ordinary witchy code, a concurrent run is byte-identical on both

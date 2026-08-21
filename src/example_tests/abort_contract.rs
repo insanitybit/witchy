@@ -92,7 +92,7 @@ use crate::{codegen, interpreter};
         }
     }
 
-    /// (RFC-0044 rule 3) The pure-witchy std contract-violation aborts: a bad
+    /// (RFC-0044 rule 3) The Witchy std contract-violation path aborts: a bad
     /// argument that used to silently default now aborts, with the SAME message
     /// on both backends (they run the identical std source; RFC-0045 routes the
     /// message). Each case pairs a program with its message core.

@@ -99,7 +99,7 @@ with an opaque origin. The child frame receives only the compiled guest and
 plain grant data; its Content Security Policy admits exactly its granted
 `Fetch` origins.
 
-The browser has honest providers for pure computation, `Console`, `Clock`,
+The browser has honest providers for non-authority infrastructure, `Console`, `Clock`,
 page-supplied `Env`, an in-memory `Dir`, origin-scoped `Fetch`, opaque
 `SecretStore`, and sequential `VM`. Raw sockets, native subprocesses, bare
 secrets, and host filesystem roots have no browser provider and remain denied.

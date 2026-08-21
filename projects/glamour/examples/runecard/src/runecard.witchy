@@ -3,7 +3,7 @@
 // Given a rune's published metadata as JSON, it produces a glamour `VNode` card —
 // the name, version, a row of capability BADGES, and a provenance line — that a
 // capability-holding host shell diffs into the DOM. There are no events (a card is
-// a pure render), so the rune has no `Msg` and emits no `on` bindings.
+// a data-only render), so the rune has no `Msg` and emits no `on` bindings.
 //
 // SECURITY: every metadata field (name, version, each capability, provenance)
 // flows through glamour's `text(...)` node, never an HTML-string sink, so a

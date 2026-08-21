@@ -1,8 +1,9 @@
-// A capability-secure, MULTI-CORE web server. Handlers are pure
-// `fn(Request) -> Response` — they have no Net/Dir/Console, so a handler literally
-// cannot touch the network, filesystem, or console. Only `main` holds the `Net`, and
-// it hands it to `serve` to listen — never to a handler. The router, path params, and
-// middleware are axum-flavored; the capability sandbox is pure witchy.
+// A capability-secure, MULTI-CORE web server. The ordinary
+// `fn(Request) -> Response` handlers are closed over request data and receive no
+// Net/Dir/Console, so they cannot touch the network, filesystem, or console as
+// written. Only `main` holds the `Net`, and it hands it to `serve` to listen —
+// never to a handler. Use `pure fn` when an API needs a checked effect-free
+// callable contract rather than this example's empty handler footprint.
 //
 // `server.serve` uses ALL cores for free: it runs a prefork pool of worker VMs that
 // share the listener, and the kernel load-balances connections across them. You write

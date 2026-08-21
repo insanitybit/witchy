@@ -160,7 +160,7 @@ The loud boundaries are part of the current language state:
   streams. Long-lived producer/consumer loops eventually exhaust the linear
   arena; the [async chapter](tour-async.md) gives the operational ceiling.
 - Browser hosts grant only the capability families they implement. The default
-  book host is pure-compute plus `Console`; native `Exec`, secrets, and raw
+  book host has a root footprint of `Console`; native `Exec`, secrets, and raw
   sockets are unavailable there.
 
 These are checked boundaries, not alternate semantics. The implementation's

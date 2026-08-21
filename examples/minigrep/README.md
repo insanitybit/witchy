@@ -4,7 +4,7 @@ The CLI search tool from chapter 12 of *The Rust Programming Language*, in
 witchy. It reads a file with a read-only `Dir` capability, prints the lines that
 contain a query, and switches to case-insensitive search when `IGNORE_CASE` is
 set — with witchy's capability-typed entry point (`Console`, a read-only `Dir`,
-`Env`, and the args). The two `search` functions are pure (`pub`).
+`Env`, and the args). The two `search` functions are data-only (`pub`).
 
 **Shows:** a capability-typed `main`, `Dir[Read]`/`Env`/args, `match` on an
 `Option`, `pub` functions across modules, in-rune `test_*` functions, and a

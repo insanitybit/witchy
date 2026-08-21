@@ -4,7 +4,7 @@ A tiny arithmetic evaluator: it tokenizes a string, parses it with operator
 precedence (recursive descent), and evaluates the tree, reporting the first error
 as a value. A compact tour of witchy's data side — recursive enums (`Token`,
 `Expr`), exhaustive pattern matching, recursion, and `Result`-typed errors — all
-pure (its footprint is just `Console`), so it runs identically interpreted,
+its root footprint is just `Console`, so it runs identically interpreted,
 compiled, and sandboxed.
 
 **Shows:** recursive enums, `match`, recursion, `Result`/`Option`, `pub`

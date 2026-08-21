@@ -1,7 +1,7 @@
 // A complete arithmetic calculator: it parses and evaluates expressions like
 // "100 - 2 * (3 + 4)" straight from a string, honoring precedence and
 // parentheses. A hand-written recursive-descent parser/evaluator — mutual
-// recursion, tuples to thread the cursor, and character scanning — all pure
+// recursion, tuples to thread the cursor, and character scanning — all data-only
 // (only `main` touches the Console). So it runs identically interpreted,
 // compiled, and inside the capability sandbox:
 //   witchy examples/calculator/src/calculator.witchy   # interpret

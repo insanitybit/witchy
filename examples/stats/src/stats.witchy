@@ -1,7 +1,7 @@
 // stats — summary statistics over a list of floats: count, mean, population
 // variance, standard deviation, min, and max. Floats live in the list and flow
 // through arithmetic and sqrt; values are rendered with math.format_float (fixed
-// decimals), which works on both backends — unlike to_string on a Float. Pure
+// decimals), which works on both backends — unlike to_string on a Float. Data-only
 // (Console only); identical interpreted and compiled. Run:
 //   witchy examples/stats/src/stats.witchy
 

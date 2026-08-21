@@ -1,7 +1,7 @@
 // Durations the witchy way: write times as `30s`, `500ms`, `2hr` — a distinct
 // type, so the compiler stops you adding a Duration to a bare number, yet they
 // combine and compare with the ordinary operators (`d * 2`, `a < b`, `a + b`).
-// The std `duration` module formats and parses them. Everything here is pure, so
+// The std `duration` module formats and parses them. Everything here is data-only, so
 // it runs identically on the interpreter and compiled to WASM.
 // Run: witchy examples/durations/src/durations.witchy
 

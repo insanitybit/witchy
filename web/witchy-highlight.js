@@ -1,5 +1,5 @@
 // witchy-highlight — the ONE dependency-free witchy syntax highlighter (RFC-0041 Phase 0).
-// A pure `source -> HTML` function (no DOM), so it is shared by every web surface — the
+// A data-only `source -> HTML` function (no DOM), so it is shared by every web surface — the
 // standalone playground and the docs app's code blocks — and unit-tested in Node. Promoting
 // this to a single module is what keeps the keyword/builtin lists in ONE place instead of
 // drifting between `web/playground.js` and the book's highlighter.

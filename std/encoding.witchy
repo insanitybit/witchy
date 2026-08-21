@@ -6,7 +6,7 @@
 // qualified name and run in Rust on both backends.
 //
 // Encoding is total, so the encoders return a plain `String`. Decoding can fail, so
-// the public `*decode` functions guard the raw codec with a pure-witchy alphabet
+// the public `*decode` functions guard the raw codec with a data-only alphabet
 // check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any
 // non-alphabet character or a truncated final group is a reachable `Err` - never a
 // silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
@@ -162,7 +162,7 @@ pub fn base64url_to_hex_string(data: String) -> Result(String, String):
         Ok(text) -> Ok(text)
         Err(e) -> Err(encoding_error_message(e))
 
-// --- alphabet validators (pure witchy) --------------------------------------
+// --- alphabet validators (implemented in Witchy) ---------------------------
 // Character-level, so they agree with the native byte-level codecs: a string these
 // accept is entirely ASCII-alphabet, which the codec then consumes in full - so a
 // valid decode is never a truncated one. A rejected string never reaches the codec.

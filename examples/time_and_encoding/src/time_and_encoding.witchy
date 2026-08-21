@@ -1,6 +1,6 @@
 // time_and_encoding — a tiny showcase of the std `time` and `encoding` modules:
 // turn a unix timestamp into a civil UTC date, and base64/hex a short payload
-// with a decode round-trip. Pure (its footprint is just Console). Run:
+// with a decode round-trip. Its root footprint is just Console. Run:
 //   witchy examples/time_and_encoding/src/time_and_encoding.witchy
 
 import time

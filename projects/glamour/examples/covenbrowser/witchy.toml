@@ -3,7 +3,7 @@
 # multi-view interactive UI. `Model` is a list of runes plus a selected index;
 # `Msg = Open(Int) | Back` drives navigation between the INDEX (clickable rune
 # cards) and a DETAIL view (the card + highlighted source + a back button). A
-# capability-pure rune: its only host call is `print` from `main` (Console =
+# empty-root-footprint rune: its only host call is `print` from `main` (Console =
 # output, not authority); `export_step` itself holds NO runtime authority. The JS
 # DOM host shell (web/witchy-runtime/glamour-dom.mjs) diffs the returned VNode
 # into the real DOM and routes click events back as `Msg` values — the rune

@@ -1,6 +1,6 @@
 // matrix — integer matrices as a list of rows. Transpose, multiply, and an
 // identity, printed with right-aligned columns. Multiplication is the textbook
-// triple loop (dot each row of A with each column of B). Pure (Console only);
+// triple loop (dot each row of A with each column of B). Data-only apart from `main` (root footprint: `Console`);
 // identical on both backends. Run:  witchy examples/matrix/src/matrix.witchy
 fn main(console: Console):
     let a = [[1, 2, 3], [4, 5, 6]]

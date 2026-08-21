@@ -2,7 +2,7 @@
 
 Pairs lists two ways: `list.enumerate` pairs each element with its index, and
 `list.zip` pairs two lists element-wise. Both yield lists of tuples, which the
-`for` loops destructure. Pure (`Console` only); identical interpreted and compiled.
+`for` loops destructure. Data-only apart from `main` (root footprint: `Console`); identical interpreted and compiled.
 
 **Shows:** `list.enumerate`/`list.zip`, tuple destructuring in `for` loops, and
 string interpolation.

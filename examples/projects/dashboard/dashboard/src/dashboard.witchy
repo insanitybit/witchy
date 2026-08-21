@@ -1,6 +1,6 @@
 // dashboard — composes two widget runes, `tasks` and `coverage`, each of which
 // depends on the shared `bars` base. So the dependency graph is a *diamond*:
-// `witchy tree` shows `bars` resolved once, and because every rune is pure the
+// `witchy tree` shows `bars` resolved once, and because every rune is data-only the
 // whole program's footprint is just `Console`. Run with:  witchy run
 //   witchy tree     # see the diamond (bars appears once, marked `(*)`)
 

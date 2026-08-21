@@ -1,4 +1,4 @@
-// Uses the bundled standard library. `import list` brings in pure combinators;
+// Uses the bundled standard library. `import list` brings in data-only combinators;
 // because that module was never handed a capability, it cannot perform effects —
 // only `main` (which holds the Console) decides what to print.
 

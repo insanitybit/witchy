@@ -7,7 +7,7 @@ name = "insanitybit/greeter"
 version = "0.1.0"
 
 [capabilities]
-# A pure library: no runtime authority. The registry recomputes this footprint
+# An empty-root-footprint library: no runtime authority. The registry recomputes this footprint
 # from the uploaded source (coven_footprint) and rejects under-declaration, so
 # keeping it empty is a real, server-checked claim.
 runtime = []

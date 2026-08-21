@@ -1,4 +1,4 @@
-// wordlib — word-frequency analysis. A pure library rune (a path dependency of
+// wordlib — word-frequency analysis. A capability-free library rune (a path dependency of
 // `wordfreq`) showcasing std `string` + `ascii` + `dict` + `list`: it normalizes
 // words (letters/digits only, lowercased), tallies them into a Dict, and ranks
 // them by count (ties broken alphabetically) for a deterministic top-N.

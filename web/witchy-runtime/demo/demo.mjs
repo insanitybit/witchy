@@ -4,7 +4,7 @@
 //
 //   * COUNTER: mounted via glamour-dom's `mount()` — the +/- buttons dispatch a
 //     Msg into the rune, the rune folds it, and the differ patches the DOM.
-//   * HIGHLIGHTER: instantiated under the RFC-0007 pure-compute shim; we call its
+//   * HIGHLIGHTER: instantiated under the RFC-0007 deny-all capability shim; we call its
 //     `export_render({src})` via `callString` and render the returned VNode JSON
 //     with createElement/textContent ONLY (never innerHTML) — the same
 //     structurally-injection-free walk glamour-dom uses, inlined here so this demo

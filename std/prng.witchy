@@ -2,8 +2,8 @@
 // standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits
 // in i64 (no overflow), so it is content-correct on both backends. State is
 // threaded explicitly - the same seed always replays the same sequence, which is
-// what you want for tests, sampling, and games. NOT for cryptography. Pure and
-// capability-free.
+// what you want for tests, sampling, and games. NOT for cryptography. The module
+// has no root capability demand.
 
 import option
 

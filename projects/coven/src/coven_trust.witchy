@@ -3,7 +3,7 @@
 // short-lived OIDC JWT from a trusted issuer (a CI system's OIDC token, e.g. GitHub
 // Actions). This module verifies the RS256 signature against the issuer's pinned key, the
 // audience, and the expiry (via `std/jwt`), and derives identity from the VERIFIED claims.
-// Pure (no HTTP, no store): the server maps these results to status codes.
+// This module takes no HTTP or store authority; the server maps its results to status codes.
 
 import jwt
 import coven_json
@@ -184,9 +184,9 @@ fn signing_key(entry: Issuer, token: String) -> Result(String, TokenError):
                 None -> Err(TokenMissingKid(entry.id))
         None -> Ok(entry.pubkey)
 
-// --- live OIDC issuer discovery (pure validation) -----------------------------
+// --- live OIDC issuer discovery (data-only validation) ------------------------
 // The `<issuer-url>=oidc` trust form resolves an issuer's JWKS at startup from
-// its OIDC discovery document. This module stays pure: the two HTTPS fetches
+// its OIDC discovery document. Validation stays data-only: the two HTTPS fetches
 // live in coven.witchy (through a Fetch scoped to the issuer origin); these
 // validators decide what a fetched document may install, so they can be
 // differential-tested without a network.

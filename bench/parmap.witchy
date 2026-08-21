@@ -1,4 +1,4 @@
-// Multi-core benchmark: map a CPU-heavy pure function over a list with
+// Multi-core benchmark: map a CPU-heavy closed top-level function over a list with
 // `vm.par_map`, which runs the elements across OS-thread worker VMs (one
 // wasmtime instance per core). Compare against `parmap.go` (goroutines).
 import vm

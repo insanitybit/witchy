@@ -2,7 +2,7 @@
 // recursive generic ADT — the type parameter `a` flows through the constructors
 // (`Push(a, Stack(a))`) and every function below works for *any* `a`. The same
 // `size`/`peek`/`reverse` operate on a `Stack(Int)` and a `Stack(String)` alike,
-// fully type-checked, with `peek` returning a generic `Option(a)`. Pure (only
+// fully type-checked, with `peek` returning a generic `Option(a)`. Data-only (only
 // `main` touches the Console), so it runs identically interpreted, compiled, and
 // inside the capability sandbox:
 //   witchy examples/generic_stack/src/generic_stack.witchy

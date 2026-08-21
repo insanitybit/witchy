@@ -622,7 +622,7 @@ fn main(console: Console):
         // The module validates (the synthesized wrappers are well-formed wasm). The
         // spike (`tests/browser_shim.rs`) proves it round-trips through the JS shim
         // and that the wrappers add NO host import (the rune stays instantiable
-        // under the deny-all pure-compute host).
+        // under the deny-all capability host).
         assert!(
             validates_wasm_gc(&bytes),
             "a module with string-export wrappers must validate"

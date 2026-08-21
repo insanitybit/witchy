@@ -11,8 +11,8 @@ the public contract in [`spec/wasm-abi.md`](../../spec/wasm-abi.md).
 
 This is a *general* witchy-WASM browser runtime, not specific to any one app. It
 is distinct from the `web/witchy-host.js` playground shim, which compiles
-snippets via a Rust-built `witchy.wasm` lib and delegates the pure helpers back
-to that lib; this runtime is standalone and implements the pure helpers in JS.
+snippets via a Rust-built `witchy.wasm` lib and delegates the non-authority helpers back
+to that lib; this runtime is standalone and implements those helpers in JS.
 The book's `witchy-cell-sandbox.js` imports both inside a fresh opaque-origin
 frame: compilation stays in the trusted parent, while guest execution and its
 derived Fetch CSP stay in the child.
@@ -88,7 +88,7 @@ const out = callString("__export_export_step", '{"model":0}'); // -> result stri
 
 `glamour-dom.mjs` is the capability-holding shell that runs a glamour MVU rune in
 a browser: `mount(wasmBytes, rootElement, opts)` instantiates the rune under this
-pure-compute host, calls its `export_step` to render, diffs the returned VNode
+deny-all capability host, calls its `export_step` to render, diffs the returned VNode
 into the real DOM (`createElement` / `textContent` / `setAttribute` only — never
 `innerHTML`), and wires `on` attributes as `addEventListener` handlers that route
 events back as `Msg` values and re-render. The witchy rune computes; the shell

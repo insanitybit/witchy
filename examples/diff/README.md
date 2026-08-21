@@ -2,7 +2,7 @@
 
 A line diff by longest common subsequence: fill the classic LCS length table over
 the two line lists, then backtrack from the bottom-right corner, emitting unchanged
-(`  `), deleted (`- `), and inserted (`+ `) lines. The `diff` function is pure
+(`  `), deleted (`- `), and inserted (`+ `) lines. The `diff` function is data-only
 (`pub`, no capabilities); only `main` touches the `Console`, so it runs identically
 interpreted, compiled, and inside the capability sandbox.
 

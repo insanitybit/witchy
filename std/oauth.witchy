@@ -1,5 +1,5 @@
 // oauth - the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in
-// with GitHub / Google". Pure witchy over `std/http` (HTTPS) + `url`. A relying party:
+// with GitHub / Google". Implemented in Witchy over `std/http` (HTTPS) + `url`. A relying party:
 //   1. redirects the user to `authorize_url(...)`;
 //   2. receives a `code` (and the `state` it sent) at its registered callback;
 //   3. exchanges the code for an access token with `exchange_code(...)`.

@@ -35,7 +35,7 @@ use super::*;
         );
     }
 
-    /// `std/toml` (pure witchy) reads `witchy.toml` manifests: `toml.get` for
+    /// `std/toml` (implemented in Witchy) reads `witchy.toml` manifests: `toml.get` for
     /// string values by `section.key`, `toml.get_array` for string arrays — what
     /// a self-hosted package manager needs to read a manifest.
     #[test]

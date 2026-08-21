@@ -6,7 +6,7 @@ compiled backend, with closures (including a *capturing* one) crossing the
 compiled boundary.
 
 **Shows:** the `list` stdlib module with closures — `map`, `filter`, `fold`,
-`sort_by`, `at`. Pure (`import list` grants no capabilities); only `main` touches
+`sort_by`, `at`. Data-only (`import list` grants no capabilities); only `main` touches
 the `Console`.
 
 ## Run

@@ -1,5 +1,5 @@
 // bars — the shared rendering base: integer percentages and fixed-width progress
-// bars. A pure library rune (no host capabilities). Both `tasks` and `coverage`
+// bars. A capability-free library rune (no host capabilities). Both `tasks` and `coverage`
 // depend on it, so the app's dependency graph is a diamond and `witchy tree`
 // resolves `bars` once.
 

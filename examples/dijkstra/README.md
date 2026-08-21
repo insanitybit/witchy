@@ -3,7 +3,7 @@
 Single-source shortest paths in a weighted directed graph. Nodes are indices and
 the graph is an edge list of `(from, to, weight)`; we settle the nearest unsettled
 node, relax its outgoing edges, then reconstruct one shortest path from the
-predecessor table. `dijkstra` and `path_to` are pure (`pub`, no capabilities); only
+predecessor table. `dijkstra` and `path_to` are data-only (`pub`, no capabilities); only
 `main` touches the `Console`, so it runs identically interpreted, compiled, and
 inside the capability sandbox.
 

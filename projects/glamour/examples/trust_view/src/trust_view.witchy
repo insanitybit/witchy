@@ -3,7 +3,7 @@
 // snapshot version + target count, and the snapshot/timestamp signature, freshness, and
 // rollback checks, each shown as a pass/fail indicator. The values are baked here; the shell
 // fills them from `/coven/rootpub`, `/coven/snapshot`, `/coven/timestamp` and computes the
-// checks. A pure render (no events); empty footprint.
+// checks. A data-only render (no events); empty footprint.
 
 import list
 import reflect

@@ -1550,13 +1550,13 @@ pub(crate) fn link_capability_imports(
     host::staging::link_staging(linker)?;
     host::vm_worker::link_vm(linker)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
-    // They carry no authority — pure reads — and the WIR static prelude declares
+    // They carry no authority — data reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
     // never call them, so the body is unreachable; returning 0 is a safe default.
     linker.func_wrap("witchy", "field_str_len", |_: Caller<'_, VmState>, _: i32| -> i32 { 0 })?;
     linker.func_wrap("witchy", "field_intlist_len", |_: Caller<'_, VmState>, _: i32| -> i32 { 0 })?;
     linker.func_wrap("witchy", "field_strlist_size", |_: Caller<'_, VmState>, _: i32| -> i32 { 0 })?;
-    // Native-stdlib functions are pure (no authority), so they're always
+    // Native-stdlib functions carry no authority, so they're always
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.
     host::crypto::link_pure(linker)?;

@@ -1,4 +1,4 @@
-// Pure helpers for the built-in `Duration` type - a length of time, written as a
+// Data-only helpers for the built-in `Duration` type - a length of time, written as a
 // literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with
 // the language operators (`a + b`, `d * 3`, `a < b`); this module adds
 // construction from plain numbers, component access, and human formatting.

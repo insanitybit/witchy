@@ -28,7 +28,7 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     let rp = registry_get(net, host, port, "/coven/rootpub")
     console.print("rootpub:${http.status(rp)}")
 
-    // publish acme/money@1.0.0 (a pure library — no capabilities). Anonymous registry:
+    // publish acme/money@1.0.0 (an empty-footprint library). Anonymous registry:
     // no identity token, so the builders pass `None`.
     let pub1 = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot", None, None))
     let pub1_doc = json.decode(http.body(pub1)) ?? json.object_sorted([])

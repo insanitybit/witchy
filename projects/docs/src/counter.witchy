@@ -1,4 +1,4 @@
-// A tiny INTERACTIVE glamour app for the book (RFC-0041): a live counter. Pure MVU — it holds
+// A tiny INTERACTIVE glamour app for the book (RFC-0041): a live counter. Data-oriented MVU — it holds
 // no capability and emits no effect, so it needs no network and no timer. The docs page mounts
 // it with the SAME `glamour-dom` runtime that drives the book itself, with `UiFetch` denied —
 // proof that a live glamour app runs in the docs with authority withheld by construction.

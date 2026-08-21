@@ -3,7 +3,7 @@
 // distance and predecessor per node, repeatedly settle the nearest unsettled
 // node (a linear find-min, fine for a small graph), and relax its outgoing
 // edges. Afterwards we print every distance and reconstruct one shortest path.
-// Pure (Console only); identical interpreted and compiled. Run:
+// Data-only apart from `main` (root footprint: `Console`); identical interpreted and compiled. Run:
 //   witchy examples/dijkstra/src/dijkstra.witchy
 fn main(console: Console):
     let names = ["A", "B", "C", "D", "E"]

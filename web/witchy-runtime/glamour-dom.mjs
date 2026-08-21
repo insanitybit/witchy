@@ -1,9 +1,9 @@
 // glamour-dom — the capability-HOLDING DOM host shell for a glamour MVU rune
-// (RFC-0008). The witchy rune is pure (capability-free): it computes a VNode tree
+// (RFC-0008). The witchy rune has an empty root footprint: it computes a VNode tree
 // and folds messages into the next model. This shell holds ALL authority — the
 // DOM, the events, and (later) effects — and drives the loop:
 //
-//   1. instantiate the rune under RFC-0007's pure-compute host (deny-all imports);
+//   1. instantiate the rune under RFC-0007's deny-all capability host (deny-all imports);
 //   2. call `export_step({model})` to get the initial {model, vnode};
 //   3. build the DOM from the vnode (createElement/textContent/setAttribute ONLY —
 //      NEVER innerHTML: the Perfect-Types-safe, structurally-injection-free path
@@ -269,7 +269,7 @@ export async function mount(wasmBytes, root, opts = {}) {
     return unescape(encodeURIComponent(value)).length;
   };
 
-  // Call the rune's pure step function. `extra` is `{}` for the initial render or
+  // Call the rune's data-only step function. `extra` is `{}` for the initial render or
   // `{ msg }` after an event; the rune returns `{ model, vnode, cmd }` (or
   // `{ error }`). `cmd` is the effect DESCRIPTION the shell interprets below.
   const step = (model, extra, start = undefined) => {

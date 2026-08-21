@@ -56,7 +56,7 @@ to call.
 The rest of the language supports ordinary application code. This small
 in-process server is an `async` task that owns a channel,
 folds the messages it receives into running state, and answers a request - the
-request/reply shape you'd normally reach for a socket, here in pure, deterministic
+request/reply shape you'd normally reach for a socket, here in deterministic data-only
 witchy that needs nothing but `Console`.
 
 ```witchy

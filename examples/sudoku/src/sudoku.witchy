@@ -3,7 +3,7 @@
 // is consistent with its row, column, and 3x3 box, and recurses — backtracking
 // (an `Option` `None`) when a cell admits no digit. Boards are *immutable*: each
 // trial builds a fresh board with one cell set, the natural functional style.
-// Pure (Console only). Run:  witchy examples/sudoku/src/sudoku.witchy
+// Data-only apart from `main` (root footprint: `Console`). Run:  witchy examples/sudoku/src/sudoku.witchy
 fn main(console: Console):
     let puzzle = [[5, 3, 0, 0, 7, 0, 0, 0, 0], [6, 0, 0, 1, 9, 5, 0, 0, 0], [0, 9, 8, 0, 0, 0, 0, 6, 0], [8, 0, 0, 0, 6, 0, 0, 0, 3], [4, 0, 0, 8, 0, 3, 0, 0, 1], [7, 0, 0, 0, 2, 0, 0, 0, 6], [0, 6, 0, 0, 0, 0, 2, 8, 0], [0, 0, 0, 4, 1, 9, 0, 0, 5], [0, 0, 0, 0, 8, 0, 0, 7, 9]]
 

@@ -6,15 +6,15 @@ verified: 0783c22
 
 witchyc-compiled modules reach the outside world through a single WASM import
 module named `"witchy"`. Each import is a host function the runtime must supply;
-**a granted host function is a capability** (or a piece of pure infrastructure).
+**a granted host function is a capability** (or non-authority infrastructure).
 This is the handshake between the compiler (the import declarations live in
 `crates/witchy-wir/src/wir_prelude.rs`, and the codegen path in
 `crates/witchy-lower/src/codegen/` selects which a module reaches) and a host
 that satisfies them (`crates/witchy-runtime/src/runtime.rs` is the wasmtime host;
-`web/witchy-runtime/witchy-runtime.mjs` is the JavaScript pure-compute host).
+`web/witchy-runtime/witchy-runtime.mjs` is the JavaScript deny-all capability host).
 
 This document is that import surface as a **stable public contract**. A host -
-the browser pure-compute runtime, or any third-party tool - depends on the names,
+the browser deny-all capability runtime, or any third-party tool - depends on the names,
 signatures, and marshaling protocol below; a compiler change to any of them is a
 breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
@@ -56,7 +56,7 @@ below. Per the WebAssembly spec, a module that imports a function the host doesn
 
 - an authority-free rune using only browser-provided services instantiates and
   runs;
-- an impure rune imports a capability function the host does **not** provide →
+- an authority-bearing rune imports a capability function the host does **not** provide →
   `WebAssembly.instantiate` throws, and the module never runs.
 
 The host is a sieve that admits no authority-bearing module. It's deliberately
@@ -81,8 +81,8 @@ A compiled module exports:
 
 A `pub fn` whose name starts with `export_` and has the shape
 `(String) -> String` is a **JS-callable string export**: the compiler emits a
-stable export wrapper plus a bump allocator so a host (the browser pure-compute
-shim, the glamour DOM shell - [RFC-0008](../rfcs/0008-frontend-framework-rune.md) can call a pure witchy function with a
+stable export wrapper plus a bump allocator so a host (the browser deny-all capability
+shim, the glamour DOM shell - [RFC-0008](../rfcs/0008-frontend-framework-rune.md) can call a Witchy function over data with a
 JSON string in and a JSON string out. These are **exports, not imports**: they
 grant **no** authority - the wrapper only reads/writes guest memory.
 
@@ -144,7 +144,7 @@ ABI version 8 declares **96 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
-- **pure infrastructure**: deterministic computation or marshaling, no authority;
+- **non-authority infrastructure**: deterministic computation or marshaling, no authority;
 - **capability authority**: only linked when the corresponding grant is present;
 - **launch input**: data selected by the host at launch, not ambient authority;
 - **internal/toolchain service**: compiler, reflection, or worker-runtime plumbing;
@@ -166,11 +166,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
-| `print` | `(i32, i32)` | pure infrastructure | none | provided |
+| `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
 | `console_read_len` | `() -> i32` | capability authority | Console.Read | omitted |
-| `crypto.sha256` | `(i32, i32)` | pure infrastructure | none | provided |
-| `crypto.sha256_bytes` | `(i32, i32)` | pure infrastructure | none | omitted |
-| `crypto.rune_hash` | `(i32, i32, i32)` | pure infrastructure | none | provided |
+| `crypto.sha256` | `(i32, i32)` | non-authority infrastructure | none | provided |
+| `crypto.sha256_bytes` | `(i32, i32)` | non-authority infrastructure | none | omitted |
+| `crypto.rune_hash` | `(i32, i32, i32)` | non-authority infrastructure | none | provided |
 | `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
@@ -179,8 +179,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `field_str_len` | `(i32) -> i32` | internal/toolchain service | none | provided |
 | `field_intlist_len` | `(i32) -> i32` | internal/toolchain service | none | provided |
 | `field_strlist_size` | `(i32) -> i32` | internal/toolchain service | none | provided |
-| `float_to_str` | `(f64, i32) -> i32` | pure infrastructure | none | provided |
-| `encoding` | `(i32, i32, i32) -> i32` | pure infrastructure | none | provided |
+| `float_to_str` | `(f64, i32) -> i32` | non-authority infrastructure | none | provided |
+| `encoding` | `(i32, i32, i32) -> i32` | non-authority infrastructure | none | provided |
 | `crypto.sign` | `(externref, i32, i32)` | capability authority | Secret | omitted |
 | `crypto.public_key` | `(externref, i32)` | capability authority | Secret | omitted |
 | `secretstore_lookup` | `(i32) -> externref` | capability authority | Secret | omitted |
@@ -194,7 +194,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_read_bytes_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `args_size` | `() -> i32` | launch input | none | provided |
-| `write_pending_list` | `(i32)` | pure infrastructure | none | provided |
+| `write_pending_list` | `(i32)` | non-authority infrastructure | none | provided |
 | `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_write` | `(i32)` | internal/toolchain service | none | omitted |
 | `vm_par_map_bytes_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
@@ -210,15 +210,15 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_recv_line_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_all_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_bytes_len` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
-| `fill_pending` | `(i32)` | pure infrastructure | none | provided |
-| `crypto.sha512` | `(i32, i32)` | pure infrastructure | none | provided |
-| `crypto.sha3_256` | `(i32, i32)` | pure infrastructure | none | provided |
-| `crypto.hmac_sha256` | `(i32, i32, i32)` | pure infrastructure | none | provided |
-| `crypto.__shake128` | `(i32, i32, i32)` | pure infrastructure | none | omitted |
-| `crypto.__shake256` | `(i32, i32, i32)` | pure infrastructure | none | omitted |
-| `print_int` | `(i64)` | pure infrastructure | none | provided |
-| `print_float` | `(f64)` | pure infrastructure | none | provided |
-| `string_from_code` | `(i64, i32) -> i32` | pure infrastructure | none | provided |
+| `fill_pending` | `(i32)` | non-authority infrastructure | none | provided |
+| `crypto.sha512` | `(i32, i32)` | non-authority infrastructure | none | provided |
+| `crypto.sha3_256` | `(i32, i32)` | non-authority infrastructure | none | provided |
+| `crypto.hmac_sha256` | `(i32, i32, i32)` | non-authority infrastructure | none | provided |
+| `crypto.__shake128` | `(i32, i32, i32)` | non-authority infrastructure | none | omitted |
+| `crypto.__shake256` | `(i32, i32, i32)` | non-authority infrastructure | none | omitted |
+| `print_int` | `(i64)` | non-authority infrastructure | none | provided |
+| `print_float` | `(f64)` | non-authority infrastructure | none | provided |
+| `string_from_code` | `(i64, i32) -> i32` | non-authority infrastructure | none | provided |
 | `mint_dir` | `(i32) -> externref` | capability authority | Dir.grant | omitted |
 | `dir_subdir` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_only` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
@@ -260,11 +260,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `now` | `() -> i64` | capability authority | Clock | omitted |
 | `now_monotonic` | `() -> i64` | capability authority | Clock | omitted |
 | `rand_u64` | `() -> i64` | capability authority | Rand | omitted |
-| `regex_match_spans_len` | `(i32, i32) -> i32` | pure infrastructure | none | provided |
-| `crypto.__ecdsa_p256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
-| `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
-| `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
-| `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
+| `regex_match_spans_len` | `(i32, i32) -> i32` | non-authority infrastructure | none | provided |
+| `crypto.__ecdsa_p256_verify_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
+| `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
+| `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
+| `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
 | `mint_exec` | `() -> externref` | capability authority | Exec | omitted |
 | `exec_only` | `(externref, i32) -> externref` | capability authority | Exec | omitted |
 | `exec_run` | `(externref, externref, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
@@ -302,7 +302,7 @@ Public decoders validate their alphabet and shape before calling a raw decode
 op. Hosts still reject an unknown op or malformed direct hex decode loudly.
 
 The crypto digests, encoding transforms, float formatting, and code-point
-encoding are pure functions; the pure-compute host mirrors
+encoding are deterministic data transforms; the deny-all capability host mirrors
 `crates/witchy-runtime/src/native.rs` / `crates/witchy-runtime/src/runtime.rs`
 **byte-for-byte**, so a browser run and a native run agree on
 every observable byte (the parity rule). The ed25519/p256 verifies need a platform
@@ -314,13 +314,13 @@ a self-contained synchronous implementation needing none.
 > `args_size` is host-chosen *input* rather than authority. Browser callers
 > provide it as `opts.args`; omission means an empty argument list.
 
-> The `compiler_*` imports are pure functions of their source arguments and grant
+> The `compiler_*` imports are deterministic functions of their source arguments and grant
 > no authority - they never appear in the capability footprint (a program that
 > `import compiler` and calls `compiler.footprint` shows only its real
 > capabilities). The interpreter **and** the native wasmtime host
 > (`crates/witchy-runtime/src/runtime.rs`) both link them, so `std/compiler`'s
 > `footprint`/`diff`/`doc` run on the compiled backend as well as the
-> interpreter. Only the pure-compute browser host omits them - it ships no
+> interpreter. Only the deny-all browser capability host omits them - it ships no
 > compiler - so a module importing one cannot instantiate there.
 
 ## Hosts
@@ -329,7 +329,7 @@ a self-contained synchronous implementation needing none.
   non-authority import and defines capability-authority imports only when the
   corresponding grant is present; it's the reference implementation of every
   signature and the pending-buffer protocol above.
-- **`web/witchy-runtime/witchy-runtime.mjs`** - the JavaScript pure-compute host
+- **`web/witchy-runtime/witchy-runtime.mjs`** - the JavaScript deny-all capability host
   ([RFC-0007](../rfcs/0007-witchy-wasm-browser-target.md)). Provides exactly the imports marked `browser: provided` above and
   omits every capability-authority import by default. Explicit capability
   options add only the selected browser-menu provider imports. In particular,
@@ -342,7 +342,7 @@ a self-contained synchronous implementation needing none.
   See the [browser runtime guide](../web/witchy-runtime/README.md).
 
 The spike [`web/witchy-runtime/spike.mjs`](../web/witchy-runtime/spike.mjs) (driven by the Rust test
-[`tests/browser/shim.rs`](../tests/browser/shim.rs)) compiles a pure rune, runs it under the JS host, asserts
+[`tests/browser/shim.rs`](../tests/browser/shim.rs)) compiles an empty-root-footprint rune, runs it under the JS host, asserts
 its output equals the native interpreter run byte-for-byte, and confirms a
 capability rune is rejected with a `LinkError`.
 
@@ -360,14 +360,14 @@ message, not merely on the fact of erroring.
   execution with a diagnostic label - an ability the guest already has via
   `unreachable`. Like the checked-heap imports
   (`heap_register`, [RFC-0023](../rfcs/0023-checked-heap.md)), it's therefore defined unconditionally on
-  every host (the pure-compute shim included) and is **excluded from the
+  every host (the deny-all capability shim included) and is **excluded from the
   capability footprint** (`witchy caps` and the coven widening gate never see it).
 - **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`
   (`DiagTemplate`). `template` is the stable `DiagTemplate::id()` (part of the
   compiled ABI - don't renumber); `a`/`b` are integer holes and `str_ptr` is a
   witchy-string pointer (or `0`). The interpreter and native host use the same
   renderer. The dependency-free browser host mirrors the small table, pinned by
-  a compiled test matrix covering every pure template.
+  a compiled test matrix covering every diagnostic template.
 - **`__witchy_diagnostic_site` carries source location.** Modules with routed failures
   export one mutable `i64`: high 32 bits are a static witchy-string pointer to
   the lexical function name, low 32 bits are the source line. Lowered calls pass

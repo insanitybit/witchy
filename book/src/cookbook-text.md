@@ -3,8 +3,8 @@
 Most programs spend their time turning bytes into meaning and back: matching a
 pattern, pulling fields out of a URL, or moving a value through base64. witchy
 keeps each of these jobs in its own small module - `regex`, `url`, `encoding` -
-so you import exactly the surface you need. None of them require a capability:
-they're pure computation over strings, so the examples below run identically on
+so you import exactly the surface you need. None of them add root capability
+demand; they are data transforms over strings, so the examples below run identically on
 both backends.
 
 ## Matching with `regex`

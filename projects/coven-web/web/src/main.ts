@@ -1,5 +1,5 @@
 // coven-web bootstrap — the THIN, capability-holding JS host shell for the coven-web app,
-// which is now ONE capability-pure glamour rune (projects/glamour/examples/coven_web_app),
+// which is now ONE empty-root-footprint glamour rune (projects/glamour/examples/coven_web_app),
 // compiled to WASM and base64-inlined below at build time (RFC-0015 Phase D). This file is
 // the entire hand-written frontend: it holds ALL authority — the network, the bearer session
 // token, and the WebAuthn ceremony — and hands the rune only data + narrow port results, so

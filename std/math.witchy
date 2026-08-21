@@ -1,5 +1,5 @@
-// The witchy standard math library: small integer helpers, pure and
-// capability-free. (Comparison can't be generic without type classes, so these
+// The witchy standard math library: small integer helpers with no root
+// capability demand. (Comparison can't be generic without type classes, so these
 // are Int-specific.)
 // --- Native primitives (intercepted by both backends; self-recursive
 // placeholder bodies give the type checker the signatures). ---

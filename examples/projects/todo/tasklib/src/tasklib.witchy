@@ -1,4 +1,4 @@
-// tasklib — parse and render a Markdown-style checklist. A *pure* library rune:
+// tasklib — parse and render a Markdown-style checklist. A *data-only* library rune:
 // it imports only `string` and declares no host capabilities, so any program may
 // depend on it without granting filesystem or network authority. `witchy caps`
 // on a consumer confirms this dependency contributes nothing to the footprint.

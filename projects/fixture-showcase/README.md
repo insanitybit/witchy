@@ -2,14 +2,14 @@
 
 This rune demonstrates Witchy's testing boundary in one small application:
 
-- pure decision logic is tested without capabilities;
+- data-only decision logic is tested without capabilities;
 - production code receives `Console`, `Clock`, `Env`, and argv explicitly;
 - the root test package declares an owned `capability FixtureWorld` record;
 - the runner assembles that record from a validated fixture plan;
 - exact provider call counts make unexpected effects fail the test;
 - the same fixture test runs under the interpreter and Wasmtime.
 
-Run the pure unit test:
+Run the data-only unit test:
 
 ```sh
 witchy test --filter release_line projects/fixture-showcase

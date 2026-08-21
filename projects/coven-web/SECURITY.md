@@ -7,7 +7,7 @@ The full design is in [`PLAN.md`](PLAN.md); this is the security summary.
 
 ## Architecture in one line
 
-A 100%-witchy `std/server` (`src/coven_web.witchy`) serves a single **capability-pure glamour
+A 100%-witchy `std/server` (`src/coven_web.witchy`) serves a single **empty-root-footprint glamour
 WASM rune** as the entire frontend (`projects/glamour/examples/coven_web_app`, empty footprint —
 compiled and base64-inlined into `app.js`; the only hand-written JS is a thin host shell holding
 all authority) and reverse-proxies coven's read API **same-origin**, so the browser only ever
@@ -159,7 +159,7 @@ The frontend *is* witchy-compiled WASM: the whole app is a glamour rune (RFC-000
 optional source highlighter is a second one. Full threat model:
 [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The load-bearing rules, all upheld:
 
-- **Pure-compute by construction.** The browser host shim implements only the non-capability
+- **Empty root footprint by construction.** The browser host shim implements only the non-capability
   `"witchy"` imports and **denies every capability import** (Net/Dir/Clock/…); a module that needs
   authority simply fails to instantiate. A footprint-empty rune is the *static* form of what the
   iframe sandbox enforces dynamically — two independent containment proofs, not one.

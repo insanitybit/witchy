@@ -1,6 +1,6 @@
 // Range patterns: match an integer against a span instead of enumerating every
 // value. `lo..hi` is exclusive of `hi`, `lo..=hi` is inclusive; both compose with
-// literal arms, or-patterns (`a | b`), and `if` guards. Pure (only `main` touches
+// literal arms, or-patterns (`a | b`), and `if` guards. Data-only (only `main` touches
 // the Console), so the classification runs identically interpreted, compiled, and
 // inside the capability sandbox:
 //   witchy examples/ranges/src/ranges.witchy

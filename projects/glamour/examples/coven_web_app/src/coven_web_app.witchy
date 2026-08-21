@@ -3,7 +3,7 @@
 // views (catalog, version record, API docs, registry trust) are wired into one MVU loop;
 // every fetch is performed by the host shell (which attaches the session credential itself),
 // every navigation is a real URL, and login + promote/yank go through host PORTS (the
-// WebAuthn ceremony runs in the host, never the rune). The rune is capability-PURE — no Net,
+// WebAuthn ceremony runs in the host, never the rune). The rune is empty-root-footprint — no Net,
 // no token, empty footprint — so the whole trusted shell is XSS-immune by construction;
 // authority lives entirely at the JS host edge (glamour-dom.mjs + the fetch/session/passkey
 // ports). State is 4 strings — the route, the signed-in identity, the current view's raw
@@ -158,7 +158,7 @@ fn body(route: String, data: String, sess: String, query: String) -> VNode(Msg):
 // metadata — author, lifecycle state, release date — the things you scan a registry for. A rune's
 // required capabilities are a quiet secondary line, not the headline. The search box still filters
 // by name, author, OR capability (so "Net" finds everything that touches the network); filtering
-// is pure (the model holds the query, no fetch per keystroke).
+// is data-only (the model holds the query, no fetch per keystroke).
 fn catalog_view(data: String, query: String) -> VNode(Msg):
     let all = parse_runes(data)
     let q = query.to_lower()
@@ -202,7 +202,7 @@ fn gi(j: Json, k: String) -> Int:
         Some(v) -> json.as_int(v).unwrap_or(0)
         None -> 0
 
-// Format a unix-SECONDS timestamp as a crates.io-style date, e.g. "Jun 23, 2026" (pure: no Clock).
+// Format a unix-SECONDS timestamp as a crates.io-style date, e.g. "Jun 23, 2026" (without reading `Clock`).
 fn fmt_date(secs: Int) -> String:
     time.format(time.from_unix(secs), "%b %d, %Y")
 
@@ -262,7 +262,7 @@ fn version_view(route: String, data: String, sess: String) -> VNode(Msg):
 
 // UI-01: the "how to install" affordance the record page was missing. A copy-paste command
 // (with the hosted registry pinned via COVEN_URL) plus a one-line note that a release still in
-// its 72h staging cooldown needs `--allow-fresh`. Pure text nodes — no HTML sink.
+// its 72h staging cooldown needs `--allow-fresh`. Plain text nodes — no HTML sink.
 fn install_block(name: String) -> VNode(Msg):
     glamour.element("section", [glamour.prop("class", "install")], [glamour.element("h2", [glamour.prop("class", "install-title")], [glamour.text("install")]), glamour.element("pre", [glamour.prop("class", "install-cmd")], [glamour.element("code", [], [glamour.text("COVEN_URL=https://witchy.fly.dev witchy add ${unwire(name)}")])]), glamour.element("p", [glamour.prop("class", "muted install-note")], [glamour.text("A release still inside its 72h staging cooldown needs --allow-fresh.")])])
 

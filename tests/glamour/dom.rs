@@ -1,4 +1,4 @@
-//! RFC-0008 ("A capability-pure frontend framework (MVU over VNode)") capstone
+//! RFC-0008 ("An empty-root-footprint frontend framework (MVU over VNode)") capstone
 //! test: drive the FULL glamour MVU run loop headlessly.
 //!
 //! The committed Node driver (`web/witchy-runtime/glamour-dom.test.mjs`):
@@ -9,12 +9,12 @@
 //!      two buttons and a `<span>` showing 0), and that the + button carries a
 //!      click handler (an `on` attr wired as `addEventListener`);
 //!   3. simulates a `+` click — the handler dispatches the `Inc` message back into
-//!      the pure rune, which folds it into count+1 — and asserts the `<span>`
+//!      the empty-root-footprint rune, which folds it into count+1 — and asserts the `<span>`
 //!      re-renders to 1, then 2; a `-` click decrements; and the differ patches
 //!      the existing DOM in place (no wholesale replacement).
 //!
 //! That proves render + event -> update -> re-render end to end: the witchy core
-//! stays pure (the `String -> String` `export_step` ABI), and the JS shell holds
+//! retains an empty root footprint (the `String -> String` `export_step` ABI), and the JS shell holds
 //! all the authority (the DOM, the events). Node is the host engine; if `node` is
 //! absent the test SKIPS cleanly so the suite stays green everywhere. The driver
 //! is independently runnable: `node web/witchy-runtime/glamour-dom.test.mjs`.
@@ -793,7 +793,7 @@ fn glamour_dom_timer_effect_dispatches_msg_via_fake_clock() {
 
 /// (RFC-0040) The committed Node driver (`user-cap-export.test.mjs`) compiles a
 /// cap-gated export `export_step(ui: UiRoot, input: String)`, instantiates it in the
-/// pure browser host with a `[user_caps]` grant, and asserts the host-minted
+/// deny-all browser host with a `[user_caps]` grant, and asserts the host-minted
 /// `UiRoot`'s policy round-trips into the rune — and that a missing grant traps
 /// (parity with the wasmtime host). This is the browser end of the app-root ABI,
 /// proving the minted VALUE, not just that the wrapper is well-formed.
@@ -833,7 +833,7 @@ fn glamour_autocounter_footprint_is_empty() {
     for forbidden in ["Net", "Dir", "Clock"] {
         assert!(
             !stdout.contains(forbidden),
-            "the capability-pure rune must not demand `{forbidden}`:\n{stdout}"
+            "the empty-root-footprint rune must not demand `{forbidden}`:\n{stdout}"
         );
     }
 }
@@ -902,7 +902,7 @@ fn glamour_package_page_renders_identity_footprint_and_docs() {
 
 /// RFC-0015 Phase D: the d3-runes-chart COMPARTMENT renderer's chart logic. The committed
 /// Node test (`projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs`)
-/// exercises the renderer's pure `barChartSvg(points) -> SVG` core — the foreign code that
+/// exercises the renderer's data-only `barChartSvg(points) -> SVG` core — the foreign code that
 /// would run isolated in the chart compartment. It asserts one bar per point, scaling to
 /// the max, and that only NUMERIC counts reach the SVG (a hostile label cannot inject, so
 /// even the in-box `innerHTML` is safe). The live rendering and the iframe/CSP isolation
@@ -981,7 +981,7 @@ fn glamour_coven_app_shell_routes_and_fetches() {
 /// real loop: the sidebar lists the book's pages, the initial route fetches a page and
 /// renders its Markdown to real elements (via `std/markdown`), and clicking a page navigates
 /// to its URL, fetches it, and renders it. The app holds no `Net` — the host shell performs
-/// every fetch — so the docs SITE is a capability-pure witchy program.
+/// every fetch — so the docs SITE is an empty-root-footprint witchy program.
 #[test]
 fn glamour_docs_app_renders_book_pages() {
     run_node_driver("web/witchy-runtime/glamour-docs.test.mjs", "GLAMOUR-DOCS OK", "glamour docs app");
@@ -1079,7 +1079,7 @@ fn glamour_compartment_isolates_foreign_code() {
 }
 
 /// RFC-0015 Phase A3 PARITY: the Markdown renderer produces byte-identical VNode JSON on
-/// the interpreter and the compiled WASM backend — the prime directive, for the pure
+/// the interpreter and the compiled WASM backend — the prime directive, for the data-only
 /// `markdown.to_vnode` string-processing path. Renders a document exercising headings,
 /// bold, inline code, a sanitized link, and a list, then runs `witchy parity`.
 #[test]
@@ -1132,7 +1132,7 @@ fn glamour_markdown_renderer_is_xss_safe() {
 ///
 /// The committed Node driver (`web/witchy-runtime/highlighter.test.mjs`) compiles
 /// the `highlighter` demo to WASM, calls its `export_render({src})` export through
-/// the RFC-0007 pure-compute host shim, parses the returned VNode JSON, and renders
+/// the RFC-0007 deny-all capability host, parses the returned VNode JSON, and renders
 /// it into a fake DOM with createElement/textContent ONLY. It asserts the
 /// highlighted structure (a `pre>code`, the keyword `fn` in `span.kw`, the comment
 /// in `span.com`, the string in `span.str`) AND — the security headline — that a
@@ -1176,7 +1176,7 @@ fn glamour_highlighter_footprint_is_empty() {
     for forbidden in ["Net", "Dir", "Clock"] {
         assert!(
             !stdout.contains(forbidden),
-            "the capability-pure highlighter must not demand `{forbidden}`:\n{stdout}"
+            "the empty-root-footprint highlighter must not demand `{forbidden}`:\n{stdout}"
         );
     }
 }

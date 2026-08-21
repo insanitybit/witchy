@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // RFC-0015 Phase D: test the committed d3-runes-chart compartment renderer's
-// pure chart core. The renderer is intentionally self-contained in index.html so
+// data-only chart core. The renderer is intentionally self-contained in index.html so
 // the opaque-origin compartment does not need network/module fetches.
 
 import { readFileSync } from "node:fs";

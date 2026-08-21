@@ -2,7 +2,7 @@
 
 The `crypto` module provides the cryptographic primitives a program reaches for:
 hashes, HMACs, and signature verification. Like the other text modules it's
-pure computation - hashing a string needs no capability. Signing, by contrast,
+data-only computation - hashing a string needs no capability. Signing, by contrast,
 requires a `Secret` (covered with the secret store), because the private key is
 authority you must be granted.
 

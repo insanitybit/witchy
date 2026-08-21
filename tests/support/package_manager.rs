@@ -303,7 +303,7 @@ pub(crate) fn witchy_pm_update_regates_transitive_widening() {
         assert_eq!(http_post(&addr, "/coven/promote", &promote).0, 200, "promote {name}@{version}");
     };
 
-    // t0: a pure `util@1.0.0` and an `app@1.0.0` that depends on it. Both empty.
+    // t0: an empty-footprint `util@1.0.0` and an `app@1.0.0` that depends on it. Both empty.
     publish(
         "acme/util",
         "util",

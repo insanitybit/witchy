@@ -3,7 +3,7 @@
 // matched by scanning with a depth counter (no precomputed jump table). Output
 // builds a string: a cell value is turned into a character by indexing a literal
 // of printable ASCII (index = value - 32), since the language has no chr/ord
-// builtin. Pure (Console only); identical on both backends. Run:
+// builtin. Data-only apart from `main` (root footprint: `Console`); identical on both backends. Run:
 //   witchy examples/brainfuck/src/brainfuck.witchy
 fn main(console: Console):
     // The canonical "Hello World!" program.

@@ -389,4 +389,4 @@ message type. The executor moves one opaque message envelope, and the checked
 endpoint type recovers the envelope's i32, i64, f64, host-reference, or direct
 GC-reference field; references are never bit-cast through an integer slot. A
 spawned task returns `()` (it reports results by sending them),
-which is what keeps the whole executor expressible in pure witchy.
+which is what keeps the whole executor expressible in Witchy.
