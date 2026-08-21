@@ -1,4 +1,6 @@
-fn main(console: Console, clock: Clock):
+mode opt
+
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var s = 0
     var i = 0

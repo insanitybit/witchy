@@ -1,12 +1,6 @@
-// Indexed list traversal (RFC-0034 L2): a `for i in 0..list.length(xs)` loop
-// reading `xs[i]`. Each access is a logical bounds check (`i < 0 || i >= len`)
-// + load; the bounds-check-elision lever proves `0 <= i < length(xs)` from the
-// compiler-managed counter (with `xs` unmutated) and drops the check, leaving a
-// direct unchecked load the Binaryen pass can fold — ~1.5x on this shape. The
-// CLBG numeric kernels (`nsieve`, `fannkuch`) cache the length in a var
-// (`while i < n`), which conservative elision can't prove equals `length(xs)`;
-// this is the idiomatic indexed-loop form it DOES reach.
-fn main(console: Console, clock: Clock):
+mode opt
+
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var xs = []
     var k = 0

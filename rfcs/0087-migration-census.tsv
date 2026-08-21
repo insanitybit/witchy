@@ -1,5 +1,5 @@
 path	line	category	callee	parameter	root
-benchmarks/dict_count.witchy	5	auxiliary-result-discard	dict.insert	-	-
+benchmarks/dict_count.witchy	7	auxiliary-result-discard	dict.insert	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
 examples/maze/src/maze.witchy	83	auxiliary-result-discard	dict.insert	-	-
 examples/wordcount/src/wordcount.witchy	9	auxiliary-result-discard	dict.insert	-	-

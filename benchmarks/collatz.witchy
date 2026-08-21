@@ -1,4 +1,6 @@
-fn steps(start: Int) -> Int:
+mode opt
+
+fn steps(let start: Int) -> Int:
     var n = start
     var c = 0
     while n > 1:
@@ -9,7 +11,7 @@ fn steps(start: Int) -> Int:
         c = c + 1
     c
 
-fn main(console: Console, clock: Clock):
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var total = 0
     var i = 1

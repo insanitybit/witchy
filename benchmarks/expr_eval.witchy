@@ -1,28 +1,24 @@
-// AST-evaluation benchmark: build an arithmetic expression tree and walk it.
-// This is the shape of every interpreter / compiler / query engine — recursive
-// pattern-matching over a sum type. In witchy it's a `type` + `match`; in Go it
-// takes a tagged struct and a `switch` (Go has no sum types). Exercises recursive
-// enum allocation (boxed children) and multi-way match dispatch in a hot loop.
+mode opt
 
 type Expr:
     Num(Int)
     Add(Expr, Expr)
     Mul(Expr, Expr)
 
-fn eval(e: Expr) -> Int:
+fn eval(let e: Expr) -> Int:
     match e:
         Num(n) -> n
         Add(a, b) -> eval(a) + eval(b)
         Mul(a, b) -> eval(a) * eval(b)
 
 // A balanced tree of `Add(Mul(t, 2), t)`, so eval(build(d)) == 3^d.
-fn build(depth: Int) -> Expr:
+fn build(let depth: Int) -> Expr:
     if depth <= 0:
         Num(1)
     else:
         Add(Mul(build(depth - 1), Num(2)), build(depth - 1))
 
-fn main(console: Console, clock: Clock):
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var total = 0
     var i = 0

@@ -1,8 +1,6 @@
-// Closure-call benchmark: invoke a first-class function (an `Rc<dyn Fn>` on the
-// compiled backend) several million times in a tight loop. Measures closure-call
-// overhead (heap pointer + indirect call), the same shape Go's func values have.
+mode opt
 
-fn main(console: Console, clock: Clock):
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     let f = fn(x: Int): x % 7
     var total = 0

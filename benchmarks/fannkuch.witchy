@@ -1,13 +1,8 @@
-// fannkuch-redux (benchmarksgame): for each permutation of [0..n), count the
-// pancake flips that bring element 0 to the front; report a checksum and the max
-// flip count. Permutation rotation and the per-permutation flip both mutate small
-// fixed-size arrays in place via `list.set_at(xs, i, v)` — O(1) per element
-// only because of the in-place set_at fast path (otherwise each set rebuilds the
-// whole array). Output encodes both results as `checksum*1000 + maxflips`.
+mode opt
 
 import list
 
-fn fannkuch(n: Int) -> Int:
+fn fannkuch(let n: Int) -> Int:
     var perm1 = []
     for i in list.range(n):
         list.push(perm1, i)
@@ -71,7 +66,7 @@ fn fannkuch(n: Int) -> Int:
         perm_count = perm_count + 1
     0
 
-fn main(console: Console, clock: Clock):
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     let r = fannkuch(10)
     let bench_t1 = clock.now_monotonic()

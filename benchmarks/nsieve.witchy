@@ -1,11 +1,8 @@
-// nsieve (benchmarksgame): count primes below N with the Sieve of Eratosthenes.
-// Exercises in-place `list.set_at` on a large flag array — O(n log log n) only
-// because `list.set_at(xs, j, false)` mutates the owned buffer in place;
-// without that fast path the per-set rebuild is O(n^2) and OOMs.
+mode opt
 
 import list
 
-fn nsieve(n: Int) -> Int:
+fn nsieve(let n: Int) -> Int:
     var flags = list.repeat(true, n)
     var count = 0
     var i = 2
@@ -19,7 +16,7 @@ fn nsieve(n: Int) -> Int:
         i = i + 1
     count
 
-fn main(console: Console, clock: Clock):
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var total = 0
     total = total + nsieve(800000)

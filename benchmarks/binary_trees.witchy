@@ -1,23 +1,21 @@
-// Allocation-stress benchmark: build and discard many binary trees, summing a
-// checksum of each. Native witchy frees each tree deterministically (Rust
-// ownership, no GC); Go relies on its garbage collector.
+mode opt
 
 type Tree:
     Leaf
     Node(Tree, Tree)
 
-fn build(depth: Int) -> Tree:
+fn build(let depth: Int) -> Tree:
     if depth == 0:
         Node(Leaf, Leaf)
     else:
         Node(build(depth - 1), build(depth - 1))
 
-fn check(t: Tree) -> Int:
+fn check(let t: Tree) -> Int:
     match t:
         Leaf -> 0
         Node(l, r) -> 1 + check(l) + check(r)
 
-fn main(console: Console, clock: Clock):
+fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     var total = 0
     var i = 0
