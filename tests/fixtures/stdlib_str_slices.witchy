@@ -1,0 +1,36 @@
+mode opt
+
+import string
+
+fn main() -> Int:
+    let orig = "hello world, witchy string slices!"
+    let sv = string.as_str(&orig)
+    let part1 = sv.slice(0, 5)
+    let part2 = sv.slice(6, 11)
+    let part3 = sv.slice(13, 34)
+
+    let s1 = part1.to_string()
+    let s2 = part2.to_string()
+    let s3 = part3.to_string()
+
+    let l1 = part1.len()
+    let l_all = sv.len()
+    let empty = sv.slice(0, 0).is_empty()
+    let not_empty = part1.is_empty()
+
+    // Sub-slicing a slice
+    let sub = part3.slice(0, 6)
+    let s_sub = sub.to_string()
+
+    // Out-of-bounds slicing clamps safely
+    let clamped = sv.slice(13, 999).to_string()
+
+    // Unicode multi-byte characters
+    let uni = "✨witchy🚀lang"
+    let uni_slice = string.as_str(&uni).slice(0, 7)
+    let uni_str = uni_slice.to_string()
+
+    if s1 == "hello" && s2 == "world" && s3 == "witchy string slices!" && s_sub == "witchy" && clamped == "witchy string slices!" && l1 == 5 && l_all == 34 && empty && !not_empty && uni_str == "✨witchy":
+        42
+    else:
+        0

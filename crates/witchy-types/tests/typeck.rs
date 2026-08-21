@@ -3764,4 +3764,21 @@ fn main():
             "{err_str}"
         );
     }
+
+    #[test]
+    fn stdlib_str_slice_operations_typecheck() {
+        check_str(
+            "mode opt\n\nfn process_str(s: &'a String) -> String:\n    let slice_view = string.as_str(s)\n    let sub = string.slice(slice_view, 0, 5)\n    string.to_string(sub)\n",
+        )
+        .expect("string.as_str, string.slice, string.to_string should typecheck");
+    }
+
+    #[test]
+    fn stdlib_str_slice_methods_typecheck() {
+        check_str(
+            "mode opt\n\nimpl str:\n    pub fn slice(self: &'a str, start: Int, end: Int) -> &'a str:\n        string.slice(self, start, end)\n    pub fn to_string(self: &'a str) -> String:\n        string.to_string(self)\n\nfn test_methods(s: &'a String) -> String:\n    let sv = string.as_str(s)\n    let sub = sv.slice(0, 3)\n    sub.to_string()\n",
+        )
+        .expect("s.as_str().slice(0, 3).to_string() should typecheck");
+    }
 }
+

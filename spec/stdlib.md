@@ -3957,6 +3957,14 @@ The witchy standard string library. Like `list`, it is pure: it declares no capa
 
 #### `fn substring(s: String, start: Int, end: Int) -> String`
 
+#### `fn as_str(s: &'a String) -> &'a str`
+
+#### `fn slice(s: &'a str, start: Int, end: Int) -> &'a str`
+
+#### `fn to_string(s: &'a str) -> String`
+
+#### `fn len(s: &'a str) -> Int`
+
 #### `fn to_upper(s: String) -> String`
 
 #### `fn to_lower(s: String) -> String`
@@ -4000,6 +4008,10 @@ Replace every occurrence of `from` with `to`.
 #### `String.substring(start: Int, end: Int) -> String`
 
 The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
+
+#### `String.as_str() -> &'a str`
+
+Return a borrowed view of this String as a string slice (`&'a str`).
 
 #### `String.to_upper() -> String`
 
@@ -4106,6 +4118,30 @@ Safely parse a base-10 integer: an optional leading `-`/`+` then one or more dig
 #### `String.lines() -> List(String)`
 
 Split text into its newline-separated lines.
+
+#### `str.len() -> Int`
+
+The string slice's length in BYTES (UTF-8).
+
+#### `str.length() -> Int`
+
+The string's length in BYTES (UTF-8). For user-perceived characters, see `char_count`.
+
+#### `str.char_count() -> Int`
+
+The number of Unicode scalar values.
+
+#### `str.slice(start: Int, end: Int) -> &'a str`
+
+The sub-slice from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
+
+#### `str.is_empty() -> Bool`
+
+Whether the string has no characters.
+
+#### `str.to_string() -> String`
+
+Convert this borrowed slice into an owned String.
 
 ## `task`
 

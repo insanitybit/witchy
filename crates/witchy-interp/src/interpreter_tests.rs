@@ -163,7 +163,7 @@ fn echo(page: Page) -> Page:
                     Value::str("1"),
                     Value::str("x"),
                 ],
-                intrinsics::STRING_SUBSTRING => {
+                intrinsics::STRING_SUBSTRING | intrinsics::STRING_SLICE => {
                     vec![Value::str("12"), Value::Int(0), Value::Int(1)]
                 }
                 intrinsics::STRING_SPLIT

@@ -127,6 +127,10 @@ pub enum IntrinsicId {
     StringFind,
     StringReplace,
     StringSubstring,
+    StringAsStr,
+    StringSlice,
+    StringToString,
+    StringLen,
     StringToUpper,
     StringToLower,
     StringTrim,
@@ -210,6 +214,10 @@ pub enum IntrinsicSignature {
     StringStringStringToString,
     StringStringStringToInt,
     StringIntIntToString,
+    StringToStr,
+    StrIntIntToStr,
+    StrToString,
+    StrToInt,
     ListStringListStringToString,
     /// (RFC-0121) A by-handle secret op: asks only for `Seal`, so a `Secret[Seal]`
     /// satisfies it and a bare `Secret` narrows into it (`crypto.sign`).
@@ -280,6 +288,7 @@ impl IntrinsicSignature {
             Self::BytesToInt
                 | Self::BytesIntToInt
                 | Self::StringToInt
+                | Self::StrToInt
                 | Self::StringStringToInt
                 | Self::StringStringStringToInt
                 | Self::FloatToInt
@@ -588,6 +597,10 @@ pub const STRING_ENDS_WITH: &str = "string.ends_with";
 pub const STRING_FIND: &str = "string.find";
 pub const STRING_REPLACE: &str = "string.replace";
 pub const STRING_SUBSTRING: &str = "string.substring";
+pub const STRING_AS_STR: &str = "string.as_str";
+pub const STRING_SLICE: &str = "string.slice";
+pub const STRING_TO_STRING: &str = "string.to_string";
+pub const STRING_LEN: &str = "string.len";
 pub const STRING_TO_UPPER: &str = "string.to_upper";
 pub const STRING_TO_LOWER: &str = "string.to_lower";
 pub const STRING_TRIM: &str = "string.trim";
@@ -2427,6 +2440,66 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::StringAsStr,
+        name: STRING_AS_STR,
+        arity: 1,
+        signature: IntrinsicSignature::StringToStr,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_AS_STR,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::StringSlice,
+        name: STRING_SLICE,
+        arity: 3,
+        signature: IntrinsicSignature::StrIntIntToStr,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["str_substring"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_SLICE,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::StringToString,
+        name: STRING_TO_STRING,
+        arity: 1,
+        signature: IntrinsicSignature::StrToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_TO_STRING,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::StringLen,
+        name: STRING_LEN,
+        arity: 1,
+        signature: IntrinsicSignature::StrToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_LEN,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::StringToUpper,
         name: STRING_TO_UPPER,
         arity: 1,
@@ -2907,6 +2980,10 @@ pub const STRING_OPERATIONS: &[&str] = &[
     STRING_FIND,
     STRING_REPLACE,
     STRING_SUBSTRING,
+    STRING_AS_STR,
+    STRING_SLICE,
+    STRING_TO_STRING,
+    STRING_LEN,
     STRING_TO_UPPER,
     STRING_TO_LOWER,
     STRING_TRIM,
@@ -3070,6 +3147,10 @@ pub fn is_string_operation(name: &str) -> bool {
                 | IntrinsicId::StringFind
                 | IntrinsicId::StringReplace
                 | IntrinsicId::StringSubstring
+                | IntrinsicId::StringAsStr
+                | IntrinsicId::StringSlice
+                | IntrinsicId::StringToString
+                | IntrinsicId::StringLen
                 | IntrinsicId::StringToUpper
                 | IntrinsicId::StringToLower
                 | IntrinsicId::StringTrim
@@ -3892,7 +3973,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 15);
+        assert_eq!(actual.len(), 19);
 
         for name in STRING_OPERATIONS {
             let spec = lookup(name).expect("string operation");
@@ -3940,6 +4021,44 @@ mod tests {
                 IntrinsicSignature::StringIntIntToString => {
                     (vec![string(), int(), int()], string())
                 }
+                IntrinsicSignature::StringToStr => (
+                    vec![Type::Qualified(
+                        crate::ast::TypeQual::Borrow("a".into()),
+                        Box::new(string()),
+                    )],
+                    Type::Qualified(
+                        crate::ast::TypeQual::Borrow("a".into()),
+                        Box::new(named("str")),
+                    ),
+                ),
+                IntrinsicSignature::StrIntIntToStr => (
+                    vec![
+                        Type::Qualified(
+                            crate::ast::TypeQual::Borrow("a".into()),
+                            Box::new(named("str")),
+                        ),
+                        int(),
+                        int(),
+                    ],
+                    Type::Qualified(
+                        crate::ast::TypeQual::Borrow("a".into()),
+                        Box::new(named("str")),
+                    ),
+                ),
+                IntrinsicSignature::StrToString => (
+                    vec![Type::Qualified(
+                        crate::ast::TypeQual::Borrow("a".into()),
+                        Box::new(named("str")),
+                    )],
+                    string(),
+                ),
+                IntrinsicSignature::StrToInt => (
+                    vec![Type::Qualified(
+                        crate::ast::TypeQual::Borrow("a".into()),
+                        Box::new(named("str")),
+                    )],
+                    int(),
+                ),
                 IntrinsicSignature::IntToString => (vec![int()], string()),
                 other => panic!("unexpected string signature {other:?}"),
             }

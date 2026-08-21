@@ -2710,7 +2710,10 @@ impl<'types> Codegen<'types> {
 
     fn is_explicit_reference_type(ty: &Type) -> bool {
         match ty {
-            Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+            Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), inner) => {
+                let unq = inner.unqualified();
+                !matches!(unq, Type::Named(name, _) if name == "str") && !matches!(unq, Type::Slice(_))
+            }
             Type::Qualified(_, inner) => Self::is_explicit_reference_type(inner),
             _ => false,
         }

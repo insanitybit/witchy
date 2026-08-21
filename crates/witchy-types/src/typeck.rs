@@ -1160,6 +1160,34 @@ fn check_nominal_lifetime_declarations(module: &Module) -> Result<(), TypeError>
 }
 
 fn normal_mode_item_mentions_reference_surface(item: &Item) -> bool {
+    match item {
+        Item::Function(f)
+            if matches!(
+                f.name.as_str(),
+                "as_str"
+                    | "slice"
+                    | "to_string"
+                    | "len"
+                    | "string.as_str"
+                    | "string.slice"
+                    | "string.to_string"
+                    | "string.len"
+                    | "String__as_str"
+                    | "str__slice"
+                    | "str__length"
+                    | "str__len"
+                    | "str__char_count"
+                    | "str__is_empty"
+                    | "str__to_string"
+            ) =>
+        {
+            return false;
+        }
+        Item::Impl(i) if i.type_name == "str" || i.type_name == "String" => {
+            return false;
+        }
+        _ => {}
+    }
     let callable_mentions_reference = |params: &[ast::Param], result: Option<&ast::Type>| {
         params
             .iter()
@@ -2065,15 +2093,25 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         witchy_syntax::format::type_str(&target)
                     ));
                 }
-                validate_type_model(
-                    &target,
-                    &known,
-                    &arities,
-                    &type_defs,
-                    &nominal_parameters,
-                    &reference_storage,
-                )
-                    .map_err(|e| in_ctx(e, &im.type_name))?;
+                if im.type_name != "str" {
+                    validate_type_model(
+                        &target,
+                        &known,
+                        &arities,
+                        &type_defs,
+                        &nominal_parameters,
+                        &reference_storage,
+                    )
+                        .map_err(|e| in_ctx(e, &im.type_name))?;
+                } else {
+                    validate_type(
+                        &target,
+                        &known,
+                        &arities,
+                        &nominal_parameters,
+                    )
+                        .map_err(|e| in_ctx(e, &im.type_name))?;
+                }
                 for arg in &im.trait_args {
                     validate_type_model(arg, &known, &arities, &type_defs, &nominal_parameters, &reference_storage)
                         .map_err(|e| in_ctx(e, &im.type_name))?;
@@ -5645,6 +5683,19 @@ impl Checker {
             }
             S::StringIntIntToString => {
                 Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
+            }
+            S::StringToStr => {
+                Some((vec![Ty::String], Ty::Named("str".into(), Vec::new())))
+            }
+            S::StrIntIntToStr => {
+                let str_ty = Ty::Named("str".into(), Vec::new());
+                Some((vec![str_ty.clone(), Ty::Int, Ty::Int], str_ty))
+            }
+            S::StrToString => {
+                Some((vec![Ty::Named("str".into(), Vec::new())], Ty::String))
+            }
+            S::StrToInt => {
+                Some((vec![Ty::Named("str".into(), Vec::new())], Ty::Int))
             }
             S::ListStringListStringToString => Some((
                 vec![

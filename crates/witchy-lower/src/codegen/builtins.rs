@@ -487,7 +487,9 @@ impl Codegen<'_> {
                     Kind::I64,
                 )
             }
-            (intrinsics::LIST_LENGTH, 1) | (intrinsics::STRING_LENGTH, 1)
+            (intrinsics::LIST_LENGTH, 1)
+                | (intrinsics::STRING_LENGTH, 1)
+                | (intrinsics::STRING_LEN, 1)
                 if self.collect_wir =>
             {
                 let arg = self.lower_expr(&args[0])?;
@@ -1117,17 +1119,29 @@ impl Codegen<'_> {
                 let up = if name == intrinsics::STRING_TO_UPPER { 1 } else { 0 };
                 call(intrinsic_helper(name), vec![self.lower_expr(&args[0])?, W::ConstI32(up)])
             }
-            (intrinsics::STRING_SUBSTRING, 3) => {
+            (intrinsics::STRING_AS_STR, 1) | (intrinsics::STRING_TO_STRING, 1) => {
+                if self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                    self.lower_place_reference_read(&args[0], Kind::I32, &args[0])?
+                } else {
+                    self.lower_expr(&args[0])?
+                }
+            }
+            (intrinsics::STRING_SUBSTRING, 3) | (intrinsics::STRING_SLICE, 3) => {
                 self.uses_substring = true;
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
                 let ek = self.kind_of(&args[2]);
+                let base = if self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                    self.lower_place_reference_read(&args[0], Kind::I32, &args[0])?
+                } else {
+                    self.lower_expr(&args[0])?
+                };
                 // (BUG-011) Pass the char indices at full i64 width — `$str_substring`
                 // clamps them to `[0, char_count]` before narrowing to byte offsets,
                 // exactly like the interpreter. A prior narrow-to-i32 here wrapped huge
                 // indices (near the i64 extremes), diverging from the interpreter.
-                call(intrinsic_helper(name), vec![
-                    self.lower_expr(&args[0])?,
+                call("str_substring", vec![
+                    base,
                     Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])

@@ -1916,6 +1916,66 @@ impl Interpreter {
                 }
                 _ => err("substring expects a String and two Int indices"),
             },
+            intrinsics::STRING_AS_STR => {
+                let v = one(args)?;
+                let s = match v {
+                    Value::Str(s) => s.clone(),
+                    Value::Reference { cell, .. } => match &*cell.borrow() {
+                        Value::Str(s) => s.clone(),
+                        other => return err(format!("as_str expects a String, got `{other}`")),
+                    },
+                    other => return err(format!("as_str expects a String, got `{other}`")),
+                };
+                Ok(Some(Value::Str(s)))
+            }
+            intrinsics::STRING_SLICE => match args {
+                [s_val, Value::Int(start), Value::Int(end)] => {
+                    let s = match s_val {
+                        Value::Str(s) => s.clone(),
+                        Value::Reference { cell, .. } => match &*cell.borrow() {
+                            Value::Str(s) => s.clone(),
+                            other => return err(format!("slice expects a str, got `{other}`")),
+                        },
+                        other => return err(format!("slice expects a str, got `{other}`")),
+                    };
+                    let chars: Vec<char> = s.chars().collect();
+                    let lo = (*start).max(0) as usize;
+                    let hi = (*end).max(0) as usize;
+                    let lo = lo.min(chars.len());
+                    let hi = hi.min(chars.len());
+                    let out: String = if lo < hi {
+                        chars[lo..hi].iter().collect()
+                    } else {
+                        String::new()
+                    };
+                    Ok(Some(Value::str(out)))
+                }
+                _ => err("slice expects a str and two Int indices"),
+            },
+            intrinsics::STRING_TO_STRING => {
+                let v = one(args)?;
+                let s = match v {
+                    Value::Str(s) => s.clone(),
+                    Value::Reference { cell, .. } => match &*cell.borrow() {
+                        Value::Str(s) => s.clone(),
+                        other => return err(format!("to_string expects a str, got `{other}`")),
+                    },
+                    other => return err(format!("to_string expects a str, got `{other}`")),
+                };
+                Ok(Some(Value::Str(s)))
+            }
+            intrinsics::STRING_LEN => {
+                let v = one(args)?;
+                let len = match v {
+                    Value::Str(s) => s.len(),
+                    Value::Reference { cell, .. } => match &*cell.borrow() {
+                        Value::Str(s) => s.len(),
+                        other => return err(format!("len expects a str, got `{other}`")),
+                    },
+                    other => return err(format!("len expects a str, got `{other}`")),
+                };
+                Ok(Some(Value::Int(len as i64)))
+            }
             // Conversions.
             intrinsics::MATH_TO_FLOAT => match one(args)? {
                 Value::Int(n) => Ok(Some(Value::Float(n as f64))),

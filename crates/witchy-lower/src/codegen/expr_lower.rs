@@ -28,7 +28,7 @@ impl<'types> Codegen<'types> {
     /// by both source `*reference` and the compiler-generated `borrow.Owned`
     /// materializer, so the latter produces an owned snapshot rather than
     /// leaking the carrier across its erased generic ABI.
-    fn lower_place_reference_read(
+    pub(crate) fn lower_place_reference_read(
         &mut self,
         expr: &Expr,
         result_kind: Kind,

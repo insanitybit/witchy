@@ -1599,19 +1599,30 @@ fn declared_expr_type(
             _ => None,
         },
         Expr::Call { name, args } => {
-            let (params, ret, _) = fn_sigs.get(name)?;
-            let mut binds = HashMap::new();
-            for (param, arg) in params.iter().zip(args) {
-                let (Some(param), Some(arg_ty)) = (param, type_of(arg)) else {
-                    continue;
-                };
-                let _ = bind_ast_type_vars(param, &arg_ty, &mut binds);
+            if let Some((params, ret, _)) = fn_sigs.get(name) {
+                let mut binds = HashMap::new();
+                for (param, arg) in params.iter().zip(args) {
+                    let (Some(param), Some(arg_ty)) = (param, type_of(arg)) else {
+                        continue;
+                    };
+                    let _ = bind_ast_type_vars(param, &arg_ty, &mut binds);
+                }
+                return Some(subst_trait_params(ret, &binds));
             }
-            // Keep unresolved variables in place. The nominal declaration is
-            // still authoritative enough to resolve owner methods (`dict.new()`
-            // is `Dict(k, v)` before its insert arguments constrain k/v), while
-            // typeck remains responsible for proving those variables concrete.
-            Some(subst_trait_params(ret, &binds))
+            match name.as_str() {
+                intrinsics::STRING_AS_STR | intrinsics::STRING_SLICE => {
+                    Some(named_type("str"))
+                }
+                intrinsics::STRING_TO_STRING
+                | intrinsics::STRING_SUBSTRING
+                | intrinsics::STRING_TO_UPPER
+                | intrinsics::STRING_TO_LOWER
+                | intrinsics::STRING_TRIM => Some(named_type("String")),
+                intrinsics::STRING_LENGTH | intrinsics::STRING_LEN | intrinsics::STRING_CHAR_COUNT | intrinsics::STRING_TO_INT => {
+                    Some(named_type("Int"))
+                }
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -2876,7 +2887,7 @@ fn type_owner_module_name(name: &str) -> Option<&str> {
         "Duration" => Some("duration"),
         "List" => Some("list"),
         "Dict" => Some("dict"),
-        "String" => Some("string"),
+        "String" | "str" => Some("string"),
         "Set" => Some("set"),
         "Option" => Some("option"),
         "Result" => Some("result"),
@@ -2891,6 +2902,9 @@ fn type_owner_module_name(name: &str) -> Option<&str> {
 }
 
 fn type_owner_module_ast(ty: &Type) -> Option<&str> {
+    if matches!(ty.unqualified(), Type::Slice(_)) {
+        return Some("list");
+    }
     type_owner_module_name(nominal_type_name(ty)?)
 }
 

@@ -40,6 +40,18 @@ pub fn replace(s: String, from: String, to: String) -> String:
 pub fn substring(s: String, start: Int, end: Int) -> String:
     string.substring(s, start, end)
 
+pub fn as_str(s: &'a String) -> &'a str:
+    string.as_str(s)
+
+pub fn slice(s: &'a str, start: Int, end: Int) -> &'a str:
+    string.slice(s, start, end)
+
+pub fn to_string(s: &'a str) -> String:
+    string.to_string(s)
+
+pub fn len(s: &'a str) -> Int:
+    string.len(s)
+
 pub fn to_upper(s: String) -> String:
     string.to_upper(s)
 
@@ -137,6 +149,10 @@ impl String:
     // counted by Unicode scalar; out-of-range indices clamp.
     pub fn substring(self, start: Int, end: Int) -> String:
         string.substring(self, start, end)
+
+    // Return a borrowed view of this String as a string slice (`&'a str`).
+    pub fn as_str(self: &'a String) -> &'a str:
+        string.as_str(self)
 
     // ASCII case mapping (the portable set both backends share).
     pub fn to_upper(self) -> String:
@@ -399,3 +415,30 @@ impl String:
     // Split text into its newline-separated lines.
     pub fn lines(self) -> List(String):
         string.split(self, "\n")
+
+// --- impl str: string slice methods ---
+impl str:
+    // The string slice's length in BYTES (UTF-8).
+    pub fn len(self: &'a str) -> Int:
+        string.len(self)
+
+    // The string slice's length in BYTES (UTF-8).
+    pub fn length(self: &'a str) -> Int:
+        string.len(self)
+
+    // The number of Unicode scalar values in this slice.
+    pub fn char_count(self: &'a str) -> Int:
+        string.to_string(self).char_count()
+
+    // The sub-slice from character index `start` (inclusive) to `end` (exclusive),
+    // counted by Unicode scalar; out-of-range indices clamp.
+    pub fn slice(self: &'a str, start: Int, end: Int) -> &'a str:
+        string.slice(self, start, end)
+
+    // Whether the string slice has no characters.
+    pub fn is_empty(self: &'a str) -> Bool:
+        string.len(self) == 0
+
+    // Convert this borrowed slice into an owned String.
+    pub fn to_string(self: &'a str) -> String:
+        string.to_string(self)

@@ -2392,6 +2392,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         (intrinsics::LIST_LENGTH, 1)
         | (intrinsics::DICT_LENGTH, 1)
         | (intrinsics::STRING_LENGTH, 1)
+        | (intrinsics::STRING_LEN, 1)
         | (intrinsics::STRING_CHAR_COUNT, 1)
         | (intrinsics::LIST_AT, 2)
         | (intrinsics::DICT_AT, 2)
@@ -2423,6 +2424,9 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         | (intrinsics::STRING_SPLIT, 2)
         | (intrinsics::STRING_STARTS_WITH, 2)
         | (intrinsics::STRING_ENDS_WITH, 2)
+        | (intrinsics::STRING_AS_STR, 1)
+        | (intrinsics::STRING_TO_STRING, 1)
+        | (intrinsics::STRING_SLICE, 3)
         | (intrinsics::STRING_SUBSTRING, 3)
         | (intrinsics::STRING_REPLACE, 3) => read_all(argc),
         // Conversions never retain buffers.

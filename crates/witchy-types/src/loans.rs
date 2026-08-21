@@ -195,8 +195,25 @@ fn authenticated_borrow_escape_boundary(name: &str) -> Option<BorrowEscapeBounda
 /// substrate, exempt from the `mode opt` gate exactly as the linker's import rule
 /// exempts it).
 fn is_std_fn(name: &str) -> bool {
-    name.rsplit_once('.')
-        .is_some_and(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m))
+    if let Some((m, _)) = name.rsplit_once('.') {
+        return witchy_syntax::linker::STD_MODULES.contains(&m);
+    }
+    if let Some((type_name, _)) = name.split_once("__") {
+        return matches!(
+            type_name,
+            "String"
+                | "str"
+                | "List"
+                | "Dict"
+                | "Bytes"
+                | "Option"
+                | "Result"
+                | "Int"
+                | "Float"
+                | "Bool"
+        );
+    }
+    false
 }
 
 /// The stable owner-object base that keeps borrowed storage alive.
@@ -1023,44 +1040,50 @@ fn facts_impl(
     // Pass 2: check each body and record statement-identity events.
     for item in &module.items {
         let Item::Function(f) = item else { continue };
+        let is_std = is_std_fn(&f.name);
+        let mut std_facts = LoanFacts::default();
+        let target_facts = if is_std { &mut std_facts } else { &mut facts };
         let mut ctx = LoanCtx {
             sigs: &sigs,
             type_table,
             fn_name: &f.name,
-            facts: &mut facts,
+            facts: target_facts,
             catalog: &catalog,
             return_relations: sigs
                 .get(&f.name)
                 .map(|sig| named_return_relations(sig, &f.params))
                 .unwrap_or_default(),
             block_results: HashMap::new(),
-            input_borrows: f
-                .params
-                .iter()
-                .filter_map(|param| {
-                    let ty = param.ty.as_ref()?;
-                    let slots = catalog.slots(ty);
-                    if slots.is_empty() {
-                        return None;
-                    }
-                    Some((
-                        param.name.clone(),
-                        slots
-                            .into_iter()
-                            .map(|slot| BorrowSource {
-                                owner: param.name.clone(),
-                                root_type: Some(ty.clone()),
-                                projection: slot.projection.clone(),
-                                borrower_projection: slot.projection,
-                                origin: f.name.clone(),
-                                kind: slot.kind,
-                                owner_type: slot.storage_type,
-                                temporary: false,
-                            })
-                            .collect(),
-                    ))
-                })
-                .collect(),
+            input_borrows: if is_std {
+                HashMap::new()
+            } else {
+                f.params
+                    .iter()
+                    .filter_map(|param| {
+                        let ty = param.ty.as_ref()?;
+                        let slots = catalog.slots(ty);
+                        if slots.is_empty() {
+                            return None;
+                        }
+                        Some((
+                            param.name.clone(),
+                            slots
+                                .into_iter()
+                                .map(|slot| BorrowSource {
+                                    owner: param.name.clone(),
+                                    root_type: Some(ty.clone()),
+                                    projection: slot.projection.clone(),
+                                    borrower_projection: slot.projection,
+                                    origin: f.name.clone(),
+                                    kind: slot.kind,
+                                    owner_type: slot.storage_type,
+                                    temporary: false,
+                                })
+                                .collect(),
+                        ))
+                    })
+                    .collect()
+            },
             return_callable: f
                 .ret
                 .as_ref()
@@ -1076,7 +1099,7 @@ fn facts_impl(
             })
             .collect();
         ctx.check_block_with(&f.body, &[], &callable_params, true, &[])?;
-        index_control_flow(&f.body, true, &mut facts);
+        index_control_flow(&f.body, true, target_facts);
 
         let mut lambdas = Vec::new();
         collect_lambdas(&f.body, &mut lambdas);
@@ -1088,8 +1111,11 @@ fn facts_impl(
                 &format!("lambda {} in {}", index + 1, short_name(&f.name)),
                 is_opt_function(&f.name, &module.modes),
                 LoanEnvironment { sigs: &sigs, catalog: &catalog, type_table },
-                &mut facts,
+                target_facts,
             )?;
+        }
+        if is_std {
+            facts.edges.extend(std_facts.edges);
         }
     }
     Ok(facts)
@@ -3235,6 +3261,15 @@ impl LoanCtx<'_> {
                     }
                 }
             }
+            Expr::Call { name, args }
+                if matches!(
+                    witchy_syntax::intrinsics::canonical_operation_name(name),
+                    witchy_syntax::intrinsics::STRING_AS_STR
+                        | witchy_syntax::intrinsics::STRING_SLICE
+                ) && !args.is_empty() =>
+            {
+                self.collect_alias_sources(&args[0], live, out);
+            }
             _ => {}
         }
     }
@@ -4187,7 +4222,8 @@ impl LoanCtx<'_> {
                     source.owner,
                 )));
             }
-            if let Some(access) = signature.access.as_ref()
+            if !is_std_fn(self.fn_name)
+                && let Some(access) = signature.access.as_ref()
                 && let Some(parameter) = access.params().get(index)
                 && let Some(required) = direct_reference_kind(parameter.ty())
             {
