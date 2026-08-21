@@ -425,6 +425,12 @@ pub enum VectorOp {
     I64x2ExtMulHighI32x4U,
     I64x2Add,
     I32x4Add,
+    I8x16Add,
+    I8x16Sub,
+    I8x16GeU,
+    I8x16LeU,
+    I8x16GtU,
+    I8x16LtU,
 }
 
 impl VectorOp {
@@ -448,6 +454,12 @@ impl VectorOp {
             VectorOp::I64x2ExtMulHighI32x4U => "i64x2.extmul_high_i32x4_u",
             VectorOp::I64x2Add => "i64x2.add",
             VectorOp::I32x4Add => "i32x4.add",
+            VectorOp::I8x16Add => "i8x16.add",
+            VectorOp::I8x16Sub => "i8x16.sub",
+            VectorOp::I8x16GeU => "i8x16.ge_u",
+            VectorOp::I8x16LeU => "i8x16.le_u",
+            VectorOp::I8x16GtU => "i8x16.gt_u",
+            VectorOp::I8x16LtU => "i8x16.lt_u",
         }
     }
 }

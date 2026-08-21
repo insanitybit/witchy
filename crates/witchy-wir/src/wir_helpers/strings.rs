@@ -131,8 +131,8 @@ pub(crate) fn str_eq_helper() -> WirFunc {
 /// `$str_cmp(a: i32, b: i32) -> i32` — byte-lexicographic comparison of two
 /// `[len][bytes]` strings: negative if `a < b`, zero if equal, positive if
 /// `a > b`. Compares up to the shorter length, then breaks ties by length.
-/// Mirrors `STR_CMP_WAT`; byte reads via `Load8U`, no heap/import/table.
-pub(super) fn str_cmp_helper() -> WirFunc {
+/// Vectorized with 16-byte SIMD chunk comparisons and CTZ mismatch discovery.
+pub(crate) fn str_cmp_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -144,9 +144,87 @@ pub(super) fn str_cmp_helper() -> WirFunc {
         rhs: Box::new(r),
     };
     let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
     let byte_at = |base: &str| E::Load8U {
-        ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"))),
+        ptr: Box::new(ptr_at(base)),
         offset: 0,
+    };
+    let vec_loop = N::Block {
+        label: "vdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "vl".into(),
+            body: vec![
+                N::Br {
+                    target: "vdone".into(),
+                    cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("n"))),
+                },
+                N::SetLocal { local: "va".into(), value: load_v128(ptr_at("a")) },
+                N::SetLocal { local: "vb".into(), value: load_v128(ptr_at("b")) },
+                N::SetLocal {
+                    local: "mask".into(),
+                    value: E::Vector {
+                        op: VectorOp::I8x16Bitmask,
+                        args: vec![E::Vector {
+                            op: VectorOp::I8x16Eq,
+                            args: vec![getl("va"), getl("vb")],
+                        }],
+                    },
+                },
+                N::If {
+                    cond: bin(BinOp::Ne, getl("mask"), i32c(0xffff)),
+                    then_: vec![
+                        N::SetLocal {
+                            local: "diff_pos".into(),
+                            value: E::Unary {
+                                op: UnOp::Ctz,
+                                kind: Kind::I32,
+                                arg: Box::new(bin(BinOp::Xor, getl("mask"), i32c(0xffff))),
+                            },
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: bin(BinOp::Add, getl("i"), getl("diff_pos")),
+                        },
+                        N::Return(Some(bin(BinOp::Sub, byte_at("a"), byte_at("b")))),
+                    ],
+                    els: vec![],
+                    result: None,
+                },
+                N::SetLocal {
+                    local: "i".into(),
+                    value: bin(BinOp::Add, getl("i"), i32c(16)),
+                },
+                N::Br { target: "vl".into(), cond: None },
+            ],
+        }],
+    };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br {
+                    target: "done".into(),
+                    cond: Some(bin(BinOp::Ge, getl("i"), getl("n"))),
+                },
+                N::SetLocal { local: "ca".into(), value: byte_at("a") },
+                N::SetLocal { local: "cb".into(), value: byte_at("b") },
+                N::If {
+                    cond: bin(BinOp::Ne, getl("ca"), getl("cb")),
+                    then_: vec![N::Return(Some(bin(BinOp::Sub, getl("ca"), getl("cb"))))],
+                    els: vec![],
+                    result: None,
+                },
+                N::SetLocal {
+                    local: "i".into(),
+                    value: bin(BinOp::Add, getl("i"), i32c(1)),
+                },
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
     };
     WirFunc {
         name: "str_cmp".into(),
@@ -162,6 +240,10 @@ pub(super) fn str_cmp_helper() -> WirFunc {
             WirLocal { name: "i".into(), ty: WirTy::Bool },
             WirLocal { name: "ca".into(), ty: WirTy::Bool },
             WirLocal { name: "cb".into(), ty: WirTy::Bool },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            WirLocal { name: "diff_pos".into(), ty: WirTy::Bool },
+            WirLocal { name: "va".into(), ty: WirTy::V128 },
+            WirLocal { name: "vb".into(), ty: WirTy::V128 },
         ],
         body: vec![
             N::SetLocal { local: "alen".into(), value: load_i32(getl("a")) },
@@ -175,32 +257,8 @@ pub(super) fn str_cmp_helper() -> WirFunc {
                 result: None,
             },
             N::SetLocal { local: "i".into(), value: i32c(0) },
-            N::Block {
-                label: "done".into(),
-                result: None,
-                body: vec![N::Loop {
-                    label: "l".into(),
-                    body: vec![
-                        N::Br {
-                            target: "done".into(),
-                            cond: Some(bin(BinOp::Ge, getl("i"), getl("n"))),
-                        },
-                        N::SetLocal { local: "ca".into(), value: byte_at("a") },
-                        N::SetLocal { local: "cb".into(), value: byte_at("b") },
-                        N::If {
-                            cond: bin(BinOp::Ne, getl("ca"), getl("cb")),
-                            then_: vec![N::Return(Some(bin(BinOp::Sub, getl("ca"), getl("cb"))))],
-                            els: vec![],
-                            result: None,
-                        },
-                        N::SetLocal {
-                            local: "i".into(),
-                            value: bin(BinOp::Add, getl("i"), i32c(1)),
-                        },
-                        N::Br { target: "l".into(), cond: None },
-                    ],
-                }],
-            },
+            vec_loop,
+            scan_loop,
             N::Push(bin(BinOp::Sub, getl("alen"), getl("blen"))),
         ],
         raw_body: None,
@@ -367,8 +425,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
 }
 
 /// `$starts_with(s, p) -> i32` — 1 iff string `s` begins with prefix `p`.
-/// Byte-compares `p`'s bytes against `s`'s leading bytes; bails to 0 the moment a
-/// byte differs or `p` is longer than `s`.
+/// Vectorized with 16-byte SIMD chunk comparisons.
 pub(crate) fn starts_with_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -376,9 +433,43 @@ pub(crate) fn starts_with_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
     let p_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("p"), getl("i"))), offset: 4 };
+    let vec_loop = N::Block {
+        label: "vdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "vl".into(),
+            body: vec![
+                N::Br {
+                    target: "vdone".into(),
+                    cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("plen"))),
+                },
+                setl("vs", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                setl("vp", load_v128(b(BinOp::Add, b(BinOp::Add, getl("p"), i32c(4)), getl("i")))),
+                setl(
+                    "mask",
+                    E::Vector {
+                        op: VectorOp::I8x16Bitmask,
+                        args: vec![E::Vector {
+                            op: VectorOp::I8x16Eq,
+                            args: vec![getl("vs"), getl("vp")],
+                        }],
+                    },
+                ),
+                N::If {
+                    cond: b(BinOp::Ne, getl("mask"), i32c(0xffff)),
+                    then_: vec![N::Return(Some(i32c(0)))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(16))),
+                N::Br { target: "vl".into(), cond: None },
+            ],
+        }],
+    };
     let scan_loop = N::Block {
         label: "done".into(),
         result: None,
@@ -404,10 +495,13 @@ pub(crate) fn starts_with_helper() -> WirFunc {
             WirLocal { name: "p".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["plen", "i"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![
+            WirLocal { name: "plen".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            WirLocal { name: "vs".into(), ty: WirTy::V128 },
+            WirLocal { name: "vp".into(), ty: WirTy::V128 },
+        ],
         body: vec![
             setl("plen", load(getl("p"))),
             N::If {
@@ -417,6 +511,7 @@ pub(crate) fn starts_with_helper() -> WirFunc {
                 result: None,
             },
             setl("i", i32c(0)),
+            vec_loop,
             scan_loop,
             N::Push(i32c(1)),
         ],
@@ -425,8 +520,7 @@ pub(crate) fn starts_with_helper() -> WirFunc {
 }
 
 /// `$ends_with(s, p) -> i32` — 1 iff string `s` ends with suffix `p`.
-/// Like `$starts_with`, but the comparison window into `s` is shifted by
-/// `off = len(s) - len(p)`; bails to 0 if `p` is longer than `s`.
+/// Vectorized with 16-byte SIMD chunk comparisons.
 pub(crate) fn ends_with_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -434,12 +528,46 @@ pub(crate) fn ends_with_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U {
         ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("off"), getl("i")))),
         offset: 4,
     };
     let p_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("p"), getl("i"))), offset: 4 };
+    let vec_loop = N::Block {
+        label: "vdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "vl".into(),
+            body: vec![
+                N::Br {
+                    target: "vdone".into(),
+                    cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("plen"))),
+                },
+                setl("vs", load_v128(b(BinOp::Add, b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("off")), getl("i")))),
+                setl("vp", load_v128(b(BinOp::Add, b(BinOp::Add, getl("p"), i32c(4)), getl("i")))),
+                setl(
+                    "mask",
+                    E::Vector {
+                        op: VectorOp::I8x16Bitmask,
+                        args: vec![E::Vector {
+                            op: VectorOp::I8x16Eq,
+                            args: vec![getl("vs"), getl("vp")],
+                        }],
+                    },
+                ),
+                N::If {
+                    cond: b(BinOp::Ne, getl("mask"), i32c(0xffff)),
+                    then_: vec![N::Return(Some(i32c(0)))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(16))),
+                N::Br { target: "vl".into(), cond: None },
+            ],
+        }],
+    };
     let scan_loop = N::Block {
         label: "done".into(),
         result: None,
@@ -465,10 +593,14 @@ pub(crate) fn ends_with_helper() -> WirFunc {
             WirLocal { name: "p".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["plen", "off", "i"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![
+            WirLocal { name: "plen".into(), ty: WirTy::Bool },
+            WirLocal { name: "off".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            WirLocal { name: "vs".into(), ty: WirTy::V128 },
+            WirLocal { name: "vp".into(), ty: WirTy::V128 },
+        ],
         body: vec![
             setl("plen", load(getl("p"))),
             setl("off", b(BinOp::Sub, load(getl("s")), getl("plen"))),
@@ -479,6 +611,7 @@ pub(crate) fn ends_with_helper() -> WirFunc {
                 result: None,
             },
             setl("i", i32c(0)),
+            vec_loop,
             scan_loop,
             N::Push(i32c(1)),
         ],

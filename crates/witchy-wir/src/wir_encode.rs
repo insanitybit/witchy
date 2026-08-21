@@ -1585,6 +1585,12 @@ fn vector_op_instr(op: VectorOp) -> Instruction<'static> {
         VectorOp::I64x2ExtMulHighI32x4U => Instruction::I64x2ExtMulHighI32x4U,
         VectorOp::I64x2Add => Instruction::I64x2Add,
         VectorOp::I32x4Add => Instruction::I32x4Add,
+        VectorOp::I8x16Add => Instruction::I8x16Add,
+        VectorOp::I8x16Sub => Instruction::I8x16Sub,
+        VectorOp::I8x16GeU => Instruction::I8x16GeU,
+        VectorOp::I8x16LeU => Instruction::I8x16LeU,
+        VectorOp::I8x16GtU => Instruction::I8x16GtU,
+        VectorOp::I8x16LtU => Instruction::I8x16LtU,
     }
 }
 

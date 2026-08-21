@@ -595,6 +595,8 @@ pub(crate) fn str_chars_helper() -> WirFunc {
 /// `$ascii_case(s, up) -> i32` — `s` with ASCII letters cased: `up != 0`
 /// uppercases (`a`–`z` → `A`–`Z`), else lowercases. Non-letters and non-ASCII
 /// bytes copy through unchanged (byte-wise, so multibyte UTF-8 is preserved).
+/// Accelerated with 16-way SIMD bitselect conversion and a zero-allocation
+/// Cow fast path returning `s` directly if no casing changes are needed.
 pub(crate) fn ascii_case_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -602,9 +604,171 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+
+    // Range checks for single byte
     let in_range = |lo: i32, hi: i32| b(BinOp::And, b(BinOp::GeU, getl("b"), i32c(lo)), b(BinOp::LeU, getl("b"), i32c(hi)));
-    let scan_loop = N::Block {
+
+    // Cow check: scan to see if ANY character needs casing.
+    let cow_vec_check = N::Block {
+        label: "cvdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "cvl".into(),
+            body: vec![
+                N::Br {
+                    target: "cvdone".into(),
+                    cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
+                },
+                setl("v", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                setl(
+                    "target_match",
+                    E::Vector {
+                        op: VectorOp::V128And,
+                        args: vec![
+                            E::Vector {
+                                op: VectorOp::I8x16GeU,
+                                args: vec![getl("v"), getl("splat_lo")],
+                            },
+                            E::Vector {
+                                op: VectorOp::I8x16LeU,
+                                args: vec![getl("v"), getl("splat_hi")],
+                            },
+                        ],
+                    },
+                ),
+                setl(
+                    "mask",
+                    E::Vector {
+                        op: VectorOp::I8x16Bitmask,
+                        args: vec![getl("target_match")],
+                    },
+                ),
+                // If any character in the chunk matches, we need to transform (break to alloc)
+                N::If {
+                    cond: getl("mask"),
+                    then_: vec![N::Br { target: "needs_transform".into(), cond: None }],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(16))),
+                N::Br { target: "cvl".into(), cond: None },
+            ],
+        }],
+    };
+
+    let cow_tail_check = N::Block {
+        label: "ctdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "ctl".into(),
+            body: vec![
+                N::Br { target: "ctdone".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
+                N::If {
+                    cond: in_range(65, 90),
+                    then_: vec![
+                        N::If {
+                            cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("up")) },
+                            then_: vec![N::Br { target: "needs_transform".into(), cond: None }],
+                            els: vec![],
+                            result: None,
+                        },
+                    ],
+                    els: vec![],
+                    result: None,
+                },
+                N::If {
+                    cond: in_range(97, 122),
+                    then_: vec![
+                        N::If {
+                            cond: getl("up"),
+                            then_: vec![N::Br { target: "needs_transform".into(), cond: None }],
+                            els: vec![],
+                            result: None,
+                        },
+                    ],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "ctl".into(), cond: None },
+            ],
+        }],
+    };
+
+    // Vectorized transformation loop
+    let vec_transform_loop = N::Block {
+        label: "vtdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "vtl".into(),
+            body: vec![
+                N::Br {
+                    target: "vtdone".into(),
+                    cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
+                },
+                setl("v", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                setl(
+                    "target_match",
+                    E::Vector {
+                        op: VectorOp::V128And,
+                        args: vec![
+                            E::Vector {
+                                op: VectorOp::I8x16GeU,
+                                args: vec![getl("v"), getl("splat_lo")],
+                            },
+                            E::Vector {
+                                op: VectorOp::I8x16LeU,
+                                args: vec![getl("v"), getl("splat_hi")],
+                            },
+                        ],
+                    },
+                ),
+                N::If {
+                    cond: getl("up"),
+                    then_: vec![
+                        setl(
+                            "v_mod",
+                            E::Vector {
+                                op: VectorOp::I8x16Sub,
+                                args: vec![getl("v"), E::Vector { op: VectorOp::I8x16Splat, args: vec![i32c(32)] }],
+                            },
+                        ),
+                    ],
+                    els: vec![
+                        setl(
+                            "v_mod",
+                            E::Vector {
+                                op: VectorOp::I8x16Add,
+                                args: vec![getl("v"), E::Vector { op: VectorOp::I8x16Splat, args: vec![i32c(32)] }],
+                            },
+                        ),
+                    ],
+                    result: None,
+                },
+                setl(
+                    "v_trans",
+                    E::Vector {
+                        op: VectorOp::V128Bitselect,
+                        args: vec![getl("v_mod"), getl("v"), getl("target_match")],
+                    },
+                ),
+                N::Store {
+                    ptr: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("i")),
+                    value: getl("v_trans"),
+                    kind: Kind::V128,
+                    offset: 0,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(16))),
+                N::Br { target: "vtl".into(), cond: None },
+            ],
+        }],
+    };
+
+    // Scalar tail transformation loop
+    let tail_transform_loop = N::Block {
         label: "done".into(),
         result: None,
         body: vec![N::Loop {
@@ -634,6 +798,7 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
             ],
         }],
     };
+
     WirFunc {
         name: "ascii_case".into(),
         params: vec![
@@ -641,17 +806,58 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
             WirLocal { name: "up".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Str],
-        locals: ["len", "i", "res", "b"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "b".into(), ty: WirTy::Bool },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            WirLocal { name: "splat_lo".into(), ty: WirTy::V128 },
+            WirLocal { name: "splat_hi".into(), ty: WirTy::V128 },
+            WirLocal { name: "v".into(), ty: WirTy::V128 },
+            WirLocal { name: "target_match".into(), ty: WirTy::V128 },
+            WirLocal { name: "v_mod".into(), ty: WirTy::V128 },
+            WirLocal { name: "v_trans".into(), ty: WirTy::V128 },
+        ],
         body: vec![
             setl("len", load(getl("s"))),
-            // (RFC-0016) allocate through `$rc_alloc` (header + reuse).
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("len")) },
+                then_: vec![N::Return(Some(getl("s")))],
+                els: vec![],
+                result: None,
+            },
+            // Initialize bounds for check pass:
+            N::If {
+                cond: getl("up"),
+                then_: vec![
+                    setl("splat_lo", E::Vector { op: VectorOp::I8x16Splat, args: vec![i32c(97)] }),
+                    setl("splat_hi", E::Vector { op: VectorOp::I8x16Splat, args: vec![i32c(122)] }),
+                ],
+                els: vec![
+                    setl("splat_lo", E::Vector { op: VectorOp::I8x16Splat, args: vec![i32c(65)] }),
+                    setl("splat_hi", E::Vector { op: VectorOp::I8x16Splat, args: vec![i32c(90)] }),
+                ],
+                result: None,
+            },
+            // Cow check pass (returns s if no modification needed)
+            N::Block {
+                label: "needs_transform".into(),
+                result: None,
+                body: vec![
+                    setl("i", i32c(0)),
+                    cow_vec_check,
+                    cow_tail_check,
+                    // No character matched: return original string (Cow zero-alloc)!
+                    N::Return(Some(getl("s"))),
+                ],
+            },
+            // Transformation pass
             setl("res", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), getl("len"))] }),
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
             setl("i", i32c(0)),
-            scan_loop,
+            vec_transform_loop,
+            tail_transform_loop,
             N::Push(getl("res")),
         ],
         raw_body: None,

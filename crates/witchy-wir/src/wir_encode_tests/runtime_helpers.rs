@@ -1784,3 +1784,263 @@
         );
         assert_agrees(&module, &["1", "0", "25", "-1"]);
     }
+
+    #[test]
+    fn simd_starts_with_and_ends_with() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        let s = "abcdefghijklmnopqrstuvwxyz0123456789"; // 36 bytes
+        let p_start = "abcdefghijklmnop"; // 16 bytes
+        let p_start_diff = "abcdefghijklmnoX"; // 16 bytes, diff at 15
+        let p_end = "wxyz0123456789"; // 14 bytes
+        let p_end_diff = "Wxyz0123456789";
+
+        let seg_s = encoded_string(s);
+        let seg_p1 = encoded_string(p_start);
+        let seg_p2 = encoded_string(p_start_diff);
+        let seg_p3 = encoded_string(p_end);
+        let seg_p4 = encoded_string(p_end_diff);
+
+        let data = vec![
+            DataSegment { offset: 100, bytes: seg_s },
+            DataSegment { offset: 200, bytes: seg_p1 },
+            DataSegment { offset: 300, bytes: seg_p2 },
+            DataSegment { offset: 400, bytes: seg_p3 },
+            DataSegment { offset: 500, bytes: seg_p4 },
+        ];
+
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                // starts_with(s, p_start) -> 1
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "starts_with".into(),
+                            args: vec![i32c(100), i32c(200)],
+                        }),
+                    }],
+                }),
+                // starts_with(s, p_start_diff) -> 0
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "starts_with".into(),
+                            args: vec![i32c(100), i32c(300)],
+                        }),
+                    }],
+                }),
+                // ends_with(s, p_end) -> 1
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "ends_with".into(),
+                            args: vec![i32c(100), i32c(400)],
+                        }),
+                    }],
+                }),
+                // ends_with(s, p_end_diff) -> 0
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "ends_with".into(),
+                            args: vec![i32c(100), i32c(500)],
+                        }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let module = print_int_data_module(
+            vec![
+                crate::wir_helpers::starts_with_helper(),
+                crate::wir_helpers::ends_with_helper(),
+                run,
+            ],
+            data,
+            vec![],
+        );
+        assert_agrees(&module, &["1", "0", "1", "0"]);
+    }
+
+    #[test]
+    fn simd_str_cmp() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        let s1 = "abcdefghijklmnopqrstuvwxyz"; // 26 bytes
+        let s2 = "abcdefghijklmnopqrstuvwxyz";
+        let s3 = "abcdefghijklmnopqrstuvwxyZ"; // 'z' (122) vs 'Z' (90) -> diff at index 25 is positive (32)
+
+        let seg1 = encoded_string(s1);
+        let seg2 = encoded_string(s2);
+        let seg3 = encoded_string(s3);
+
+        let data = vec![
+            DataSegment { offset: 100, bytes: seg1 },
+            DataSegment { offset: 200, bytes: seg2 },
+            DataSegment { offset: 300, bytes: seg3 },
+        ];
+
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                // str_cmp(s1, s2) -> 0
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "str_cmp".into(),
+                            args: vec![i32c(100), i32c(200)],
+                        }),
+                    }],
+                }),
+                // str_cmp(s1, s3) -> 32
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "str_cmp".into(),
+                            args: vec![i32c(100), i32c(300)],
+                        }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let module = print_int_data_module(
+            vec![
+                crate::wir_helpers::str_cmp_helper(),
+                run,
+            ],
+            data,
+            vec![],
+        );
+        assert_agrees(&module, &["0", "32"]);
+    }
+
+    #[test]
+    fn simd_ascii_case_cow_and_transformation() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        let s_lower = "already lowercase 1234567890 hello world!";
+        let s_mixed = "Hello World 1234567890 ABCDEFGHIJKLMNOPQRSTUVWXYZ!";
+
+        let seg_lower = encoded_string(s_lower);
+        let seg_mixed = encoded_string(s_mixed);
+
+        let data = vec![
+            DataSegment { offset: 100, bytes: seg_lower },
+            DataSegment { offset: 300, bytes: seg_mixed },
+        ];
+
+        let globals = vec![heap_global(1024)];
+
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![
+                WirLocal { name: "res1".into(), ty: WirTy::Bool },
+                WirLocal { name: "res2".into(), ty: WirTy::Bool },
+            ],
+            body: vec![
+                // to_lower(s_lower) should return SAME pointer 100 (Cow zero-alloc!)
+                WirNode::SetLocal {
+                    local: "res1".into(),
+                    value: Call {
+                        func: "ascii_case".into(),
+                        args: vec![i32c(100), i32c(0)],
+                    },
+                },
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Binary {
+                            op: BinOp::Eq,
+                            kind: Kind::I32,
+                            lhs: Box::new(GetLocal("res1".into())),
+                            rhs: Box::new(i32c(100)),
+                        }),
+                    }],
+                }),
+                // to_lower(s_mixed) has uppercase so allocates new buffer != 300
+                WirNode::SetLocal {
+                    local: "res2".into(),
+                    value: Call {
+                        func: "ascii_case".into(),
+                        args: vec![i32c(300), i32c(0)],
+                    },
+                },
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Binary {
+                            op: BinOp::Ne,
+                            kind: Kind::I32,
+                            lhs: Box::new(GetLocal("res2".into())),
+                            rhs: Box::new(i32c(300)),
+                        }),
+                    }],
+                }),
+                // Check that byte 0 of res2 is 'h' (104) instead of 'H' (72)
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Load8U {
+                            ptr: Box::new(Binary {
+                                op: BinOp::Add,
+                                kind: Kind::I32,
+                                lhs: Box::new(GetLocal("res2".into())),
+                                rhs: Box::new(i32c(4)),
+                            }),
+                            offset: 0,
+                        }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let module = print_int_data_module(
+            vec![
+                crate::wir_helpers::ascii_case_helper(),
+                crate::wir_helpers::rc_alloc_helper(),
+                crate::wir_helpers::ensure_helper(false),
+                run,
+            ],
+            data,
+            globals,
+        );
+        // "1" (pointer equal to 100), "1" (new buffer != 300), "104" ('h')
+        assert_agrees(&module, &["1", "1", "104"]);
+    }
