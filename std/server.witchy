@@ -1,12 +1,12 @@
 // The witchy web framework - a slice of axum/tower over the `Net` capability,
 // built on the shared `Request`/`Response` types in `http`.
 //
-// A handler is a pure `fn(Request) -> Response`: it has NO capability
-// parameters, so it is *structurally* unable to touch the network, filesystem,
-// or console. To give a handler authority (a logger, a store, an outbound
-// client), capture it in the closure - capture IS dependency injection. `serve`
-// holds the `Net` to listen and never hands it to a handler, so even a mounted
-// third-party handler can only compute over the request; it cannot phone home.
+// A handler is an ordinary `fn(Request) -> Response`: opaque delegated behavior
+// that may be effectful. To give a handler a logger, store, or outbound client,
+// capture a suitably narrowed capability in the closure - capture is dependency
+// injection. `serve` keeps the `Net` used to listen and never hands that specific
+// capability to a handler. This confines listener authority; it does not make
+// the ordinary handler type a purity contract.
 //
 //   let app = server.router()
 //       .get("/", home)
@@ -747,9 +747,9 @@ fn handle_one(server: Listener, handler: fn(Request) -> Response):
 // listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each
 // re-running this program and accepting from the SAME bound listener - the kernel
 // load-balances connections across them, so the server scales across cores with no
-// extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives
-// in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers
-// are interchangeable. (For a single-threaded server, use `serve_one`.)
+// extra effort from you. Handlers are ordinary `fn(Request) -> Response` values whose
+// state and delegated authority may live in captures (e.g. a store `Dir` = the
+// filesystem). (For a single-threaded server, use `serve_one`.)
 pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
     let server = net.listen(addr)
     server.serve_pool()

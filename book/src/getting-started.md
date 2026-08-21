@@ -18,10 +18,11 @@ Sections:
 
 ## Capabilities
 
-A function can only do what its signature says. `main` takes a `Console` - that's
-why it can print. A function without a `Console` can't print. A function without
-a `Dir` can't touch the filesystem. There's no import or global that grants
-these powers.
+A function can exercise only authority it receives through typed values. `main`
+takes a `Console` - that's why it can print directly. A function without a
+`Console` possesses no direct printing authority, though an ordinary callback
+may delegate a narrower printing operation. There's no import or global that
+grants host powers.
 
 ```witchy
 import show

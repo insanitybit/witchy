@@ -43,7 +43,7 @@ compiler rejects it, because `main`'s body references a `console` that no longer
 exists. Authority has to come from somewhere, and the only "somewhere" is the
 parameter list.
 
-## Pure by default
+## Data-only helpers
 
 In this larger program, `double` and `classify` take no capabilities:
 
@@ -66,9 +66,10 @@ zero
 42
 ```
 
-`double` and `classify` are **provably pure**. They can't print, can't read a
-file, can't get the time - there's no parameter that would let them, and they
-can't fabricate one. This isn't documentation or a naming convention you hope
-people follow. It's a property the type checker guarantees. Most of any real
-witchy program is functions like these; capabilities flow only to the few places
-that genuinely need them.
+`double` and `classify` are effect-free as written: they receive ordinary data
+and perform only arithmetic and matching. Their signatures prove that they
+possess no direct host capabilities, but that rule does not make every ordinary
+function type pure. A function may accept an opaque callback and invoke behavior
+deliberately delegated by its caller. Most real witchy programs should still
+keep data transforms separate from those explicit boundaries; the checked
+`pure fn` contract lets APIs require effect-free invocation directly.

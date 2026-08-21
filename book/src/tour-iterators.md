@@ -181,9 +181,12 @@ lowering threads live locals through state-machine segments. The remaining
 restriction is placement: `await` works in loop bodies, but not in branch
 conditions or match scrutinees.
 
-A generator with no capability parameters is also, by construction, **pure**: a
-`gen fn` that takes no `Console`/`Dir`/`Net` provably can't do I/O - it computes
-the next value.
+A generator with no capability parameters possesses no direct host authority,
+but that alone is not a purity contract. It may invoke an ordinary callback
+whose creator deliberately delegated effectful behavior. A generator that uses
+only ordinary data and effect-free operations computes the next value without
+I/O; today that property is established from its implementation, not inferred
+from the absence of capability parameters.
 
 Modules organize these definitions; compile-time code can generate more of them
 before type checking.

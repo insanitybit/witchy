@@ -1,8 +1,9 @@
 # Capabilities: The Heart of witchy
 
-Pure functions are easy. They can't print, read a file, or touch the network,
-because nothing in their signatures grants any of that - and a language where
-every function is pure is a language that can't do anything useful.
+Effect-free functions are easy to reason about, but an ordinary function type
+does not promise purity merely because it has no capability parameters. Code
+may receive authority directly as a capability value or transitively as opaque
+behavior delegated through a callback.
 
 These chapters are about the other kind of code: the code that does need host
 authority, and what it costs to keep that authority visible instead of
@@ -10,8 +11,8 @@ ambient.
 
 The chapters develop one rule:
 
-> **Authority enters a program in exactly one place - the parameters of `main` -
-> and flows onward only as function arguments.**
+> **Root authority enters a program in exactly one place - the parameters of
+> `main` - and flows onward only through values.**
 
 - [**Authority as a Value**](capabilities-authority.md) - what a capability *is*,
   and why it can't be forged.
@@ -23,5 +24,7 @@ The chapters develop one rule:
   "the VM enforces it."
 
 witchy makes this object-capability model part of the language and checks it in
-the type system. Capability-typed parameters state the authority a function can
-exercise.
+the type system. Capability-typed parameters state directly possessed
+authority; ordinary callbacks expose delegated behavior without disclosing
+their captured capabilities. The checked `pure fn` contract is the explicit
+way to require effect-free invocation.

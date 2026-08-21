@@ -67,17 +67,24 @@ fn main(console: Console):
 
 **Capabilities are the heart of it.** Authority enters a program in exactly one
 place: the typed parameters of `main`. Capabilities cannot be constructed (no
-constructor exists), propagate only as arguments (no globals, no ambient
-lookup), and only ever **narrow**. So a function with no capability parameters
-provably has no effects, and you audit by reading signatures. Capability
-operations are **methods on the capability that carries the authority** —
-`console.print(s)`, `dir.read(path)`, `clock.now()` — so authority is loud at
-every call. The caps: `Console`, `Clock`, `Env`, `Rand`, `Dir`, `File`, `Net`,
-`Fetch`, `Exec`, `SecretStore`, `Secret`. Narrow with `dir as Dir[Read]`,
+constructor exists), flow only through values (no globals, no ambient lookup),
+and only ever **narrow**. Capability parameters expose directly possessed root
+authority. Ordinary callbacks are values too: passing one delegates its opaque,
+potentially effectful callable behavior without handing the receiver arbitrary
+access to the capabilities captured by its creator. Therefore no capability
+parameters means no direct host authority, not "provably no effects." Audit root
+demand and callable interfaces from signatures; do not infer an ordinary
+`fn(...)` value's hidden capture set. The checked `pure fn` qualifier is the
+explicit effect-free contract. Capability operations are **methods on the
+capability that carries the authority** - `console.print(s)`, `dir.read(path)`,
+`clock.now()` - so direct authority is loud at every call. The caps: `Console`,
+`Clock`, `Env`, `Rand`, `Dir`, `File`, `Net`, `Fetch`, `Exec`, `SecretStore`,
+`Secret`. Narrow with `dir as Dir[Read]`,
 `dir.subtree("uploads")`, `net.only(Net.tcp(host, port))`,
-`net.deny(Net.private())`. To deny authority to a region of code, **give it its
-own function and don't pass the capability** — the absence of a parameter *is*
-the firewall.
+`net.deny(Net.private())`. To deny direct possession to a region of code, give
+it its own function and do not pass or capture the capability. Also avoid
+delegating a callback that exercises that authority: the firewall is the full
+flow of values, not merely the absence of a capability-typed parameter.
 
 **Types.** `Int` (64-bit, wraps on overflow), `Float`, `Bool`, `String`,
 `Duration` (`30s`, `250ms` — a distinct type, not an `Int`), `Nil` (both the

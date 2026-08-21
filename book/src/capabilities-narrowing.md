@@ -366,11 +366,11 @@ both of which review (and the coven gate) will flag.
 
 ## Withholding authority by structure
 
-Everything above narrows along *calls* - you weaken a handle as you pass it
-on. The same mechanism gives you the strongest possible way to *deny* authority
-to a stretch of code: don't pass it. A function or closure that never receives a
-capability can't use it - there's no name to reach, no value to alias, nothing
-to forge.
+Everything above narrows along *calls* - you weaken a handle as you pass it on.
+The same mechanism denies direct capability possession: do not pass or capture
+the handle. Account for delegated values too. An ordinary callback may exercise
+authority captured by its creator, while exposing only its narrower callable
+interface to the receiver.
 
 When a region of work must not touch the network (or the clock, or the disk),
 lift it into a function that isn't given that capability:
@@ -386,13 +386,12 @@ fn main(console: Console, clock: Clock):
     console.print("logged at ${clock.now()}")
 ```
 
-`audit_log` can't read the clock in *any* execution, under *any* later refactor:
-the authority was never handed to it. This is **capture-as-dependency-injection** -
-authority comes from *holding* a capability, so the un-bypassable way to deny
-it's to not pass the reference. The boundary is sealed against the future, too:
-if someone later adds a `Net` parameter to `main`, the code inside `audit_log`
-still can't dial, because its authority is fixed by its own signature, not by
-whatever its callers accumulate over time.
+`audit_log` has a closed implementation with no callback input or capture, so it
+cannot read the clock. This is **capture-as-dependency-injection**: if someone
+later adds a `Net` parameter to `main`, that alone does not let `audit_log` dial.
+Doing so would require changing the interface or deliberately delegating new
+behavior. The boundary is the complete flow of values, not merely the absence
+of a capability-typed parameter.
 
 ## The supply-chain payoff
 

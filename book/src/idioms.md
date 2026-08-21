@@ -146,6 +146,8 @@ to authority (glamour's `UiFetch` tokens are policy you can't forge).
 Push effects to the edges. `main` receives capabilities and delegates;
 the middle of the program is pure functions over data (easy to test - no
 capabilities to fake); the leaves take exactly the capability they use,
-narrowed as far as it will go (`Dir[Read]`, not `Dir`). If a function's
-signature has no capabilities, it provably has no effects - keep as much of
-the program in that state as you can.
+narrowed as far as it will go (`Dir[Read]`, not `Dir`). A signature without
+capability parameters rules out direct host authority, but an ordinary callback
+input is opaque delegated behavior and may be effectful. Keep the middle
+data-only, and use the explicit checked `pure fn` contract when an API must
+enforce effect-free invocation.

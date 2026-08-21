@@ -1,14 +1,16 @@
 # Web APIs and Services
 
 Witchy's web server framework (`std/server`) combines the routing model of
-axum with Tower-style middleware, backed by pure value handlers and capability
-security.
+axum with Tower-style middleware, backed by value handlers and explicit
+capability delegation.
 
-In Witchy, HTTP handlers are **pure functions** of type `fn(Request) -> Response`.
-They have no ambient authority to touch the filesystem, outbound network, or
-clock unless explicit capabilities are injected via closure capture. The listening
-socket is held by `server.serve`, which never passes the network capability to
-handlers.
+In Witchy, HTTP handlers have the ordinary type `fn(Request) -> Response`. That
+type is opaque delegated behavior and may be effectful: a closure can capture a
+narrowed logger, store, or outbound client supplied by its creator. The
+listening socket is held by `server.serve`, which never passes that specific
+network capability to handlers. This confines listener authority; it does not
+make the ordinary handler type a purity contract. The checked `pure fn`
+qualifier is the explicit effect-free contract.
 
 ## Routing and JSON responses
 
@@ -42,9 +44,10 @@ integration tests fast and deterministic without binding a TCP socket.
 
 ## Middleware and dependency injection
 
-Middleware layers wrap handlers (`fn(Handler) -> Handler`). Because handlers
-have no ambient access to authority, any required capability (such as `Console` for
-logging or `Dir` for storage) is explicitly passed into the middleware factory:
+Middleware layers wrap handlers (`fn(Handler) -> Handler`). They have no ambient
+access to authority, so any required capability (such as `Console` for logging
+or `Dir` for storage) is explicitly passed into the middleware factory and then
+delegated through the resulting closure:
 
 ```witchy
 from http import Request, Response

@@ -1,7 +1,7 @@
-// The witchy standard list library. Every function here is pure: the module
-// declares no capability parameters, so importing it grants no authority - it
-// can only transform data. This is the capability model in miniature: a library
-// you didn't hand a Console/Dir/Net to literally cannot reach them.
+// The witchy standard list library. Importing it grants no root authority, and
+// its direct operations transform ordinary data. Higher-order combinators such
+// as `map`, `filter`, and `fold` invoke the ordinary callbacks supplied by their
+// callers; those callbacks are opaque delegated behavior and may be effectful.
 
 // `Option` powers the total lookups below (head/last/get/find): a missing
 // element is `None`, never an out-of-bounds trap.

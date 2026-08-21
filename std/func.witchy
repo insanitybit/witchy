@@ -1,6 +1,6 @@
-// The witchy standard function-combinator library. Pure and capability-free.
-// With first-class functions these build new functions from existing ones
-// without writing wrapper lambdas by hand.
+// The witchy standard function-combinator library. Importing it adds no root
+// capability demand. Its combinators invoke and compose caller-supplied ordinary
+// callbacks, preserving their opaque, potentially effectful delegated behavior.
 
 // Return the argument unchanged.
 pub fn identity(x: a) -> a:

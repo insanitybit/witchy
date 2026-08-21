@@ -3,16 +3,17 @@
 // `par_map` maps a function over a list with the elements processed in PARALLEL on
 // the compiled backend: the work is split across OS-thread worker VMs, each its own
 // isolated WebAssembly instance, and the results are gathered back in INPUT order.
-// Because the result is ordered by input index and the mapped function is pure, the
-// parallel result is identical to a sequential map - so the interpreter oracle (and
-// this module's own reference body) computes it sequentially and the two backends
-// agree. Parallelism changes how fast the map runs, not what it returns.
+// Results are ordered by input index. The current ordinary callback type does not
+// itself promise purity: a closure may contain opaque delegated behavior. The
+// parallel fast path therefore remains restricted to eligible bare top-level
+// functions and transport-safe values; a checked effect-free callable contract is
+// required before the API can use purity as a general scheduling guarantee.
 //
 // The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL
 // function and the element representation can cross the worker boundary. A local
 // function value, lambda, or pointer-bearing element type instead runs this module's
-// sequential reference body, with identical results. That fallback changes only
-// performance: `par_map` promises an ordered map, not isolation.
+// sequential reference body. `par_map` promises result ordering, not a general
+// purity or isolation contract for an arbitrary ordinary callback.
 
 import list
 

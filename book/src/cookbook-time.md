@@ -94,8 +94,10 @@ fn main(console: Console, clock: Clock):
 
 This program's output depends on when you run it, so the book shows it as a
 plain snippet rather than a pinned example - but it type-checks, and
-`witchy caps` reports its footprint as exactly `Clock, Console`. That is the
-capability model doing its job: any function that reads the wall clock announces
-it in its signature, and one that doesn't take a `Clock` structurally *can't*.
-Keep your date math in pure `time`/`duration` code, take the `Clock` only at the
-edge, and the bulk of your logic stays deterministic and easy to test.
+`witchy caps` reports its root footprint as exactly `Clock, Console`. That is the
+capability model doing its job: direct clock access requires a `Clock` value, and
+the root grant is explicit. An ordinary callback can instead delegate a narrower
+operation that reads time, so missing `Clock` parameters alone are not a purity
+contract. Keep your date math in data-only `time`/`duration` code, take the
+`Clock` only at the edge, and the bulk of your logic stays deterministic and
+easy to test.

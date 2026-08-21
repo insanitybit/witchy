@@ -8,7 +8,9 @@
 // element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own
 // types to give them a custom readable form. `Show` is preluded: interpolation
 // (`"${x}"`) always honors a relevant impl, while values without one keep the
-// structural default. Pure except `say`, which takes the `Console` it prints to.
+// structural default. Built-in rendering is data-only, and `say` takes the
+// `Console` it prints to. A custom `Show` impl is an ordinary callable contract
+// and may invoke behavior delegated through its value.
 
 import duration
 import cmp

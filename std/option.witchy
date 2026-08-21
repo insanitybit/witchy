@@ -1,6 +1,8 @@
 // The witchy standard `Option` type and helpers. `Option`, `Some`, and `None`
 // are prelude names and never need an import; `import option` brings in the
-// qualified helper forms such as `option.map`. Pure and capability-free.
+// qualified helper forms such as `option.map`. Importing the module adds no root
+// capability demand; callback-taking helpers invoke behavior delegated by their
+// callers and therefore do not promise effect-free invocation.
 
 // For the `ok_or`/`ok_or_else` conversions to Result.
 

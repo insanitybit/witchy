@@ -1,9 +1,10 @@
 // std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over
 // first-class `channel`s. Spawning and channels are independent - you can spawn
 // without a channel, and a channel is a value you create and pass around, not a
-// task's mailbox. Built on a pure-witchy cooperative executor with a deterministic
-// round-robin schedule, so a concurrent run is byte-identical on the interpreter
-// and the compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
+// task's mailbox. Built on a witchy cooperative executor with a deterministic
+// round-robin schedule. Given deterministic task behavior, interpreter and
+// compiled runs agree; ordinary task callbacks may themselves exercise delegated
+// effects. There is no scheduler state in the runtime and no `Pin`.
 //
 // Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)`
 // pair carries values of ITS OWN type `m`, and independent channels in one program
@@ -283,11 +284,12 @@ fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task(N
 // visible - spawn and join happen inside - so this cannot leak a handle, cannot
 // deadlock on a forgotten join, and is the ergonomic default for data parallelism.
 // Each item's result rides its own channel, so the returned order is the input
-// order regardless of completion order: the result is a pure function of `items`
-// and `f`, hence DETERMINISTIC by construction and byte-identical on both backends.
-// That determinism is exactly what lets a future parallel backend run the items on
-// separate cores without changing the observable result (see RFC-0032). Results are
-// of the message type `m` (they ride channels), as with `gather`.
+// order regardless of completion order. `f` is an ordinary callback and may
+// exercise opaque delegated effects, so ordering alone is not a purity or
+// determinism contract. A future parallel backend must require an explicit
+// effect-free callable contract before assuming that reordering invocations is
+// unobservable (see RFC-0032). Results are of the message type `m` (they ride
+// channels), as with `gather`.
 pub fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m)):
     and_then(par_build(items, f), fn(own built):
         let (jobs, rxs) = built

@@ -39,12 +39,14 @@ the clock is ticking
 `main`'s parameter list is the program's **root grant**. The host decides what
 to put there; the program can't ask for more.
 
-## Authority flows only by argument
+## Authority flows through values
 
 A capability is an ordinary value once you've it, and code passes it as an
 argument. There are no globals to stash it in and no ambient registry to fetch
-it from. A function's authority is
-*exactly* its capability-typed parameters - visible, local, complete.
+it from. Capability-typed parameters make directly possessed authority visible
+and local. Ordinary callbacks are values too: passing one delegates the right
+to invoke its interface, while the capabilities captured by its creator remain
+opaque to the receiver.
 
 ```witchy
 // `log` can print, because it was given a Console. `compute` cannot, because it
@@ -64,11 +66,14 @@ fn main(console: Console):
 compute(6): 37
 ```
 
-Read `compute`'s signature: `fn compute(x: Int) -> Int`. No capabilities. It's
-*provably* incapable of any effect - it can only compute. You don't have to read
-its body, or its callees' bodies, to know that. Contrast a typical language,
-where `compute` could be doing anything, and the only way to find out is to
-audit the entire call graph.
+`compute` is effect-free as written: it receives ordinary data and performs
+arithmetic. Its signature proves that it possesses no direct host capability,
+but lack of a capability parameter is not a general purity contract. A function
+that accepts an ordinary callback may invoke effectful behavior deliberately
+delegated by its caller, without learning or possessing the callback's captured
+capabilities. The `pure fn` qualifier makes effect-free invocation an explicit
+checked API promise; ordinary `fn` remains opaque and potentially
+effectful.
 
 ## Inspecting authority with `witchy caps`
 
@@ -88,8 +93,10 @@ manager checks that computed footprint for dependencies.
 
 Reading the clock needs a `Clock`: current time is an input from outside the
 program. The same applies to environment variables (`Env`) and randomness. A
-function whose result depends on any of these values lists the corresponding
-capability in its signature.
+function that reads one of these inputs directly lists the corresponding
+capability in its signature. It may instead receive a narrower operation as an
+ordinary callback; invoking that operation exercises delegated behavior, not a
+new or ambient root grant.
 
 You can't conjure a `Clock` from an integer, and there's no global to reach
 for. If a function has authority, someone handed it over.

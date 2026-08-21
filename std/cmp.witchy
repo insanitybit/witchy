@@ -3,7 +3,8 @@
 // through these traits, so `a == b` and `x < y` work on your own types once you
 // implement (or derive) them - there is no separate `compare`/`greater` to call
 // by name. Built-in impls cover the primitives; `Self` in a method signature
-// stands for the implementing type. Pure and capability-free.
+// stands for the implementing type. Built-in comparisons are data-only. A custom
+// trait impl is an ordinary callable contract and may invoke delegated behavior.
 
 import bytes
 import option

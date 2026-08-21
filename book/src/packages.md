@@ -24,7 +24,10 @@ pub fn shout(s: String) -> String:
     "HEY ${s.to_upper()}"
 ```
 
-It has no capability parameters, so consumers can verify that the rune is pure.
+Its recomputed root capability demand is empty, and this implementation is
+effect-free as written. Lack of capability parameters alone is not a purity
+contract for arbitrary higher-order code: an ordinary callback can carry
+behavior deliberately delegated by its caller.
 
 ## Consume your first package
 
@@ -64,10 +67,10 @@ witchy tree .    # the dependency, plus the capability footprint it pulls in
 ```
 
 `witchy tree` prints the resolved dependency tree with each rune's recomputed
-capability footprint alongside it, so before you trust `hello` you can see
-exactly what authority it - and its transitive dependencies - reach for. The
-rest of this chapter is about that footprint: how it's computed, and how adding
-or upgrading a dependency gates on it.
+capability footprint alongside it, so before you trust `hello` you can see the
+root authority it - and its transitive dependencies - demand. The rest of this
+chapter is about that footprint: how it's computed, and how adding or upgrading
+a dependency gates on it.
 
 ## The footprint is recomputed, never trusted
 
@@ -97,8 +100,9 @@ acme/shout@1.0.0 demands no capabilities.
 tree max authority now: none
 ```
 
-The real value shows up on *upgrades*. Suppose `acme/logger@1.0.0` is pure, you
-depend on it, and `1.1.0` quietly adds a function that takes a `Net`:
+The real value shows up on *upgrades*. Suppose `acme/logger@1.0.0` has an empty
+root footprint, you depend on it, and `1.1.0` quietly adds a function that takes
+a `Net`:
 
 ```sh
 witchy update
@@ -110,12 +114,19 @@ blocked: acme/logger 1.0.0 -> 1.1.0 widens the footprint
 run `witchy update --allow-cap Net` to accept, or pin the old version
 ```
 
-A dependency can't silently start touching the network between versions. The
-gate forces the new authority to be seen and accepted - a code-review signal
-that's verb-precise (`Net[Listen]` is different from `Net[Connect]`) and
-impossible to miss. `witchy tree` shows the whole dependency tree's authority at
-any time - each rune's recorded footprint alongside it - and `witchy why-cap
+A dependency can't silently add a new root network demand between versions.
+The gate forces that new authority to be seen and accepted - a code-review
+signal that's verb-precise (`Net[Listen]` is different from `Net[Connect]`) and
+impossible to miss. `witchy tree` shows the whole dependency tree's root demand
+at any time - each rune's recorded footprint alongside it - and `witchy why-cap
 <dir> <Cap>` traces which dependency pulls a given capability in.
+
+That guarantee does not replace behavioral review. A dependency can change how
+it invokes an ordinary callback that the application already delegated without
+widening its capability footprint. The receiver still does not possess the
+callback creator's captured capabilities; it possesses the narrower callable
+interface. APIs that require effect-free plugin behavior express that with the
+checked `pure fn` contract.
 
 ## Trusted publishing, two-phase release
 

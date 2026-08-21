@@ -21,16 +21,31 @@ behave like ordinary values with three restrictions, all enforced by the
 compiler:
 
 1. **They cannot be created.** There is no constructor for `Console` or `Dir`.
-   If a function wants to print, it must *receive* a `Console`.
-2. **They propagate only as arguments.** No globals, no ambient lookup. A
-   function's complete authority is visible in its signature.
+   To call the print verb directly, a function must *receive* a `Console`; a
+   caller may instead delegate a narrower logging operation as a callback.
+2. **They propagate only through values.** No globals, no ambient lookup.
+   Capability parameters expose directly possessed authority. An ordinary
+   callable is also a value: handing one to code delegates its callable
+   interface, while its captured implementation remains opaque.
 3. **They only narrow.** A full `Dir` can be passed where `Dir[Read]` is
    expected (implicitly, at any call boundary) or narrowed explicitly with
    `as` - but a `Dir[Read]` can never become a `Dir[Write]`.
 
-The consequence: **a function with no capability parameters provably has no
-effects**, and a function with `Dir[Read]` provably cannot write a file. You
-audit witchy code by reading signatures, not by tracing call graphs.
+The consequence is precise but narrower than "no capability parameter means
+pure." **Code can exercise only authority it receives directly or transitively
+through values.** A function with `Dir[Read]` cannot use that handle to write a
+file. A function with no capability parameters possesses no direct host
+authority, but an ordinary callback parameter may delegate opaque, potentially
+effectful behavior. The callback receiver may invoke that behavior; it does not
+thereby possess or gain arbitrary access to the capabilities captured by the
+callback's creator.
+
+Root auditing and behavior contracts are therefore separate. `main`'s typed
+parameters remain the complete root grant, and `witchy caps` reports that
+actual root demand. An ordinary `fn(...)` type reports the callable interface
+being delegated, not its creator's hidden capture set. The `pure fn` qualifier
+is the explicit, checker-enforced promise that invoking a callable is
+effect-free; ordinary `fn` makes no such promise.
 
 **Vocabulary.** Three words are used precisely throughout the docs: a
 **capability** is the unforgeable value itself (`Console`, `Dir`, `Net`); a
@@ -315,11 +330,12 @@ UI effects.
 
 ## Withholding authority by structure
 
-The patterns above narrow along *calls*. To deny a capability to a region of
-code outright, give that work its own function and don't pass the capability: a
-function or closure that never receives a capability cannot use it, alias it, or
-forge it. This is capture-as-dependency-injection - the strongest firewall witchy
-has, because there's no name to reach and no value to smuggle.
+The patterns above narrow along *calls*. To deny direct capability possession to
+a region of code, give that work its own function and do not pass or capture the
+capability. Also account for delegated values: an ordinary callback can exercise
+authority captured by its creator when invoked. This is intentional
+capture-as-dependency-injection. The receiver gets the narrower right to invoke
+that behavior, not general access to the captured capability.
 
 ```witchy
 fn audit_log(console: Console, body: String):
@@ -331,9 +347,11 @@ fn main(console: Console, clock: Clock):
     console.print("at ${clock.now()}")
 ```
 
-`audit_log`'s authority is fixed by its signature, not by what its callers hold:
-if `main` later gains a `Net`, `audit_log` still cannot dial, because `net` was
-never a parameter. The absence of a parameter *is* the boundary.
+`audit_log` has no callback input or capture and receives only `Console`, so its
+closed implementation cannot dial. If `main` later gains a `Net`, that alone
+does not change `audit_log`; a caller would have to change the interface or
+deliberately delegate new behavior. The boundary is the full flow of values,
+not only the absence of a capability-typed parameter.
 
 ## Auditing - and what it actually defends
 

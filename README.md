@@ -5,9 +5,11 @@ can read `~/.ssh`, open a socket, or shell out, and its signature won't tell you
 You find out by auditing the implementation, and then everything it calls.
 
 witchy is an experimental capability-secure language that doesn't work that way.
-A function can only touch the outside world through capability values it's
-explicitly handed - so what a program *can do* is visible in its types,
-inspectable from its artifacts, and enforceable at the host boundary.
+Code can touch the outside world only through authority it receives directly as
+a capability value or transitively as deliberately delegated behavior. Root
+grants and callable interfaces are visible in types, inspectable from artifacts,
+and enforceable at the host boundary; an ordinary callback's captured
+implementation remains opaque.
 
 ```witchy
 // This helper receives read authority, not write authority.
@@ -19,9 +21,8 @@ fn main(console: Console, dir: Dir):
     console.print(load(dir, "notes.txt"))
 ```
 
-A web API where handlers are pure by construction - `serve` holds the `Net`,
-and a handler that captures no capabilities structurally can't log, fetch a
-URL, or read a file, even if a dependency wrote it:
+A web API where `serve` keeps possession of the listening `Net`, while this
+data-only handler receives no authority-bearing input:
 
 ```witchy
 from http import Request, Response
@@ -102,15 +103,19 @@ preview; comptime remains experimental.
 
 ## Why capabilities?
 
-A witchy function can't exercise host authority absent from its typed inputs,
-and `witchy caps` / `caps-diff` / `grants-check` / `sandbox` make that footprint
-inspectable and enforceable.
+A witchy function can't exercise host authority absent from its typed inputs.
+Those inputs may include ordinary callbacks whose opaque behavior the caller
+chose to delegate. `witchy caps` / `caps-diff` / `grants-check` / `sandbox` make
+root capability demand inspectable and enforceable; they do not guess a
+callback creator's hidden capture set.
 
 That's a bounded guarantee, and the bound is worth being precise about. You
 still trust the compiler, the runtime, whichever host bindings you link, and
-whoever shipped you the binary. What you stop having to trust is the body of
-every function you call. The [capabilities guide](spec/capabilities.md) states
-the exact model and its limits.
+whoever shipped you the binary. What you stop granting implicitly is ambient
+access to all host resources. Ordinary callbacks still delegate behavior that
+must be reviewed unless an API requires the explicit checked `pure fn`
+contract. The [capabilities guide](spec/capabilities.md) states the exact model
+and its limits.
 
 ## Status
 

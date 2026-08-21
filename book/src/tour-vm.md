@@ -149,14 +149,15 @@ fn main(net: Net, console: Console):
     server.serve(net, "127.0.0.1:8080", app)   # uses every core
 ```
 
-The handlers remain pure `fn(Request) -> Response` values. Their state lives in
-captured capabilities (a store `Dir` represents the filesystem), so the workers
-are interchangeable. The routes determine the application; the server supplies
-the parallel workers.
+The handlers remain ordinary `fn(Request) -> Response` values. Their state and
+delegated authority may live in captured capabilities (a store `Dir` represents
+the filesystem). The routes determine the application; the server supplies the
+parallel workers.
 Reach for `server.serve_one` if you want a single-core loop (e.g. for per-process
 in-memory state). witchy's own package registry, `coven`, runs exactly this way.
 
-Use `vm.par_map` for a list and a pure function; use `vm.with_dir` to run code
-with less authority than the caller; use `vm.serve` for an isolated stateful
-worker. Use `chan`/`task` for cooperative concurrency within one VM; see [the
-async chapter](tour-async.md).
+Use `vm.par_map` only for mapping behavior suitable for isolated execution;
+today its ordinary callback type does not itself prove purity. Use `vm.with_dir`
+to run code with less authority than the caller, and `vm.serve` for an isolated
+stateful worker. Use `chan`/`task` for cooperative concurrency within one VM;
+see [the async chapter](tour-async.md).

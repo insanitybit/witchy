@@ -1,5 +1,5 @@
-// The witchy standard string library. Like `list`, it is pure: it declares no
-// capability parameters, so importing it grants no authority. The primitive
+// The witchy standard string library. Importing it grants no root authority;
+// this module's implementation operates on ordinary string data. The primitive
 // string operations (`split`, `replace`, `contains`, `to_upper`, ...) are
 // builtins; these are the conveniences built on top of them.
 

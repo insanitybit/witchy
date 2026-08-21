@@ -5,7 +5,9 @@
 // `take_while`/...) are lazy and compose without building intermediate lists;
 // consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite
 // iterators are fine (`count_from`, `repeat`) as long as something bounds them
-// (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends.
+// (`take`/`take_while`/`find`). Importing the module adds no root capability
+// demand, but adapters invoke caller-supplied ordinary callbacks, whose delegated
+// behavior may be effectful. The iterator machinery runs on both backends.
 // `gen fn`/`yield` lower to this representation: common loops use `unfold` with
 // an owned typed frame, while `from_gen` remains the fallback for irregular
 // control flow.

@@ -1,6 +1,8 @@
 // The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are
 // prelude names and never need an import; `import result` brings in the qualified
-// helper forms such as `result.map_ok`. Pure and capability-free.
+// helper forms such as `result.map_ok`. Importing the module adds no root
+// capability demand; callback-taking helpers invoke behavior delegated by their
+// callers and therefore do not promise effect-free invocation.
 
 // For the `ok`/`err` conversions to Option.
 

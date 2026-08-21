@@ -6,8 +6,9 @@
 // the `async`/`await` surface lowers onto (that targets `std/task`, which points
 // here for `select`). A future's live state is the captured values of its
 // continuation closure - owned values, never internal references, so unlike Rust
-// there is nothing self-referential and no `Pin`. Pure structure (closures + sum
-// types), so it runs byte-identically on both backends.
+// there is nothing self-referential and no `Pin`. The scheduler is ordinary
+// witchy structure (closures + sum types), but polling invokes opaque continuation
+// behavior and is not itself a purity contract.
 //
 // `More` is the cooperative yield point: an executor drives a future by polling
 // it one step at a time, so several futures can interleave at their `pending` points.
@@ -122,9 +123,10 @@ fn slot_value(s: Slot(a)) -> a:
 
 // Drive every task in `tasks` concurrently to completion, returning their results
 // in the original order. The schedule is a deterministic round-robin - one poll
-// step per task per round - so it is single-threaded and fixed-order, and both
-// backends produce byte-identical output. Tasks interleave at their `pending`/
-// `await` points. This is the structured-concurrency primitive (`scope`/`join`):
+// step per task per round - so it is single-threaded and fixed-order on both
+// backends. Deterministic continuations therefore agree; ordinary continuations
+// may exercise delegated effects. Tasks interleave at their `pending`/`await`
+// points. This is the structured-concurrency primitive (`scope`/`join`):
 // hand it the task list and it fans them out, joining all before it returns.
 pub fn join_all(tasks: List(Future(a))) -> List(a):
     var slots = list.map(tasks, fn(f): Running(f))
@@ -133,10 +135,10 @@ pub fn join_all(tasks: List(Future(a))) -> List(a):
     list.map(slots, fn(s): slot_value(s))
 
 // Race `tasks`: drive them concurrently until the FIRST one finishes, and return
-// its index and value; the losers are simply dropped (no further polling - and
-// because futures are pure and lazy, dropping is cancellation, no cleanup hook
-// needed). On a tie within a round the lowest index wins, so the result is
-// deterministic and both backends agree. This is the `select` of structured
+// its index and value; the losers are simply dropped. Because futures are lazy,
+// dropping schedules no further polling and needs no cleanup hook. On a tie
+// within a round the lowest index wins, so the scheduling decision is
+// deterministic. This is the `select` of structured
 // concurrency (e.g. race a task against `sleep` for a timeout).
 pub fn select(tasks: List(Future(a))) -> (Int, a):
     if list.is_empty(tasks):
