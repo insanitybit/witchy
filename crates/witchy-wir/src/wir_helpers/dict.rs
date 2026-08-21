@@ -910,6 +910,105 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
     }
 }
 
+/// `$dict_update_slice_cap(d, p, len, default, clos, cap) -> (i32, i32)` — update dictionary
+/// using a raw borrowed string slice `(p, len)` with zero allocations on hit.
+pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
+    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    let call_clos = |arg: E| E::CallIndirect {
+        signature: gc_slot_closure_signature(1, 1),
+        args: vec![getl("clos"), arg],
+        index: Box::new(E::StructGet {
+            struct_id: 0,
+            field: CLOSURE_CODE_FIELD,
+            base: Box::new(getl("clos")),
+        }),
+    };
+    WirFunc {
+        name: "dict_update_slice_cap".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "default".into(), ty: WirTy::Int },
+            WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "found".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Int },
+            WirLocal { name: "k_str".into(), ty: WirTy::Str },
+            WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            setl("found", E::Call {
+                func: "dict_find_slice".into(),
+                args: vec![getl("d"), getl("p"), getl("len")],
+            }),
+            N::If {
+                cond: b(BinOp::And, b(BinOp::Ge, getl("found"), i32c(0)), b(BinOp::Gt, getl("cap"), i32c(0))),
+                then_: vec![
+                    setl("new", call_clos(val_at("found"))),
+                    N::Store {
+                        ptr: entry("found"),
+                        value: getl("new"),
+                        kind: Kind::I64,
+                        offset: 12,
+                    },
+                    setl("ret_ptr", getl("d")),
+                    setl("ret_cap", getl("cap")),
+                ],
+                els: vec![
+                    N::If {
+                        cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                        then_: vec![setl("new", call_clos(val_at("found")))],
+                        els: vec![setl("new", call_clos(getl("default")))],
+                        result: None,
+                    },
+                    setl("k_str", E::Call {
+                        func: "rc_alloc".into(),
+                        args: vec![b(BinOp::Add, getl("len"), i32c(4))],
+                    }),
+                    N::Store {
+                        ptr: getl("k_str"),
+                        value: getl("len"),
+                        kind: Kind::I32,
+                        offset: 0,
+                    },
+                    N::MemoryCopy {
+                        dest: b(BinOp::Add, getl("k_str"), i32c(4)),
+                        src: getl("p"),
+                        len: getl("len"),
+                    },
+                    N::CallStoreMulti {
+                        func: "dict_insert_cap".into(),
+                        args: vec![
+                            getl("d"),
+                            E::ToSlot(Box::new(getl("k_str")), Kind::I32),
+                            getl("new"),
+                            i32c(1),
+                            getl("cap"),
+                        ],
+                        dests: vec!["ret_ptr".into(), "ret_cap".into()],
+                    },
+                ],
+                result: None,
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_update(d, k, default, mode, clos) -> i32` — apply the updater closure
 /// to the current value (or `default` when absent) and reinsert.
 pub(crate) fn dict_update_helper() -> WirFunc {

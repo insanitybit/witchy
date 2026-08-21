@@ -2,7 +2,7 @@ mode opt
 
 fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
-    var d = dict.new()
+    var d = dict.with_capacity(1000)
     var i = 0
     while i < 3000000:
         let k = i % 1000

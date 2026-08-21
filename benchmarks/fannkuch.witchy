@@ -4,16 +4,16 @@ import list
 
 fn fannkuch(let n: Int) -> Int:
     var perm1 = []
-    for i in list.range(n):
+    for i in 0..n:
         list.push(perm1, i)
     var count = []
-    for i in list.range(n):
+    for i in 0..n:
         list.push(count, 0)
     // `perm` is allocated ONCE and refilled in place each permutation (like Go's
     // `copy(perm, perm1)`); allocating a fresh copy per permutation would leak
     // 10! transient arrays into the never-freeing bump allocator and OOM.
     var perm = []
-    for i in list.range(n):
+    for i in 0..n:
         list.push(perm, 0)
     var max_flips = 0
     var checksum = 0
@@ -25,7 +25,7 @@ fn fannkuch(let n: Int) -> Int:
             r = r - 1
         if list.at(perm1, 0) != 0:
             var j = 0
-            while j < list.length(perm):
+            while j < n:
                 list.set_at(perm, j, list.at(perm1, j))
                 j = j + 1
             var flips = 0

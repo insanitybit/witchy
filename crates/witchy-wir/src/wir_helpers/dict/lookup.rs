@@ -254,3 +254,382 @@ pub(crate) fn dict_find_helper() -> WirFunc {
         raw_body: None,
     }
 }
+
+/// `$dict_slice_eq(str_ptr, slice_ptr, slice_len) -> i32` — compare an existing
+/// `[len: i32][bytes...]` string against a raw `(slice_ptr, slice_len)` slice.
+pub(crate) fn dict_slice_eq_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let bin = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    let str_byte_at = |off: &str| E::Load8U {
+        ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl("str_ptr"), i32c(4)), getl(off))),
+        offset: 0,
+    };
+    let slice_byte_at = |off: &str| E::Load8U {
+        ptr: Box::new(bin(BinOp::Add, getl("slice_ptr"), getl(off))),
+        offset: 0,
+    };
+    WirFunc {
+        name: "dict_slice_eq".into(),
+        params: vec![
+            WirLocal { name: "str_ptr".into(), ty: WirTy::Str },
+            WirLocal { name: "slice_ptr".into(), ty: WirTy::Str },
+            WirLocal { name: "slice_len".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "v1".into(), ty: WirTy::V128 },
+            WirLocal { name: "v2".into(), ty: WirTy::V128 },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: bin(BinOp::Ne, load_i32(getl("str_ptr")), getl("slice_len")),
+                then_: vec![N::Return(Some(i32c(0)))],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "i".into(), value: i32c(0) },
+            N::Block {
+                label: "vdone".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "vl".into(),
+                    body: vec![
+                        N::Br {
+                            target: "vdone".into(),
+                            cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("slice_len"))),
+                        },
+                        N::SetLocal {
+                            local: "v1".into(),
+                            value: load_v128(bin(BinOp::Add, bin(BinOp::Add, getl("str_ptr"), i32c(4)), getl("i"))),
+                        },
+                        N::SetLocal {
+                            local: "v2".into(),
+                            value: load_v128(bin(BinOp::Add, getl("slice_ptr"), getl("i"))),
+                        },
+                        N::SetLocal {
+                            local: "mask".into(),
+                            value: E::Vector {
+                                op: VectorOp::I8x16Bitmask,
+                                args: vec![E::Vector {
+                                    op: VectorOp::I8x16Eq,
+                                    args: vec![getl("v1"), getl("v2")],
+                                }],
+                            },
+                        },
+                        N::If {
+                            cond: bin(BinOp::Ne, getl("mask"), i32c(0xffff)),
+                            then_: vec![N::Return(Some(i32c(0)))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal { local: "i".into(), value: bin(BinOp::Add, getl("i"), i32c(16)) },
+                        N::Br { target: "vl".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Block {
+                label: "wdone".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "wl".into(),
+                    body: vec![
+                        N::Br {
+                            target: "wdone".into(),
+                            cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(8)), getl("slice_len"))),
+                        },
+                        N::If {
+                            cond: E::Binary {
+                                op: BinOp::Ne,
+                                kind: Kind::I64,
+                                lhs: Box::new(E::Load {
+                                    ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl("str_ptr"), i32c(4)), getl("i"))),
+                                    kind: Kind::I64,
+                                    offset: 0,
+                                }),
+                                rhs: Box::new(E::Load {
+                                    ptr: Box::new(bin(BinOp::Add, getl("slice_ptr"), getl("i"))),
+                                    kind: Kind::I64,
+                                    offset: 0,
+                                }),
+                            },
+                            then_: vec![N::Return(Some(i32c(0)))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal { local: "i".into(), value: bin(BinOp::Add, getl("i"), i32c(8)) },
+                        N::Br { target: "wl".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Block {
+                label: "tdone".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "tl".into(),
+                    body: vec![
+                        N::Br {
+                            target: "tdone".into(),
+                            cond: Some(bin(BinOp::Ge, getl("i"), getl("slice_len"))),
+                        },
+                        N::If {
+                            cond: bin(BinOp::Ne, str_byte_at("i"), slice_byte_at("i")),
+                            then_: vec![N::Return(Some(i32c(0)))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal { local: "i".into(), value: bin(BinOp::Add, getl("i"), i32c(1)) },
+                        N::Br { target: "tl".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Push(i32c(1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_hash_slice(p, len) -> i32` — foldhash over raw `(p, len)` slice bytes.
+pub(crate) fn dict_hash_slice_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let c1 = i64c(-49064778989728563i64);
+    let c2 = i64c(-4265267296055464877i64);
+    let vec_loop = N::Block {
+        label: "vdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "vl".into(),
+            body: vec![
+                N::Br { target: "vdone".into(), cond: Some(b32(BinOp::Gt, b32(BinOp::Add, getl("i"), i32c(16)), getl("len"))) },
+                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 0 }),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c1.clone())),
+                setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
+                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 8 }),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c2.clone())),
+                setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(16))),
+                N::Br { target: "vl".into(), cond: None },
+            ],
+        }],
+    };
+    let word_loop = N::Block {
+        label: "wdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "wl".into(),
+            body: vec![
+                N::Br { target: "wdone".into(), cond: Some(b32(BinOp::Gt, b32(BinOp::Add, getl("i"), i32c(8)), getl("len"))) },
+                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 0 }),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c1.clone())),
+                setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(8))),
+                N::Br { target: "wl".into(), cond: None },
+            ],
+        }],
+    };
+    let tail_loop = N::Block {
+        label: "tdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "tl".into(),
+            body: vec![
+                N::Br { target: "tdone".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), offset: 0 }) }), c1.clone())),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "tl".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "dict_hash_slice".into(),
+        params: vec![
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "x".into(), ty: WirTy::Int },
+            WirLocal { name: "w".into(), ty: WirTy::Int },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            setl("x", i64c(-7046029254386353131i64)),
+            setl("i", i32c(0)),
+            vec_loop,
+            word_loop,
+            tail_loop,
+            setl("x", b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("len")) })),
+            setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32))), i64c(-4265267296055464877i64))),
+            setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(29)))),
+            N::Push(E::FromSlot(Box::new(getl("x")), Kind::I32)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_find_slice(d, p, len) -> i32` — find entry index for raw slice `(p, len)`.
+pub(crate) fn dict_find_slice_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |ptr: E, off: u32| E::Load { ptr: Box::new(ptr), kind: Kind::I32, offset: off };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let key_at = |e: E| E::FromSlot(Box::new(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 }), Kind::I32);
+    let keq = |e: E| E::Call { func: "dict_slice_eq".into(), args: vec![key_at(e), getl("p"), getl("len")] };
+    let linear = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
+                N::If { cond: keq(getl("i")), then_: vec![N::Return(Some(getl("i")))], els: vec![], result: None },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    let slot_at_h = load(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(4))), 0);
+    let probe = N::Block {
+        label: "miss".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "p".into(),
+            body: vec![
+                setl("e", slot_at_h),
+                N::Br { target: "miss".into(), cond: Some(E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) }) },
+                N::If {
+                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
+                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                N::Br { target: "p".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "dict_find_slice".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["idx", "count", "i", "slots", "h", "e"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("idx", load(b(BinOp::Sub, getl("d"), i32c(4)), 0)),
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("idx")) },
+                then_: vec![
+                    setl("count", load(getl("d"), 0)),
+                    setl("i", i32c(0)),
+                    linear,
+                    N::Return(Some(i32c(-1))),
+                ],
+                els: vec![],
+                result: None,
+            },
+            setl("slots", load(getl("idx"), 0)),
+            setl("h", b(BinOp::And, E::Call { func: "dict_hash_slice".into(), args: vec![getl("p"), getl("len")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            probe,
+            N::Push(i32c(-1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_get_slice_or(d, p, len, default) -> i64`
+pub(crate) fn dict_get_slice_or_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
+    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+
+    WirFunc {
+        name: "dict_get_slice_or".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "default".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal {
+                local: "found".into(),
+                value: E::Call {
+                    func: "dict_find_slice".into(),
+                    args: vec![getl("d"), getl("p"), getl("len")],
+                },
+            },
+            N::If {
+                cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                then_: vec![N::Push(val_at("found"))],
+                els: vec![N::Push(getl("default"))],
+                result: Some(WirTy::Int),
+            },
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_contains_slice(d, p, len) -> bool`
+pub(crate) fn dict_contains_slice_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+
+    WirFunc {
+        name: "dict_contains_slice".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal {
+                local: "found".into(),
+                value: E::Call {
+                    func: "dict_find_slice".into(),
+                    args: vec![getl("d"), getl("p"), getl("len")],
+                },
+            },
+            N::Push(b(BinOp::Ge, getl("found"), i32c(0))),
+        ],
+        raw_body: None,
+    }
+}
+
