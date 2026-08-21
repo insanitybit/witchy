@@ -55,7 +55,7 @@ fn parcel(own value: a) -> Parcel(a):
 
 fn unpack(own wrapped: Parcel(a)) -> a:
     match wrapped:
-        Parcel(value) -> value
+        Parcel(value) -> move value
 
 fn select_once(
     choose_left: Bool,
@@ -79,11 +79,14 @@ fn finish_transaction(own completion: TransactionCompletion):
     match completion:
         TransactionCompletion(transaction, callback) -> callback(transaction)
 
+fn report_transaction(own transaction: Transaction, console: Console, label: String):
+    match transaction:
+        Transaction(identifier) -> console.print("${label}-${identifier}")
+
 fn cancel_transaction(own completion: TransactionCompletion, console: Console):
     match completion:
         TransactionCompletion(transaction, _) ->
-            match transaction:
-                Transaction(identifier) -> console.print("transaction-cancelled-${identifier}")
+            report_transaction(transaction, console, "transaction-cancelled")
 
 fn main(console: Console):
     let offset = 2
@@ -127,16 +130,14 @@ fn main(console: Console):
     let transaction_completion = TransactionCompletion(
         Transaction(21),
         once fn(own transaction: Transaction):
-            match transaction:
-                Transaction(identifier) -> console.print("transaction-finished-${identifier}")
+            report_transaction(transaction, console, "transaction-finished")
     )
     finish_transaction(transaction_completion)
 
     let transaction_cancellation = TransactionCompletion(
         Transaction(22),
         once fn(own transaction: Transaction):
-            match transaction:
-                Transaction(identifier) -> console.print("unexpected-transaction-${identifier}")
+            report_transaction(transaction, console, "unexpected-transaction")
     )
     cancel_transaction(transaction_cancellation, console)
 "#;
@@ -226,7 +227,7 @@ pure fn announce(console: Console):
 fn main():
     let _ = 0
 "#,
-            needles: &["pure", "console"],
+            needles: &["pure", "capability", "print"],
         },
         Rejection {
             name: "pure opaque callback",
@@ -351,7 +352,7 @@ fn main():
     let callback: pure once fn(Int) -> Int = pure once fn(value: Int): value
     let hidden = dynamic.dynamic(callback)
 "#,
-            needles: &["dynamic", "function"],
+            needles: &["reflect", "fn"],
         },
     ];
 
