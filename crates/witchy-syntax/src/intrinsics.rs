@@ -690,7 +690,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteItemHoles,
         name: COMPILER_QUOTE_ITEM_HOLES,
-        arity: 5,
+        arity: 3,
         signature: IntrinsicSignature::CompilerQuoteItemHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
