@@ -35,20 +35,28 @@ ALL_BENCHES=(
     list_index
 )
 
-# Colors (if terminal)
-if [ -t 1 ]; then
-    BOLD="\033[1m"
-    GREEN="\033[32m"
-    YELLOW="\033[33m"
-    CYAN="\033[36m"
-    RED="\033[31m"
-    RESET="\033[0m"
+# Colors (ANSI-C escape literals work reliably across bash, zsh, and macOS terminals)
+if [ -t 1 ] || [ "${CLICOLOR_FORCE:-0}" = "1" ]; then
+    BOLD=$'\033[1m'
+    DIM=$'\033[2m'
+    GREEN=$'\033[32m'
+    BRIGHT_GREEN=$'\033[1;32m'
+    YELLOW=$'\033[33m'
+    CYAN=$'\033[36m'
+    BRIGHT_CYAN=$'\033[1;36m'
+    RED=$'\033[31m'
+    BRIGHT_RED=$'\033[1;31m'
+    RESET=$'\033[0m'
 else
     BOLD=""
+    DIM=""
     GREEN=""
+    BRIGHT_GREEN=""
     YELLOW=""
     CYAN=""
+    BRIGHT_CYAN=""
     RED=""
+    BRIGHT_RED=""
     RESET=""
 fi
 
@@ -82,9 +90,9 @@ while [ $# -gt 0 ]; do
             usage
             ;;
         -l|--list)
-            echo "Available benchmarks:"
+            printf "Available benchmarks:\n"
             for b in "${ALL_BENCHES[@]}"; do
-                echo "  - $b"
+                printf "  - %s\n" "$b"
             done
             exit 0
             ;;
@@ -101,8 +109,8 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -*)
-            echo "Error: Unknown option $1" >&2
-            echo "Run ./bench.sh --help for usage." >&2
+            printf "%sError: Unknown option %s%s\n" "$RED" "$1" "$RESET" >&2
+            printf "Run ./bench.sh --help for usage.\n" >&2
             exit 1
             ;;
         *)
@@ -118,7 +126,7 @@ fi
 
 # 1. Ensure witchy release binary is built
 if [ ! -x "$WITCHY" ]; then
-    echo -e "${CYAN}==> Building release binary ($WITCHY)...${RESET}"
+    printf "%s==> Building release binary (%s)...%s\n" "$CYAN" "$WITCHY" "$RESET"
     cargo build --release -p witchy
 fi
 
@@ -127,7 +135,7 @@ mkdir -p "$BUILD_DIR"
 # 2. Build required Go binaries
 for b in "${TARGETS[@]}"; do
     if [ ! -f "$BENCH_DIR/${b}.witchy" ]; then
-        echo -e "${RED}Error: Benchmark '$b' not found in benchmarks/${b}.witchy${RESET}" >&2
+        printf "%sError: Benchmark '%s' not found in benchmarks/%s.witchy%s\n" "$RED" "$b" "$b" "$RESET" >&2
         exit 1
     fi
     if [ -f "$BENCH_DIR/${b}.go" ]; then
@@ -152,20 +160,25 @@ min_kernel_ns() {
 }
 
 if [ "$MODE" = "full" ]; then
-    echo -e "${CYAN}==> Running full benchmark suite via benchmarks/run.sh...${RESET}"
+    printf "%s==> Running full benchmark suite via benchmarks/run.sh...%s\n" "$CYAN" "$RESET"
     (cd "$BENCH_DIR" && WITCHY="$WITCHY" ./run.sh)
     exit 0
 fi
 
 # Fast / Quick mode
-echo -e "${BOLD}Witchy Benchmark Suite ($MODE mode, $RUNS sample(s))${RESET}"
-echo -e "${CYAN}Kernel: in-program monotonic compute clock; < 1.00x beats Go${RESET}"
-echo
+printf "\n%s%sWitchy Performance Benchmarks%s %s(%s mode, %s sample(s))%s\n" "$BOLD" "$BRIGHT_CYAN" "$RESET" "$DIM" "$MODE" "$RUNS" "$RESET"
+printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats Go%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
 
-printf "%-16s %15s %15s %15s %10s\n" "Benchmark" "Witchy (ms)" "Go (ms)" "vs Go" "Status"
-printf "%-16s %15s %15s %15s %10s\n" "----------------" "---------------" "---------------" "---------------" "----------"
+printf "  %-18s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "vs Go" "Status"
+printf "  %s\n" "──────────────────────────────────────────────────────────────────────"
+
+total_count=0
+pass_count=0
+faster_count=0
 
 for b in "${TARGETS[@]}"; do
+    total_count=$((total_count + 1))
+    
     # Correctness check
     g_out=""
     if [ -f "$BUILD_DIR/${b}_go" ]; then
@@ -173,9 +186,9 @@ for b in "${TARGETS[@]}"; do
     fi
     w_out=$("$WITCHY" sandbox "$BENCH_DIR/${b}.witchy" 2>/dev/null | result)
 
-    status="${GREEN}OK${RESET}"
+    is_ok=1
     if [ -n "$g_out" ] && [ "$w_out" != "$g_out" ]; then
-        status="${RED}MISMATCH${RESET}"
+        is_ok=0
     fi
 
     # Warm compile cache
@@ -189,23 +202,36 @@ for b in "${TARGETS[@]}"; do
         gns=$(min_kernel_ns "$BUILD_DIR/${b}_go")
     fi
 
+    if [ "$is_ok" -eq 1 ]; then
+        pass_count=$((pass_count + 1))
+        status_disp="${GREEN}OK${RESET}"
+    else
+        status_disp="${BRIGHT_RED}MISMATCH${RESET}"
+    fi
+
     if [ -n "$wns" ] && [ -n "$gns" ] && [ "$gns" -gt 0 ]; then
-        w_ms=$(awk -v ns="$wns" 'BEGIN { printf "%.1f", ns / 1000000 }')
-        g_ms=$(awk -v ns="$gns" 'BEGIN { printf "%.1f", ns / 1000000 }')
+        w_ms=$(awk -v ns="$wns" 'BEGIN { printf "%.1f ms", ns / 1000000 }')
+        g_ms=$(awk -v ns="$gns" 'BEGIN { printf "%.1f ms", ns / 1000000 }')
         ratio=$(awk -v w="$wns" -v g="$gns" 'BEGIN { printf "%.2f", w / g }')
         ratio_str="${ratio}x"
         
         if awk -v r="$ratio" 'BEGIN { exit (r < 1.00 ? 0 : 1) }'; then
-            printf "%-16s %12s ms %12s ms   ${GREEN}%8s${RESET}   ${GREEN}%s${RESET}\n" "$b" "$w_ms" "$g_ms" "$ratio_str" "$status"
+            faster_count=$((faster_count + 1))
+            printf "  %-18s %14s %14s %s%14s%s    %s\n" "$b" "$w_ms" "$g_ms" "$BRIGHT_GREEN" "$ratio_str" "$RESET" "$status_disp"
         else
-            printf "%-16s %12s ms %12s ms   %8s   %s\n" "$b" "$w_ms" "$g_ms" "$ratio_str" "$status"
+            printf "  %-18s %14s %14s %14s    %s\n" "$b" "$w_ms" "$g_ms" "$ratio_str" "$status_disp"
         fi
     elif [ -n "$wns" ]; then
-        w_ms=$(awk -v ns="$wns" 'BEGIN { printf "%.1f", ns / 1000000 }')
-        printf "%-16s %12s ms %15s   %8s   %s\n" "$b" "$w_ms" "—" "—" "$status"
+        w_ms=$(awk -v ns="$wns" 'BEGIN { printf "%.1f ms", ns / 1000000 }')
+        printf "  %-18s %14s %14s %14s    %s\n" "$b" "$w_ms" "—" "—" "$status_disp"
     else
-        printf "%-16s %15s %15s   %8s   %s\n" "$b" "(wall-only)" "—" "—" "$status"
+        printf "  %-18s %14s %14s %14s    %s\n" "$b" "(wall-only)" "—" "—" "$status_disp"
     fi
 done
 
-echo
+printf "  %s\n" "──────────────────────────────────────────────────────────────────────"
+if [ "$faster_count" -gt 0 ]; then
+    printf "  %s%s%d/%d passed%s, %s%d faster than Go%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
+else
+    printf "  %s%s%d/%d passed%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET"
+fi
