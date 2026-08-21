@@ -4076,6 +4076,98 @@ fn main() -> Int:
         );
     }
 
+    #[test]
+    fn elides_bounds_check_before_proven_indexed_list_write() {
+        // The same proof that makes `list.at(xs, i)` safe in an eligible `while`
+        // loop also makes `list.set_at(xs, i, value)` safe. The store retains its
+        // ordinary ownership/write-back ABI; this only removes the redundant
+        // validation call that precedes it.
+        let src = r#"
+fn main() -> Int:
+    var xs = [0, 0, 0, 0, 0]
+    var i = 0
+    while i < list.length(xs):
+        xs[i] = i
+        i = i + 1
+    var total = 0
+    var j = 0
+    while j < list.length(xs):
+        total = total + list.at(xs, j)
+        j = j + 1
+    total
+"#;
+        assert_eq!(run_int(src), 10, "the optimized store preserves the result");
+
+        let write_only = r#"
+fn main() -> Int:
+    var xs = [0, 0, 0, 0, 0]
+    var i = 0
+    while i < list.length(xs):
+        xs[i] = i
+        i = i + 1
+    i
+"#;
+
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let (on, _, _) = call_shape(write_only, default);
+        assert!(
+            !on.contains("list_at"),
+            "bounds-elide ON: the proven write has no redundant `call $list_at` validation (got {on:?})",
+        );
+
+        let off_set = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        let (off, _, _) = call_shape(write_only, off_set);
+        assert!(
+            off.contains("list_at"),
+            "-bounds-elide: the write retains its checked `call $list_at` validation (got {off:?})",
+        );
+
+        let counted_write = r#"
+fn main() -> Int:
+    var xs = [0, 0, 0, 0, 0]
+    for i in 0..list.length(xs):
+        xs[i] = i
+    0
+"#;
+        let (counted_on, _, _) = call_shape(counted_write, default);
+        assert!(
+            !counted_on.contains("list_at"),
+            "the existing counted-loop proof also elides the indexed write guard (got {counted_on:?})",
+        );
+
+        let additive_start_write = r#"
+fn main() -> Int:
+    var xs = [0, 0, 0, 0, 0]
+    var start = 1
+    var j = start + start
+    while j < list.length(xs):
+        xs[j] = j
+        j = j + 1
+    0
+"#;
+        let (additive_on, _, _) = call_shape(additive_start_write, default);
+        assert!(
+            !additive_on.contains("list_at"),
+            "a sum of known non-negative starts preserves the indexed-write proof (got {additive_on:?})",
+        );
+
+        let shortening_write = r#"
+fn main() -> Int:
+    var xs = [0, 0]
+    var i = 0
+    while i < list.length(xs):
+        xs = [0]
+        xs[i] = i
+        i = i + 1
+    0
+"#;
+        let (shortening, _, _) = call_shape(shortening_write, default);
+        assert!(
+            shortening.contains("list_at"),
+            "a potentially length-changing rebinding must retain the indexed-write trap (got {shortening:?})",
+        );
+    }
+
     /// Run `src` on the COMPILED backend under a specific optimization set (for value-
     /// parity checks across the `closure-elide` lever).
     fn run_str_opt(src: &str, opt: witchy_syntax::opt::OptSet) -> Vec<String> {

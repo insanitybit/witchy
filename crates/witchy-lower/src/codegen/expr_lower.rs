@@ -1364,9 +1364,9 @@ impl<'types> Codegen<'types> {
                                             let mut scan = crate::codegen::type_vars::DevirtScan::default();
                                             scan.walk_block(body);
                                             
-                                            let xs_stable = !scan.let_bind.contains_key(xs_var) 
-                                                && !scan.other_bind.contains(xs_var) 
-                                                && !scan.reassigned.contains(xs_var);
+                                            let xs_stable = !scan.let_bind.contains_key(xs_var)
+                                                && !scan.other_bind.contains(xs_var)
+                                                && !scan.length_changing_reassigned.contains(xs_var);
                                                 
                                             if xs_stable {
                                                 let mut num_assigns = 0;
@@ -1416,7 +1416,6 @@ impl<'types> Codegen<'types> {
                                                 }
                                                 
                                                 valid_induction = check_induction(body, i_var, &mut num_assigns, &self.known_non_negative_vars);
-                                                
                                                 if valid_induction && num_assigns > 0 {
                                                     elide_pair = Some((i_var.clone(), xs_var.clone()));
                                                 }

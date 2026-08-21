@@ -1257,7 +1257,14 @@ impl Codegen<'_> {
                     let list_tmp = assign_scratch("list", level);
                     let index_tmp = assign_scratch("index", level);
                     let value_tmp = assign_scratch("value", level);
-                    W::Seq(vec![
+                    // Share the exact in-range proof used by `list.at`: an eligible
+                    // counted loop has established that this named list/index pair is
+                    // non-negative and below the unchanged list length. The store still
+                    // uses the ordinary `list_set_cap` ownership path; only its redundant
+                    // validation read is omitted.
+                    let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
+                        if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
+                    let mut nodes = vec![
                         // Assignment order is destination base, destination
                         // coordinate, RHS, then the checked store. Stage all three
                         // so no source expression is lowered or evaluated twice.
@@ -1267,14 +1274,18 @@ impl Codegen<'_> {
                             local: value_tmp.clone(),
                             value: W::ToSlot(Box::new(value), Self::wir_kind(vk)),
                         },
-                        N::Drop(W::Call {
+                    ];
+                    if !elide {
+                        nodes.push(N::Drop(W::Call {
                             func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_at")
                                 .into(),
                             args: vec![
                                 W::GetLocal(list_tmp.clone()),
                                 W::GetLocal(index_tmp.clone()),
                             ],
-                        }),
+                        }));
+                    }
+                    nodes.extend([
                         N::CallStoreMulti {
                             func: intrinsic_helper_variant(
                                 intrinsics::LIST_SET_AT,
@@ -1294,7 +1305,8 @@ impl Codegen<'_> {
                             dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
                         },
                         N::Push(W::GetLocal(TUPLE_TMP.to_string())),
-                    ])
+                    ]);
+                    W::Seq(nodes)
                 }
             }
             (intrinsics::LIST_AT, 2) => {

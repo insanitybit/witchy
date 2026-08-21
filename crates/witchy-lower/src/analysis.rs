@@ -458,13 +458,13 @@ fn self_update_args<'a>(
     None
 }
 
-/// `xs = set_at(xs, i, v)`: the index and the new value. Unlike `list.push`
-/// (a builtin with a stable name), `list.set_at` is an ordinary stdlib function,
-/// so by codegen time the call is monomorphized to `list.set_at__<ElemType>`;
-/// match that suffixed form as well as the bare name.
+/// `xs = set_at(xs, i, v)`: the index and the new value. The parser preserves an
+/// indexed place assignment as the temporary `__set_at` method name until UFCS
+/// resolution. Afterwards `list.set_at` is an ordinary stdlib function, so it can be
+/// monomorphized to `list.set_at__<ElemType>`; match every representation here.
 fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if (matches!(f.as_str(), "list.set_at" | intrinsics::LIST_SET_AT)
+        if (matches!(f.as_str(), "__set_at" | "list.set_at" | intrinsics::LIST_SET_AT)
             || f.starts_with("list.set_at__"))
             && args.len() == 3
         {
@@ -5374,8 +5374,8 @@ mod shape_matcher_tests {
     // ---- self_set_at / self_update_at: monomorphized stdlib names ----
 
     #[test]
-    fn set_at_matches_bare_and_monomorphized_names() {
-        for f in ["list.set_at", "list.__set_at", "list.set_at__Int"] {
+    fn set_at_matches_parser_and_monomorphized_names() {
+        for f in ["__set_at", "list.set_at", "list.__set_at", "list.set_at__Int"] {
             let v = call(f, vec![var("xs"), int(0), int(9)]);
             assert!(self_set_at("xs", &v).is_some(), "{f} should match");
         }

@@ -7,6 +7,21 @@
 use super::*;
 
 impl<'types> Codegen<'types> {
+    /// Conservative local fact used by the loop bounds proof. Addition cannot
+    /// produce a negative result from two non-negative operands (overflow traps
+    /// before a wrapped value can be observed), so preserve the fact through the
+    /// small expression subset needed by induction-style loop starts.
+    fn expr_is_known_non_negative(&self, value: &Expr) -> bool {
+        match value {
+            Expr::Int(value) => *value >= 0,
+            Expr::Var(name) => self.known_non_negative_vars.contains(name),
+            Expr::Binary { op: BinOp::Add, lhs, rhs, .. } => {
+                self.expr_is_known_non_negative(lhs) && self.expr_is_known_non_negative(rhs)
+            }
+            _ => false,
+        }
+    }
+
     /// Lower a SIMPLE block to a `WirSeq`. Only functions without in-place/cap
     /// machinery qualify — no `inplace_push` vars, no `var` params, no own-ABI
     /// param — and only `Let`/`Expr`/`Return` statements; any other shape (the
@@ -65,14 +80,10 @@ impl<'types> Codegen<'types> {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
                 Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
-                    if let Expr::Int(k) = value {
-                        if *k >= 0 {
-                            self.known_non_negative_vars.insert(name.clone());
-                        } else {
-                            self.known_non_negative_vars.remove(name);
-                        }
+                    if self.expr_is_known_non_negative(value) {
+                        self.known_non_negative_vars.insert(name.clone());
                     } else {
-                        // Any other assignment might make it negative
+                        // Any unrecognized assignment might make it negative.
                         self.known_non_negative_vars.remove(name);
                     }
                 }
@@ -1273,11 +1284,22 @@ impl<'types> Codegen<'types> {
                                 let sv = || W::GetLocal("__witchy_set_val".to_string());
                                 let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
                                 let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
-                                let cond = bin(
-                                    BinOp::And,
-                                    bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
-                                    bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
-                                );
+                                // `elide_index_list` is populated only while lowering an
+                                // eligible loop whose counter is non-negative and below the
+                                // unchanged length of this exact list binding. Its indexed
+                                // self-write therefore needs neither the explicit trap call
+                                // nor a second range branch before the owned-capacity store.
+                                let proven_index = matches!(iexpr, Expr::Var(index)
+                                    if self.elide_index_list.iter().any(|(i, list)| i == index && list == name));
+                                let cond = if proven_index {
+                                    bin(BinOp::Gt, cap.clone(), W::ConstI32(0))
+                                } else {
+                                    bin(
+                                        BinOp::And,
+                                        bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
+                                        bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
+                                    )
+                                };
                                 let slot_ptr = || bin(
                                     BinOp::Add,
                                     bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
@@ -1305,16 +1327,18 @@ impl<'types> Codegen<'types> {
                                 // `list index {i} out of bounds (length {len})` diagnostic
                                 // (and carries the `__witchy_abort` import); the result is
                                 // unreachable (the call always traps here) so it is dropped.
-                                let set_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
-                                seq.push(N::If {
-                                    cond: bin(BinOp::Or, bin(BinOp::Lt, si(), W::ConstI32(0)), bin(BinOp::Ge, si(), set_len())),
-                                    then_: vec![N::Drop(W::Call {
-                                        func: "list_at".into(),
-                                        args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],
-                                    })],
-                                    els: vec![],
-                                    result: None,
-                                });
+                                if !proven_index {
+                                    let set_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
+                                    seq.push(N::If {
+                                        cond: bin(BinOp::Or, bin(BinOp::Lt, si(), W::ConstI32(0)), bin(BinOp::Ge, si(), set_len())),
+                                        then_: vec![N::Drop(W::Call {
+                                            func: "list_at".into(),
+                                            args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],
+                                        })],
+                                        els: vec![],
+                                        result: None,
+                                    });
+                                }
                                 let rc_drop_displaced = Self::wir_kind(vk) == witchy_wir::wir::Kind::I32
                                     && self.inplace_push.contains(name)
                                     && self.expr_is_offset0_rc(vexpr)
@@ -2062,4 +2086,3 @@ impl<'types> Codegen<'types> {
         Some(true)
     }
 }
-

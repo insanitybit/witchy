@@ -139,6 +139,10 @@ pub(crate) struct DevirtScan {
     pub(crate) other_bind: HashSet<String>,
     /// Names reassigned via `name = …` — a single one disqualifies the name.
     pub(crate) reassigned: HashSet<String>,
+    /// Reassignments that may change a list binding's length. A self `set_at`
+    /// rebinding is deliberately excluded: it changes an element but preserves
+    /// the list length, so it cannot invalidate a `i < list.length(xs)` proof.
+    pub(crate) length_changing_reassigned: HashSet<String>,
 }
 
 impl DevirtScan {
@@ -151,6 +155,12 @@ impl DevirtScan {
                 }
                 Stmt::Assign { name, value } => {
                     self.reassigned.insert(name.clone());
+                    if !matches!(
+                        crate::analysis::self_inplace_op(name, value),
+                        Some(crate::analysis::InPlaceOp::SetAt(_, _))
+                    ) {
+                        self.length_changing_reassigned.insert(name.clone());
+                    }
                     self.walk_expr(value);
                 }
                 Stmt::LetPattern { pattern, value } => {
@@ -285,6 +295,7 @@ pub(super) fn collect_devirt_eligible(body: &Block) -> HashSet<String> {
         let_bind,
         other_bind,
         reassigned,
+        ..
     } = s;
     let_bind
         .into_iter()
@@ -301,15 +312,17 @@ pub(super) fn collect_devirt_eligible(body: &Block) -> HashSet<String> {
 /// Soundness: the for-counter is compiler-managed (set to the counter each iteration,
 /// advancing `lo, lo+1, …`), so inside the body `lo ≤ i < hi`. With `lo ≥ 0` and
 /// `hi = list.length(xs)`, that is exactly `0 ≤ i < length(xs)` — in range — PROVIDED
-/// the length we proved cannot change: `xs` must not be reassigned (which would rebind
-/// it, possibly to a shorter list) nor re-bound by a shadowing `let`/tuple/for/param/
-/// pattern (which would make `xs` at the access a different value than the one whose
-/// length bounds the loop). `i` likewise must not be reassigned/shadowed in the body
-/// (it would no longer equal the counter). The walk that proves this (`DevirtScan`) is
-/// exhaustive. Half-open only: an inclusive `0..=length(xs)` would let `i == length`
-/// (OOB), so it is rejected. Conservative everywhere — any deviation keeps the checked
-/// access. Gated on `bounds-elide`; off ⇒ None ⇒ the access keeps its trap guard (the
-/// de-opt reference the differential sweep compares against).
+/// the length we proved cannot change: `xs` must not be rebound to a potentially
+/// different-length list nor re-bound by a shadowing `let`/tuple/for/param/pattern
+/// (which would make `xs` at the access a different value than the one whose length
+/// bounds the loop). A self `set_at` rebinding is permitted because the existing
+/// in-place analysis proves it preserves length. `i` likewise must not be
+/// reassigned/shadowed in the body (it would no longer equal the counter). The walk
+/// that proves this (`DevirtScan`) is exhaustive. Half-open only: an inclusive
+/// `0..=length(xs)` would let `i == length` (OOB), so it is rejected. Conservative
+/// everywhere — any deviation keeps the checked access. Gated on `bounds-elide`; off
+/// ⇒ None ⇒ the access keeps its trap guard (the de-opt reference the differential
+/// sweep compares against).
 pub(super) fn bounds_elide_pair(
     var: &str,
     lo: &Expr,
@@ -335,12 +348,17 @@ pub(super) fn bounds_elide_pair(
     };
     let mut scan = DevirtScan::default();
     scan.walk_block(body);
-    let stable = |n: &str| {
+    let list_length_stable = |n: &str| {
+        !scan.let_bind.contains_key(n)
+            && !scan.other_bind.contains(n)
+            && !scan.length_changing_reassigned.contains(n)
+    };
+    let counter_stable = |n: &str| {
         !scan.let_bind.contains_key(n)
             && !scan.other_bind.contains(n)
             && !scan.reassigned.contains(n)
     };
-    (stable(&xs) && stable(var)).then_some((var.to_string(), xs))
+    (list_length_stable(&xs) && counter_stable(var)).then_some((var.to_string(), xs))
 }
 
 pub(crate) fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
