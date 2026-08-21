@@ -1503,6 +1503,64 @@
     "runnable": true
   },
   {
+    "block": 3,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-functional.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "plugin: 42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-functional.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "delegated: first",
+      "delegated: second"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-functional.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "completed: ready"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-functional.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "finished: saved",
+      "cancelled"
+    ],
+    "runnable": true
+  },
+  {
     "block": 1,
     "browser_runnable": true,
     "console_only": true,
