@@ -289,6 +289,29 @@ mod tests {
     }
 
     #[test]
+    fn reflected_function_type_preserves_all_callable_contract_bits() {
+        for qualifiers in [
+            CallableQualifiers::ORDINARY,
+            CallableQualifiers::new(true, false),
+            CallableQualifiers::new(false, true),
+            CallableQualifiers::new(true, true),
+        ] {
+            let reflected = type_expr(&Type::Fn(
+                vec![Type::Named("Int".into(), Vec::new())],
+                Box::new(Type::Named("String".into(), Vec::new())),
+                vec![Convention::Own],
+                qualifiers,
+            ));
+            let Expr::Ctor { name, args } = reflected else {
+                panic!("function type must reflect as a structured constructor")
+            };
+            assert_eq!(name, "meta.TFn");
+            assert_eq!(args[3], Expr::Bool(qualifiers.pure));
+            assert_eq!(args[4], Expr::Bool(qualifiers.once));
+        }
+    }
+
+    #[test]
     fn normalized_typeinfo_preserves_parameter_order_across_alias_expansion() {
         let module = crate::parser::parse_module(
             "type Flip(x, y) = (y, x)\n\ntype Mixed(a):\n    payload: Flip(b, c)\n",

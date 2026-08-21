@@ -391,6 +391,12 @@
         )
         .expect_err("ordinary callable must not narrow to pure");
         assert!(ordinary.message.contains("expected `pure fn"), "{ordinary:?}");
+
+        let generic = check_source(
+            "fn identity(value: a) -> a:\n    value\n\nfn ordinary(x: Int) -> Int:\n    x\n\nfn main():\n    let narrowed: pure fn(Int) -> Int = identity(ordinary)\n",
+        )
+        .expect_err("generic transport must not launder an ordinary callable into pure");
+        assert!(generic.message.contains("pure fn"), "{generic:?}");
     }
 
     #[test]
@@ -446,6 +452,15 @@
                 .message
                 .contains("consumed by invocation"),
             "{repeated:?}"
+        );
+
+        let propagated = check_source(
+            "fn twice(own callback: once fn() -> Result(Int, String)) -> Result(Int, String):\n    let first = callback()?\n    let second = callback()?\n    Ok(first + second)\n",
+        )
+        .expect_err("error propagation must not restore an attempted once invocation");
+        assert!(
+            propagated.message.contains("consumed by invocation"),
+            "{propagated:?}"
         );
 
         let copied = check_source(
