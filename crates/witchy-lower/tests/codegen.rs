@@ -3000,7 +3000,7 @@ fn main() -> Int:
     #[test]
     fn literal_nontrapping_integer_divisors_stay_raw() {
         let module = parse_module(
-            "fn main() -> Int:\n    let quotient = 9 / 3\n    quotient + (7 % 4)\n",
+            "fn main() -> Int:\n    let quotient = 9 / 3\n    quotient + (7 % 5)\n",
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
@@ -4559,5 +4559,34 @@ fn main(console: Console):
             .unwrap();
         let lines = captured.lock().unwrap().clone();
         assert_eq!(lines, vec!["42"]);
+    }
+
+    #[test]
+    fn power_of_two_modulo_strength_reduction() {
+        let src = r#"
+fn main(console: Console):
+    var x = 1025
+    let rem1024 = x % 1024
+    let is_even = (x % 2) == 0
+    let is_odd = (x % 2) != 0
+    var neg = -5
+    let rem2_neg = neg % 2
+    console.print("${rem1024} ${is_even} ${is_odd} ${rem2_neg}")
+"#;
+        let module = parse_module(src).expect("parse");
+        let wir = assemble_wir_module(&module).expect_lowered("wir");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        // The positive power-of-two modulo should lower to bitwise and without i64.rem_s
+        assert!(wat.contains("i64.and"), "should contain bitwise and: {wat}");
+        
+        let bytes = compile_module_binary(&module).expect_lowered("compile");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        let lines = captured.lock().unwrap().clone();
+        assert_eq!(lines, vec!["1 false true -1"]);
     }
 }

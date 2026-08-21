@@ -2488,50 +2488,88 @@ impl<'types> Codegen<'types> {
                 // The plain numeric path only. Every special case returns `None` so
                 // the legacy arm keeps its exact emission.
                 if ck == Kind::I64 && matches!(op, BinOp::Eq | BinOp::NotEq) {
+                    let mut check_pow2 = |sub_lhs: &Expr, sub_rhs: &Expr| -> Option<W> {
+                        if let Expr::Int(n) = sub_rhs {
+                            if *n > 0 && (*n & (*n - 1)) == 0 {
+                                let mask = *n - 1;
+                                let sub_lk = self.kind_of(sub_lhs);
+                                let sub_w = Self::wir_convert(self.lower_expr(sub_lhs)?, sub_lk, Kind::I64);
+                                let and_w = W::Binary {
+                                    op: witchy_wir::wir::BinOp::And,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(sub_w),
+                                    rhs: Box::new(W::ConstI64(mask)),
+                                };
+                                let cmp_op = if *op == BinOp::Eq {
+                                    witchy_wir::wir::BinOp::Eq
+                                } else {
+                                    witchy_wir::wir::BinOp::Ne
+                                };
+                                return Some(W::Binary {
+                                    op: cmp_op,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(and_w),
+                                    rhs: Box::new(W::ConstI64(0)),
+                                });
+                            }
+                        }
+                        None
+                    };
                     if let (Expr::Binary { op: BinOp::Mod, lhs: sub_lhs, rhs: sub_rhs }, Expr::Int(0)) = (lhs.as_ref(), rhs.as_ref()) {
-                        if let Expr::Int(2) = sub_rhs.as_ref() {
-                            let sub_lk = self.kind_of(sub_lhs);
-                            let sub_w = Self::wir_convert(self.lower_expr(sub_lhs)?, sub_lk, Kind::I64);
-                            let and_w = W::Binary {
-                                op: witchy_wir::wir::BinOp::And,
-                                kind: witchy_wir::wir::Kind::I64,
-                                lhs: Box::new(sub_w),
-                                rhs: Box::new(W::ConstI64(1)),
-                            };
-                            let cmp_op = if *op == BinOp::Eq {
-                                witchy_wir::wir::BinOp::Eq
-                            } else {
-                                witchy_wir::wir::BinOp::Ne
-                            };
-                            return Some(W::Binary {
-                                op: cmp_op,
-                                kind: witchy_wir::wir::Kind::I64,
-                                lhs: Box::new(and_w),
-                                rhs: Box::new(W::ConstI64(0)),
-                            });
+                        if let Some(w) = check_pow2(sub_lhs, sub_rhs) {
+                            return Some(w);
                         }
                     }
                     if let (Expr::Int(0), Expr::Binary { op: BinOp::Mod, lhs: sub_lhs, rhs: sub_rhs }) = (lhs.as_ref(), rhs.as_ref()) {
-                        if let Expr::Int(2) = sub_rhs.as_ref() {
-                            let sub_lk = self.kind_of(sub_lhs);
-                            let sub_w = Self::wir_convert(self.lower_expr(sub_lhs)?, sub_lk, Kind::I64);
-                            let and_w = W::Binary {
-                                op: witchy_wir::wir::BinOp::And,
-                                kind: witchy_wir::wir::Kind::I64,
-                                lhs: Box::new(sub_w),
-                                rhs: Box::new(W::ConstI64(1)),
-                            };
-                            let cmp_op = if *op == BinOp::Eq {
-                                witchy_wir::wir::BinOp::Eq
-                            } else {
-                                witchy_wir::wir::BinOp::Ne
-                            };
-                            return Some(W::Binary {
-                                op: cmp_op,
-                                kind: witchy_wir::wir::Kind::I64,
-                                lhs: Box::new(and_w),
-                                rhs: Box::new(W::ConstI64(0)),
-                            });
+                        if let Some(w) = check_pow2(sub_lhs, sub_rhs) {
+                            return Some(w);
+                        }
+                    }
+                }
+                if ck == Kind::I64 && *op == BinOp::Mod {
+                    if let Expr::Int(n) = rhs.as_ref() {
+                        if *n > 0 && (*n & (*n - 1)) == 0 {
+                            let mask = *n - 1;
+                            let lhs_w = Self::wir_convert(self.lower_expr(lhs)?, lk, Kind::I64);
+                            if self.is_guaranteed_non_negative(lhs) {
+                                return Some(W::Binary {
+                                    op: witchy_wir::wir::BinOp::And,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(lhs_w),
+                                    rhs: Box::new(W::ConstI64(mask)),
+                                });
+                            } else if let Expr::Var(v) = lhs.as_ref() {
+                                let sign = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Shr,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(W::GetLocal(v.clone())),
+                                    rhs: Box::new(W::ConstI64(63)),
+                                };
+                                let bias = W::Binary {
+                                    op: witchy_wir::wir::BinOp::And,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(sign.clone()),
+                                    rhs: Box::new(W::ConstI64(mask)),
+                                };
+                                let sum = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(W::GetLocal(v.clone())),
+                                    rhs: Box::new(bias.clone()),
+                                };
+                                let and_m = W::Binary {
+                                    op: witchy_wir::wir::BinOp::And,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(sum),
+                                    rhs: Box::new(W::ConstI64(mask)),
+                                };
+                                return Some(W::Binary {
+                                    op: witchy_wir::wir::BinOp::Sub,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(and_m),
+                                    rhs: Box::new(bias),
+                                });
+                            }
                         }
                     }
                 }
@@ -3243,5 +3281,36 @@ impl<'types> Codegen<'types> {
             }
             _ => return None,
         })
+    }
+
+    pub(crate) fn is_guaranteed_non_negative(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Int(n) => *n >= 0,
+            Expr::Call { name, .. } => {
+                matches!(
+                    name.as_str(),
+                    intrinsics::LIST_LENGTH
+                        | intrinsics::STRING_LENGTH
+                        | intrinsics::STRING_CHAR_COUNT
+                        | intrinsics::DICT_LENGTH
+                )
+            }
+            Expr::Binary { op: BinOp::BitAnd, lhs, rhs } => {
+                if let Expr::Int(n) = rhs.as_ref() {
+                    *n >= 0
+                } else if let Expr::Int(n) = lhs.as_ref() {
+                    *n >= 0
+                } else {
+                    false
+                }
+            }
+            Expr::Binary { op: BinOp::Mod, lhs, .. } => {
+                self.is_guaranteed_non_negative(lhs)
+            }
+            Expr::Var(name) => {
+                self.known_length_vars.contains_key(name)
+            }
+            _ => false,
+        }
     }
 }
