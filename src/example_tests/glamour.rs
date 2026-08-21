@@ -1379,3 +1379,31 @@ fn main(console: Console):
             assert!(err.contains(expected), "expected `{expected}` in: {err}");
         }
     }
+
+    /// RFC-0136: ergonomic program constructors (simple_program, command_program) have backend parity.
+    #[test]
+    fn glamour_rfc0136_ergonomic_programs_have_backend_parity() {
+        let src = "import glamour\n\
+                   from glamour import Ui\n\
+                   \n\
+                   type Msg:\n\
+                   \x20   Inc\n\
+                   \x20   Dec\n\
+                   \n\
+                   fn update_simple(count: Int, msg: Msg) -> Int:\n\
+                   \x20   match msg:\n\
+                   \x20       Inc -> count + 1\n\
+                   \x20       Dec -> count - 1\n\
+                   \n\
+                   fn view_simple(count: Int) -> Ui(Msg):\n\
+                   \x20   glamour.ui(glamour.element(\"div\", [], [glamour.text(\"count: ${count}\")]))\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let app = glamour.simple_program(0, update_simple, view_simple)\n\
+                   \x20   let (model, cmd, sub, ui) = glamour.program_update(app, Nil, 0, Inc)\n\
+                   \x20   console.print(\"after Inc: ${model}\")\n\
+                   \x20   console.print(glamour.to_html(glamour.ui_node(ui)))\n";
+        let out = glamour_run_both(src);
+        assert_eq!(out, vec!["after Inc: 1".to_string(), "<div>count: 1</div>".to_string()]);
+    }
+

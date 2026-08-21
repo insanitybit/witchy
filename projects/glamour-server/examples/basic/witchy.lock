@@ -12,5 +12,5 @@ runtime_footprint = []
 name = "glamour"
 version = "0.1.0"
 source = "path:projects/glamour"
-hash = "sha256:6ebfbc6877d71afd96b3a0e5f39c7e39736952133ae3eb304915ed040229e9c7"
+hash = "sha256:b4532ea6cab81b3a4cd8eab9051a1d53d875f30d8dc9d1c29088aabe6ec74e98"
 runtime_footprint = []

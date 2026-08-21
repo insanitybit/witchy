@@ -1,7 +1,7 @@
 ---
 rfc: 0136
 title: "Impregnable and Ergonomic Glamour — Secure by Construction, Beautiful by Design"
-status: proposed
+status: implemented
 created: 2026-08-20
 superseded-by:
 tracking:

@@ -2115,6 +2115,14 @@ type Program(auth, model, msg):
 pub fn program(authorize: fn(UiRoot) -> auth, initial: fn(Start) -> model, start: fn(auth, model) -> Cmd(msg), update: fn(auth, model, msg) -> (model, Cmd(msg)), render: fn(model) -> Ui(msg), subscriptions: fn(auth, model) -> Sub(msg)) -> Program(auth, model, msg):
     Program(authorize, initial, start, update, render, subscriptions)
 
+// A zero-ceremony program constructor for pure state machines without side effects (RFC-0136).
+pub fn simple_program(initial_model: model, update_fn: fn(model, msg) -> model, render_fn: fn(model) -> Ui(msg)) -> Program(Nil, model, msg):
+    Program(fn(_root: UiRoot): Nil, fn(_start: Start): initial_model, fn(_auth: Nil, _model: model): NoCmd, fn(_auth: Nil, model: model, msg: msg): (update_fn(model, msg), NoCmd), render_fn, fn(_auth: Nil, _model: model): NoSub)
+
+// An ergonomic program constructor for command-driven state machines without subscriptions (RFC-0136).
+pub fn command_program(authorize_fn: fn(UiRoot) -> auth, initial_model: model, update_fn: fn(auth, model, msg) -> (model, Cmd(msg)), render_fn: fn(model) -> Ui(msg)) -> Program(auth, model, msg):
+    Program(authorize_fn, fn(_start: Start): initial_model, fn(_auth: auth, _model: model): NoCmd, update_fn, render_fn, fn(_auth: auth, _model: model): NoSub)
+
 fn media_query_literal(source: String) -> MediaQuery:
     let query = source.trim()
     if valid_media_query(query):
