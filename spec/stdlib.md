@@ -2,7 +2,7 @@
 
 ## `ascii`
 
-ASCII character predicates over single-character strings (such as those `string.char_at` returns). Pure and capability-free. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
+ASCII character predicates over single-character strings (such as those `string.char_at` returns). These data operations demand no root capability. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
 
 #### `fn is_digit(c: String) -> Bool`
 
@@ -157,7 +157,7 @@ Whether the buffer ends with `suffix`.
 
 ## `cbor`
 
-cbor - a minimal CBOR (RFC 8949) decoder for the WebAuthn subset: the values a registration `attestationObject` and its embedded COSE_Key use. Supports unsigned/negative integers, byte strings, text strings, arrays, and definite- length maps. Indefinite-length items, tags, floats, and simple values are rejected - they do not occur in a WebAuthn attestation. Pure (no capability).
+cbor - a minimal CBOR (RFC 8949) decoder for the WebAuthn subset: the values a registration `attestationObject` and its embedded COSE_Key use. Supports unsigned/negative integers, byte strings, text strings, arrays, and definite- length maps. Indefinite-length items, tags, floats, and simple values are rejected - they do not occur in a WebAuthn attestation. The module demands no root capability; that footprint fact is separate from a `pure fn` contract.
 
 #### `type Cbor`
 
@@ -217,7 +217,7 @@ The integer a `Cbor` holds, or None.
 
 ## `chan`
 
-std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent - you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly - no scheduler state in the runtime, no `Pin`.
+std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent - you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a witchy cooperative executor with a deterministic round-robin schedule. Given deterministic task behavior, interpreter and compiled runs agree; ordinary task callbacks may themselves exercise delegated effects. There is no scheduler state in the runtime and no `Pin`.
 
 Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types - a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. Compiled WebAssembly represents `__Msg` as one typed GC envelope whose i32, i64, f64, externref, and erased anyref fields preserve the message's physical kind; anyref carries either a GC struct or GC array, and the checked endpoint type selects the field to recover. No reference is bit-cast through an integer slot. Erasure remains observationally invisible, so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full while the executor is making progress (backpressure), an unbounded one never does. If every live task parks with no progress, the executor runs its quiescence close pass: parked receivers/selects resume with `None`, parked senders are released, and parked joins resume. This replaces sender refcounting and destructors; it is deterministic on both backends, but "closed" means quiescent, not "no `Sender` value can ever be used again".
 
@@ -321,7 +321,7 @@ STRUCTURED fan-out-and-collect: run every task in `jobs` concurrently and return
 
 #### `fn par_map(items: List(a), f: fn(a) -> Task(m)) -> Task(List(m))`
 
-STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible - spawn and join happen inside - so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order: the result is a pure function of `items` and `f`, hence DETERMINISTIC by construction and byte-identical on both backends. That determinism is exactly what lets a future parallel backend run the items on separate cores without changing the observable result (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`.
+STRUCTURED parallel map (the level-1 combinator): run `f` over every item of `items` concurrently and return the results in INPUT order. The tasks are never visible - spawn and join happen inside - so this cannot leak a handle, cannot deadlock on a forgotten join, and is the ergonomic default for data parallelism. Each item's result rides its own channel, so the returned order is the input order regardless of completion order. `f` is an ordinary callback and may exercise opaque delegated effects, so ordering alone is not a purity or determinism contract. A future parallel backend must require an explicit effect-free callable contract before assuming that reordering invocations is unobservable (see RFC-0032). Results are of the message type `m` (they ride channels), as with `gather`.
 
 #### `fn par_reduce(items: List(a), f: fn(a) -> Task(m), init: m, combine: fn(m, m) -> m) -> Task(m)`
 
@@ -353,7 +353,7 @@ Drive `root` through the canonical `std/task` executor. `chan` keeps this facade
 
 ## `cmp`
 
-The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them - there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Pure and capability-free.
+The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them - there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Built-in comparisons are data-only. A custom trait impl is an ordinary callable contract and may invoke delegated behavior.
 
 #### `type Ordering`
 
@@ -903,7 +903,7 @@ Swap keys and values. With duplicate values, a later entry wins.
 
 ## `duration`
 
-Pure helpers for the built-in `Duration` type - a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
+Data-only helpers for the built-in `Duration` type - a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
 
 #### `type DurationParseError`
 
@@ -1082,7 +1082,7 @@ Logical callable access metadata. Every position and projection names a source t
 
 #### `sealed type RuntimeCallableAccess`
 
-- `RuntimeCallableAccess(List(RuntimeAccessQualifier), List(RuntimeParameterAccess), RuntimeResultAccess, List(RuntimeBorrowRelation))`
+- `RuntimeCallableAccess(Bool, Bool, List(RuntimeAccessQualifier), List(RuntimeParameterAccess), RuntimeResultAccess, List(RuntimeBorrowRelation))`
 
 #### `sealed type RuntimeMethod`
 
@@ -1152,6 +1152,10 @@ The canonical access identity covers the receiver and every declared method para
 
 #### `fn access_borrow_relations(access: RuntimeCallableAccess) -> List(RuntimeBorrowRelation)`
 
+#### `fn access_is_pure(access: RuntimeCallableAccess) -> Bool`
+
+#### `fn access_is_once(access: RuntimeCallableAccess) -> Bool`
+
 #### `fn borrow_relation_lifetime(relation: RuntimeBorrowRelation) -> Int`
 
 #### `fn borrow_relation_output(relation: RuntimeBorrowRelation) -> List(RuntimeLoanProjectionStep)`
@@ -1202,7 +1206,7 @@ encoding - hex and base64 for text conveniences and raw Bytes payloads.
 
 The byte-level codecs need access witchy source cannot express directly, so the raw transforms are native intrinsics (like `crypto`): the private helpers below are placeholders the runtime never executes - each is intercepted by its qualified name and run in Rust on both backends.
 
-Encoding is total, so the encoders return a plain `String`. Decoding can fail, so the public `*decode` functions guard the raw codec with a pure-witchy alphabet check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any non-alphabet character or a truncated final group is a reachable `Err` - never a silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
+Encoding is total, so the encoders return a plain `String`. Decoding can fail, so the public `*decode` functions guard the raw codec with a data-only alphabet check and return `Result` (RFC-0044): valid input decodes to `Ok`, and any non-alphabet character or a truncated final group is a reachable `Err` - never a silent truncation (the JWT/WebAuthn segment-decoding hazard BUG-006 named).
 
 #### `type EncodingError`
 
@@ -1355,7 +1359,7 @@ Recursively collect every file under `path` whose name ends with `ext`, as (relp
 
 ## `func`
 
-The witchy standard function-combinator library. Pure and capability-free. With first-class functions these build new functions from existing ones without writing wrapper lambdas by hand.
+The witchy standard function-combinator library. Importing it adds no root capability demand. Its combinators invoke and compose caller-supplied ordinary callbacks, preserving their opaque, potentially effectful delegated behavior.
 
 #### `fn identity(x: a) -> a`
 
@@ -1387,7 +1391,7 @@ The first / second component of a pair - handy for the tuples `iter.zip` and `it
 
 std/future - cooperative single-threaded futures via CPS over closures.
 
-A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). It is a standalone building block for racing and joining independent computations (`select`, `join_all`) - NOT what the `async`/`await` surface lowers onto (that targets `std/task`, which points here for `select`). A future's live state is the captured values of its continuation closure - owned values, never internal references, so unlike Rust there is nothing self-referential and no `Pin`. Pure structure (closures + sum types), so it runs byte-identically on both backends.
+A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). It is a standalone building block for racing and joining independent computations (`select`, `join_all`) - NOT what the `async`/`await` surface lowers onto (that targets `std/task`, which points here for `select`). A future's live state is the captured values of its continuation closure - owned values, never internal references, so unlike Rust there is nothing self-referential and no `Pin`. The scheduler is ordinary witchy structure (closures + sum types), but polling invokes opaque continuation behavior and is not itself a purity contract.
 
 `More` is the cooperative yield point: an executor drives a future by polling it one step at a time, so several futures can interleave at their `pending` points.
 
@@ -1451,11 +1455,11 @@ Drive a single future to completion and return its value. Recursive on `More` so
 
 #### `fn join_all(tasks: List(Future(a))) -> List(a)`
 
-Drive every task in `tasks` concurrently to completion, returning their results in the original order. The schedule is a deterministic round-robin - one poll step per task per round - so it is single-threaded and fixed-order, and both backends produce byte-identical output. Tasks interleave at their `pending`/ `await` points. This is the structured-concurrency primitive (`scope`/`join`): hand it the task list and it fans them out, joining all before it returns.
+Drive every task in `tasks` concurrently to completion, returning their results in the original order. The schedule is a deterministic round-robin - one poll step per task per round - so it is single-threaded and fixed-order on both backends. Deterministic continuations therefore agree; ordinary continuations may exercise delegated effects. Tasks interleave at their `pending`/`await` points. This is the structured-concurrency primitive (`scope`/`join`): hand it the task list and it fans them out, joining all before it returns.
 
 #### `fn select(tasks: List(Future(a))) -> (Int, a)`
 
-Race `tasks`: drive them concurrently until the FIRST one finishes, and return its index and value; the losers are simply dropped (no further polling - and because futures are pure and lazy, dropping is cancellation, no cleanup hook needed). On a tie within a round the lowest index wins, so the result is deterministic and both backends agree. This is the `select` of structured concurrency (e.g. race a task against `sleep` for a timeout).
+Race `tasks`: drive them concurrently until the FIRST one finishes, and return its index and value; the losers are simply dropped. Because futures are lazy, dropping schedules no further polling and needs no cleanup hook. On a tie within a round the lowest index wins, so the scheduling decision is deterministic. This is the `select` of structured concurrency (e.g. race a task against `sleep` for a timeout).
 
 ## `http`
 
@@ -1633,7 +1637,7 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 ## `iter`
 
-std/iter - lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation: common loops use `unfold` with an owned typed frame, while `from_gen` remains the fallback for irregular control flow.
+std/iter - lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Importing the module adds no root capability demand, but adapters invoke caller-supplied ordinary callbacks, whose delegated behavior may be effectful. The iterator machinery runs on both backends. `gen fn`/`yield` lower to this representation: common loops use `unfold` with an owned typed frame, while `from_gen` remains the fallback for irregular control flow.
 
 Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so pipelines read left-to-right. The module level keeps only what has no receiver - the constructors (`iter.range`, `iter.from_list`, ...) - plus `iter.collect` (whose polymorphic return type dispatches on the EXPECTED type; keeping it a free function also avoids a measured mono-pass blowup) and the pull primitive `iter.next` (also a method; the free form drives the module's own generic internals).
 
@@ -1822,7 +1826,7 @@ A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the `w
 
 ## `json`
 
-A JSON library - the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so - unlike networking - it compiles to WASM like the rest of the data std.
+A JSON library - the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. It demands no root capability and compiles to Wasm like the rest of the data std. Individual effect-free APIs use the explicit `pure fn` contract.
 
 #### `type Json`
 
@@ -2003,7 +2007,7 @@ Convert any reflectable value to `Json`, which also gives `Json.from(x)` and `x.
 
 ## `jwt`
 
-jwt - verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own - fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
+jwt - verify a compact JWS / JWT (the OIDC identity-token shape), implemented in Witchy over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own - fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
 
 A compact JWT is `header.payload.signature`, each base64url. The signature covers the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
 
@@ -2119,7 +2123,7 @@ Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA"
 
 ## `list`
 
-The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority - it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.
+The witchy standard list library. Importing it grants no root authority, and its direct operations transform ordinary data. Higher-order combinators such as `map`, `filter`, and `fold` invoke the ordinary callbacks supplied by their callers; those callbacks are opaque delegated behavior and may be effectful.
 
 #### `fn with_capacity(capacity: Int) -> List(a)`
 
@@ -2423,7 +2427,7 @@ Concatenate the strings, inserting `sep` between adjacent elements: `["a", "b", 
 
 ## `math`
 
-The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.)
+The witchy standard math library: small integer helpers with no root capability demand. (Comparison can't be generic without type classes, so these are Int-specific.)
 
 #### `fn to_float(n: Int) -> Float`
 
@@ -2607,7 +2611,7 @@ A declared type expression, exposed as data so generators do not have to parse s
 
 - `TNamed(String, List(TypeExpr))`
 - `TTuple(List(TypeExpr))`
-- `TFn(List(TypeExpr), TypeExpr, List(String))`
+- `TFn(List(TypeExpr), TypeExpr, List(String), Bool, Bool)`
 - `TQualified(String, TypeExpr)`
 - `TBorrowed(TypeExpr, String)`
 - `TReference(String, TypeExpr, String)`
@@ -2675,6 +2679,10 @@ A tuple type such as `(Int, String)`.
 A function type such as `fn(Int) -> String`.
 
 #### `fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax`
+
+#### `fn type_fn_with_qualifiers(params: List(TypeSyntax), conventions: List(String), pure: Bool, once: Bool, ret: TypeSyntax) -> TypeSyntax`
+
+A function type with explicit invocation qualifiers.
 
 #### `fn type_frozen(ty: TypeSyntax) -> TypeSyntax`
 
@@ -2858,7 +2866,7 @@ Render a structured type back to source text only when generated source needs to
 
 ## `oauth`
 
-oauth - the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in with GitHub / Google". Pure witchy over `std/http` (HTTPS) + `url`. A relying party:   1. redirects the user to `authorize_url(...)`;   2. receives a `code` (and the `state` it sent) at its registered callback;   3. exchanges the code for an access token with `exchange_code(...)`. Identity is then read from a provider endpoint (GitHub `/user`) or, for OIDC, the `id_token` (verify with `std/jwt`). `state` is an opaque anti-CSRF token the caller signs before the redirect and re-checks on the callback - bind it to the session.
+oauth - the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in with GitHub / Google". Implemented in Witchy over `std/http` (HTTPS) + `url`. A relying party:   1. redirects the user to `authorize_url(...)`;   2. receives a `code` (and the `state` it sent) at its registered callback;   3. exchanges the code for an access token with `exchange_code(...)`. Identity is then read from a provider endpoint (GitHub `/user`) or, for OIDC, the `id_token` (verify with `std/jwt`). `state` is an opaque anti-CSRF token the caller signs before the redirect and re-checks on the callback - bind it to the session.
 
 #### `type OAuthError`
 
@@ -2919,7 +2927,7 @@ GET `url` with a `Bearer` access token and parse the JSON body - the "read the s
 
 ## `option`
 
-The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are prelude names and never need an import; `import option` brings in the qualified helper forms such as `option.map`. Pure and capability-free.
+The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are prelude names and never need an import; `import option` brings in the qualified helper forms such as `option.map`. Importing the module adds no root capability demand; callback-taking helpers invoke behavior delegated by their callers and therefore do not promise effect-free invocation.
 
 #### `type Option`
 
@@ -3008,7 +3016,7 @@ Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and both `Some
 
 ## `path`
 
-path - pure manipulation of '/'-separated path strings.
+path - data-only manipulation of '/'-separated path strings.
 
 This is string surgery only - it never touches the filesystem (that is the `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext components, and a `normalize` that collapses `.` and `..`.
 
@@ -3042,11 +3050,11 @@ Collapse `.` and `..` segments and redundant slashes. A relative path that backs
 
 ## `policy`
 
-policy - typed capability refinement policies (RFC-0011, RFC-0057). A policy is a pure value built by a type-associated constructor on the capability it belongs to, then handed to that capability's refinement verb: `net.only(policy)` narrows a `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The constructors live under the capability's OWN type - `Net.tcp(…)`, `Dir.ext(…)` - so a reader finds a capability's whole refinement vocabulary (verbs and policy values) in one place, with no shared grab-bag reaching across capabilities:
+policy - typed capability refinement policies (RFC-0011, RFC-0057). A policy is a an inert value built by a type-associated constructor on the capability it belongs to, then handed to that capability's refinement verb: `net.only(policy)` narrows a `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The constructors live under the capability's OWN type - `Net.tcp(…)`, `Dir.ext(…)` - so a reader finds a capability's whole refinement vocabulary (verbs and policy values) in one place, with no shared grab-bag reaching across capabilities:
 
     let db  = net.only(Net.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.deny(Net.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block     let log = dir.only(Dir.ext(".log"))               // only `.log` files
 
-These are pure value builders (empty capability footprint). A `NetPolicy` wraps the same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a connect-time choice on the address, not a property of the policy (RFC-0009). The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.
+These are data-only value builders with an empty root capability footprint. A `NetPolicy` wraps the same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a connect-time choice on the address, not a property of the policy (RFC-0009). The module is preluded, so `Net.tcp(…)` / `Dir.ext(…)` resolve without an import.
 
 #### `sealed type NetPolicy`
 
@@ -3080,7 +3088,7 @@ A sealed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/ope
 
 ## `prng`
 
-A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly - the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
+A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly - the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. The module has no root capability demand.
 
 #### `sealed type Rng`
 
@@ -3361,7 +3369,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 ## `result`
 
-The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper forms such as `result.map_ok`. Pure and capability-free.
+The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper forms such as `result.map_ok`. Importing the module adds no root capability demand; callback-taking helpers invoke behavior delegated by their callers and therefore do not promise effect-free invocation.
 
 #### `type Result`
 
@@ -3579,7 +3587,7 @@ The highest version in `versions` that satisfies `req`, or None if none do. Keep
 
 The witchy web framework - a slice of axum/tower over the `Net` capability, built on the shared `Request`/`Response` types in `http`.
 
-A handler is a pure `fn(Request) -> Response`: it has NO capability parameters, so it is *structurally* unable to touch the network, filesystem, or console. To give a handler authority (a logger, a store, an outbound client), capture it in the closure - capture IS dependency injection. `serve` holds the `Net` to listen and never hands it to a handler, so even a mounted third-party handler can only compute over the request; it cannot phone home.
+A handler is an ordinary `fn(Request) -> Response`: opaque delegated behavior that may be effectful. To give a handler a logger, store, or outbound client, capture a suitably narrowed capability in the closure - capture is dependency injection. `serve` keeps the `Net` used to listen and never hands that specific capability to a handler. This confines listener authority; it does not make the ordinary handler type a purity contract.
 
   let app = server.router()       .get("/", home)       .get("/users/:id", show)       .layer(logging(console))   server.serve(net, "127.0.0.1:8080", app)
 
@@ -3731,7 +3739,7 @@ Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_respons
 
 #### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
-Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener - the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are pure `fn(Request) -> Response` whose state lives in their captured capabilities (e.g. a store `Dir` = the filesystem), so the workers are interchangeable. (For a single-threaded server, use `serve_one`.)
+Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener - the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are ordinary `fn(Request) -> Response` values whose state and delegated authority may live in captures (e.g. a store `Dir` = the filesystem). (For a single-threaded server, use `serve_one`.)
 
 #### `fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router)`
 
@@ -3863,7 +3871,7 @@ Two sets are equal when they hold exactly the same members, regardless of insert
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars - `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) - and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work - and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. `Show` is preluded: interpolation (`"${x}"`) always honors a relevant impl, while values without one keep the structural default. Pure except `say`, which takes the `Console` it prints to.
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars - `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) - and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work - and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. `Show` is preluded: interpolation (`"${x}"`) always honors a relevant impl, while values without one keep the structural default. Built-in rendering is data-only, and `say` takes the `Console` it prints to. A custom `Show` impl is an ordinary callable contract and may invoke behavior delegated through its value.
 
 #### `trait Show`
 
@@ -3971,7 +3979,7 @@ Tuples render as `(a, b)`; each supported arity has its own impl and dispatches 
 
 ## `string`
 
-The witchy standard string library. Like `list`, it is pure: it declares no capability parameters, so importing it grants no authority. The primitive string operations (`split`, `replace`, `contains`, `to_upper`, ...) are builtins; these are the conveniences built on top of them.
+The witchy standard string library. Importing it grants no root authority; this module's implementation operates on ordinary string data. The primitive string operations (`split`, `replace`, `contains`, `to_upper`, ...) are builtins; these are the conveniences built on top of them.
 
 #### `fn length(s: String) -> Int`
 
@@ -4480,7 +4488,7 @@ A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives
 
 ## `toml`
 
-toml - a TOML reader written in pure witchy (no native code). Two ways in: `toml.decode(text)` parses a whole document into a structured `Toml` tree (the `json.decode` shape); or look individual values up by a `section.key` path with `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and dotted `[a.b]`) tables, `key = value` for string/int/bool values, and `["a", "b"]` arrays. Comments (`#`) - whole-line and trailing - and blank lines are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float primitive yet.)
+toml - a TOML reader implemented in Witchy with no native code. Two ways in: `toml.decode(text)` parses a whole document into a structured `Toml` tree (the `json.decode` shape); or look individual values up by a `section.key` path with `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and dotted `[a.b]`) tables, `key = value` for string/int/bool values, and `["a", "b"]` arrays. Comments (`#`) - whole-line and trailing - and blank lines are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float primitive yet.)
 
 #### `type Toml`
 
@@ -4606,7 +4614,7 @@ Consume a transaction without publishing its replacement and recover the origina
 
 ## `url`
 
-Minimal URL parsing - the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
+Minimal URL parsing - the witchy slice of Go's net/url. It has an empty root capability footprint and compiles to WASM. Handles `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
 
 `parse` returns a matchable `UrlError`; `parse_string` is the String-rendering bridge for application-style callers. Simple scalar parses like `string.parse_int` stay `Option`.
 
@@ -4697,9 +4705,9 @@ Like `decode`, but also maps `+` to a space - the `application/x-www-form-urlenc
 
 std/vm - (RFC-0032) parallel execution across cores.
 
-`par_map` maps a function over a list with the elements processed in PARALLEL on the compiled backend: the work is split across OS-thread worker VMs, each its own isolated WebAssembly instance, and the results are gathered back in INPUT order. Because the result is ordered by input index and the mapped function is pure, the parallel result is identical to a sequential map - so the interpreter oracle (and this module's own reference body) computes it sequentially and the two backends agree. Parallelism changes how fast the map runs, not what it returns.
+`par_map` maps a function over a list with the elements processed in PARALLEL on the compiled backend: the work is split across OS-thread worker VMs, each its own isolated WebAssembly instance, and the results are gathered back in INPUT order. Results are ordered by input index. The current ordinary callback type does not itself promise purity: a closure may contain opaque delegated behavior. The parallel fast path therefore remains restricted to eligible bare top-level functions and transport-safe values; a checked effect-free callable contract is required before the API can use purity as a general scheduling guarantee.
 
-The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL function and the element representation can cross the worker boundary. A local function value, lambda, or pointer-bearing element type instead runs this module's sequential reference body, with identical results. That fallback changes only performance: `par_map` promises an ordered map, not isolation.
+The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL function and the element representation can cross the worker boundary. A local function value, lambda, or pointer-bearing element type instead runs this module's sequential reference body. `par_map` promises result ordering, not a general purity or isolation contract for an arbitrary ordinary callback.
 
 #### `fn par_map(xs: List(a), f: fn(a) -> b) -> List(b)`
 
@@ -4715,7 +4723,7 @@ Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is 
 
 ## `webauthn`
 
-webauthn - server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
+webauthn - server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), implemented in Witchy. ES256 (P-256, COSE alg -7) only.
 
 The browser hands every BINARY value to the server HEX-ENCODED (it holds them as ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and checks everything that matters - it trusts none of the client's interpretation:   * clientDataJSON.type == "webauthn.get"   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)   * clientDataJSON.origin == the expected origin (anti-phishing)   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)   * the user-presence (and, for 2FA, user-verification) flags are set   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`     verifies under the public key bound to this credential at registration. A forged or replayed assertion fails one of these and is rejected here.
 

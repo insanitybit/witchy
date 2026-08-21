@@ -1,21 +1,21 @@
 # Project: A Confined Log Scanner
 
-*Push the effects to the edges, keep the middle pure.* That's the organizing
+*Push the effects to the edges, keep the middle data-focused.* That's the organizing
 rule of this chapter, and it's worth stating first, because it's what makes the
 last step - running the whole thing in a sandbox - almost boring.
 
 We'll build `scan`, a confined command-line tool that searches a log file for
-lines containing a query, with optional case-insensitivity. It exercises a pure
-core, a capability shell, and the sandbox.
+lines containing a query, with optional case-insensitivity. It exercises a
+data-processing core, a capability shell, and the sandbox.
 
-## Start pure
+## Start with the data core
 
-Filtering lines needs no delegated behavior. Give that logic an explicit purity
-contract so it can be run and tested independently:
+Filtering lines needs no delegated behavior in this implementation. Keep that
+logic separate so it can be run and tested independently:
 
 ```witchy
 // Lines of `contents` that contain `query`.
-pure fn matches(query: String, contents: String) -> List(String):
+fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in contents.lines():
         if line.contains(query):
@@ -23,7 +23,7 @@ pure fn matches(query: String, contents: String) -> List(String):
     hits
 
 // Case-insensitive variant: fold both sides to lower case first.
-pure fn matches_ci(query: String, contents: String) -> List(String):
+fn matches_ci(query: String, contents: String) -> List(String):
     var hits = []
     let needle = query.to_lower()
     for line in contents.lines():
@@ -45,8 +45,9 @@ ci:     INFO started
 ci:     info retry
 ```
 
-This is the heart of the program, and its `pure fn` signatures are checked
-effect-free. We could write a dozen `test_*` functions for it and
+This is the heart of the program. Its bodies only transform their inputs as
+written, while the ordinary function type makes no general purity promise. We
+could write a dozen `test_*` functions for it and
 never need a capability. That's the goal: the logic that's worth testing
 carefully is the logic that touches nothing.
 

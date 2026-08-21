@@ -1,5 +1,5 @@
 // policy - typed capability refinement policies (RFC-0011, RFC-0057). A policy is a
-// inert value built by a type-associated constructor on the capability it belongs to,
+// an inert value built by a type-associated constructor on the capability it belongs to,
 // then handed to that capability's refinement verb: `net.only(policy)` narrows a
 // `Net`, `net.deny(policy)` subtracts it, `dir.only(policy)` confines a `Dir`. The
 // constructors live under the capability's OWN type - `Net.tcp(…)`, `Dir.ext(…)` - so
