@@ -2712,6 +2712,15 @@ enum Uncomparable {
     Existential,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PureCaptureHazard {
+    Capability(&'static str),
+    DeclaredCapability,
+    OrdinaryCallable,
+    Existential,
+    UnresolvedGeneric,
+}
+
 // `uncomparable_kind` is a `Checker` method (it must consult the record/enum type
 // tables to reach fn/capability FIELDS, not just generic arguments — BUG-302).
 
@@ -3792,6 +3801,10 @@ struct Checker {
     /// carried capability is `match`, which the linker confines to the home
     /// module — otherwise an alias would leak the underlying authority.
     sealed_types: HashSet<String>,
+    /// Every source nominal declared with `capability`, including bare,
+    /// positional, and unsealed forms whose payload fields alone do not reveal
+    /// that the nominal value is authority-bearing.
+    capability_types: HashSet<String>,
     /// Every `sealed type` and `capability` record. Rebuilding one through a
     /// record update is construction, so it is legal only while checking a
     /// function in the type's defining module.
@@ -3867,6 +3880,15 @@ struct Checker {
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
+    /// Whether the callable body currently being checked promised `pure`.
+    /// Ordinary nested lambdas replace (rather than inherit) this context: their
+    /// bodies are latent behavior, while their construction is checked at the
+    /// enclosing expression site.
+    current_pure: bool,
+    /// Binding identities for `var` parameters of the current callable. A write
+    /// to one of these places is observable caller write-back; mutable locals and
+    /// owned parameters remain ordinary internal computation.
+    pure_var_parameters: HashSet<(usize, String)>,
     /// The callback parameter of an isolated-worker stdlib reference body. The
     /// wrapper may invoke this parameter directly; the worker adapter still has
     /// its own capability-bearing callback boundary.
@@ -4527,6 +4549,232 @@ impl Checker {
             }
         }
         go(self, t, &mut HashSet::new())
+    }
+
+    /// Classify values captured into a closure whose construction or invocation
+    /// must preserve a `pure` promise. Unlike the general capability firewall,
+    /// callable signatures are opaque here: a function value does not own its
+    /// parameter or result types. Its own qualifier is the complete contract.
+    fn pure_capture_hazard(&self, ty: &Ty) -> Option<PureCaptureHazard> {
+        fn direct_capability(ty: &Ty) -> Option<&'static str> {
+            Some(match ty {
+                Ty::Console(_) => "Console",
+                Ty::Clock => "Clock",
+                Ty::Rand => "Rand",
+                Ty::Env => "Env",
+                Ty::Secret(_) => "Secret",
+                Ty::Exec => "Exec",
+                Ty::Fetch => "Fetch",
+                Ty::Dir(_) => "Dir",
+                Ty::File(_) => "File",
+                Ty::Net(_) => "Net",
+                Ty::Socket => "Socket",
+                Ty::Listener => "Listener",
+                Ty::BuildOut => "BuildOut",
+                Ty::BuildRead => "BuildRead",
+                Ty::BuildEnv => "BuildEnv",
+                Ty::BuildNet => "BuildNet",
+                Ty::BuildExec => "BuildExec",
+                Ty::Named(name, _) if name == "SecretStore" => "SecretStore",
+                _ => return None,
+            })
+        }
+
+        fn go(
+            checker: &Checker,
+            ty: &Ty,
+            visiting: &mut HashSet<String>,
+        ) -> Option<PureCaptureHazard> {
+            let resolved = checker.resolve(ty);
+            if let Some(capability) = direct_capability(&resolved) {
+                return Some(PureCaptureHazard::Capability(capability));
+            }
+            match resolved {
+                Ty::Fn(_, _, _, _, qualifiers) => (!qualifiers.pure)
+                    .then_some(PureCaptureHazard::OrdinaryCallable),
+                Ty::Dyn(_, _) => Some(PureCaptureHazard::Existential),
+                Ty::Var(_) => Some(PureCaptureHazard::UnresolvedGeneric),
+                Ty::List(item) => go(checker, &item, visiting),
+                Ty::Tuple(items) => items.iter().find_map(|item| go(checker, item, visiting)),
+                Ty::Named(name, arguments) => {
+                    if checker.capability_types.contains(&name) {
+                        return Some(PureCaptureHazard::DeclaredCapability);
+                    }
+                    if let Some(capability) = checker.transparent_externref_brands.get(&name) {
+                        return externref_cap_name(capability)
+                            .map(PureCaptureHazard::Capability);
+                    }
+
+                    // Check arguments known to occupy owning storage before
+                    // the recursion guard. A recursive generic may transform
+                    // its argument (`Grow(a)` -> `Grow(List(a))`), so guarding
+                    // on exact instantiations would never converge. The owning
+                    // position fixpoint tells us which arguments can actually
+                    // enter the value; callable-only positions stay opaque.
+                    let argument_hazard = match checker.must_consume_parameters.get(&name) {
+                        Some(stored) => stored
+                            .iter()
+                            .zip(&arguments)
+                            .find_map(|(stored, argument)| {
+                                if *stored {
+                                    go(checker, argument, visiting)
+                                } else {
+                                    None
+                                }
+                            }),
+                        None => arguments
+                            .iter()
+                            .find_map(|argument| go(checker, argument, visiting)),
+                    };
+                    if argument_hazard.is_some() {
+                        return argument_hazard;
+                    }
+                    if !visiting.insert(name.clone()) {
+                        return None;
+                    }
+
+                    if let Some((parameters, fields)) = checker.record_fields.get(&name) {
+                        let substitution = parameters
+                            .iter()
+                            .copied()
+                            .zip(arguments.iter().cloned())
+                            .collect::<HashMap<_, _>>();
+                        for (_, field) in fields {
+                            let field = checker.subst_vars(field, &substitution);
+                            if let Some(hazard) = go(checker, &field, visiting) {
+                                visiting.remove(&name);
+                                return Some(hazard);
+                            }
+                        }
+                    }
+                    if let Some(variants) = checker.adt_variants.get(&name) {
+                        for variant in variants {
+                            let Some((payloads, result)) = checker.ctor_sigs.get(variant) else {
+                                continue;
+                            };
+                            let result_arguments = match checker.resolve(result) {
+                                Ty::Named(_, result_arguments) => result_arguments,
+                                _ => Vec::new(),
+                            };
+                            let substitution = result_arguments
+                                .iter()
+                                .zip(&arguments)
+                                .filter_map(|(parameter, argument)| match parameter {
+                                    Ty::Var(id) => Some((*id, argument.clone())),
+                                    _ => None,
+                                })
+                                .collect::<HashMap<_, _>>();
+                            for payload in payloads {
+                                let payload = checker.subst_vars(payload, &substitution);
+                                if let Some(hazard) = go(checker, &payload, visiting) {
+                                    visiting.remove(&name);
+                                    return Some(hazard);
+                                }
+                            }
+                        }
+                    }
+
+                    visiting.remove(&name);
+                    None
+                }
+                Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+                | Ty::Bool | Ty::Unit => None,
+                // Direct capabilities were handled above.
+                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret(_)
+                | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead
+                | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => None,
+            }
+        }
+
+        go(self, ty, &mut HashSet::new())
+    }
+
+    fn reject_pure_capture(&self, capture: &str, ty: &Ty) -> Result<(), TypeError> {
+        let Some(hazard) = self.pure_capture_hazard(ty) else {
+            return Ok(());
+        };
+        let reason = match hazard {
+            PureCaptureHazard::Capability(capability) => {
+                format!("it carries capability `{capability}`")
+            }
+            PureCaptureHazard::DeclaredCapability => {
+                "its nominal type is declared as a capability".to_string()
+            }
+            PureCaptureHazard::OrdinaryCallable => {
+                "it carries an ordinary callable with opaque effects".to_string()
+            }
+            PureCaptureHazard::Existential => {
+                "it carries existential behavior that is not statically effect-classified"
+                    .to_string()
+            }
+            PureCaptureHazard::UnresolvedGeneric => {
+                "its generic type may store authority or an ordinary callable".to_string()
+            }
+        };
+        terr(format!(
+            "closure capture `{capture}` cannot cross a pure boundary because {reason}"
+        ))
+    }
+
+    fn reject_pure_intrinsic_call(&self, name: &str) -> Result<(), TypeError> {
+        if !self.current_pure {
+            return Ok(());
+        }
+        let Some(spec) = intrinsics::lookup(name) else {
+            return Ok(());
+        };
+        if spec.capability_effect != intrinsics::CapabilityEffect::None {
+            return terr(format!(
+                "pure callable cannot invoke `{}` because it exercises capability authority",
+                diagnostic_callable_name(name)
+            ));
+        }
+        match spec.effect {
+            intrinsics::IntrinsicEffect::Pure | intrinsics::IntrinsicEffect::ControlFlow => Ok(()),
+            intrinsics::IntrinsicEffect::Dynamic => terr(format!(
+                "pure callable cannot invoke `{}` because dynamic behavior is not statically effect-classified",
+                diagnostic_callable_name(name)
+            )),
+            // The three WriteBack rows are collection extract computations.
+            // Their `var` argument selects whether the repaired collection is
+            // stored in a local or a caller-owned place; the call-site check
+            // below rejects only the latter.
+            intrinsics::IntrinsicEffect::WriteBack => Ok(()),
+            intrinsics::IntrinsicEffect::Task => terr(format!(
+                "pure callable cannot invoke `{}` because task scheduling is an observable effect",
+                diagnostic_callable_name(name)
+            )),
+            intrinsics::IntrinsicEffect::Toolchain => terr(format!(
+                "pure callable cannot invoke `{}` because compiler/toolchain access is an observable effect",
+                diagnostic_callable_name(name)
+            )),
+        }
+    }
+
+    fn reject_pure_caller_writeback(&self, name: &str, args: &[Expr]) -> Result<(), TypeError> {
+        if !self.current_pure
+            || !intrinsics::lookup(name)
+                .is_some_and(|spec| spec.effect == intrinsics::IntrinsicEffect::WriteBack)
+        {
+            return Ok(());
+        }
+        let Some(place) = args.first().and_then(crate::access::checked_place) else {
+            // Catalog/source conventions still require a mutable place. There
+            // is no caller-visible write-back to classify until one exists.
+            return Ok(());
+        };
+        if self
+            .must_binding_key(place.root())
+            .is_some_and(|binding| self.pure_var_parameters.contains(&binding))
+        {
+            return terr(format!(
+                "pure callable cannot pass `var` parameter `{}` to `{}` because the collection repair writes back to the caller",
+                place.root(),
+                diagnostic_callable_name(name)
+            ));
+        }
+        Ok(())
     }
 
     /// The same authority closure as `ty_carries_capability`, with the nominal
@@ -6635,6 +6883,16 @@ impl Checker {
                             "cannot assign to `{name}`: it is immutable (declared with `let`)"
                         ));
                     }
+                    if self.current_pure
+                        && self
+                            .must_binding_key(name)
+                            .is_some_and(|binding| self.pure_var_parameters.contains(&binding))
+                    {
+                        self.pop();
+                        return terr(format!(
+                            "pure callable cannot assign to `var` parameter `{name}` because that writes back to the caller"
+                        ));
+                    }
                     let must_preserving_self_update =
                         self.is_must_preserving_self_update(name, value);
                     if self.ty_carries_must_consume(&existing)
@@ -6995,6 +7253,11 @@ impl Checker {
         // unlexable by user code); the loan pass separately proves that its
         // first argument is a live exclusive reference.
         if name == intrinsics::REFERENCE_WRITE {
+            if self.current_pure {
+                return terr(
+                    "pure callable cannot write through an explicit reference because that mutates caller-owned state",
+                );
+            }
             if args.len() != 2 {
                 return terr("internal: reference write requires a reference and a value");
             }
@@ -7005,6 +7268,12 @@ impl Checker {
         }
         let is_cap_op = cap_ops::is_marked(name);
         let call_name = cap_ops::surface_name(name);
+        if self.current_pure && is_cap_op {
+            return terr(format!(
+                "pure callable cannot invoke capability operation `{call_name}`"
+            ));
+        }
+        self.reject_pure_caller_writeback(call_name, args)?;
         if expected.is_none()
             && matches!(call_name, "dynamic.try_decode" | "dynamic.decode")
         {
@@ -7062,7 +7331,13 @@ impl Checker {
         // yet unconstrained variable (which we pin to a function type).
         if !is_cap_op && let Some(vty) = self.lookup(name) {
             match self.resolve(&vty) {
-                Ty::Fn(param_tys, ret, conventions, reference_params, _) => {
+                Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) => {
+                    if self.current_pure && !qualifiers.pure {
+                        return terr(format!(
+                            "pure callable cannot invoke ordinary function value `{}`; require a `pure fn` parameter or binding",
+                            diagnostic_callable_name(name)
+                        ));
+                    }
                     if self.current_isolated_callback.as_deref() != Some(name) {
                         self.reject_externref_cap_aggregate_ty(
                             &vty,
@@ -7125,6 +7400,12 @@ impl Checker {
                     return Ok(*ret);
                 }
                 Ty::Var(_) => {
+                    if self.current_pure {
+                        return terr(format!(
+                            "pure callable cannot invoke `{}` without a statically declared `pure fn` contract",
+                            diagnostic_callable_name(name)
+                        ));
+                    }
                     let mut argtys = Vec::new();
                     for arg in args {
                         let arg_ty = self.infer(arg)?;
@@ -7154,6 +7435,7 @@ impl Checker {
                 _ => {} // a non-function local with this name: fall through
             }
         }
+        self.reject_pure_intrinsic_call(call_name)?;
         // A concrete catalog type recipe outranks the linked std placeholder.
         // Source declarations remain present for documentation, parameter
         // conventions, and ownership qualifiers, while generic trait bounds
@@ -7190,6 +7472,21 @@ impl Checker {
             .is_none()
             .then(|| (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten())
             .flatten();
+        if self.current_pure
+            && catalog_contract.is_none()
+            && user_sig.is_some()
+            && !self
+                .fn_qualifiers
+                .get(name)
+                .copied()
+                .unwrap_or(CallableQualifiers::ORDINARY)
+                .pure
+        {
+            return terr(format!(
+                "pure callable cannot invoke ordinary function `{}`; the callee must be declared `pure fn`",
+                diagnostic_callable_name(name)
+            ));
+        }
         let exact_generic_positions = if user_sig.is_some()
             && self
                 .fn_typarams
@@ -8120,6 +8417,11 @@ impl Checker {
                 conventions,
                 ..
             } => {
+                if self.current_pure {
+                    return terr(format!(
+                        "pure callable cannot invoke existential method `{owner_trait}.{method}` because its implementation is not statically effect-classified"
+                    ));
+                }
                 let receiver_ty = self.infer(receiver)?;
                 self.reject_borrowed_nominal_runtime_ty(
                     &receiver_ty,
@@ -8282,6 +8584,7 @@ impl Checker {
                 // express it at all. Reject it uniformly here (using the shared
                 // AST capture/assignment scan) so every backend agrees.
                 let scan = witchy_syntax::lambda_scan::scan_lambda(params, body);
+                let pure_capture_boundary = self.current_pure || qualifiers.pure;
                 let outer = scan.assigns_outer();
                 if !outer.is_empty() {
                     return terr(format!(
@@ -8313,7 +8616,13 @@ impl Checker {
                              non-escaping; wait for projection-aware closure loan facts"
                         ));
                     }
+                    if pure_capture_boundary {
+                        self.reject_pure_capture(&capture, &captured_ty)?;
+                    }
                 }
+                let saved_pure = std::mem::replace(&mut self.current_pure, qualifiers.pure);
+                let saved_pure_var_parameters =
+                    std::mem::take(&mut self.pure_var_parameters);
                 self.push();
                 let param_tys: Vec<Ty> = params
                     .iter()
@@ -8328,6 +8637,12 @@ impl Checker {
                         ty.clone(),
                         p.convention.binds_mutable() || parameter_binds_exclusive_reference(p),
                     );
+                    if qualifiers.pure && p.convention == Convention::Var {
+                        let binding = self
+                            .must_binding_key(&p.name)
+                            .expect("a just-defined lambda parameter has a binding identity");
+                        self.pure_var_parameters.insert(binding);
+                    }
                     if self.ty_carries_must_consume(ty) {
                         match p.convention {
                             Convention::Own => self.mark_must_consume_binding(&p.name, ty),
@@ -8373,6 +8688,8 @@ impl Checker {
                 self.current_ret = saved_ret;
                 self.reject_live_must_in_current_scope()?;
                 self.pop();
+                self.current_pure = saved_pure;
+                self.pure_var_parameters = saved_pure_var_parameters;
                 let conventions = params.iter().map(|p| p.convention).collect();
                 let function_ty = Ty::Fn(
                     param_tys,
@@ -8397,7 +8714,12 @@ impl Checker {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
-                if let Ty::Fn(param_tys, ret, conventions, reference_params, _) = self.resolve(&fty) {
+                if let Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) = self.resolve(&fty) {
+                    if self.current_pure && !qualifiers.pure {
+                        return terr(
+                            "pure callable cannot apply an ordinary function value; the callee expression must have a `pure fn` type",
+                        );
+                    }
                     self.reject_externref_cap_aggregate_ty(&fty, "function value")?;
                     if param_tys.len() != args.len() {
                         return terr(format!(
@@ -8436,6 +8758,11 @@ impl Checker {
                         "function-value application result",
                     )?;
                     return Ok(*ret);
+                }
+                if self.current_pure {
+                    return terr(
+                        "pure callable cannot apply a value without a statically declared `pure fn` contract",
+                    );
                 }
                 let mut argtys = Vec::new();
                 for arg in args {
@@ -8547,6 +8874,9 @@ impl Checker {
                         }
                         Ok(t)
                     }
+                    UnOp::Await if self.current_pure => terr(
+                        "pure callable cannot suspend with `await`; task scheduling is an observable effect",
+                    ),
                     // `await e` has the type of `e` (Phase 1: the awaited value is
                     // the value itself; suspension is invisible to the type).
                     UnOp::Await => Ok(t),
@@ -9950,6 +10280,8 @@ impl Checker {
         self.must_live.clear();
         self.must_borrowed.clear();
         self.current_ret = Some(ret.clone());
+        self.current_pure = func.pure;
+        self.pure_var_parameters.clear();
         self.current_isolated_callback = isolated_vm_callback_contract(
             &func.name,
             func.params.len(),
@@ -10012,6 +10344,12 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable() || parameter_binds_exclusive_reference(param),
             );
+            if func.pure && param.convention == Convention::Var {
+                let binding = self
+                    .must_binding_key(&param.name)
+                    .expect("a just-defined parameter has a binding identity");
+                self.pure_var_parameters.insert(binding);
+            }
             if self.ty_carries_must_consume(ty) {
                 match param.convention {
                     // An `own` parameter is the declaration of a consuming
@@ -11042,6 +11380,16 @@ fn run_check_selected(
         explicit_reference_bindings: vec![HashSet::new()],
         frozen_bindings: vec![HashSet::new()],
         sealed_types: HashSet::new(),
+        capability_types: module
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Type(definition) = item else {
+                    return None;
+                };
+                definition.is_capability.then(|| definition.name.clone())
+            })
+            .collect(),
         construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
         gc_cap_aggregates: HashSet::new(),
@@ -11073,6 +11421,8 @@ fn run_check_selected(
         must_borrowed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
+        current_pure: false,
+        pure_var_parameters: HashSet::new(),
         current_isolated_callback: None,
         dict_key_ops: Vec::new(),
         cur_line: 0,

@@ -846,7 +846,7 @@ fn function_types_retain_parameter_conventions() {
     let Item::Function(function) = &module.items[0] else {
         panic!("expected function");
     };
-    let Some(Type::Fn(params, ret, conventions)) = &function.params[0].ty else {
+    let Some(Type::Fn(params, ret, conventions, _)) = &function.params[0].ty else {
         panic!("expected function-typed parameter");
     };
     assert_eq!(params.len(), 4);

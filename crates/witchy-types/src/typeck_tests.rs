@@ -6,6 +6,214 @@
     }
 
     #[test]
+    fn pure_named_bodies_allow_local_computation_traps_and_pure_calls() {
+        check_source(
+            "pure fn increment(x: Int) -> Int:\n    x + 1\n\npure fn compute(x: Int) -> Int:\n    var total = x\n    total = increment(total)\n    total\n\npure fn propagate(value: Result(Int, String)) -> Result(Int, String):\n    let unwrapped = value?\n    Ok(unwrapped)\n\npure fn stop(message: String):\n    fail(message)\n",
+        )
+        .expect("immutable computation, local mutation, pure calls, control flow, and traps are effect-free");
+
+        let ordinary = check_source(
+            "fn increment(x: Int) -> Int:\n    x + 1\n\npure fn compute(x: Int) -> Int:\n    increment(x)\n",
+        )
+        .expect_err("a pure named function cannot invoke an ordinary named function");
+        assert!(ordinary.message.contains("ordinary function `increment`"), "{ordinary:?}");
+
+        let capability = check_str(
+            "pure fn log(console: Console):\n    console.print(\"no\")\n",
+        )
+        .expect_err("a pure body cannot invoke a capability operation");
+        assert!(capability.contains("capability operation"), "{capability}");
+    }
+
+    #[test]
+    fn pure_function_value_calls_require_a_pure_contract() {
+        check_source(
+            "pure fn invoke(callback: pure fn(Int) -> Int, value: Int) -> Int:\n    callback(value)\n",
+        )
+        .expect("a pure callable may invoke a callback with a declared-pure contract");
+
+        let ordinary = check_source(
+            "pure fn invoke(callback: fn(Int) -> Int, value: Int) -> Int:\n    callback(value)\n",
+        )
+        .expect_err("ordinary callback effects are opaque at a pure call site");
+        assert!(ordinary.message.contains("ordinary function value `callback`"), "{ordinary:?}");
+
+        let applied = check_source(
+            "pure fn choose(flag: Bool, left: fn(Int) -> Int, right: fn(Int) -> Int) -> Int:\n    (if flag: left else: right)(1)\n",
+        )
+        .expect_err("Apply must enforce the callable qualifier too");
+        assert!(applied.message.contains("apply an ordinary function value"), "{applied:?}");
+
+        check_source(
+            "pure fn choose(flag: Bool, left: pure fn(Int) -> Int, right: pure fn(Int) -> Int) -> Int:\n    (if flag: left else: right)(1)\n",
+        )
+        .expect("Apply accepts an expression whose joined callable contract remains pure");
+    }
+
+    #[test]
+    fn pure_intrinsics_reject_dynamic_task_toolchain_and_capability_effects() {
+        for (source, expected) in [
+            (
+                "pure fn inspect():\n    let ignored = __dynamic_runtime_type(\"module\", \"Type\")\n",
+                "dynamic behavior",
+            ),
+            (
+                "pure fn schedule():\n    __channel_open(1)\n",
+                "task scheduling",
+            ),
+            (
+                "import compiler\n\npure fn audit(source: String) -> String:\n    compiler.footprint(source)\n",
+                "compiler/toolchain access",
+            ),
+            (
+                "import secretstore\n\npure fn read(store: SecretStore) -> Option(Secret):\n    secretstore.get(store, \"token\")\n",
+                "capability authority",
+            ),
+        ] {
+            let error = check_source(source).expect_err("the intrinsic effect is outside pure");
+            assert!(error.message.contains(expected), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn pure_closure_boundaries_reject_authority_and_opaque_behavior_captures() {
+        let capability = check_source(
+            "pure fn defer(console: Console) -> pure fn() -> Int:\n    pure fn():\n        let ignored = console\n        1\n",
+        )
+        .expect_err("a pure closure cannot capture a host capability");
+        assert!(capability.message.contains("carries capability `Console`"), "{capability:?}");
+
+        let ordinary_callback = check_source(
+            "pure fn defer(callback: fn() -> Int) -> fn() -> Int:\n    fn(): callback()\n",
+        )
+        .expect_err("pure construction cannot delegate captured opaque behavior");
+        assert!(ordinary_callback.message.contains("ordinary callable with opaque effects"), "{ordinary_callback:?}");
+
+        let pure_lambda_body = check_source(
+            "fn ordinary() -> Int:\n    1\n\nfn factory() -> pure fn() -> Int:\n    pure fn(): ordinary()\n",
+        )
+        .expect_err("a declared-pure lambda body gets its own enforced pure context");
+        assert!(pure_lambda_body.message.contains("ordinary function `ordinary`"), "{pure_lambda_body:?}");
+
+        check_source(
+            "fn ordinary() -> Int:\n    1\n\npure fn factory() -> Int:\n    let deferred = fn(): ordinary()\n    0\n",
+        )
+        .expect("an ordinary nested lambda resets latent purity and may defer opaque behavior without capturing authority");
+
+        check_source(
+            "pure fn keep(callback: pure fn(Console) -> Int) -> Int:\n    let deferred = pure fn():\n        let ignored = callback\n        1\n    deferred()\n",
+        )
+        .expect("a pure callable capture is safe and its capability-bearing signature is not captured storage");
+
+        check_source(
+            "pure fn defer(callback: pure fn(Int) -> Int) -> Int:\n    let deferred = pure fn(): callback(1)\n    0\n",
+        )
+        .expect("a pure closure may invoke a captured callback with an explicit pure contract");
+
+    }
+
+    #[test]
+    fn pure_closure_capture_is_not_erased_by_a_later_local_shadow() {
+        let shadow_laundering = check_str(
+            "pure fn defer(console: Console) -> fn() -> Nil:\n    fn():\n        console.print(\"hidden\")\n        let console = 0\n",
+        )
+        .expect_err("a later local shadow must not erase an earlier capability capture");
+        assert!(shadow_laundering.contains("closure capture `console`"), "{shadow_laundering}");
+    }
+
+    #[test]
+    fn pure_capture_audit_recurses_through_storage_and_marks_every_user_capability_nominal() {
+        let aggregate = check_source(
+            "type Holder:\n    Holder(fn() -> Int)\n\npure fn defer(holder: Holder) -> fn() -> Int:\n    fn():\n        let ignored = holder\n        1\n",
+        )
+        .expect_err("an aggregate that stores an ordinary callable cannot cross a pure boundary");
+        assert!(aggregate.message.contains("ordinary callable with opaque effects"), "{aggregate:?}");
+
+        let generic = check_source(
+            "pure fn defer(value: a) -> pure fn() -> Int:\n    pure fn():\n        let ignored = value\n        1\n",
+        )
+        .expect_err("an unresolved stored generic may hide authority");
+        assert!(generic.message.contains("generic type may store authority"), "{generic:?}");
+
+        let existential = check_source(
+            "trait Inspect:\n    fn inspect(self) -> Int\n\npure fn defer(value: dyn Inspect) -> pure fn() -> Int:\n    pure fn():\n        let ignored = value\n        1\n",
+        )
+        .expect_err("an existential capture may hide ordinary behavior");
+        assert!(existential.message.contains("existential behavior"), "{existential:?}");
+
+        let mut positional = witchy_syntax::parser::parse_module(
+            "capability Token:\n    label: String\n\npure fn defer(token: Token) -> pure fn() -> Int:\n    pure fn():\n        let ignored = token\n        1\n",
+        )
+        .expect("capability source parses");
+        let Item::Type(token) = &mut positional.items[0] else {
+            panic!("first item is the capability declaration")
+        };
+        token.sealed = false;
+        token.variants[0].field_names.clear();
+        let capability = check(&positional)
+            .expect_err("positional/unsealed capability identity must not depend on its fields");
+        assert!(capability.message.contains("nominal type is declared as a capability"), "{capability:?}");
+
+        check_source(
+            "type Grow(a):\n    Value(a)\n    More(Grow(List(a)))\n\npure fn inspect(value: Grow(Int)) -> Int:\n    let deferred = pure fn():\n        let ignored = value\n        1\n    0\n",
+        )
+        .expect("argument-transforming recursive storage must terminate when it carries only data");
+
+        let transformed = check_source(
+            "type Grow(a):\n    Value(a)\n    More(Grow((a, fn() -> Int)))\n\npure fn defer(value: Grow(Int)) -> pure fn() -> Int:\n    pure fn():\n        let ignored = value\n        1\n",
+        )
+        .expect_err("a transformed recursive stored argument must still expose an ordinary callable");
+        assert!(transformed.message.contains("ordinary callable with opaque effects"), "{transformed:?}");
+    }
+
+    #[test]
+    fn pure_writeback_rejects_var_parameters_but_allows_shadowing_and_locals() {
+        let writeback = check_source(
+            "pure fn replace(var value: Int):\n    value = value + 1\n",
+        )
+        .expect_err("assignment to a var parameter writes back to the caller");
+        assert!(writeback.message.contains("assign to `var` parameter `value`"), "{writeback:?}");
+
+        let collection_writeback = check_source(
+            "pure fn pop(var values: List(Int)) -> Option(Int):\n    list.__pop_extract(values)\n",
+        )
+        .expect_err("a collection repair cannot write through a pure var parameter");
+        assert!(
+            collection_writeback
+                .message
+                .contains("collection repair writes back to the caller"),
+            "{collection_writeback:?}"
+        );
+
+        let reference_write = check_source(
+            "mode opt\n\npure fn replace(target: &'a mut Int):\n    *target = 1\n",
+        )
+        .expect_err("writing through an explicit reference mutates caller-owned state");
+        assert!(reference_write.message.contains("write through an explicit reference"), "{reference_write:?}");
+
+        let lambda_writeback = check_source(
+            "fn writer() -> pure fn(var Int) -> Nil:\n    pure fn(var value: Int):\n        value = value + 1\n",
+        )
+        .expect_err("pure lambda var parameters obey the same writeback rule");
+        assert!(lambda_writeback.message.contains("assign to `var` parameter `value`"), "{lambda_writeback:?}");
+
+        check_source(
+            "pure fn local(value: Int) -> Int:\n    var result = value\n    result = result + 1\n    result\n",
+        )
+        .expect("a pure body may mutate its own local storage");
+
+        check_source(
+            "pure fn pop_local() -> Option(Int):\n    var values = [1, 2]\n    list.__pop_extract(values)\n",
+        )
+        .expect("collection write-back into a local variable remains pure");
+
+        check_source(
+            "pure fn shadow(var value: Int) -> Int:\n    if true:\n        var value = 1\n        value = value + 1\n        return value\n    0\n",
+        )
+        .expect("binding identity keeps a shadowing local distinct from the var parameter");
+    }
+
+    #[test]
     fn must_consume_requires_disposition_on_every_path() {
         let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\n";
 
@@ -196,8 +404,10 @@
 
     #[test]
     fn type_table_retains_the_full_callable_signature() {
+        use witchy_syntax::ast::Type;
+
         let module = witchy_syntax::parser::parse_module(
-            "pure fn inspect(borrow text: String) -> Int:\n    0\n",
+            "pure fn inspect(let text: String) -> Int:\n    0\n",
         )
         .expect("source parses");
         let typed = annotate_checked(module).expect("source type-checks");
@@ -516,6 +726,19 @@
             witchy_syntax::ast::Item::Function(function)
                 if function.name.ends_with("__inspect") && function.pure
         )));
+
+        let pure_dispatch = "trait Inspect:\n    pure fn inspect(self) -> Int\n\
+                             type Box:\n    Box(Int)\n\
+                             impl Inspect for Box:\n    pure fn inspect(self) -> Int:\n        0\n\
+                             pure fn read(boxed: Box) -> Int:\n    boxed.inspect()\n";
+        check_str(pure_dispatch)
+            .expect("trait lowering must preserve the selected implementation's pure qualifier");
+
+        let existential_dispatch = check_str(
+            "trait Inspect:\n    pure fn inspect(self) -> Int\n\npure fn read(value: dyn Inspect) -> Int:\n    value.inspect()\n",
+        )
+        .expect_err("existential dispatch has no statically selected pure implementation");
+        assert!(existential_dispatch.contains("existential method"), "{existential_dispatch}");
     }
 
     #[test]

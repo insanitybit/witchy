@@ -385,6 +385,9 @@ impl IntrinsicSignature {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntrinsicEffect {
     Pure,
+    /// Runtime type reflection or dynamic dispatch. These operations
+    /// may recover behavior whose callable contract is not statically visible.
+    Dynamic,
     WriteBack,
     ControlFlow,
     Task,
@@ -929,7 +932,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_RUNTIME_TYPE,
         arity: 2,
         signature: IntrinsicSignature::StringStringToRuntimeType,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -944,7 +947,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_DESCRIPTOR,
         arity: 1,
         signature: IntrinsicSignature::GenericToRuntimeType,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -959,7 +962,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_DESCRIPTOR_ID,
         arity: 1,
         signature: IntrinsicSignature::GenericToInt,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -974,7 +977,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_FIELDS,
         arity: 1,
         signature: IntrinsicSignature::RuntimeTypeToListRuntimeField,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -989,7 +992,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_FIELD_STATUS,
         arity: 2,
         signature: IntrinsicSignature::RuntimeTypeStringToDynamicFieldStatus,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1004,7 +1007,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_METHODS,
         arity: 1,
         signature: IntrinsicSignature::RuntimeTypeToListRuntimeMethod,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1019,7 +1022,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_CALL,
         arity: 3,
         signature: IntrinsicSignature::DynamicStringListDynamicToResultDynamicDynamicError,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1034,7 +1037,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_CALL_WITH,
         arity: 4,
         signature: IntrinsicSignature::DynamicStringListDynamicGenericToResultDynamicDynamicError,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1049,7 +1052,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_IMPLEMENTS,
         arity: 2,
         signature: IntrinsicSignature::DynamicRuntimeTypeToBool,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1064,7 +1067,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_AS_TRAIT,
         arity: 2,
         signature: IntrinsicSignature::DynamicRuntimeTypeToResultDynamicDynamicError,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1079,7 +1082,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_TRY_DECODE,
         arity: 1,
         signature: IntrinsicSignature::DynamicToOptionGeneric,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::FrontendGenerated,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -1094,7 +1097,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         name: DYNAMIC_TRY_DECODE_TYPED,
         arity: 2,
         signature: IntrinsicSignature::DynamicIntToOptionGeneric,
-        effect: IntrinsicEffect::Pure,
+        effect: IntrinsicEffect::Dynamic,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::Builtin,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
@@ -3650,6 +3653,30 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_dispatch_and_reflection_rows_are_not_classified_as_pure() {
+        for name in [
+            DYNAMIC_RUNTIME_TYPE,
+            DYNAMIC_DESCRIPTOR,
+            DYNAMIC_DESCRIPTOR_ID,
+            DYNAMIC_FIELDS,
+            DYNAMIC_FIELD_STATUS,
+            DYNAMIC_METHODS,
+            DYNAMIC_CALL,
+            DYNAMIC_CALL_WITH,
+            DYNAMIC_IMPLEMENTS,
+            DYNAMIC_AS_TRAIT,
+            DYNAMIC_TRY_DECODE,
+            DYNAMIC_TRY_DECODE_TYPED,
+        ] {
+            assert_eq!(
+                lookup(name).expect("dynamic intrinsic row").effect,
+                IntrinsicEffect::Dynamic,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn bytes_operation_family_has_complete_semantic_metadata() {
         let expected_helpers = [
             (BYTES_FROM_STRING, None, IntrinsicLowering::Identity),
@@ -4387,6 +4414,7 @@ mod tests {
                             vec![value()],
                             Box::new(value()),
                             vec![Convention::Let],
+                            crate::ast::CallableQualifiers::ORDINARY,
                         ),
                     ],
                     dict(),
