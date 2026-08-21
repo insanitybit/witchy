@@ -387,6 +387,39 @@ impl RuntimeDeclarationCatalog {
             &BTreeMap::new(),
             &mut visiting,
             &[],
+            false,
+        )?;
+        self.type_identity(ty)
+    }
+
+    /// Resolve descriptor-only identity after walking the complete retained
+    /// shape for capability leaves. Unlike a Dynamic payload, a callable or
+    /// existential may be described without storing a value of that type, but
+    /// capability authority still may not become readable descriptor data.
+    pub(crate) fn descriptor_type_identity(
+        &self,
+        ty: &Type,
+        module: &Module,
+    ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
+        let mut definitions = BTreeMap::new();
+        for item in &module.items {
+            let Item::Type(definition) = item else {
+                continue;
+            };
+            let Some(identity) = self.resolve(&definition.name, DeclarationKind::Type) else {
+                continue;
+            };
+            definitions.insert(identity.clone(), definition);
+        }
+        let mut visiting = Vec::new();
+        validate_capability_free_type(
+            ty,
+            self,
+            &definitions,
+            &BTreeMap::new(),
+            &mut visiting,
+            &[],
+            true,
         )?;
         self.type_identity(ty)
     }
@@ -399,13 +432,30 @@ fn validate_capability_free_type(
     bindings: &BTreeMap<String, Type>,
     visiting: &mut Vec<DeclarationIdentity>,
     path: &[String],
+    descriptor_only: bool,
 ) -> Result<(), RuntimeTypeError> {
     match ty {
         Type::Qualified(_, inner) => {
-            validate_capability_free_type(inner, catalog, definitions, bindings, visiting, path)
+            validate_capability_free_type(
+                inner,
+                catalog,
+                definitions,
+                bindings,
+                visiting,
+                path,
+                descriptor_only,
+            )
         }
         Type::Slice(inner) => {
-            validate_capability_free_type(inner, catalog, definitions, bindings, visiting, path)
+            validate_capability_free_type(
+                inner,
+                catalog,
+                definitions,
+                bindings,
+                visiting,
+                path,
+                descriptor_only,
+            )
         }
         Type::Tuple(items) => {
             for (index, item) in items.iter().enumerate() {
@@ -418,20 +468,71 @@ fn validate_capability_free_type(
                     bindings,
                     visiting,
                     &child_path,
+                    descriptor_only,
                 )?;
             }
             Ok(())
+        }
+        Type::Fn(parameters, result, _, _) if descriptor_only => {
+            for (index, parameter) in parameters.iter().enumerate() {
+                let mut child_path = path.to_vec();
+                child_path.push(format!("function parameter[{index}]"));
+                validate_capability_free_type(
+                    parameter,
+                    catalog,
+                    definitions,
+                    bindings,
+                    visiting,
+                    &child_path,
+                    descriptor_only,
+                )?;
+            }
+            let mut child_path = path.to_vec();
+            child_path.push("function result".into());
+            validate_capability_free_type(
+                result,
+                catalog,
+                definitions,
+                bindings,
+                visiting,
+                &child_path,
+                descriptor_only,
+            )
         }
         Type::Fn(..) => Err(RuntimeTypeError::UninspectableDynamicPayload {
             kind: "function".into(),
             path: path.to_vec(),
         }),
+        Type::Dyn(name, arguments) if descriptor_only => {
+            for (index, argument) in arguments.iter().enumerate() {
+                let mut child_path = path.to_vec();
+                child_path.push(format!("existential `{name}` argument[{index}]"));
+                validate_capability_free_type(
+                    argument,
+                    catalog,
+                    definitions,
+                    bindings,
+                    visiting,
+                    &child_path,
+                    descriptor_only,
+                )?;
+            }
+            Ok(())
+        }
         Type::Dyn(name, _) => Err(RuntimeTypeError::UninspectableDynamicPayload {
             kind: format!("existential `{name}`"),
             path: path.to_vec(),
         }),
         Type::RecordCompose { base, fields } => {
-            validate_capability_free_type(base, catalog, definitions, bindings, visiting, path)?;
+            validate_capability_free_type(
+                base,
+                catalog,
+                definitions,
+                bindings,
+                visiting,
+                path,
+                descriptor_only,
+            )?;
             for (name, field) in fields {
                 let mut child_path = path.to_vec();
                 child_path.push(name.clone());
@@ -442,6 +543,7 @@ fn validate_capability_free_type(
                     bindings,
                     visiting,
                     &child_path,
+                    descriptor_only,
                 )?;
             }
             Ok(())
@@ -456,13 +558,21 @@ fn validate_capability_free_type(
                         bindings,
                         visiting,
                         path,
+                        descriptor_only,
                     );
                 }
             }
             if super::identity::capability_type(name) {
-                return Err(RuntimeTypeError::CapabilityRetained {
-                    capability: name.clone(),
-                    path: path.to_vec(),
+                return Err(if descriptor_only {
+                    RuntimeTypeError::CapabilityDescriptorRetained {
+                        capability: name.clone(),
+                        path: path.to_vec(),
+                    }
+                } else {
+                    RuntimeTypeError::CapabilityRetained {
+                        capability: name.clone(),
+                        path: path.to_vec(),
+                    }
                 });
             }
             if super::identity::primitive(name, args.len()).is_some() {
@@ -478,6 +588,7 @@ fn validate_capability_free_type(
                     bindings,
                     visiting,
                     &child_path,
+                    descriptor_only,
                 );
             }
             if let Some(fields) = decode_anon_record(name) {
@@ -491,6 +602,7 @@ fn validate_capability_free_type(
                         bindings,
                         visiting,
                         &child_path,
+                        descriptor_only,
                     )?;
                 }
                 return Ok(());
@@ -509,6 +621,7 @@ fn validate_capability_free_type(
                                 bindings,
                                 visiting,
                                 &child_path,
+                                descriptor_only,
                             )?;
                         }
                         at += 1;
@@ -531,9 +644,16 @@ fn validate_capability_free_type(
                 }
             })?;
             if definition.is_capability {
-                return Err(RuntimeTypeError::CapabilityRetained {
-                    capability: definition.name.clone(),
-                    path: path.to_vec(),
+                return Err(if descriptor_only {
+                    RuntimeTypeError::CapabilityDescriptorRetained {
+                        capability: definition.name.clone(),
+                        path: path.to_vec(),
+                    }
+                } else {
+                    RuntimeTypeError::CapabilityRetained {
+                        capability: definition.name.clone(),
+                        path: path.to_vec(),
+                    }
                 });
             }
             let nominal_parameters =
@@ -552,6 +672,7 @@ fn validate_capability_free_type(
                                 &BTreeMap::new(),
                                 visiting,
                                 &child_path,
+                                descriptor_only,
                             )?;
                         }
                     } else {
@@ -580,6 +701,7 @@ fn validate_capability_free_type(
                     &BTreeMap::new(),
                     visiting,
                     &child_path,
+                    descriptor_only,
                 )?;
             }
             if visiting.contains(&declaration) {
@@ -605,6 +727,7 @@ fn validate_capability_free_type(
                         &nested_bindings,
                         visiting,
                         &child_path,
+                        descriptor_only,
                     )?;
                 }
             }

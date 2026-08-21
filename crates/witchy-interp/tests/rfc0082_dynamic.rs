@@ -123,9 +123,10 @@ fn runtime_type_rejects_transitively_retained_capabilities_with_a_path() {
     let error = witchy_interp::interpreter::run_checked_module(&module, ".", Vec::new())
     .expect_err("a runtime descriptor must not retain authority")
     .to_string();
-    assert!(error.contains("Session"), "missing declaration path: {error}");
-    assert!(error.contains("transport"), "missing field path: {error}");
-    assert!(error.contains("Net"), "missing capability leaf: {error}");
+    assert_eq!(
+        error,
+        "runtime error: capability type `Net` cannot have a runtime descriptor; retained by `main.Session.transport`"
+    );
 }
 
 #[test]

@@ -329,7 +329,7 @@ pub(super) fn collect_dynamic_types(
         // descriptor construction and typed decoding.
         if *descriptor_only {
             runtime_catalog
-                .type_identity(ty)
+                .descriptor_type_identity(ty, module)
                 .map_err(|error| error.to_string())?;
         } else {
             runtime_catalog

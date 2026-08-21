@@ -666,6 +666,7 @@ pub enum RuntimeTypeError {
     CapabilityType(String),
     CapabilityDescriptorIdentity,
     CapabilityInValueCallableParameter,
+    CapabilityDescriptorRetained { capability: String, path: Vec<String> },
     CapabilityRetained { capability: String, path: Vec<String> },
     UninspectableDynamicPayload { kind: String, path: Vec<String> },
     MissingRuntimeShape {
@@ -704,6 +705,13 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::CapabilityInValueCallableParameter => f.write_str(
                 "capability authority cannot occupy a callable value-descriptor parameter",
             ),
+            Self::CapabilityDescriptorRetained { capability, path } => {
+                write!(f, "capability type `{capability}` cannot have a runtime descriptor")?;
+                if !path.is_empty() {
+                    write!(f, "; retained by `{}`", path.join(" -> "))?;
+                }
+                Ok(())
+            }
             Self::CapabilityRetained { capability, path } => {
                 write!(f, "capability type `{capability}` cannot convert to Dynamic")?;
                 if !path.is_empty() {
