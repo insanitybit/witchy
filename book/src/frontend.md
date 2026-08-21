@@ -31,7 +31,8 @@ fn view(m: Model) -> Ui(Msg):
 
 fn main(console: Console):
     let app = glamour.simple_program(Model(0), update, view)
-    let (model, _cmd, _sub, ui) = glamour.program_update(app, Nil, Model(0), Inc)
+    let model = update(Model(0), Inc)
+    let ui = view(model)
     console.print("State: ${model.count}")
     console.print(glamour.to_html(glamour.ui_node(ui)))
 ```
