@@ -51,6 +51,14 @@
     }
 
     #[test]
+    fn captured_pure_lambda_preserves_its_declared_callable_access_identity() {
+        check_source(
+            "pure fn apply_pure(callback: pure fn(Int) -> Int, value: Int) -> Int:\n    callback(value)\n\nfn run() -> Int:\n    let offset = 2\n    let plugin: pure fn(Int) -> Int = pure fn(value: Int): value * 2 + offset\n    apply_pure(plugin, 20)\n",
+        )
+        .expect("a captured pure lambda retains the declared pure function identity");
+    }
+
+    #[test]
     fn pure_intrinsics_reject_dynamic_task_toolchain_and_capability_effects() {
         for (source, expected) in [
             (

@@ -4083,6 +4083,7 @@ impl<'a> AccessVerifier<'a> {
                     )?;
                     let inferred_result = inferred.materialize_type(signature.result().ty());
                     let callable_qualifiers = signature.callable_qualifiers.clone();
+                    let callable_contract = signature.callable_contract;
                     signature = AccessSignature::from_parts_with_catalog(
                         signature
                             .params()
@@ -4095,6 +4096,7 @@ impl<'a> AccessVerifier<'a> {
                     )
                     .map_err(Self::signature_error)?;
                     signature.callable_qualifiers = callable_qualifiers;
+                    signature.callable_contract = callable_contract;
                 }
                 let expected = self.flow_from_type(signature.result().ty())
                     .map_err(Self::signature_error)?;
