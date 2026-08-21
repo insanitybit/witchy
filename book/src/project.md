@@ -10,12 +10,12 @@ core, a capability shell, and the sandbox.
 
 ## Start pure
 
-Filtering lines needs no capabilities. Write that logic as plain functions so it
-can be run and tested independently:
+Filtering lines needs no delegated behavior. Give that logic an explicit purity
+contract so it can be run and tested independently:
 
 ```witchy
 // Lines of `contents` that contain `query`.
-fn matches(query: String, contents: String) -> List(String):
+pure fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in contents.lines():
         if line.contains(query):
@@ -23,7 +23,7 @@ fn matches(query: String, contents: String) -> List(String):
     hits
 
 // Case-insensitive variant: fold both sides to lower case first.
-fn matches_ci(query: String, contents: String) -> List(String):
+pure fn matches_ci(query: String, contents: String) -> List(String):
     var hits = []
     let needle = query.to_lower()
     for line in contents.lines():
@@ -45,8 +45,8 @@ ci:     INFO started
 ci:     info retry
 ```
 
-This is the heart of the program, and it's *provably effect-free* - look at the
-signatures. We could write a dozen `test_*` functions for it and
+This is the heart of the program, and its `pure fn` signatures are checked
+effect-free. We could write a dozen `test_*` functions for it and
 never need a capability. That's the goal: the logic that's worth testing
 carefully is the logic that touches nothing.
 

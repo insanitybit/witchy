@@ -1,10 +1,11 @@
 # serve_api
 
 A small JSON API with axum-style routing and a tower-style logging middleware.
-The part no other framework has: handlers are pure by construction. The
-`logging` layer can print only because `main` captured a `Console` into it; a
-plain handler captures nothing, so it structurally cannot log, fetch a URL, or
-read a file. `serve` holds the `Net`; handlers never do.
+Handlers are ordinary delegated callables: the `logging` layer can print because
+`main` captures a `Console` into it, while the closed `home` and `greet`
+implementations only build responses from request data. `serve` keeps the
+listening `Net`; an API that must enforce effect-free handlers should require
+`pure fn` explicitly.
 
 **Shows:** the `server` router, path params, middleware layers as
 `fn(Handler) -> Handler` closures, capability capture as dependency injection,

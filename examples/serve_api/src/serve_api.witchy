@@ -1,9 +1,9 @@
 // A small JSON API showing the witchy web feel: axum-style routing, tower-style
-// middleware, and the part no other framework has — handlers that are pure by
-// construction. The `logging` layer can print ONLY because `main` captured a
-// Console into it (capture is dependency injection). A plain handler captures
-// nothing, so it structurally cannot log, fetch a URL, or read a file — even if
-// a dependency wrote it. `serve` holds the Net; handlers never do.
+// middleware, and explicit callable delegation. The `logging` layer can print
+// because `main` captured a Console into it (capture is dependency injection).
+// Router handlers are ordinary callables, so an API that needs effect-free
+// invocation must require `pure fn`; the closed handlers below simply use no
+// authority. `serve` holds the listening Net.
 // Run: witchy --net 127.0.0.1:8080 examples/serve_api/src/serve_api.witchy
 
 import reflect
