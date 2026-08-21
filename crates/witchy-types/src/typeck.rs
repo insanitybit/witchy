@@ -3514,20 +3514,39 @@ fn block_can_complete(block: &Block) -> bool {
 fn join_reachable_binding_facts(
     before_consumed: &HashSet<(usize, String)>,
     before_must_live: &HashSet<(usize, String)>,
-    branches: &[(bool, HashSet<(usize, String)>, HashSet<(usize, String)>)],
-) -> (HashSet<(usize, String)>, HashSet<(usize, String)>) {
-    let mut reaching = branches.iter().filter(|(completes, _, _)| *completes).peekable();
+    before_once_invoked: &HashSet<(usize, String)>,
+    branches: &[(
+        bool,
+        HashSet<(usize, String)>,
+        HashSet<(usize, String)>,
+        HashSet<(usize, String)>,
+    )],
+) -> (
+    HashSet<(usize, String)>,
+    HashSet<(usize, String)>,
+    HashSet<(usize, String)>,
+) {
+    let mut reaching = branches
+        .iter()
+        .filter(|(completes, _, _, _)| *completes)
+        .peekable();
     let first = reaching.next().or_else(|| branches.first());
-    let Some((_, first_consumed, first_must_live)) = first else {
-        return (before_consumed.clone(), before_must_live.clone());
+    let Some((_, first_consumed, first_must_live, first_once_invoked)) = first else {
+        return (
+            before_consumed.clone(),
+            before_must_live.clone(),
+            before_once_invoked.clone(),
+        );
     };
     let mut consumed = first_consumed.clone();
     let mut must_live = first_must_live.clone();
-    for (_, branch_consumed, branch_must_live) in reaching {
+    let mut once_invoked = first_once_invoked.clone();
+    for (_, branch_consumed, branch_must_live, branch_once_invoked) in reaching {
         consumed = &consumed | branch_consumed;
         must_live = &must_live | branch_must_live;
+        once_invoked = &once_invoked | branch_once_invoked;
     }
-    (consumed, must_live)
+    (consumed, must_live, once_invoked)
 }
 
 /// A `unique List` / `unique Dict` result is also a compiled capacity-token
@@ -3856,6 +3875,10 @@ struct Checker {
     /// Bindings that have been consumed (moved out via an `own` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
     consumed: HashSet<(usize, String)>,
+    /// Consumed bindings whose consuming edge was invocation of a `once fn`,
+    /// retained separately so diagnostics and CFG joins do not misreport an
+    /// affine call as an `own` move.
+    once_invoked: HashSet<(usize, String)>,
     /// Nominal declarations whose values carry a must-consume obligation,
     /// including aggregates that transitively contain one of those values.
     must_consume_types: HashSet<String>,
@@ -3873,6 +3896,10 @@ struct Checker {
     /// through the borrow but may not move, return, replace, or pass them to an
     /// `own` boundary.
     must_borrowed: HashSet<(usize, String)>,
+    /// Affine callable bindings received through a shared `borrow` parameter.
+    /// They may be inspected or forwarded to another borrow, but invocation or
+    /// transfer would consume the caller-owned value.
+    once_borrowed: HashSet<(usize, String)>,
     /// One entry per ACTIVE `region:` block, holding the names declared
     /// inside it — an assignment to a name outside the innermost region must
     /// be scalar (a region's only pointer-escape is its value).
@@ -5473,8 +5500,12 @@ impl Checker {
         let scope = self.scopes.len().saturating_sub(1);
         self.consumed
             .retain(|(binding_scope, _)| *binding_scope != scope);
+        self.once_invoked
+            .retain(|(binding_scope, _)| *binding_scope != scope);
         self.must_live.retain(|(binding_scope, _)| *binding_scope != scope);
         self.must_borrowed
+            .retain(|(binding_scope, _)| *binding_scope != scope);
+        self.once_borrowed
             .retain(|(binding_scope, _)| *binding_scope != scope);
         self.scopes.pop();
         self.borrowed_shell_bindings.pop();
@@ -5525,6 +5556,339 @@ impl Checker {
         }
     }
 
+    fn ty_carries_once_callable(&self, ty: &Ty) -> bool {
+        fn go(checker: &Checker, ty: &Ty, seen: &mut HashSet<String>) -> bool {
+            match checker.resolve(ty) {
+                Ty::Fn(_, _, _, _, qualifiers) => qualifiers.once,
+                Ty::List(item) => go(checker, &item, seen),
+                Ty::Tuple(items) => items.iter().any(|item| go(checker, item, seen)),
+                // An existential's type arguments describe its method surface;
+                // they are not stored payload fields. The concrete payload is
+                // checked at the packing boundary instead.
+                Ty::Dyn(..) => false,
+                Ty::Named(name, arguments) => {
+                    let builtin_hit = matches!(
+                        name.rsplit('.').next().unwrap_or(&name),
+                        "Option" | "Result" | "Dict" | "Set" | "Task" | "Iter"
+                    ) && arguments.iter().any(|argument| go(checker, argument, seen));
+                    if builtin_hit {
+                        return true;
+                    }
+                    let parameter_hit = checker
+                        .must_consume_parameters
+                        .get(&name)
+                        .is_some_and(|positions| {
+                            positions.iter().zip(&arguments).any(|(stored, argument)| {
+                                *stored && go(checker, argument, seen)
+                            })
+                        });
+                    if parameter_hit {
+                        return true;
+                    }
+                    // Owning arguments are checked before this name-only guard:
+                    // that detects `Grow(Grow(once fn()))` without following an
+                    // argument-growing recursive field forever.
+                    if !seen.insert(name.clone()) {
+                        return false;
+                    }
+                    let field_hit = checker.record_fields.get(&name).is_some_and(|(params, fields)| {
+                        let bindings: HashMap<u32, Ty> = params
+                            .iter()
+                            .copied()
+                            .zip(arguments.iter().cloned())
+                            .collect();
+                        fields.iter().any(|(_, field)| {
+                            go(checker, &checker.subst_vars(field, &bindings), seen)
+                        })
+                    });
+                    let variant_hit = checker.adt_variants.get(&name).is_some_and(|variants| {
+                        variants.iter().any(|variant| {
+                            checker.ctor_sigs.get(variant).is_some_and(|(payloads, result)| {
+                                let result_arguments = match checker.resolve(result) {
+                                    Ty::Named(_, result_arguments) => result_arguments,
+                                    _ => Vec::new(),
+                                };
+                                let bindings = result_arguments
+                                    .iter()
+                                    .zip(&arguments)
+                                    .filter_map(|(parameter, argument)| match parameter {
+                                        Ty::Var(id) => Some((*id, argument.clone())),
+                                        _ => None,
+                                    })
+                                    .collect::<HashMap<_, _>>();
+                                payloads.iter().any(|payload| {
+                                    go(checker, &checker.subst_vars(payload, &bindings), seen)
+                                })
+                            })
+                        })
+                    });
+                    seen.remove(&name);
+                    field_hit || variant_hit
+                }
+                _ => false,
+            }
+        }
+        go(self, ty, &mut HashSet::new())
+    }
+
+    fn mark_borrowed_once_binding(&mut self, name: &str) {
+        if let Some(binding) = self.must_binding_key(name) {
+            self.once_borrowed.insert(binding);
+        }
+    }
+
+    fn is_borrowed_once_binding(&self, name: &str) -> bool {
+        self.must_binding_key(name)
+            .is_some_and(|binding| self.once_borrowed.contains(&binding))
+    }
+
+    fn reject_explicit_once_reference_type(
+        &mut self,
+        declared: &ast::Type,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        fn contains(checker: &mut Checker, declared: &ast::Type) -> bool {
+            match declared {
+                ast::Type::Qualified(
+                    ast::TypeQual::Borrow(_)
+                        | ast::TypeQual::LegacyBorrow(_)
+                        | ast::TypeQual::BorrowMut(_),
+                    referent,
+                ) => {
+                    let referent_ty = checker.to_ty(referent);
+                    checker.ty_carries_once_callable(&referent_ty)
+                        || contains(checker, referent)
+                }
+                ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => {
+                    contains(checker, inner)
+                }
+                ast::Type::Named(name, arguments) => {
+                    let positions = checker.must_consume_parameters.get(name).cloned();
+                    match positions {
+                        Some(positions) => positions
+                            .iter()
+                            .zip(arguments)
+                            .any(|(stored, argument)| *stored && contains(checker, argument)),
+                        None => arguments
+                            .iter()
+                            .any(|argument| contains(checker, argument)),
+                    }
+                }
+                ast::Type::Tuple(arguments) => {
+                    arguments.iter().any(|argument| contains(checker, argument))
+                }
+                // Existential arguments describe the method surface rather than
+                // fields stored by the value. Concrete method declarations are
+                // validated as function signatures after trait lowering.
+                ast::Type::Dyn(..) => false,
+                ast::Type::Fn(parameters, result, _, _) => {
+                    parameters.iter().any(|parameter| contains(checker, parameter))
+                        || contains(checker, result)
+                }
+                ast::Type::RecordCompose { base, fields } => {
+                    contains(checker, base)
+                        || fields.iter().any(|(_, field)| contains(checker, field))
+                }
+            }
+        }
+
+        if contains(self, declared) {
+            return terr(format!(
+                "{context} contains an explicit reference to affine once-callable storage; shared and exclusive reference handles are copyable but the current loan facts cannot consume their referent, so pass ownership or use an explicit `let` parameter that does not invoke it"
+            ));
+        }
+        Ok(())
+    }
+
+    fn affine_place(&self, expression: &Expr) -> Option<(String, bool)> {
+        fn go(expression: &Expr, projected: bool) -> Option<(String, bool)> {
+            match expression {
+                Expr::Var(root) => Some((root.clone(), projected)),
+                // A type ascription does not manufacture a new value and is
+                // transparent even when nested below a field/index projection.
+                Expr::As { expr, .. } => go(expr, projected),
+                Expr::Unary { op: UnOp::Deref, expr } => go(expr, projected),
+                Expr::Field { base, .. } | Expr::Index { base, .. } => go(base, true),
+                Expr::Call { name, args }
+                    if matches!(
+                        name.as_str(),
+                        intrinsics::LIST_AT | intrinsics::DICT_AT
+                    ) && args.len() == 2 =>
+                {
+                    go(&args[0], true)
+                }
+                _ => None,
+            }
+        }
+        go(expression, false)
+    }
+
+    fn affine_place_root(&self, expression: &Expr) -> Option<String> {
+        self.affine_place(expression).map(|(root, _)| root)
+    }
+
+    fn reject_once_loop_backedge(
+        &self,
+        before: &HashSet<(usize, String)>,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        for binding @ (scope, name) in self.consumed.difference(before) {
+            let Some((ty, _)) = self.scopes.get(*scope).and_then(|frame| frame.get(name)) else {
+                continue;
+            };
+            if !self.ty_carries_once_callable(ty) {
+                continue;
+            }
+            let action = if self.once_invoked.contains(binding) {
+                "invoked"
+            } else {
+                "transferred"
+            };
+            return terr(format!(
+                "once-callable `{name}` is {action} in {context}; a loop backedge could repeat that affine consumption"
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_once_match_guard_consumption(
+        &self,
+        before: &HashSet<(usize, String)>,
+    ) -> Result<(), TypeError> {
+        for (scope, name) in self.consumed.difference(before) {
+            let Some((ty, _)) = self.scopes.get(*scope).and_then(|frame| frame.get(name)) else {
+                continue;
+            };
+            if self.ty_carries_once_callable(ty) {
+                return terr(format!(
+                    "match guard cannot consume affine value `{name}` because a false guard falls through to later arms"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn reject_implicit_once_copy(
+        &self,
+        expression: &Expr,
+        ty: &Ty,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        if !self.ty_carries_once_callable(ty)
+            || matches!(expression, Expr::Unary { op: UnOp::Move, .. })
+        {
+            return Ok(());
+        }
+        let Some(root) = self.affine_place_root(expression) else {
+            return Ok(());
+        };
+        if self.lookup(&root).is_some() {
+            return terr(format!(
+                "once-callable `{root}` would be copied by {context}; pass it to an `own` parameter or use `move {root}`"
+            ));
+        }
+        Ok(())
+    }
+
+    fn consume_once_callee(&mut self, expression: &Expr, ty: &Ty) -> Result<(), TypeError> {
+        let Ty::Fn(_, _, _, _, qualifiers) = self.resolve(ty) else { return Ok(()) };
+        if !qualifiers.once {
+            return Ok(());
+        }
+        let Some(root) = self.affine_place_root(expression) else {
+            return Ok(());
+        };
+        if self.is_explicit_reference_binding(&root) {
+            return terr(format!(
+                "cannot invoke once-callable through explicit reference `{root}`; the reference handle does not carry referent-consumption state"
+            ));
+        }
+        if self.is_borrowed_once_binding(&root) {
+            return terr(format!(
+                "borrowed once-callable `{root}` cannot be invoked because invocation consumes the caller-owned value; take it by value or `own`"
+            ));
+        }
+        if self.is_consumed_binding(&root) {
+            let action = if self
+                .must_binding_key(&root)
+                .is_some_and(|binding| self.once_invoked.contains(&binding))
+            {
+                "consumed by invocation"
+            } else {
+                "moved or transferred"
+            };
+            return terr(format!("use of once-callable `{root}` after it was {action}"));
+        }
+        self.mark_consumed_binding(&root);
+        if let Some(binding) = self.must_binding_key(&root) {
+            self.once_invoked.insert(binding);
+        }
+        Ok(())
+    }
+
+    fn transfer_once_match_scrutinee(
+        &mut self,
+        expression: &Expr,
+        ty: &Ty,
+    ) -> Result<(), TypeError> {
+        if !self.ty_carries_once_callable(ty)
+            || matches!(expression, Expr::Unary { op: UnOp::Move, .. })
+        {
+            return Ok(());
+        }
+        let Some(root) = self.affine_place_root(expression) else {
+            return Ok(());
+        };
+        if self.is_borrowed_once_binding(&root) {
+            return terr(format!(
+                "cannot destructure borrowed affine value `{root}`; matching transfers its once-callable payloads"
+            ));
+        }
+        self.mark_consumed_binding(&root);
+        Ok(())
+    }
+
+    fn enforce_once_argument(
+        &mut self,
+        expression: &Expr,
+        parameter: &Ty,
+        convention: Convention,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        if !self.ty_carries_once_callable(parameter) {
+            return Ok(());
+        }
+        match convention {
+            Convention::Var => terr(format!(
+                "{context} cannot use `var` with a once-callable: invocation could leave an empty write-back slot; use `own` or reinitialize explicitly before a later transfer"
+            )),
+            Convention::Borrow => Ok(()),
+            Convention::Let => self.reject_implicit_once_copy(expression, parameter, context),
+            Convention::Own => {
+                if let Some(root) = self.affine_place_root(expression) {
+                    if self.is_borrowed_once_binding(&root) {
+                        return terr(format!(
+                            "{context} cannot transfer borrowed once-callable `{root}` to an `own` parameter"
+                        ));
+                    }
+                    if self.is_consumed_binding(&root) {
+                        let reason = if self
+                            .must_binding_key(&root)
+                            .is_some_and(|binding| self.once_invoked.contains(&binding))
+                        {
+                            "after it was consumed by invocation"
+                        } else {
+                            "after it was already transferred"
+                        };
+                        return terr(format!("use of once-callable `{root}` {reason}"));
+                    }
+                    self.mark_consumed_binding(&root);
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn mark_must_consume_binding(&mut self, name: &str, ty: &Ty) {
         if !self.ty_carries_must_consume(ty) {
             return;
@@ -5554,6 +5918,7 @@ impl Checker {
     fn reinitialize_binding(&mut self, name: &str) {
         if let Some(binding) = self.must_binding_key(name) {
             self.consumed.remove(&binding);
+            self.once_invoked.remove(&binding);
         }
     }
 
@@ -6799,6 +7164,10 @@ impl Checker {
                             decl,
                             &format!("local type ascription for `{name}`"),
                         )?;
+                        self.reject_explicit_once_reference_type(
+                            decl,
+                            &format!("local type ascription for `{name}`"),
+                        )?;
                         // (RFC-0025) `frozen` asserts deep immutability, so a `frozen`
                         // binding cannot also be mutable — `var x: frozen T` is a
                         // contradiction the checker rejects (the contract has teeth).
@@ -6836,6 +7205,7 @@ impl Checker {
                     if self.ty_carries_must_consume(&vt) {
                         self.reject_implicit_must_copy(value, &format!("binding `{name}`"))?;
                     }
+                    self.reject_implicit_once_copy(value, &vt, &format!("binding `{name}`"))?;
                     let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
                     let borrowed_list_binding = self.is_direct_borrowed_nominal_list(&vt)
@@ -6933,6 +7303,11 @@ impl Checker {
                     if self.ty_carries_must_consume(&vt) {
                         self.reject_implicit_must_copy(value, &format!("assignment to `{name}`"))?;
                     }
+                    self.reject_implicit_once_copy(
+                        value,
+                        &vt,
+                        &format!("assignment to `{name}`"),
+                    )?;
                     if !self.is_borrowed_shell_self_update(name, &existing, value) {
                         self.reject_borrowed_nominal_runtime_ty(
                             &vt,
@@ -6967,6 +7342,7 @@ impl Checker {
                         ));
                     }
                     let vt = self.infer(value)?;
+                    self.reject_implicit_once_copy(value, &vt, "pattern destructuring")?;
                     if self.ty_carries_must_consume(&vt) {
                         self.reject_implicit_must_copy(value, "pattern destructuring")?;
                         if self.expression_introduces_must_obligation(value, &vt) {
@@ -7004,6 +7380,14 @@ impl Checker {
                         }
                         self.consume_must_binding(name);
                     }
+                    if let Some(expression) = opt {
+                        self.reject_implicit_once_copy(expression, &t, "return")?;
+                        if self.ty_carries_once_callable(&t)
+                            && let Some(root) = self.affine_place_root(expression)
+                        {
+                            self.mark_consumed_binding(&root);
+                        }
+                    }
                     self.reject_all_live_must_before_return()?;
                     // A return diverges: its position can satisfy any expected
                     // type, so contribute a fresh var (which unifies with anything).
@@ -7019,6 +7403,11 @@ impl Checker {
                         self.infer(e)?
                     };
                     if i != tail {
+                        self.reject_implicit_once_copy(
+                            e,
+                            &ty,
+                            "discarded expression",
+                        )?;
                         if self.ty_carries_must_consume(&ty) {
                             return terr(
                                 "a must-consume expression result cannot be discarded; bind it and consume it, pass it to an `own` parameter, or return it",
@@ -7038,6 +7427,12 @@ impl Checker {
                         );
                     }
                     ty = self.infer(e)?;
+                    self.reject_implicit_once_copy(e, &ty, "generator yield")?;
+                    if self.ty_carries_once_callable(&ty)
+                        && let Some(root) = self.affine_place_root(e)
+                    {
+                        self.mark_consumed_binding(&root);
+                    }
                 }
                 // `break`/`continue` diverge (control leaves the block), so like
                 // `return` they contribute a fresh var that unifies with any
@@ -7057,6 +7452,14 @@ impl Checker {
                 ));
             }
             self.consume_must_binding(name);
+        }
+        if let Some(Stmt::Expr(expression)) = block.stmts.last()
+            && self.ty_carries_once_callable(&ty)
+        {
+            self.reject_implicit_once_copy(expression, &ty, "block result")?;
+            if let Some(root) = self.affine_place_root(expression) {
+                self.mark_consumed_binding(&root);
+            }
         }
         self.reject_live_must_in_current_scope()?;
         self.pop();
@@ -7111,6 +7514,15 @@ impl Checker {
                             self.reject_implicit_must_copy(item, "list construction")?;
                         }
                     }
+                    if self.ty_carries_once_callable(expected) {
+                        for item in items {
+                            self.reject_implicit_once_copy(
+                                item,
+                                &elem,
+                                "list construction",
+                            )?;
+                        }
+                    }
                     return self.finish_infer(expr, expected.clone());
                 }
                 let at = self.infer(expr)?;
@@ -7127,6 +7539,15 @@ impl Checker {
                         if self.ty_carries_must_consume(expected) {
                             for item in items {
                                 self.reject_implicit_must_copy(item, "tuple construction")?;
+                            }
+                        }
+                        if self.ty_carries_once_callable(expected) {
+                            for (item, slot) in items.iter().zip(&slots) {
+                                self.reject_implicit_once_copy(
+                                    item,
+                                    slot,
+                                    "tuple construction",
+                                )?;
                             }
                         }
                         return self.finish_infer(expr, expected.clone());
@@ -7183,6 +7604,15 @@ impl Checker {
                             )?;
                         }
                     }
+                    if self.ty_carries_once_callable(&result) {
+                        for (argument, field) in args.iter().zip(&fields) {
+                            self.reject_implicit_once_copy(
+                                argument,
+                                field,
+                                &format!("constructor `{name}`"),
+                            )?;
+                        }
+                    }
                     self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
                     self.reject_structural_authority_ty(&result, &format!("constructor `{name}`"))?;
                     return self.finish_infer(expr, result);
@@ -7200,10 +7630,13 @@ impl Checker {
                 self.unify(&Ty::Bool, &ct)?;
                 let before = self.consumed.clone();
                 let must_before = self.must_live.clone();
+                let once_before = self.once_invoked.clone();
                 let then_completes = block_can_complete(then_block);
                 let tt = self.infer_block_expected(then_block, expected)?;
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
+                let once_then =
+                    std::mem::replace(&mut self.once_invoked, once_before.clone());
                 self.coerce_arg(expected, &tt)?;
                 let else_completes = if let Some(else_block) = else_block {
                     let et = self.infer_block_expected(else_block, expected)?;
@@ -7221,11 +7654,21 @@ impl Checker {
                     true
                 };
                 let branches = [
-                    (then_completes, consumed_then, must_then),
-                    (else_completes, self.consumed.clone(), self.must_live.clone()),
+                    (then_completes, consumed_then, must_then, once_then),
+                    (
+                        else_completes,
+                        self.consumed.clone(),
+                        self.must_live.clone(),
+                        self.once_invoked.clone(),
+                    ),
                 ];
-                (self.consumed, self.must_live) =
-                    join_reachable_binding_facts(&before, &must_before, &branches);
+                (self.consumed, self.must_live, self.once_invoked) =
+                    join_reachable_binding_facts(
+                        &before,
+                        &must_before,
+                        &once_before,
+                        &branches,
+                    );
                 self.finish_infer(expr, expected.clone())
             }
             Expr::Block(block) => {
@@ -7393,6 +7836,9 @@ impl Checker {
                         &conventions,
                         &reference_params,
                     )?;
+                    if qualifiers.once {
+                        self.consume_once_callee(&Expr::Var(name.to_string()), &vty)?;
+                    }
                     self.reject_borrowed_nominal_runtime_ty(
                         ret.as_ref(),
                         &format!("call to function value `{display}` result"),
@@ -7719,6 +8165,14 @@ impl Checker {
         if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
             let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
+                if let Some(parameter) = params.get(i) {
+                    self.enforce_once_argument(
+                        arg,
+                        parameter,
+                        *conv,
+                        &format!("argument {} to `{name}`", i + 1),
+                    )?;
+                }
                 let explicit_exclusive = self
                     .fn_exclusive_reference_params
                     .get(name)
@@ -7883,6 +8337,14 @@ impl Checker {
     ) -> Result<(), TypeError> {
         let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
+            if let Some(parameter) = parameter_types.get(index) {
+                self.enforce_once_argument(
+                    arg,
+                    parameter,
+                    *convention,
+                    &format!("argument {} to function value `{name}`", index + 1),
+                )?;
+            }
             if reference_params.get(index).copied().unwrap_or(false)
                 && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
                 && let Some(place) = crate::access::checked_place(expr)
@@ -8005,6 +8467,7 @@ impl Checker {
         receiver: &Expr,
         args: &[Expr],
         conventions: &[Convention],
+        parameter_types: &[Ty],
     ) -> Result<(), TypeError> {
         let callee = format!("{owner_trait}.{method}");
         let mut operands = Vec::with_capacity(args.len() + 1);
@@ -8020,6 +8483,16 @@ impl Checker {
 
         let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (operand, convention)) in operands.iter().zip(conventions).enumerate() {
+            if index > 0
+                && let Some(parameter) = parameter_types.get(index - 1)
+            {
+                self.enforce_once_argument(
+                    operand,
+                    parameter,
+                    *convention,
+                    &format!("operand {} to existential `{callee}`", index + 1),
+                )?;
+            }
             match convention {
                 Convention::Var => {
                     if matches!(operand, Expr::Unary { op: UnOp::Move, .. }) {
@@ -8325,6 +8798,11 @@ impl Checker {
                     self.coerce_arg(fty, &at).map_err(|e| TypeError {
                         message: format!("in anonymous union tag `.{tag}`: {}", e.message),
                     })?;
+                    self.reject_implicit_once_copy(
+                        arg,
+                        fty,
+                        &format!("anonymous union tag `.{tag}`"),
+                    )?;
                 }
                 return Ok(());
             }
@@ -8415,6 +8893,7 @@ impl Checker {
                 owner_trait,
                 method,
                 conventions,
+                params,
                 ..
             } => {
                 if self.current_pure {
@@ -8434,12 +8913,17 @@ impl Checker {
                         &format!("existential method call `{owner_trait}.{method}`"),
                     )?;
                 }
+                let parameter_types = params
+                    .iter()
+                    .map(|parameter| self.to_ty(parameter))
+                    .collect::<Vec<_>>();
                 self.enforce_existential_conventions(
                     owner_trait,
                     method,
                     receiver,
                     args,
                     conventions,
+                    &parameter_types,
                 )?;
                 let result = self.to_ty(result);
                 self.reject_borrowed_nominal_runtime_ty(
@@ -8454,6 +8938,12 @@ impl Checker {
                     &source,
                     "existential erasure",
                 )?;
+                if self.ty_carries_once_callable(&source) {
+                    return terr(format!(
+                        "existential erasure cannot hide affine once-callable payload `{}`",
+                        self.resolve(&source),
+                    ));
+                }
                 Ok(self.to_ty(ty))
             }
             Expr::ExistentialUpcast { expr, ty } => {
@@ -8490,10 +8980,15 @@ impl Checker {
                     let t = self.infer(it)?;
                     self.unify(&elem, &t)?;
                 }
-                let ty = Ty::List(Box::new(elem));
+                let ty = Ty::List(Box::new(elem.clone()));
                 if self.ty_carries_must_consume(&ty) {
                     for item in items {
                         self.reject_implicit_must_copy(item, "list construction")?;
+                    }
+                }
+                if self.ty_carries_once_callable(&ty) {
+                    for item in items {
+                        self.reject_implicit_once_copy(item, &elem, "list construction")?;
                     }
                 }
                 self.reject_externref_cap_aggregate_ty(&ty, "list literal")?;
@@ -8511,12 +9006,28 @@ impl Checker {
                         self.reject_implicit_must_copy(item, "tuple construction")?;
                     }
                 }
+                if self.ty_carries_once_callable(&ty) {
+                    for (item, item_ty) in items.iter().zip(match &ty {
+                        Ty::Tuple(types) => types.as_slice(),
+                        _ => &[],
+                    }) {
+                        self.reject_implicit_once_copy(item, item_ty, "tuple construction")?;
+                    }
+                }
                 self.reject_externref_cap_aggregate_ty(&ty, "tuple literal")?;
                 self.reject_structural_authority_ty(&ty, "tuple literal")?;
                 Ok(ty)
             }
             Expr::Var(name) => {
                 if self.is_consumed_binding(name) {
+                    if self
+                        .must_binding_key(name)
+                        .is_some_and(|binding| self.once_invoked.contains(&binding))
+                    {
+                        return terr(format!(
+                            "use of once-callable `{name}` after it was consumed by invocation"
+                        ));
+                    }
                     return terr(format!(
                         "use of `{name}` after it was moved (consumed by an `own` parameter)"
                     ));
@@ -8578,6 +9089,20 @@ impl Checker {
                     ret.as_ref(),
                     &self.borrowed_nominal_types,
                 )?;
+                for parameter in params {
+                    if let Some(declared) = &parameter.ty {
+                        self.reject_explicit_once_reference_type(
+                            declared,
+                            &format!("lambda parameter `{}`", parameter.name),
+                        )?;
+                    }
+                }
+                if let Some(result) = ret {
+                    self.reject_explicit_once_reference_type(
+                        result,
+                        "lambda return type",
+                    )?;
+                }
                 // Closures capture by value, so an assignment to a captured
                 // (outer) variable cannot propagate out: the interpreter would
                 // silently mutate a private copy while the compiled backends can't
@@ -8594,6 +9119,11 @@ impl Checker {
                 }
                 for capture in scan.captures() {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
+                    if self.ty_carries_once_callable(&captured_ty) {
+                        return terr(format!(
+                            "closure environment captures affine once-callable `{capture}`; pass it explicitly to an `own` parameter instead"
+                        ));
+                    }
                     if self.is_must_binding(&capture) {
                         return terr(format!(
                             "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
@@ -8657,6 +9187,18 @@ impl Checker {
                             }
                         }
                     }
+                    if self.ty_carries_once_callable(ty) {
+                        match p.convention {
+                            Convention::Var => {
+                                return terr(format!(
+                                    "lambda parameter `{}` cannot use `var` with once-callable `{ty}`; invocation could leave an empty write-back slot",
+                                    p.name,
+                                ));
+                            }
+                            Convention::Borrow => self.mark_borrowed_once_binding(&p.name),
+                            Convention::Let | Convention::Own => {}
+                        }
+                    }
                     if p.ty.as_ref().is_some_and(type_is_explicit_reference) {
                         self.explicit_reference_bindings
                             .last_mut()
@@ -8714,7 +9256,9 @@ impl Checker {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
-                if let Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) = self.resolve(&fty) {
+                if let Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) =
+                    self.resolve(&fty)
+                {
                     if self.current_pure && !qualifiers.pure {
                         return terr(
                             "pure callable cannot apply an ordinary function value; the callee expression must have a `pure fn` type",
@@ -8753,6 +9297,9 @@ impl Checker {
                         &conventions,
                         &reference_params,
                     )?;
+                    if qualifiers.once {
+                        self.consume_once_callee(func, &fty)?;
+                    }
                     self.reject_borrowed_nominal_runtime_ty(
                         ret.as_ref(),
                         "function-value application result",
@@ -8836,6 +9383,15 @@ impl Checker {
                             )?;
                         }
                     }
+                    if self.ty_carries_once_callable(&result) {
+                        for (argument, field) in args.iter().zip(&fields) {
+                            self.reject_implicit_once_copy(
+                                argument,
+                                field,
+                                &format!("constructor `{name}`"),
+                            )?;
+                        }
+                    }
                     self.reject_externref_cap_aggregate_ty(&result, &format!("constructor `{name}`"))?;
                     self.reject_structural_authority_ty(&result, &format!("constructor `{name}`"))?;
                     Ok(result)
@@ -8867,10 +9423,32 @@ impl Checker {
                     // already-consumed binding.
                     UnOp::Move => {
                         self.reject_borrowed_nominal_runtime_ty(&t, "unary `move`")?;
-                        if let Expr::Var(v) = expr.as_ref() {
-                            self.reject_own_of_borrowed_must(v, "`move`")?;
-                            self.mark_consumed_binding(v);
-                            self.consume_must_binding(v);
+                        if let Some((root, projected)) = self.affine_place(expr) {
+                            self.reject_own_of_borrowed_must(&root, "`move`")?;
+                            if projected
+                                && self
+                                    .lookup(&root)
+                                    .is_some_and(|root_ty| self.ty_carries_must_consume(&root_ty))
+                            {
+                                return terr(format!(
+                                    "cannot partially move `{root}` because its aggregate carries a must-consume obligation; transfer the whole value to an `own` operation"
+                                ));
+                            }
+                            if self.is_borrowed_once_binding(&root)
+                                && self.ty_carries_once_callable(&t)
+                            {
+                                return terr(format!(
+                                    "cannot move borrowed once-callable `{root}`; only its owner may transfer it"
+                                ));
+                            }
+                            if matches!(expr.as_ref(), Expr::Var(_))
+                                || self.ty_carries_once_callable(&t)
+                            {
+                                self.mark_consumed_binding(&root);
+                                if !projected {
+                                    self.consume_must_binding(&root);
+                                }
+                            }
                         }
                         Ok(t)
                     }
@@ -8882,11 +9460,24 @@ impl Checker {
                     UnOp::Await => Ok(t),
                     // Shared borrows and dereferences retain their referent's
                     // runtime shape; the loan pass consumes the source operator.
-                    UnOp::Borrow | UnOp::Deref if self.opt_mode => Ok(t),
+                    UnOp::Borrow if self.opt_mode => {
+                        if self.ty_carries_once_callable(&t) {
+                            return terr(
+                                "cannot create an explicit shared reference to affine once-callable storage; the copyable reference handle cannot carry referent-consumption state",
+                            );
+                        }
+                        Ok(t)
+                    }
+                    UnOp::Deref if self.opt_mode => Ok(t),
                     UnOp::Borrow | UnOp::Deref => terr(
                         "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
                     ),
                     UnOp::BorrowMut if self.opt_mode => {
+                        if self.ty_carries_once_callable(&t) {
+                            return terr(
+                                "cannot create an explicit exclusive reference to affine once-callable storage; referent-consuming invocation through reference handles is not supported",
+                            );
+                        }
                         if self.exclusive_borrow_targets_frozen_storage(expr) {
                             return terr(
                                 "cannot create an exclusive reference to `frozen` storage; frozen values permit shared reads only",
@@ -8989,6 +9580,7 @@ impl Checker {
             }
             Expr::RecordUpdate { name, base, fields } => {
                 let bt = self.infer(base)?;
+                self.reject_implicit_once_copy(base, &bt, "record spread/update")?;
                 let borrowed_shell = self.is_authorized_borrowed_shell_update(base, &bt);
                 if !borrowed_shell {
                     self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
@@ -9048,6 +9640,11 @@ impl Checker {
                         }
                     }
                     let vt = self.infer_expected(vexpr, &expected)?;
+                    self.reject_implicit_once_copy(
+                        vexpr,
+                        &expected,
+                        &format!("update of field `{fname}`"),
+                    )?;
                     if !self.existential_coercion(&expected, &vt)? {
                         self.unify(&expected, &vt).map_err(|e| TypeError {
                             message: format!("`update` of field `{fname}`: {}", e.message),
@@ -9105,10 +9702,14 @@ impl Checker {
                 // `own` operand call has already discharged its argument, while
                 // every unrelated live resource would be abandoned on Err/None.
                 self.reject_all_live_must_before_return()?;
+                if self.ty_carries_once_callable(&value_ty) {
+                    self.reject_implicit_once_copy(inner, &resolved, "`?` extraction")?;
+                }
                 Ok(value_ty)
             }
             Expr::As { expr: payload, ty } => {
                 self.reject_borrowed_nominal_container_type(ty, "type ascription")?;
+                self.reject_explicit_once_reference_type(ty, "type ascription")?;
                 let src = self.infer(payload)?;
                 let target = self.to_ty(ty);
                 // (RFC-0081) Explicit erasure `value as dyn Trait` is a legal
@@ -9136,6 +9737,12 @@ impl Checker {
                         &resolved_src,
                         &format!("erasure to `dyn {}`", existential_bare(dyn_name)),
                     )?;
+                    if self.ty_carries_once_callable(&resolved_src) {
+                        return terr(format!(
+                            "`as dyn {}` cannot erase affine once-callable payload `{resolved_src}`; keep the concrete owning type or consume it through an explicit `own` operation",
+                            existential_bare(dyn_name),
+                        ));
+                    }
                     if let Some((cap, path)) = self.ty_capability_retention(&resolved_src) {
                         let path = if path.is_empty() {
                             String::new()
@@ -9171,10 +9778,13 @@ impl Checker {
                     .map_err(|e| TypeError { message: format!("`if` condition: {}", e.message) })?;
                 let before = self.consumed.clone();
                 let must_before = self.must_live.clone();
+                let once_before = self.once_invoked.clone();
                 let then_completes = block_can_complete(then_block);
                 let tt = self.infer_block(then_block)?;
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
+                let once_then =
+                    std::mem::replace(&mut self.once_invoked, once_before.clone());
                 let (else_completes, result) = match else_block {
                     Some(eb) => {
                         let et = self.infer_block(eb)?;
@@ -9189,21 +9799,33 @@ impl Checker {
                     }
                 };
                 let branches = [
-                    (then_completes, consumed_then, must_then),
-                    (else_completes, self.consumed.clone(), self.must_live.clone()),
+                    (then_completes, consumed_then, must_then, once_then),
+                    (
+                        else_completes,
+                        self.consumed.clone(),
+                        self.must_live.clone(),
+                        self.once_invoked.clone(),
+                    ),
                 ];
-                (self.consumed, self.must_live) =
-                    join_reachable_binding_facts(&before, &must_before, &branches);
+                (self.consumed, self.must_live, self.once_invoked) =
+                    join_reachable_binding_facts(
+                        &before,
+                        &must_before,
+                        &once_before,
+                        &branches,
+                    );
                 Ok(result)
             }
             Expr::Block(b) => self.infer_block(b),
             Expr::While { cond, body } => {
+                let consumed_before = self.consumed.clone();
                 let ct = self.infer(cond)?;
                 self.unify(&Ty::Bool, &ct).map_err(|e| TypeError {
                     message: format!("`while` condition: {}", e.message),
                 })?;
                 let must_before = self.must_live.clone();
                 self.infer_block(body)?;
+                self.reject_once_loop_backedge(&consumed_before, "a `while` loop")?;
                 self.must_live = &must_before | &self.must_live;
                 Ok(Ty::Unit)
             }
@@ -9213,6 +9835,8 @@ impl Checker {
                 self.unify(&Ty::List(Box::new(elem.clone())), &it).map_err(|e| TypeError {
                     message: format!("`for` expects a List to iterate: {}", e.message),
                 })?;
+                self.reject_implicit_once_copy(iter, &it, "`for` iteration")?;
+                let consumed_before_body = self.consumed.clone();
                 self.push();
                 let borrowed_element = self.is_direct_borrowed_nominal(&elem);
                 self.define(var.clone(), elem, false);
@@ -9225,6 +9849,7 @@ impl Checker {
                 }
                 self.infer_block(body)?;
                 self.pop();
+                self.reject_once_loop_backedge(&consumed_before_body, "a `for` loop")?;
                 Ok(Ty::Unit)
             }
             Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
@@ -9392,6 +10017,10 @@ impl Checker {
                                 e.message
                             ),
                         })?;
+                        if self.ty_carries_once_callable(&t) {
+                            self.reject_implicit_once_copy(lhs, &lt, "`??` left operand")?;
+                            self.reject_implicit_once_copy(rhs, &t, "`??` fallback")?;
+                        }
                         Ok(t)
                     }
                     Ty::Named(ref n, ref args) if n == "Result" && args.len() == 2 => {
@@ -9403,6 +10032,10 @@ impl Checker {
                                 e.message
                             ),
                         })?;
+                        if self.ty_carries_once_callable(&t) {
+                            self.reject_implicit_once_copy(lhs, &lt, "`??` left operand")?;
+                            self.reject_implicit_once_copy(rhs, &t, "`??` fallback")?;
+                        }
                         Ok(t)
                     }
                     Ty::Var(_) => terr(
@@ -9439,6 +10072,7 @@ impl Checker {
         expected: Option<&Ty>,
     ) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
+        self.transfer_once_match_scrutinee(scrutinee, &st)?;
         if self.ty_carries_must_consume(&st) {
             self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
             if self.expression_introduces_must_obligation(scrutinee, &st) {
@@ -9450,10 +10084,12 @@ impl Checker {
         let mut result = expected.cloned();
         let before = self.consumed.clone();
         let must_before = self.must_live.clone();
+        let once_before = self.once_invoked.clone();
         let mut branch_facts = Vec::with_capacity(arms.len());
         for arm in arms {
             self.consumed = before.clone();
             self.must_live = must_before.clone();
+            self.once_invoked = once_before.clone();
             self.push();
             if let Some(dup) = pattern_dup_binding(&arm.pattern) {
                 return terr(format!(
@@ -9463,14 +10099,17 @@ impl Checker {
             }
             self.check_pattern(&arm.pattern, &st)?;
             if let Some(guard) = &arm.guard {
+                let guard_before = self.consumed.clone();
                 let gt = self.infer(guard)?;
                 self.unify(&Ty::Bool, &gt)
                     .map_err(|e| TypeError { message: format!("match guard: {}", e.message) })?;
+                self.reject_once_match_guard_consumption(&guard_before)?;
             }
             let bt = match expected {
                 Some(expected) => self.infer_expected(&arm.body, expected)?,
                 None => self.infer(&arm.body)?,
             };
+            self.reject_implicit_once_copy(&arm.body, &bt, "match arm result")?;
             if expected.is_some() {
                 self.coerce_arg(result.as_ref().expect("expected match type"), &bt).map_err(|e| TypeError {
                     message: format!("match arm disagrees with the expected type: {}", e.message),
@@ -9489,10 +10128,16 @@ impl Checker {
                 expr_can_complete(&arm.body),
                 self.consumed.clone(),
                 self.must_live.clone(),
+                self.once_invoked.clone(),
             ));
         }
-        (self.consumed, self.must_live) =
-            join_reachable_binding_facts(&before, &must_before, &branch_facts);
+        (self.consumed, self.must_live, self.once_invoked) =
+            join_reachable_binding_facts(
+                &before,
+                &must_before,
+                &once_before,
+                &branch_facts,
+            );
         // Coverage analysis (exhaustiveness + unreachability) reasons per
         // alternative, so flatten a top-level `Pattern::Or` arm into one synthetic
         // arm per alternative (sharing the guard) — exactly what the old
@@ -10277,8 +10922,10 @@ impl Checker {
         self.explicit_reference_bindings = vec![HashSet::new()];
         self.frozen_bindings = vec![HashSet::new()];
         self.consumed.clear();
+        self.once_invoked.clear();
         self.must_live.clear();
         self.must_borrowed.clear();
+        self.once_borrowed.clear();
         self.current_ret = Some(ret.clone());
         self.current_pure = func.pure;
         self.pure_var_parameters.clear();
@@ -10370,6 +11017,19 @@ impl Checker {
                             diagnostic_callable_name(&source_callable),
                         ));
                     }
+                }
+            }
+            if self.ty_carries_once_callable(ty) {
+                match param.convention {
+                    Convention::Var => {
+                        return terr(format!(
+                            "parameter `{}` of `{}` cannot use `var` with once-callable `{ty}`; invocation could leave an empty write-back slot",
+                            param.name,
+                            diagnostic_callable_name(&source_callable),
+                        ));
+                    }
+                    Convention::Borrow => self.mark_borrowed_once_binding(&param.name),
+                    Convention::Let | Convention::Own => {}
                 }
             }
             if param.ty.as_ref().is_some_and(type_is_explicit_reference) {
@@ -11415,10 +12075,12 @@ fn run_check_selected(
         next_var: 0,
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
+        once_invoked: HashSet::new(),
         must_consume_types: must_consume.types,
         must_consume_parameters: must_consume.parameters,
         must_live: HashSet::new(),
         must_borrowed: HashSet::new(),
+        once_borrowed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
         current_pure: false,
@@ -11605,6 +12267,65 @@ fn run_check_selected(
     // Reject typo'd / undeclared type names in signatures before they become
     // opaque types that mis-unify with a confusing message later.
     check_type_names(module)?;
+
+    // RFC-0138 first cut: explicit reference handles do not retain the
+    // referent-root consumption fact required by `once fn`. Reject these
+    // relations module-wide before a skipped template or unused declaration can
+    // preserve an unsound signature.
+    for item in &module.items {
+        match item {
+            Item::Function(function) => {
+                c.current_typarams = c
+                    .fn_typarams
+                    .get(&function.name)
+                    .map(|parameters| parameters.iter().cloned().collect())
+                    .unwrap_or_default();
+                for parameter in &function.params {
+                    if let Some(declared) = &parameter.ty {
+                        c.reject_explicit_once_reference_type(
+                            declared,
+                            &format!(
+                                "parameter `{}` of `{}`",
+                                parameter.name,
+                                diagnostic_callable_name(&function.name),
+                            ),
+                        )?;
+                    }
+                }
+                if let Some(result) = &function.ret {
+                    c.reject_explicit_once_reference_type(
+                        result,
+                        &format!(
+                            "return type of `{}`",
+                            diagnostic_callable_name(&function.name),
+                        ),
+                    )?;
+                }
+            }
+            Item::Type(definition) => {
+                c.current_typarams.clear();
+                for field in definition
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                {
+                    c.reject_explicit_once_reference_type(
+                        field,
+                        &format!("type `{}`", definition.name),
+                    )?;
+                }
+            }
+            Item::TypeAlias { name, ty, .. } => {
+                c.current_typarams.clear();
+                c.reject_explicit_once_reference_type(
+                    ty,
+                    &format!("type alias `{name}`"),
+                )?;
+            }
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::Comptime(_) => {}
+        }
+    }
+    c.current_typarams.clear();
 
     // `main` is the root entrypoint: its parameters are where the host's authority
     // enters, so they must be capabilities (or the args list) — validate before

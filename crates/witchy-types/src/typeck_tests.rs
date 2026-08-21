@@ -411,17 +411,416 @@
         )
         .expect("source parses");
         let typed = annotate_checked(module).expect("source type-checks");
-        let Type::Fn(parameters, result, conventions, qualifiers) = typed
+        let ast::Type::Fn(parameters, result, conventions, qualifiers) = typed
             .table()
             .function_type("inspect")
             .expect("non-generic function signature")
         else {
             panic!("function table entry must remain callable")
         };
-        assert_eq!(parameters, vec![Type::Named("String".into(), Vec::new())]);
-        assert_eq!(*result, Type::Named("Int".into(), Vec::new()));
+        assert_eq!(parameters, vec![ast::Type::Named("String".into(), Vec::new())]);
+        assert_eq!(*result, ast::Type::Named("Int".into(), Vec::new()));
         assert_eq!(conventions, vec![Convention::Borrow]);
         assert_eq!(qualifiers, CallableQualifiers::new(true, false));
+    }
+
+    #[test]
+    fn once_callable_invocation_consumes_but_scope_exit_may_drop() {
+        check_source(
+            "fn main():\n    let unused: once fn() -> Int = once fn() -> Int: 1\n",
+        )
+        .expect("affine once callables are droppable");
+
+        let repeated = check_source(
+            "fn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let first = callback()\n    let second = callback()\n    let _ = first + second\n",
+        )
+        .expect_err("a once callable may be invoked at most once");
+        assert!(
+            repeated
+                .message
+                .contains("consumed by invocation"),
+            "{repeated:?}"
+        );
+
+        let copied = check_source(
+            "fn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let alias = callback\n    let _ = alias()\n",
+        )
+        .expect_err("binding a second alias would copy affine storage");
+        assert!(copied.message.contains("would be copied"), "{copied:?}");
+
+        let discarded_place = check_source(
+            "fn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    callback\n    let _ = callback()\n",
+        )
+        .expect_err("discarding a place expression must not copy affine storage");
+        assert!(
+            discarded_place.message.contains("discarded expression")
+                && discarded_place.message.contains("would be copied"),
+            "{discarded_place:?}"
+        );
+
+        let projected = check_source(
+            "fn main():\n    let callbacks = [once fn() -> Int: 1]\n    let first = callbacks[0]()\n    let second = callbacks[0]()\n    let _ = first + second\n",
+        )
+        .expect_err("calling a projected once value consumes its owning root");
+        assert!(projected.message.contains("consumed by invocation"), "{projected:?}");
+
+        check_source(
+            "fn main():\n    let reusable: fn(once fn() -> Int) -> Int = fn(callback: once fn() -> Int) -> Int: callback()\n    let alias = reusable\n    let _ = alias(once fn() -> Int: 1)\n",
+        )
+        .expect("a reusable callable merely mentioning a once parameter is not affine storage");
+    }
+
+    #[test]
+    fn once_parameter_conventions_require_transfer_and_reject_borrowed_invocation_or_var() {
+        check_source(
+            "fn invoke(callback: once fn() -> Int) -> Int:\n    callback()\n\nfn main() -> Int:\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    invoke(move callback)\n",
+        )
+        .expect("a default immutable parameter owns a once callback after explicit transfer");
+
+        let copied = check_source(
+            "fn invoke(callback: once fn() -> Int) -> Int:\n    callback()\n\nfn main() -> Int:\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    invoke(callback)\n",
+        )
+        .expect_err("a default once parameter may not copy its caller's binding");
+        assert!(copied.message.contains("would be copied"), "{copied:?}");
+
+        let borrowed = check_source(
+            "fn inspect(let callback: once fn() -> Int) -> Int:\n    callback()\n",
+        )
+        .expect_err("an explicit borrow may not consume its caller's once callback");
+        assert!(
+            borrowed.message.contains("borrowed once-callable")
+                && borrowed.message.contains("cannot be invoked"),
+            "{borrowed:?}"
+        );
+
+        let borrowed_match = check_source(
+            "type OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn inspect(let boxed: OnceBox) -> Int:\n    match boxed:\n        OnceBox(_) -> 0\n",
+        )
+        .expect_err("matching an affine wrapper transfers it and cannot consume a borrow");
+        assert!(
+            borrowed_match
+                .message
+                .contains("cannot destructure borrowed affine value"),
+            "{borrowed_match:?}"
+        );
+
+        let variable = check_source(
+            "fn replace(var callback: once fn() -> Int) -> Int:\n    callback()\n",
+        )
+        .expect_err("var once parameters require definite reinitialization, which is not in v1");
+        assert!(variable.message.contains("empty write-back slot"), "{variable:?}");
+
+        for source in [
+            "fn both(own left: once fn() -> Int, own right: once fn() -> Int):\n    let _ = 0\n\nfn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    both(callback, callback)\n",
+            "fn both(own left: once fn() -> Int, own right: once fn() -> Int):\n    let _ = 0\n\nfn main():\n    let invoke = both\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    invoke(callback, callback)\n",
+        ] {
+            let duplicate_own = check_source(source)
+                .expect_err("two implicit-own arguments may not consume the same root");
+            assert!(
+                duplicate_own.message.contains("already transferred"),
+                "{duplicate_own:?}"
+            );
+        }
+
+        let existential_duplicate = check_str(
+            "trait InvokeBoth:\n    fn both(self, own left: once fn() -> Int, own right: once fn() -> Int)\n\ntype Runner:\n    Runner\n\nimpl InvokeBoth for Runner:\n    fn both(self, own left: once fn() -> Int, own right: once fn() -> Int):\n        let _ = 0\n\nfn main():\n    let dynamic = Runner as dyn InvokeBoth\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    dynamic.both(callback, callback)\n",
+        )
+        .expect_err("existential convention enforcement must reject duplicate own roots");
+        assert!(
+            existential_duplicate.contains("already transferred"),
+            "{existential_duplicate}"
+        );
+    }
+
+    #[test]
+    fn trait_method_contract_preserves_once_result_consumption() {
+        let repeated = check_str(
+            "trait Supply:\n    fn supply(self) -> once fn() -> Int\n\ntype Source:\n    Source\n\nimpl Supply for Source:\n    fn supply(self) -> once fn() -> Int:\n        once fn() -> Int: 1\n\nfn main():\n    let callback = Source.supply()\n    let first = callback()\n    let second = callback()\n    let _ = first + second\n",
+        )
+        .expect_err("trait-backed callable results retain once identity");
+        assert!(repeated.contains("consumed by invocation"), "{repeated}");
+    }
+
+    #[test]
+    fn once_explicit_reference_handles_are_rejected_without_referent_provenance() {
+        let shared_aliases = check_source(
+            "mode opt\n\nfn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let left = &callback\n    let right = &callback\n    let first = left()\n    let second = right()\n    let _ = first + second\n",
+        )
+        .expect_err("copyable shared handles cannot alias a once referent");
+        assert!(
+            shared_aliases
+                .message
+                .contains("explicit shared reference to affine once-callable"),
+            "{shared_aliases:?}"
+        );
+
+        let dereferenced = check_source(
+            "mode opt\n\nfn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let handle = &callback\n    let first = (*handle)()\n    let second = (*handle)()\n    let _ = first + second\n",
+        )
+        .expect_err("deref application must not make a reference-rooted once value callable");
+        assert!(
+            dereferenced.message.contains("explicit shared reference"),
+            "{dereferenced:?}"
+        );
+
+        let exclusive = check_source(
+            "mode opt\n\nfn main():\n    var callback: once fn() -> Int = once fn() -> Int: 1\n    let handle = &mut callback\n    let _ = (*handle)()\n",
+        )
+        .expect_err("exclusive handles also lack referent-consumption state in v1");
+        assert!(
+            exclusive
+                .message
+                .contains("explicit exclusive reference to affine once-callable"),
+            "{exclusive:?}"
+        );
+
+        let direct_parameter = check_source(
+            "mode opt\n\nfn inspect(callback: &'a once fn() -> Int) -> Int:\n    0\n",
+        )
+        .expect_err("signatures may not admit a reference to a once callable");
+        assert!(
+            direct_parameter
+                .message
+                .contains("contains an explicit reference to affine once-callable storage"),
+            "{direct_parameter:?}"
+        );
+
+        let nominal_parameter = check_source(
+            "mode opt\n\ntype OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn inspect(boxed: &'a OnceBox) -> Int:\n    0\n",
+        )
+        .expect_err("signatures may not admit a reference to nominal affine storage");
+        assert!(
+            nominal_parameter
+                .message
+                .contains("contains an explicit reference to affine once-callable storage"),
+            "{nominal_parameter:?}"
+        );
+
+        let field = check_source(
+            "mode opt\n\ntype RefBox('a):\n    callback: &'a once fn() -> Int\n",
+        )
+        .expect_err("nominal fields may not store a reference to a once callable");
+        assert!(
+            field
+                .message
+                .contains("contains an explicit reference to affine once-callable storage"),
+            "{field:?}"
+        );
+    }
+
+    #[test]
+    fn once_transfer_is_preserved_through_returns_branches_matches_and_aggregates() {
+        check_source(
+            "type OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn choose(flag: Bool, own left: once fn() -> Int, own right: once fn() -> Int) -> once fn() -> Int:\n    if flag:\n        move left\n    else:\n        move right\n\nfn unwrap(own boxed: OnceBox) -> once fn() -> Int:\n    match boxed:\n        OnceBox(callback) -> move callback\n\nfn main() -> Int:\n    let boxed = OnceBox(choose(true, once fn() -> Int: 1, once fn() -> Int: 2))\n    let callback = unwrap(move boxed)\n    callback()\n",
+        )
+        .expect("branch, aggregate, match, and return boundaries preserve affine transfer");
+
+        check_source(
+            "must type Completion:\n    Completion(once fn() -> Int)\n\nfn finish(own completion: Completion) -> Int:\n    match completion:\n        Completion(callback) -> callback()\n\nfn main() -> Int:\n    let completion = Completion(once fn() -> Int: 1)\n    finish(completion)\n",
+        )
+        .expect("an own operation may destructure a must wrapper and consume its once payload without an explicit match move");
+
+        let implicit_return = check_source(
+            "fn forward(callback: once fn() -> Int) -> once fn() -> Int:\n    callback\n",
+        )
+        .expect_err("returning a place without move would copy the callback");
+        assert!(implicit_return.message.contains("would be copied"), "{implicit_return:?}");
+
+        let aggregate_copy = check_source(
+            "type OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn main():\n    let boxed = OnceBox(once fn() -> Int: 1)\n    let alias = boxed\n    let _ = alias\n",
+        )
+        .expect_err("nominal storage carrying a once callback is affine");
+        assert!(aggregate_copy.message.contains("would be copied"), "{aggregate_copy:?}");
+
+        let nested_aggregate_copy = check_source(
+            "type Box(a):\n    Box(a)\n\nfn main():\n    let nested = Box(Box(once fn() -> Int: 1))\n    let alias = nested\n    let _ = alias\n",
+        )
+        .expect_err("argument-changing nominal nesting must retain affine storage");
+        assert!(
+            nested_aggregate_copy.message.contains("would be copied"),
+            "{nested_aggregate_copy:?}"
+        );
+
+        check_source(
+            "type Phantom(a):\n    Phantom\n\nfn copy(value: Phantom(once fn() -> Int)) -> Phantom(once fn() -> Int):\n    value\n",
+        )
+        .expect("a phantom generic argument does not make nominal storage affine");
+
+        let transformed_recursive = check_source(
+            "type Grow(a):\n    Grow(a, Grow(once fn() -> Int))\n\nfn copy(value: Grow(Int)) -> Grow(Int):\n    value\n",
+        )
+        .expect_err("a transformed recursive field must expose its stored once callback");
+        assert!(
+            transformed_recursive.message.contains("would be copied"),
+            "{transformed_recursive:?}"
+        );
+
+        check_source(
+            "type Grow(a):\n    Grow(a, Grow(List(a)))\n\nfn copy(value: Grow(Int)) -> Grow(Int):\n    value\n",
+        )
+        .expect("argument-growing recursive fields terminate when no once callback is stored");
+
+        let hidden = check_source(
+            "fn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let deferred = fn() -> Int: callback()\n    let _ = deferred\n",
+        )
+        .expect_err("a closure environment may not hide affine storage");
+        assert!(hidden.message.contains("captures affine once-callable"), "{hidden:?}");
+
+        let hidden_aggregate = check_source(
+            "type OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn main():\n    let boxed = OnceBox(once fn() -> Int: 1)\n    let deferred = fn() -> OnceBox: move boxed\n    let _ = deferred\n",
+        )
+        .expect_err("a closure environment may not hide nominal affine storage");
+        assert!(
+            hidden_aggregate
+                .message
+                .contains("captures affine once-callable"),
+            "{hidden_aggregate:?}"
+        );
+
+        let hidden_before_shadow = check_source(
+            "fn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let deferred = fn() -> Int:\n        let first = callback()\n        let callback: once fn() -> Int = once fn() -> Int: 2\n        first\n    let _ = deferred\n",
+        )
+        .expect_err("a later lambda-local shadow must not hide an earlier affine capture");
+        assert!(
+            hidden_before_shadow
+                .message
+                .contains("captures affine once-callable"),
+            "{hidden_before_shadow:?}"
+        );
+    }
+
+    #[test]
+    fn once_expected_aggregate_injection_and_yield_boundaries_require_transfer() {
+        for (source, context) in [
+            (
+                "fn pack(callback: once fn() -> Int) -> List(once fn() -> Int):\n    [callback]\n",
+                "list construction",
+            ),
+            (
+                "fn pack(callback: once fn() -> Int) -> (once fn() -> Int,):\n    (callback,)\n",
+                "tuple construction",
+            ),
+            (
+                "fn pack(callback: once fn() -> Int) -> .[Ready(once fn() -> Int)]:\n    .Ready(callback)\n",
+                "anonymous union tag `.Ready`",
+            ),
+        ] {
+            let error = check_source(source)
+                .expect_err("an expected aggregate shape must not copy affine payloads");
+            assert!(
+                error.message.contains("would be copied")
+                    && error.message.contains(context),
+                "{error:?}"
+            );
+        }
+
+        let implicit = witchy_syntax::parser::parse_module(
+            "type Iter(a):\n    Iter(List(a))\n\ngen fn values(callback: once fn() -> Int) -> Iter(once fn() -> Int):\n    yield callback\n",
+        )
+        .expect("generator source parses");
+        let names = ["values".to_string()].into_iter().collect::<HashSet<_>>();
+        let conversions = HashSet::default();
+        let error = check_selected_lowered(&implicit, &names, &conversions)
+            .expect_err("yielding a frame-held callback without transfer would copy it");
+        assert!(
+            error.message.contains("generator yield")
+                && error.message.contains("would be copied"),
+            "{error:?}"
+        );
+
+        let transferred = witchy_syntax::parser::parse_module(
+            "type Iter(a):\n    Iter(List(a))\n\ngen fn values(callback: once fn() -> Int) -> Iter(once fn() -> Int):\n    yield move callback\n    let _ = callback()\n",
+        )
+        .expect("generator source parses");
+        let error = check_selected_lowered(&transferred, &names, &conversions)
+            .expect_err("an explicitly yielded callback remains consumed after resume");
+        assert!(error.message.contains("moved or transferred"), "{error:?}");
+    }
+
+    #[test]
+    fn once_loop_backedges_reject_outer_consumption_but_allow_fresh_elements() {
+        let repeated = check_source(
+            "fn repeat(callback: once fn() -> Int):\n    while true:\n        let _ = callback()\n",
+        )
+        .expect_err("a loop backedge could invoke the same callback twice");
+        assert!(repeated.message.contains("loop backedge"), "{repeated:?}");
+
+        check_source(
+            "fn main():\n    let callbacks = [once fn() -> Int: 1, once fn() -> Int: 2]\n    for callback in move callbacks:\n        let _ = callback()\n",
+        )
+        .expect("each transferred list element is a fresh affine binding");
+    }
+
+    #[test]
+    fn once_match_guards_and_arm_results_cannot_duplicate_affine_paths() {
+        let guarded = check_source(
+            "fn guarded(flag: Bool, callback: once fn() -> Bool) -> Bool:\n    match flag:\n        true if callback() -> true\n        _ -> callback()\n",
+        )
+        .expect_err("a false guard may fall through after evaluating its callback");
+        assert!(guarded.message.contains("match guard cannot consume"), "{guarded:?}");
+
+        let arm_alias = check_source(
+            "fn select(flag: Bool, own left: once fn() -> Int, own right: once fn() -> Int) -> once fn() -> Int:\n    match flag:\n        true -> left\n        false -> right\n",
+        )
+        .expect_err("a match arm result may not copy its affine place");
+        assert!(arm_alias.message.contains("match arm result"), "{arm_alias:?}");
+    }
+
+    #[test]
+    fn once_projection_roots_survive_ascriptions_and_must_aggregates_reject_partial_moves() {
+        let projected = check_source(
+            "fn main():\n    let private: .{callback: once fn() -> Int, marker: Int} = .{callback: once fn() -> Int: 1, marker: 0}\n    let first = ((private as .{callback: once fn() -> Int}).callback)()\n    let second = ((private as .{callback: once fn() -> Int}).callback)()\n    let _ = first + second\n",
+        )
+        .expect_err("nested record ascription must preserve the projected affine root");
+        assert!(projected.message.contains("consumed by invocation"), "{projected:?}");
+
+        let partial_must = check_source(
+            "must type Ticket:\n    Ticket(Int)\n\ntype Envelope:\n    ticket: Ticket\n    callback: once fn() -> Int\n\nfn main():\n    let envelope = Envelope(Ticket(1), once fn() -> Int: 1)\n    let callback = move envelope.callback\n    let _ = callback()\n",
+        )
+        .expect_err("a projected once move may not discharge an entire must aggregate");
+        assert!(partial_must.message.contains("cannot partially move"), "{partial_must:?}");
+    }
+
+    #[test]
+    fn once_payloads_cannot_be_erased_or_escape_generic_fallback_checking() {
+        let ordinary_generic = witchy_syntax::parser::parse_module(
+            "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+        )
+        .expect("ordinary generic fixture parses");
+        let ordinary_generic = crate::traits::lower_checked(ordinary_generic)
+            .expect("non-affine generics retain their ordinary fallback");
+        assert!(ordinary_generic.items.iter().all(|item| {
+            !matches!(item, ast::Item::Function(function) if function.name.starts_with("identity__"))
+        }));
+
+        let erased = check_source(
+            "trait Run:\n    fn run(self) -> Int\n\ntype OnceBox:\n    OnceBox(once fn() -> Int)\n\nimpl Run for OnceBox:\n    fn run(self) -> Int:\n        0\n\nfn main():\n    let boxed = OnceBox(once fn() -> Int: 1)\n    let hidden = move boxed as dyn Run\n    let _ = hidden\n",
+        )
+        .expect_err("existential packing may not erase affine payload storage");
+        assert!(erased.message.contains("cannot erase affine once-callable payload"), "{erased:?}");
+
+        for (template, source) in [
+            (
+                "fn duplicate(value: a) -> (a, a):\n    (value, value)\n",
+                "fn duplicate(value: a) -> (a, a):\n    (value, value)\n\nfn main():\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let pair = duplicate(move callback)\n",
+            ),
+            (
+                "type OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn duplicate(value: a) -> (a, a):\n    (value, value)\n",
+                "type OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn duplicate(value: a) -> (a, a):\n    (value, value)\n\nfn main():\n    let boxed = OnceBox(once fn() -> Int: 1)\n    let pair = duplicate(move boxed)\n",
+            ),
+            (
+                "fn duplicate(value: a) -> (a, a):\n    (value, value)\n",
+                "fn duplicate(value: a) -> (a, a):\n    (value, value)\n\nfn main():\n    let duplicate_once: fn(once fn() -> Int) -> (once fn() -> Int, once fn() -> Int) = duplicate\n    let callback: once fn() -> Int = once fn() -> Int: 1\n    let pair = duplicate_once(move callback)\n",
+            ),
+        ] {
+            let template = witchy_syntax::parser::parse_module(template)
+                .expect("generic template parses");
+            check(&template).expect("the unconstrained generic template is valid in isolation");
+            let module = witchy_syntax::parser::parse_module(source).expect("source parses");
+            let error = crate::traits::lower_checked(module)
+                .expect_err("once instantiation must generate and recheck a concrete body");
+            assert!(error.contains("would be copied"), "{error}");
+        }
     }
 
     #[test]

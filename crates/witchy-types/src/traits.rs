@@ -329,7 +329,7 @@ fn lower_with(
     let needs_lowering = module.items.iter().any(|it| {
         matches!(it, Item::Trait(_) | Item::Impl(_))
             || matches!(it, Item::Function(f) if !f.bounds.is_empty()
-                || (mono_unbounded && !signature_type_vars(f).is_empty()))
+                || !signature_type_vars(f).is_empty())
     }) || module_needs_lowering(&module.items);
     if !needs_lowering {
         return (module, Vec::new(), std::collections::BTreeMap::new());
@@ -733,19 +733,17 @@ fn lower_with(
             }
         }
     }
-    // Unbounded generic functions are ALSO templates, but stay in `items` as a
-    // fallback: a call whose primitive type argument resolves is rewritten to a
-    // specialization (so `==` is content-correct and `Int` stays 64-bit), while a
-    // call that can't be resolved keeps calling the generic version unchanged.
-    if mono_unbounded {
-        for it in &typed.module().items {
-            if let Item::Function(f) = it {
-                if f.bounds.is_empty()
-                    && !signature_type_vars(f).is_empty()
-                    && !crate::typeck::intrinsic(&f.name)
-                {
-                    templates.entry(f.name.clone()).or_insert_with(|| f.clone());
-                }
+    // Unbounded generic functions are also candidate templates, but stay in
+    // `items` as a fallback. Ordinary lowering specializes only an affine-once
+    // instantiation, whose concrete body must be rechecked for implicit copies;
+    // Wasm additionally retains its existing primitive specialization policy.
+    for it in &typed.module().items {
+        if let Item::Function(f) = it {
+            if f.bounds.is_empty()
+                && !signature_type_vars(f).is_empty()
+                && !crate::typeck::intrinsic(&f.name)
+            {
+                templates.entry(f.name.clone()).or_insert_with(|| f.clone());
             }
         }
     }
@@ -763,6 +761,7 @@ fn lower_with(
     let render_available = templates.contains_key("show.render");
     let mut mono_diags: Vec<String> = Vec::new();
     let mut generic_specializations = std::collections::BTreeMap::new();
+    let mut affine_specializations = HashSet::new();
     if !templates.is_empty() {
         // Annotate + monomorphize to a FIXPOINT (RFC-0046 §2): each round types the
         // concrete specializations the previous round generated, unlocking the
@@ -807,6 +806,7 @@ fn lower_with(
                         fn_sigs,
                         memo: std::mem::take(&mut memo),
                         specializations: &mut generic_specializations,
+                        affine_specializations: &mut affine_specializations,
                         generated: Vec::new(),
                         table,
                         skip_walk: &no_fallback,
@@ -814,6 +814,7 @@ fn lower_with(
                         render_available,
                         current_function: String::new(),
                         current_line: 0,
+                        mono_unbounded,
                     };
                     match witness_plan {
                         Ok(witnesses) => {
@@ -868,7 +869,25 @@ fn lower_with(
             // typed owner before extending the AST, then annotate the new exact
             // module before either the next round or the final dispatch pass.
             let mut module = typed.into_module();
+            let generated_names = generated
+                .iter()
+                .filter(|function| affine_specializations.contains(&function.name))
+                .map(|function| function.name.clone())
+                .collect::<HashSet<_>>();
             module.items.extend(generated.into_iter().map(Item::Function));
+            let concrete_check_error = (!generated_names.is_empty())
+                .then(|| {
+                    crate::typeck::check_selected_lowered(
+                        &module,
+                        &generated_names,
+                        &from_conversion_fns,
+                    )
+                })
+                .transpose()
+                .err();
+            if let Some(error) = &concrete_check_error {
+                mono_diags.push(error.message.clone());
+            }
             let __t = mono_timing_start();
             typed =
                 crate::typeck::annotate_with_from_conversions(module, &from_conversion_fns);
@@ -878,6 +897,9 @@ fn lower_with(
                     typed.module().items.len(),
                     __t.elapsed()
                 );
+            }
+            if concrete_check_error.is_some() {
+                break;
             }
             if round + 1 == MAX_MONO_ROUNDS {
                 mono_diags.push(format!(
@@ -4423,6 +4445,9 @@ struct Mono<'a> {
     fn_sigs: HashMap<String, FnSig>,
     memo: HashMap<(String, LogicalSpecializationIdentity), String>,
     specializations: &'a mut std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
+    /// Concrete generic bodies whose type arguments carry affine callable
+    /// storage and therefore require a semantic recheck after substitution.
+    affine_specializations: &'a mut HashSet<String>,
     generated: Vec<Function>,
     /// typeck's resolved types for this module instance. Generated bodies have
     /// no entries until the next fixpoint round, so declarations and typed local
@@ -4447,6 +4472,10 @@ struct Mono<'a> {
     /// call-site statement line in `Block::lines`.
     current_function: String,
     current_line: u32,
+    /// Whether this lowering target also requests the existing broad primitive
+    /// specializations. Affine-once instantiations are specialized on every
+    /// backend so their concrete bodies can be ownership-checked.
+    mono_unbounded: bool,
 }
 
 #[cfg(test)]

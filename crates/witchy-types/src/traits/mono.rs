@@ -14,6 +14,54 @@ use witchy_syntax::ast::*;
 use super::*;
 
 impl Mono<'_> {
+    fn type_carries_once_identity(&self, ty: &Type) -> bool {
+        fn go(mono: &Mono<'_>, ty: &Type, seen: &mut HashSet<String>) -> bool {
+            match ty {
+                Type::Qualified(_, inner) | Type::Slice(inner) => go(mono, inner, seen),
+                Type::Fn(_, _, _, qualifiers) => qualifiers.once,
+                Type::Tuple(items) => items.iter().any(|item| go(mono, item, seen)),
+                // Existential arguments describe the method surface, not the
+                // hidden concrete payload. Packing is checked separately.
+                Type::Dyn(..) => false,
+                Type::RecordCompose { base, fields } => {
+                    go(mono, base, seen)
+                        || fields.iter().any(|(_, field)| go(mono, field, seen))
+                }
+                Type::Named(name, arguments) => {
+                    // Recursing into an opaque/builtin argument may specialize
+                    // a phantom parameter unnecessarily, but never classifies
+                    // storage as affine; the concrete type checker owns that
+                    // decision. Declared payloads below close zero-argument and
+                    // nominal-field cases such as `OnceBox(once fn())`.
+                    if arguments.iter().any(|argument| go(mono, argument, seen)) {
+                        return true;
+                    }
+                    if !seen.insert(name.clone()) {
+                        return false;
+                    }
+                    let found = mono
+                        .ctor_infos
+                        .values()
+                        .filter(|info| info.owner == *name)
+                        .any(|info| {
+                            let substitution = info
+                                .params
+                                .iter()
+                                .cloned()
+                                .zip(arguments.iter().cloned())
+                                .collect::<HashMap<_, _>>();
+                            info.fields.iter().any(|field| {
+                                go(mono, &subst_trait_params(field, &substitution), seen)
+                            })
+                        });
+                    seen.remove(name);
+                    found
+                }
+            }
+        }
+        go(self, ty, &mut HashSet::new())
+    }
+
     pub(super) fn seed_specialization(&mut self, name: &str, type_args: Vec<Type>) {
         self.specialize(name, type_args);
     }
@@ -132,8 +180,10 @@ impl Mono<'_> {
                 }
                 let key = type_key(ty.unqualified());
                 if !requires_specialization
-                    && !table_confirmed.contains(&var)
-                    && !is_specializable_type_arg(&key)
+                    && !self.type_carries_once_identity(&ty)
+                    && (!self.mono_unbounded
+                        || (!table_confirmed.contains(&var)
+                            && !is_specializable_type_arg(&key)))
                 {
                     return None;
                 }
@@ -185,6 +235,9 @@ impl Mono<'_> {
     }
 
     fn specialize(&mut self, name: &str, type_args: Vec<Type>) -> String {
+        let affine = type_args
+            .iter()
+            .any(|argument| self.type_carries_once_identity(argument));
         let identity = LogicalSpecializationIdentity::from_types(&type_args);
         let key = (name.to_string(), identity.clone());
         if let Some(m) = self.memo.get(&key) {
@@ -200,6 +253,9 @@ impl Mono<'_> {
         let mangled = format!("{name}__{}", safe.join("__"));
         self.memo.insert(key, mangled.clone());
         self.specializations.insert(mangled.clone(), identity);
+        if affine {
+            self.affine_specializations.insert(mangled.clone());
+        }
 
         let mut f = self.templates[name].clone();
         f.name = mangled.clone();
