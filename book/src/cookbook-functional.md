@@ -69,3 +69,144 @@ shape, a different projection.
 
 Reach for these when a lambda would just be noise. Anywhere else, write the
 named helper.
+
+## Pure plugins
+
+Use `pure fn` when an extension point promises computation without host effects.
+The plugin may capture ordinary immutable data, and it can still be widened to
+an ordinary reusable function when a less restrictive API needs it.
+
+```witchy
+pure fn run_plugin(plugin: pure fn(Int) -> Int, value: Int) -> Int:
+    plugin(value)
+
+fn main(console: Console):
+    let offset = 2
+    let plugin: pure fn(Int) -> Int = pure fn(value: Int): value * 2 + offset
+    console.print("plugin: ${run_plugin(plugin, 20)}")
+```
+
+```text
+plugin: 42
+```
+
+The qualifier is a checked promise, not an ascription that suppresses effects.
+This does not compile because the ordinary callback could exercise authority:
+
+```witchy-static
+pure fn run_plugin(plugin: fn(Int) -> Int, value: Int) -> Int:
+    plugin(value)
+
+fn main():
+    let _ = 0
+```
+
+## Reusable delegated behavior
+
+An ordinary function value delegates its callable behavior. Its receiver does
+not need to name capabilities hidden in the closure environment; the caller
+chooses what behavior to provide. Taking the callback with `own` transfers the
+caller's binding, but the callback remains reusable inside the callee.
+
+```witchy
+fn log_twice(own logger: fn(String) -> Nil):
+    logger("first")
+    logger("second")
+
+fn main(console: Console):
+    let logger = fn(message: String): console.print("delegated: ${message}")
+    log_twice(logger)
+```
+
+```text
+delegated: first
+delegated: second
+```
+
+Delegated authority is not purity. This version does not compile because the
+closure captures `Console` and calls it under a `pure fn` promise:
+
+```witchy-static
+fn main(console: Console):
+    let logger: pure fn(String) -> Nil =
+        pure fn(message: String): console.print(message)
+    logger("effect")
+```
+
+## At most one completion
+
+Use `once fn` for a callback that may be invoked at most once. Passing it to an
+`own` parameter transfers the one remaining invocation, and attempting the call
+consumes it even if the call returns an error or traps.
+
+```witchy
+fn complete(own callback: once fn(String) -> Nil, message: String):
+    callback(message)
+
+fn main(console: Console):
+    let completion: once fn(String) -> Nil =
+        once fn(message: String): console.print("completed: ${message}")
+    complete(completion, "ready")
+```
+
+```text
+completed: ready
+```
+
+The callback is affine. A second invocation is rejected before either backend
+runs the program:
+
+```witchy-static
+fn main():
+    let completion: once fn(Int) -> Int = once fn(value: Int): value
+    let _ = completion(1)
+    completion(2)
+```
+
+## Exactly-once disposition with a `must` wrapper
+
+`once` alone is at-most-once and may be dropped unused. Wrap it in a nominal
+`must` protocol when every control-flow path must either complete or explicitly
+cancel. The wrapper carries the disposition obligation across opaque APIs; it
+does not hide that obligation in the closure environment.
+
+```witchy
+must sealed type Completion:
+    Completion(once fn(String) -> Nil)
+
+fn finish(own completion: Completion, message: String):
+    match completion:
+        Completion(callback) -> callback(message)
+
+fn cancel(own completion: Completion):
+    match completion:
+        Completion(_) -> ()
+
+fn main(console: Console):
+    let completed = Completion(
+        once fn(message: String): console.print("finished: ${message}")
+    )
+    finish(completed, "saved")
+
+    let cancelled = Completion(
+        once fn(message: String): console.print("unexpected: ${message}")
+    )
+    cancel(cancelled)
+    console.print("cancelled")
+```
+
+```text
+finished: saved
+cancelled
+```
+
+Forgetting both operations is a type error because the `must` value reaches the
+end of its scope without disposition:
+
+```witchy-static
+must sealed type Completion:
+    Completion(once fn(String) -> Nil)
+
+fn main():
+    let completion = Completion(once fn(message: String): ())
+```
