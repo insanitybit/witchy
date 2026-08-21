@@ -1147,6 +1147,29 @@ impl<'types> Codegen<'types> {
                 let recover_kind = self.kind_for_type(access.result().ty());
                 let typed_abi = Self::closure_uses_typed_abi(&param_kinds, recover_kind);
                 let ownership = Self::ownership_envelope_for_signature(&access);
+                // Direct inline lambda application `(fn(x): ...)(arg)`: beta-reduce inline
+                // without allocating a closure environment or dispatching through the function table.
+                if let Expr::Lambda { params, body, .. } = func.as_ref() {
+                    if params.len() == args.len() {
+                        let mut seq = Vec::new();
+                        for (param, arg) in params.iter().zip(args.iter()) {
+                            let arg_w = self.lower_expr(arg)?;
+                            let pk = self.kind_of(arg);
+                            self.locals.insert(param.name.clone(), pk);
+                            seq.push(N::SetLocal {
+                                local: param.name.clone(),
+                                value: arg_w,
+                            });
+                        }
+                        let saved_inplace = self.inplace_push.clone();
+                        self.begin_unit(body);
+                        let body_seq = self.lower_block(body)?;
+                        self.finish_unit("inline_lambda").unwrap();
+                        self.inplace_push = saved_inplace;
+                        seq.extend(body_seq);
+                        return Some(W::Seq(seq));
+                    }
+                }
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
