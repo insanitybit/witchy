@@ -105,9 +105,10 @@ type a custom rendering.
 
 Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
 `List(a)`, `Dict(k, v)`, tuples `(a, b, ...)`, function types
-`fn(Int, String) -> Bool`, and the capability types (`Console`, `Clock`, `Env`,
-`Rand`, `Dir[...]`, `File[...]`, `Net[...]`, `Fetch`, `Exec`, `SecretStore`,
-`Secret` - see [capabilities.md](capabilities.md)).
+`fn(Int, String) -> Bool` (optionally qualified `pure`, `once`, or canonical
+`pure once`), and the capability types (`Console`, `Clock`, `Env`, `Rand`,
+`Dir[...]`, `File[...]`, `Net[...]`, `Fetch`, `Exec`, `SecretStore`, `Secret` -
+see [capabilities.md](capabilities.md)).
 
 **Algebraic data types.** One `type` declaration covers enums, tagged unions,
 and records:
@@ -785,6 +786,123 @@ Failure propagation rebuilds the enclosing return type's `None` or `Err`
 representation. The success payload type of the operand may differ from the
 function's success type, including across scalar, capability-reference, and
 typed-GC layouts; only the propagated error contract must be compatible.
+
+**Callable qualifiers.** `pure` and `once` are contextual identifiers, not
+reserved words. They introduce a callable qualifier only when the complete
+prefix is immediately followed by `fn`; elsewhere they remain ordinary names.
+The contextual grammar is:
+
+```text
+callable-prefix      ::= "pure" | "once" | "pure" "once"
+function-type        ::= [callable-prefix] "fn" "(" function-parameters ")" "->" type
+lambda-expression    ::= [callable-prefix] "fn" "(" parameters ")" ["->" type] ":" body
+function-declaration ::= ["pure"] "fn" name "(" parameters ")" ["->" type] ":" body
+```
+
+The canonical combined spelling is `pure once fn`; `once pure fn` is rejected
+rather than silently reordered. Named functions and methods denote reusable
+code, so they may be ordinary or `pure` but may not be declared `once`. A fresh
+single-use adapter is written as a `once fn` lambda:
+
+```witchy-static
+fn reusable(value: Int) -> Int:
+    value + 1
+
+fn main():
+    let single: once fn(Int) -> Int =
+        once fn(value: Int): reusable(value)
+    let _ = single(1)
+```
+
+In this first language stage, `pure` qualifies only ordinary named functions,
+methods, lambdas, and function types. It does not combine with `async fn`,
+`gen fn`, or `comptime fn`.
+
+A `pure fn` promises that invocation has no externally observable authority
+effect. Its body may compute, allocate ordinary managed values, mutate local
+bindings, return `Option`/`Result`, trap, or fail to terminate. It may invoke
+only other `pure fn` values. Capability operations, invocation or capture of an
+opaque ordinary callback, capability-bearing captures, `var` parameter
+write-back, suspension, workers, channels, dynamic calls, and other operations
+classified effectful are rejected. Capturing immutable ordinary data is
+allowed. Purity is an explicit checked API promise; it is not inferred for an
+ordinary public declaration and cannot be asserted by narrowing an ordinary
+function value.
+
+A `once fn` value is affine and droppable. It may be dropped unused or moved
+into a return, storage location, or `own` parameter, but it may not be
+implicitly copied.
+Attempting invocation consumes the callable before control enters it, so a
+returned error, `?` propagation, or trap does not restore the invocation. Any
+second invocation or other use of the consumed binding is a check-time error.
+A shared borrowed `once fn` cannot be invoked or transferred because the
+remaining invocation belongs to its caller; a default parameter can receive one
+only through an explicit `move`, and `var` cannot carry one because consuming it
+would leave no value to write back. These rules follow a once callable through
+aliases, aggregates, generic instantiations, branches, patterns, and returns.
+
+A closure environment remains opaque at a function-value boundary. A closure
+therefore cannot capture a live affine or must-consume value:
+doing so would erase the captured obligation if the callable were dropped.
+Writing `own callback: fn(...)` or `own callback: once fn(...)` does not make
+such a hidden capture safe; `own` transfers the callable value, not a promise to
+invoke or dispose of an obligation hidden inside it.
+
+Callable type identity is exact over both qualifiers, every parameter type and
+convention, the result type, type qualifiers, and checked borrow relations.
+Aliases, generics, trait signatures, reflection, and runtime type descriptors
+preserve that identity. Captured capability names are not part of the public
+function type: an ordinary callback is opaque delegated behavior, and its caller
+chooses the environment it supplies.
+
+There is one directed compatibility exception to exact identity: purity may be
+widened away without changing invocation cardinality.
+
+| Source | Expected target | Result |
+|---|---|---|
+| `pure fn(A) -> B` | `fn(A) -> B` | allowed |
+| `pure once fn(A) -> B` | `once fn(A) -> B` | allowed |
+| `fn(A) -> B` | `pure fn(A) -> B` | rejected |
+| `once fn(A) -> B` | `fn(A) -> B` | rejected |
+| `fn(A) -> B` | `once fn(A) -> B` | rejected |
+
+Branch joins may likewise forget purity only when both branches have the same
+invocation cardinality. Reusable and once branches have no implicit common
+callable type; no directed conversion changes cardinality, with or without
+`pure`.
+
+The callable contract is independent of ownership and disposition:
+
+| Contract | Question answered |
+|---|---|
+| `pure fn(A) -> B` | May invocation exercise authority effects? |
+| `once fn(A) -> B` | How many invocation attempts remain? |
+| `own callback: T` | Who owns the callable after this call? |
+| `must type Wrapper: ...` | Must this value be disposed or transferred on every path? |
+
+Thus `own callback: fn(A) -> B` transfers a callback that remains reusable
+inside the callee, while `own callback: once fn(A) -> B` transfers one remaining
+invocation. `once` alone means at most once and permits dropping the value. An
+exactly-once-or-cancel protocol uses a nominal `must` wrapper around the once
+callable and exposes consuming operations for every allowed disposition:
+
+```witchy-static
+must sealed type Completion:
+    Completion(once fn(String) -> Nil)
+
+fn finish(own completion: Completion, message: String):
+    match completion:
+        Completion(callback) -> callback(message)
+
+fn cancel(own completion: Completion):
+    match completion:
+        Completion(_) -> ()
+```
+
+`pure` and `once` are erased from the physical closure representation after
+checking. The interpreter and compiled backends use the same function-value
+layout and invocation ABI for all four qualified forms; the qualifiers remain
+observable only through checked logical type and reflection identity.
 
 Function values preserve the concrete runtime kinds in their signatures. A
 direct capability reference or concrete GC aggregate may therefore cross an
