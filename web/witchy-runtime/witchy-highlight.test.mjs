@@ -34,8 +34,10 @@ ok(hRef.includes('<span class="t-kw">mut</span>'), "mutable reference access is 
 ok(hRef.includes('<span class="t-type">String</span>'), "the referenced type is coloured");
 ok(hRef.replace(/<[^>]+>/g, "") === escapeHtml(reference), "reference syntax reconstructs the escaped source exactly");
 
-// Capability keywords (RFC-0038/0039 surface).
-const h2 = highlightWitchy("grantable capability UiRoot:");
+// Capability and module keywords.
+const h2 = highlightWitchy("from glamour import Ui, VNode\ntype Msg derive(Reflect):\ngrantable capability UiRoot:");
+ok(h2.includes('<span class="t-kw">from</span>'), "`from` is a keyword");
+ok(h2.includes('<span class="t-kw">derive</span>'), "`derive` is a keyword");
 ok(h2.includes('<span class="t-kw">grantable</span>'), "`grantable` is a keyword");
 ok(h2.includes('<span class="t-kw">capability</span>'), "`capability` is a keyword");
 ok(highlightWitchy("mode opt").includes('<span class="t-kw">mode</span>'), "`mode` is a keyword");

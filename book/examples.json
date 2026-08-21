@@ -1822,6 +1822,49 @@
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
+    "file": "book/src/frontend.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "State: 1",
+      "<div class=\"counter\"><button>-</button><span>Count: 1</span><button>+</button></div>"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/frontend.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "<section class=\"card\"><h1>Dashboard</h1><p>&lt;script&gt;alert('xss')&lt;/script&gt;</p></section>"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/frontend.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "URL: /user/alice"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
     "file": "book/src/functional-in-place.md",
     "footprint": [
       "Console[Read,Write]"

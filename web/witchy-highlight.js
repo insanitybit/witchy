@@ -10,7 +10,7 @@
 
 export const KEYWORDS = new Set(
   ("fn let var if else match for in while return break continue type trait " +
-    "impl actor on import pub own move spawn where as gen yield " +
+    "impl actor on import from derive pub own move spawn where as gen yield " +
     "retain without capability grantable mut mode async await sealed")
     .split(" "),
 );
