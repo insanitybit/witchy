@@ -521,16 +521,22 @@ don't pass the capability - a function that never receives a capability cannot
 use it, alias it, or forge it. That structural boundary (capture-as-DI) is
 witchy's firewall; see [the capability reference](capabilities.md).
 
-A `region:` block (optionally `region -> T:`) is a user-controlled allocation
-scope: everything allocated inside is reclaimed at the block's end, and the
-block's VALUE is what escapes - on the compiled backend it's deep-copied out,
-except sub-values from outside the region, which are shared rather than
+A `region:` block (optionally `region -> T:`) is an **unstable** user-controlled
+allocation scope: everything allocated inside is reclaimed at the block's end,
+and the block's VALUE is what escapes - on the compiled backend it's deep-copied
+out, except sub-values from outside the region, which are shared rather than
 copied. Assigning a non-scalar variable declared outside the region is a type
 error (the value is the only pointer escape; scalar assignments are fine), and
 `yield` is rejected. A region never changes observable behavior - only when
 memory is reclaimed - so the interpreter runs it as a plain block. The
 optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
-when inference cannot see it. See [RFC-0034](../rfcs/regions.md).
+when inference cannot see it. See [RFC-0128](../rfcs/0128-regions-and-reclamation.md).
+
+The compiler warns on every `region:` use. Its value semantics remain safe and
+interpreter/Wasm parity remains required, but the keyword, boundary rules, and
+performance contract may change or be removed. Prefer ownership annotations and
+compiler-inferred reclamation unless measurement shows that an explicit region
+materially improves the target workload.
 
 ```witchy
 import option

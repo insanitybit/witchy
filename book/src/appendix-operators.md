@@ -75,7 +75,7 @@ Comparison doesn't chain: write `0 <= x && x < n`, not `0 <= x < n`.
 | `comptime` | a compile-time item-generation block (`comptime:`) |
 | `capability` | declare a user-defined capability (`capability X from U`) |
 | `grantable` | allow a bare user capability to be supplied to an entry point |
-| `region` | a scoped temporary-allocation region (`region:` / `region -> T:`) |
+| `region` | an unstable scoped temporary-allocation region (`region:` / `region -> T:`) |
 | `true` / `false` | boolean literals |
 
 Several declaration and type modifiers are contextual words rather than general

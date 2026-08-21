@@ -16,6 +16,13 @@ related:
 
 # RFC-0128: Regions and predictable memory reclamation
 
+> **2026-08-21 stability note:** implementation evidence establishes safe value
+> semantics and backend parity, but not that explicit syntax is necessary beside
+> ownership annotations and inferred reclamation. The `region:` keyword is
+> therefore unstable: the compiler warns on use, and the syntax and performance
+> contract may change or be removed. This dated note supersedes the permanence
+> claim below while preserving the accepted RFC as historical design context.
+
 ## Decision
 
 `region:` is a permanent Witchy feature. It gives a lexical scope for temporary

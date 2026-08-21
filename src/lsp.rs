@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use lsp_server::{Connection, Message, Notification};
 use serde_json::{Value, json};
 
-use witchy_syntax::{ast, parser};
+use witchy_syntax::{ast, parser, unstable};
 
 type LspResult = Result<(), Box<dyn Error + Sync + Send>>;
 
@@ -773,6 +773,7 @@ fn send_diagnostics(connection: &Connection, uri: &str, diagnostics: Vec<Value>)
 /// falling back to the bundled std library — mirroring how `witchy <file>` loads
 /// a program.
 fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) -> Vec<Value> {
+    let unstable_features = unstable::feature_uses(text);
     let path = uri_to_path(uri);
     let dir = path
         .as_ref()
@@ -1011,6 +1012,16 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                     }
                 }
             }
+            for feature in unstable_features {
+                diags.push(severity_diag(
+                    feature.line.saturating_sub(1),
+                    feature.column.saturating_sub(1),
+                    feature.end_line.saturating_sub(1),
+                    feature.end_column.saturating_sub(1),
+                    2,
+                    feature.warning,
+                ));
+            }
             diags
 }
 
@@ -1028,12 +1039,23 @@ fn line_diag(line0: u32, text: &str, message: &str) -> Value {
 }
 
 fn diag(start_line: u32, start_char: u32, end_line: u32, end_char: u32, message: &str) -> Value {
+    severity_diag(start_line, start_char, end_line, end_char, 1, message)
+}
+
+fn severity_diag(
+    start_line: u32,
+    start_char: u32,
+    end_line: u32,
+    end_char: u32,
+    severity: u8,
+    message: &str,
+) -> Value {
     json!({
         "range": {
             "start": { "line": start_line, "character": start_char },
             "end": { "line": end_line, "character": end_char }
         },
-        "severity": 1, // Error
+        "severity": severity,
         "source": "witchy",
         "message": message
     })

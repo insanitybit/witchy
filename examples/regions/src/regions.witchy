@@ -1,6 +1,6 @@
-// `region:` gives short-term allocations an explicit lifetime: everything
-// allocated inside is reclaimed at the block's end, and the block's VALUE is
-// what escapes — deep-copied out, except values from OUTSIDE the region,
+// Unstable: `region:` gives short-term allocations an explicit lifetime.
+// Everything allocated inside is reclaimed at the block's end, and the block's
+// VALUE is what escapes — deep-copied out, except values from OUTSIDE the region,
 // which are shared rather than copied. A region never changes behavior, only
 // when memory is freed, so it runs identically interpreted and compiled.
 // Run:  witchy examples/regions/src/regions.witchy

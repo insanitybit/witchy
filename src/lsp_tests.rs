@@ -517,6 +517,22 @@ fn main(console: Console):
         assert_eq!(diags(src), Vec::<Value>::new());
     }
 
+    #[test]
+    fn region_is_reported_as_an_unstable_warning() {
+        let src = "fn main() -> Int:\n    region:\n        1\n";
+        let diagnostics = diags(src);
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["severity"], json!(2));
+        assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(1));
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("`region:` is unstable")),
+            "{diagnostics:?}",
+        );
+    }
+
     /// (BUG-165) A `mode opt` file whose ownership-relevant parameter carries no
     /// convention is rejected by `witchy check`; the LSP must publish that same
     /// error instead of silently accepting a program the compiler refuses.

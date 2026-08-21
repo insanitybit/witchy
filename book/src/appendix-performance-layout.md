@@ -12,6 +12,11 @@ when it can prove the same facts without syntax.
 
 ## Regions: reclaim a burst of temporaries
 
+> **Unstable:** the compiler warns on `region:`. Its syntax and performance
+> contract may change or be removed while Witchy compares explicit regions with
+> ownership annotations and compiler-inferred reclamation. Use it for measured
+> experiments, not as a compatibility-stable application boundary.
+
 `region:` groups allocations under one lifetime. At the end of the block,
 region-born temporaries are reclaimed together. If the block returns a value
 that was created inside it, the necessary bytes are copied out. Values owned

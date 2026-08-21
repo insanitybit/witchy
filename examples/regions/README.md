@@ -1,5 +1,9 @@
 # regions
 
+> **Unstable:** `region:` is an experimental performance feature. The compiler
+> warns when it is used, and its syntax or performance contract may change or be
+> removed. Measure it against ownership annotations and inferred reclamation.
+
 `region:` gives short-term allocations an explicit lifetime: everything
 allocated inside is reclaimed at the block's end, and the block's value is what
 escapes — deep-copied out, except values from outside the region, which are

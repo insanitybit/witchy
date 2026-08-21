@@ -1,6 +1,6 @@
 //! Native source discovery, loading, linking, and expansion.
 
-use witchy_syntax::{ast, format, parser};
+use witchy_syntax::{ast, format, parser, unstable};
 #[cfg(test)]
 use witchy_syntax::linker;
 use witchy_interp::{comptime, pipeline};
@@ -213,19 +213,20 @@ fn load_file_modules(
         }
         // Read a local source when present; the linker rejects it if its module
         // name is reserved by a non-identical bundled std module.
-        let src = match std::fs::read_to_string(&p) {
+        let (src, user_source) = match std::fs::read_to_string(&p) {
             Ok(s) => {
                 // Repository checks read canonical std sources from disk. Source
                 // identity, not the filesystem path, determines provenance: an
                 // exact embedded module keeps std ownership, while any local
                 // modification remains user code even under a std filename.
-                if bundled_module(&name) != Some(s.as_str()) {
+                let user_source = bundled_module(&name) != Some(s.as_str());
+                if user_source {
                     user_modules.insert(name.clone());
                 }
-                s
+                (s, user_source)
             }
             Err(e) => match bundled_module(&name) {
-                Some(s) => s.to_string(),
+                Some(s) => (s.to_string(), false),
                 None => {
                     // A misspelled `import` of a std module gets a suggestion.
                     let hint = if name != entry_stem {
@@ -241,6 +242,9 @@ fn load_file_modules(
         };
         let module = parse_module_cached(&p.canonicalize().unwrap_or_else(|_| p.clone()), &src)
             .map_err(|e| format!("{name}: {e}"))?;
+        if user_source {
+            emit_unstable_feature_warnings(&p, &src);
+        }
         for imp in &module.imports {
             if !loaded.contains(imp) {
                 let dep_path = deps
@@ -300,17 +304,17 @@ fn load_file_modules_authenticated(
         if !loaded.insert(name.clone()) {
             continue;
         }
-        let (source, owner) = match std::fs::read_to_string(&module_path) {
+        let (source, owner, user_source) = match std::fs::read_to_string(&module_path) {
             Ok(source) => {
                 if bundled_module(&name) == Some(source.as_str()) {
-                    (source, bundled_module_owner(&name)?)
+                    (source, bundled_module_owner(&name)?, false)
                 } else {
                     user_modules.insert(name.clone());
-                    (source, proposed_owner)
+                    (source, proposed_owner, true)
                 }
             }
             Err(error) => match bundled_module(&name) {
-                Some(source) => (source.to_string(), bundled_module_owner(&name)?),
+                Some(source) => (source.to_string(), bundled_module_owner(&name)?, false),
                 None => {
                     let hint = if name != entry_stem {
                         witchy_syntax::linker::closest_std_module(&name)
@@ -329,6 +333,9 @@ fn load_file_modules_authenticated(
         assignments.push((name.clone(), owner.clone()));
         let module = parse_module_cached(&module_path, &source)
             .map_err(|error| format!("{name}: {error}"))?;
+        if user_source {
+            emit_unstable_feature_warnings(&module_path, &source);
+        }
         for import in &module.imports {
             if loaded.contains(import) {
                 continue;
@@ -370,6 +377,27 @@ fn load_file_modules_authenticated(
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
         .map_err(|error| error.to_string())?;
     Ok((modules, entry_stem, user_modules, owners))
+}
+
+fn unstable_feature_warnings(path: &std::path::Path, source: &str) -> Vec<String> {
+    unstable::feature_uses(source)
+        .into_iter()
+        .map(|feature| {
+            format!(
+                "{}:{}:{}: warning: {}",
+                path.display(),
+                feature.line,
+                feature.column,
+                feature.warning,
+            )
+        })
+        .collect()
+}
+
+fn emit_unstable_feature_warnings(path: &std::path::Path, source: &str) {
+    for warning in unstable_feature_warnings(path, source) {
+        eprintln!("{warning}");
+    }
 }
 
 fn toolchain_module_owner(module: &str) -> Result<ModuleLoadIdentity, String> {
@@ -555,7 +583,7 @@ pub(crate) fn linked_has_main(linked: &ast::Module) -> bool {
 mod tests {
     use super::{
         expand_file_source, link_file_checked_authenticated_with_deps,
-        AuthenticatedDependency, TestFileError,
+        unstable_feature_warnings, AuthenticatedDependency, TestFileError,
     };
     use witchy_types::runtime_type::{
         DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
@@ -567,6 +595,19 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
+    }
+
+    #[test]
+    fn unstable_region_warning_names_source_location() {
+        let warnings = unstable_feature_warnings(
+            std::path::Path::new("src/main.witchy"),
+            "fn main() -> Int:\n    region:\n        1\n",
+        );
+
+        assert_eq!(
+            warnings,
+            vec!["src/main.witchy:2:5: warning: `region:` is unstable and may change or be removed; do not rely on its current syntax or performance contract"],
+        );
     }
 
     #[test]

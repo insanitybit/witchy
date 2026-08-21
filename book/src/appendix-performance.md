@@ -13,7 +13,7 @@ This appendix is organized around that source-level question:
 |---|---|---|
 | `let`, `var`, `own`, `move` | Clear call ownership and write-back behavior | [Syntax and ownership contracts](appendix-performance-ownership.md) |
 | `unique`, `local unique`, `frozen` | In-place updates, extraction, and safe sharing | [Syntax and ownership contracts](appendix-performance-ownership.md) |
-| `region:` | Bulk reclamation for temporary work | [Layouts and allocation lifetime](appendix-performance-layout.md) |
+| `region:` (unstable) | Bulk reclamation for temporary work | [Layouts and allocation lifetime](appendix-performance-layout.md) |
 | `packed` | Inline, cache-dense data layout | [Layouts and allocation lifetime](appendix-performance-layout.md) |
 | `mode opt`, `&'a T`, `&'a mut T` | Explicit lifetimes, loans, and reference carriers | [Opt-mode References and Lifetimes](opt-mode-references.md) |
 | A measured source shape | Evidence for a real workload improvement | [Measuring and diagnosing](appendix-performance-measurement.md) |
