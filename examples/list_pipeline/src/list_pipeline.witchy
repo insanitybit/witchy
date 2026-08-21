@@ -1,7 +1,7 @@
 // A `list` pipeline: map / filter / fold and a comparator-driven sort compose
-// over a list. The library is pure — `import list` hands it no Console, Dir, or
-// Net, so it can only transform data — and the closures you pass to it are
-// ordinary first-class values.
+// over a list. Importing `list` demands no Console, Dir, or Net root. Its
+// callback parameters are ordinary delegated behavior, though; the closures in
+// this example happen to capture only data.
 
 import list
 

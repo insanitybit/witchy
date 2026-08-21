@@ -2,7 +2,8 @@
 // registration `attestationObject` and its embedded COSE_Key use. Supports
 // unsigned/negative integers, byte strings, text strings, arrays, and definite-
 // length maps. Indefinite-length items, tags, floats, and simple values are
-// rejected - they do not occur in a WebAuthn attestation. Pure (no capability).
+// rejected - they do not occur in a WebAuthn attestation. The module demands no
+// root capability; that footprint fact is separate from a `pure fn` contract.
 
 import bytes
 import show

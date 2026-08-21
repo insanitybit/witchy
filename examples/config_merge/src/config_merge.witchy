@@ -1,8 +1,8 @@
 // Layered configuration the witchy way: a base config patched by an environment
 // overlay, then rendered for humans. Shows `json.merge` (a shallow per-key
-// override) and `json.encode_pretty` from the std `json` module. Every function
-// here is pure, so this whole program prints identically on the interpreter and
-// the compiled WASM backend.
+// override) and `json.encode_pretty` from the std `json` module. The builders
+// only construct data as written; `main` owns the Console effect. Both backends
+// produce the same result.
 // Run: witchy examples/config_merge/src/config_merge.witchy
 
 import reflect

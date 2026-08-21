@@ -1,18 +1,19 @@
-// glamour — the view layer (RFC-0008): a capability-pure MVU core over a `VNode`
-// tree. A view is a VALUE, not a side effect: `view(state) -> VNode(msg)` is a
-// pure projection of state to data, an event is a `msg` VALUE carried by `On`,
+// glamour — the view layer (RFC-0008): an MVU core with an empty host-capability
+// footprint over a `VNode` tree. A view is a VALUE, not a side effect:
+// `view(state) -> VNode(msg)` projects state to data, an event is a `msg` VALUE carried by `On`,
 // and `update(state, msg) -> (state, Cmd(msg))` is an ordinary `match`. The rune
 // holds NO capability; `witchy caps projects/glamour/src/glamour.witchy` proves
 // the footprint is empty. A capability-holding host shell diffs the tree into the
 // real DOM and marshals DOM events back as `msg` values — the rune computes, the
 // shell acts.
 //
-// `string`/`list` come from the prelude (no import needed) and are PURE, so they
-// grant no authority — that is what keeps this rune's footprint empty.
+// `string`/`list` come from the prelude and demand no root authority, which
+// keeps this rune's host-capability footprint empty. Their ordinary callback
+// parameters still represent explicit delegated behavior.
 
-// `json`/`reflect` are PURE (capability-free) too — they serialize the VNode tree
-// and reflect a `msg` value to JSON the host shell consumes. Importing them keeps
-// the empty footprint (they touch no Net/Dir/Clock); see `to_json`/the run loop.
+// `json`/`reflect` also demand no host root. They serialize the VNode tree and
+// reflect a `msg` value to JSON the host shell consumes. Importing them keeps the
+// empty footprint; see `to_json` and the run loop.
 
 import reflect
 import meta

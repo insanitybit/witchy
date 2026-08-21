@@ -1,7 +1,7 @@
 // A JSON library - the witchy take on Go's encoding/json. This slice is the
 // value type and the encoder (serialization); the decoder (parsing) follows.
-// Pure and capability-free, so - unlike networking - it compiles to WASM like
-// the rest of the data std.
+// It demands no root capability and compiles to Wasm like the rest of the data
+// std. Individual effect-free APIs use the explicit `pure fn` contract.
 
 import string
 import show

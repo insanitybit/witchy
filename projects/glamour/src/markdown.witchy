@@ -5,8 +5,9 @@
 // HTML-string sink — so raw HTML in the source is shown as literal text, never parsed
 // as markup; and a link's `href` is scheme-checked, so a `javascript:`/`data:` URL is
 // neutralized. This is witchy-rendered DATA, not foreign code, so it needs no
-// compartment. (`string`/`list` are prelude — pure, capability-free — so this module's
-// footprint stays empty, exactly like the rest of glamour.)
+// compartment. `string` and `list` demand no root capabilities, so importing
+// them does not widen this module's empty host-capability footprint. Ordinary
+// callback parameters remain explicit delegated behavior.
 
 from glamour import VNode
 
