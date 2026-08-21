@@ -771,6 +771,10 @@ The core operations are native primitives (intercepted by both backends; the bod
 
 An empty Dict.
 
+#### `fn with_capacity(capacity: Int) -> Dict(k, v)`
+
+An empty Dict with pre-allocated capacity.
+
 #### `fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq`
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.

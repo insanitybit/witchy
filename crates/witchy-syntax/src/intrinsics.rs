@@ -147,6 +147,7 @@ pub enum IntrinsicId {
     ListPopExtract,
     ListWithCapacity,
     DictNew,
+    DictWithCapacity,
     DictInsert,
     DictInsertExtract,
     DictGetOr,
@@ -239,6 +240,7 @@ pub enum IntrinsicSignature {
     GenericListPopExtract,
     GenericListWithCapacity,
     GenericDictNew,
+    GenericDictWithCapacity,
     GenericDictInsert,
     GenericDictInsertExtract,
     GenericDictGetOr,
@@ -338,6 +340,7 @@ impl IntrinsicSignature {
         matches!(
             self,
             Self::GenericDictNew
+                | Self::GenericDictWithCapacity
                 | Self::GenericDictInsert
                 | Self::GenericDictUpdate
                 | Self::GenericDictRemove
@@ -628,6 +631,7 @@ pub const LIST_POP_EXTRACT: &str = "list.__pop_extract";
 pub const LIST_WITH_CAPACITY: &str = "list.with_capacity";
 
 pub const DICT_NEW: &str = "dict.new";
+pub const DICT_WITH_CAPACITY: &str = "dict.with_capacity";
 pub const DICT_INSERT: &str = "dict.__insert";
 pub const DICT_INSERT_EXTRACT: &str = "dict.__insert_extract";
 pub const DICT_GET_OR: &str = "dict.get_or";
@@ -2745,6 +2749,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::DictWithCapacity,
+        name: DICT_WITH_CAPACITY,
+        arity: 1,
+        signature: IntrinsicSignature::GenericDictWithCapacity,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_with_capacity"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_WITH_CAPACITY,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::DictInsert,
         name: DICT_INSERT,
         arity: 3,
@@ -3024,6 +3043,7 @@ pub const LIST_OPERATIONS: &[&str] = &[
 
 pub const DICT_OPERATIONS: &[&str] = &[
     DICT_NEW,
+    DICT_WITH_CAPACITY,
     DICT_INSERT,
     DICT_INSERT_EXTRACT,
     DICT_GET_OR,
@@ -3237,6 +3257,7 @@ pub fn is_dict_operation(name: &str) -> bool {
         matches!(
             spec.id,
             IntrinsicId::DictNew
+                | IntrinsicId::DictWithCapacity
                 | IntrinsicId::DictInsert
                 | IntrinsicId::DictInsertExtract
                 | IntrinsicId::DictGetOr
@@ -4339,7 +4360,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 13);
+        assert_eq!(actual.len(), 14);
 
         for name in DICT_OPERATIONS {
             let spec = lookup(name).expect("dict operation");
@@ -4394,6 +4415,7 @@ mod tests {
             let dict = || Type::Named("Dict".into(), vec![key(), value()]);
             match signature {
                 IntrinsicSignature::GenericDictNew => (vec![], dict()),
+                IntrinsicSignature::GenericDictWithCapacity => (vec![named("Int")], dict()),
                 IntrinsicSignature::GenericDictInsert => {
                     (vec![dict(), key(), value()], dict())
                 }

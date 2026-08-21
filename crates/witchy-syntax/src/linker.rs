@@ -136,6 +136,7 @@ const BUILTINS: &[&str] = &[
     "push",
     "concat",
     "dict_new",
+    "dict_with_capacity",
     "insert",
     "get_or",
     "has",

@@ -821,6 +821,7 @@ pub fn moved_builtin(bare: &str) -> Option<&'static str> {
         "length" => intrinsics::LIST_LENGTH,
         "concat" => intrinsics::LIST_CONCAT,
         "dict_new" => intrinsics::DICT_NEW,
+        "dict_with_capacity" => intrinsics::DICT_WITH_CAPACITY,
         "insert" => "dict.insert",
         "get_or" => intrinsics::DICT_GET_OR,
         "has" => intrinsics::DICT_CONTAINS_KEY,

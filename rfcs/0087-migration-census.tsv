@@ -9,10 +9,10 @@ projects/glamour/src/glamour.witchy	491	auxiliary-result-discard	dict.insert	-	-
 projects/glamour/src/glamour.witchy	499	auxiliary-result-discard	dict.insert	-	-
 projects/glamour/src/glamour.witchy	542	auxiliary-result-discard	dict.insert	-	-
 projects/glamour/src/glamour.witchy	544	auxiliary-result-discard	dict.insert	-	-
-std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
-std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
-std/dict.witchy	97	auxiliary-result-discard	dict.remove	-	-
-std/dict.witchy	100	auxiliary-result-discard	dict.__remove_extract	-	-
+std/dict.witchy	25	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	31	auxiliary-result-discard	dict.__insert_extract	-	-
+std/dict.witchy	101	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	104	auxiliary-result-discard	dict.__remove_extract	-	-
 std/list.witchy	42	auxiliary-result-discard	list.__pop_extract	-	-
 std/list.witchy	87	auxiliary-result-discard	list.__pop_extract	-	-
 std/prng.witchy	92	expression-position-mutator	prng.advance	-	-

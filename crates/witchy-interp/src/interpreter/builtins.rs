@@ -2080,6 +2080,13 @@ impl Interpreter {
                 [] => Ok(Some(Value::dict(Vec::new()))),
                 _ => err("dict_new takes no arguments"),
             },
+            intrinsics::DICT_WITH_CAPACITY => match args {
+                [Value::Int(cap)] => {
+                    let cap_val = (*cap).max(0) as usize;
+                    Ok(Some(Value::dict(Vec::with_capacity(cap_val))))
+                }
+                _ => err("with_capacity expects an Int capacity"),
+            },
             // Return a new dict with `k` set to `v` (replacing any existing entry).
             intrinsics::DICT_INSERT => match args {
                 [Value::Dict(entries), k, v] => {

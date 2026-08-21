@@ -4538,4 +4538,26 @@ fn main(console: Console):
         assert!(scan.contains("call $rc_dup"), "owner roots retained: {scan}");
         assert!(scan.contains("call $rc_drop"), "owner roots released: {scan}");
     }
+
+    #[test]
+    fn dict_with_capacity_compiles_and_inserts() {
+        let src = r#"
+import dict
+
+fn main(console: Console):
+    var d = dict.with_capacity(100)
+    d = dict.__insert(d, "key", 42)
+    console.print("${dict.get_or(d, "key", 0)}")
+"#;
+        let module = parse_module(src).expect("parse");
+        let bytes = compile_module_binary(&module).expect_lowered("compile");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        let lines = captured.lock().unwrap().clone();
+        assert_eq!(lines, vec!["42"]);
+    }
 }

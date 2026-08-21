@@ -13,6 +13,10 @@
 pub fn new() -> Dict(k, v):
     dict.new()
 
+// An empty Dict with pre-allocated capacity.
+pub fn with_capacity(capacity: Int) -> Dict(k, v):
+    dict.with_capacity(capacity)
+
 // A new dict with `key` set to `val` (replacing any existing entry).
 // Insertion order of first appearance is preserved. The `d[key] = val` sugar
 // (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to

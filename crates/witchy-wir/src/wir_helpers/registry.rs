@@ -1111,6 +1111,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "dict_with_capacity" => Some(WirHelperSpec {
+            func: dict_with_capacity_helper(),
+            helper_deps: &["rc_alloc", "ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "dict_insert" => Some(WirHelperSpec {
             func: dict_insert_helper(),
             helper_deps: &["rc_alloc", "dict_find"],

@@ -127,6 +127,7 @@ const HELPER_NAMES: &[&str] = &[
     "is_ws",
     "trim",
     "dict_new",
+    "dict_with_capacity",
     "dict_hash",
     "dict_find",
     "dict_index_put",

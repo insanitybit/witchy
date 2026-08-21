@@ -10459,8 +10459,14 @@ impl<'types> Codegen<'types> {
             Expr::Call { name, .. } => {
                 matches!(
                     name.as_str(),
-                    intrinsics::DICT_NEW | "dict.insert" | intrinsics::DICT_INSERT | "dict.remove"
-                        | intrinsics::DICT_REMOVE | "dict.update" | intrinsics::DICT_UPDATE
+                    intrinsics::DICT_NEW
+                        | intrinsics::DICT_WITH_CAPACITY
+                        | "dict.insert"
+                        | intrinsics::DICT_INSERT
+                        | "dict.remove"
+                        | intrinsics::DICT_REMOVE
+                        | "dict.update"
+                        | intrinsics::DICT_UPDATE
                 )
             }
             _ => false,

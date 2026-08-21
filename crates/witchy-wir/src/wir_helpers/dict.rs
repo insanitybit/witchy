@@ -254,6 +254,52 @@ pub(crate) fn dict_new_helper() -> WirFunc {
     }
 }
 
+/// `$dict_with_capacity(cap: i64) -> i32` — an empty dict with pre-allocated capacity `cap`:
+/// 8 reserved bytes (hidden index word at p-4, count at p) plus 16 bytes per preallocated entry.
+pub(crate) fn dict_with_capacity_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_with_capacity".into(),
+        params: vec![WirLocal { name: "cap".into(), ty: WirTy::Int }],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "c".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "c".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("cap")) },
+            },
+            N::If {
+                cond: b(BinOp::Lt, getl("c"), i32c(0)),
+                then_: vec![N::SetLocal { local: "c".into(), value: i32c(0) }],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "p".into(),
+                value: b(
+                    BinOp::Add,
+                    E::Call {
+                        func: "rc_alloc".into(),
+                        args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("c"), i32c(16)))],
+                    },
+                    i32c(4),
+                ),
+            },
+            N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::Store { ptr: getl("p"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::Push(getl("p")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_insert(d, k, v, mode) -> i32` — a fresh dict like `d` with `k` set to
 /// `v`: the matching entry's value replaced, or `(k, v)` appended. Copies the
 /// existing block (resetting the hidden index word to 0), then writes in place.

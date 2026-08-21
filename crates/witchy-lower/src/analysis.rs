@@ -2433,7 +2433,9 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         (intrinsics::MATH_TO_FLOAT, 1)
         | (intrinsics::MATH_TO_INT, 1)
         | (intrinsics::MATH_SQRT, 1) => read_all(argc),
-        (intrinsics::LIST_WITH_CAPACITY, 1) | (intrinsics::DICT_NEW, 0) => Some(Vec::new()),
+        (intrinsics::LIST_WITH_CAPACITY, 1)
+        | (intrinsics::DICT_NEW, 0)
+        | (intrinsics::DICT_WITH_CAPACITY, 1) => Some(Vec::new()),
         _ => None,
     }
 }
@@ -2458,7 +2460,8 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // the rc-region start is `ptr-4`.
         ("dict.insert" | intrinsics::DICT_INSERT, 3)
         | ("dict.update" | intrinsics::DICT_UPDATE, 4)
-        | ("dict.remove" | intrinsics::DICT_REMOVE, 2) => Some(4),
+        | ("dict.remove" | intrinsics::DICT_REMOVE, 2)
+        | (intrinsics::DICT_WITH_CAPACITY, 1) => Some(4),
         // List / string results: the buffer pointer IS the rc-region start (offset 0).
         // These allocators (`list_push`/`list_concat`/`ascii_case`/`substr`, and
         // `trim` via `substr`) are routed through `$rc_alloc`, so their results carry
@@ -3910,12 +3913,18 @@ fn no_copy_fresh(expr: &Expr) -> bool {
         // The empty dictionary has no old spine to copy. Its first structural
         // update establishes the geometric-capacity token returned by the var ABI.
         Expr::Call { name, args }
-            if args.is_empty()
+            if (args.is_empty()
                 && (name == intrinsics::DICT_NEW
                     || name
                         .strip_prefix(intrinsics::DICT_NEW)
                         .is_some_and(|suffix| suffix.starts_with("__"))
-                    || name.ends_with(".dict.new")) =>
+                    || name.ends_with(".dict.new")))
+                || (args.len() == 1
+                    && (name == intrinsics::DICT_WITH_CAPACITY
+                        || name
+                            .strip_prefix(intrinsics::DICT_WITH_CAPACITY)
+                            .is_some_and(|suffix| suffix.starts_with("__"))
+                        || name.ends_with(".dict.with_capacity"))) =>
         {
             true
         }

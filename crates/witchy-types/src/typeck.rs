@@ -3578,6 +3578,12 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
                                 .strip_prefix(intrinsics::DICT_NEW)
                                 .is_some_and(|suffix| suffix.starts_with("__"))
                             || name.ends_with(".dict.new")))
+                    || (args.len() == 1
+                        && (name == intrinsics::DICT_WITH_CAPACITY
+                            || name
+                                .strip_prefix(intrinsics::DICT_WITH_CAPACITY)
+                                .is_some_and(|suffix| suffix.starts_with("__"))
+                            || name.ends_with(".dict.with_capacity")))
             }
             Expr::Unary { op: UnOp::Move, expr } => produces_capacity(expr, functions),
             _ => false,
@@ -6503,6 +6509,11 @@ impl Checker {
                 let key = self.fresh();
                 let value = self.fresh();
                 Some((vec![], Ty::Named("Dict".into(), vec![key, value])))
+            }
+            S::GenericDictWithCapacity => {
+                let key = self.fresh();
+                let value = self.fresh();
+                Some((vec![Ty::Int], Ty::Named("Dict".into(), vec![key, value])))
             }
             S::GenericDictInsert => {
                 let key = self.fresh();

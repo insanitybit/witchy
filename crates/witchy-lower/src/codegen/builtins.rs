@@ -768,6 +768,10 @@ impl Codegen<'_> {
                 self.uses_dict = true;
                 call(intrinsic_helper(name), vec![])
             }
+            (intrinsics::DICT_WITH_CAPACITY, 1) => {
+                self.uses_dict = true;
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
+            }
             (intrinsics::DICT_KEYS, 1) => {
                 self.uses_dict_iter = true;
                 call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
