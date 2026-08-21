@@ -698,9 +698,15 @@ fn visit_wir_expr<'a>(expression: &'a WirExpr, visit: &mut impl FnMut(&'a WirNod
             visit_wir_expr(array, visit);
             visit_wir_expr(index, visit);
         }
+        WirExpr::Vector { args, .. } => {
+            for argument in args {
+                visit_wir_expr(argument, visit);
+            }
+        }
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
         | WirExpr::StrPtr(_)
         | WirExpr::GetLocal(_)
         | WirExpr::GetGlobal(_)

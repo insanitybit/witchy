@@ -158,9 +158,15 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
         }
         WirExpr::Control(node) => adapt_explicit_returns_node(node, kind),
         WirExpr::Seq(seq) => adapt_explicit_returns_seq(seq, kind),
+        WirExpr::Vector { args, .. } => {
+            for arg in args {
+                adapt_explicit_returns_expr(arg, kind);
+            }
+        }
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
         | WirExpr::StrPtr(_)
         | WirExpr::MemorySize
         | WirExpr::GetLocal(_)
@@ -294,8 +300,13 @@ pub(in crate::wir_opt) fn rename_expr_locals(
         }
         WirExpr::Control(node) => rename_node_locals(node, renames),
         WirExpr::Seq(seq) => rename_seq_locals(seq, renames),
+        WirExpr::Vector { args, .. } => {
+            for arg in args {
+                rename_expr_locals(arg, renames);
+            }
+        }
         WirExpr::ConstI64(_) | WirExpr::ConstF64(_) | WirExpr::ConstI32(_)
-        | WirExpr::StrPtr(_) | WirExpr::MemorySize | WirExpr::GetGlobal(_)
+        | WirExpr::ConstV128(_) | WirExpr::StrPtr(_) | WirExpr::MemorySize | WirExpr::GetGlobal(_)
         | WirExpr::RefNull(_) => {}
     }
 }

@@ -6024,7 +6024,12 @@ fn collect_called_funcs(
             | E::RefCastNullable { value: base, .. }
             | E::RefIsNull(base)
             | E::ArrayLen(base) => expr(base, out, uses_table),
-            E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
+            E::Vector { args, .. } => {
+                for a in args {
+                    expr(a, out, uses_table);
+                }
+            }
+            E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::ConstV128(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
@@ -6156,7 +6161,12 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
             | E::RefCastNullable { value: base, .. }
             | E::RefIsNull(base)
             | E::ArrayLen(base) => expr(base, out),
-            E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
+            E::Vector { args, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::ConstV128(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
@@ -6337,9 +6347,15 @@ fn attach_diagnostic_site_expr(
             | E::RefCastNullable { value: base, .. }
             | E::RefIsNull(base)
             | E::ArrayLen(base) => reaches_host |= expr(base, site),
+            E::Vector { args, .. } => {
+                for arg in args {
+                    reaches_host |= expr(arg, site);
+                }
+            }
             E::ConstI64(_)
             | E::ConstF64(_)
             | E::ConstI32(_)
+            | E::ConstV128(_)
             | E::StrPtr(_)
             | E::GetLocal(_)
             | E::GetGlobal(_)

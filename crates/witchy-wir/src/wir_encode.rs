@@ -20,7 +20,7 @@ use wasm_encoder::{
 };
 
 use crate::wir::{
-    BinOp, ClosureSignature, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq,
+    BinOp, ClosureSignature, GlobalInit, Kind, UnOp, VectorOp, WirExpr, WirModule, WirNode, WirSeq,
     WirArrayDef, WirStructDef, slot_closure_signature,
 };
 
@@ -99,8 +99,14 @@ impl Preflight<'_> {
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
+            | WirExpr::ConstV128(_)
             | WirExpr::StrPtr(_)
             | WirExpr::MemorySize => {}
+            WirExpr::Vector { args, .. } => {
+                for a in args {
+                    self.expr(a, locals, labels)?;
+                }
+            }
             WirExpr::GetLocal(name) => {
                 if !locals.contains(name.as_str()) {
                     return Self::reject(format!("unknown local ${name}"));
@@ -132,7 +138,9 @@ impl Preflight<'_> {
             WirExpr::Unary { op, kind, arg } => {
                 let valid = match op {
                     UnOp::Neg => matches!(kind, Kind::I32 | Kind::I64 | Kind::F64),
-                    UnOp::BitNot => matches!(kind, Kind::I32 | Kind::I64),
+                    UnOp::BitNot | UnOp::Ctz | UnOp::Clz | UnOp::Popcnt => {
+                        matches!(kind, Kind::I32 | Kind::I64)
+                    }
                     UnOp::Not => *kind == Kind::I32,
                     UnOp::ToFloat | UnOp::Sqrt => *kind == Kind::F64,
                     UnOp::ToInt => *kind == Kind::I64,
@@ -445,6 +453,7 @@ fn val_type(kind: Kind, gc_base: u32) -> ValType {
         Kind::I32 => ValType::I32,
         Kind::I64 => ValType::I64,
         Kind::F64 => ValType::F64,
+        Kind::V128 => ValType::V128,
         // (RFC-0005) An unforgeable, nullable host reference.
         Kind::ExternRef => ValType::EXTERNREF,
         // (RFC-0005 Stage 4) An erased nullable GC struct reference.
@@ -466,6 +475,7 @@ fn load_align(kind: Kind) -> u32 {
         Kind::I32 => 2, // 4 bytes
         Kind::I64 => 3, // 8 bytes
         Kind::F64 => 3, // 8 bytes
+        Kind::V128 => 4, // 16 bytes
         // (RFC-0005) Reference kinds are never a linear-memory load/store.
         Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("reference-typed values are not linear-memory loads")
@@ -1023,6 +1033,7 @@ impl EncodeCtx<'_> {
                     Kind::I32 => Instruction::I32Store(mem),
                     Kind::I64 => Instruction::I64Store(mem),
                     Kind::F64 => Instruction::F64Store(mem),
+                    Kind::V128 => Instruction::V128Store(mem),
                     Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
                         unreachable!("reference-typed values are not stored to linear memory")
                     }
@@ -1228,6 +1239,9 @@ impl EncodeCtx<'_> {
             WirExpr::ConstF64(x) => {
                 func.instruction(&Instruction::F64Const((*x).into()));
             }
+            WirExpr::ConstV128(bytes) => {
+                func.instruction(&Instruction::V128Const(i128::from_le_bytes(*bytes)));
+            }
             // A string pointer is an i32 byte offset into linear memory.
             WirExpr::StrPtr(off) => {
                 func.instruction(&Instruction::I32Const(*off as i32));
@@ -1237,6 +1251,12 @@ impl EncodeCtx<'_> {
             }
             WirExpr::GetGlobal(name) => {
                 func.instruction(&Instruction::GlobalGet(self.global(name)));
+            }
+            WirExpr::Vector { op, args } => {
+                for a in args {
+                    self.encode_expr(func, a);
+                }
+                func.instruction(&vector_op_instr(*op));
             }
             WirExpr::ToSlot(inner, kind) => {
                 self.encode_expr(func, inner);
@@ -1290,6 +1310,30 @@ impl EncodeCtx<'_> {
                     self.encode_expr(func, arg);
                     func.instruction(&Instruction::F64Sqrt);
                 }
+                UnOp::Ctz => {
+                    self.encode_expr(func, arg);
+                    match kind {
+                        Kind::I32 => func.instruction(&Instruction::I32Ctz),
+                        Kind::I64 => func.instruction(&Instruction::I64Ctz),
+                        _ => unreachable!("ctz on non-integer"),
+                    };
+                }
+                UnOp::Clz => {
+                    self.encode_expr(func, arg);
+                    match kind {
+                        Kind::I32 => func.instruction(&Instruction::I32Clz),
+                        Kind::I64 => func.instruction(&Instruction::I64Clz),
+                        _ => unreachable!("clz on non-integer"),
+                    };
+                }
+                UnOp::Popcnt => {
+                    self.encode_expr(func, arg);
+                    match kind {
+                        Kind::I32 => func.instruction(&Instruction::I32Popcnt),
+                        Kind::I64 => func.instruction(&Instruction::I64Popcnt),
+                        _ => unreachable!("popcnt on non-integer"),
+                    };
+                }
             },
             WirExpr::Convert { from, to, arg } => {
                 self.encode_expr(func, arg);
@@ -1316,6 +1360,7 @@ impl EncodeCtx<'_> {
                     Kind::I32 => Instruction::I32Load(mem),
                     Kind::I64 => Instruction::I64Load(mem),
                     Kind::F64 => Instruction::F64Load(mem),
+                    Kind::V128 => Instruction::V128Load(mem),
                     Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
                         unreachable!("reference-typed values are not loaded from linear memory")
                     }
@@ -1347,14 +1392,14 @@ impl EncodeCtx<'_> {
                     .unwrap_or_else(|| panic!("call to unknown func ${name}"));
                 func.instruction(&Instruction::Call(idx));
             }
-            WirExpr::CallHost { import, args } => {
+            WirExpr::CallHost { import: name, args } => {
                 for a in args {
                     self.encode_expr(func, a);
                 }
                 let idx = *self
                     .import_index
-                    .get(import.as_str())
-                    .unwrap_or_else(|| panic!("call to unknown host import ${import}"));
+                    .get(name.as_str())
+                    .unwrap_or_else(|| panic!("call to unknown host import ${name}"));
                 func.instruction(&Instruction::Call(idx));
             }
             WirExpr::CallIndirect {
@@ -1435,7 +1480,10 @@ impl EncodeCtx<'_> {
             }
             WirExpr::RefNull(kind) => {
                 let heap = match kind {
-                    Kind::ExternRef => HeapType::EXTERN,
+                    Kind::ExternRef => HeapType::Abstract {
+                        shared: false,
+                        ty: AbstractHeapType::Extern,
+                    },
                     Kind::StructRef => HeapType::Abstract {
                         shared: false,
                         ty: AbstractHeapType::Struct,
@@ -1457,13 +1505,15 @@ impl EncodeCtx<'_> {
     }
 }
 
-/// to-slot conversion instruction for a value of `kind` (None if already i64).
 /// Mirrors `wir::to_slot_op` — note I32 is the SIGNED extend.
 fn to_slot_instr(kind: Kind) -> Option<Instruction<'static>> {
     match kind {
         Kind::I64 => None,
         Kind::I32 => Some(Instruction::I64ExtendI32S),
         Kind::F64 => Some(Instruction::I64ReinterpretF64),
+        Kind::V128 => {
+            unreachable!("cannot box a 128-bit vector value into the i64 slot")
+        }
         // (RFC-0005) A reference cannot be boxed into the i64 slot (no bit-pattern);
         // the crossing is a `typeck` reject (§4.4), so this is unreachable.
         Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
@@ -1479,6 +1529,9 @@ fn from_slot_instr(kind: Kind) -> Option<Instruction<'static>> {
         Kind::I64 => None,
         Kind::I32 => Some(Instruction::I32WrapI64),
         Kind::F64 => Some(Instruction::F64ReinterpretI64),
+        Kind::V128 => {
+            unreachable!("cannot recover a 128-bit vector value from the i64 slot")
+        }
         Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("cannot recover a reference-typed value (a capability) from the i64 slot")
         }
@@ -1491,6 +1544,7 @@ fn const_zero(kind: Kind) -> Instruction<'static> {
         Kind::I32 => Instruction::I32Const(0),
         Kind::I64 => Instruction::I64Const(0),
         Kind::F64 => Instruction::F64Const(0.0.into()),
+        Kind::V128 => Instruction::V128Const(0),
         Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("no `.const 0` for a reference kind")
         }
@@ -1503,9 +1557,34 @@ fn const_neg_one(kind: Kind) -> Instruction<'static> {
         Kind::I32 => Instruction::I32Const(-1),
         Kind::I64 => Instruction::I64Const(-1),
         Kind::F64 => Instruction::F64Const((-1.0).into()),
+        Kind::V128 => Instruction::V128Const(-1i128),
         Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             unreachable!("no `.const -1` for a reference kind")
         }
+    }
+}
+
+/// The `Instruction` matching `VectorOp` (RFC-0140).
+fn vector_op_instr(op: VectorOp) -> Instruction<'static> {
+    match op {
+        VectorOp::I8x16Splat => Instruction::I8x16Splat,
+        VectorOp::I16x8Splat => Instruction::I16x8Splat,
+        VectorOp::I32x4Splat => Instruction::I32x4Splat,
+        VectorOp::I64x2Splat => Instruction::I64x2Splat,
+        VectorOp::I8x16Eq => Instruction::I8x16Eq,
+        VectorOp::I8x16Ne => Instruction::I8x16Ne,
+        VectorOp::I8x16Bitmask => Instruction::I8x16Bitmask,
+        VectorOp::I8x16Swizzle => Instruction::I8x16Swizzle,
+        VectorOp::I8x16RelaxedSwizzle => Instruction::I8x16RelaxedSwizzle,
+        VectorOp::V128And => Instruction::V128And,
+        VectorOp::V128Or => Instruction::V128Or,
+        VectorOp::V128Xor => Instruction::V128Xor,
+        VectorOp::V128Not => Instruction::V128Not,
+        VectorOp::V128Bitselect => Instruction::V128Bitselect,
+        VectorOp::I64x2ExtMulLowI32x4U => Instruction::I64x2ExtMulLowI32x4U,
+        VectorOp::I64x2ExtMulHighI32x4U => Instruction::I64x2ExtMulHighI32x4U,
+        VectorOp::I64x2Add => Instruction::I64x2Add,
+        VectorOp::I32x4Add => Instruction::I32x4Add,
     }
 }
 

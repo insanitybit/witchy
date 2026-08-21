@@ -23,9 +23,10 @@ pub(crate) fn str_eq_helper() -> WirFunc {
         rhs: Box::new(r),
     };
     let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
-    // byte a[4+i] vs b[4+i]
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
     let byte_at = |base: &str| E::Load8U {
-        ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"))),
+        ptr: Box::new(ptr_at(base)),
         offset: 0,
     };
     WirFunc {
@@ -38,6 +39,9 @@ pub(crate) fn str_eq_helper() -> WirFunc {
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "v1".into(), ty: WirTy::V128 },
+            WirLocal { name: "v2".into(), ty: WirTy::V128 },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
         ],
         body: vec![
             // same pointer → equal
@@ -56,6 +60,44 @@ pub(crate) fn str_eq_helper() -> WirFunc {
             },
             N::SetLocal { local: "len".into(), value: load_i32(getl("a")) },
             N::SetLocal { local: "i".into(), value: i32c(0) },
+            // Vector loop: 16 bytes per iteration (RFC-0140)
+            N::Block {
+                label: "vdone".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "vl".into(),
+                    body: vec![
+                        N::Br {
+                            target: "vdone".into(),
+                            cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
+                        },
+                        N::SetLocal { local: "v1".into(), value: load_v128(ptr_at("a")) },
+                        N::SetLocal { local: "v2".into(), value: load_v128(ptr_at("b")) },
+                        N::SetLocal {
+                            local: "mask".into(),
+                            value: E::Vector {
+                                op: VectorOp::I8x16Bitmask,
+                                args: vec![E::Vector {
+                                    op: VectorOp::I8x16Eq,
+                                    args: vec![getl("v1"), getl("v2")],
+                                }],
+                            },
+                        },
+                        N::If {
+                            cond: bin(BinOp::Ne, getl("mask"), i32c(0xffff)),
+                            then_: vec![N::Return(Some(i32c(0)))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: bin(BinOp::Add, getl("i"), i32c(16)),
+                        },
+                        N::Br { target: "vl".into(), cond: None },
+                    ],
+                }],
+            },
+            // Scalar tail loop (< 16 remaining bytes)
             N::Block {
                 label: "done".into(),
                 result: None,
@@ -166,10 +208,8 @@ pub(super) fn str_cmp_helper() -> WirFunc {
 }
 
 /// `$find_byte(s: i32, sub: i32) -> i32` — index of the first occurrence of
-/// `sub` in `s` (byte-wise), or `-1`; empty `sub` → 0. Mirrors `FIND_BYTE_WAT`
-/// (a scan loop with an inner byte-compare loop; the inner mismatch `br` lives
-/// inside an `if`, which the encoder must count as a branch frame). No
-/// heap/import/table.
+/// `sub` in `s` (byte-wise), or `-1`; empty `sub` → 0. Vectorized for single-byte
+/// searches with 16-way SIMD bitmask scanning (RFC-0140).
 pub(crate) fn find_byte_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -177,6 +217,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))), offset: 4 };
     let sub_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sub"), getl("j"))), offset: 4 };
@@ -217,6 +258,73 @@ pub(crate) fn find_byte_helper() -> WirFunc {
             ],
         }],
     };
+    // Single-byte accelerated SIMD needle search
+    let single_byte_branch = vec![
+        setl("needle", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sub"), i32c(4))), offset: 0 }),
+        setl("target_splat", E::Vector {
+            op: VectorOp::I8x16Splat,
+            args: vec![getl("needle")],
+        }),
+        // 16-byte SIMD search loop
+        N::Block {
+            label: "vdone".into(),
+            result: None,
+            body: vec![N::Loop {
+                label: "vl".into(),
+                body: vec![
+                    N::Br {
+                        target: "vdone".into(),
+                        cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("slen"))),
+                    },
+                    setl("v", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                    setl("mask", E::Vector {
+                        op: VectorOp::I8x16Bitmask,
+                        args: vec![E::Vector {
+                            op: VectorOp::I8x16Eq,
+                            args: vec![getl("v"), getl("target_splat")],
+                        }],
+                    }),
+                    N::If {
+                        cond: getl("mask"),
+                        then_: vec![
+                            N::Return(Some(b(
+                                BinOp::Add,
+                                getl("i"),
+                                E::Unary { op: UnOp::Ctz, kind: Kind::I32, arg: Box::new(getl("mask")) },
+                            ))),
+                        ],
+                        els: vec![],
+                        result: None,
+                    },
+                    setl("i", b(BinOp::Add, getl("i"), i32c(16))),
+                    N::Br { target: "vl".into(), cond: None },
+                ],
+            }],
+        },
+        // Scalar tail loop for remaining bytes
+        N::Block {
+            label: "tdone".into(),
+            result: None,
+            body: vec![N::Loop {
+                label: "tl".into(),
+                body: vec![
+                    N::Br {
+                        target: "tdone".into(),
+                        cond: Some(b(BinOp::Ge, getl("i"), getl("slen"))),
+                    },
+                    N::If {
+                        cond: b(BinOp::Eq, E::Load8U { ptr: Box::new(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i"))), offset: 0 }, getl("needle")),
+                        then_: vec![N::Return(Some(getl("i")))],
+                        els: vec![],
+                        result: None,
+                    },
+                    setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                    N::Br { target: "tl".into(), cond: None },
+                ],
+            }],
+        },
+        N::Return(Some(i32c(-1))),
+    ];
     WirFunc {
         name: "find_byte".into(),
         params: vec![
@@ -224,10 +332,17 @@ pub(crate) fn find_byte_helper() -> WirFunc {
             WirLocal { name: "sub".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["slen", "sublen", "i", "j", "match"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
+            WirLocal { name: "sublen".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "j".into(), ty: WirTy::Bool },
+            WirLocal { name: "match".into(), ty: WirTy::Bool },
+            WirLocal { name: "needle".into(), ty: WirTy::Bool },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            WirLocal { name: "v".into(), ty: WirTy::V128 },
+            WirLocal { name: "target_splat".into(), ty: WirTy::V128 },
+        ],
         body: vec![
             setl("slen", load(getl("s"))),
             setl("sublen", load(getl("sub"))),
@@ -238,6 +353,12 @@ pub(crate) fn find_byte_helper() -> WirFunc {
                 result: None,
             },
             setl("i", i32c(0)),
+            N::If {
+                cond: b(BinOp::Eq, getl("sublen"), i32c(1)),
+                then_: single_byte_branch,
+                els: vec![],
+                result: None,
+            },
             scan_loop,
             N::Push(i32c(-1)),
         ],

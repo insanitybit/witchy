@@ -2138,7 +2138,9 @@ impl<'types> Codegen<'types> {
                     witchy_wir::wir::Kind::I64 => Kind::I64,
                     witchy_wir::wir::Kind::F64 => Kind::F64,
                     witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
-                    witchy_wir::wir::Kind::StructRef | witchy_wir::wir::Kind::AnyRef => {
+                    witchy_wir::wir::Kind::StructRef
+                    | witchy_wir::wir::Kind::AnyRef
+                    | witchy_wir::wir::Kind::V128 => {
                         return None;
                     }
                     witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
@@ -4814,7 +4816,8 @@ impl<'types> Codegen<'types> {
                                 witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
                                 witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
                                 witchy_wir::wir::Kind::StructRef
-                                | witchy_wir::wir::Kind::AnyRef => continue,
+                                | witchy_wir::wir::Kind::AnyRef
+                                | witchy_wir::wir::Kind::V128 => continue,
                             }),
                         });
                     }
@@ -7138,6 +7141,7 @@ impl<'types> Codegen<'types> {
                 WK::I32 => W::ConstI32(0),
                 WK::I64 => W::ConstI64(0),
                 WK::F64 => W::ConstF64(0.0),
+                WK::V128 => W::ConstV128([0; 16]),
                 ref_kind @ (WK::ExternRef | WK::StructRef | WK::AnyRef | WK::GcRef(_)) => {
                     W::RefNull(ref_kind)
                 }
@@ -8405,6 +8409,7 @@ impl<'types> Codegen<'types> {
             witchy_wir::wir::Kind::I32 => W::ConstI32(0),
             witchy_wir::wir::Kind::I64 => W::ConstI64(0),
             witchy_wir::wir::Kind::F64 => W::ConstF64(0.0),
+            witchy_wir::wir::Kind::V128 => W::ConstV128([0; 16]),
             reference @ (witchy_wir::wir::Kind::ExternRef
             | witchy_wir::wir::Kind::StructRef
             | witchy_wir::wir::Kind::AnyRef
@@ -9321,7 +9326,8 @@ impl<'types> Codegen<'types> {
                                         witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
                                         witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
                                         witchy_wir::wir::Kind::StructRef
-                                        | witchy_wir::wir::Kind::AnyRef => continue,
+                                        | witchy_wir::wir::Kind::AnyRef
+                                        | witchy_wir::wir::Kind::V128 => continue,
                                     }),
                                 });
                             }

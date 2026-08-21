@@ -20,6 +20,8 @@
         config.wasm_reference_types(true);
         config.wasm_function_references(true);
         config.wasm_gc(true);
+        config.wasm_simd(true);
+        config.wasm_relaxed_simd(true);
         let engine = wasmtime::Engine::new(&config).expect("engine");
         let m = wasmtime::Module::new(&engine, binary)
             .unwrap_or_else(|e| panic!("encoded module invalid: {e:#}"));
@@ -89,6 +91,8 @@
         let binary = encode(&with_rc_floor(module), &[]);
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
+        config.wasm_simd(true);
+        config.wasm_relaxed_simd(true);
         let engine = wasmtime::Engine::new(&config).expect("engine");
         let m = wasmtime::Module::new(&engine, &binary).expect("encoded module invalid");
         let mut linker = wasmtime::Linker::new(&engine);

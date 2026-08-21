@@ -207,9 +207,15 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
         | WirExpr::RefCastNullable { value: base, .. }
         | WirExpr::ArrayLen(base)
         | WirExpr::RefIsNull(base) => simplify_expr(base, changed),
+        WirExpr::Vector { args, .. } => {
+            for a in args.iter_mut() {
+                simplify_expr(a, changed);
+            }
+        }
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
         | WirExpr::StrPtr(_)
         | WirExpr::MemorySize
         | WirExpr::GetLocal(_)
@@ -337,9 +343,11 @@ fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::RefCastNullable { value: base, .. }
         | WirExpr::ArrayLen(base)
         | WirExpr::RefIsNull(base) => expr_size(base),
+        WirExpr::Vector { args, .. } => args.iter().map(expr_size).sum(),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
         | WirExpr::StrPtr(_)
         | WirExpr::MemorySize
         | WirExpr::GetLocal(_)

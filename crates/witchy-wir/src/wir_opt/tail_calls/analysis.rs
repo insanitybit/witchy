@@ -257,8 +257,13 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCall
         }
         WirExpr::Control(node) => collect_explicit_return_calls_node(node, out),
         WirExpr::Seq(seq) => collect_explicit_return_calls_seq(seq, out),
+        WirExpr::Vector { args, .. } => {
+            for arg in args {
+                collect_explicit_return_calls_expr(arg, out);
+            }
+        }
         WirExpr::ConstI64(_) | WirExpr::ConstF64(_) | WirExpr::ConstI32(_)
-        | WirExpr::StrPtr(_) | WirExpr::MemorySize | WirExpr::GetLocal(_)
+        | WirExpr::ConstV128(_) | WirExpr::StrPtr(_) | WirExpr::MemorySize | WirExpr::GetLocal(_)
         | WirExpr::GetGlobal(_) | WirExpr::RefNull(_) => {}
     }
 }

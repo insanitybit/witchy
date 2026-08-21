@@ -2041,6 +2041,7 @@ impl<'types> Codegen<'types> {
                         witchy_wir::wir::Kind::I32 => W::ConstI32(0),
                         witchy_wir::wir::Kind::I64 => W::ConstI64(0),
                         witchy_wir::wir::Kind::F64 => W::ConstF64(0.0),
+                        witchy_wir::wir::Kind::V128 => W::ConstV128([0; 16]),
                         ref_kind @ (witchy_wir::wir::Kind::ExternRef
                         | witchy_wir::wir::Kind::StructRef
                         | witchy_wir::wir::Kind::AnyRef

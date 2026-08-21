@@ -978,6 +978,7 @@ fn carrier_ty(kind: Kind) -> WirTy {
         Kind::I32 => WirTy::Bool,
         Kind::I64 => WirTy::Int,
         Kind::F64 => WirTy::Float,
+        Kind::V128 => WirTy::V128,
         Kind::ExternRef => WirTy::Extern,
         Kind::StructRef => WirTy::StructRef,
         Kind::AnyRef => WirTy::AnyRef,
@@ -1310,6 +1311,7 @@ fn default_value(ty: &WirTy) -> WirExpr {
         Kind::I64 => WirExpr::ConstI64(0),
         Kind::F64 => WirExpr::ConstF64(0.0),
         Kind::I32 => WirExpr::ConstI32(0),
+        Kind::V128 => WirExpr::ConstV128([0; 16]),
         kind @ (Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_)) => {
             WirExpr::RefNull(kind)
         }
@@ -1670,9 +1672,13 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         }
         WirExpr::Control(node) => rewrite_explicit_returns_node(node, ctx),
         WirExpr::Seq(seq) => rewrite_explicit_returns_seq(seq, ctx),
+        WirExpr::Vector { args, .. } => {
+            args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
+        }
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
         | WirExpr::StrPtr(_)
         | WirExpr::MemorySize
         | WirExpr::GetLocal(_)

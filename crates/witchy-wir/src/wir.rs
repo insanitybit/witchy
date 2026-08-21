@@ -28,6 +28,8 @@ pub enum Kind {
     I32,
     I64,
     F64,
+    /// (RFC-0140) 128-bit vector register (WebAssembly `v128`).
+    V128,
     /// (RFC-0005) A wasm `externref`: an unforgeable, opaque host reference. It
     /// lives ONLY in locals/params/results/globals/tables and GC struct fields —
     /// never in linear memory, and there is no `i32 -> externref` cast — so a
@@ -143,6 +145,7 @@ impl Kind {
             Kind::I32 => "i32",
             Kind::I64 => "i64",
             Kind::F64 => "f64",
+            Kind::V128 => "v128",
             Kind::ExternRef => "externref",
             Kind::StructRef => "(ref null struct)",
             Kind::AnyRef => "(ref null any)",
@@ -171,6 +174,8 @@ pub enum WirTy {
     Unit,
     Capability,
     List(Box<WirTy>),
+    /// (RFC-0140) 128-bit vector register.
+    V128,
     /// The universal untyped i64 slot (generic/monomorphized boundaries).
     Slot,
     /// (RFC-0005) A capability carried as a bare `externref` — the unforgeable
@@ -194,6 +199,7 @@ impl WirTy {
         match self {
             WirTy::Int => Kind::I64,
             WirTy::Float => Kind::F64,
+            WirTy::V128 => Kind::V128,
             WirTy::Slot => Kind::I64,
             WirTy::Extern => Kind::ExternRef,
             WirTy::StructRef => Kind::StructRef,
@@ -390,6 +396,60 @@ pub enum UnOp {
     ToInt,
     /// `f64 -> f64` square root (`f64.sqrt`), for `math.sqrt`.
     Sqrt,
+    /// Count trailing zeros (`i32.ctz` / `i64.ctz`).
+    Ctz,
+    /// Count leading zeros (`i32.clz` / `i64.clz`).
+    Clz,
+    /// Population count (`i32.popcnt` / `i64.popcnt`).
+    Popcnt,
+}
+
+/// A 128-bit vector operator (RFC-0140).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorOp {
+    I8x16Splat,
+    I16x8Splat,
+    I32x4Splat,
+    I64x2Splat,
+    I8x16Eq,
+    I8x16Ne,
+    I8x16Bitmask,
+    I8x16Swizzle,
+    I8x16RelaxedSwizzle,
+    V128And,
+    V128Or,
+    V128Xor,
+    V128Not,
+    V128Bitselect,
+    I64x2ExtMulLowI32x4U,
+    I64x2ExtMulHighI32x4U,
+    I64x2Add,
+    I32x4Add,
+}
+
+impl VectorOp {
+    pub fn wat(self) -> &'static str {
+        match self {
+            VectorOp::I8x16Splat => "i8x16.splat",
+            VectorOp::I16x8Splat => "i16x8.splat",
+            VectorOp::I32x4Splat => "i32x4.splat",
+            VectorOp::I64x2Splat => "i64x2.splat",
+            VectorOp::I8x16Eq => "i8x16.eq",
+            VectorOp::I8x16Ne => "i8x16.ne",
+            VectorOp::I8x16Bitmask => "i8x16.bitmask",
+            VectorOp::I8x16Swizzle => "i8x16.swizzle",
+            VectorOp::I8x16RelaxedSwizzle => "i8x16.relaxed_swizzle",
+            VectorOp::V128And => "v128.and",
+            VectorOp::V128Or => "v128.or",
+            VectorOp::V128Xor => "v128.xor",
+            VectorOp::V128Not => "v128.not",
+            VectorOp::V128Bitselect => "v128.bitselect",
+            VectorOp::I64x2ExtMulLowI32x4U => "i64x2.extmul_low_i32x4_u",
+            VectorOp::I64x2ExtMulHighI32x4U => "i64x2.extmul_high_i32x4_u",
+            VectorOp::I64x2Add => "i64x2.add",
+            VectorOp::I32x4Add => "i32x4.add",
+        }
+    }
 }
 
 /// The typed expression layer — witchy-semantic value nodes. Post-order emission
@@ -399,11 +459,19 @@ pub enum WirExpr {
     ConstI64(i64),
     ConstF64(f64),
     ConstI32(i32),
+    /// (RFC-0140) 128-bit vector constant bytes.
+    ConstV128([u8; 16]),
     /// A pointer to an interned `[i32 len][utf-8]` string record (the byte offset).
     StrPtr(u32),
     GetLocal(String),
     /// Read a module global by name (`global.get $g`).
     GetGlobal(String),
+
+    /// (RFC-0140) 128-bit vector operation.
+    Vector {
+        op: VectorOp,
+        args: Vec<WirExpr>,
+    },
 
     /// value -> universal i64 slot.
     ToSlot(Box<WirExpr>, Kind),
@@ -1067,6 +1135,7 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             WirExpr::ConstI32(_)
             | WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
+            | WirExpr::ConstV128(_)
             | WirExpr::StrPtr(_)
             | WirExpr::RefNull(_) => {}
             _ => {
@@ -1118,9 +1187,19 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
         // whole-number `5` needs no `.0`. (The binary encoder writes the bits
         // directly and does not go through this text path.)
         WirExpr::ConstF64(x) => emit(s, depth, &format!("f64.const {x}")),
+        WirExpr::ConstV128(bytes) => {
+            let parts: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+            emit(s, depth, &format!("v128.const i8x16 {}", parts.join(" ")));
+        }
         WirExpr::StrPtr(off) => emit(s, depth, &format!("i32.const {off}")),
         WirExpr::GetLocal(name) => emit(s, depth, &format!("local.get ${name}")),
         WirExpr::GetGlobal(name) => emit(s, depth, &format!("global.get ${name}")),
+        WirExpr::Vector { op, args } => {
+            for a in args {
+                print_expr(s, a, depth);
+            }
+            emit(s, depth, op.wat());
+        }
         WirExpr::ToSlot(inner, kind) => {
             print_expr(s, inner, depth);
             if let Some(op) = to_slot_op(*kind) {
@@ -1172,6 +1251,18 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             UnOp::Sqrt => {
                 print_expr(s, arg, depth);
                 emit(s, depth, "f64.sqrt");
+            }
+            UnOp::Ctz => {
+                print_expr(s, arg, depth);
+                emit(s, depth, &format!("{}.ctz", kind.wat()));
+            }
+            UnOp::Clz => {
+                print_expr(s, arg, depth);
+                emit(s, depth, &format!("{}.clz", kind.wat()));
+            }
+            UnOp::Popcnt => {
+                print_expr(s, arg, depth);
+                emit(s, depth, &format!("{}.popcnt", kind.wat()));
             }
         },
         WirExpr::Convert { from, to, arg } => {
@@ -1309,6 +1400,7 @@ fn to_slot_op(kind: Kind) -> Option<&'static str> {
         // Bools have the high bit clear, so sign-extension leaves them unchanged.
         Kind::I32 => Some("i64.extend_i32_s"),
         Kind::F64 => Some("i64.reinterpret_f64"),
+        Kind::V128 => panic!("cannot box a 128-bit vector value into the i64 slot"),
         // (RFC-0005) A reference has no i64 bit-pattern, so it cannot enter the
         // universal slot. Reaching here means the i64 Slot-boundary `typeck`
         // reject (§4.4) was bypassed — a compiler bug, not a program error.
@@ -1324,6 +1416,7 @@ fn from_slot_op(kind: Kind) -> Option<&'static str> {
         Kind::I64 => None,
         Kind::I32 => Some("i32.wrap_i64"),
         Kind::F64 => Some("f64.reinterpret_i64"),
+        Kind::V128 => panic!("cannot recover a 128-bit vector value from the i64 slot"),
         Kind::ExternRef | Kind::StructRef | Kind::AnyRef | Kind::GcRef(_) => {
             panic!("cannot recover a reference-typed value (a capability) from the i64 slot")
         }
@@ -1348,6 +1441,7 @@ fn clos_type_name(signature: &ClosureSignature) -> String {
             Kind::I32 => "i32".into(),
             Kind::I64 => "i64".into(),
             Kind::F64 => "f64".into(),
+            Kind::V128 => "v128".into(),
             Kind::ExternRef => "externref".into(),
             Kind::StructRef => "structref".into(),
             Kind::AnyRef => "anyref".into(),
@@ -1422,9 +1516,15 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
             | WirExpr::RefCastNullable { value: base, .. }
             | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => walk_expr(base, out),
+            WirExpr::Vector { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
+            | WirExpr::ConstV128(_)
             | WirExpr::StrPtr(_)
             | WirExpr::MemorySize
             | WirExpr::GetLocal(_)
@@ -1551,9 +1651,15 @@ pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::
             | WirExpr::RefCastNullable { value: base, .. }
             | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => walk_expr(base, out),
+            WirExpr::Vector { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
+            | WirExpr::ConstV128(_)
             | WirExpr::StrPtr(_)
             | WirExpr::MemorySize
             | WirExpr::GetGlobal(_)
@@ -1788,9 +1894,15 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
             | WirExpr::RefCastNullable { value: base, .. }
             | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => expr_violates(base, hits),
+            WirExpr::Vector { args, .. } => {
+                for a in args {
+                    expr_violates(a, hits);
+                }
+            }
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
+            | WirExpr::ConstV128(_)
             | WirExpr::StrPtr(_)
             | WirExpr::GetLocal(_)
             | WirExpr::GetGlobal(_)

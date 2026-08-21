@@ -65,6 +65,25 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
     // keys between slots — observable dict behavior is unchanged. Not
     // DoS-resistant (fixed constants), which a value-semantic dict does not need.
     let c1 = i64c(-49064778989728563i64); // 0xff51afd7ed558ccd (murmur3 fmix)
+    let c2 = i64c(-4265267296055464877i64);
+    let vec_loop = N::Block {
+        label: "vdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "vl".into(),
+            body: vec![
+                N::Br { target: "vdone".into(), cond: Some(b32(BinOp::Gt, b32(BinOp::Add, getl("i"), i32c(16)), getl("len"))) },
+                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 4 }),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c1.clone())),
+                setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
+                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 12 }),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c2.clone())),
+                setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(16))),
+                N::Br { target: "vl".into(), cond: None },
+            ],
+        }],
+    };
     let word_loop = N::Block {
         label: "wdone".into(),
         result: None,
@@ -124,6 +143,7 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             setl("len", E::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
             setl("x", i64c(-7046029254386353131i64)), // 0x9e3779b97f4a7c15 (golden-ratio seed)
             setl("i", i32c(0)),
+            vec_loop,
             word_loop,
             tail_loop,
             // Fold in the length, then a final avalanche so the low bits the

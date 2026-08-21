@@ -1621,3 +1621,166 @@
             exports: vec![("run".into(), "run".into())],
         }
     }
+
+    #[test]
+    fn simd_vector_primitives_roundtrip() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        // Test:
+        // 1. ConstV128 + I8x16Splat + I8x16Eq + I8x16Bitmask + UnOp::Ctz
+        // 2. VectorOp::I64x2ExtMulLowI32x4U
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![
+                WirLocal { name: "v1".into(), ty: WirTy::V128 },
+                WirLocal { name: "v2".into(), ty: WirTy::V128 },
+                WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            ],
+            body: vec![
+                // v1 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+                WirNode::SetLocal {
+                    local: "v1".into(),
+                    value: ConstV128([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+                },
+                // v2 = splat(5)
+                WirNode::SetLocal {
+                    local: "v2".into(),
+                    value: Vector {
+                        op: VectorOp::I8x16Splat,
+                        args: vec![i32c(5)],
+                    },
+                },
+                // mask = bitmask(eq(v1, v2)) -> bit 5 set -> 0b0000_0000_0010_0000 = 32
+                WirNode::SetLocal {
+                    local: "mask".into(),
+                    value: Vector {
+                        op: VectorOp::I8x16Bitmask,
+                        args: vec![Vector {
+                            op: VectorOp::I8x16Eq,
+                            args: vec![GetLocal("v1".into()), GetLocal("v2".into())],
+                        }],
+                    },
+                },
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(GetLocal("mask".into())),
+                    }],
+                }),
+                // ctz(mask) -> 5
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Unary {
+                            op: UnOp::Ctz,
+                            kind: Kind::I32,
+                            arg: Box::new(GetLocal("mask".into())),
+                        }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = print_int_module(vec![run], vec![]);
+        assert_agrees(&module, &["32", "5"]);
+    }
+
+    #[test]
+    fn simd_accelerated_str_eq_and_find_byte() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        let s_long1 = "abcdefghijklmnopqrstuvwxyz0123456789"; // 36 bytes > 16
+        let s_long2 = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let s_diff = "abcdefghijklmnopqrstuvwxyZ0123456789"; // diff at byte 25
+        let needle = "z";
+        let needle_miss = "!";
+
+        let seg1 = encoded_string(s_long1);
+        let seg2 = encoded_string(s_long2);
+        let seg3 = encoded_string(s_diff);
+        let seg_n = encoded_string(needle);
+        let seg_m = encoded_string(needle_miss);
+
+        let data = vec![
+            DataSegment { offset: 100, bytes: seg1 },
+            DataSegment { offset: 200, bytes: seg2 },
+            DataSegment { offset: 300, bytes: seg3 },
+            DataSegment { offset: 400, bytes: seg_n },
+            DataSegment { offset: 500, bytes: seg_m },
+        ];
+
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                // str_eq(s_long1, s_long2) -> 1
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "str_eq".into(),
+                            args: vec![i32c(100), i32c(200)],
+                        }),
+                    }],
+                }),
+                // str_eq(s_long1, s_diff) -> 0
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "str_eq".into(),
+                            args: vec![i32c(100), i32c(300)],
+                        }),
+                    }],
+                }),
+                // find_byte(s_long1, "z") -> 25
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "find_byte".into(),
+                            args: vec![i32c(100), i32c(400)],
+                        }),
+                    }],
+                }),
+                // find_byte(s_long1, "!") -> -1
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Call {
+                            func: "find_byte".into(),
+                            args: vec![i32c(100), i32c(500)],
+                        }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let module = print_int_data_module(
+            vec![
+                crate::wir_helpers::str_eq_helper(),
+                crate::wir_helpers::find_byte_helper(),
+                run,
+            ],
+            data,
+            vec![],
+        );
+        assert_agrees(&module, &["1", "0", "25", "-1"]);
+    }

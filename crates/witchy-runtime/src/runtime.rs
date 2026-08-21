@@ -1194,8 +1194,8 @@ impl Runtime {
         config.wasm_function_references(true);
         config.wasm_gc(true);
         config.wasm_threads(false);
-        config.wasm_simd(false);
-        config.wasm_relaxed_simd(false);
+        config.wasm_simd(true);
+        config.wasm_relaxed_simd(true);
         config.wasm_multi_memory(false);
         config.wasm_tail_call(false);
         config.wasm_memory64(false);
