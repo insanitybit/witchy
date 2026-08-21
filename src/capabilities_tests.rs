@@ -72,7 +72,7 @@
     }
 
     #[test]
-    fn pure_functions_have_no_footprint() {
+    fn capability_free_parameters_have_no_root_footprint() {
         let fp = footprint(r#"
 pub fn add(a: Int, b: Int) -> Int:
     (a + b)
@@ -84,13 +84,94 @@ pub fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
+    fn callable_signatures_do_not_demand_their_named_host_capabilities() {
+        let fp = footprint(r#"
+pub fn install(callback: fn(Console, Dir[Read]) -> Net[Connect, Tcp], callbacks: List(fn(Secret[Seal]) -> Fetch)) -> Nil:
+    return
+"#);
+        assert!(
+            fp.total.is_empty(),
+            "callable parameter and result types describe delegated behavior, not roots"
+        );
+        assert_eq!(fp.entries.len(), 1);
+        assert!(fp.entries[0].capabilities.is_empty());
+    }
+
+    #[test]
+    fn callable_fields_are_opaque_but_concrete_aggregate_caps_remain_roots() {
+        let fp = footprint(r#"
+type Handler:
+    Handler(fn(Console, Net[Connect]) -> Secret[Seal])
+
+type Context:
+    Context(Dir[Read], Console, Handler)
+
+pub fn run(context: Context, callback: fn(Net[Listen, Tcp]) -> Nil) -> Nil:
+    return
+"#);
+        assert_eq!(
+            fp.total,
+            cs(&[("Console", CONSOLE_FULL), ("Dir", &["Read"])])
+        );
+        assert!(
+            !fp.total.contains_key("Net") && !fp.total.contains_key("Secret"),
+            "capabilities mentioned only inside callable types are delegated, not roots"
+        );
+    }
+
+    #[test]
+    fn direct_capability_root_is_preserved_alongside_an_opaque_callback() {
+        let module = parse_module(r#"
+fn main(console: Console, callback: fn(Console, Net) -> Nil):
+    return
+"#)
+        .expect("parse");
+        assert_eq!(run_grant(&module), cs(&[("Console", CONSOLE_FULL)]));
+    }
+
+    #[test]
+    fn build_callback_signatures_do_not_add_build_root_demand() {
+        let fp = footprint(r#"
+fn build(out: BuildOut, direct: (BuildRead, Int), callback: fn(BuildRead, BuildNet) -> BuildExec):
+    return
+"#);
+        assert_eq!(
+            fp.build,
+            cs(&[("BuildOut", &[]), ("BuildRead", &[])]),
+            "the direct tuple member is a root; the callable signature is opaque"
+        );
+    }
+
+    #[test]
+    fn changing_only_callback_behavior_does_not_widen_root_footprint() {
+        let old = footprint(r#"
+pub fn run(callback: fn(Int) -> Nil) -> Nil:
+    callback(1)
+"#);
+        let new = footprint(r#"
+pub fn run(callback: fn(Console, Net) -> Secret) -> Nil:
+    return
+"#);
+        let change = diff(&old, &new);
+        assert!(change.added.is_empty());
+        assert!(change.removed.is_empty());
+        assert!(
+            !change.widened(),
+            "callback contracts and implementations are delegation changes, not new root demand"
+        );
+    }
+
+    #[test]
     fn build_footprint_is_the_union_of_the_build_entrypoints_caps() {
         // The build axis is the `build` entrypoint's build caps; it is separate
-        // from the runtime axis (here empty — a pure codegen rune).
+        // from the runtime axis (here empty — a capability-free codegen rune).
         let fp = footprint(
             "fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):\n    out.write_out(\"x.witchy\", schema.read_build(\"a.proto\"))\n",
         );
-        assert!(fp.total.is_empty(), "runtime footprint is empty for a pure build step");
+        assert!(
+            fp.total.is_empty(),
+            "runtime root footprint is empty for a capability-free build step"
+        );
         assert_eq!(
             fp.build,
             cs(&[("BuildOut", &[]), ("BuildRead", &[]), ("BuildExec", &[])])
@@ -430,27 +511,27 @@ pub fn serve(console: Console) -> Int:
     }
 
     /// Supply-chain regression net: the bundled std modules must keep the
-    /// capability footprints they advertise. The pure modules stay pure (empty
-    /// footprint), and only the networking modules require authority — exactly
+    /// capability footprints they advertise. The modules with no root demand stay
+    /// empty, and only the networking modules require authority — exactly
     /// `Net`, never `Console`/`Dir`. If a future change slips a capability param
     /// into, say, `list`, this fails loudly.
     #[test]
     fn std_module_footprints_are_pinned() {
-        let pure = [
+        let no_root_demand = [
             "list", "string", "math", "option", "result", "func", "cmp", "ascii", "set",
             "json", "url", "duration", "prng", "regex", "compiler", "toml", "semver",
             "rights", "dict", "time", "encoding", "path", "policy",
         ];
-        for name in pure {
+        for name in no_root_demand {
             let src = witchy_syntax::linker::std_source(name).expect("bundled module");
             let fp = footprint(src);
             assert!(
                 fp.total.is_empty(),
-                "std module `{name}` should be pure but needs {:?}",
+                "std module `{name}` should have no root demand but needs {:?}",
                 fp.total
             );
         }
-        // `crypto` is pure except for `sign`/`public_key`, which take a
+        // `crypto` has no root demand except for `sign`/`public_key`, which take a
         // `Secret` — so the module's surface demands exactly that (its hashing
         // and verification stay capability-free).
         let crypto = footprint(witchy_syntax::linker::std_source("crypto").expect("bundled module"));
@@ -459,10 +540,10 @@ pub fn serve(console: Console) -> Int:
             vec!["Secret"],
             "crypto's only capability demand is Secret (for sign/public_key)",
         );
-        // `show` is pure except for `say` (the Show-accepting `print`), which
-        // takes a `Console` — so the module's surface demands exactly that (the
-        // `Show` trait and its impls, including the container blankets, stay
-        // capability-free).
+        // `show` has no root demand except for `say` (the Show-accepting
+        // `print`), which takes a `Console` — so the module's surface demands
+        // exactly that (the `Show` trait and its impls, including the container
+        // blankets, stay capability-free).
         let show = footprint(witchy_syntax::linker::std_source("show").expect("bundled module"));
         assert_eq!(
             show.total.keys().copied().collect::<Vec<_>>(),

@@ -2,14 +2,14 @@
 //! story.
 //!
 //! Witchy's host capabilities (`Console`, `Dir`, `Net`) are unforgeable: no
-//! expression can construct one, and there is no ambient authority. A capability
-//! can only enter code as a parameter. Therefore a function's authority is
-//! exactly its capability-typed parameters, and a module's footprint is the
-//! union over its entry points (public functions and `main`). Unlike Go — where
-//! any dependency runs with your
-//! full ambient authority — this makes "what can this code touch?" statically
-//! computable, so a dependency that *widens* its footprint (suddenly asks for
-//! `Net`, or asks for a `Net` it can now *listen* on) is visible and gateable.
+//! expression can construct one, and there is no ambient authority. Root
+//! authority enters through capability-bearing entry-point parameters; already
+//! authorized callers may separately delegate behavior in opaque callable
+//! values. A module's footprint is therefore its demanded root authority, unioned
+//! over its entry points (public functions and `main`), not a summary of effects
+//! reachable through callbacks. Unlike Go — where any dependency runs with your
+//! full ambient authority — this makes root-authority widening (suddenly asking
+//! for `Net`, or asking for a `Net` it can now *listen* on) visible and gateable.
 //!
 //! The footprint is right-precise: a capability carries the *verbs* it permits
 //! (`Dir[Read]`, `Net[Connect]`), so the audit distinguishes a read-only loader
@@ -57,9 +57,10 @@ pub fn is_capability_type_name(name: &str) -> bool {
     witchy_cap_model::is_capability_type_name(name)
 }
 
-/// Build-time capability kinds reachable from a type (no rights — kind-only).
-/// Used only over the `build` entrypoint's parameters; recurses through tuples/
-/// generics for soundness even though a build cap is normally a direct param.
+/// Build-time capability kinds reachable from a root parameter type (no rights
+/// — kind-only). Used only over the `build` entrypoint's parameters; recurses
+/// through concrete tuples/generics even though a build cap is normally direct.
+/// Callable signatures are opaque delegation contracts, not root demand.
 fn build_caps_in(ty: &Type, out: &mut CapSet) {
     match ty {
         Type::Qualified(_, inner) => build_caps_in(inner, out),
@@ -79,10 +80,7 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
             build_caps_in(base, out);
             fields.iter().for_each(|(_, ty)| build_caps_in(ty, out));
         }
-        Type::Fn(params, ret, _, _) => {
-            params.iter().for_each(|p| build_caps_in(p, out));
-            build_caps_in(ret, out);
-        }
+        Type::Fn(..) => {}
     }
 }
 
@@ -479,11 +477,14 @@ fn merge_into(dst: &mut CapSet, src: &CapSet) {
     }
 }
 
-/// Host capabilities (with rights) reachable from a type, resolving user types
-/// through `taint`. A capability wrapped in a type — a brand like
-/// `ConfigDir(Dir[Read])`, or any record holding one — still confers that
-/// authority (at those rights) on whoever receives the value, so the analyzer
-/// must see through the wrapper to stay sound.
+/// Host capabilities (with rights) reachable from a root parameter type,
+/// resolving user types through `taint`. A capability wrapped in a type — a
+/// brand like `ConfigDir(Dir[Read])`, or any record holding one — still confers
+/// that authority (at those rights) on whoever receives the value, so the
+/// analyzer must see through the wrapper to stay sound. A callable value instead
+/// delegates behavior chosen by its caller; capabilities named in its signature
+/// or hidden in its closure environment are not roots demanded by the receiving
+/// function.
 fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
     match ty {
         Type::Qualified(_, inner) => caps_in(inner, taint, out),
@@ -517,12 +518,7 @@ fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
                 caps_in(ty, taint, out);
             }
         }
-        Type::Fn(params, ret, _, _) => {
-            for p in params {
-                caps_in(p, taint, out);
-            }
-            caps_in(ret, taint, out);
-        }
+        Type::Fn(..) => {}
     }
 }
 
@@ -590,12 +586,12 @@ pub struct Entry {
     pub brands: BTreeSet<String>,
 }
 
-/// A module's capability footprint: each entry point's requirements and the
-/// union across all of them (the maximum host authority the module can wield).
+/// A module's capability footprint: each entry point's root requirements and
+/// their union. Delegated callback behavior is intentionally outside this total.
 pub struct Footprint {
     pub entries: Vec<Entry>,
-    /// Every capability-touching function in declaration order — the entry
-    /// points plus private helpers whose signatures carry capability types.
+    /// Every root-capability-demanding function in declaration order — the
+    /// entry points plus private helpers whose signatures carry root types.
     /// Display-only (`witchy caps`): the gate and the published footprint
     /// records use `entries`/`total`, where private helpers are subsumed by
     /// whichever entry point reaches them.
@@ -618,7 +614,8 @@ pub struct Footprint {
 }
 
 /// What changed between two versions of a module's footprint. `added` is a
-/// *widening* — host authority the newer version demands that the older did not.
+/// *widening* — root host authority the newer version demands that the older did
+/// not.
 /// That includes a wholly new capability (a dependency that suddenly asks for
 /// `Net`) *and* a new right on an existing one (a `Net[Connect]` that can now
 /// also `Listen`). `removed` is a narrowing (a dropped capability or right),
@@ -646,8 +643,8 @@ pub struct FootprintDiff {
 }
 
 impl FootprintDiff {
-    /// Whether the newer footprint demands authority the older one did not. This
-    /// is the signal the install/CI gate fails on: new authority — a new
+    /// Whether the newer footprint demands root authority the older one did not.
+    /// This is the signal the install/CI gate fails on: new root authority — a new
     /// capability or a new right on an existing one — must be an explicit,
     /// reviewed decision, never something a version bump slips in. Brand changes
     /// are intentional refinements, not authority, so they never trip this.
@@ -683,11 +680,11 @@ pub(crate) fn cap_delta(a: &CapSet, b: &CapSet) -> CapSet {
     out
 }
 
-/// Compare two footprints by their total authority — the primitive behind the
-/// block-on-widening gate. Because capabilities are unforgeable and only enter
-/// through parameters, a module cannot gain authority without changing a public
-/// entry point's signature, so this total-level diff fully captures a widening.
-/// Brand differences are reported alongside as refinement (intent) changes.
+/// Compare two footprints by their demanded root authority — the primitive
+/// behind the block-on-widening gate. This detects new capability-bearing entry
+/// parameters, but intentionally does not treat an opaque callback contract or
+/// callback implementation change as new root demand. Brand differences are
+/// reported alongside as refinement (intent) changes.
 pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
     FootprintDiff {
         added: cap_delta(&new.total, &old.total),
@@ -820,10 +817,11 @@ pub fn analyze(module: &Module) -> Footprint {
     let mut per_function = Vec::new();
     let mut total = CapSet::new();
     for item in &module.items {
-        // The capability-bearing types at this entry point: a public function's
-        // (or `main`'s) parameters. Private functions get the same signature scan,
-        // but report-only. Public impl methods are callable API too, so they are
-        // scanned under the same rule; private impl helpers remain report-only.
+        // The root-capability-bearing types at this entry point: a public
+        // function's (or `main`'s) parameters. Private functions get the same
+        // signature scan, but report-only. Public impl methods are callable API
+        // too, so they are scanned under the same rule; private impl helpers
+        // remain report-only.
         let mut item_entries = Vec::new();
         match item {
             Item::Function(f) if f.comptime_only => {}
@@ -889,13 +887,15 @@ pub fn analyze(module: &Module) -> Footprint {
 
 /// The host authority a *run* of this module grants: `main`'s parameters alone.
 ///
-/// Authority originates solely at `main` — witchy has no ambient capabilities, so a
-/// function `main` never calls can never be reached holding one. This differs from
-/// `analyze().total`, the whole-program union over every public entry point: once a
-/// program is *linked*, the std modules' own `pub fn`s become items too, and a
-/// verify-only program that imports `crypto` would otherwise inherit `crypto.sign`'s
-/// `Secret` in its grant. `total` is the right surface for the supply-chain gate
-/// (what a consumer COULD exercise through a rune's API); a run wants only what its
+/// Root authority originates solely at `main`'s concrete capability-bearing
+/// parameters; callable parameters delegate behavior separately. Witchy has no
+/// ambient capabilities, so a function `main` never calls can never be reached
+/// holding a root. This differs from `analyze().total`, the whole-program union
+/// over every public entry point: once a program is *linked*, the std modules'
+/// own `pub fn`s become items too, and a verify-only program that imports
+/// `crypto` would otherwise inherit `crypto.sign`'s `Secret` in its grant.
+/// `total` is the right surface for the root-demand supply-chain gate (what a
+/// consumer may need to grant through a rune's API); a run wants only what its
 /// `main` actually receives. Empty when there is no `main`.
 pub fn run_grant(module: &Module) -> CapSet {
     analyze(module)
