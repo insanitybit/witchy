@@ -3753,6 +3753,16 @@ type CallObligations = Vec<(Ty, String)>;
 type UserCallSig = (Vec<Ty>, Ty, CallObligations);
 type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SuspensionTransferKind {
+    /// The executor's root task cannot be addressed by a `Handle`, so its owned
+    /// frame is driven to completion unless the whole program aborts.
+    Root,
+    /// A spawned task can be shallow-cancelled while suspended. With no drop
+    /// glue, abandoning this frame would also abandon any live must obligation.
+    Cancellable(String),
+}
+
 struct Checker {
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
@@ -3773,6 +3783,11 @@ struct Checker {
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     /// Callable contract promised by each named reusable function.
     fn_qualifiers: HashMap<String, CallableQualifiers>,
+    /// Compiler-marked async segment functions, including whether their source
+    /// callable is the executor root. This authenticates the one internal
+    /// closure shape that transfers owned frame columns across `await`; source
+    /// closures never receive this privilege.
+    suspension_frames: HashMap<String, SuspensionTransferKind>,
     /// Functions selected by trait lowering as actual `From.from` impls.
     /// Generated function names are an ABI detail, not semantic evidence.
     from_conversion_fns: HashSet<String>,
@@ -5698,6 +5713,66 @@ impl Checker {
             ));
         }
         Ok(())
+    }
+
+    /// Recognize the exact shallow continuation emitted by async lowering:
+    /// `fn(own resume): frame(carried..., resume)`. Every captured binding must
+    /// be forwarded exactly once, as a bare argument, to the identically named
+    /// `own` slot of a compiler-marked frame function. This is deliberately a
+    /// provenance check, not a general rule for closures passed to `own`.
+    fn suspension_transfer_kind(
+        &self,
+        params: &[ast::Param],
+        body: &Block,
+        captures: &[String],
+    ) -> Option<SuspensionTransferKind> {
+        if body.region.is_some() || body.stmts.len() != 1 {
+            return None;
+        }
+        let Stmt::Expr(Expr::Call { name, args }) = &body.stmts[0] else {
+            return None;
+        };
+        let kind = self.suspension_frames.get(name)?.clone();
+        let conventions = self.fn_conventions.get(name)?;
+        let target_names = self.fn_param_names.get(name)?;
+        if args.len() != conventions.len() || args.len() != target_names.len() {
+            return None;
+        }
+
+        let captures = captures
+            .iter()
+            .filter(|capture| self.lookup(capture).is_some())
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let lambda_params = params
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect::<HashSet<_>>();
+        for ((argument, convention), target_name) in
+            args.iter().zip(conventions).zip(target_names)
+        {
+            let Expr::Var(argument_name) = argument else {
+                return None;
+            };
+            if convention != &Convention::Own
+                || argument_name != target_name
+                || (!captures.contains(&argument_name.as_str())
+                    && !lambda_params.contains(argument_name.as_str()))
+            {
+                return None;
+            }
+        }
+        if captures.iter().any(|capture| {
+            args.iter()
+                .filter(|argument| {
+                    matches!(argument, Expr::Var(name) if name.as_str() == *capture)
+                })
+                .count()
+                != 1
+        }) {
+            return None;
+        }
+        Some(kind)
     }
 
     fn affine_place(&self, expression: &Expr) -> Option<(String, bool)> {
@@ -9117,7 +9192,10 @@ impl Checker {
                         outer.join("`, `")
                     ));
                 }
-                for capture in scan.captures() {
+                let captures = scan.captures();
+                let suspension_transfer =
+                    self.suspension_transfer_kind(params, body, &captures);
+                for capture in captures {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
                     if self.ty_carries_once_callable(&captured_ty) {
                         return terr(format!(
@@ -9125,9 +9203,23 @@ impl Checker {
                         ));
                     }
                     if self.is_must_binding(&capture) {
-                        return terr(format!(
-                            "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
-                        ));
+                        match &suspension_transfer {
+                            Some(SuspensionTransferKind::Root)
+                                if self.is_live_must_binding(&capture) => {}
+                            Some(SuspensionTransferKind::Cancellable(source))
+                                if self.is_live_must_binding(&capture) =>
+                            {
+                                return terr(format!(
+                                    "must-consume `{capture}` remains live across `await` in async fn `{}`; spawned tasks are shallow-cancellable and suspended frames have no drop cleanup, so consume or return it before the suspension",
+                                    diagnostic_callable_name(source),
+                                ));
+                            }
+                            _ => {
+                                return terr(format!(
+                                    "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
+                                ));
+                            }
+                        }
                     }
                     if self
                         .explicit_reference_bindings
@@ -11963,6 +12055,31 @@ fn run_check_selected(
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     let must_consume = must_consume_catalog(module);
+    let root_source = module
+        .linked_entry
+        .as_ref()
+        .map_or_else(|| "main".to_string(), |entry| format!("{entry}.main"));
+    let suspension_frames = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Function(function) = item else {
+                return None;
+            };
+            if !function.attributes.iter().any(|attribute| {
+                attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
+            }) {
+                return None;
+            }
+            let source = witchy_syntax::suspension::source_callable_name(function);
+            let kind = if source == root_source {
+                SuspensionTransferKind::Root
+            } else {
+                SuspensionTransferKind::Cancellable(source)
+            };
+            Some((function.name.clone(), kind))
+        })
+        .collect();
     let mut c = Checker {
         type_record: if record { Some(HashMap::new()) } else { None },
         // Construction requests are also retained during ordinary checking so
@@ -11973,6 +12090,7 @@ fn run_check_selected(
         record_projection_record: Some(HashMap::new()),
         fn_sigs: HashMap::new(),
         fn_qualifiers: HashMap::new(),
+        suspension_frames,
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
         fn_exclusive_reference_params: HashMap::new(),

@@ -116,6 +116,36 @@ fn task_handles_must_be_joined_cancelled_or_returned_on_every_path() {
 }
 
 #[test]
+fn cancellable_async_frames_cannot_suspend_with_a_live_task_handle() {
+    let dir = TempDir::new("cancellable-must-task-handle");
+    let source = r#"
+import chan
+
+async fn leaf():
+    chan.yield_now().await
+
+async fn supervisor():
+    let nested = chan.spawn(leaf()).await
+    chan.yield_now().await
+    chan.join(nested).await
+
+async fn main(console: Console):
+    let parent = chan.spawn(supervisor()).await
+    chan.cancel(parent).await
+"#;
+    assert_rejected(
+        &dir,
+        "live-handle-across-cancellable-await",
+        source,
+        &[
+            "must-consume `nested` remains live across `await`",
+            "spawned tasks are shallow-cancellable",
+        ],
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn structured_task_handle_aggregates_run_on_compiled_wasm() {
     let source = r#"
 import chan
