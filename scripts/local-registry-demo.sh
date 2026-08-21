@@ -62,9 +62,9 @@ name = "acme/shout"
 version = "1.0.0"
 EOF
 cat > lib/src/shout.witchy <<'EOF'
-// Uppercase greeting helpers. Pure: no capability parameters, so this rune's
-// computed footprint is empty — the consumer can verify that.
-pub fn shout(s: String) -> String:
+// Uppercase greeting helpers. `pure fn` checks effect-free invocation; the
+// empty capability footprint separately proves no root grant is demanded.
+pub pure fn shout(s: String) -> String:
     "HEY " <> string.to_upper(s)
 EOF
 

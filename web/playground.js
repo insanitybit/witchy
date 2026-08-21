@@ -46,8 +46,8 @@ fn main(console: Console):
   "Generators": `import iter
 import list
 
-// A PURE generator — no capability parameters, so it provably can't print, read a file, or
-// touch the network. It can only compute: an infinite stream, taken finitely.
+// No authority value enters this generator, so this example only computes an infinite stream,
+// taken finitely. `pure` does not yet qualify generator declarations.
 gen fn fibs() -> Iter(Int):
     var a = 0
     var b = 1

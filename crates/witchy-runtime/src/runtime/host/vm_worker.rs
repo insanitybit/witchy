@@ -13,11 +13,11 @@ use super::super::{
 };
 
 /// Register the always-available `vm.*` worker imports (RFC-0032).
-/// The par_map staging pair computes re-entrant closure calls and writes the
-/// results out — no authority of their own, the closure runs with the module's
-/// existing caps. The capability-passing spawns grant the worker only the
-/// `Dir` the caller already holds and explicitly passes — a re-grant, no new
-/// authority.
+/// The par_map staging pair computes delegated callback calls in a fresh worker
+/// and writes the results out. Its zero-capability host grant, rather than the
+/// callback's parameter list, is the physical sandbox boundary. Capability-
+/// passing spawns grant the worker only the `Dir` the caller already holds and
+/// explicitly passes: a re-grant, not new authority.
 pub(in crate::runtime) fn link_vm(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
     linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
@@ -108,11 +108,11 @@ fn host_vm_par_map_run(
 /// `Store`/`Instance` of the same module (own linear memory), invoking the mapped
 /// function by table index through the `__call_idx` trampoline for each input.
 ///
-/// The worker is granted ZERO ambient authority — `vm.par_map`'s function is pure
-/// (no capability parameters), so the only capability imports linked are the
-/// authority-free staging helpers; every other host import is defined as a TRAP
-/// (deny-by-omission). A worker thus physically cannot touch the filesystem, network,
-/// or any other host resource, even though it shares the parent's compiled module.
+/// The worker is granted ZERO ambient authority. The only capability imports
+/// linked are the authority-free staging helpers; every other host import is a
+/// TRAP (deny by omission). This physical grant boundary is what prevents the
+/// delegated callback from touching the filesystem, network, or another host
+/// resource even though the worker shares the parent's compiled module.
 /// This is RFC-0032's Tier-B isolation mechanism in miniature.
 fn run_par_chunk(
     engine: &Engine,

@@ -1,26 +1,22 @@
-// The capability thesis, made concrete. A "plugin" is just a pure function
-// `fn(Int) -> Int`: it has NO capability parameters, so it is *structurally*
-// unable to read a file, open a socket, or print — there is simply no
-// Console/Dir/Net in scope for it to use. The host owns all authority and
-// decides what each plugin sees. Authority is opt-in (by parameter or by
-// capture), never ambient — so the host can run arbitrary third-party plugins
-// with zero risk that they phone home. (Give `bonus` a `net: Net` and try to
-// `connect`: there's no Net to hand it, so it won't even compile.)
+// The capability thesis, made concrete. A compute-only plugin has the checked
+// type `pure fn(Int) -> Int`. The contract rejects capability operations,
+// authority-bearing captures, and opaque ordinary callback invocation. The host
+// owns the root authority and decides which narrower operations it delegates.
 //
 //   witchy examples/plugin_host/src/plugin_host.witchy
 //   witchy parity examples/plugin_host/src/plugin_host.witchy     # backends agree
 //   witchy sandbox examples/plugin_host/src/plugin_host.witchy    # granted exactly: Console
 
 // --- untrusted plugins: pure, authority-free transforms ---
-fn double(x: Int) -> Int:
+pure fn double(x: Int) -> Int:
     x * 2
 
-fn bonus(x: Int) -> Int:
+pure fn bonus(x: Int) -> Int:
     x + 10
 
-// The host runs a pipeline of arbitrary `fn(Int) -> Int` plugins over an input.
-// They can only compute over the number they're handed — nothing else.
-fn run_pipeline(plugins: List(fn(Int) -> Int), x: Int) -> Int:
+// The host runs a pipeline of checked `pure fn(Int) -> Int` plugins. An ordinary
+// callback would be delegated behavior and is deliberately not accepted here.
+pure fn run_pipeline(plugins: List(pure fn(Int) -> Int), x: Int) -> Int:
     var acc = x
     for p in plugins:
         acc = p(acc)
@@ -31,7 +27,8 @@ fn main(console: Console):
     for n in [1, 5, 10]:
         console.print("${n}" + " -> " + "${run_pipeline(plugins, n)}")
     // Granting authority is by capture: this logger closes over `console`, so the
-    // host can hand a *logging* power to otherwise-pure code without surrendering
-    // the Console itself.
+    // host can hand out that narrower logging power without surrendering the
+    // Console itself. Receiving the ordinary callback is explicit delegation,
+    // not a purity promise.
     let log = fn(msg: String): console.print("[log] " + msg)
     log("ran the pipeline")
