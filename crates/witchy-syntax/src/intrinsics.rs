@@ -49,6 +49,7 @@ pub enum IntrinsicId {
     ChannelSend,
     ChannelRecv,
     ChannelSelect,
+    ChannelSelect2,
     SecretStoreGet,
     SecretStoreRequire,
     MetaItem,
@@ -509,6 +510,7 @@ pub(crate) const CHANNEL_OPEN: &str = "__channel_open";
 pub(crate) const CHANNEL_SEND: &str = "__channel_send";
 pub(crate) const CHANNEL_RECV: &str = "__channel_recv";
 pub(crate) const CHANNEL_SELECT: &str = "__channel_select";
+pub(crate) const CHANNEL_SELECT2: &str = "__channel_select2";
 
 pub const SECRETSTORE_GET: &str = "secretstore.get";
 pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
@@ -1265,6 +1267,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "channel select",
+        private_callers: MESSAGE_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::ChannelSelect2,
+        name: CHANNEL_SELECT2,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Task,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::SourceFunction,
+        runtime: IntrinsicRuntime::SourceFunction,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "channel select 2",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -3128,6 +3145,7 @@ pub(crate) fn is_channel_bridge(name: &str) -> bool {
                 | IntrinsicId::ChannelSend
                 | IntrinsicId::ChannelRecv
                 | IntrinsicId::ChannelSelect
+                | IntrinsicId::ChannelSelect2
         )
     })
 }

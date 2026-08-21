@@ -86,6 +86,14 @@ impl<'types> Codegen<'types> {
                         // Any unrecognized assignment might make it negative.
                         self.known_non_negative_vars.remove(name);
                     }
+                    self.known_length_vars.remove(name);
+                    if let Expr::Call { name: fname, args } = value {
+                        if fname == intrinsics::LIST_LENGTH && args.len() == 1 {
+                            if let Expr::Var(xs_name) = &args[0] {
+                                self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }

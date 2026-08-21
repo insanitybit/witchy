@@ -338,7 +338,7 @@ pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
     match a:
         Receiver(ia) ->
             match b:
-                Receiver(ib) -> task.__channel_select([ia, ib], fn(o): select_result(o))
+                Receiver(ib) -> task.__channel_select2(ia, ib, fn(o): select_result(o))
 
 fn select_result(o: Option((Int, __Msg))) -> Task(Selected(m)):
     match o:

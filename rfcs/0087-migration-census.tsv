@@ -11,8 +11,8 @@ projects/glamour/src/glamour.witchy	541	auxiliary-result-discard	dict.insert	-	-
 projects/glamour/src/glamour.witchy	543	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
-std/dict.witchy	74	auxiliary-result-discard	dict.remove	-	-
-std/dict.witchy	77	auxiliary-result-discard	dict.__remove_extract	-	-
+std/dict.witchy	97	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	100	auxiliary-result-discard	dict.__remove_extract	-	-
 std/list.witchy	42	auxiliary-result-discard	list.__pop_extract	-	-
 std/list.witchy	87	auxiliary-result-discard	list.__pop_extract	-	-
 std/prng.witchy	92	expression-position-mutator	prng.advance	-	-
@@ -33,8 +33,8 @@ witchy-files	296
 markdown-blocks	231
 checked	527
 rejected	0
-var-declarations	41
-resolved-var-calls	735
+var-declarations	42
+resolved-var-calls	741
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0

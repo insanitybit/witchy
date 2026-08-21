@@ -57,6 +57,12 @@ trait PartialOrd: PartialEq:
 trait Ord: Eq + PartialOrd:
     fn compare(self, other: Self) -> Ordering
 
+// Trait for a query value `q` that can be compared for equivalence against a stored key `k` (RFC-0139).
+// Decouples heterogeneous key lookups from reference subtyping to allow zero-allocation queries for slices,
+// tuples, and records.
+trait Equivalent(k):
+    fn equivalent(self, key: k) -> Bool
+
 // Flip an ordering - `Less` <-> `Greater`, `Equal` unchanged - for reverse sorts.
 pub fn reverse(o: Ordering) -> Ordering:
     match o:
@@ -393,3 +399,24 @@ pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
             best = x
             seen = true
     best
+
+// --- Equivalent implementations (RFC-0139) -----------------------------------
+impl Equivalent(a) for a where a: Eq:
+    fn equivalent(self, key: a) -> Bool:
+        self == key
+
+impl Equivalent(List(t)) for List(t) where t: Eq:
+    fn equivalent(self, key: List(t)) -> Bool:
+        self == key
+
+impl Equivalent((k1, k2)) for (q1, q2) where q1: Equivalent(k1), q2: Equivalent(k2):
+    fn equivalent(self, key: (k1, k2)) -> Bool:
+        let (q_a, q_b) = self
+        let (k_a, k_b) = key
+        q_a.equivalent(k_a) && q_b.equivalent(k_b)
+
+impl Equivalent((k1, k2, k3)) for (q1, q2, q3) where q1: Equivalent(k1), q2: Equivalent(k2), q3: Equivalent(k3):
+    fn equivalent(self, key: (k1, k2, k3)) -> Bool:
+        let (q_a, q_b, q_c) = self
+        let (k_a, k_b, k_c) = key
+        q_a.equivalent(k_a) && q_b.equivalent(k_b) && q_c.equivalent(k_c)

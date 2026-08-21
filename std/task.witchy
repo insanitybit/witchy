@@ -45,6 +45,7 @@ sealed type Step(a):
     Open(Int, fn(Int) -> Task(a))
     Push(Int, __Msg, fn(Nil) -> Task(a))
     Pull(Int, fn(Option(__Msg)) -> Task(a))
+    Pull2(Int, Int, fn(Option((Int, __Msg))) -> Task(a))
     PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))
     Wait(Int, fn(Nil) -> Task(a))
     Cancel(Int, fn(Nil) -> Task(a))
@@ -88,6 +89,7 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Open(cap, cont) -> Open(cap, fn(c): and_then(cont(c), k))
         Push(ch, msg, cont) -> Push(ch, msg, fn(u): and_then(cont(u), k))
         Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
+        Pull2(ch0, ch1, cont) -> Pull2(ch0, ch1, fn(o): and_then(cont(o), k))
         PullAny(chs, cont) -> PullAny(chs, fn(o): and_then(cont(o), k))
         Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
         Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
@@ -131,6 +133,13 @@ fn __channel_send(channel: ChannelId, msg: __Msg) -> Task(Nil):
 fn __channel_recv(channel: ChannelId, decode: fn(Option(__Msg)) -> a) -> Task(a):
     match channel:
         ChannelId(id) -> Task(fn(): Pull(id, fn(msg): done(decode(msg))))
+
+// Fast-path 2-receiver select avoiding channel ID list construction (RFC-0139).
+fn __channel_select2(a: ChannelId, b: ChannelId, k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
+    match a:
+        ChannelId(ia) ->
+            match b:
+                ChannelId(ib) -> Task(fn(): Pull2(ia, ib, k))
 
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
     Task(fn(): PullAny(channel_ids(channels), k))
@@ -342,6 +351,26 @@ pub fn run(root: Task(Nil)):
                                 prog = true
                             else:
                                 list.set_at(slots, i, WaitRecv(ch, cont))
+                        Pull2(ch0, ch1, cont) ->
+                            let (_buf0, _head0, count0, _cap0) = list.at(channels, ch0)
+                            if count0 > 0:
+                                let (buf, head, count, cap) = list.at(channels, ch0)
+                                let msg = list.at(buf, head)
+                                let physcap = list.length(buf)
+                                list.set_at(channels, ch0, (buf, (head + 1) % physcap, count - 1, cap))
+                                list.set_at(slots, i, Active(cont(Some((0, msg)))))
+                                prog = true
+                            else:
+                                let (_buf1, _head1, count1, _cap1) = list.at(channels, ch1)
+                                if count1 > 0:
+                                    let (buf, head, count, cap) = list.at(channels, ch1)
+                                    let msg = list.at(buf, head)
+                                    let physcap = list.length(buf)
+                                    list.set_at(channels, ch1, (buf, (head + 1) % physcap, count - 1, cap))
+                                    list.set_at(slots, i, Active(cont(Some((1, msg)))))
+                                    prog = true
+                                else:
+                                    list.set_at(slots, i, WaitAny([ch0, ch1], cont))
                         PullAny(chs, cont) ->
                             match first_ready(0, chs, channels):
                                 Some(hit) ->

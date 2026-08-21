@@ -1,18 +1,14 @@
-// Deterministic two-source fan-in through `chan.select`. Both bounded channels
-// are filled before the kernel clock starts, so every initial tie must select
-// the first receiver; after it drains, the second receiver supplies the rest.
-// The result checks source-local sequence, that exact phase order, and an
-// order-sensitive rolling checksum so the fan-in work stays observable.
+mode opt
 
 from chan import Sender
 
-async fn produce(tx: Sender(Int), start: Int, count: Int):
+async fn produce(let tx: Sender(Int), let start: Int, let count: Int):
     var i = 0
     while i < count:
         chan.send(tx, start + i * 2).await
         i = i + 1
 
-fn expected_checksum(per_source: Int) -> Int:
+fn expected_checksum(let per_source: Int) -> Int:
     var checksum = 0
     var i = 0
     while i < per_source:
@@ -24,7 +20,7 @@ fn expected_checksum(per_source: Int) -> Int:
         i = i + 1
     checksum
 
-async fn main(console: Console, clock: Clock):
+async fn main(let console: Console, let clock: Clock):
     let (a_tx, a_rx) = chan.channel(2048).await
     let (b_tx, b_rx) = chan.channel(2048).await
     let a_handle = chan.spawn(produce(a_tx, 0, 2048)).await
@@ -45,6 +41,7 @@ async fn main(console: Console, clock: Clock):
             Second(value) ->
                 (0, 1, (checksum * 257 + value + 2) % 1000000007, seen_a == 2048 && value == seen_b * 2 + 1)
             Closed -> (1, 0, checksum, false)
+
         seen_a = seen_a + add_a
         seen_b = seen_b + add_b
         checksum = next_checksum

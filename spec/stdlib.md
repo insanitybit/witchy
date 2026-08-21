@@ -391,6 +391,12 @@ A total order: `compare` never reports "incomparable". Sorting and the `min`/ `m
 
 - `fn compare(self, other: Self) -> Ordering`
 
+#### `trait Equivalent(k)`
+
+Trait for a query value `q` that can be compared for equivalence against a stored key `k` (RFC-0139). Decouples heterogeneous key lookups from reference subtyping to allow zero-allocation queries for slices, tuples, and records.
+
+- `fn equivalent(self, key: k) -> Bool`
+
 #### `fn reverse(o: Ordering) -> Ordering`
 
 Flip an ordering - `Less` <-> `Greater`, `Equal` unchanged - for reverse sorts.
@@ -565,6 +571,22 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 - `fn ne(self, other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq`
+
+#### `impl Equivalent(a) for a where a: Eq`
+
+- `fn equivalent(self, key: a) -> Bool`
+
+#### `impl Equivalent(List(t)) for List(t) where t: Eq`
+
+- `fn equivalent(self, key: List(t)) -> Bool`
+
+#### `impl Equivalent((k1, k2)) for (q1, q2) where q1: Equivalent(k1), q2: Equivalent(k2)`
+
+- `fn equivalent(self, key: (k1, k2)) -> Bool`
+
+#### `impl Equivalent((k1, k2, k3)) for (q1, q2, q3) where q1: Equivalent(k1), q2: Equivalent(k2), q3: Equivalent(k3)`
+
+- `fn equivalent(self, key: (k1, k2, k3)) -> Bool`
 
 ## `compiler`
 
@@ -767,6 +789,20 @@ The value for `key`, or a runtime error when absent. This is the read half of th
 
 #### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq`
 
+#### `fn update_str(var d: Dict(String, v), key: &'a str, default: v, f: fn(v) -> v)`
+
+Single-lookup upsert with a borrowed string slice key (RFC-0139). On Hit: zero allocations (in-place value update). On Miss: clones string slice to insert entry.
+
+#### `fn contains_str(d: Dict(String, v), key: &'a str) -> Bool`
+
+String slice lookup without allocating an owned String (RFC-0139).
+
+#### `fn get_str_or(d: Dict(String, v), key: &'a str, default: v) -> v`
+
+#### `fn at_str(d: Dict(String, v), key: &'a str) -> v`
+
+#### `fn get_str(d: Dict(String, v), key: &'a str) -> Option(v)`
+
 #### `fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
@@ -831,7 +867,7 @@ Remove `key`, returning its old value when present. The dictionary performs one 
 
 #### `Dict.get(key: k) -> Option(v)`
 
-A lookup that says whether the key was present, rather than forcing a default.
+A lookup that says whether the key was present, rather than forcing a default (O(1) hash lookup).
 
 #### `Dict.get_or(key: k, default: v) -> v`
 
@@ -4165,6 +4201,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Open(Int, fn(Int) -> Task(a))`
 - `Push(Int, __Msg, fn(Nil) -> Task(a))`
 - `Pull(Int, fn(Option(__Msg)) -> Task(a))`
+- `Pull2(Int, Int, fn(Option((Int, __Msg))) -> Task(a))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
