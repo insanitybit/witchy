@@ -219,6 +219,20 @@ fn gate_nextest_crate_plus_integration_test_unions_without_workspace() {
 }
 
 #[test]
+fn gate_nextest_nested_integration_module_fails_safe_to_workspace() {
+    let output = gate_nextest(&[
+        "crates/witchy-types/src/typeck.rs",
+        "tests/browser/shim.rs",
+        "tests/rfc0082/dynamic_methods.rs",
+    ]);
+    assert_eq!(
+        output.trim(),
+        "WORKSPACE",
+        "nested integration modules became nonexistent binary selectors: {output}",
+    );
+}
+
+#[test]
 fn gate_nextest_src_commands_web_is_not_workspace() {
     let output = gate_nextest(&["src/commands/web/tests.rs"]);
     assert!(

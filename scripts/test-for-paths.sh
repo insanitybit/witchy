@@ -74,6 +74,14 @@ add_pkg() {
 }
 add_gate_test() {
     local t="$1" x
+    # `case` globs treat `*` as matching `/`, so the generic `tests/*.rs`
+    # route can receive a nested module such as `tests/browser/shim.rs`.
+    # Nested modules are not Cargo integration-test binary names. Fail safe to
+    # the workspace instead of emitting an invalid `binary(browser/shim)`
+    # nextest selector that prevents the serialized gate from starting.
+    case "$t" in
+        */*) gate_workspace=1; return ;;
+    esac
     for x in ${gate_tests[0]+"${gate_tests[@]}"}; do [ "$x" = "$t" ] && return; done
     gate_tests+=("$t")
 }
