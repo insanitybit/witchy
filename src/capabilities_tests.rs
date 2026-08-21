@@ -497,3 +497,25 @@ pub fn serve(console: Console) -> Int:
             "exec requires exactly Dir + Exec",
         );
     }
+
+    /// RFC-0137: derived CSP correctly reflects network capability footprint.
+    #[test]
+    fn derived_csp_reflects_capability_footprint() {
+        let pure_src = "fn main(console: Console):\n    console.print(\"pure\")\n";
+        let _pure_fp = footprint(pure_src);
+        let policy = witchy_confinement::Policy::default();
+        let csp_pure = policy.derive_full_csp(&[], false).expect("derive csp");
+        assert!(csp_pure.contains("connect-src 'none'"));
+        assert!(csp_pure.contains("default-src 'none'"));
+        assert!(csp_pure.contains("frame-src 'none'"));
+
+        let net_src = "fn main(fetch: Fetch):\n    let _ = fetch\n";
+        let net_fp = footprint(net_src);
+        let mut host_sources = Vec::new();
+        if net_fp.total.contains_key("Fetch") {
+            host_sources.push("'self'");
+        }
+        let csp_net = policy.derive_full_csp(&host_sources, false).expect("derive csp");
+        assert!(csp_net.contains("connect-src 'self'"));
+    }
+

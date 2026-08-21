@@ -20,7 +20,7 @@ USAGE:
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
     witchy expand  <file.witchy>                  print canonical source after comptime/tag expansion
-    witchy caps     [file.witchy]                 report the capability footprint (defaults to the project entry)
+    witchy caps     [--csp] [file.witchy]         report the capability footprint (defaults to the project entry)
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy which    <name>                        find a function in the standard library by (partial) name
     witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments

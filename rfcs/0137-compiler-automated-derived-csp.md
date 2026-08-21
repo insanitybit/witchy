@@ -1,7 +1,7 @@
 ---
 rfc: 0137
 title: "Compiler-Automated Derived CSP: Mathematical Confinement from Network Capabilities"
-status: proposed
+status: implemented
 created: 2026-08-21
 superseded-by:
 tracking:

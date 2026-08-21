@@ -42,7 +42,7 @@ pub(crate) use witchy::typeck;
 pub(crate) use witchy::trusted_exe;
 
 pub(crate) use commands::capabilities::{
-    report_capabilities, report_capability_diff, report_grant_check, report_grant_diff,
+    report_capabilities, report_capability_diff, report_derived_csp, report_grant_check, report_grant_diff,
 };
 #[cfg(test)]
 pub(crate) use commands::compile::{emit_wasm_file, emit_wat_file};

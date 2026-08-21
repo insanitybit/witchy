@@ -9,8 +9,8 @@ use crate::cli::{
 use crate::{
     ast, bundled_module, commands, enforce_performance_modes, execute_file_exit,
     format, idp, link_file_checked, load_signing_seed, lsp, opt, parser, pipeline,
-    project_entry_file, report_capabilities, report_capability_diff, report_grant_check,
-    report_grant_diff,
+    project_entry_file, report_capabilities, report_capability_diff, report_derived_csp,
+    report_grant_check, report_grant_diff,
     run_benchmarks, runtime, trusted_exe, RUN_MEMORY_PAGES,
 };
 use witchy_syntax::linker;
@@ -200,19 +200,27 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("caps") {
-        let path = match std::env::args().nth(2) {
-            Some(p) => p,
+        let args: Vec<String> = std::env::args().collect();
+        let show_csp = args.iter().any(|a| a == "--csp");
+        let file_arg = args.iter().skip(2).find(|a| !a.starts_with("--"));
+        let path = match file_arg {
+            Some(p) => p.clone(),
             None => match project_entry_file() {
                 Some(p) => p,
                 None => {
                     eprintln!(
-                        "usage: witchy caps <file>  (or run inside a project — no witchy.toml here)"
+                        "usage: witchy caps [--csp] <file>  (or run inside a project — no witchy.toml here)"
                     );
                     std::process::exit(1);
                 }
             },
         };
-        if let Err(e) = report_capabilities(&path) {
+        let res = if show_csp {
+            report_derived_csp(&path)
+        } else {
+            report_capabilities(&path)
+        };
+        if let Err(e) = res {
             eprintln!("{e}");
             std::process::exit(1);
         }

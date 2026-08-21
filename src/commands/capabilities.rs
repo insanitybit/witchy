@@ -70,6 +70,22 @@ pub(crate) fn report_capabilities(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Print the derived Content-Security-Policy (RFC-0137) based on the program's capability footprint.
+pub(crate) fn report_derived_csp(path: &str) -> Result<(), String> {
+    let fp = analyze_file(path)?;
+    let mut host_sources = Vec::new();
+    let has_net = fp.total.contains_key("Net") || fp.total.contains_key("Fetch");
+    let has_ui_fetch = fp.user_caps.iter().any(|c| c.contains("UiFetch") || c.contains("UiRoot"));
+    if has_net || has_ui_fetch {
+        host_sources.push("'self'");
+    }
+    let policy = witchy_confinement::Policy::default();
+    let has_compartment = fp.user_caps.iter().any(|c| c.contains("Compartment"));
+    let csp = policy.derive_full_csp(&host_sources, has_compartment)?;
+    println!("{csp}");
+    Ok(())
+}
+
 /// Compare the capability footprints of two versions of a module and report any
 /// *widening* — host authority the newer version demands that the older did not.
 /// Returns whether it widened so the caller can fail the supply-chain gate. This

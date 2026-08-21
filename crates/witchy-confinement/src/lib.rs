@@ -240,6 +240,15 @@ impl Policy {
         ))
     }
 
+    /// Derive the full Content-Security-Policy string (RFC-0137).
+    pub fn derive_full_csp(&self, host_sources: &[&str], has_compartment: bool) -> Result<String, String> {
+        let connect_src = self.csp_connect_src(host_sources)?;
+        let frame_src = if has_compartment { "frame-src 'self'" } else { "frame-src 'none'" };
+        Ok(format!(
+            "default-src 'none'; {connect_src}; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; {frame_src}; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types glamour;"
+        ))
+    }
+
     pub fn normalize_classes(&mut self) {
         if !self.filesystem.is_empty() {
             self.syscall_classes.insert(SyscallClass::FsOpen);
