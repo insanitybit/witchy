@@ -4576,7 +4576,6 @@ fn main(console: Console):
         let module = parse_module(src).expect("parse");
         let wir = assemble_wir_module(&module).expect_lowered("wir");
         let wat = witchy_wir::wir::to_wat(&wir);
-        // The positive power-of-two modulo should lower to bitwise and without i64.rem_s
         assert!(wat.contains("i64.and"), "should contain bitwise and: {wat}");
         
         let bytes = compile_module_binary(&module).expect_lowered("compile");
@@ -4588,5 +4587,27 @@ fn main(console: Console):
             .unwrap();
         let lines = captured.lock().unwrap().clone();
         assert_eq!(lines, vec!["1 false true -1"]);
+    }
+
+    #[test]
+    fn unused_scratch_locals_are_pruned_from_stack_frames() {
+        let src = r#"
+fn fib(n: Int) -> Int:
+    if n <= 1:
+        n
+    else:
+        fib(n - 1) + fib(n - 2)
+
+fn main() -> Int:
+    fib(5)
+"#;
+        let module = parse_module(src).expect("parse");
+        let wir = assemble_wir_module(&module).expect_lowered("wir");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let fib_pos = wat.find("(func $fib").expect("fib func");
+        let fib_wat = &wat[fib_pos..];
+        let end_pos = fib_wat.find("\n  (func").unwrap_or(fib_wat.len());
+        let fib_block = &fib_wat[..end_pos];
+        assert!(!fib_block.contains("(local $"), "fib should have zero local variable declarations: {fib_block}");
     }
 }
