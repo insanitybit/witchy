@@ -2044,3 +2044,45 @@
         // "1" (pointer equal to 100), "1" (new buffer != 300), "104" ('h')
         assert_agrees(&module, &["1", "1", "104"]);
     }
+
+    #[test]
+    fn simd_arithmetic_vector_ops() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![
+                WirLocal { name: "v1".into(), ty: WirTy::V128 },
+                WirLocal { name: "v2".into(), ty: WirTy::V128 },
+                WirLocal { name: "v3".into(), ty: WirTy::V128 },
+            ],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "v1".into(),
+                    value: Vector {
+                        op: VectorOp::I32x4Splat,
+                        args: vec![i32c(10)],
+                    },
+                },
+                WirNode::SetLocal {
+                    local: "v2".into(),
+                    value: Vector {
+                        op: VectorOp::I32x4Splat,
+                        args: vec![i32c(3)],
+                    },
+                },
+                WirNode::SetLocal {
+                    local: "v3".into(),
+                    value: Vector {
+                        op: VectorOp::I32x4Add,
+                        args: vec![GetLocal("v1".into()), GetLocal("v2".into())],
+                    },
+                },
+            ],
+            raw_body: None,
+        };
+        let module = print_int_module(vec![run], vec![]);
+        assert_agrees(&module, &[]);
+    }
