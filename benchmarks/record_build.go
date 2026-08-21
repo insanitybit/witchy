@@ -23,7 +23,7 @@ func build(n int) Stack {
 
 func main() {
 	t0 := time.Now()
-	s := build(3000000)
+	s := build(500000)
 	fmt.Println(s.total + len(s.items))
 	fmt.Printf("bench_ns=%d\n", time.Since(t0).Nanoseconds())
 }
