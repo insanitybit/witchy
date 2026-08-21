@@ -98,6 +98,12 @@ fn bytes_match_at(b: Bytes, needle: Bytes, start: Int) -> Bool:
         j = j + 1
     true
 
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool:
+    let n = __bytes_length(a)
+    if n != __bytes_length(b):
+        return false
+    bytes_match_at(a, b, 0)
+
 // Methods are the primary surface (RFC-0099). A method whose name matches a
 // kept module function delegates to it; the rest own their implementation.
 impl Bytes:
@@ -116,7 +122,7 @@ impl Bytes:
     // Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
     pub fn decode_utf8(self) -> Result(String, BytesError):
         let text = __bytes_to_string(self)
-        if int_list(__bytes_from_string(text)) == int_list(self):
+        if bytes_eq(__bytes_from_string(text), self):
             Ok(text)
         else:
             Err(InvalidUtf8)
