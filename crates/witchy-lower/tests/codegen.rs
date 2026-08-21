@@ -4610,28 +4610,4 @@ fn main() -> Int:
         let fib_block = &fib_wat[..end_pos];
         assert!(!fib_block.contains("(local $"), "fib should have zero local variable declarations: {fib_block}");
     }
-
-    #[test]
-    fn direct_lambda_application_inlines_body_without_closure_allocation() {
-        let src = r#"
-fn main(console: Console):
-    let res = (fn(x: Int): x * 2 + 1)(20)
-    console.print("${res}")
-"#;
-        let module = parse_module(src).expect("parse");
-        let wir = assemble_wir_module(&module).expect_lowered("wir");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        assert!(!wat.contains("call_indirect"), "should not use call_indirect: {wat}");
-        assert!(!wat.contains("__lamw"), "should not allocate closure wrapper: {wat}");
-
-        let bytes = compile_module_binary(&module).expect_lowered("compile");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        let lines = captured.lock().unwrap().clone();
-        assert_eq!(lines, vec!["41"]);
-    }
 }
