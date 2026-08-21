@@ -25,11 +25,10 @@ URL, or read a file, even if a dependency wrote it:
 
 ```witchy
 from http import Request, Response
-from json import Json
 from server import Router
 
 fn greet(req: Request) -> Response:
-    server.json_value(200, JsonObject([("hello", JsonString(server.param_or(req, "name", "world")))]))
+    server.send(200, .{hello: server.param_or(req, "name", "world")})
 
 fn main(console: Console, net: Net):
     let app = server.router().get("/hello/:name", greet)
