@@ -236,7 +236,9 @@ impl Reflect for Widget:
 
 @dynamic
 pub pure fn rewrite(self: Widget, label: String, suffix: unique String) -> unique Widget:
-    Widget(self.value + label.char_count() + suffix.char_count())
+    // Keep this reflection fixture independently pure: its purpose is the
+    // callable access contract, not standard-library effect classification.
+    Widget(self.value + 1)
 
 fn main(console: Console):
     let descriptor = dynamic.type_of(dynamic.dynamic(Widget(1)))
