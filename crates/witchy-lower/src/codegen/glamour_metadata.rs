@@ -4030,6 +4030,7 @@ fn runtime_type_material(identity: &RuntimeTypeIdentity) -> String {
             conventions,
             qualifiers,
             access,
+            ..
         } => {
             let params = params
                 .iter()
