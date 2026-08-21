@@ -999,13 +999,14 @@ fn substitute_type(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
             qualifier.clone(),
             Box::new(substitute_type(inner, bindings)),
         ),
-        Type::Fn(parameters, result, conventions) => Type::Fn(
+        Type::Fn(parameters, result, conventions, qualifiers) => Type::Fn(
             parameters
                 .iter()
                 .map(|parameter| substitute_type(parameter, bindings))
                 .collect(),
             Box::new(substitute_type(result, bindings)),
             conventions.clone(),
+            *qualifiers,
         ),
         Type::Dyn(name, arguments) => Type::Dyn(
             name.clone(),

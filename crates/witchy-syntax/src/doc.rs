@@ -51,7 +51,7 @@ pub fn associated_function(
             }
             let marker = format!(
                 "pub {}fn {}(",
-                fn_qualifier(method.is_async, method.is_gen),
+                fn_qualifier(method.pure, method.is_async, method.is_gen),
                 method.name
             );
             return Ok(Some(AssociatedFunctionDoc {
@@ -89,7 +89,7 @@ pub fn instance_method(
             }
             let marker = format!(
                 "pub {}fn {}(",
-                fn_qualifier(method.is_async, method.is_gen),
+                fn_qualifier(method.pure, method.is_async, method.is_gen),
                 method.name
             );
             return Ok(Some(AssociatedFunctionDoc {
@@ -182,7 +182,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             continue;
         }
         any = true;
-        let sig = format!("{}{}", fn_qualifier(f.is_async, f.is_gen), signature(&f.name, &f.params, &f.ret, &f.bounds));
+        let sig = format!("{}{}", fn_qualifier(f.pure, f.is_async, f.is_gen), signature(&f.name, &f.params, &f.ret, &f.bounds));
         let dynamic = f.attributes.iter().any(|attribute| attribute == "dynamic");
         let sig = if dynamic { format!("@dynamic {sig}") } else { sig };
         let _ = writeln!(out, "#### `{sig}`\n");
@@ -194,7 +194,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
         }
         // The source line carries the same `async`/`gen` qualifier before `fn`,
         // so the doc-comment marker must reconstruct it to find the block.
-        let marker = format!("pub {}fn {}(", fn_qualifier(f.is_async, f.is_gen), f.name);
+        let marker = format!("pub {}fn {}(", fn_qualifier(f.pure, f.is_async, f.is_gen), f.name);
         let doc = doc_above_top_level(&lines, &marker);
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
@@ -215,7 +215,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             let (sig, _) = inherent_signature(&im.type_name, m);
             any = true;
             let _ = writeln!(out, "#### `{sig}`\n");
-            let marker = format!("pub {}fn {}(", fn_qualifier(m.is_async, m.is_gen), m.name);
+            let marker = format!("pub {}fn {}(", fn_qualifier(m.pure, m.is_async, m.is_gen), m.name);
             let doc = {
                 let method_doc = doc_above_indented(&lines, &marker);
                 if method_doc.is_empty() {
@@ -355,7 +355,7 @@ fn inherent_signature(owner: &str, method: &Function) -> (String, bool) {
         .map(|rest| {
             format!(
                 "{}{}.{rest}",
-                fn_qualifier(method.is_async, method.is_gen),
+                fn_qualifier(method.pure, method.is_async, method.is_gen),
                 owner
             )
         })
@@ -476,8 +476,11 @@ fn str_lit(v: &str) -> String {
 
 /// The `async`/`gen` prefix a function or method carries before `fn`, matching
 /// `witchy fmt`'s order (`async gen fn`). Empty for a plain function (BUG-167).
-fn fn_qualifier(is_async: bool, is_gen: bool) -> String {
+fn fn_qualifier(pure: bool, is_async: bool, is_gen: bool) -> String {
     let mut q = String::new();
+    if pure {
+        q.push_str("pure ");
+    }
     if is_async {
         q.push_str("async ");
     }
@@ -535,7 +538,11 @@ fn impl_header(im: &ImplDef) -> String {
 /// A trait method signature (`fn from(value: a) -> Self`). A trait method has no
 /// `where` bounds of its own here, so render with an empty bound set (BUG-073).
 fn method_sig_str(m: &MethodSig) -> String {
-    signature(&m.name, &m.params, &m.ret, &[])
+    format!(
+        "{}{}",
+        if m.pure { "pure " } else { "" },
+        signature(&m.name, &m.params, &m.ret, &[]),
+    )
 }
 
 /// The contiguous `//` block at the top of the file (the module description).

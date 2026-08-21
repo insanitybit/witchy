@@ -19,7 +19,8 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
 
 use witchy_syntax::ast::{
-    self, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
+    self, Block, CallableQualifiers, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
+    Stmt, UnOp,
 };
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 use witchy_syntax::{cap_ops, intrinsics};
@@ -156,7 +157,7 @@ pub enum Ty {
     /// mutable-reference positions.  The final vector is semantic identity, not
     /// an ABI convention: `let x: &'a mut T` accepts `&mut place`, whereas a
     /// `var x: T` accepts a caller write-back place.
-    Fn(Vec<Ty>, Box<Ty>, Vec<Convention>, Vec<bool>),
+    Fn(Vec<Ty>, Box<Ty>, Vec<Convention>, Vec<bool>, CallableQualifiers),
     Var(u32),
 }
 
@@ -229,7 +230,13 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
-            Ty::Fn(params, ret, conventions, _) => {
+            Ty::Fn(params, ret, conventions, _, qualifiers) => {
+                if qualifiers.pure {
+                    write!(f, "pure ")?;
+                }
+                if qualifiers.once {
+                    write!(f, "once ")?;
+                }
                 write!(f, "fn(")?;
                 for (i, t) in params.iter().enumerate() {
                     if i > 0 {
@@ -268,7 +275,7 @@ fn collect_callable_lifetime_markers(ty: &Ty, markers: &mut HashMap<String, Stri
             }
         }
         // Nested function types introduce their own binders.
-        Ty::Fn(_, _, _, _)
+        Ty::Fn(..)
         | Ty::Int
         | Ty::Float
         | Ty::Duration
@@ -333,9 +340,9 @@ fn normalize_callable_lifetime_markers(
                 .map(|argument| normalize_callable_lifetime_markers(argument, markers))
                 .collect(),
         ),
-            Ty::Fn(parameters, result, conventions, reference_params) => {
+            Ty::Fn(parameters, result, conventions, reference_params, qualifiers) => {
             let (parameters, result) = alpha_normalize_callable(parameters, result);
-                Ty::Fn(parameters, Box::new(result), conventions.clone(), reference_params.clone())
+                Ty::Fn(parameters, Box::new(result), conventions.clone(), reference_params.clone(), *qualifiers)
         }
         other => other.clone(),
     }
@@ -566,7 +573,7 @@ fn collect_parameter_lifetime_binders(t: &ast::Type, lifetimes: &mut HashSet<Str
         }
         // A nested function type binds and validates its own relations; those
         // names do not enter the enclosing callable's lifetime scope.
-        ast::Type::Fn(_, _, _) => {}
+        ast::Type::Fn(..) => {}
     }
 }
 
@@ -645,7 +652,7 @@ fn validate_nominal_lifetime_uses(
             }
             Ok(())
         }
-        ast::Type::Fn(parameters, result, _) => {
+        ast::Type::Fn(parameters, result, _, _) => {
             let mut nested = HashSet::new();
             for parameter in parameters {
                 collect_parameter_lifetime_binders(parameter, &mut nested);
@@ -700,7 +707,7 @@ fn collect_declared_lifetime_uses(t: &ast::Type, used: &mut HashSet<String>) {
         }
         // A nested function type binds its own lifetime relations. A same-spelled
         // nested binder must not make an outer nominal lifetime look used.
-        ast::Type::Fn(_, _, _) => {}
+        ast::Type::Fn(..) => {}
     }
 }
 
@@ -726,7 +733,7 @@ fn type_contains_nominal_lifetime_relation(t: &ast::Type) -> bool {
         }
         // The function value owns its independently quantified relations; it is
         // not itself a borrowed aggregate stored by the enclosing shell.
-        ast::Type::Fn(_, _, _) => false,
+        ast::Type::Fn(..) => false,
     }
 }
 
@@ -754,7 +761,7 @@ fn type_contains_explicit_reference_relation(t: &ast::Type) -> bool {
         }
         // Nested function values have independently quantified relations and
         // are handled by the callable carrier path, not this aggregate set.
-        ast::Type::Fn(_, _, _) => false,
+        ast::Type::Fn(..) => false,
     }
 }
 
@@ -793,7 +800,7 @@ fn borrowed_nominal_relation_name<'a>(
         // A function value owns its separately quantified relation. Its own
         // parameter conventions are validated when this traversal reaches the
         // nested callable below.
-        ast::Type::Fn(_, _, _) | ast::Type::RecordCompose { .. } => None,
+        ast::Type::Fn(..) | ast::Type::RecordCompose { .. } => None,
     }
 }
 
@@ -933,7 +940,7 @@ fn reject_borrowed_nominal_containers(
         }
         // Nested callable relations are separately quantified, but each
         // callable surface still has to reject borrowed aggregate containers.
-        ast::Type::Fn(parameters, result, conventions) => {
+        ast::Type::Fn(parameters, result, conventions, _) => {
             for (index, parameter) in parameters.iter().enumerate() {
                 if let Some(element) = direct_borrowed_nominal_list_name(parameter, lifetime_nominals) {
                     return terr(format!(
@@ -1257,7 +1264,7 @@ fn type_mentions_reference_surface(ty: &ast::Type) -> bool {
                     .iter()
                     .any(|(_, field)| type_mentions_reference_surface(field))
         }
-        ast::Type::Fn(parameters, result, _) => {
+        ast::Type::Fn(parameters, result, _, _) => {
             parameters.iter().any(type_mentions_reference_surface)
                 || type_mentions_reference_surface(result)
         }
@@ -1292,7 +1299,7 @@ fn validate_type(
                 .iter()
                 .try_for_each(|(_, ty)| validate_type(ty, known, arities, nominal_parameters))
         }
-        ast::Type::Fn(params, ret, _) => {
+        ast::Type::Fn(params, ret, _, _) => {
             params
                 .iter()
                 .try_for_each(|p| validate_type(p, known, arities, nominal_parameters))?;
@@ -1431,7 +1438,7 @@ fn authority_taint_type(
         // arguments can carry taint.
         ast::Type::Dyn(_, args) => args.iter().find_map(|a| authority_taint_type(a, defs, seen)),
         ast::Type::Tuple(items) => items.iter().find_map(|t| authority_taint_type(t, defs, seen)),
-        ast::Type::Fn(params, ret, _) => params
+        ast::Type::Fn(params, ret, _, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(|t| authority_taint_type(t, defs, seen)),
@@ -1476,7 +1483,7 @@ fn reject_structural_authority_type(
         ast::Type::Tuple(items) => {
             items.iter().try_for_each(|item| reject_structural_authority_type(item, defs))
         }
-        ast::Type::Fn(params, ret, _) => {
+        ast::Type::Fn(params, ret, _, _) => {
             params.iter().try_for_each(|param| reject_structural_authority_type(param, defs))?;
             reject_structural_authority_type(ret, defs)
         }
@@ -1544,7 +1551,7 @@ fn reject_borrowed_capability_views(
                 reject_borrowed_capability_views(field, storage)
             })
         }
-        ast::Type::Fn(parameters, result, _) => {
+        ast::Type::Fn(parameters, result, _, _) => {
             parameters.iter().try_for_each(|parameter| {
                 reject_borrowed_capability_views(parameter, storage)
             })?;
@@ -1599,7 +1606,7 @@ fn reject_bare_unsized_types(t: &ast::Type) -> Result<(), TypeError> {
             }
             ast::Type::Tuple(items) => items.iter().try_for_each(|item| visit(item, false)),
             ast::Type::Dyn(_, args) => args.iter().try_for_each(|arg| visit(arg, false)),
-            ast::Type::Fn(params, ret, _) => {
+            ast::Type::Fn(params, ret, _, _) => {
                 params.iter().try_for_each(|p| visit(p, false))?;
                 visit(ret, false)
             }
@@ -1647,7 +1654,7 @@ fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeEr
                 visit(base)?;
                 fields.iter().try_for_each(|(_, field)| visit(field))
             }
-            ast::Type::Fn(parameters, result, _) => {
+            ast::Type::Fn(parameters, result, _, _) => {
                 parameters.iter().try_for_each(visit)?;
                 visit(result)
             }
@@ -1696,7 +1703,7 @@ fn reject_contradictory_exclusive_reference_handle_qualifiers(t: &ast::Type) -> 
                 visit(base)?;
                 fields.iter().try_for_each(|(_, field)| visit(field))
             }
-            ast::Type::Fn(parameters, result, _) => {
+            ast::Type::Fn(parameters, result, _, _) => {
                 parameters.iter().try_for_each(visit)?;
                 visit(result)
             }
@@ -1907,7 +1914,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
                         .map_err(|e| in_ctx(e, ctx))
                 }
-                Expr::Lambda { params, body, ret } => {
+                Expr::Lambda { params, body, ret, .. } => {
                     for param in params {
                         if let Some(ty) = &param.ty {
                             validate_type_model(ty, known, arities, type_defs, nominal_parameters, storage)
@@ -2446,7 +2453,7 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
         }
         ast::Type::Dyn(_, args) => args.iter().find_map(|a| packed_list_in_type(a, packed_names)),
         ast::Type::Tuple(items) => items.iter().find_map(|a| packed_list_in_type(a, packed_names)),
-        ast::Type::Fn(args, ret, _) => args
+        ast::Type::Fn(args, ret, _, _) => args
             .iter()
             .find_map(|a| packed_list_in_type(a, packed_names))
             .or_else(|| packed_list_in_type(ret, packed_names)),
@@ -2537,7 +2544,7 @@ fn transparent_externref_brand_field_cap(
         ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
         // (RFC-0081) A dyn type is never a transparent externref brand.
         ast::Type::Named(_, _) | ast::Type::Dyn(_, _) | ast::Type::Tuple(_)
-        | ast::Type::Fn(_, _, _) => None,
+        | ast::Type::Fn(..) => None,
         ast::Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached externref representation selection before records::lower normalized it"
         ),
@@ -2632,7 +2639,7 @@ fn reject_cap_slot_boundary(
                 reject_cap_slot_boundary(ty, _defs, storage, ctx, position)
             })
         }
-        ast::Type::Fn(args, ret, _) => {
+        ast::Type::Fn(args, ret, _, _) => {
             // Function signatures may mention capabilities: the typed closure ABI
             // preserves direct reference parameters and results. Still recurse so
             // unsupported containers nested in the signature are diagnosed at their
@@ -2739,7 +2746,7 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
         Ty::Named(_, args) => args.iter().find_map(float_key_position),
         Ty::List(e) => float_key_position(e),
         Ty::Tuple(ts) => ts.iter().find_map(float_key_position),
-        Ty::Fn(ps, r, _, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
+        Ty::Fn(ps, r, _, _, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
         _ => None,
     }
 }
@@ -2768,7 +2775,7 @@ fn first_type_var(t: &Ty) -> Option<u32> {
         Ty::List(e) => first_type_var(e),
         Ty::Tuple(ts) => ts.iter().find_map(first_type_var),
         Ty::Named(_, args) => args.iter().find_map(first_type_var),
-        Ty::Fn(ps, r, _, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
+        Ty::Fn(ps, r, _, _, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
         _ => None,
     }
 }
@@ -3228,7 +3235,7 @@ fn type_host_taint<'a>(
         // (RFC-0081) A dyn value is never itself a capability; scan args only.
         ast::Type::Dyn(_, args) => args.iter().find_map(|a| type_host_taint(a, types, seen)),
         ast::Type::Tuple(ts) => ts.iter().find_map(|t| type_host_taint(t, types, seen)),
-        ast::Type::Fn(params, ret, _) => params
+        ast::Type::Fn(params, ret, _, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(|t| type_host_taint(t, types, seen)),
@@ -3736,6 +3743,8 @@ struct Checker {
     /// finalized only after the ending substitution is known.
     record_projection_record: Option<HashMap<usize, (Ty, Ty)>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
+    /// Callable contract promised by each named reusable function.
+    fn_qualifiers: HashMap<String, CallableQualifiers>,
     /// Functions selected by trait lowering as actual `From.from` impls.
     /// Generated function names are an ABI detail, not semantic evidence.
     from_conversion_fns: HashSet<String>,
@@ -4094,12 +4103,13 @@ impl Checker {
                 }
                 return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
             }
-            ast::Type::Fn(params, ret, conventions) => {
+            ast::Type::Fn(params, ret, conventions, qualifiers) => {
                 return Ty::Fn(
                     params.iter().map(|t| self.to_ty(t)).collect(),
                     Box::new(self.to_ty(ret)),
                     conventions.clone(),
                     params.iter().map(type_is_exclusive_reference).collect(),
+                    *qualifiers,
                 );
             }
             // (RFC-0081) A first-class existential identity: the bare trait
@@ -4151,11 +4161,12 @@ impl Checker {
                 }
                 Ty::Tuple(ts.iter().map(|t| self.to_ty_generic(t, vars)).collect())
             }
-            ast::Type::Fn(params, ret, conventions) => Ty::Fn(
+            ast::Type::Fn(params, ret, conventions, qualifiers) => Ty::Fn(
                 params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
                 Box::new(self.to_ty_generic(ret, vars)),
                 conventions.clone(),
                 params.iter().map(type_is_exclusive_reference).collect(),
+                *qualifiers,
             ),
             // (RFC-0081) First-class existential identity; arguments recurse so
             // a signature's generic vars inside `dyn T(a)` stay shared (the
@@ -4250,11 +4261,12 @@ impl Checker {
             Ty::Dyn(n, args) => {
                 Ty::Dyn(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
             }
-            Ty::Fn(params, ret, conventions, reference_params) => Ty::Fn(
+            Ty::Fn(params, ret, conventions, reference_params, qualifiers) => Ty::Fn(
                 params.iter().map(|x| self.subst_vars(x, map)).collect(),
                 Box::new(self.subst_vars(&ret, map)),
                 conventions,
                 reference_params,
+                qualifiers,
             ),
             other => other,
         }
@@ -4270,11 +4282,12 @@ impl Checker {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             Ty::Dyn(n, args) => Ty::Dyn(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
-            Ty::Fn(params, ret, conventions, reference_params) => Ty::Fn(
+            Ty::Fn(params, ret, conventions, reference_params, qualifiers) => Ty::Fn(
                 params.iter().map(|t| self.resolve(t)).collect(),
                 Box::new(self.resolve(ret)),
                 conventions.clone(),
                 reference_params.clone(),
+                *qualifiers,
             ),
             _ => t.clone(),
         }
@@ -4346,7 +4359,7 @@ impl Checker {
             match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
-                Ty::Fn(params, ret, _, _) => params
+                Ty::Fn(params, ret, _, _, _) => params
                     .iter()
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
@@ -4470,7 +4483,7 @@ impl Checker {
             match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
-                Ty::Fn(params, ret, _, _) => params
+                Ty::Fn(params, ret, _, _, _) => params
                     .iter()
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
@@ -4565,7 +4578,7 @@ impl Checker {
                     child.push(format!("tuple[{index}]"));
                     go(checker, item, visiting, &child)
                 }),
-                Ty::Fn(params, result, _, _) => params
+                Ty::Fn(params, result, _, _, _) => params
                     .iter()
                     .enumerate()
                     .find_map(|(index, param)| {
@@ -4710,7 +4723,7 @@ impl Checker {
             Ty::BuildExec => Some("BuildExec".to_string()),
             Ty::List(inner) => self.ty_authority_taint(&inner, seen),
             Ty::Tuple(items) => items.iter().find_map(|item| self.ty_authority_taint(item, seen)),
-            Ty::Fn(params, ret, _, _) => params
+            Ty::Fn(params, ret, _, _, _) => params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.ty_authority_taint(item, seen)),
@@ -4756,7 +4769,7 @@ impl Checker {
             Ty::Tuple(items) => {
                 items.iter().try_for_each(|item| self.reject_structural_authority_ty(item, ctx))
             }
-            Ty::Fn(params, ret, _, _) => {
+            Ty::Fn(params, ret, _, _, _) => {
                 params.iter().try_for_each(|param| self.reject_structural_authority_ty(param, ctx))?;
                 self.reject_structural_authority_ty(&ret, ctx)
             }
@@ -4787,7 +4800,7 @@ impl Checker {
             Ty::List(inner) => self.compiler_syntax_ty(&inner),
             Ty::Dyn(_, args) => args.iter().find_map(|arg| self.compiler_syntax_ty(arg)),
             Ty::Tuple(items) => items.iter().find_map(|item| self.compiler_syntax_ty(item)),
-            Ty::Fn(params, ret, _, _) => params
+            Ty::Fn(params, ret, _, _, _) => params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.compiler_syntax_ty(item)),
@@ -5067,7 +5080,7 @@ impl Checker {
                 }
                 Ok(())
             }
-            Ty::Fn(params, ret, _, _) => {
+            Ty::Fn(params, ret, _, _, _) => {
                 params
                     .iter()
                     .try_for_each(|param| self.reject_externref_cap_aggregate_ty(param, ctx))?;
@@ -5120,8 +5133,8 @@ impl Checker {
                 }
                 Ok(())
             }
-            (Ty::Fn(xp, xr, xc, xrefs), Ty::Fn(yp, yr, yc, yrefs))
-                if xp.len() == yp.len() && xc == yc =>
+            (Ty::Fn(xp, xr, xc, xrefs, xq), Ty::Fn(yp, yr, yc, yrefs, yq))
+                if xp.len() == yp.len() && xc == yc && xq == yq =>
             {
                 let reference_positions_match = (0..xp.len()).all(|index| {
                     xrefs.get(index).copied().unwrap_or(false)
@@ -5149,6 +5162,43 @@ impl Checker {
         }
     }
 
+    /// Least upper bound for branch results. Callable purity may widen away at
+    /// a join; invocation cardinality never does.
+    fn branch_lub(&mut self, left: &Ty, right: &Ty) -> Result<Ty, TypeError> {
+        let left = self.resolve(left);
+        let right = self.resolve(right);
+        if let (
+            Ty::Fn(lp, lr, lc, lrefs, lq),
+            Ty::Fn(rp, rr, rc, rrefs, rq),
+        ) = (&left, &right)
+        {
+            if lq.once != rq.once {
+                return terr(format!(
+                    "callable branches disagree on invocation cardinality: `{left}` versus `{right}`"
+                ));
+            }
+            let qualifiers = CallableQualifiers::new(lq.pure && rq.pure, lq.once);
+            let widened_left = Ty::Fn(
+                lp.clone(),
+                lr.clone(),
+                lc.clone(),
+                lrefs.clone(),
+                qualifiers,
+            );
+            let widened_right = Ty::Fn(
+                rp.clone(),
+                rr.clone(),
+                rc.clone(),
+                rrefs.clone(),
+                qualifiers,
+            );
+            self.unify(&widened_left, &widened_right)?;
+            return Ok(self.resolve(&widened_left));
+        }
+        self.unify(&left, &right)?;
+        Ok(self.resolve(&left))
+    }
+
     /// Whether type variable `x` occurs anywhere inside `t` (after resolving
     /// intermediate variables) — the standard infinite-type guard.
     fn occurs(&self, x: u32, t: &Ty) -> bool {
@@ -5157,7 +5207,7 @@ impl Checker {
             Ty::List(inner) => self.occurs(x, &inner),
             Ty::Tuple(items) => items.iter().any(|i| self.occurs(x, i)),
             Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(|a| self.occurs(x, a)),
-            Ty::Fn(params, ret, _, _) => {
+            Ty::Fn(params, ret, _, _, _) => {
                 params.iter().any(|p| self.occurs(x, p)) || self.occurs(x, &ret)
             }
             _ => false,
@@ -5802,6 +5852,7 @@ impl Checker {
                     Box::new(value.clone()),
                     vec![Convention::Let],
                     vec![false],
+                    CallableQualifiers::ORDINARY,
                 );
                 Some((vec![dict.clone(), key, value, update], dict))
             }
@@ -6059,7 +6110,33 @@ impl Checker {
         if self.existential_coercion(expected, actual)? {
             return Ok(());
         }
-        let coercible = match (self.resolve(expected), self.resolve(actual)) {
+        let expected_resolved = self.resolve(expected);
+        let actual_resolved = self.resolve(actual);
+        if let (
+            Ty::Fn(params, result, conventions, references, expected_qualifiers),
+            Ty::Fn(actual_params, actual_result, actual_conventions, actual_references, actual_qualifiers),
+        ) = (&expected_resolved, &actual_resolved)
+            && expected_qualifiers.once == actual_qualifiers.once
+            && !expected_qualifiers.pure
+            && actual_qualifiers.pure
+        {
+            let widened = Ty::Fn(
+                actual_params.clone(),
+                actual_result.clone(),
+                actual_conventions.clone(),
+                actual_references.clone(),
+                *expected_qualifiers,
+            );
+            let expected_callable = Ty::Fn(
+                params.clone(),
+                result.clone(),
+                conventions.clone(),
+                references.clone(),
+                *expected_qualifiers,
+            );
+            return self.unify(&expected_callable, &widened);
+        }
+        let coercible = match (&expected_resolved, &actual_resolved) {
             // `want`'s rights must be a subset of what the argument `has`.
             (Ty::Dir(want), Ty::Dir(has)) => (!want.read || has.read) && (!want.write || has.write),
             (Ty::File(want), Ty::File(has)) => (!want.read || has.read) && (!want.write || has.write),
@@ -6091,7 +6168,7 @@ impl Checker {
         // the `Dir`/`Console` rights diagnostics, so `reveal` on a sealed secret reads
         // as the policy decision it is rather than as "expected Secret, found
         // Secret[Seal]".
-        if let (Ty::Secret(want), Ty::Secret(has)) = (self.resolve(expected), self.resolve(actual))
+        if let (Ty::Secret(want), Ty::Secret(has)) = (&expected_resolved, &actual_resolved)
             && want.reveal
             && !has.reveal
         {
@@ -6102,6 +6179,16 @@ impl Checker {
             ));
         }
         self.unify(expected, actual)
+    }
+
+    fn callable_purity_widening(&self, expected: &Ty, actual: &Ty) -> bool {
+        matches!(
+            (self.resolve(expected), self.resolve(actual)),
+            (
+                Ty::Fn(_, _, _, _, CallableQualifiers { pure: false, once: expected_once }),
+                Ty::Fn(_, _, _, _, CallableQualifiers { pure: true, once: actual_once }),
+            ) if expected_once == actual_once
+        )
     }
 
     /// Check one directed structural-record conversion. Only compiler-owned
@@ -6482,7 +6569,8 @@ impl Checker {
                             )
                         })?;
                         let directed = self.existential_coercion(&want, &vt)?
-                            || self.record_width_conformance(&want, &vt)?;
+                            || self.record_width_conformance(&want, &vt)?
+                            || self.callable_purity_widening(&want, &vt);
                         if directed {
                             want
                         } else {
@@ -6595,6 +6683,7 @@ impl Checker {
                     }
                     if !self.existential_coercion(&existing, &vt)?
                         && !self.record_width_conformance(&existing, &vt)?
+                        && !self.callable_purity_widening(&existing, &vt)
                     {
                         self.unify(&existing, &vt)?;
                     }
@@ -6945,7 +7034,18 @@ impl Checker {
                     .get(function)
                     .cloned()
                     .unwrap_or_else(|| vec![Convention::Let; params.len()]);
-                let function_ty = Ty::Fn(params, Box::new(ret), conventions, vec![false; args.len()]);
+                let qualifiers = self
+                    .fn_qualifiers
+                    .get(function)
+                    .copied()
+                    .unwrap_or(CallableQualifiers::ORDINARY);
+                let function_ty = Ty::Fn(
+                    params,
+                    Box::new(ret),
+                    conventions,
+                    vec![false; args.len()],
+                    qualifiers,
+                );
                 if call_name != "vm.with_dir"
                     && let Some(cap) = self.ty_carries_externref_cap(&function_ty)
                 {
@@ -6962,7 +7062,7 @@ impl Checker {
         // yet unconstrained variable (which we pin to a function type).
         if !is_cap_op && let Some(vty) = self.lookup(name) {
             match self.resolve(&vty) {
-                Ty::Fn(param_tys, ret, conventions, reference_params) => {
+                Ty::Fn(param_tys, ret, conventions, reference_params, _) => {
                     if self.current_isolated_callback.as_deref() != Some(name) {
                         self.reject_externref_cap_aggregate_ty(
                             &vty,
@@ -7042,6 +7142,7 @@ impl Checker {
                             Box::new(ret.clone()),
                             vec![Convention::Let; args.len()],
                             vec![false; args.len()],
+                            CallableQualifiers::ORDINARY,
                         ),
                     )?;
                     self.reject_externref_cap_aggregate_ty(
@@ -7214,6 +7315,10 @@ impl Checker {
                     Box::new(callback_ret),
                     conventions,
                     vec![false; callback_param_count],
+                    self.fn_qualifiers
+                        .get(function)
+                        .copied()
+                        .unwrap_or(CallableQualifiers::ORDINARY),
                 ))
             } else if exact_generic {
                 self.infer(arg)
@@ -7688,7 +7793,7 @@ impl Checker {
         self.fn_conventions.get(name).cloned().or_else(|| {
             let ty = self.lookup(name)?;
             match self.resolve(&ty) {
-                Ty::Fn(_, _, conventions, _) => Some(conventions.clone()),
+                Ty::Fn(_, _, conventions, _, _) => Some(conventions.clone()),
                 _ => None,
             }
         })
@@ -8139,7 +8244,18 @@ impl Checker {
                         .get(name)
                         .cloned()
                         .unwrap_or_else(|| vec![false; param_count]);
-                    let function_ty = Ty::Fn(params, Box::new(ret), conventions, reference_params);
+                    let qualifiers = self
+                        .fn_qualifiers
+                        .get(name)
+                        .copied()
+                        .unwrap_or(CallableQualifiers::ORDINARY);
+                    let function_ty = Ty::Fn(
+                        params,
+                        Box::new(ret),
+                        conventions,
+                        reference_params,
+                        qualifiers,
+                    );
                     self.reject_externref_cap_aggregate_ty(
                         &function_ty,
                         &format!("function value `{name}`"),
@@ -8153,7 +8269,7 @@ impl Checker {
                 }
                 terr(format!("unbound variable `{name}`"))
             }
-            Expr::Lambda { params, body, ret } => {
+            Expr::Lambda { params, body, ret, qualifiers } => {
                 validate_callable_nominal_lifetimes(
                     "lambda",
                     params,
@@ -8175,7 +8291,7 @@ impl Checker {
                 }
                 for capture in scan.captures() {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
-                    if self.is_live_must_binding(&capture) {
+                    if self.is_must_binding(&capture) {
                         return terr(format!(
                             "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
                         ));
@@ -8258,9 +8374,15 @@ impl Checker {
                 self.reject_live_must_in_current_scope()?;
                 self.pop();
                 let conventions = params.iter().map(|p| p.convention).collect();
-                let function_ty = Ty::Fn(param_tys, Box::new(lambda_ret), conventions, vec![false; params.len()]);
+                let function_ty = Ty::Fn(
+                    param_tys,
+                    Box::new(lambda_ret),
+                    conventions,
+                    vec![false; params.len()],
+                    *qualifiers,
+                );
                 if ret.is_none()
-                    && let Ty::Fn(_, result, _, _) = &function_ty
+                    && let Ty::Fn(_, result, _, _, _) = &function_ty
                 {
                     self.reject_borrowed_nominal_runtime_ty(
                         result,
@@ -8275,7 +8397,7 @@ impl Checker {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
-                if let Ty::Fn(param_tys, ret, conventions, reference_params) = self.resolve(&fty) {
+                if let Ty::Fn(param_tys, ret, conventions, reference_params, _) = self.resolve(&fty) {
                     self.reject_externref_cap_aggregate_ty(&fty, "function value")?;
                     if param_tys.len() != args.len() {
                         return terr(format!(
@@ -8332,6 +8454,7 @@ impl Checker {
                         Box::new(ret.clone()),
                         vec![Convention::Let; args.len()],
                         vec![false; args.len()],
+                        CallableQualifiers::ORDINARY,
                     ),
                 )
                     .map_err(|e| TypeError {
@@ -8722,17 +8845,17 @@ impl Checker {
                 let tt = self.infer_block(then_block)?;
                 let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 let must_then = std::mem::replace(&mut self.must_live, must_before.clone());
-                let else_completes = match else_block {
+                let (else_completes, result) = match else_block {
                     Some(eb) => {
                         let et = self.infer_block(eb)?;
-                        self.unify(&tt, &et).map_err(|e| TypeError {
+                        let joined = self.branch_lub(&tt, &et).map_err(|e| TypeError {
                             message: format!("`if` branches disagree: {}", e.message),
                         })?;
-                        block_can_complete(eb)
+                        (block_can_complete(eb), joined)
                     }
                     None => {
                         self.unify(&tt, &Ty::Unit)?;
-                        true
+                        (true, self.resolve(&tt))
                     }
                 };
                 let branches = [
@@ -8741,7 +8864,7 @@ impl Checker {
                 ];
                 (self.consumed, self.must_live) =
                     join_reachable_binding_facts(&before, &must_before, &branches);
-                Ok(tt)
+                Ok(result)
             }
             Expr::Block(b) => self.infer_block(b),
             Expr::While { cond, body } => {
@@ -8994,7 +9117,7 @@ impl Checker {
                 );
             }
         }
-        let result = expected.cloned().unwrap_or_else(|| self.fresh());
+        let mut result = expected.cloned();
         let before = self.consumed.clone();
         let must_before = self.must_live.clone();
         let mut branch_facts = Vec::with_capacity(arms.len());
@@ -9019,13 +9142,16 @@ impl Checker {
                 None => self.infer(&arm.body)?,
             };
             if expected.is_some() {
-                self.coerce_arg(&result, &bt).map_err(|e| TypeError {
+                self.coerce_arg(result.as_ref().expect("expected match type"), &bt).map_err(|e| TypeError {
                     message: format!("match arm disagrees with the expected type: {}", e.message),
                 })?;
             } else {
-                self.unify(&result, &bt).map_err(|e| TypeError {
-                    message: format!("match arms produce different types: {}", e.message),
-                })?;
+                result = Some(match result {
+                    Some(ref current) => self.branch_lub(current, &bt).map_err(|e| TypeError {
+                        message: format!("match arms produce different types: {}", e.message),
+                    })?,
+                    None => bt,
+                });
             }
             self.reject_live_must_in_current_scope()?;
             self.pop();
@@ -9044,7 +9170,7 @@ impl Checker {
         let flat = flatten_or_arms(arms);
         self.check_unreachable(&flat)?;
         self.check_exhaustive(&st, &flat)?;
-        Ok(result)
+        Ok(result.unwrap_or(Ty::Unit))
     }
 
     /// (RFC-0052) Whether a pattern is REFUTABLE in an irrefutable context
@@ -10240,7 +10366,8 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
 #[derive(Default)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
-    functions: HashMap<String, (Vec<Ty>, Ty)>,
+    /// Complete callable identity for each concrete named declaration.
+    functions: HashMap<String, Ty>,
     existential_packs: HashMap<usize, (Ty, Ty)>,
     existential_upcasts: HashMap<usize, (Ty, Ty)>,
     record_projections: HashMap<usize, (Ty, Ty)>,
@@ -10263,10 +10390,7 @@ impl TypeTable {
     /// single concrete entry; their concrete function-value expressions still
     /// appear in [`Self::type_of`].
     pub fn function_type(&self, name: &str) -> Option<ast::Type> {
-        let (params, result) = self.functions.get(name)?;
-        let params = params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?;
-        let result = ty_to_ast(result)?;
-        Some(ast::Type::Fn(params, Box::new(result), Vec::new()))
+        ty_to_ast(self.functions.get(name)?)
     }
 
     /// The finalized `(existential, concrete)` construction requested at this
@@ -10477,10 +10601,11 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
             n.clone(),
             args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         ),
-        Ty::Fn(params, ret, conventions, _) => T::Fn(
+        Ty::Fn(params, ret, conventions, _, qualifiers) => T::Fn(
             params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
             Box::new(ty_to_ast(ret)?),
             conventions.clone(),
+            *qualifiers,
         ),
         Ty::Var(_) => return None,
     })
@@ -10492,7 +10617,7 @@ fn ty_has_var(t: &Ty) -> bool {
         Ty::List(e) => ty_has_var(e),
         Ty::Tuple(ts) => ts.iter().any(ty_has_var),
         Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(ty_has_var),
-        Ty::Fn(ps, r, _, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
+        Ty::Fn(ps, r, _, _, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
         _ => false,
     }
 }
@@ -10849,6 +10974,7 @@ fn run_check_selected(
         existential_upcast_record: Some(HashMap::new()),
         record_projection_record: Some(HashMap::new()),
         fn_sigs: HashMap::new(),
+        fn_qualifiers: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
         fn_exclusive_reference_params: HashMap::new(),
@@ -11015,6 +11141,10 @@ fn run_check_selected(
                     None => c.fresh(),
                 };
                 c.fn_sigs.insert(f.name.clone(), (params, ret));
+                c.fn_qualifiers.insert(
+                    f.name.clone(),
+                    CallableQualifiers::new(f.pure, false),
+                );
                 let typarams: Vec<(String, u32)> = vars
                     .iter()
                     .filter_map(|(name, ty)| match ty {
@@ -11219,8 +11349,27 @@ fn run_check_selected(
             .filter_map(|(name, (params, result))| {
                 let params = params.iter().map(|param| c.resolve(param)).collect::<Vec<_>>();
                 let result = c.resolve(result);
-                (!params.iter().any(ty_has_var) && !ty_has_var(&result))
-                    .then(|| (name.clone(), (params, result)))
+                let conventions = c
+                    .fn_conventions
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| vec![Convention::Let; params.len()]);
+                let references = c
+                    .fn_exclusive_reference_params
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| vec![false; params.len()]);
+                let qualifiers = c
+                    .fn_qualifiers
+                    .get(name)
+                    .copied()
+                    .unwrap_or(CallableQualifiers::ORDINARY);
+                (!params.iter().any(ty_has_var) && !ty_has_var(&result)).then(|| {
+                    (
+                        name.clone(),
+                        Ty::Fn(params, Box::new(result), conventions, references, qualifiers),
+                    )
+                })
             })
             .collect();
         return Ok(Some(TypeTable {

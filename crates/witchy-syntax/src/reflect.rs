@@ -159,7 +159,7 @@ fn type_expr(t: &Type) -> Expr {
             name: "meta.TTuple".into(),
             args: vec![Expr::List(ts.iter().map(type_expr).collect())],
         },
-        Type::Fn(ps, r, conventions) => Expr::Ctor {
+        Type::Fn(ps, r, conventions, qualifiers) => Expr::Ctor {
             name: "meta.TFn".into(),
             args: vec![
                 Expr::List(ps.iter().map(type_expr).collect()),
@@ -177,6 +177,8 @@ fn type_expr(t: &Type) -> Expr {
                         })
                         .collect(),
                 ),
+                Expr::Bool(qualifiers.pure),
+                Expr::Bool(qualifiers.once),
             ],
         },
     }

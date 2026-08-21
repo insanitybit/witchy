@@ -715,7 +715,7 @@ fn rc_leaf_bias(t: &Type) -> Option<i32> {
         Type::Dyn(_, _) => None,
         Type::Slice(_) => Some(-1),
         Type::Tuple(_) => Some(0),
-        Type::Fn(_, _, _) => Some(-1),
+        Type::Fn(_, _, _, _) => Some(-1),
         Type::Named(name, args)
             if args.is_empty()
                 && !name.contains('.')
@@ -1796,7 +1796,7 @@ impl<'types> Codegen<'types> {
         match t {
             Type::Named(n, _) if n == "__Msg" => Kind::GcRef(MESSAGE_WRAPPER_ID),
             Type::Dyn(_, _) => Kind::GcRef(EXISTENTIAL_WRAPPER_ID),
-            Type::Fn(_, _, _) => Kind::GcRef(CLOSURE_WRAPPER_ID),
+            Type::Fn(_, _, _, _) => Kind::GcRef(CLOSURE_WRAPPER_ID),
             Type::Tuple(_) => self
                 .gc_tuple_shape(t)
                 .and_then(|shape| self.gc_tuple_ids.get(&shape).copied())
@@ -1925,7 +1925,7 @@ impl<'types> Codegen<'types> {
                     .collect::<Vec<_>>()
                     .join(";")
             ),
-            Type::Fn(params, result, conventions) => {
+            Type::Fn(params, result, conventions, _) => {
                 let conventions = conventions
                     .iter()
                     .map(|convention| match convention {
@@ -2162,7 +2162,7 @@ impl<'types> Codegen<'types> {
                 }
             }
             Type::Slice(inner) => self.collect_unit_gc_ids_type(inner, ids),
-            Type::Fn(params, result, _) => {
+            Type::Fn(params, result, _, _) => {
                 for param in params {
                     self.collect_unit_gc_ids_type(param, ids);
                 }
@@ -2379,7 +2379,7 @@ impl<'types> Codegen<'types> {
         }
         let ty = ty.unqualified();
         Some(match ty {
-            Type::Fn(_, _, _) => GcFieldShape::Function,
+            Type::Fn(_, _, _, _) => GcFieldShape::Function,
             Type::Named(name, _) if name == "__Msg" => GcFieldShape::Message,
             Type::Tuple(_) => self
                 .gc_tuple_shape(ty)
@@ -2660,7 +2660,7 @@ impl<'types> Codegen<'types> {
             return Vec::new();
         };
         match ty.unqualified() {
-            Type::Fn(params, _, _) => params.iter().map(|ty| self.kind_for_type(ty)).collect(),
+            Type::Fn(params, _, _, _) => params.iter().map(|ty| self.kind_for_type(ty)).collect(),
             _ => Vec::new(),
         }
     }
@@ -2672,7 +2672,7 @@ impl<'types> Codegen<'types> {
             return Some(result.clone());
         }
         let ty = self.ast_type_of_expr(func)?;
-        let Type::Fn(_, result, _) = ty.unqualified() else {
+        let Type::Fn(_, result, _, _) = ty.unqualified() else {
             return None;
         };
         Some(result.as_ref().clone())
@@ -3118,7 +3118,7 @@ impl<'types> Codegen<'types> {
     /// closure-bound variable. Used to track `let f = <closure>` for later `f(x)`.
     fn closure_ret_kind_of(&self, value: &Expr) -> Option<Kind> {
         if let Some(ty) = self.ast_type_of_expr(value)
-            && let Type::Fn(_, ret, _) = ty.unqualified()
+            && let Type::Fn(_, ret, _, _) = ty.unqualified()
         {
             return Some(self.kind_for_type(ret));
         }
@@ -3132,7 +3132,7 @@ impl<'types> Codegen<'types> {
                 .or_else(|| self.fn_ret.get(v).copied())
                 .or_else(|| {
                     self.top_level_function_type(v).and_then(|ty| {
-                        let Type::Fn(_, result, _) = ty.unqualified() else {
+                        let Type::Fn(_, result, _, _) = ty.unqualified() else {
                             return None;
                         };
                         Some(self.kind_for_type(result))
@@ -3179,6 +3179,9 @@ impl<'types> Codegen<'types> {
     /// has already been refined with access facts by assembly, making this the
     /// same callable contract used to build the forwarding closure.
     fn top_level_function_type(&self, name: &str) -> Option<Type> {
+        if let Some(ty) = self.type_table.function_type(name) {
+            return Some(ty);
+        }
         let params = self.fn_params.get(name)?;
         let result = self.fn_ret_ty.get(name)?.clone();
         Some(Type::Fn(
@@ -3188,6 +3191,7 @@ impl<'types> Codegen<'types> {
                 .collect::<Option<Vec<_>>>()?,
             Box::new(result),
             params.iter().map(|param| param.convention).collect(),
+            Default::default(),
         ))
     }
 
@@ -3504,13 +3508,14 @@ impl<'types> Codegen<'types> {
                     .map(|item| Self::substitute_pattern_type(item, bindings))
                     .collect(),
             ),
-            Type::Fn(params, result, conventions) => Type::Fn(
+            Type::Fn(params, result, conventions, qualifiers) => Type::Fn(
                 params
                     .iter()
                     .map(|param| Self::substitute_pattern_type(param, bindings))
                     .collect(),
                 Box::new(Self::substitute_pattern_type(result, bindings)),
                 conventions.clone(),
+                *qualifiers,
             ),
             Type::Qualified(qualifier, inner) => Type::Qualified(
                 qualifier.clone(),
@@ -3608,7 +3613,7 @@ impl<'types> Codegen<'types> {
                     self.local_types.insert(name.clone(), ty.clone());
                     self.local_val_types.insert(name.clone(), vt);
                     self.locals.insert(name.clone(), self.kind_for_type(ty));
-                    if let Type::Fn(_, ret, _) = ty.unqualified() {
+                    if let Type::Fn(_, ret, _, _) = ty.unqualified() {
                         self.local_fn_ret_kind.insert(name.clone(), self.kind_for_type(ret));
                         let envelope = Self::ownership_envelope_for_type(ty);
                         if envelope.has_state() {
@@ -4041,7 +4046,7 @@ impl<'types> Codegen<'types> {
                     && let Some(element) = args.first()
                 {
                     self.local_types.insert(var.clone(), element.clone());
-                    if let Type::Fn(_, ret, _) = element.unqualified() {
+                    if let Type::Fn(_, ret, _, _) = element.unqualified() {
                         self.local_fn_ret_kind
                             .insert(var.clone(), self.kind_for_type(ret));
                         let envelope = Self::ownership_envelope_for_type(element);
@@ -4284,7 +4289,7 @@ impl<'types> Codegen<'types> {
             // A function-typed parameter (`f: fn(...) -> RET`): remember RET's kind
             // so a closure call `f(x)` recovers the result at the right width.
             if let Some(ty) = &p.ty
-                && let Type::Fn(_, ret, _) = ty.unqualified()
+                && let Type::Fn(_, ret, _, _) = ty.unqualified()
             {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
                 let envelope = Self::ownership_envelope_for_type(ty);
@@ -8649,7 +8654,7 @@ impl<'types> Codegen<'types> {
             list_elem_list_vt: self.local_list_elem_list_valtype.get(name).copied(),
             list_nesting: self.local_list_nesting.get(name).cloned(),
             fn_ret_kind: self.local_fn_ret_kind.get(name).copied().or_else(|| {
-                let Type::Fn(_, result, _) = self.local_types.get(name)?.unqualified() else {
+                let Type::Fn(_, result, _, _) = self.local_types.get(name)?.unqualified() else {
                     return None;
                 };
                 Some(self.kind_for_type(result))
@@ -8973,7 +8978,7 @@ impl<'types> Codegen<'types> {
                 .unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
             if let Some(ty) = resolved_type
-                && let Type::Fn(_, ret, _) = ty.unqualified()
+                && let Type::Fn(_, ret, _, _) = ty.unqualified()
             {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
                 let envelope = Self::ownership_envelope_for_type(ty);
@@ -10474,7 +10479,7 @@ impl<'types> Codegen<'types> {
                 // (RFC-0081) The dyn head is a trait name, never the ADT's name.
                 Type::Dyn(_, args) => args.iter().any(|a| mentions(a, name)),
                 Type::Tuple(ts) => ts.iter().any(|t| mentions(t, name)),
-                Type::Fn(params, ret, _) => {
+                Type::Fn(params, ret, _, _) => {
                     params.iter().any(|p| mentions(p, name)) || mentions(ret, name)
                 }
                 Type::RecordCompose { base, fields } => {

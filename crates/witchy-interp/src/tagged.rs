@@ -594,7 +594,7 @@ fn is_expr_syntax_type(ty: &Type) -> bool {
         Type::Slice(_)
         | Type::Dyn(_, _)
         | Type::Tuple(_)
-        | Type::Fn(_, _, _)
+        | Type::Fn(..)
         | Type::RecordCompose { .. } => false,
     }
 }
@@ -656,6 +656,7 @@ fn expand_one(
     let bridge = Function {
         line: 0,
         public: true,
+        pure: false,
         comptime_only: true,
         attributes: Vec::new(),
         name: bridge_name.into(),
@@ -673,6 +674,7 @@ fn expand_one(
     let main = Function {
         line: 0,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name: "main".into(),

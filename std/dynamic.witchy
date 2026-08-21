@@ -65,7 +65,7 @@ sealed type RuntimeBorrowRelation:
     RuntimeBorrowRelation(Int, List(RuntimeLoanProjectionStep), List(RuntimeBorrowOwner), RuntimeType, List(RuntimeQualifierSite))
 
 sealed type RuntimeCallableAccess:
-    RuntimeCallableAccess(List(RuntimeAccessQualifier), List(RuntimeParameterAccess), RuntimeResultAccess, List(RuntimeBorrowRelation))
+    RuntimeCallableAccess(Bool, Bool, List(RuntimeAccessQualifier), List(RuntimeParameterAccess), RuntimeResultAccess, List(RuntimeBorrowRelation))
 
 sealed type RuntimeMethod:
     RuntimeMethod(String, List(RuntimeType), RuntimeType, List(String), RuntimeCallableAccess)
@@ -152,7 +152,15 @@ pub fn method_access(method: RuntimeMethod) -> RuntimeCallableAccess:
 
 pub fn access_borrow_relations(access: RuntimeCallableAccess) -> List(RuntimeBorrowRelation):
     match access:
-        RuntimeCallableAccess(_, _, _, relations) -> relations
+        RuntimeCallableAccess(_, _, _, _, _, relations) -> relations
+
+pub fn access_is_pure(access: RuntimeCallableAccess) -> Bool:
+    match access:
+        RuntimeCallableAccess(pure, _, _, _, _, _) -> pure
+
+pub fn access_is_once(access: RuntimeCallableAccess) -> Bool:
+    match access:
+        RuntimeCallableAccess(_, once, _, _, _, _) -> once
 
 pub fn borrow_relation_lifetime(relation: RuntimeBorrowRelation) -> Int:
     match relation:

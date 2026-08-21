@@ -79,7 +79,7 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
             build_caps_in(base, out);
             fields.iter().for_each(|(_, ty)| build_caps_in(ty, out));
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             params.iter().for_each(|p| build_caps_in(p, out));
             build_caps_in(ret, out);
         }
@@ -517,7 +517,7 @@ fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
                 caps_in(ty, taint, out);
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for p in params {
                 caps_in(p, taint, out);
             }

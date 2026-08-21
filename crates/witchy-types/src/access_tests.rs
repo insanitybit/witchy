@@ -1,4 +1,6 @@
-use witchy_syntax::ast::{Block, Convention, Function, Param, Type, TypeQual};
+use witchy_syntax::ast::{
+    Block, CallableQualifiers, Convention, Function, Param, Type, TypeQual,
+};
 
 use crate::access::{
     AccessKind, AccessMismatchKind, AccessQualifier, AccessSignature, AccessSignatureError,
@@ -69,6 +71,7 @@ fn public_catalog_free_constructors_preserve_coarse_nominal_lifetime_relations()
         vec![parser.clone()],
         Box::new(parser.clone()),
         vec![Convention::Let],
+        Default::default(),
     );
 
     assert_coarse_root_relation(
@@ -510,6 +513,7 @@ fn function_type_derivation_normalizes_legacy_empty_conventions() {
         vec![named("Int"), named("String")],
         Box::new(named("Bool")),
         Vec::new(),
+        Default::default(),
     );
     let sig = AccessSignature::from_function_type(&ty).unwrap();
     assert!(
@@ -520,10 +524,66 @@ fn function_type_derivation_normalizes_legacy_empty_conventions() {
 }
 
 #[test]
+fn callable_contract_bits_are_exact_top_level_and_nested_access_identity() {
+    let callable = |qualifiers| {
+        Type::Fn(
+            vec![named("Int")],
+            Box::new(named("Bool")),
+            vec![Convention::Let],
+            qualifiers,
+        )
+    };
+    let contracts = [
+        CallableQualifiers::new(false, false),
+        CallableQualifiers::new(true, false),
+        CallableQualifiers::new(false, true),
+        CallableQualifiers::new(true, true),
+    ];
+    let signatures = contracts
+        .into_iter()
+        .map(|contract| {
+            AccessSignature::from_function_type(&callable(contract))
+                .expect("qualified callable signature")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        signatures
+            .iter()
+            .map(AccessSignature::identity_key)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4,
+    );
+    for (signature, contract) in signatures.iter().zip(contracts) {
+        assert_eq!(signature.callable_contract(), contract);
+    }
+    let mismatch = signatures[0].verify_exact(&signatures[1]).unwrap_err();
+    assert_eq!(mismatch.kind(), AccessMismatchKind::TypeShape);
+
+    let nested_keys = contracts
+        .into_iter()
+        .map(|contract| {
+            let outer = Type::Fn(
+                vec![callable(contract)],
+                Box::new(named("Bool")),
+                vec![Convention::Let],
+                CallableQualifiers::ORDINARY,
+            );
+            AccessSignature::from_function_type(&outer)
+                .expect("nested callable signature")
+                .identity_key()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(nested_keys.len(), 4);
+}
+
+#[test]
 fn from_function_requires_a_finalized_result_type() {
     let function = Function {
         line: 0,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name: "inferred".to_string(),
@@ -597,6 +657,7 @@ fn qualified_function_types_preserve_outer_callable_qualifiers() {
         vec![named("Int")],
         Box::new(named("Bool")),
         vec![Convention::Let],
+        Default::default(),
     );
     let qualified_type = qualified(TypeQual::Unique, plain.clone());
     let qualified_sig = AccessSignature::from_function_type(&qualified_type).unwrap();
@@ -795,6 +856,7 @@ fn nested_function_lifetimes_stay_in_the_nested_signature_scope() {
             named("String"),
         )),
         vec![Convention::Borrow],
+        Default::default(),
     );
     let renamed_callback = Type::Fn(
         vec![qualified(TypeQual::Borrow("inner".to_string()), named("String"))],
@@ -803,6 +865,7 @@ fn nested_function_lifetimes_stay_in_the_nested_signature_scope() {
             named("String"),
         )),
         vec![Convention::Borrow],
+        Default::default(),
     );
     let required = signature(
         vec![

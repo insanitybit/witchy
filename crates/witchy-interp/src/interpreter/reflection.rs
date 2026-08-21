@@ -678,7 +678,7 @@ pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeErro
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::Tuple(items))
         }
-        ("TFn", [Value::List(params), ret, conventions]) => {
+        ("TFn", [Value::List(params), ret, conventions, Value::Bool(pure), Value::Bool(once)]) => {
             let params = params
                 .iter()
                 .map(compiler_reflected_type)
@@ -689,7 +689,12 @@ pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeErro
                 "meta.type_expr function",
             )?;
             let ret = compiler_reflected_type(ret)?;
-            Ok(Type::Fn(params, Box::new(ret), conventions))
+            Ok(Type::Fn(
+                params,
+                Box::new(ret),
+                conventions,
+                CallableQualifiers::new(*pure, *once),
+            ))
         }
         ("TQualified", [Value::Str(qualifier), inner]) => {
             let qualifier = match qualifier.as_str() {

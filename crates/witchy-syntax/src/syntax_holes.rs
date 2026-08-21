@@ -276,7 +276,7 @@ fn substitute_type(ty: &mut Type, holes: &mut [Option<Type>]) -> Result<(), Stri
             }
             Ok(())
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             substitute_types(params, holes)?;
             substitute_type(ret, holes)
         }
@@ -430,7 +430,7 @@ fn substitute_expr(
             substitute_type(ty, types)?;
             substitute_type(result, types)?;
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             substitute_params(params, holes, types, patterns)?;
             if let Some(ret) = ret {
                 substitute_type(ret, types)?;

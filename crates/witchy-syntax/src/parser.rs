@@ -310,6 +310,54 @@ impl Parser {
         matches!(self.kind(), Tok::Ident(n) if n == name)
     }
 
+    /// `pure` and `once` remain contextual identifiers. They introduce a
+    /// callable only when the complete prefix is immediately followed by `fn`.
+    fn starts_qualified_fn(&self) -> bool {
+        match self.kind() {
+            Tok::Ident(name) if name == "pure" => {
+                matches!(
+                    self.toks.get(self.pos + 1).map(|token| &token.kind),
+                    Some(Tok::Fn | Tok::Async | Tok::Gen | Tok::Comptime)
+                ) || (matches!(
+                    self.toks.get(self.pos + 1).map(|token| &token.kind),
+                    Some(Tok::Ident(name)) if name == "once"
+                ) && matches!(
+                    self.toks.get(self.pos + 2).map(|token| &token.kind),
+                    Some(Tok::Fn)
+                ))
+            }
+            Tok::Ident(name) if name == "once" => {
+                matches!(
+                    self.toks.get(self.pos + 1).map(|token| &token.kind),
+                    Some(Tok::Fn | Tok::Async | Tok::Gen | Tok::Comptime)
+                ) || matches!(
+                    self.toks.get(self.pos + 1).map(|token| &token.kind),
+                    Some(Tok::Ident(name)) if name == "pure"
+                )
+            }
+            _ => false,
+        }
+    }
+
+    fn callable_qualifiers(&mut self) -> Result<CallableQualifiers, ParseError> {
+        let pure = if self.at_ident("pure") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let once = if self.at_ident("once") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        if !pure && once && self.at_ident("pure") {
+            return Err(self.error("callable qualifiers must be written `pure once fn`, not `once pure fn`"));
+        }
+        Ok(CallableQualifiers::new(pure, once))
+    }
+
     fn at(&self, k: &Tok) -> bool {
         self.kind() == k
     }
@@ -510,6 +558,7 @@ impl Parser {
         let public = self.eat(&Tok::Pub);
         if public
             && !(self.at(&Tok::Fn)
+                || self.starts_qualified_fn()
                 || self.at(&Tok::Gen)
                 || self.at(&Tok::Async)
                 || self.at(&Tok::Comptime))
@@ -520,12 +569,17 @@ impl Parser {
         }
         if !(attributes.is_empty()
             || self.at(&Tok::Fn)
+            || self.starts_qualified_fn()
             || self.at(&Tok::Gen)
             || self.at(&Tok::Async))
         {
             return Err(self.error("declaration attributes may only precede a function"));
         }
-        if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
+        if self.at(&Tok::Fn)
+            || self.starts_qualified_fn()
+            || self.at(&Tok::Gen)
+            || self.at(&Tok::Async)
+        {
             Ok(Item::Function(self.function(public, false, attributes)?))
         } else if self.at(&Tok::Type) {
             self.type_def(false, false)
@@ -659,7 +713,15 @@ impl Parser {
                  method may only appear in an inherent `impl Type:` block",
             ));
         }
+        let qualifiers = if self.starts_qualified_fn() {
+            self.callable_qualifiers()?
+        } else {
+            CallableQualifiers::ORDINARY
+        };
         self.expect(&Tok::Fn)?;
+        if qualifiers.once {
+            return Err(self.error("named methods are reusable; `once fn` is only valid for function values and function types"));
+        }
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
         let params = self.params(true)?;
@@ -675,6 +737,7 @@ impl Parser {
             None
         };
         Ok(MethodSig {
+            pure: qualifiers.pure,
             name,
             params,
             ret,
@@ -772,6 +835,13 @@ impl Parser {
                 // for type-associated (self-less) constructors — `Net.tcp(…)` —
                 // that a module exports as public API (RFC-0057).
                 let public = self.eat(&Tok::Pub);
+                if !(self.at(&Tok::Fn)
+                    || self.starts_qualified_fn()
+                    || self.at(&Tok::Gen)
+                    || self.at(&Tok::Async))
+                {
+                    return Err(self.error("expected a method declaration"));
+                }
                 methods.push(self.function(public, false, Vec::new())?);
             }
             self.expect(&Tok::RBrace)?;
@@ -1111,12 +1181,26 @@ impl Parser {
         attributes: Vec<String>,
     ) -> Result<Function, ParseError> {
         let line = self.cur().line;
+        let qualifiers = if self.starts_qualified_fn() {
+            self.callable_qualifiers()?
+        } else {
+            CallableQualifiers::ORDINARY
+        };
         let is_async = self.eat(&Tok::Async);
         let is_gen = self.eat(&Tok::Gen);
+        if (qualifiers.pure || qualifiers.once) && self.at(&Tok::Comptime) {
+            return Err(self.error("callable qualifiers cannot be combined with `comptime fn`"));
+        }
+        if qualifiers.pure && (is_async || is_gen || comptime_only) {
+            return Err(self.error("`pure` currently qualifies only ordinary `fn` declarations, lambdas, and function types"));
+        }
         if comptime_only && (is_async || is_gen) {
             return Err(self.error("`comptime fn` cannot be `async` or `gen`"));
         }
         self.expect(&Tok::Fn)?;
+        if qualifiers.once {
+            return Err(self.error("named functions are reusable; `once fn` is only valid for function values and function types"));
+        }
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
         self.pending_impl_bounds.clear();
@@ -1150,6 +1234,7 @@ impl Parser {
         Ok(Function {
             line,
             public,
+            pure: qualifiers.pure,
             comptime_only,
             attributes,
             name,
@@ -1393,6 +1478,11 @@ impl Parser {
             }
             return Ok(Type::Dyn(name, args));
         }
+        let callable_qualifiers = if self.starts_qualified_fn() {
+            self.callable_qualifiers()?
+        } else {
+            CallableQualifiers::ORDINARY
+        };
         if self.eat(&Tok::Fn) {
             // Function type: `fn(T1, var T2, own T3) -> R`.
             self.expect(&Tok::LParen)?;
@@ -1417,7 +1507,7 @@ impl Parser {
             self.expect(&Tok::RParen)?;
             self.expect(&Tok::RArrow)?;
             let ret = self.ty()?;
-            return Ok(Type::Fn(params, Box::new(ret), conventions));
+            return Ok(Type::Fn(params, Box::new(ret), conventions, callable_qualifiers));
         }
         if self.eat(&Tok::DotLBrace) {
             return self.anon_record_type();
@@ -2038,6 +2128,11 @@ impl Parser {
     }
 
     fn atom(&mut self) -> Result<Expr, ParseError> {
+        if self.starts_qualified_fn() {
+            let qualifiers = self.callable_qualifiers()?;
+            self.expect(&Tok::Fn)?;
+            return self.lambda_after_fn(qualifiers);
+        }
         match self.kind().clone() {
             Tok::Ident(name) if name == "quote" && self.quote_category().is_some() => {
                 self.quote_syntax()
@@ -2220,27 +2315,7 @@ impl Parser {
                 // `fn(params): expr` (used inline inside call parens, where the
                 // off-side layout is suppressed), or an indented/`{ }` block body.
                 self.advance();
-                self.expect(&Tok::LParen)?;
-                // A lambda is a function VALUE — no keyword-argument defaults.
-                let params = self.params(false)?;
-                self.expect(&Tok::RParen)?;
-                // Optional declared return type: `fn(x: Int) -> Bool: ...`. Makes
-                // the closure a `?` boundary with that exact type.
-                let ret = if self.eat(&Tok::RArrow) {
-                    Some(self.ty()?)
-                } else {
-                    None
-                };
-                // A lambda is its own function scope, never a generator: `yield`
-                // inside it belongs to no generator (the enclosing `gen fn`'s
-                // lowering does not descend into closures), so clearing `in_gen`
-                // here rejects `yield`-in-lambda at parse time instead of letting
-                // it slip through `check` and fail only in codegen (BUG-183).
-                let prev_gen = std::mem::replace(&mut self.in_gen, false);
-                let body = self.colon_or_block();
-                self.in_gen = prev_gen;
-                let body = body?;
-                Ok(Expr::Lambda { params, body, ret })
+                self.lambda_after_fn(CallableQualifiers::ORDINARY)
             }
             Tok::Match => self.match_expr(),
             Tok::Region => self.region_block(),
@@ -2250,6 +2325,27 @@ impl Parser {
             }
             other => Err(self.error(format!("expected an expression, found `{other}`"))),
         }
+    }
+
+    fn lambda_after_fn(
+        &mut self,
+        qualifiers: CallableQualifiers,
+    ) -> Result<Expr, ParseError> {
+        self.expect(&Tok::LParen)?;
+        // A lambda is a function VALUE — no keyword-argument defaults.
+        let params = self.params(false)?;
+        self.expect(&Tok::RParen)?;
+        let ret = if self.eat(&Tok::RArrow) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        // A lambda is its own function scope, never a generator.
+        let prev_gen = std::mem::replace(&mut self.in_gen, false);
+        let body = self.colon_or_block();
+        self.in_gen = prev_gen;
+        let body = body?;
+        Ok(Expr::Lambda { params, body, ret, qualifiers })
     }
 
     fn quote_category(&self) -> Option<&str> {

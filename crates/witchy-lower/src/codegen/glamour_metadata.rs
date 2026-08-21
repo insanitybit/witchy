@@ -588,6 +588,7 @@ fn checked_glamour_execution_module(
         module.items.push(Item::Function(Function {
             line: 0,
             public: true,
+            pure: false,
             comptime_only: false,
             attributes: vec!["browser".into()],
             name: generated_owner_name(&generated_owner, "export_glamour_worker_execute"),
@@ -988,6 +989,7 @@ fn glamour_completion_capture_dispatch(
     Ok(Function {
         line: 0,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name: capture_dispatch_name,
@@ -1029,6 +1031,7 @@ fn glamour_completion_dispatch(
     Function {
         line: 0,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name,
@@ -1151,6 +1154,7 @@ fn generated_development_codec_function(
     Function {
         line: 0,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name,
@@ -1676,7 +1680,7 @@ impl GlamourCaptureCodecs {
                     items.len(),
                 ))
             }
-            Type::Slice(_) | Type::Fn(_, _, _) | Type::Dyn(_, _) => Err(island_metadata_error(format!(
+            Type::Slice(_) | Type::Fn(_, _, _, _) | Type::Dyn(_, _) => Err(island_metadata_error(format!(
                 "Glamour callback environment cannot persist `{type_source}`"
             ))),
             Type::RecordCompose { .. } => Err(island_metadata_error(
@@ -3119,7 +3123,7 @@ fn glamour_work_metadata(
             let (completion_message_type, completion_input_type) = if matches!(signature.kind, "timer" | "interval") {
                 (completion_type, None)
             } else {
-                let Type::Fn(inputs, output, _) = completion_type.unqualified() else {
+                let Type::Fn(inputs, output, _, _) = completion_type.unqualified() else {
                     return Err(island_metadata_error(format!(
                         "Glamour work call `{name}` in `{owner_name}` has a non-function completion",
                     )));
@@ -3163,7 +3167,7 @@ fn glamour_work_metadata(
                             "Glamour worker task `{task_name}` in `{owner_name}` has no concrete function type",
                         ))
                     })?;
-                let Type::Fn(inputs, output, _) = task_type.unqualified() else {
+                let Type::Fn(inputs, output, _, _) = task_type.unqualified() else {
                     return Err(island_metadata_error(format!(
                         "Glamour worker task `{task_name}` in `{owner_name}` is not a function",
                     )));
@@ -3533,7 +3537,7 @@ fn glamour_work_map_metadata(
                         "Glamour `{channel}.map` in `{owner_name}` has no concrete mapper type",
                     ))
                 })?;
-            let Type::Fn(inputs, output, _) = mapper_type.unqualified() else {
+            let Type::Fn(inputs, output, _, _) = mapper_type.unqualified() else {
                 return Err(island_metadata_error(format!(
                     "Glamour `{channel}.map` in `{owner_name}` mapper is not a function",
                 )));
@@ -4024,8 +4028,8 @@ fn runtime_type_material(identity: &RuntimeTypeIdentity) -> String {
             params,
             result,
             conventions,
+            qualifiers,
             access,
-            ..
         } => {
             let params = params
                 .iter()
@@ -4051,7 +4055,11 @@ fn runtime_type_material(identity: &RuntimeTypeIdentity) -> String {
                 "function{}{}{}",
                 framed(&format!("params{}{}", params.len(), framed(&params))),
                 framed(&runtime_type_material(result)),
-                framed(&format!("{conventions}|access={access:?}")),
+                framed(&format!(
+                    "{conventions}|pure={}|once={}|access={access:?}",
+                    qualifiers.pure,
+                    qualifiers.once,
+                )),
             )
         }
         RuntimeTypeIdentity::Nominal {

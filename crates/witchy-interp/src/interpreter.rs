@@ -498,6 +498,7 @@ fn closure_function(owner: String, params: Vec<Param>, body: Block) -> Rc<Functi
     Rc::new(Function {
         line: 0,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name: owner,

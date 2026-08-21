@@ -165,7 +165,7 @@ impl ResolvedSource {
                         restore_local_type_names(field, prefix);
                     }
                 }
-                crate::ast::Type::Fn(inputs, output, _) => {
+                crate::ast::Type::Fn(inputs, output, _, _) => {
                     for input in inputs {
                         restore_local_type_names(input, prefix);
                     }

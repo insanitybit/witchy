@@ -550,7 +550,7 @@ fn type_mentions_reference(ty: &Type) -> bool {
             type_mentions_reference(base)
                 || fields.iter().any(|(_, field)| type_mentions_reference(field))
         }
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             parameters.iter().any(type_mentions_reference) || type_mentions_reference(result)
         }
     }
@@ -1070,7 +1070,7 @@ impl<'a> Scope<'a> {
                     .iter_mut()
                     .try_for_each(|(_, field)| self.resolve_type(field))
             }
-            Type::Fn(ps, r, _) => {
+            Type::Fn(ps, r, _, _) => {
                 ps.iter_mut().try_for_each(|p| self.resolve_type(p))?;
                 self.resolve_type(r)
             }
@@ -1583,7 +1583,7 @@ impl<'a> Scope<'a> {
                 self.resolve_type(ty)?;
                 self.resolve_type(result)?;
             }
-            Expr::Lambda { params, body, ret } => {
+            Expr::Lambda { params, body, ret, .. } => {
                 for p in params.iter_mut() {
                     if let Some(t) = &mut p.ty {
                         self.resolve_type(t)?;

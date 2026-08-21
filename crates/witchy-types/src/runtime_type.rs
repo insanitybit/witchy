@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use witchy_syntax::ast::{Item, Module, Type};
 #[cfg(test)]
-use witchy_syntax::ast::Convention;
+use witchy_syntax::ast::{CallableQualifiers, Convention};
 #[cfg(test)]
 use witchy_syntax::type_resolve::{ResolvedDeclarationKind, ResolvedDeclarations};
 
@@ -502,7 +502,7 @@ fn collect_runtime_type_shape_inner(
                 visiting,
             )?;
         }
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             for parameter in parameters {
                 collect_runtime_type_shape(
                     parameter,
@@ -840,6 +840,7 @@ mod tests {
             vec![string.clone()],
             Box::new(string),
             vec![Convention::Borrow],
+            CallableQualifiers::ORDINARY,
         );
         let type_only_signature = crate::access::AccessSignature::from_function_type(&ty)
             .expect("type-only callable signature");
@@ -895,13 +896,66 @@ mod tests {
             vec![int.clone()],
             Box::new(int.clone()),
             vec![Convention::Borrow],
+            CallableQualifiers::ORDINARY,
         );
-        let owned = Type::Fn(vec![int.clone()], Box::new(int), vec![Convention::Own]);
+        let owned = Type::Fn(
+            vec![int.clone()],
+            Box::new(int),
+            vec![Convention::Own],
+            CallableQualifiers::ORDINARY,
+        );
         let borrowed = RuntimeTypeIdentity::from_resolved_type(&borrowed, &|_, _| None)
             .expect("borrowed function identity");
         let owned = RuntimeTypeIdentity::from_resolved_type(&owned, &|_, _| None)
             .expect("owned function identity");
         assert_ne!(borrowed, owned);
+    }
+
+    #[test]
+    fn callable_qualifiers_have_four_distinct_runtime_identities_and_descriptors() {
+        let contracts = [
+            CallableQualifiers::new(false, false),
+            CallableQualifiers::new(true, false),
+            CallableQualifiers::new(false, true),
+            CallableQualifiers::new(true, true),
+        ];
+        let identities = contracts
+            .into_iter()
+            .map(|qualifiers| {
+                let ty = Type::Fn(
+                    vec![Type::Named("Int".into(), Vec::new())],
+                    Box::new(Type::Named("Bool".into(), Vec::new())),
+                    vec![Convention::Let],
+                    qualifiers,
+                );
+                RuntimeTypeIdentity::from_resolved_type(&ty, &|_, _| None)
+                    .expect("callable runtime identity")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(identities.iter().collect::<BTreeSet<_>>().len(), 4);
+        for (identity, qualifiers) in identities.iter().zip(contracts) {
+            let RuntimeTypeIdentity::Function {
+                qualifiers: actual,
+                access,
+                ..
+            } = identity
+            else {
+                panic!("callable identity must remain a function")
+            };
+            assert_eq!(*actual, qualifiers);
+            assert_eq!(access.callable_contract(), qualifiers);
+        }
+
+        let plan = RuntimeTypePlan::build(identities.clone()).expect("callable descriptor plan");
+        assert_eq!(
+            identities
+                .iter()
+                .map(|identity| plan.id(identity).expect("descriptor id"))
+                .collect::<BTreeSet<_>>()
+                .len(),
+            4,
+        );
     }
 
     #[test]
@@ -913,6 +967,7 @@ mod tests {
                 vec![parameter],
                 Box::new(Type::Tuple(Vec::new())),
                 vec![Convention::Let],
+                CallableQualifiers::ORDINARY,
             )
         };
 
@@ -972,6 +1027,7 @@ mod tests {
                 vec![view(left), view(right)],
                 Box::new(view(result)),
                 vec![Convention::Borrow, Convention::Borrow],
+                CallableQualifiers::ORDINARY,
             )
         };
         let identity = |ty: &Type| {
@@ -1008,6 +1064,7 @@ mod tests {
             vec![parameter],
             Box::new(result),
             vec![Convention::Var],
+            CallableQualifiers::ORDINARY,
         );
         let RuntimeTypeIdentity::Function { access, .. } =
             RuntimeTypeIdentity::from_resolved_type(&ty, &|_, _| None)
@@ -1104,6 +1161,7 @@ mod tests {
                     crate::access::AccessKind::Consuming => Convention::Own,
                 })
                 .collect(),
+            CallableQualifiers::ORDINARY,
         );
         let coarse = catalog
             .type_identity(&coarse_type)
@@ -1189,13 +1247,14 @@ mod tests {
             .expect_err("capability identity cannot become a descriptor root");
         assert_eq!(root_error, RuntimeTypeError::CapabilityDescriptorIdentity);
 
-        let RuntimeTypeIdentity::Function { result, conventions, access, .. } = identity else {
+        let RuntimeTypeIdentity::Function { result, conventions, qualifiers, access, .. } = identity else {
             unreachable!("checked callable identity remains a function")
         };
         let forged_value = RuntimeTypeIdentity::Function {
             params: vec![RuntimeCallableParameterIdentity::value(capability)],
             result,
             conventions,
+            qualifiers,
             access,
         };
         let value_error = RuntimeTypePlan::build([forged_value])

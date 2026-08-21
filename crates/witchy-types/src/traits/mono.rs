@@ -65,7 +65,7 @@ impl Mono<'_> {
     }
 
     fn refine_var_call_args(&self, name: &str, args: &[Expr], scope: &mut Scope<Type>) {
-        let Some((params, _, conventions)) = self.fn_sigs.get(name) else { return };
+        let Some((params, _, conventions, _)) = self.fn_sigs.get(name) else { return };
         let mut bindings = HashMap::new();
         for (param, arg) in params.iter().zip(args) {
             let (Some(pattern), Some(actual)) = (param, self.type_ast(arg, scope)) else {
@@ -147,10 +147,11 @@ impl Mono<'_> {
         template: &Function,
         actual: &Type,
     ) -> Option<Vec<Type>> {
-        let Type::Fn(actual_params, actual_ret, actual_conventions) = actual.unqualified() else {
+        let Type::Fn(actual_params, actual_ret, actual_conventions, actual_qualifiers) = actual.unqualified() else {
             return None;
         };
         if template.params.len() != actual_params.len()
+            || *actual_qualifiers != CallableQualifiers::new(template.pure, false)
             || template
                 .params
                 .iter()
@@ -216,7 +217,15 @@ impl Mono<'_> {
             let params = f.params.iter().map(|param| param.ty.clone()).collect();
             let conventions = f.params.iter().map(|param| param.convention).collect();
             self.fn_sigs
-                .insert(mangled.clone(), (params, ret.clone(), conventions));
+                .insert(
+                    mangled.clone(),
+                    (
+                        params,
+                        ret.clone(),
+                        conventions,
+                        CallableQualifiers::new(f.pure, false),
+                    ),
+                );
         }
         // Substitute the body's type ANNOTATIONS too (`var items: List(a) = []`,
         // `x as T`), so a specialization's body type-checks at the concrete type.

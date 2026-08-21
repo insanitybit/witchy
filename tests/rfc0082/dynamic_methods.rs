@@ -235,14 +235,15 @@ impl Reflect for Widget:
         reflect.MNil
 
 @dynamic
-pub fn rewrite(self: Widget, label: String, suffix: unique String) -> unique Widget:
+pub pure fn rewrite(self: Widget, label: String, suffix: unique String) -> unique Widget:
     Widget(self.value + label.char_count() + suffix.char_count())
 
 fn main(console: Console):
     let descriptor = dynamic.type_of(dynamic.dynamic(Widget(1)))
     let method = list.at(dynamic.methods(descriptor), 0)
     match dynamic.method_access(method):
-        dynamic.RuntimeCallableAccess(callable, parameters, result, relations) ->
+        dynamic.RuntimeCallableAccess(pure, once, callable, parameters, result, relations) ->
+            console.print("contract-${pure}-${once}")
             console.print("shape-${list.length(callable)}-${list.length(parameters)}-${list.length(relations)}")
             match list.at(parameters, 1):
                 dynamic.RuntimeParameterAccess(dynamic.AccessValue, sites, input, writeback) ->
@@ -268,6 +269,7 @@ fn main(console: Console):
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret logical access reflection fixture");
     let expected = [
+        "contract-true-false",
         "shape-0-3-0",
         "value-0-false-false",
         "unique-0-true-false",
@@ -286,6 +288,42 @@ fn main(console: Console):
         )
         .expect("spawn logical access reflection fixture");
     actor.run().expect("run logical access reflection fixture");
+    assert_eq!(actor.output(), expected);
+}
+
+#[test]
+fn dynamic_runtime_type_accepts_qualified_callable_descriptors() {
+    let source = r#"
+import dynamic
+
+fn main(console: Console):
+    console.print(dynamic.type_name(dynamic.runtime_type(fn(Int) -> Int)))
+    console.print(dynamic.type_name(dynamic.runtime_type(pure fn(Int) -> Int)))
+    console.print(dynamic.type_name(dynamic.runtime_type(once fn(Int) -> Int)))
+    console.print(dynamic.type_name(dynamic.runtime_type(pure once fn(Int) -> Int)))
+"#;
+    let checked = checked(source);
+    let expected = [
+        "fn(Int) -> Int",
+        "pure fn(Int) -> Int",
+        "once fn(Int) -> Int",
+        "pure once fn(Int) -> Int",
+    ];
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret qualified callable descriptors");
+    assert_eq!(interpreted, expected);
+
+    let wasm = codegen::compile_checked_module_binary(&checked)
+        .expect_lowered("compile qualified callable descriptors");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn qualified callable descriptors");
+    actor.run().expect("run qualified callable descriptors");
     assert_eq!(actor.output(), expected);
 }
 
@@ -361,7 +399,7 @@ fn main(console: Console):
     let descriptor = dynamic.type_of(dynamic.dynamic(Widget(1)))
     let method = list.at(dynamic.methods(descriptor), 0)
     match dynamic.method_access(method):
-        dynamic.RuntimeCallableAccess(_, _, _, relations) ->
+        dynamic.RuntimeCallableAccess(_, _, _, _, _, relations) ->
             match list.at(relations, 0):
                 dynamic.RuntimeBorrowRelation(lifetime, output, owners, storage, storage_sites) ->
                     console.print("relation-${lifetime}-${list.length(output)}-${dynamic.type_name(storage)}")

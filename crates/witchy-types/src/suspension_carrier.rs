@@ -556,7 +556,7 @@ fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
             arguments.iter().find_map(non_integer_channel)
         }
-        Type::Fn(parameters, result, _) => parameters
+        Type::Fn(parameters, result, _, _) => parameters
             .iter()
             .find_map(non_integer_channel)
             .or_else(|| non_integer_channel(result)),
@@ -606,7 +606,7 @@ fn state_kind(function: &Function) -> Option<CarrierStateKind> {
 }
 
 fn inferred_parameters(typed: &TypedModule, function: &Function) -> Option<Vec<Type>> {
-    let Type::Fn(parameters, _, _) = typed.table().function_type(&function.name)? else {
+    let Type::Fn(parameters, _, _, _) = typed.table().function_type(&function.name)? else {
         return None;
     };
     Some(parameters)
@@ -649,7 +649,7 @@ fn direct_lanes(
         Type::Named(name, arguments) => {
             flatten_nominal(name, arguments, definitions, substitutions, visiting)
         }
-        Type::Slice(..) | Type::Fn(_, _, _) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
+        Type::Slice(..) | Type::Fn(..) | Type::Dyn(_, _) | Type::RecordCompose { .. } => None,
     }
 }
 

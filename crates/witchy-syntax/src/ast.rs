@@ -222,6 +222,11 @@ pub struct TraitDef {
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MethodSig {
+    /// `pure fn` promises that invoking this method performs no ambient or
+    /// delegated effects. Named methods are always reusable; `once fn` is only
+    /// valid for callable values and types.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub pure: bool,
     pub name: String,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
@@ -384,6 +389,10 @@ pub struct Function {
     #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
     pub line: u32,
     pub public: bool,
+    /// `pure fn` declaration promise. Named functions are always reusable;
+    /// affine invocation is represented only on function values and types.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub pure: bool,
     /// `comptime fn` — a pure helper available only while expanding `comptime:`,
     /// derives, and tagged literals. It is omitted from the runtime module after
     /// compile-time expansion, so compiler syntax values can stay compile-time-only.
@@ -415,6 +424,7 @@ pub struct Function {
 impl PartialEq for Function {
     fn eq(&self, other: &Self) -> bool {
         self.public == other.public
+            && self.pure == other.pure
             && self.comptime_only == other.comptime_only
             && self.attributes == other.attributes
             && self.name == other.name
@@ -482,6 +492,26 @@ impl Convention {
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
 )]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableQualifiers {
+    /// Invocation is capability-free and may only call other pure callables.
+    pub pure: bool,
+    /// The callable value may be invoked at most once.
+    pub once: bool,
+}
+
+impl CallableQualifiers {
+    pub const ORDINARY: Self = Self { pure: false, once: false };
+
+    pub const fn new(pure: bool, once: bool) -> Self {
+        Self { pure, once }
+    }
+}
+
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Named(String, Vec<Type>),
@@ -499,7 +529,7 @@ pub enum Type {
     /// A function type: parameter types, return type, and one convention per
     /// parameter. An empty convention vector is tolerated only for legacy
     /// compiler-generated values and means all-default `let` parameters.
-    Fn(Vec<Type>, Box<Type>, Vec<Convention>),
+    Fn(Vec<Type>, Box<Type>, Vec<Convention>, CallableQualifiers),
     /// (RFC-0025/0026/0083) An ownership/immutability qualifier on a type:
     /// `frozen T`, `unique T`, `local unique T`, or a borrowed view (`let('a) T` /
     /// `View(T, 'a)`). A compile-time CONTRACT — typeck enforces it (a `frozen`
@@ -602,7 +632,7 @@ fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
                 collect_effective_type_params(argument, parameters);
             }
         }
-        Type::Fn(inputs, output, _) => {
+        Type::Fn(inputs, output, _, _) => {
             for input in inputs {
                 collect_effective_type_params(input, parameters);
             }
@@ -868,6 +898,7 @@ pub enum Expr {
         params: Vec<Param>,
         body: Block,
         ret: Option<Type>,
+        qualifiers: CallableQualifiers,
     },
     /// Record update: a new record like `p` with the named fields replaced. `p`
     /// is not mutated. `name` is `Some(Point)` when produced by lowering the
@@ -1203,7 +1234,7 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
                 collect_type_names(field, out);
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for p in params {
                 collect_type_names(p, out);
             }
@@ -1383,7 +1414,7 @@ pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
                 collect_type_vars(field, out);
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for p in params {
                 collect_type_vars(p, out);
             }

@@ -84,6 +84,7 @@ fn reflect_impl(
     let mut methods = vec![Function {
         line: 0,
         public: true,
+        pure: false,
         comptime_only: false,
         attributes: Vec::new(),
         name: "reflect".to_string(),
@@ -155,6 +156,7 @@ fn reflect_impl(
         methods.push(Function {
             line: 0,
             public: true,
+            pure: false,
             comptime_only: false,
             attributes: Vec::new(),
             name: "__dynamic_field".into(),

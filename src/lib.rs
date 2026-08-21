@@ -314,7 +314,7 @@ fn ownership_relevant_type(ty: &witchy_syntax::ast::Type) -> bool {
         witchy_syntax::ast::Type::RecordCompose { .. } => true,
         // (RFC-0081) A dyn value is a heap value, so its convention matters.
         witchy_syntax::ast::Type::Dyn(_, _) => true,
-        witchy_syntax::ast::Type::Fn(_, _, _) => false,
+        witchy_syntax::ast::Type::Fn(_, _, _, _) => false,
         witchy_syntax::ast::Type::Slice(inner) => ownership_relevant_type(inner),
         witchy_syntax::ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
     }

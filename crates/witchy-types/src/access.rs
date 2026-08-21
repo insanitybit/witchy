@@ -14,8 +14,8 @@ use foldhash::{HashMap, HashMapExt as _};
 
 use witchy_cap_model::CapabilityKind;
 use witchy_syntax::ast::{
-    BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
-    TypeDef, TypeQual, Variant, effective_nominal_type_def_params,
+    BinOp, Block, CallableQualifiers, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
+    Stmt, Type, TypeDef, TypeQual, Variant, effective_nominal_type_def_params,
     effective_type_def_params,
 };
 use witchy_syntax::intrinsics;
@@ -642,7 +642,7 @@ impl BorrowRelationCatalog {
                 slots
             }
             Type::Dyn(_, _) => coarse_borrow_slots(ty, lifetimes, types),
-            Type::RecordCompose { .. } | Type::Fn(_, _, _) => Vec::new(),
+            Type::RecordCompose { .. } | Type::Fn(..) => Vec::new(),
         }
     }
 
@@ -780,7 +780,7 @@ fn coarse_borrow_slots(
                     collect(field, substitutions, found);
                 }
             }
-            Type::Fn(_, _, _) => {}
+            Type::Fn(..) => {}
         }
     }
 
@@ -805,7 +805,7 @@ fn type_node_count(ty: &Type) -> usize {
         Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments
             .iter()
             .fold(0usize, |count, argument| count.saturating_add(type_node_count(argument))),
-        Type::Fn(params, result, _) => params
+        Type::Fn(params, result, _, _) => params
             .iter()
             .fold(type_node_count(result), |count, parameter| {
                 count.saturating_add(type_node_count(parameter))
@@ -861,13 +861,14 @@ fn substitute_borrow_slot_type_with(
                 .map(|item| substitute_borrow_slot_type_with(item, substitutions, active))
                 .collect(),
         ),
-        Type::Fn(params, result, conventions) => Type::Fn(
+        Type::Fn(params, result, conventions, qualifiers) => Type::Fn(
             params
                 .iter()
                 .map(|param| substitute_borrow_slot_type_with(param, substitutions, active))
                 .collect(),
             Box::new(substitute_borrow_slot_type_with(result, substitutions, active)),
             conventions.clone(),
+            *qualifiers,
         ),
         Type::Dyn(name, arguments) => Type::Dyn(
             name.clone(),
@@ -1040,6 +1041,7 @@ impl AccessResult {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccessSignature {
     callable_qualifiers: Vec<AccessQualifier>,
+    callable_contract: CallableQualifiers,
     params: Vec<AccessParam>,
     result: AccessResult,
     borrow_relations: Vec<BorrowRelation>,
@@ -1047,7 +1049,7 @@ pub struct AccessSignature {
 
 /// Encoding version for [`AccessIdentityKey`]. Increment this whenever the
 /// canonical byte representation changes.
-pub const ACCESS_IDENTITY_SCHEMA_VERSION: u32 = 1;
+pub const ACCESS_IDENTITY_SCHEMA_VERSION: u32 = 2;
 
 /// Stable, alpha-normalized identity exported by the checked RFC-0110 access
 /// authority. Its bytes are intentionally opaque to lowering; consumers may
@@ -1076,7 +1078,12 @@ impl AccessSignature {
                 AccessKind::Consuming => Convention::Own,
             })
             .collect();
-        let mut ty = Type::Fn(params, Box::new(self.result.ty.clone()), conventions);
+        let mut ty = Type::Fn(
+            params,
+            Box::new(self.result.ty.clone()),
+            conventions,
+            self.callable_contract,
+        );
         for qualifier in self.callable_qualifiers.iter().rev() {
             let qualifier = match qualifier {
                 AccessQualifier::Frozen => TypeQual::Frozen,
@@ -1119,7 +1126,9 @@ impl AccessSignature {
             .clone()
             .ok_or(AccessSignatureError::MissingResultType)?;
         let conventions = function.params.iter().map(|param| param.convention).collect();
-        Self::from_parts_with_catalog(params, result, conventions, catalog)
+        let mut signature = Self::from_parts_with_catalog(params, result, conventions, catalog)?;
+        signature.callable_contract = CallableQualifiers::new(function.pure, false);
+        Ok(signature)
     }
 
     /// Derive the signature carried by a checked first-class function type.
@@ -1132,7 +1141,7 @@ impl AccessSignature {
         catalog: &BorrowRelationCatalog,
     ) -> Result<Self, AccessSignatureError> {
         let callable_qualifiers = leading_qualifiers(ty);
-        let Type::Fn(params, result, conventions) = ty.unqualified() else {
+        let Type::Fn(params, result, conventions, callable_contract) = ty.unqualified() else {
             return Err(AccessSignatureError::NotFunctionType);
         };
         let conventions = normalized_conventions(params.len(), conventions)?;
@@ -1143,6 +1152,7 @@ impl AccessSignature {
             catalog,
         )?;
         signature.callable_qualifiers = callable_qualifiers;
+        signature.callable_contract = *callable_contract;
         Ok(signature)
     }
 
@@ -1201,7 +1211,7 @@ impl AccessSignature {
         resolved: &Type,
         catalog: &BorrowRelationCatalog,
     ) -> Result<Self, AccessSignatureError> {
-        let Type::Fn(resolved_params, resolved_result, resolved_conventions) =
+        let Type::Fn(resolved_params, resolved_result, resolved_conventions, callable_contract) =
             resolved.unqualified()
         else {
             return Err(AccessSignatureError::NotFunctionType);
@@ -1230,7 +1240,9 @@ impl AccessSignature {
             || resolved_result.as_ref().clone(),
             |declared| apply_declared_contract(declared, resolved_result),
         );
-        Self::from_parts_with_catalog(params, result, conventions, catalog)
+        let mut signature = Self::from_parts_with_catalog(params, result, conventions, catalog)?;
+        signature.callable_contract = *callable_contract;
+        Ok(signature)
     }
 
     /// Derive a signature from finalized checked parameter and result types.
@@ -1347,6 +1359,7 @@ impl AccessSignature {
 
         Ok(Self {
             callable_qualifiers: Vec::new(),
+            callable_contract: CallableQualifiers::ORDINARY,
             params: access_params,
             result: AccessResult {
                 ty: result,
@@ -1366,6 +1379,10 @@ impl AccessSignature {
         &self.callable_qualifiers
     }
 
+    pub fn callable_contract(&self) -> CallableQualifiers {
+        self.callable_contract
+    }
+
     pub fn result(&self) -> &AccessResult {
         &self.result
     }
@@ -1378,6 +1395,9 @@ impl AccessSignature {
     /// changing any access component. Lifetime names are alpha-renamable; their
     /// occurrence structure and result-to-owner positions are not.
     pub fn verify_exact(&self, candidate: &Self) -> Result<(), AccessMismatch> {
+        if self.callable_contract != candidate.callable_contract {
+            return Err(AccessMismatch::new(None, AccessMismatchKind::TypeShape));
+        }
         if self.params.len() != candidate.params.len() {
             return Err(AccessMismatch::new(None, AccessMismatchKind::ParameterCount));
         }
@@ -1557,7 +1577,7 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
                         self.ty(item);
                     }
                 }
-                Type::Fn(parameters, result, conventions) => {
+                Type::Fn(parameters, result, conventions, qualifiers) => {
                     self.tag(2);
                     // Nested callables bind their own lifetime namespace. This
                     // mirrors `compare_type`: reusing an outer spelling inside
@@ -1574,6 +1594,8 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
                         self.ty(parameter);
                     }
                     self.ty(result);
+                    self.tag(u8::from(qualifiers.pure));
+                    self.tag(u8::from(qualifiers.once));
                     self.lifetimes = outer_lifetimes;
                 }
                 Type::Qualified(qualifier, inner) => {
@@ -1664,6 +1686,8 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
     let mut encoder = Encoder::default();
     encoder.u32(ACCESS_IDENTITY_SCHEMA_VERSION);
     encoder.qualifiers(&signature.callable_qualifiers);
+    encoder.tag(u8::from(signature.callable_contract.pure));
+    encoder.tag(u8::from(signature.callable_contract.once));
     encoder.usize(signature.params.len());
     for parameter in &signature.params {
         encoder.tag(match parameter.kind {
@@ -1740,7 +1764,7 @@ pub fn ownership_state_class(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Some(OwnershipStateClass::LayoutDependent { children: states }))
         }
-        Type::Fn(_, _, _) | Type::Dyn(_, _) => Ok(Some(OwnershipStateClass::GcReference)),
+        Type::Fn(..) | Type::Dyn(_, _) => Ok(Some(OwnershipStateClass::GcReference)),
         Type::Slice(inner) => ownership_state_class(inner),
         Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
             "Int" | "Float" | "Duration" | "Bool" | "Nil" | "()" => Ok(None),
@@ -1961,8 +1985,8 @@ fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
                     .collect(),
             )
         }
-        Type::Fn(declared_params, declared_result, declared_conventions) => {
-            let Type::Fn(resolved_params, resolved_result, resolved_conventions) =
+        Type::Fn(declared_params, declared_result, declared_conventions, declared_qualifiers) => {
+            let Type::Fn(resolved_params, resolved_result, resolved_conventions, _) =
                 resolved.unqualified()
             else {
                 return resolved.clone();
@@ -1983,6 +2007,7 @@ fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
                     .collect(),
                 Box::new(apply_declared_contract(declared_result, resolved_result)),
                 conventions,
+                *declared_qualifiers,
             )
         }
         Type::Slice(declared_elem) => {
@@ -2014,7 +2039,7 @@ fn type_has_qualifier(ty: &Type, predicate: impl Copy + Fn(&TypeQual) -> bool) -
         }
         // A nested callable owns its activation-local result contract. Returning
         // the callable does not return a value produced by invoking it.
-        Type::Fn(_, _, _) => false,
+        Type::Fn(..) => false,
     }
 }
 
@@ -2042,7 +2067,7 @@ fn type_has_ownership_qualifier(ty: &Type) -> bool {
         // A nested callable's parameter/result ownership belongs to that
         // callable's own access signature, not to the function value which
         // contains it.
-        Type::Fn(_, _, _) => false,
+        Type::Fn(..) => false,
     }
 }
 
@@ -2145,9 +2170,12 @@ fn compare_type(
             Ok(())
         }
         (
-            Type::Fn(left_params, left_result, left_conventions),
-            Type::Fn(right_params, right_result, right_conventions),
+            Type::Fn(left_params, left_result, left_conventions, left_qualifiers),
+            Type::Fn(right_params, right_result, right_conventions, right_qualifiers),
         ) => {
+            if left_qualifiers != right_qualifiers {
+                return Err(AccessMismatchKind::TypeShape);
+            }
             if left_params.len() != right_params.len() {
                 return Err(AccessMismatchKind::TypeShape);
             }
@@ -2300,7 +2328,7 @@ impl AccessFlow {
         ty: &Type,
         catalog: &BorrowRelationCatalog,
     ) -> Result<Self, AccessSignatureError> {
-        if matches!(ty.unqualified(), Type::Fn(_, _, _)) {
+        if matches!(ty.unqualified(), Type::Fn(..)) {
             return AccessSignature::from_function_type_with_catalog(ty, catalog)
                 .map(Self::Callable);
         }
@@ -2343,7 +2371,7 @@ impl AccessFlow {
                 }
             }
             Type::Qualified(_, _) => unreachable!("unqualified removes every qualifier"),
-            Type::RecordCompose { .. } | Type::Fn(_, _, _) => Ok(Self::None),
+            Type::RecordCompose { .. } | Type::Fn(..) => Ok(Self::None),
         }
     }
 
@@ -2353,7 +2381,7 @@ impl AccessFlow {
     /// value flow instead of silently publishing the erased shape.
     fn materialize_type(&self, ty: &Type) -> Type {
         match (self, ty.unqualified()) {
-            (Self::Callable(signature), Type::Fn(_, _, _)) => signature.as_type(),
+            (Self::Callable(signature), Type::Fn(..)) => signature.as_type(),
             (Self::Product(actual), Type::Tuple(expected)) if actual.len() == expected.len() => {
                 Type::Tuple(
                     actual
@@ -2799,7 +2827,12 @@ impl<'a> AccessVerifier<'a> {
             return self.declaration_signature(function);
         };
         let conventions = function.params.iter().map(|parameter| parameter.convention).collect();
-        let resolved = Type::Fn(params, Box::new(result), conventions);
+        let resolved = Type::Fn(
+            params,
+            Box::new(result),
+            conventions,
+            CallableQualifiers::new(function.pure, false),
+        );
         AccessSignature::from_resolved_function_with_catalog(
             function,
             &resolved,
@@ -2818,7 +2851,7 @@ impl<'a> AccessVerifier<'a> {
         let Some(resolved) = self.resolved_expression_type(expression) else {
             return self.declaration_signature(function);
         };
-        let Type::Fn(params, _, _) = resolved.unqualified() else { return Ok(None) };
+        let Type::Fn(params, _, _, _) = resolved.unqualified() else { return Ok(None) };
         if params.len() != function.params.len() {
             return Ok(None);
         }
@@ -2866,13 +2899,14 @@ impl<'a> AccessVerifier<'a> {
                     .map(|field| Self::substitute_type(field, substitutions))
                     .collect(),
             ),
-            Type::Fn(params, result, conventions) => Type::Fn(
+            Type::Fn(params, result, conventions, qualifiers) => Type::Fn(
                 params
                     .iter()
                     .map(|param| Self::substitute_type(param, substitutions))
                     .collect(),
                 Box::new(Self::substitute_type(result, substitutions)),
                 conventions.clone(),
+                *qualifiers,
             ),
             Type::Qualified(qualifier, inner) => Type::Qualified(
                 qualifier.clone(),
@@ -3270,7 +3304,7 @@ impl<'a> AccessVerifier<'a> {
                     Self::collect_type_substitutions(declared, actual, substitutions);
                 }
             }
-            (Type::Fn(declared_params, declared_result, _), Type::Fn(actual_params, actual_result, _))
+            (Type::Fn(declared_params, declared_result, _, _), Type::Fn(actual_params, actual_result, _, _))
                 if declared_params.len() == actual_params.len() =>
             {
                 for (declared, actual) in declared_params.iter().zip(actual_params) {
@@ -3297,7 +3331,7 @@ impl<'a> AccessVerifier<'a> {
             return;
         }
         match (declared.unqualified(), actual) {
-            (Type::Fn(_, _, _), AccessFlow::Callable(signature)) => {
+            (Type::Fn(..), AccessFlow::Callable(signature)) => {
                 Self::collect_type_substitutions(declared, &signature.as_type(), substitutions);
             }
             (Type::Tuple(declared), AccessFlow::Product(actual))
@@ -3956,7 +3990,7 @@ impl<'a> AccessVerifier<'a> {
                     }
                 }
             }
-            Expr::Lambda { params, body, ret } => {
+            Expr::Lambda { params, body, ret, .. } => {
                 let resolved = self
                     .expression_type_hints
                     .get(&(expression as *const Expr as usize))

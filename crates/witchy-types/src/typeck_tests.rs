@@ -130,6 +130,88 @@
                 "{error:?}"
             );
         }
+
+        for (source, binding) in [
+            (
+                "must type Ticket:\n    Ticket(Int)\n\nfn inspect(let ticket: Ticket):\n    let _ = 0\n\nfn defer(let ticket: Ticket) -> fn() -> Nil:\n    fn(): inspect(ticket)\n",
+                "ticket",
+            ),
+            (
+                "must type Ticket:\n    Ticket(Int)\n\ntype Envelope:\n    Envelope(Ticket)\n\nfn inspect(let envelope: Envelope):\n    let _ = 0\n\nfn defer(let envelope: Envelope) -> fn() -> Nil:\n    fn(): inspect(envelope)\n",
+                "envelope",
+            ),
+        ] {
+            let borrowed = check_source(source)
+                .expect_err("an escaping closure cannot hide a borrowed must-consume obligation");
+            assert!(
+                borrowed.message.contains(&format!(
+                    "closure environment carries must-consume `{binding}`; this callable type would erase that obligation"
+                )),
+                "{borrowed:?}"
+            );
+        }
+
+        check_source(
+            "fn run(own action: fn() -> Int) -> Int:\n    action()\n\nfn main() -> Int:\n    let value = 1\n    run(fn(): value)\n",
+        )
+        .expect("an owned ordinary closure may still capture ordinary copyable data");
+    }
+
+    #[test]
+    fn callable_purity_widens_only_toward_ordinary_and_survives_aliases() {
+        check_source(
+            "pure fn clean(x: Int) -> Int:\n    x\n\nfn invoke(callback: fn(Int) -> Int) -> Int:\n    callback(1)\n\nfn main() -> Int:\n    let widened: fn(Int) -> Int = clean\n    invoke(widened)\n",
+        )
+        .expect("pure callable should widen to an ordinary reusable callable");
+
+        let narrowing = check_source(
+            "pure fn clean(x: Int) -> Int:\n    x\n\nfn main() -> pure fn(Int) -> Int:\n    let widened: fn(Int) -> Int = clean\n    let narrowed: pure fn(Int) -> Int = widened\n    narrowed\n",
+        )
+        .expect_err("an ordinary alias must not narrow back to pure");
+        assert!(narrowing.message.contains("value disagrees"), "{narrowing:?}");
+
+        let ordinary = check_source(
+            "fn ordinary(x: Int) -> Int:\n    x\n\nfn require(callback: pure fn(Int) -> Int) -> Int:\n    callback(1)\n\nfn main() -> Int:\n    require(ordinary)\n",
+        )
+        .expect_err("ordinary callable must not narrow to pure");
+        assert!(ordinary.message.contains("expected `pure fn"), "{ordinary:?}");
+    }
+
+    #[test]
+    fn callable_branch_lub_widens_purity_but_not_cardinality() {
+        check_source(
+            "pure fn clean(x: Int) -> Int:\n    x\n\nfn ordinary(x: Int) -> Int:\n    x + 1\n\nfn choose(flag: Bool) -> fn(Int) -> Int:\n    let callback = if flag: clean else: ordinary\n    callback\n",
+        )
+        .expect("mixed-purity branch should join at ordinary callable");
+
+        let cardinality = check_source(
+            "pure fn clean(x: Int) -> Int:\n    x\n\nfn choose(flag: Bool, once_callback: once fn(Int) -> Int) -> fn(Int) -> Int:\n    let callback = if flag: clean else: once_callback\n    callback\n",
+        )
+        .expect_err("reusable and once callables have no branch LUB");
+        assert!(
+            cardinality.message.contains("invocation cardinality"),
+            "{cardinality:?}"
+        );
+    }
+
+    #[test]
+    fn type_table_retains_the_full_callable_signature() {
+        let module = witchy_syntax::parser::parse_module(
+            "pure fn inspect(borrow text: String) -> Int:\n    0\n",
+        )
+        .expect("source parses");
+        let typed = annotate_checked(module).expect("source type-checks");
+        let Type::Fn(parameters, result, conventions, qualifiers) = typed
+            .table()
+            .function_type("inspect")
+            .expect("non-generic function signature")
+        else {
+            panic!("function table entry must remain callable")
+        };
+        assert_eq!(parameters, vec![Type::Named("String".into(), Vec::new())]);
+        assert_eq!(*result, Type::Named("Int".into(), Vec::new()));
+        assert_eq!(conventions, vec![Convention::Borrow]);
+        assert_eq!(qualifiers, CallableQualifiers::new(true, false));
     }
 
     #[test]
@@ -410,6 +492,30 @@
                          fn bad(u: User) -> String:\n    u.name()\n";
         let err = check_str(ambiguous).unwrap_err();
         assert!(err.contains("ambiguous") && err.contains("Label") && err.contains("DebugName"), "{err}");
+    }
+
+    #[test]
+    fn trait_method_purity_is_a_directed_callable_contract() {
+        let missing = "trait Inspect:\n    pure fn inspect(self) -> Int\n\
+                       type Box:\n    Box(Int)\n\
+                       impl Inspect for Box:\n    fn inspect(self) -> Int:\n        0\n";
+        let error = check_str(missing).expect_err("ordinary impl cannot satisfy a pure method");
+        assert!(
+            error.contains("ordinary, but the trait requires `pure fn`"),
+            "{error}"
+        );
+
+        let stronger = "trait Inspect:\n    fn inspect(self) -> Int\n\
+                        type Box:\n    Box(Int)\n\
+                        impl Inspect for Box:\n    pure fn inspect(self) -> Int:\n        0\n";
+        check_str(stronger).expect("pure impl may satisfy an ordinary method contract");
+        let module = witchy_syntax::parser::parse_module(stronger).expect("parse");
+        let lowered = crate::traits::lower_checked(module).expect("lower");
+        assert!(lowered.items.iter().any(|item| matches!(
+            item,
+            witchy_syntax::ast::Item::Function(function)
+                if function.name.ends_with("__inspect") && function.pure
+        )));
     }
 
     #[test]

@@ -547,7 +547,7 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(scrutinee, out);
             collect_refs_block(body, out);
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             for p in params {
                 if let Some(t) = &p.ty {
                     collect_type_names(t, out);

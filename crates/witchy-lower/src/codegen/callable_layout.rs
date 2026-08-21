@@ -59,7 +59,7 @@ impl Codegen<'_> {
         &self,
         ty: &Type,
     ) -> Option<CallableLayoutSignature> {
-        let Type::Fn(parameters, result, _) = ty.unqualified() else {
+        let Type::Fn(parameters, result, _, _) = ty.unqualified() else {
             return None;
         };
         Some(CallableLayoutSignature::new(

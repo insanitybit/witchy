@@ -408,7 +408,7 @@ fn check_expr(
         | Expr::ExistentialUpcast { expr, ty } => {
             !type_contains(ty, candidate) && ordinary(expr)
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             !params.iter().any(|parameter| {
                 parameter.ty.as_ref().is_some_and(|ty| type_contains(ty, candidate))
             }) && ret.as_ref().is_none_or(|ty| !type_contains(ty, candidate))
@@ -495,7 +495,7 @@ fn type_contains(ty: &Type, candidate: &Type) -> bool {
             arguments.iter().any(|argument| type_contains(argument, candidate))
         }
         Type::Tuple(fields) => fields.iter().any(|field| type_contains(field, candidate)),
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             parameters.iter().any(|parameter| type_contains(parameter, candidate))
                 || type_contains(result, candidate)
         }

@@ -380,7 +380,7 @@ impl Codegen<'_> {
             other => other,
         };
         match inner {
-            Type::Tuple(_) | Type::Fn(_, _, _) => true,
+            Type::Tuple(_) | Type::Fn(_, _, _, _) => true,
             Type::Named(n, _) => {
                 n == "String"
                     || n == "List"
@@ -502,7 +502,7 @@ impl Codegen<'_> {
                     .local_types
                     .get(other)
                     .and_then(|t| match t.unqualified() {
-                        Type::Fn(_, ret, _) => Some(ty_to_valtype(ret)),
+                        Type::Fn(_, ret, _, _) => Some(ty_to_valtype(ret)),
                         _ => None,
                     })
                     .unwrap_or(ValType::Other),

@@ -48,7 +48,7 @@ fn compiler_syntax_in_ast_type(t: &ast::Type) -> Option<&'static str> {
         ast::Type::Qualified(_, inner) => compiler_syntax_in_ast_type(inner),
         ast::Type::Slice(inner) => compiler_syntax_in_ast_type(inner),
         ast::Type::Tuple(items) => items.iter().find_map(compiler_syntax_in_ast_type),
-        ast::Type::Fn(params, ret, _) => params
+        ast::Type::Fn(params, ret, _, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(compiler_syntax_in_ast_type),

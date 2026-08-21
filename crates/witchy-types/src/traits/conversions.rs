@@ -167,6 +167,7 @@ fn rewrite_try_from_expr(
                             region: None,
                         },
                         ret: Some(dst_err.clone()),
+                        qualifiers: Default::default(),
                     },
                 ],
             };

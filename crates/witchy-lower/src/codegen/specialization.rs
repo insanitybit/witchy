@@ -601,6 +601,7 @@ mod tests {
         Function {
             line: 0,
             public: false,
+            pure: false,
             comptime_only: false,
             attributes: Vec::new(),
             name: "relay__Point".to_string(),

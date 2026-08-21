@@ -349,7 +349,7 @@ fn resolve_type_with_origin(
             }
             changed
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             let mut changed = false;
             for p in params {
                 changed |= resolve_type_with_origin(p, context, resolve_call_site_head, shapes)?;
@@ -449,7 +449,7 @@ fn collect_anon_shapes(ty: &Type, out: &mut HashSet<Vec<String>>) {
                 collect_anon_shapes(field, out);
             }
         }
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             for param in params {
                 collect_anon_shapes(param, out);
             }
@@ -491,7 +491,7 @@ fn substitute_alias_params(ty: &mut Type, subst: &HashMap<String, Type>) -> bool
             }
             changed
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             let mut changed = false;
             for p in params {
                 changed |= substitute_alias_params(p, subst);
@@ -659,7 +659,7 @@ fn resolve_in_expr_with_origin(
     shapes: &mut HashSet<Vec<String>>,
 ) -> Result<(), String> {
     match e {
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             for p in params.iter_mut() {
                 if let Some(t) = &mut p.ty {
                     resolve_type_with_origin(t, map, resolve_call_site_head, shapes)?;

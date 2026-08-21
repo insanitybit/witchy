@@ -16,7 +16,7 @@
 //! "printed source in, items out".
 
 use witchy_syntax::ast::{
-    BinOp, Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
+    BinOp, Block, CallableQualifiers, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
 };
 use witchy_syntax::origin::{ExpansionOrigin, OriginTable, SourceSpan};
 use std::hash::{Hash, Hasher};
@@ -124,6 +124,7 @@ fn expand_with_item_limit_and_origins(
                         region: None,
                     },
                     ret: None,
+                    qualifiers: CallableQualifiers::ORDINARY,
                 },
             },
         );
@@ -154,6 +155,7 @@ fn expand_with_item_limit_and_origins(
                         region: None,
                     },
                     ret: None,
+                    qualifiers: CallableQualifiers::ORDINARY,
                 },
             },
         );
@@ -208,6 +210,7 @@ fn expand_with_item_limit_and_origins(
         prog_items.push(Item::Function(Function {
             line: 0,
             public: false,
+            pure: false,
             comptime_only: false,
             attributes: Vec::new(),
             name: "main".into(),

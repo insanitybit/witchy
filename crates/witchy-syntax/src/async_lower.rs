@@ -112,7 +112,7 @@ impl BorrowedShellCatalog {
             }
             // A function value owns its separately quantified relation. The
             // callable-return path below tracks what invoking it produces.
-            Type::Fn(_, _, _) => false,
+            Type::Fn(..) => false,
         }
     }
 }
@@ -441,7 +441,7 @@ fn has_async(module: &Module) -> bool {
 }
 
 fn type_is_view_callable(ty: &Type, borrowed_shells: &BorrowedShellCatalog) -> bool {
-    matches!(ty.unqualified(), Type::Fn(_, ret, _)
+    matches!(ty.unqualified(), Type::Fn(_, ret, _, _)
         if borrowed_shells.type_is_borrowed(ret))
 }
 
@@ -1114,6 +1114,7 @@ impl<'a> Ctx<'a> {
         self.segments.push(Function {
             line,
             public: false,
+            pure: false,
             comptime_only: false,
             attributes,
             name: seg_name.clone(),
@@ -1148,6 +1149,7 @@ impl<'a> Ctx<'a> {
             params: lam_params,
             body: tail_block_at(call(&seg_name, call_args), line),
             ret: None,
+            qualifiers: CallableQualifiers::ORDINARY,
         };
         Ok(call("task.and_then", vec![inner.into_task(), cont_lambda]))
     }
@@ -1189,6 +1191,7 @@ impl<'a> Ctx<'a> {
             }],
             body: tail_block_at(body_nil, first_line(&body.lines)),
             ret: None,
+            qualifiers: CallableQualifiers::ORDINARY,
         };
         Ok(call("task.for_each", vec![list_expr, f]))
     }
@@ -1471,6 +1474,7 @@ impl<'a> Ctx<'a> {
                 self.segments.push(Function {
                     line: first_line(&body.lines),
                     public: false,
+                    pure: false,
                     comptime_only: false,
                     attributes,
                     name: recv_name.clone(),
@@ -1494,6 +1498,7 @@ impl<'a> Ctx<'a> {
                     }],
                     body: tail_block_at(call(&recv_name, recv_args), first_line(&body.lines)),
                     ret: None,
+                    qualifiers: CallableQualifiers::ORDINARY,
                 };
                 call(
                     "task.and_then",
@@ -1506,6 +1511,7 @@ impl<'a> Ctx<'a> {
         self.segments.push(Function {
             line: first_line(&body.lines),
             public: false,
+            pure: false,
             comptime_only: false,
             attributes,
             name: seg_name.clone(),
@@ -1659,6 +1665,7 @@ fn lower_async_fn_with(
             params: vec![],
             body: tail_block_at(body_future, body_line),
             ret: None,
+            qualifiers: CallableQualifiers::ORDINARY,
         }],
     );
     let entry_body = if is_entry {
@@ -1674,6 +1681,7 @@ fn lower_async_fn_with(
     let entry = Function {
         line: f.line,
         public: f.public,
+        pure: false,
         comptime_only: false,
         attributes: entry_attributes,
         name: f.name,
@@ -1985,6 +1993,7 @@ fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
         }],
         body: tail_block(k),
         ret: None,
+        qualifiers: CallableQualifiers::ORDINARY,
     };
     call("task.and_then", vec![inner, lambda])
 }

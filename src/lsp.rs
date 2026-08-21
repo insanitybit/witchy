@@ -330,7 +330,8 @@ fn function_declaration(line: &str) -> Option<FunctionDeclaration<'_>> {
         .strip_prefix("pub ")
         .map_or((false, signature), |rest| (true, rest));
     let rest = rest
-        .strip_prefix("async fn ")
+        .strip_prefix("pure fn ")
+        .or_else(|| rest.strip_prefix("async fn "))
         .or_else(|| rest.strip_prefix("gen fn "))
         .or_else(|| rest.strip_prefix("fn "))?;
     let name_rest = rest.trim_start();

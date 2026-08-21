@@ -91,7 +91,7 @@ fn type_mentions_self(t: &ast::Type) -> bool {
         ast::Type::Named(n, args) => n == "Self" || args.iter().any(type_mentions_self),
         ast::Type::Dyn(_, args) => args.iter().any(type_mentions_self),
         ast::Type::Tuple(items) => items.iter().any(type_mentions_self),
-        ast::Type::Fn(params, ret, _) => {
+        ast::Type::Fn(params, ret, _, _) => {
             params.iter().any(type_mentions_self) || type_mentions_self(ret)
         }
         ast::Type::RecordCompose { base, fields } => {
@@ -211,7 +211,7 @@ impl<'a> ExistentialCheck<'a> {
                 self.visit_expr(expr)?;
                 self.visit_type(ty)
             }
-            Expr::Lambda { params, body, ret } => {
+            Expr::Lambda { params, body, ret, .. } => {
                 for param in params {
                     if let Some(ty) = &param.ty {
                         self.visit_type(ty)?;
@@ -310,7 +310,7 @@ impl<'a> ExistentialCheck<'a> {
             ast::Type::Qualified(_, inner) => self.visit_type(inner),
             ast::Type::Slice(inner) => self.visit_type(inner),
             ast::Type::Tuple(items) => items.iter().try_for_each(|i| self.visit_type(i)),
-            ast::Type::Fn(params, ret, _) => {
+            ast::Type::Fn(params, ret, _, _) => {
                 params.iter().try_for_each(|p| self.visit_type(p))?;
                 self.visit_type(ret)
             }

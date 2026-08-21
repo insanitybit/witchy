@@ -86,7 +86,7 @@ pub(crate) fn fn_param_returning_var(
     tv: &str,
 ) -> Option<usize> {
     params.iter().position(
-        |p| matches!(&p.ty, Some(Type::Fn(_, ret, _)) if bare_type_var(ret).as_deref() == Some(tv)),
+        |p| matches!(&p.ty, Some(Type::Fn(_, ret, _, _)) if bare_type_var(ret).as_deref() == Some(tv)),
     )
 }
 
@@ -113,7 +113,7 @@ pub(crate) fn type_has_var(t: &Type) -> bool {
         }
         Type::Dyn(_, args) => args.iter().any(type_has_var),
         Type::Tuple(ts) => ts.iter().any(type_has_var),
-        Type::Fn(ps, r, _) => ps.iter().any(type_has_var) || type_has_var(r),
+        Type::Fn(ps, r, _, _) => ps.iter().any(type_has_var) || type_has_var(r),
         Type::RecordCompose { base, fields } => {
             type_has_var(base) || fields.iter().any(|(_, field)| type_has_var(field))
         }

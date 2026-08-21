@@ -1,6 +1,6 @@
 use super::*;
 
-use witchy_syntax::ast::Convention;
+use witchy_syntax::ast::{CallableQualifiers, Convention};
 
 use crate::access::{
     AccessKind, AccessQualifier, AccessSignature, LoanProjection, LoanProjectionStep,
@@ -172,6 +172,7 @@ pub(crate) enum RuntimeAccessAuthority {
 pub struct RuntimeCallableAccessIdentity {
     authority: RuntimeAccessAuthority,
     callable_qualifiers: Vec<RuntimeAccessQualifier>,
+    callable_contract: CallableQualifiers,
     parameters: Vec<RuntimeAccessParameterIdentity>,
     result: RuntimeAccessResultIdentity,
     borrow_relations: Vec<RuntimeBorrowRelationIdentity>,
@@ -188,6 +189,10 @@ impl RuntimeCallableAccessIdentity {
 
     pub fn callable_qualifiers(&self) -> &[RuntimeAccessQualifier] {
         &self.callable_qualifiers
+    }
+
+    pub fn callable_contract(&self) -> CallableQualifiers {
+        self.callable_contract
     }
 
     pub fn parameters(&self) -> &[RuntimeAccessParameterIdentity] {
@@ -346,6 +351,7 @@ impl RuntimeCallableAccessIdentity {
         Ok(Self {
             authority,
             callable_qualifiers,
+            callable_contract: signature.callable_contract(),
             parameters,
             result,
             borrow_relations,
@@ -395,7 +401,7 @@ fn qualifier_sites(
                     path.pop();
                 }
             }
-            Type::Fn(parameters, result, _) => {
+            Type::Fn(parameters, result, _, _) => {
                 for (index, parameter) in parameters.iter().enumerate() {
                     path.push(RuntimeQualifierPathStep::FunctionParameter(index));
                     visit(parameter, path, lifetimes, sites)?;
@@ -490,6 +496,7 @@ pub enum RuntimeTypeIdentity {
         params: Vec<RuntimeCallableParameterIdentity>,
         result: Box<Self>,
         conventions: Vec<RuntimeConvention>,
+        qualifiers: CallableQualifiers,
         access: Box<RuntimeCallableAccessIdentity>,
     },
     Nominal {
@@ -545,6 +552,7 @@ impl RuntimeTypeIdentity {
             params,
             result,
             conventions,
+            qualifiers: signature.callable_contract(),
             access: Box::new(RuntimeCallableAccessIdentity::from_checked(
                 signature, resolve,
             )?),
@@ -587,7 +595,7 @@ impl RuntimeTypeIdentity {
                 let signature = AccessSignature::from_function_type(ty).map_err(|error| {
                     RuntimeTypeError::MalformedAccessSignature(error.to_string())
                 })?;
-                let Type::Fn(params, result, conventions) = ty.unqualified() else {
+                let Type::Fn(params, result, conventions, qualifiers) = ty.unqualified() else {
                     unreachable!("qualified callable guarded above")
                 };
                 if !conventions.is_empty() && conventions.len() != params.len() {
@@ -615,6 +623,7 @@ impl RuntimeTypeIdentity {
                         allow_capability,
                     )?),
                     conventions,
+                    qualifiers: *qualifiers,
                     access: Box::new(RuntimeCallableAccessIdentity::from_conservative_type(
                         &signature,
                         resolve,

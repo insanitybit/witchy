@@ -270,7 +270,7 @@ fn type_contains_unresolved_variable(ty: &Type) -> bool {
                 || args.iter().any(type_contains_unresolved_variable)
         }
         Type::Tuple(items) => items.iter().any(type_contains_unresolved_variable),
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             params.iter().any(type_contains_unresolved_variable)
                 || type_contains_unresolved_variable(result)
         }

@@ -400,6 +400,9 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments, uppe
     if f.public {
         s.push_str("pub ");
     }
+    if f.pure {
+        s.push_str("pure ");
+    }
     if f.comptime_only {
         s.push_str("comptime ");
     }
@@ -539,6 +542,9 @@ fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments, upper: u32) {
     s.push_str(":\n");
     for m in &t.methods {
         pad(s, 1);
+        if m.pure {
+            s.push_str("pure ");
+        }
         s.push_str("fn ");
         s.push_str(&sig(&m.name, &m.params, &m.ret, &[]));
         match &m.default {
@@ -897,9 +903,9 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u
                 block(s, b, depth, c, upper);
             }
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, qualifiers } => {
             pad(s, depth);
-            lambda_at(s, params, body, ret, depth, c, upper);
+            lambda_at(s, params, body, ret, *qualifiers, depth, c, upper);
         }
         _ => {
             pad(s, depth);
@@ -975,8 +981,8 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, uppe
         Expr::Match { .. } => {
             multiline(s, e, depth, c, upper);
         }
-        Expr::Lambda { params, body, ret } => {
-            lambda_at(s, params, body, ret, depth, c, upper);
+        Expr::Lambda { params, body, ret, qualifiers } => {
+            lambda_at(s, params, body, ret, *qualifiers, depth, c, upper);
         }
         // A `region:` block used as a value: header after `= `, body below.
         Expr::Block(b) if b.region.is_some() => {
@@ -1201,9 +1207,9 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments, upper: 
             s.push(' ');
             multiline(s, body, depth, c, upper);
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, qualifiers } => {
             s.push(' ');
-            lambda_at(s, params, body, ret, depth, c, upper);
+            lambda_at(s, params, body, ret, *qualifiers, depth, c, upper);
         }
         _ => {
             s.push(' ');
@@ -1465,13 +1471,13 @@ fn expr(e: &Expr) -> String {
             _ => format!("{}?", operand(inner, POSTFIX_PREC, false)),
         },
         Expr::As { expr, ty } => format!("{} as {}", operand(expr, POSTFIX_PREC, false), type_str(ty)),
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, qualifiers } => {
             let ps: Vec<String> = params.iter().map(param).collect();
             let r = match ret {
                 Some(t) => format!(" -> {}", type_str(t)),
                 None => String::new(),
             };
-            format!("fn({}){}: {}", ps.join(", "), r, block_value(body))
+            format!("{}fn({}){}: {}", callable_prefix(*qualifiers), ps.join(", "), r, block_value(body))
         }
         Expr::If { cond, then_block, else_block } => {
             let e = else_block
@@ -1557,8 +1563,18 @@ fn block_value(b: &Block) -> String {
 /// inline `fn(p): expr` when the body is a single inline expression, otherwise
 /// `fn(p):` followed by an indented block. `s` is positioned where the `fn`
 /// begins.
-fn lambda_at(s: &mut String, params: &[Param], body: &Block, ret: &Option<Type>, depth: usize, c: &mut Comments, upper: u32) {
+fn callable_prefix(qualifiers: CallableQualifiers) -> &'static str {
+    match (qualifiers.pure, qualifiers.once) {
+        (false, false) => "",
+        (true, false) => "pure ",
+        (false, true) => "once ",
+        (true, true) => "pure once ",
+    }
+}
+
+fn lambda_at(s: &mut String, params: &[Param], body: &Block, ret: &Option<Type>, qualifiers: CallableQualifiers, depth: usize, c: &mut Comments, upper: u32) {
     let ps: Vec<String> = params.iter().map(param).collect();
+    s.push_str(callable_prefix(qualifiers));
     s.push_str("fn(");
     s.push_str(&ps.join(", "));
     s.push(')');
@@ -1643,8 +1659,8 @@ fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], suffix: &str, de
         s.push_str(&expr(a));
         s.push_str(", ");
     }
-    if let Expr::Lambda { params, body, ret } = &last[0] {
-        lambda_at(s, params, body, ret, depth, c, upper);
+    if let Expr::Lambda { params, body, ret, qualifiers } = &last[0] {
+        lambda_at(s, params, body, ret, *qualifiers, depth, c, upper);
     }
     pad(s, depth);
     s.push(')');
@@ -2068,7 +2084,7 @@ pub fn type_str(t: &Type) -> String {
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(type_str).collect::<Vec<_>>().join(", "))
         }
-        Type::Fn(ps, r, conventions) => {
+        Type::Fn(ps, r, conventions, qualifiers) => {
             let rendered = ps
                 .iter()
                 .enumerate()
@@ -2083,7 +2099,7 @@ pub fn type_str(t: &Type) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("fn({rendered}) -> {}", type_str(r))
+            format!("{}fn({rendered}) -> {}", callable_prefix(*qualifiers), type_str(r))
         }
     }
 }
@@ -2246,7 +2262,7 @@ fn canon_type(ty: &mut Type) {
                 canon_type(field);
             }
         }
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             for parameter in parameters {
                 canon_type(parameter);
             }
@@ -3084,7 +3100,7 @@ fn rewrite_reference_type(
             rewrite_reference_type(base, local_nominals);
             for (_, field) in fields { rewrite_reference_type(field, local_nominals); }
         }
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             for parameter in parameters { rewrite_reference_type(parameter, local_nominals); }
             rewrite_reference_type(result, local_nominals);
         }

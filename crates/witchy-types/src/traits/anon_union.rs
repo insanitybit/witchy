@@ -190,7 +190,7 @@ fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
                 collect_anon_union_heads_type(arg, out);
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for param in params {
                 collect_anon_union_heads_type(param, out);
             }
@@ -293,7 +293,7 @@ fn collect_anon_union_heads_expr(expr: &Expr, out: &mut HashMap<String, usize>) 
             collect_anon_union_heads_expr(expr, out);
             collect_anon_union_heads_type(ty, out);
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             for param in params {
                 if let Some(ty) = &param.ty {
                     collect_anon_union_heads_type(ty, out);
@@ -397,6 +397,7 @@ fn anon_union_show_impl(
         methods: vec![Function {
             line: 0,
             public: true,
+            pure: false,
             comptime_only: false,
             attributes: Vec::new(),
             name: "show".to_string(),
@@ -429,6 +430,7 @@ fn anon_union_reflect_impl(
         methods: vec![Function {
             line: 0,
             public: true,
+            pure: false,
             comptime_only: false,
             attributes: Vec::new(),
             name: "reflect".to_string(),
@@ -461,6 +463,7 @@ fn anon_union_partial_eq_impl(
         methods: vec![Function {
             line: 0,
             public: true,
+            pure: false,
             comptime_only: false,
             attributes: Vec::new(),
             name: "eq".to_string(),

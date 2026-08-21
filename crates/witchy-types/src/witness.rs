@@ -778,9 +778,11 @@ fn type_key(ty: &Type) -> String {
         Type::Tuple(items) => {
             format!("({})", items.iter().map(type_key).collect::<Vec<_>>().join(","))
         }
-        Type::Fn(params, result, conventions) => format!(
-            "fn[{:?}]({})->{}",
+        Type::Fn(params, result, conventions, qualifiers) => format!(
+            "fn[{:?};{}{}]({})->{}",
             conventions,
+            if qualifiers.pure { "pure" } else { "ordinary" },
+            if qualifiers.once { ";once" } else { "" },
             params.iter().map(type_key).collect::<Vec<_>>().join(","),
             type_key(result)
         ),
@@ -802,7 +804,7 @@ fn has_free_type_variable(ty: &Type) -> bool {
                 || args.iter().any(has_free_type_variable)
         }
         Type::Dyn(_, args) | Type::Tuple(args) => args.iter().any(has_free_type_variable),
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             params.iter().any(has_free_type_variable) || has_free_type_variable(result)
         }
         Type::Qualified(_, inner) => has_free_type_variable(inner),

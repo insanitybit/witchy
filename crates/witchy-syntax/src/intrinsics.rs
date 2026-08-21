@@ -687,7 +687,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::CompilerQuoteItemHoles,
         name: COMPILER_QUOTE_ITEM_HOLES,
-        arity: 3,
+        arity: 5,
         signature: IntrinsicSignature::CompilerQuoteItemHoles,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
@@ -1557,7 +1557,7 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::MetaTypeFn,
         name: META_TYPE_FN,
-        arity: 3,
+        arity: 5,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,

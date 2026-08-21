@@ -422,7 +422,7 @@ impl Interpreter {
                 _ => err("meta.type_tuple expects List(TypeSyntax)"),
             },
             name if intrinsics::is_meta_type_fn(name) => match args {
-                [Value::List(params), conventions, ret] => {
+                [Value::List(params), conventions, Value::Bool(pure), Value::Bool(once), ret] => {
                     if self.fresh_ident_scope.is_none() {
                         return err(
                             "meta.type_fn is available only during compile-time expansion",
@@ -443,12 +443,17 @@ impl Interpreter {
                     let ret = compiler_type_syntax_value(ret, &self.compiler_type_syntax)?;
                     Ok(Some(self.store_compiler_type_syntax(
                         "function-type",
-                        Type::Fn(params, Box::new(ret), conventions),
+                        Type::Fn(
+                            params,
+                            Box::new(ret),
+                            conventions,
+                            CallableQualifiers::new(*pure, *once),
+                        ),
                         hole_ancestry,
                     )?))
                 }
                 _ => err(
-                    "meta.type_fn expects List(TypeSyntax), List(String), and TypeSyntax",
+                    "meta.type_fn expects List(TypeSyntax), List(String), Bool, Bool, and TypeSyntax",
                 ),
             },
             name if intrinsics::is_meta_type_qualified(name) => match args {

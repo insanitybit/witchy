@@ -235,15 +235,19 @@ fn __meta_type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
 
 // A function type such as `fn(Int) -> String`.
 pub fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax:
-    __meta_type_fn(params, [], ret)
+    __meta_type_fn(params, [], false, false, ret)
 
 pub fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
-    __meta_type_fn(params, conventions, ret)
+    __meta_type_fn(params, conventions, false, false, ret)
+
+// A function type with explicit invocation qualifiers.
+pub fn type_fn_with_qualifiers(params: List(TypeSyntax), conventions: List(String), pure: Bool, once: Bool, ret: TypeSyntax) -> TypeSyntax:
+    __meta_type_fn(params, conventions, pure, once, ret)
 
 // Compiler-owned function type construction. An empty convention list means
 // default `let` parameters; otherwise it must align with params.
-fn __meta_type_fn(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
-    __meta_type_fn(params, conventions, ret)
+fn __meta_type_fn(params: List(TypeSyntax), conventions: List(String), pure: Bool, once: Bool, ret: TypeSyntax) -> TypeSyntax:
+    __meta_type_fn(params, conventions, pure, once, ret)
 
 // A deeply immutable type qualifier.
 pub fn type_frozen(ty: TypeSyntax) -> TypeSyntax:
@@ -616,7 +620,7 @@ pub fn module_items(module_syntax: ModuleSyntax) -> List(ItemSyntax):
 type TypeExpr:
     TNamed(String, List(TypeExpr))
     TTuple(List(TypeExpr))
-    TFn(List(TypeExpr), TypeExpr, List(String))
+    TFn(List(TypeExpr), TypeExpr, List(String), Bool, Bool)
     TQualified(String, TypeExpr)
     TBorrowed(TypeExpr, String)
     TReference(String, TypeExpr, String)
@@ -710,7 +714,10 @@ pub fn type_source(ty: TypeExpr) -> String:
             else:
                 name + "(" + list.join(type_sources(args), ", ") + ")"
         TTuple(slots) -> "(" + list.join(type_sources(slots), ", ") + ")"
-        TFn(params, ret, conventions) -> "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
+        TFn(params, ret, conventions, pure, once) ->
+            let prefix = if pure: "pure " else: ""
+            let prefix = prefix + if once: "once " else: ""
+            prefix + "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
         TQualified(q, inner) -> q + " " + type_source(inner)
         TBorrowed(inner, lifetime) -> "&'" + lifetime + " " + type_source(inner)
         TReference(kind, inner, lifetime) ->

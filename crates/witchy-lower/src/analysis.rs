@@ -4364,7 +4364,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     )
                 }
             }
-            Expr::Lambda { params, body, ret } => {
+            Expr::Lambda { params, body, ret, .. } => {
                 let name = format!("{}::<lambda>", self.function);
                 let signature = self
                     .access

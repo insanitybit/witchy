@@ -569,7 +569,7 @@ fn record_type(
                 record_type(table, module, item, &child, ty, origin);
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for ty in params {
                 let child = child_path(path, &mut next);
                 record_type(table, module, item, &child, ty, origin);
@@ -712,7 +712,7 @@ fn record_expr(
         Expr::Field { base, .. } => {
             record_expr_child(table, module, item, path, &mut next, base, origin)
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             for param in params {
                 let child = child_path(path, &mut next);
                 record_param(table, module, item, &child, param, origin);

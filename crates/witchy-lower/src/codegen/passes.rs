@@ -475,6 +475,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
                         region: None,
                     },
                     ret: None,
+                    qualifiers: Default::default(),
                 },
             ],
         }
@@ -642,4 +643,3 @@ fn alpha_rename(body: &Block, params: &[Param]) -> Block {
     r.rename_block(&mut b);
     b
 }
-

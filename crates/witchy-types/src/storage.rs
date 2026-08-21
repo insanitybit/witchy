@@ -153,7 +153,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
             Type::Dyn(_, _) => Some(ReferenceLeaf::Existential),
             // A first-class function value is itself a reference regardless of
             // the scalar/reference shapes in its signature.
-            Type::Fn(params, ret, _) => match functions {
+            Type::Fn(params, ret, _, _) => match functions {
                 FunctionTraversal::AsReference => Some(ReferenceLeaf::Function),
                 FunctionTraversal::IgnoreSignature => None,
                 FunctionTraversal::InspectSignature => params
@@ -283,7 +283,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
                 .find_map(|arg| self.classify_stored_capability(arg, bindings, seen)),
             // A function value stores its closure/code identity, not values of
             // the capability types mentioned in its signature.
-            Type::Fn(_, _, _) => None,
+            Type::Fn(..) => None,
             Type::Named(name, args) => {
                 if args.is_empty()
                     && let Some(bound) = bindings.get(name)
@@ -420,10 +420,11 @@ fn substitute(
             name.clone(),
             args.iter().map(|arg| substitute(arg, bindings, resolving)).collect(),
         ),
-        Type::Fn(params, ret, conventions) => Type::Fn(
+        Type::Fn(params, ret, conventions, qualifiers) => Type::Fn(
             params.iter().map(|param| substitute(param, bindings, resolving)).collect(),
             Box::new(substitute(ret, bindings, resolving)),
             conventions.clone(),
+            *qualifiers,
         ),
         Type::Named(name, args) => {
             if args.is_empty()
@@ -560,7 +561,7 @@ fn storage_dependencies<'a>(
             })
             .collect(),
         // A function value's storage does not depend on its signature types.
-        Type::Fn(_, _, _) => HashSet::new(),
+        Type::Fn(..) => HashSet::new(),
         Type::Named(name, args) => {
             if externref_cap_name(name).is_some() {
                 return HashSet::new();

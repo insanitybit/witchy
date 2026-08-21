@@ -422,7 +422,7 @@ fn validate_capability_free_type(
             }
             Ok(())
         }
-        Type::Fn(_, _, _) => Err(RuntimeTypeError::UninspectableDynamicPayload {
+        Type::Fn(..) => Err(RuntimeTypeError::UninspectableDynamicPayload {
             kind: "function".into(),
             path: path.to_vec(),
         }),
@@ -637,13 +637,14 @@ pub(super) fn instantiate_runtime_type(ty: &Type, bindings: &BTreeMap<String, Ty
                 .map(|item| instantiate_runtime_type(item, bindings))
                 .collect(),
         ),
-        Type::Fn(params, result, conventions) => Type::Fn(
+        Type::Fn(params, result, conventions, qualifiers) => Type::Fn(
             params
                 .iter()
                 .map(|param| instantiate_runtime_type(param, bindings))
                 .collect(),
             Box::new(instantiate_runtime_type(result, bindings)),
             conventions.clone(),
+            *qualifiers,
         ),
         Type::Qualified(qualifier, inner) => Type::Qualified(
             qualifier.clone(),

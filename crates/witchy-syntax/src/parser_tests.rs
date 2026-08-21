@@ -2022,3 +2022,40 @@ fn slice_and_str_reference_types_parse_and_format() {
         "&'c mut [String]"
     );
 }
+
+#[test]
+fn callable_qualifiers_parse_contextually_across_declarations_types_and_lambdas() {
+    let source = "pure fn identity(x: Int) -> Int:\n    x\n\nfn carry(callback: pure once fn(Int) -> Int) -> once fn() -> Nil:\n    pure once fn(value: Int) -> Int: callback(value)\n\nfn once(x: Int) -> Int:\n    let pure = x\n    pure\n";
+    let module = parse_module(source).expect("qualified callables parse");
+    let Item::Function(identity) = &module.items[0] else { panic!("identity") };
+    assert!(identity.pure);
+    let Item::Function(carry) = &module.items[1] else { panic!("carry") };
+    let Some(Type::Fn(_, _, _, parameter_qualifiers)) = &carry.params[0].ty else {
+        panic!("qualified callback parameter")
+    };
+    assert_eq!(*parameter_qualifiers, CallableQualifiers::new(true, true));
+    let Some(Type::Fn(_, _, _, result_qualifiers)) = &carry.ret else {
+        panic!("qualified callback result")
+    };
+    assert_eq!(*result_qualifiers, CallableQualifiers::new(false, true));
+    let Stmt::Expr(Expr::Lambda { qualifiers, .. }) = &carry.body.stmts[0] else {
+        panic!("qualified lambda")
+    };
+    assert_eq!(*qualifiers, CallableQualifiers::new(true, true));
+    let Item::Function(contextual) = &module.items[2] else { panic!("contextual names") };
+    assert_eq!(contextual.name, "once");
+}
+
+#[test]
+fn named_once_and_unsupported_function_kind_qualifiers_are_rejected() {
+    for source in [
+        "once fn run():\n    Nil\n",
+        "pure once fn run():\n    Nil\n",
+        "pure async fn run():\n    Nil\n",
+        "pure gen fn run():\n    Nil\n",
+        "pure comptime fn run():\n    Nil\n",
+        "fn run(callback: once pure fn() -> Nil):\n    Nil\n",
+    ] {
+        parse_module(source).expect_err(source);
+    }
+}

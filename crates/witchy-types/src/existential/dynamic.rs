@@ -307,13 +307,12 @@ pub(super) fn collect_dynamic_types(
         if let Some(ty) =
             dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?
         {
-            let trait_descriptor = matches!(
+            let descriptor_only = matches!(
                 expr,
                 Expr::Call { name, .. }
                     if dynamic_intrinsic(name, intrinsics::DYNAMIC_RUNTIME_TYPE)
-                        && matches!(ty.unqualified(), Type::Dyn(..))
             );
-            requested.push((ty, trait_descriptor));
+            requested.push((ty, descriptor_only));
         }
         Ok(())
     })?;
@@ -323,8 +322,12 @@ pub(super) fn collect_dynamic_types(
     let runtime_catalog = runtime_catalog.ok_or_else(|| {
         "Dynamic operations require authenticated runtime declaration ownership".to_string()
     })?;
-    for (ty, trait_descriptor) in &requested {
-        if *trait_descriptor {
+    for (ty, descriptor_only) in &requested {
+        // `runtime_type(T)` requests authenticated descriptor identity only;
+        // it does not place a value of `T` into Dynamic. Function payloads
+        // remain rejected by the capability-free path used by value-backed
+        // descriptor construction and typed decoding.
+        if *descriptor_only {
             runtime_catalog
                 .type_identity(ty)
                 .map_err(|error| error.to_string())?;
@@ -1165,7 +1168,14 @@ fn runtime_callable_access_expr(
     );
     Expr::Ctor {
         name: "dynamic.RuntimeCallableAccess".into(),
-        args: vec![callable_qualifiers, parameters, result, relations],
+        args: vec![
+            Expr::Bool(access.callable_contract().pure),
+            Expr::Bool(access.callable_contract().once),
+            callable_qualifiers,
+            parameters,
+            result,
+            relations,
+        ],
     }
 }
 

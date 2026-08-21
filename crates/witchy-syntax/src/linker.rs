@@ -218,7 +218,7 @@ pub fn call_site_type_source(name: &str, args: &[Type]) -> String {
                     project(field);
                 }
             }
-            Type::Fn(params, ret, _) => {
+            Type::Fn(params, ret, _, _) => {
                 for param in params {
                     project(param);
                 }
@@ -296,6 +296,8 @@ struct EtaSig {
     arity: usize,
     /// Parameter conventions copied onto the forwarding lambda.
     conventions: Vec<Convention>,
+    /// Declaration purity preserved by function-value eta expansion.
+    pure: bool,
     /// Part of this module's public API. Same-module calls may use private
     /// helpers; imported or module-qualified cross-module calls may not.
     public: bool,
@@ -326,7 +328,7 @@ fn type_mentions_reference(ty: &Type) -> bool {
             type_mentions_reference(base)
                 || fields.iter().any(|(_, field)| type_mentions_reference(field))
         }
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             params.iter().any(type_mentions_reference) || type_mentions_reference(result)
         }
     }
@@ -376,7 +378,7 @@ fn type_mentions_named_reference(ty: &Type, bearing: &HashSet<String>) -> bool {
             type_mentions_named_reference(base, bearing)
                 || fields.iter().any(|(_, field)| type_mentions_named_reference(field, bearing))
         }
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             params.iter().any(|param| type_mentions_named_reference(param, bearing))
                 || type_mentions_named_reference(result, bearing)
         }
@@ -399,7 +401,7 @@ fn named_reference_type<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<&
                 .iter()
                 .find_map(|(_, field)| named_reference_type(field, bearing))
         }),
-        Type::Fn(params, result, _) => params
+        Type::Fn(params, result, _, _) => params
             .iter()
             .find_map(|param| named_reference_type(param, bearing))
             .or_else(|| named_reference_type(result, bearing)),
@@ -493,7 +495,7 @@ fn named_reference_trait<'a>(ty: &'a Type, bearing: &HashSet<String>) -> Option<
                 .iter()
                 .find_map(|(_, field)| named_reference_trait(field, bearing))
         }),
-        Type::Fn(params, result, _) => params
+        Type::Fn(params, result, _, _) => params
             .iter()
             .find_map(|param| named_reference_trait(param, bearing))
             .or_else(|| named_reference_trait(result, bearing)),
@@ -1064,7 +1066,7 @@ fn returns_view_callable(ty: Option<&Type>) -> bool {
     ty.is_some_and(|ty| {
         matches!(
             ty.unqualified(),
-            Type::Fn(_, result, _)
+            Type::Fn(_, result, _, _)
                 if matches!(
                     result.as_ref(),
                     Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _)
@@ -1399,7 +1401,7 @@ fn canonicalize_generator_receiver_type(ty: &mut Type, local: &str, canonical: &
                 canonicalize_generator_receiver_type(field, local, canonical);
             }
         }
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             for parameter in parameters {
                 canonicalize_generator_receiver_type(parameter, local, canonical);
             }
@@ -2052,6 +2054,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                     EtaSig {
                         arity: f.params.len(),
                         conventions: f.params.iter().map(|param| param.convention).collect(),
+                        pure: f.pure,
                         public: f.public,
                         reference_bearing: f
                             .params
@@ -2085,18 +2088,18 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                                 .params
                                 .iter()
                                 .map(|param| param.convention)
-                            .collect(),
-                        public: true,
-                        reference_bearing: method
-                            .params
-                            .iter()
-                            .filter_map(|param| param.ty.as_ref())
-                            .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
-                            || method
-                                .ret
-                                .as_ref()
-                                .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
-                        method_alias: true,
+                                .collect(),
+                            pure: method.pure,
+                            public: true,
+                            reference_bearing: method
+                                .params
+                                .iter()
+                                .filter_map(|param| param.ty.as_ref())
+                                .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
+                                || method.ret.as_ref().is_some_and(|ty| {
+                                    type_is_reference_bearing(ty, &reference_bearing)
+                                }),
+                            method_alias: true,
                             alias_target: Some(inherent_method_symbol(im, &method.name)),
                         },
                     );
@@ -2792,6 +2795,7 @@ pub fn mark_definition_site_expr(
                             .iter()
                             .map(|param| param.convention)
                             .collect(),
+                        pure: function.pure,
                         public: function.public,
                         reference_bearing: function
                             .params
@@ -3218,6 +3222,7 @@ fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
         params,
         body: Block { stmts: vec![Stmt::Expr(call)], lines: vec![0], region: None },
         ret: None,
+        qualifiers: CallableQualifiers::new(sig.pure, false),
     }
 }
 
@@ -4019,7 +4024,7 @@ fn check_reserved_type(
                 check_reserved_type(module_name, field, generated_anon_types)?;
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for param in params {
                 check_reserved_type(module_name, param, generated_anon_types)?;
             }
@@ -4112,7 +4117,7 @@ fn check_reserved_expr(
                 check_reserved_expr(module_name, arg, line, generated_anon_types)?;
             }
         }
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, .. } => {
             for param in params {
                 check_reserved_param(module_name, param, generated_anon_types)?;
             }
@@ -4545,6 +4550,32 @@ mod tests {
         link(vec![("main".to_string(), module)], "main", noop_expand)
             .map(|_| ())
             .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn eta_expansion_preserves_named_function_purity() {
+        let expression = eta_lambda(
+            "api.clean",
+            EtaSig {
+                arity: 1,
+                conventions: vec![Convention::Borrow],
+                pure: true,
+                public: true,
+                reference_bearing: false,
+                method_alias: false,
+                alias_target: None,
+            },
+        );
+        let Expr::Lambda {
+            params,
+            qualifiers,
+            ..
+        } = expression
+        else {
+            panic!("eta expansion must produce a lambda")
+        };
+        assert_eq!(params[0].convention, Convention::Borrow);
+        assert_eq!(qualifiers, CallableQualifiers::new(true, false));
     }
 
     #[test]

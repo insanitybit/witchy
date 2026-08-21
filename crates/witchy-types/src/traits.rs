@@ -118,6 +118,7 @@ enum MethodResolution {
 /// parameter would default to i32 in codegen and clash with, e.g., an f64 arg.
 fn method_fn(
     name: String,
+    pure: bool,
     mut params: Vec<Param>,
     ret: Option<Type>,
     body: Block,
@@ -146,6 +147,7 @@ fn method_fn(
     Function {
         line: 0,
         public: true,
+        pure,
         comptime_only: false,
         attributes: Vec::new(),
         name,
@@ -222,10 +224,11 @@ fn subst_self(t: &Type, self_ty: &Type) -> Type {
                 .map(|(name, ty)| (name.clone(), subst_self(ty, self_ty)))
                 .collect(),
         },
-        Type::Fn(ps, r, conventions) => Type::Fn(
+        Type::Fn(ps, r, conventions, qualifiers) => Type::Fn(
             ps.iter().map(|a| subst_self(a, self_ty)).collect(),
             Box::new(subst_self(r, self_ty)),
             conventions.clone(),
+            *qualifiers,
         ),
     }
 }
@@ -445,6 +448,7 @@ fn lower_with(
                 bounds.extend(method.bounds.iter().cloned());
                 generated.push(method_fn(
                     mangled,
+                    method.pure,
                     params,
                     ret,
                     method.body.clone(),
@@ -479,6 +483,7 @@ fn lower_with(
             bounds.extend(method.bounds.iter().cloned());
             generated.push(method_fn(
                 mangled,
+                method.pure,
                 params,
                 ret,
                 method.body.clone(),
@@ -521,6 +526,7 @@ fn lower_with(
                         );
                         generated.push(method_fn(
                             mangled,
+                            ms.pure,
                             params,
                             ret,
                             body.clone(),
@@ -1013,7 +1019,7 @@ fn display_type(t: &Type) -> String {
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached trait diagnostics before records::lower normalized it"
         ),
-        Type::Fn(ps, r, conventions) => {
+        Type::Fn(ps, r, conventions, qualifiers) => {
             let rendered = ps
                 .iter()
                 .enumerate()
@@ -1029,7 +1035,9 @@ fn display_type(t: &Type) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "fn({}) -> {}",
+                "{}{}fn({}) -> {}",
+                if qualifiers.pure { "pure " } else { "" },
+                if qualifiers.once { "once " } else { "" },
                 rendered,
                 display_type(r)
             )
@@ -1071,10 +1079,11 @@ pub(crate) fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type
                 .map(|(name, ty)| (name.clone(), subst_trait_params(ty, vars)))
                 .collect(),
         },
-        Type::Fn(ps, r, conventions) => Type::Fn(
+        Type::Fn(ps, r, conventions, qualifiers) => Type::Fn(
             ps.iter().map(|a| subst_trait_params(a, vars)).collect(),
             Box::new(subst_trait_params(r, vars)),
             conventions.clone(),
+            *qualifiers,
         ),
     }
 }
@@ -1156,6 +1165,12 @@ fn validate_trait_impl(im: &ImplDef, methods: &[MethodSig], trait_params: &[Stri
             continue;
         };
         provided.insert(name);
+
+        if sig.pure && !method.pure {
+            diags.push(format!(
+                "`impl {trait_bare} for {type_bare}` method `{name}` is ordinary, but the trait requires `pure fn`"
+            ));
+        }
 
         if method.params.len() != sig.params.len() {
             diags.push(format!(
@@ -1335,15 +1350,15 @@ fn refine_ast_scope_type(scope: &mut Scope<Type>, name: &str, refined: &Type) {
     let same_head = match (existing.unqualified(), refined.unqualified()) {
         (Type::Named(left, _), Type::Named(right, _)) => left == right,
         (Type::Tuple(left), Type::Tuple(right)) => left.len() == right.len(),
-        (Type::Fn(left, _, lc), Type::Fn(right, _, rc)) => {
-            left.len() == right.len() && lc == rc
+        (Type::Fn(left, _, lc, lq), Type::Fn(right, _, rc, rq)) => {
+            left.len() == right.len() && lc == rc && lq == rq
         }
         _ => false,
     };
     let carries_arguments = match refined.unqualified() {
         Type::Named(_, args) => !args.is_empty(),
         Type::Dyn(_, args) => !args.is_empty(),
-        Type::Slice(_) | Type::Tuple(_) | Type::Fn(_, _, _) => true,
+        Type::Slice(_) | Type::Tuple(_) | Type::Fn(..) => true,
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached trait scope refinement before records::lower normalized it"
         ),
@@ -1599,7 +1614,7 @@ fn declared_expr_type(
             _ => None,
         },
         Expr::Call { name, args } => {
-            if let Some((params, ret, _)) = fn_sigs.get(name) {
+            if let Some((params, ret, _, _)) = fn_sigs.get(name) {
                 let mut binds = HashMap::new();
                 for (param, arg) in params.iter().zip(args) {
                     let (Some(param), Some(arg_ty)) = (param, type_of(arg)) else {
@@ -1673,11 +1688,12 @@ fn local_expr_type(
         Expr::Str(_) => Some(named_type("String")),
         Expr::Bool(_) => Some(named_type("Bool")),
         Expr::Var(name) => scope.get(name).cloned().or_else(|| {
-            let (params, ret, conventions) = fn_sigs.get(name)?;
+            let (params, ret, conventions, qualifiers) = fn_sigs.get(name)?;
             Some(Type::Fn(
                 params.iter().cloned().collect::<Option<Vec<_>>>()?,
                 Box::new(ret.clone()),
                 conventions.clone(),
+                *qualifiers,
             ))
         }),
         Expr::Field { base, field } => {
@@ -1721,7 +1737,7 @@ fn local_expr_type(
             declared_expr_type(e, fn_sigs, type_of)
         }
         Expr::Apply { func, .. } => match type_of(func)?.unqualified() {
-            Type::Fn(_, ret, _) => Some((**ret).clone()),
+            Type::Fn(_, ret, _, _) => Some((**ret).clone()),
             _ => None,
         },
         Expr::RecordUpdate { base, .. } => type_of(base),
@@ -1754,7 +1770,7 @@ fn local_expr_type(
             None => Some(named_type(&format!("Tuple{}", items.len()))),
         },
         Expr::Range { .. } => Some(Type::Named("List".to_string(), vec![named_type("Int")])),
-        Expr::Lambda { params, body, ret } => {
+        Expr::Lambda { params, body, ret, qualifiers } => {
             let conventions = params.iter().map(|param| param.convention).collect();
             let params = params
                 .iter()
@@ -1765,7 +1781,7 @@ fn local_expr_type(
                 Some(Stmt::Return(None)) => Some(unit_type()),
                 _ => None,
             })?;
-            Some(Type::Fn(params, Box::new(ret), conventions))
+            Some(Type::Fn(params, Box::new(ret), conventions, *qualifiers))
         }
         Expr::AnonCtor { .. }
         | Expr::LabeledCall { .. }
@@ -1855,7 +1871,7 @@ impl Ctx<'_> {
             if m != method || module == owner {
                 return false;
             }
-            let Some((params, _, _)) = self.fn_sigs.get(name) else { return false };
+            let Some((params, _, _, _)) = self.fn_sigs.get(name) else { return false };
             match params.first() {
                 // Declared first parameter: accepts the receiver when its head type
                 // matches, or when it is a generic type variable (accepts anything).
@@ -1871,7 +1887,7 @@ impl Ctx<'_> {
     }
 
     fn refine_var_call_args(&self, name: &str, args: &[Expr], scope: &mut Scope<Type>) {
-        let Some((params, _, conventions)) = self.fn_sigs.get(name) else { return };
+        let Some((params, _, conventions, _)) = self.fn_sigs.get(name) else { return };
         let mut bindings = HashMap::new();
         for (param, arg) in params.iter().zip(args) {
             let (Some(pattern), Some(actual)) = (param, self.type_ast(arg, scope)) else {
@@ -2856,7 +2872,7 @@ fn nominal_type_name(ty: &Type) -> Option<&str> {
         // (RFC-0081) A dyn type's head is a trait name, not a nominal type name;
         // it must never enter impl lookup by name.
         Type::Dyn(..) => None,
-        Type::Slice(_) | Type::Tuple(_) | Type::Fn(_, _, _) => None,
+        Type::Slice(_) | Type::Tuple(_) | Type::Fn(..) => None,
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached nominal trait lookup before records::lower normalized it"
         ),
@@ -3067,7 +3083,9 @@ fn type_key(t: &Type) -> String {
                 stack.push(Part::Char('>'));
                 stack.push(Part::Ty(elem));
             }
-            Part::Ty(Type::Fn(params, ret, conventions)) => {
+            Part::Ty(Type::Fn(params, ret, conventions, qualifiers)) => {
+                key.push(if qualifiers.pure { 'p' } else { 'e' });
+                key.push(if qualifiers.once { '1' } else { 'n' });
                 key.push_str("fn[");
                 for convention in conventions {
                     key.push(match convention {
@@ -3213,7 +3231,9 @@ fn specialization_type_key(
                 render(elem, lifetimes, key);
                 key.push('>');
             }
-            Type::Fn(parameters, result, conventions) => {
+            Type::Fn(parameters, result, conventions, qualifiers) => {
+                key.push(if qualifiers.pure { 'p' } else { 'e' });
+                key.push(if qualifiers.once { '1' } else { 'n' });
                 key.push_str("fn[");
                 for position in 0..parameters.len() {
                     key.push(match conventions.get(position).copied().unwrap_or_default() {
@@ -3306,6 +3326,7 @@ mod specialization_identity_tests {
                     vec![borrowed(inner)],
                     Box::new(borrowed(inner)),
                     vec![Convention::Borrow],
+                    CallableQualifiers::ORDINARY,
                 ),
             ]
         };
@@ -3315,6 +3336,28 @@ mod specialization_identity_tests {
         let independently_renamed =
             LogicalSpecializationIdentity::from_types(&nested("outer", "inner"));
         assert_eq!(reused_outer_spelling, independently_renamed);
+    }
+
+    #[test]
+    fn specialization_identity_keeps_callable_qualifiers_exact() {
+        let callable = |qualifiers| {
+            Type::Fn(
+                vec![named("Int")],
+                Box::new(named("Bool")),
+                vec![Convention::Let],
+                qualifiers,
+            )
+        };
+        let identities = [
+            CallableQualifiers::new(false, false),
+            CallableQualifiers::new(true, false),
+            CallableQualifiers::new(false, true),
+            CallableQualifiers::new(true, true),
+        ]
+        .into_iter()
+        .map(|qualifiers| LogicalSpecializationIdentity::from_types(&[callable(qualifiers)]))
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(identities.len(), 4);
     }
 }
 
@@ -3350,7 +3393,7 @@ fn discarded_result_msg(method: &str) -> String {
 /// A function's parameter types (None for an unannotated param) and return type,
 /// kept so a generic call's result type can be recovered by binding the return
 /// type variable from an argument — e.g. `list.at(xs: List(a), Int) -> a`.
-type FnSig = (Vec<Option<Type>>, Type, Vec<Convention>);
+type FnSig = (Vec<Option<Type>>, Type, Vec<Convention>, CallableQualifiers);
 
 #[derive(Clone, Debug)]
 struct CtorInfo {
@@ -3366,7 +3409,15 @@ fn build_fn_sigs(items: &[Item]) -> HashMap<String, FnSig> {
             if let Some(ret) = &f.ret {
                 let ptys = f.params.iter().map(|p| p.ty.clone()).collect();
                 let conventions = f.params.iter().map(|p| p.convention).collect();
-                fn_sigs.insert(f.name.clone(), (ptys, ret.clone(), conventions));
+                fn_sigs.insert(
+                    f.name.clone(),
+                    (
+                        ptys,
+                        ret.clone(),
+                        conventions,
+                        CallableQualifiers::new(f.pure, false),
+                    ),
+                );
             }
         }
     }
@@ -3556,11 +3607,12 @@ fn bind_ast_type_vars_inner(
                     })
         }
         (
-            Type::Fn(pattern_params, pattern_ret, pattern_conventions),
-            Type::Fn(params, ret, conventions),
+            Type::Fn(pattern_params, pattern_ret, pattern_conventions, pattern_qualifiers),
+            Type::Fn(params, ret, conventions, qualifiers),
         ) => {
             pattern_params.len() == params.len()
                 && pattern_conventions == conventions
+                && pattern_qualifiers == qualifiers
                 && pattern_params
                     .iter()
                     .zip(params)
@@ -3998,7 +4050,7 @@ fn type_head_key(ty: &Type) -> Option<String> {
         Type::Slice(_) => Some("Slice".into()),
         // (RFC-0081) A dyn head is a trait name, not a nominal head key.
         Type::Dyn(..) => None,
-        Type::Fn(_, _, _) => None,
+        Type::Fn(..) => None,
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: structural record composition reached trait receiver lookup before records::lower normalized it"
         ),
@@ -4254,11 +4306,12 @@ pub(crate) fn monomorphic_impl_method_name(
     // Provided methods lower from their impl signatures. Inherited defaults
     // lower from the trait declaration's unsubstituted signature. Mirror that
     // existing split exactly so this name is the one Mono::specialize emits.
-    let (params, ret) = match implementation
+    let provided = implementation
         .methods
         .iter()
-        .find(|implementation_method| implementation_method.name == method.name)
-    {
+        .find(|implementation_method| implementation_method.name == method.name);
+    let pure = provided.map(|implementation_method| implementation_method.pure).unwrap_or(method.pure);
+    let (params, ret) = match provided {
         Some(implementation_method) => instantiate_provided_trait_method_signature(
             implementation_method,
             method,
@@ -4268,6 +4321,7 @@ pub(crate) fn monomorphic_impl_method_name(
     };
     let template = method_fn(
         base.clone(),
+        pure,
         params,
         ret,
         Block {
@@ -4413,6 +4467,7 @@ mod structured_dispatch_tests {
                 vec![Some(nominal("List", vec![a.clone()]))],
                 nominal("Option", vec![nominal("List", vec![a])]),
                 vec![Convention::Let],
+                CallableQualifiers::ORDINARY,
             ),
         );
         let expression = Expr::Call {
@@ -4440,6 +4495,7 @@ mod structured_dispatch_tests {
                 Vec::new(),
                 nominal("Dict", vec![named_type("k"), named_type("v")]),
                 Vec::new(),
+                CallableQualifiers::ORDINARY,
             ),
         );
         let unbound = declared_expr_type(

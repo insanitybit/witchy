@@ -63,7 +63,7 @@ fn type_contains_explicit_reference_relation(ty: &Type) -> bool {
                     .iter()
                     .any(|(_, field)| type_contains_explicit_reference_relation(field))
         }
-        Type::Fn(_, _, _) => false,
+        Type::Fn(..) => false,
     }
 }
 
@@ -1280,7 +1280,7 @@ fn collect_lambdas<'a>(
     out: &mut Vec<(&'a [Param], &'a Block, Option<&'a Type>)>,
 ) {
     walk_block(block, &mut |expr| {
-        if let Expr::Lambda { params, body, ret } = expr {
+        if let Expr::Lambda { params, body, ret, .. } = expr {
             out.push((params, body, ret.as_ref()));
         }
     });
@@ -1456,7 +1456,7 @@ fn type_mentions_view(ty: &Type) -> bool {
             type_mentions_view(base)
                 || fields.iter().any(|(_, ty)| type_mentions_view(ty))
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             params.iter().any(type_mentions_view) || type_mentions_view(ret)
         }
     }
@@ -1474,7 +1474,7 @@ fn type_has_generic_leaf(ty: &Type) -> bool {
         Type::Qualified(_, inner) => type_has_generic_leaf(inner),
         Type::Slice(inner) => type_has_generic_leaf(inner),
         Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(type_has_generic_leaf),
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             parameters.iter().any(type_has_generic_leaf) || type_has_generic_leaf(result)
         }
         Type::RecordCompose { base, fields } => {
@@ -1646,7 +1646,7 @@ fn authenticated_generic_materializer(
 
 fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError> {
     match ty {
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             if let Some(life) = view_lifetime(ret) {
                 let bound = params
                     .iter()
@@ -4011,7 +4011,7 @@ impl LoanCtx<'_> {
                         .and_then(|ty| borrow_sig_from_fn_type(&ty, self.catalog))
                         .map(|sig| ("projected function".into(), sig))
                 }),
-            Expr::Lambda { params, body, ret } => ret
+            Expr::Lambda { params, body, ret, qualifiers } => ret
                 .as_ref()
                 .and_then(|ret| {
                     let conventions = params.iter().map(|param| param.convention).collect();
@@ -4022,7 +4022,7 @@ impl LoanCtx<'_> {
                         })
                         .collect();
                     borrow_sig_from_fn_type(
-                        &Type::Fn(params, Box::new(ret.clone()), conventions),
+                        &Type::Fn(params, Box::new(ret.clone()), conventions, *qualifiers),
                         self.catalog,
                     )
                 })

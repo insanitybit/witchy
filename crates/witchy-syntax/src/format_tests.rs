@@ -446,6 +446,7 @@
             items: vec![Item::Function(Function {
                 line: 0,
                 public: false,
+                pure: false,
                 comptime_only: false,
                 attributes: Vec::new(),
                 name: "main".into(),
@@ -1011,4 +1012,12 @@ fn test_debug_fmt_comment() {
         let reparsed = crate::parser::parse_module(&out);
         println!("Reparsed: {:?}", reparsed);
     }
+}
+
+#[test]
+fn callable_qualifiers_round_trip_in_canonical_order() {
+    let source = "pure fn keep(callback: pure once fn(Int) -> Int) -> once fn(Int) -> Int:\n    pure once fn(value: Int) -> Int: callback(value)\n";
+    let formatted = reformat(source).expect("qualified callable formatting");
+    assert_eq!(formatted, source);
+    assert_eq!(reformat(&formatted).as_deref(), Some(source));
 }

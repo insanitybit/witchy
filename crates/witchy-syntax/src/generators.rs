@@ -219,7 +219,7 @@ fn type_carries_reference(ty: &Type) -> bool {
             type_carries_reference(base)
                 || fields.iter().any(|(_, field)| type_carries_reference(field))
         }
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             params.iter().any(type_carries_reference) || type_carries_reference(result)
         }
     }
@@ -1202,10 +1202,11 @@ fn rewrite_outer_generator_continues(block: Block, resume_name: &str) -> Block {
                 scrutinee,
                 body: rewrite_block(body, resume_name, loop_depth + 1),
             },
-            Expr::Lambda { params, body, ret } => Expr::Lambda {
+            Expr::Lambda { params, body, ret, qualifiers } => Expr::Lambda {
                 params,
                 body: rewrite_block(body, resume_name, loop_depth + 1),
                 ret,
+                qualifiers,
             },
             other => other,
         }
@@ -2533,6 +2534,7 @@ fn lower_owned_loop_frame(
     let helper = Function {
         line: f.line,
         public: false,
+        pure: false,
         comptime_only: false,
         attributes: helper_attributes,
         name: helper_name.to_string(),
@@ -2574,6 +2576,7 @@ fn lower_owned_loop_frame(
     let wrapper = Function {
         line: f.line,
         public: f.public,
+        pure: false,
         comptime_only: false,
         attributes: wrapper_attributes,
         name: f.name.clone(),

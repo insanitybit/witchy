@@ -64,7 +64,7 @@ comptime:
     emit_item(meta.function_block(true, meta.ident("generated_frozen_identity"), [frozen_param], Some(number), frozen_body))
     let reflected_number = meta.TNamed("Number", [])
     let reflected_list = meta.TNamed("List", [reflected_number])
-    let reflected_callback = meta.TFn([reflected_number], reflected_number, ["let"])
+    let reflected_callback = meta.TFn([reflected_number], reflected_number, ["let"], false, false)
     let reflected_frozen = meta.TQualified("frozen", reflected_number)
     let reflected_input = meta.type_expr(meta.TTuple([reflected_list, reflected_callback, reflected_frozen]))
     let reflected_param = meta.param(meta.ident("reflected"), reflected_input)

@@ -28,7 +28,7 @@ fn contains_concrete_float(ty: &Type) -> bool {
                     .iter()
                     .any(|(_, field)| contains_concrete_float(field))
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             params.iter().any(contains_concrete_float) || contains_concrete_float(ret)
         }
         Type::Qualified(_, inner) => contains_concrete_float(inner),
@@ -49,7 +49,7 @@ fn unsupported_deserialize_shape(ty: &Type) -> Option<&'static str> {
         Type::Tuple(_) => Some("tuple"),
         Type::Slice(_) => Some("slice"),
         Type::RecordCompose { .. } => Some("unresolved structural record composition"),
-        Type::Fn(_, _, _) => Some("function"),
+        Type::Fn(..) => Some("function"),
         Type::Qualified(_, inner) => unsupported_deserialize_shape(inner),
         Type::Dyn(_, _) => Some("existential `dyn` trait"),
     }

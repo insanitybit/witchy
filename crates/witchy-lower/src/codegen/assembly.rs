@@ -128,7 +128,7 @@ fn collect_specialized_layout_requests(
                 collect_specialized_layout_requests(field, resolver, requested);
             }
         }
-        Type::Fn(parameters, result, _) => {
+        Type::Fn(parameters, result, _, _) => {
             for parameter in parameters {
                 collect_specialized_layout_requests(parameter, resolver, requested);
             }
@@ -346,7 +346,7 @@ fn ast_type_mentions_compiler_syntax(ty: &Type) -> bool {
         Type::Dyn(_, args) => args.iter().any(ast_type_mentions_compiler_syntax),
         Type::Slice(inner) => ast_type_mentions_compiler_syntax(inner),
         Type::Tuple(items) => items.iter().any(ast_type_mentions_compiler_syntax),
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             params.iter().any(ast_type_mentions_compiler_syntax)
                 || ast_type_mentions_compiler_syntax(ret)
         }
@@ -398,7 +398,7 @@ fn collect_gc_tuple_type(
                 collect_gc_tuple_type(cg, arg, layouts);
             }
         }
-        Type::Fn(params, ret, _) => {
+        Type::Fn(params, ret, _, _) => {
             for param in params {
                 collect_gc_tuple_type(cg, param, layouts);
             }
@@ -619,7 +619,7 @@ fn type_has_planned_reference(
         return true;
     }
     match ty.unqualified() {
-        Type::Fn(_, _, _) => true,
+        Type::Fn(_, _, _, _) => true,
         // An existential's erased envelope is always a GC reference. Its trait
         // arguments may themselves contain references, but cannot determine
         // whether the envelope needs a typed reference container.
@@ -790,7 +790,7 @@ fn collect_gc_type_plans(
                 );
             }
         }
-        Type::Fn(params, result, _) => {
+        Type::Fn(params, result, _, _) => {
             for param in params {
                 collect_gc_type_plans(
                     cg,
@@ -952,7 +952,7 @@ fn collect_direct_suspension_type(
             }
         }
         Type::Slice(inner) => collect_direct_suspension_type(cg, inner, defs, seen, types),
-        Type::Fn(_, _, _) | Type::Dyn(_, _) => {}
+        Type::Fn(_, _, _, _) | Type::Dyn(_, _) => {}
         Type::RecordCompose { .. } => unreachable!(
             "compiler invariant violated: record composition must be normalized before Wasm suspension planning"
         ),
@@ -2047,7 +2047,7 @@ fn register_module_items(
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call
                 // recovers the result at the right width.
-                if let Some(Type::Fn(_, cret, _)) = resolved_ret {
+                if let Some(Type::Fn(_, cret, _, _)) = resolved_ret {
                     cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
                 }
                 // A function returning a tuple: record its slot value types so a
@@ -2196,7 +2196,7 @@ fn register_module_items(
                 .or(f.ret.as_ref());
             let ret = resolved_ret.map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
             cg.fn_ret.insert(f.name.clone(), ret);
-            if let Some(Type::Fn(_, cret, _)) = resolved_ret {
+            if let Some(Type::Fn(_, cret, _, _)) = resolved_ret {
                 cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
             }
         }
