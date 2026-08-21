@@ -1,10 +1,10 @@
 ---
 rfc: 0138
 title: "Callable delegation, pure functions, and single-use closures"
-status: proposed
+status: implemented
 created: 2026-08-21
 superseded-by:
-tracking: "Design proposal. No syntax or behavior in this RFC is implemented until its acceptance rows carry executable evidence."
+tracking: "Implemented with parser, type/access/runtime identity, purity and affine checking, capability-footprint, interpreter/Wasm parity, Dynamic descriptor, documentation, and adversarial acceptance evidence."
 related:
   - "[0125](0125-core-language-contract.md) (functions and function values)"
   - "[0126](0126-capability-effects-contract.md) (explicit authority and effects)"
