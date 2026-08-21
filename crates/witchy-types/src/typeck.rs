@@ -3767,11 +3767,6 @@ struct Checker {
     /// rebuilding intrinsic may temporarily own the list before the assignment
     /// writes the rebuilt value back to the same borrowed place.
     must_self_update_target: Option<String>,
-    /// Set while checking a closure expression passed directly to an `own`
-    /// parameter. Such a boundary transfers the closure and its by-value
-    /// captures, so live must-consume captures become obligations of the
-    /// closure body instead of forbidden copies.
-    must_capture_transfer: bool,
     /// Mutable locals whose initializer created a checked borrowed shell. This
     /// is deliberately separate from type identity: a borrowed shell received
     /// as an ordinary parameter has no compiler-owned root companions at this
@@ -6989,12 +6984,9 @@ impl Checker {
                         })?;
                     }
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
-                        let saved_capture_transfer = self.must_capture_transfer;
-                        self.must_capture_transfer = conventions.get(index)
-                            == Some(&Convention::Own);
-                        let inferred = self.infer_expected(arg, pty);
-                        self.must_capture_transfer = saved_capture_transfer;
-                        let at = inferred.map_err(|e| in_call_context(&display, e))?;
+                        let at = self
+                            .infer_expected(arg, pty)
+                            .map_err(|e| in_call_context(&display, e))?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
                             &format!("call to function value `{display}`"),
@@ -7193,11 +7185,6 @@ impl Checker {
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
             let typed_vm_callback = call_name == "vm.with_dir" && index == 1;
             let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
-            let saved_capture_transfer = self.must_capture_transfer;
-            self.must_capture_transfer = call_conventions
-                .as_ref()
-                .and_then(|conventions| conventions.get(index))
-                == Some(&Convention::Own);
             let inferred = if typed_vm_callback {
                 let Expr::Var(function) = arg else {
                     unreachable!("the isolated callback contract rejects non-function values")
@@ -7233,7 +7220,6 @@ impl Checker {
             } else {
                 self.infer_expected(arg, param_ty)
             };
-            self.must_capture_transfer = saved_capture_transfer;
             let at = inferred.map_err(|e| in_call_context(&display, e))?;
             let borrowed_list_read = self.is_nested_borrowed_nominal_list(&at)
                 && matches!(
@@ -8168,7 +8154,6 @@ impl Checker {
                 terr(format!("unbound variable `{name}`"))
             }
             Expr::Lambda { params, body, ret } => {
-                let transfers_captures = std::mem::take(&mut self.must_capture_transfer);
                 validate_callable_nominal_lifetimes(
                     "lambda",
                     params,
@@ -8188,20 +8173,12 @@ impl Checker {
                         outer.join("`, `")
                     ));
                 }
-                let mut transferred_captures = Vec::new();
                 for capture in scan.captures() {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
                     if self.is_live_must_binding(&capture) {
-                        if !transfers_captures {
-                            return terr(format!(
-                                "closure capture `{capture}` would copy a live must-consume value into an escaping closure; consume it before creating the closure or pass it through an `own` parameter"
-                            ));
-                        }
-                        self.reject_own_of_borrowed_must(
-                            &capture,
-                            "owned closure capture",
-                        )?;
-                        transferred_captures.push((capture.clone(), captured_ty.clone()));
+                        return terr(format!(
+                            "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
+                        ));
                     }
                     if self
                         .explicit_reference_bindings
@@ -8221,15 +8198,7 @@ impl Checker {
                         ));
                     }
                 }
-                for (capture, _) in &transferred_captures {
-                    self.mark_consumed_binding(capture);
-                    self.consume_must_binding(capture);
-                }
                 self.push();
-                for (capture, ty) in &transferred_captures {
-                    self.define(capture.clone(), ty.clone(), false);
-                    self.mark_must_consume_binding(capture, ty);
-                }
                 let param_tys: Vec<Ty> = params
                     .iter()
                     .map(|p| match &p.ty {
@@ -8316,12 +8285,7 @@ impl Checker {
                         ));
                     }
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
-                        let saved_capture_transfer = self.must_capture_transfer;
-                        self.must_capture_transfer = conventions.get(index)
-                            == Some(&Convention::Own);
-                        let inferred = self.infer_expected(arg, pty);
-                        self.must_capture_transfer = saved_capture_transfer;
-                        let at = inferred?;
+                        let at = self.infer_expected(arg, pty)?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
                             "function-value application",
@@ -10948,7 +10912,6 @@ fn run_check_selected(
             .collect(),
         borrowed_shell_update_target: None,
         must_self_update_target: None,
-        must_capture_transfer: false,
         borrowed_shell_bindings: vec![HashSet::new()],
         explicit_reference_bindings: vec![HashSet::new()],
         frozen_bindings: vec![HashSet::new()],

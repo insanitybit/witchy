@@ -108,12 +108,28 @@
     }
 
     #[test]
-    fn owned_function_values_transfer_must_consume_closure_captures() {
-        let source = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn run(own action: fn() -> Nil):\n    action()\n\nfn main():\n    let invoke = run\n    let ticket = make()\n    invoke(fn(): finish(ticket))\n";
+    fn owned_function_values_cannot_erase_must_consume_closure_captures() {
+        let prefix = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn run(own action: fn() -> Nil):\n    action()\n\n";
+        let cases = [
+            format!(
+                "{prefix}fn main():\n    let ticket = make()\n    run(fn(): finish(ticket))\n"
+            ),
+            format!(
+                "{prefix}fn main():\n    let invoke = run\n    let ticket = make()\n    invoke(fn(): finish(ticket))\n"
+            ),
+        ];
 
-        check_source(source).expect(
-            "an own higher-order boundary transfers a closure and its must-consume captures",
-        );
+        for source in cases {
+            let error = check_source(&source).expect_err(
+                "an opaque callable may be dropped, so `own fn` cannot hide a must-consume capture",
+            );
+            assert!(
+                error.message.contains(
+                    "closure environment carries must-consume `ticket`; this callable type would erase that obligation"
+                ),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]
