@@ -373,7 +373,7 @@
         .expect("pure callable should widen to an ordinary reusable callable");
 
         let narrowing = check_source(
-            "pure fn clean(x: Int) -> Int:\n    x\n\nfn main() -> pure fn(Int) -> Int:\n    let widened: fn(Int) -> Int = clean\n    let narrowed: pure fn(Int) -> Int = widened\n    narrowed\n",
+            "pure fn clean(x: Int) -> Int:\n    x\n\nfn run() -> pure fn(Int) -> Int:\n    let widened: fn(Int) -> Int = clean\n    let narrowed: pure fn(Int) -> Int = widened\n    narrowed\n",
         )
         .expect_err("an ordinary alias must not narrow back to pure");
         assert!(narrowing.message.contains("value disagrees"), "{narrowing:?}");
@@ -393,7 +393,7 @@
         .expect("mixed-purity branch should join at ordinary callable");
 
         let cardinality = check_source(
-            "pure fn clean(x: Int) -> Int:\n    x\n\nfn choose(flag: Bool, once_callback: once fn(Int) -> Int) -> fn(Int) -> Int:\n    let callback = if flag: clean else: once_callback\n    callback\n",
+            "pure fn clean(x: Int) -> Int:\n    x\n\nfn choose(flag: Bool, once_callback: once fn(Int) -> Int) -> fn(Int) -> Int:\n    let callback = if flag: clean else: move once_callback\n    callback\n",
         )
         .expect_err("reusable and once callables have no branch LUB");
         assert!(
@@ -404,8 +404,6 @@
 
     #[test]
     fn type_table_retains_the_full_callable_signature() {
-        use witchy_syntax::ast::Type;
-
         let module = witchy_syntax::parser::parse_module(
             "pure fn inspect(let text: String) -> Int:\n    0\n",
         )

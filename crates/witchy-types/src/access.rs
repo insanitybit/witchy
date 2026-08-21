@@ -1467,6 +1467,43 @@ impl AccessSignature {
         Ok(())
     }
 
+    /// Verify a directed callable conversion. The ordinary type checker permits
+    /// one callable-identity relaxation: a reusable or once `pure fn` may widen
+    /// to the corresponding ordinary callable. Every ownership, access, nested
+    /// type, cardinality, and borrow-relation component remains exact.
+    fn verify_directed(&self, expected: &Self) -> Result<(), AccessMismatch> {
+        let actual_contract = self.callable_contract;
+        let expected_contract = expected.callable_contract;
+        let purity_widening = actual_contract.once == expected_contract.once
+            && actual_contract.pure
+            && !expected_contract.pure;
+        if actual_contract != expected_contract && !purity_widening {
+            return Err(AccessMismatch::new(None, AccessMismatchKind::TypeShape));
+        }
+        let mut actual = self.clone();
+        actual.callable_contract = expected_contract;
+        actual.verify_exact(expected)
+    }
+
+    /// Join two branch callable identities. Purity is the sole widening axis:
+    /// a branch is pure only when both inputs are pure. Invocation cardinality
+    /// and all access/ownership relations must agree exactly.
+    fn join(&self, other: &Self) -> Result<Self, AccessMismatch> {
+        if self.callable_contract.once != other.callable_contract.once {
+            return Err(AccessMismatch::new(None, AccessMismatchKind::TypeShape));
+        }
+        let contract = CallableQualifiers::new(
+            self.callable_contract.pure && other.callable_contract.pure,
+            self.callable_contract.once,
+        );
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.callable_contract = contract;
+        right.callable_contract = contract;
+        left.verify_exact(&right)?;
+        Ok(left)
+    }
+
     /// Compare the canonical output-slot to input-slot graph independently of
     /// surface type specialization. The type checker already owns surface type
     /// compatibility at callable-value sites; this preserves the relation
@@ -2476,6 +2513,9 @@ impl AccessFlow {
         }
         match (self, expected) {
             (Self::Unknown, _) => Ok(()),
+            (Self::Callable(actual), Self::Callable(expected)) => actual
+                .verify_directed(expected)
+                .map_err(|mismatch| AccessFlowError::mismatch(context, mismatch)),
             (
                 Self::Named { name: actual_name, arguments: actual, dynamic: true },
                 Self::Named { name: expected_name, arguments: expected, dynamic: true },
@@ -2530,6 +2570,12 @@ impl AccessFlow {
         }
         if matches!(other, Self::Unknown) {
             return Ok(self.clone());
+        }
+        if let (Self::Callable(left), Self::Callable(right)) = (self, other) {
+            return left
+                .join(right)
+                .map(Self::Callable)
+                .map_err(|mismatch| AccessFlowError::mismatch(context, mismatch));
         }
         if let (
             Self::Named { name: left_name, arguments: left, dynamic: left_dynamic },
