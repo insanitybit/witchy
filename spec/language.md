@@ -888,7 +888,7 @@ change observable behavior; they only let the checker enforce, and a library
 | `frozen T` | deeply immutable - sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
 | `unique T` | the sole reference - may be mutated in place and returned as `unique` |
 | `local unique T` | unique within this call only - may be mutated but **may not escape** (returning it's a check-time error) |
-| `View(T, 'a)` | a read-only view whose lifetime is tied to an input `let('a) T`; available in `mode opt` |
+| `&'a T` / `&'a mut T` | shared / exclusive reference with explicit lifetime `'a`; available in `mode opt` ([RFC-0122](../rfcs/0122-uniform-borrow-relations.md)) |
 
 ```witchy
 import show
@@ -924,10 +924,9 @@ parameter conventions, uniqueness qualifiers, write-back ownership outputs,
 and borrowed-view owner relations; an ascription that erases those contracts is
 rejected.
 
-### Borrowed views
+### Borrowed views and reference types
 
-A `mode opt` function may return a read-only view tied to one or more borrowed
-inputs. Every returned lifetime must be bound by an input of the same name:
+In `mode opt` ([RFC-0122](../rfcs/0122-uniform-borrow-relations.md)), functions may accept and return first-class shared (`&'a T`) or exclusive mutable (`&'a mut T`) references tied to an explicit lifetime `'a`. Legacy `let('a) T` parameter bounds and `View(T, 'a)` return types remain supported through the migration compatibility path:
 
 ```witchy
 mode opt

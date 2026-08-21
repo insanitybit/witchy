@@ -6,8 +6,8 @@
 // a dependency wrote it. `serve` holds the Net; handlers never do.
 // Run: witchy --net 127.0.0.1:8080 examples/serve_api/src/serve_api.witchy
 
+import reflect
 from http import Request, Response
-from json import Json
 from server import Router
 
 // A request logger (a tower Layer: fn(Handler) -> Handler). The inner closure
@@ -21,9 +21,9 @@ fn logging(console: Console) -> fn(fn(Request) -> Response) -> fn(Request) -> Re
 fn home(req: Request) -> Response:
     server.html(200, "<h1>witchy web</h1>")
 
-// Returns a JSON document built with the std `json` module.
+// Returns a JSON document serialized from an anonymous struct via reflection.
 fn greet(req: Request) -> Response:
-    server.json_value(200, JsonObject([("hello", JsonString(server.param_or(req, "name", "")))]))
+    server.send(200, .{hello: server.param_or(req, "name", "")})
 
 fn main(console: Console, net: Net):
     let app = server.router().get("/", home).get("/hello/:name", greet).layer(logging(console))

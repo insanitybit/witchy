@@ -47,6 +47,7 @@
   - [Dates, Times, and Durations](cookbook-time.md)
   - [Reading and Writing Files](cookbook-files.md)
   - [Working with JSON](cookbook-json.md)
+  - [Web APIs and Services](cookbook-web.md)
   - [Hashing and Signatures](cookbook-crypto.md)
   - [Bytes and Binary Data](cookbook-bytes.md)
   - [Iterator Pipelines](cookbook-iterators.md)

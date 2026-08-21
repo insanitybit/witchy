@@ -1546,7 +1546,8 @@
     ],
     "output": [
       "{\"x\":3,\"y\":4}",
-      "[1,2,3]"
+      "[1,2,3]",
+      "{\"count\":42,\"status\":\"ok\"}"
     ],
     "runnable": true
   },
@@ -1713,6 +1714,34 @@
     ],
     "output": [],
     "runnable": false
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-web.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "code: 200, body: {\"greeting\":\"Hello, witchy!\"}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/cookbook-web.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [
+      "request: GET /health"
+    ],
+    "runnable": true
   },
   {
     "block": 1,

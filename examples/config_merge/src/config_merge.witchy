@@ -5,13 +5,14 @@
 // the compiled WASM backend.
 // Run: witchy examples/config_merge/src/config_merge.witchy
 
+import reflect
 from json import Json
 
 fn base() -> Json:
-    JsonObject([("host", JsonString("localhost")), ("port", JsonInt(8080)), ("debug", JsonBool(true))])
+    Json.from(.{host: "localhost", port: 8080, debug: true})
 
 fn production() -> Json:
-    JsonObject([("host", JsonString("example.com")), ("port", JsonInt(443)), ("workers", JsonInt(8))])
+    Json.from(.{host: "example.com", port: 443, workers: 8})
 
 fn main(console: Console):
     // `production` wins on the keys it sets (host, port) and adds `workers`;

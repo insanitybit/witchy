@@ -30,15 +30,19 @@ fn main(console: Console):
     // Any Reflect type stringifies straight to JSON.
     console.print(json.stringify(p))
     console.print(json.stringify([1, 2, 3]))
+    // Anonymous structs serialize directly without declaring a type.
+    console.print(json.stringify(.{count: 42, status: "ok"}))
 ```
 
 ```text
 {"x":3,"y":4}
 [1,2,3]
+{"count":42,"status":"ok"}
 ```
 
-`json.from_value(x)` does the same but returns a `Json` value instead of a
-string, when you want to embed it in a larger structure before encoding.
+`json.from_value(x)` (or `Json.from(x)` / `x.into()`) turns any reflectable
+value into a `Json` tree instead of a string, useful when embedding ad-hoc values
+into a larger document or merging configurations before encoding.
 
 ## Decoding: parse then navigate
 
