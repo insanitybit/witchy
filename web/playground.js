@@ -47,7 +47,7 @@ fn main(console: Console):
 import list
 
 // No authority value enters this generator, so this example only computes an infinite stream,
-// taken finitely. `pure` does not yet qualify generator declarations.
+// taken finitely. The pure qualifier does not yet apply to generator declarations.
 gen fn fibs() -> Iter(Int):
     var a = 0
     var b = 1

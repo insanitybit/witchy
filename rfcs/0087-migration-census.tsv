@@ -3,12 +3,12 @@ benchmarks/dict_count.witchy	5	auxiliary-result-discard	dict.insert	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
 examples/maze/src/maze.witchy	83	auxiliary-result-discard	dict.insert	-	-
 examples/wordcount/src/wordcount.witchy	9	auxiliary-result-discard	dict.insert	-	-
-projects/glamour/src/glamour.witchy	573	expression-position-mutator	dict.insert__String__Int	-	-
-projects/glamour/src/glamour.witchy	579	expression-position-mutator	dict.insert__String__Int	-	-
-projects/glamour/src/glamour.witchy	490	auxiliary-result-discard	dict.insert	-	-
-projects/glamour/src/glamour.witchy	498	auxiliary-result-discard	dict.insert	-	-
-projects/glamour/src/glamour.witchy	541	auxiliary-result-discard	dict.insert	-	-
-projects/glamour/src/glamour.witchy	543	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	574	expression-position-mutator	dict.insert__String__Int	-	-
+projects/glamour/src/glamour.witchy	580	expression-position-mutator	dict.insert__String__Int	-	-
+projects/glamour/src/glamour.witchy	491	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	499	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	542	auxiliary-result-discard	dict.insert	-	-
+projects/glamour/src/glamour.witchy	544	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
 std/dict.witchy	97	auxiliary-result-discard	dict.remove	-	-
@@ -30,8 +30,8 @@ book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__
 spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	296
-markdown-blocks	231
-checked	527
+markdown-blocks	235
+checked	531
 rejected	0
 var-declarations	42
 resolved-var-calls	741

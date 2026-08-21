@@ -5,5 +5,5 @@
 name = "stats"
 version = "0.1.0"
 source = "path:stats"
-hash = "sha256:792dfd90c97d278045085ffc2b9e206d03b98bfc46a606cb756b2be1c6adbebf"
+hash = "sha256:c5ff29967e6f679d39ef0ae2ce06c95406dfcba2db1aef4ad96fe41942f69e59"
 runtime_footprint = []

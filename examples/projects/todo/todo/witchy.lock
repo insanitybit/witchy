@@ -5,5 +5,5 @@
 name = "tasklib"
 version = "0.1.0"
 source = "path:tasklib"
-hash = "sha256:808b48377b2b16aca32b747c66393485334d7af4a8a12435be0f2cb8b30927d5"
+hash = "sha256:a8bccb398e49a43c5241b733d198e60c1f21c6b713f764d0068bdfdba7f58300"
 runtime_footprint = []

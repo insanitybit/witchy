@@ -5,5 +5,5 @@
 name = "money"
 version = "0.1.0"
 source = "path:money"
-hash = "sha256:d7ca323632bc0fcdd15d4865ce8498b5a716af7d3b0a4dcba54be9363c4931f3"
+hash = "sha256:2af4fabfafb72bd17e8c40f03320a84667a062c790003c90ab39ed0eef529284"
 runtime_footprint = []

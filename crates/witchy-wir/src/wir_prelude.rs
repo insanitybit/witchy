@@ -336,7 +336,7 @@ pub const WITCHY_ABI_VERSION: u32 = 9;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
-/// which are pure mechanics, and which are runtime/toolchain plumbing.
+/// which are non-authority mechanics, and which are runtime/toolchain plumbing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiImportClass {
     PureInfrastructure,
@@ -349,7 +349,7 @@ pub enum AbiImportClass {
 impl AbiImportClass {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::PureInfrastructure => "pure infrastructure",
+            Self::PureInfrastructure => "non-authority infrastructure",
             Self::CapabilityAuthority => "capability authority",
             Self::LaunchInput => "launch input",
             Self::InternalService => "internal/toolchain service",
