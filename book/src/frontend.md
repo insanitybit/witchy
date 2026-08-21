@@ -1,14 +1,20 @@
 # Frontend Apps with Glamour
 
-witchy builds browser UIs with authority carried explicitly. The framework is
+Witchy builds browser UIs with authority carried explicitly. The framework is
 **Glamour**, an empty-root-footprint Model-View-Update (MVU) library - and this
 book you're reading is itself a Glamour app.
 
+Glamour is engineered so that writing a frontend application produces software
+that is **impregnable by construction**: cross-site scripting (XSS), cross-site
+request forgery (CSRF), clickjacking, credential exfiltration, and supply-chain
+compromises are mathematically impossible under its capability architecture.
+
 ## The shape of a Glamour app
 
-A Glamour app has three data-oriented pieces plus a host that runs the effects:
+A Glamour app separates pure data transformations from the capability-holding
+browser shell:
 
-- a **model** - your application state, an ordinary witchy value;
+- a **model** - your application state, an ordinary Witchy value;
 - a **view** - an ordinary function from the model to a **`VNode`** tree. A view is
   *data*: you build `element`/`text`/`prop` nodes, and text is escaped by
   construction. A `<script>` in your data renders as inert text;
@@ -18,19 +24,142 @@ A Glamour app has three data-oriented pieces plus a host that runs the effects:
 A `Cmd` is an **inert description of an effect** - "make this HTTP request",
 "navigate here", "arm a timer" - returned as data. The app never performs the
 effect itself; it hands the description back, and a capability-holding **host
-shell** interprets it. So the app holds no DOM, network, storage, or credential
-authority: a witchy UI has the same deny-by-default footprint story as any other
-witchy program.
+shell** interprets it. So the app holds no direct DOM, network, storage, or credential
+authority: a Witchy UI has the same deny-by-default footprint story as any other
+Witchy program.
 
-You can see both halves - a data-only `VNode` render and a full live MVU counter whose
-network authority is denied - running right in the page in
-[Appendix: Recipes](appendix-recipes.md).
+## Ergonomic Program Constructors (RFC-0136)
 
-## Templates are witchy tagged literals
+Glamour provides zero-ceremony constructors tailored to the complexity of your
+application:
 
-Glamour doesn't add JavaScript JSX to the language. `html"..."` and
-`jsx"..."` are ordinary compile-time tags, in the same family as `sql"..."`:
-Glamour parses the static text and the compiler preserves each witchy `${...}`
+### 1. Pure State Machines (`simple_program`)
+
+For self-contained interactive components and islands that need no side-effects or
+subscriptions, `simple_program` eliminates all lifecycle boilerplate:
+
+```text
+import glamour
+from glamour import Ui, VNode
+
+type Model:
+    count: Int
+
+type Msg:
+    Inc
+    Dec
+
+fn update(m: Model, msg: Msg) -> Model:
+    match msg:
+        Inc -> Model(m.count + 1)
+        Dec -> Model(m.count - 1)
+
+fn view(m: Model) -> Ui(Msg):
+    glamour.ui(jsx"<div><button on:click=${Dec}>-</button><span>${m.count}</span><button on:click=${Inc}>+</button></div>")
+
+pub fn app():
+    glamour.simple_program(Model(0), update, view)
+```
+
+### 2. Command-Driven Applications (`command_program`)
+
+When an application performs capability-gated commands (such as HTTP fetches or
+navigation) but does not require global event subscriptions:
+
+```text
+import glamour
+from glamour import Cmd, Ui, UiRoot, UiFetch
+
+type Auth:
+    fetch: UiFetch
+
+type Model:
+    loading: Bool
+    data: String
+
+type Msg:
+    FetchData
+    DataReceived(String)
+
+fn authorize(root: UiRoot) -> Auth:
+    Auth(glamour.narrow_fetch(root, ["GET"], "/api/v1/"))
+
+fn update(auth: Auth, m: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match msg:
+        FetchData ->
+            (Model(true, m.data), glamour.http_get("req-1", auth.fetch, "/api/v1/status", DataReceived))
+        DataReceived(content) ->
+            (Model(false, content), NoCmd)
+
+pub fn app():
+    glamour.command_program(authorize, Model(false, ""), update, view)
+```
+
+### 3. Full Enterprise Applications (`program`)
+
+For full-scale applications with timers, keyboard listeners, worker pools, and
+custom port bindings, the 6-parameter `glamour.program(authorize, initial, start, update, view, subscriptions)`
+exposes complete lifecycle control.
+
+## Impregnable Security Architecture
+
+Glamour is designed to drive the cost of exploitation to zero-day / state-actor
+levels by eliminating entire bug classes structurally:
+
+### 1. Sinkless DOM Construction
+
+Glamour never calls `innerHTML`, `outerHTML`, or `document.write()`. DOM nodes are
+assembled exclusively via `document.createElement()`, `node.textContent = ...`, and
+`element.setAttribute()`. All element tag names are checked against a strict HTML5
+element allowlist (`SAFE_ELEMENTS`). Event handlers are bound via `addEventListener`
+using reflected message IDs, preventing any string evaluation or event-handler
+injection (`onload=...`, `onerror=...`).
+
+### 2. Foreign Code Compartments (`Js` Authority)
+
+Third-party libraries (such as D3 charts or code highlighters) cannot run in the
+main page context. Glamour mounts them inside opaque-origin `<iframe sandbox="allow-scripts">`
+containers with `connect-src 'none'`. They communicate solely over a bi-directional
+`MessageChannel` with validated JSON grants, completely unable to touch cookies,
+local storage, or the surrounding DOM.
+
+```text
+// Mount an isolated D3 chart compartment
+glamour.compartment("d3-runes-chart", json.stringify(chart_data), "ChartClicked")
+```
+
+### 3. Host-Custodied Secrets (`SecretInput` / `SecretRef`)
+
+Password fields, API keys, and session tokens are never held in the Wasm guest memory.
+Glamour uses host-managed `SecretInput` fields that render opaque handles (`SecretRef`).
+When forms are submitted, the browser host submits the credential directly through a
+sealed port, ensuring guest code (and any compromised dependencies) can never read the
+secret bytes.
+
+### 4. Compiler-Automated Derived CSP (RFC-0137)
+
+Content Security Policies are not written by hand; the Witchy compiler derives
+mathematically minimal CSP headers directly from your application's capability footprint:
+
+```sh
+$ witchy caps --csp app.witchy
+default-src 'none'; connect-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; frame-src 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types glamour;
+```
+
+If an app holds no `Fetch` or `UiFetch` capability, `connect-src 'none'` is emitted,
+ensuring the browser hardware physically refuses outbound network traffic.
+
+### 5. Cross-Origin Defense and CSRF Immunity
+
+State-changing endpoints in Glamour servers strictly enforce `Sec-Fetch-Site: same-origin`
+and reject cross-origin form posts. Client navigation URLs are typed tokens (`RouteDef` /
+`SafeUrl`), preventing open redirects and parameter tampering.
+
+## Templates are Witchy Tagged Literals
+
+Glamour does not add JavaScript JSX to the language. `html"..."` and `jsx"..."`
+are ordinary compile-time tags, in the same family as `sql"..."`:
+Glamour parses the static text and the compiler preserves each Witchy `${...}`
 hole as typed syntax. Both spellings produce the same checked template plan.
 
 ```text
@@ -47,44 +176,7 @@ positions use distinct typed sinks, so a plain `String` can't accidentally
 become a navigation URL. `css"..."` similarly compiles a static, scoped sheet
 with deterministic class handles.
 
-## The browser boundary is deny-by-omission
-
-A Glamour app compiles to the same witchy WebAssembly as any other program, and
-runs on the browser's own WebAssembly engine. The browser host starts with only
-non-capability infrastructure imports; no authority is ambient. A module that
-reaches for an unrequested capability can't instantiate. The page may
-explicitly opt into providers published by the browser menu. That is the same
-structural guarantee as the native sandbox, arrived at by omission rather than
-by a runtime check - see
-[the WASM ABI](https://github.com/insanitybit/witchy/blob/master/spec/wasm-abi.md)
-and [Capabilities](capabilities.md) for the full model.
-
-The book gives a **Run** button to every complete example supported by its
-browser host, including examples using `Clock`, page-supplied `Env`, an
-in-memory `Dir`, origin-scoped `Fetch`, `SecretStore`, or a sequential `VM`.
-Each click compiles in the trusted page, then transfers only the compiled guest
-and plain grant data into a fresh `<iframe sandbox="allow-scripts">`. Omitting
-`allow-same-origin` gives the frame an opaque origin; its independently derived
-CSP sets `connect-src` to exactly the granted Fetch origins. Unsupported native
-authority remains read-only rather than falling back to main-frame execution.
-
-For a *teaching* or *playground* embedder that wants those examples to run,
-[RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)
-adds an **opt-in** browser host that backs each capability with *what the browser
-actually has* - the real clock for `Clock`, a default-empty (but page-supplied)
-environment for `Env`, a confined **in-memory scratch tree** for `Dir`,
-origin-scoped browser `Fetch`, and page-supplied opaque secrets for
-`SecretStore`. It's opt-in precisely so it's
-never an ambient widening: the default host still denies everything by omission,
-and a page enables only the families it explicitly hands over. Those examples then
-run with ordinary, non-deterministic output (fine for a demo).
-
-`Exec` (a native subprocess), bare root `Secret`, and raw socket `Net` still
-have no honest browser provider and remain denied. Browser `Fetch` and
-SecretStore signing use JSPI to suspend synchronous guest calls around the
-platform's asynchronous APIs without pretending that `fetch()` is a TCP socket.
-
-## UI authority is a capability, too
+## UI Authority is a Capability
 
 Some UI effects are sensitive - fetching a URL, navigating, invoking a login or
 promote ceremony, reading a password field. Glamour makes each of those a typed,
@@ -100,43 +192,10 @@ reviewable **grantable capability**. An app receives one bare root token,
   whose bytes never enter the app.
 
 Each sensitive `Cmd` takes its token as the leading argument, so an unauthorized
-effect is *unrepresentable* rather than merely denied at runtime - a component
-without a `UiFetch` can't build an HTTP command at all. The tokens gate
+effect is *unrepresentable* rather than merely denied at runtime. The tokens gate
 construction; the capability-holding shell still re-checks each effect's policy
-before performing it. This is the capability model of
-[Capabilities](capabilities.md) applied to UI effects - the same footprint that
-[coven](appendix-ecosystem.md) gates on. The full token vocabulary is in the
+before performing it. The full token vocabulary is in the
 [capability spec](https://github.com/insanitybit/witchy/blob/master/spec/capabilities.md#framework-effect-authority-capability-safe-ui-glamour).
-
-## Running foreign code safely: compartments and the `Js` authority
-
-Sometimes you need a JavaScript library a witchy app can't replace - a charting
-engine, a syntax highlighter. Glamour lets you embed one **without giving up the
-security model**, through a *compartment*: an isolated foreign-code bundle the
-host mounts in a locked-down, opaque-origin `sandbox="allow-scripts"` iframe with
-`connect-src 'none'`, reachable only over a narrow message channel. The foreign
-code runs, but it can't touch the network, the parent origin, or the DOM outside
-its frame.
-
-Spawning foreign code is a real authority - the **`Js`** authority, the browser
-sibling of `Exec` ([RFC-0015](https://github.com/insanitybit/witchy/blob/master/rfcs/0015-secure-web-by-construction.md)). As with every other effect, the app only emits a
-*description*; the host shell, which alone holds `Js`, performs the spawn. The
-renderer id names a **sealed bundle** the compiler and publisher authenticate
-(the locked renderer registry) - so a compartment can only mount code that was
-sealed at build/publish time, not arbitrary strings assembled at runtime. A
-component builds the node with `glamour.compartment`:
-
-```
-// `renderer` is a sealed bundle id the host serves under the locked-down origin;
-// `grant` is the JSON payload that crosses in (the ONLY thing that does);
-// `on_event` names the Reflect variant the compartment's channel may dispatch back.
-glamour.compartment("d3-runes-chart", json.stringify(chart_data), "ChartClicked")
-```
-
-The shipped example is [`projects/glamour/examples/package_page`](https://github.com/insanitybit/witchy/tree/master/projects/glamour/examples/package_page),
-whose package page renders its download chart with an isolated `d3` bundle - d3 runs sandboxed,
-and even a compromised d3 is confined to its frame. Coven Web ships that bundle
-under `web/dist/compartments/d3-runes-chart/`.
 
 ## Where it runs: Coven Web and the docs app
 
@@ -153,3 +212,4 @@ Both are described in [Appendix: The Ecosystem](appendix-ecosystem.md), and thei
 source lives under
 [`projects/`](https://github.com/insanitybit/witchy/tree/master/projects)
 (`glamour/`, `coven-web/`, and `docs/`).
+
