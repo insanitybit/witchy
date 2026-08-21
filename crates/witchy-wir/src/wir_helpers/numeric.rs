@@ -43,13 +43,32 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
     }
     then_zero.push(N::Push(getl("res")));
     // Count digits of `t` (mutated to 0): `while t != 0 { ndigits++; t /= 10 }`.
-    let count_loop = N::Block {
-        label: "b1".into(),
+    let count_loop_32 = N::Block {
+        label: "b1_32".into(),
         result: None,
         body: vec![N::Loop {
-            label: "l1".into(),
+            label: "l1_32".into(),
             body: vec![
-                N::Br { target: "b1".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
+                N::Br { target: "b1_32".into(), cond: Some(bin(BinOp::Eq, Kind::I32, getl("t32"), i32c(0))) },
+                N::SetLocal {
+                    local: "ndigits".into(),
+                    value: bin(BinOp::Add, Kind::I32, getl("ndigits"), i32c(1)),
+                },
+                N::SetLocal {
+                    local: "t32".into(),
+                    value: bin(BinOp::DivU, Kind::I32, getl("t32"), i32c(10)),
+                },
+                N::Br { target: "l1_32".into(), cond: None },
+            ],
+        }],
+    };
+    let count_loop_64 = N::Block {
+        label: "b1_64".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l1_64".into(),
+            body: vec![
+                N::Br { target: "b1_64".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
                 N::SetLocal {
                     local: "ndigits".into(),
                     value: bin(BinOp::Add, Kind::I32, getl("ndigits"), i32c(1)),
@@ -58,18 +77,49 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
                     local: "t".into(),
                     value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)),
                 },
-                N::Br { target: "l1".into(), cond: None },
+                N::Br { target: "l1_64".into(), cond: None },
             ],
         }],
     };
-    // Write digits back-to-front at `p` (decremented): `store8(p, t%10 + '0')`.
-    let write_loop = N::Block {
-        label: "b2".into(),
+    // Fast 32-bit digit writing loop: t32 / 10 and digit = t32 - next * 10
+    let write_loop_32 = N::Block {
+        label: "b2_32".into(),
         result: None,
         body: vec![N::Loop {
-            label: "l2".into(),
+            label: "l2_32".into(),
             body: vec![
-                N::Br { target: "b2".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
+                N::Br { target: "b2_32".into(), cond: Some(bin(BinOp::Eq, Kind::I32, getl("t32"), i32c(0))) },
+                N::SetLocal {
+                    local: "next32".into(),
+                    value: bin(BinOp::DivU, Kind::I32, getl("t32"), i32c(10)),
+                },
+                N::Store8 {
+                    ptr: getl("p"),
+                    value: bin(
+                        BinOp::Add,
+                        Kind::I32,
+                        bin(BinOp::Sub, Kind::I32, getl("t32"), bin(BinOp::Mul, Kind::I32, getl("next32"), i32c(10))),
+                        i32c(48),
+                    ),
+                    offset: 0,
+                },
+                N::SetLocal {
+                    local: "p".into(),
+                    value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)),
+                },
+                N::SetLocal { local: "t32".into(), value: getl("next32") },
+                N::Br { target: "l2_32".into(), cond: None },
+            ],
+        }],
+    };
+    // Fallback 64-bit digit writing loop
+    let write_loop_64 = N::Block {
+        label: "b2_64".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l2_64".into(),
+            body: vec![
+                N::Br { target: "b2_64".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
                 N::Store8 {
                     ptr: getl("p"),
                     value: bin(
@@ -92,7 +142,7 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
                     local: "t".into(),
                     value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)),
                 },
-                N::Br { target: "l2".into(), cond: None },
+                N::Br { target: "l2_64".into(), cond: None },
             ],
         }],
     };
@@ -109,8 +159,18 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             })),
         },
         N::SetLocal { local: "ndigits".into(), value: i32c(0) },
-        N::SetLocal { local: "t".into(), value: getl("mag") },
-        count_loop,
+        N::If {
+            cond: bin(BinOp::LeU, Kind::I64, getl("mag"), i64c(0xFFFFFFFF)),
+            then_: vec![
+                N::SetLocal { local: "t32".into(), value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("mag")) } },
+                count_loop_32,
+            ],
+            els: vec![
+                N::SetLocal { local: "t".into(), value: getl("mag") },
+                count_loop_64,
+            ],
+            result: None,
+        },
         N::SetLocal {
             local: "len".into(),
             value: bin(BinOp::Add, Kind::I32, getl("ndigits"), getl("neg")),
@@ -136,15 +196,24 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
                 i32c(1),
             ),
         },
-        N::SetLocal { local: "t".into(), value: getl("mag") },
-        write_loop,
+        N::If {
+            cond: bin(BinOp::LeU, Kind::I64, getl("mag"), i64c(0xFFFFFFFF)),
+            then_: vec![
+                N::SetLocal { local: "t32".into(), value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("mag")) } },
+                write_loop_32,
+            ],
+            els: vec![
+                N::SetLocal { local: "t".into(), value: getl("mag") },
+                write_loop_64,
+            ],
+            result: None,
+        },
     ];
-    // object end = res + 4 + len; rebuilt per use (WirExpr is moved, not cloned).
-    let str_end = || {
-        bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len"))
-    };
     if checked {
-        else_nonzero.push(reg(getl("res"), str_end()));
+        else_nonzero.push(reg(
+            getl("res"),
+            bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len")),
+        ));
     }
     else_nonzero.push(N::Push(getl("res")));
     WirFunc {
@@ -159,6 +228,8 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             WirLocal { name: "res".into(), ty: WirTy::Bool },
             WirLocal { name: "p".into(), ty: WirTy::Bool },
             WirLocal { name: "neg".into(), ty: WirTy::Bool },
+            WirLocal { name: "t32".into(), ty: WirTy::Bool },
+            WirLocal { name: "next32".into(), ty: WirTy::Bool },
         ],
         body: vec![N::If {
             cond: bin(BinOp::Eq, Kind::I64, getl("n"), i64c(0)),

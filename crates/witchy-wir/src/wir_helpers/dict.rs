@@ -784,15 +784,29 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
 }
 
 /// `$dict_update_cap(d, k, default, mode, clos, cap) -> (i32, i32)` — the in-place
-/// upsert: apply the updater closure to the current value (or `default`) and
-/// reinsert via `$dict_insert_cap` (so an owned dict mutates in place). The
-/// closure call mirrors the non-cap `$dict_update`; the (ptr, cap) pair from
-/// `$dict_insert_cap` is captured into locals and re-pushed (WIR can't tail a
-/// multi-value call). Calls `$dict_get_or` + `$dict_insert_cap`; uses the table.
+/// upsert: single-pass lookup via `$dict_find`. On an existing key with owned
+/// capacity (`found >= 0 && cap > 0`), reads the value in place, invokes the
+/// updater closure, and updates the value slot directly without re-hashing or
+/// re-probing the table (adapting the `hashbrown` Entry pattern). If absent or
+/// unowned, computes the new value and delegates once to `$dict_insert_cap`.
 pub(crate) fn dict_update_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
+    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    let call_clos = |arg: E| E::CallIndirect {
+        signature: gc_slot_closure_signature(1, 1),
+        args: vec![getl("clos"), arg],
+        index: Box::new(E::StructGet {
+            struct_id: 0,
+            field: CLOSURE_CODE_FIELD,
+            base: Box::new(getl("clos")),
+        }),
+    };
     WirFunc {
         name: "dict_update_cap".into(),
         params: vec![
@@ -805,33 +819,43 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
         ],
         ret: vec![WirTy::Bool, WirTy::Bool],
         locals: vec![
+            WirLocal { name: "found".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Int },
             WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
             WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal {
-                local: "new".into(),
-                value: E::CallIndirect {
-                    signature: gc_slot_closure_signature(1, 1),
-                    args: vec![
-                        getl("clos"),
-                        E::Call {
-                            func: "dict_get_or".into(),
-                            args: vec![getl("d"), getl("k"), getl("default"), getl("mode")],
-                        },
-                    ],
-                    index: Box::new(E::StructGet {
-                        struct_id: 0,
-                        field: CLOSURE_CODE_FIELD,
-                        base: Box::new(getl("clos")),
-                    }),
-                },
-            },
-            N::CallStoreMulti {
-                func: "dict_insert_cap".into(),
-                args: vec![getl("d"), getl("k"), getl("new"), getl("mode"), getl("cap")],
-                dests: vec!["ret_ptr".into(), "ret_cap".into()],
+            setl("found", E::Call {
+                func: "dict_find".into(),
+                args: vec![getl("d"), getl("k"), getl("mode")],
+            }),
+            N::If {
+                cond: b(BinOp::And, b(BinOp::Ge, getl("found"), i32c(0)), b(BinOp::Gt, getl("cap"), i32c(0))),
+                then_: vec![
+                    setl("new", call_clos(val_at("found"))),
+                    N::Store {
+                        ptr: entry("found"),
+                        value: getl("new"),
+                        kind: Kind::I64,
+                        offset: 12,
+                    },
+                    setl("ret_ptr", getl("d")),
+                    setl("ret_cap", getl("cap")),
+                ],
+                els: vec![
+                    N::If {
+                        cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                        then_: vec![setl("new", call_clos(val_at("found")))],
+                        els: vec![setl("new", call_clos(getl("default")))],
+                        result: None,
+                    },
+                    N::CallStoreMulti {
+                        func: "dict_insert_cap".into(),
+                        args: vec![getl("d"), getl("k"), getl("new"), getl("mode"), getl("cap")],
+                        dests: vec!["ret_ptr".into(), "ret_cap".into()],
+                    },
+                ],
+                result: None,
             },
             N::Push(getl("ret_ptr")),
             N::Push(getl("ret_cap")),
@@ -841,13 +865,25 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
 }
 
 /// `$dict_update(d, k, default, mode, clos) -> i32` — apply the updater closure
-/// to the current value (or `default` when absent) and reinsert. The closure is
-/// a 1-arg `$clos1` (`(param i32 env)(param i64 v)(result i64)`): its env pointer
-/// is the closure record itself and its code index is the record's first word.
+/// to the current value (or `default` when absent) and reinsert.
 pub(crate) fn dict_update_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
+    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    let call_clos = |arg: E| E::CallIndirect {
+        signature: gc_slot_closure_signature(1, 1),
+        args: vec![getl("clos"), arg],
+        index: Box::new(E::StructGet {
+            struct_id: 0,
+            field: CLOSURE_CODE_FIELD,
+            base: Box::new(getl("clos")),
+        }),
+    };
     WirFunc {
         name: "dict_update".into(),
         params: vec![
@@ -858,25 +894,20 @@ pub(crate) fn dict_update_helper() -> WirFunc {
             WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
         ],
         ret: vec![WirTy::Bool],
-        locals: vec![WirLocal { name: "new".into(), ty: WirTy::Int }],
+        locals: vec![
+            WirLocal { name: "found".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Int },
+        ],
         body: vec![
-            N::SetLocal {
-                local: "new".into(),
-                value: E::CallIndirect {
-                    signature: gc_slot_closure_signature(1, 1),
-                    args: vec![
-                        getl("clos"),
-                        E::Call {
-                            func: "dict_get_or".into(),
-                            args: vec![getl("d"), getl("k"), getl("default"), getl("mode")],
-                        },
-                    ],
-                    index: Box::new(E::StructGet {
-                        struct_id: 0,
-                        field: CLOSURE_CODE_FIELD,
-                        base: Box::new(getl("clos")),
-                    }),
-                },
+            setl("found", E::Call {
+                func: "dict_find".into(),
+                args: vec![getl("d"), getl("k"), getl("mode")],
+            }),
+            N::If {
+                cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                then_: vec![setl("new", call_clos(val_at("found")))],
+                els: vec![setl("new", call_clos(getl("default")))],
+                result: None,
             },
             N::Push(E::Call {
                 func: "dict_insert".into(),

@@ -19,7 +19,6 @@ use witchy_syntax::diag::DiagTemplate;
 pub(super) fn list_at_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
-    let i64c = WirExpr::ConstI64;
     let bin32 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
         op,
         kind: Kind::I32,
@@ -50,13 +49,7 @@ pub(super) fn list_at_helper() -> WirFunc {
         locals: vec![],
         body: vec![
             WirNode::If {
-                // Both comparisons yield i32 (wasm `i64.lt_s`/`i64.ge_s` -> i32), so
-                // combine them with `i32.or`.
-                cond: bin32(
-                    BinOp::Or,
-                    bin64(BinOp::Lt, getl("i"), i64c(0)),
-                    bin64(BinOp::Ge, getl("i"), len_i64()),
-                ),
+                cond: bin64(BinOp::GeU, getl("i"), len_i64()),
                 // (RFC-0045) Route the OOB abort through `__witchy_abort` with the
                 // TRUE i64 index and the list length, so the compiled trap carries
                 // the interpreter's `list index {i} out of bounds (length {len})`.

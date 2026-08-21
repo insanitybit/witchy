@@ -1291,7 +1291,6 @@ impl<'types> Codegen<'types> {
                                 let si = || W::GetLocal("__witchy_set_idx".to_string());
                                 let sv = || W::GetLocal("__witchy_set_val".to_string());
                                 let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-                                let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
                                 // `elide_index_list` is populated only while lowering an
                                 // eligible loop whose counter is non-negative and below the
                                 // unchanged length of this exact list binding. Its indexed
@@ -1299,15 +1298,7 @@ impl<'types> Codegen<'types> {
                                 // nor a second range branch before the owned-capacity store.
                                 let proven_index = matches!(iexpr, Expr::Var(index)
                                     if self.elide_index_list.iter().any(|(i, list)| i == index && list == name));
-                                let cond = if proven_index {
-                                    bin(BinOp::Gt, cap.clone(), W::ConstI32(0))
-                                } else {
-                                    bin(
-                                        BinOp::And,
-                                        bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
-                                        bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
-                                    )
-                                };
+                                let cond = bin(BinOp::Gt, cap.clone(), W::ConstI32(0));
                                 let slot_ptr = || bin(
                                     BinOp::Add,
                                     bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
@@ -1338,7 +1329,7 @@ impl<'types> Codegen<'types> {
                                 if !proven_index {
                                     let set_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
                                     seq.push(N::If {
-                                        cond: bin(BinOp::Or, bin(BinOp::Lt, si(), W::ConstI32(0)), bin(BinOp::Ge, si(), set_len())),
+                                        cond: bin(BinOp::GeU, si(), set_len()),
                                         then_: vec![N::Drop(W::Call {
                                             func: "list_at".into(),
                                             args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],

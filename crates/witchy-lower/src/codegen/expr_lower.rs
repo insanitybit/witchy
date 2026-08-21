@@ -1462,10 +1462,18 @@ impl<'types> Codegen<'types> {
                         return None;
                     }
                 };
-                let not_cond = W::Unary {
-                    op: witchy_wir::wir::UnOp::Not,
-                    kind: witchy_wir::wir::Kind::I32,
-                    arg: Box::new(cond_w),
+                let not_cond = match cond_w {
+                    W::Binary { op, kind, lhs, rhs } if op.invert().is_some() => W::Binary {
+                        op: op.invert().unwrap(),
+                        kind,
+                        lhs,
+                        rhs,
+                    },
+                    _ => W::Unary {
+                        op: witchy_wir::wir::UnOp::Not,
+                        kind: witchy_wir::wir::Kind::I32,
+                        arg: Box::new(cond_w),
+                    },
                 };
                 let mut loop_body = vec![
                     N::Br { target: format!("we{id}"), cond: Some(not_cond) },

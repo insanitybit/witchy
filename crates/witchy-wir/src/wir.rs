@@ -380,6 +380,23 @@ impl BinOp {
             (BinOp::GeU, _) => format!("{p}.ge_u"),
         }
     }
+
+    /// The inverse comparison operator (e.g. `Lt -> Ge`), if this is a relational op.
+    pub const fn invert(self) -> Option<BinOp> {
+        match self {
+            BinOp::Eq => Some(BinOp::Ne),
+            BinOp::Ne => Some(BinOp::Eq),
+            BinOp::Lt => Some(BinOp::Ge),
+            BinOp::Le => Some(BinOp::Gt),
+            BinOp::Gt => Some(BinOp::Le),
+            BinOp::Ge => Some(BinOp::Lt),
+            BinOp::LtU => Some(BinOp::GeU),
+            BinOp::LeU => Some(BinOp::GtU),
+            BinOp::GtU => Some(BinOp::LeU),
+            BinOp::GeU => Some(BinOp::LtU),
+            _ => None,
+        }
+    }
 }
 
 /// A unary operator. `Not` is i32-only (`eqz`); `Neg`/`BitNot` act on the
