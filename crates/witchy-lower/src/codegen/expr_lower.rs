@@ -1444,10 +1444,27 @@ impl<'types> Codegen<'types> {
                 for p in &elide_pairs {
                     self.elide_index_list.push(p.clone());
                 }
+                let mut added_non_neg = None;
+                if let Expr::Binary { op, lhs, rhs } = cond.as_ref() {
+                    if matches!(op, BinOp::Gt | BinOp::GtEq) {
+                        if let Expr::Var(v) = lhs.as_ref() {
+                            if let Expr::Int(k) = rhs.as_ref() {
+                                if *k >= 0 && !self.known_non_negative_vars.contains(v) {
+                                    self.known_non_negative_vars.insert(v.clone());
+                                    added_non_neg = Some(v.clone());
+                                }
+                            }
+                        }
+                    }
+                }
                 let wm = self.loop_watermark_wir(body);
                 self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+
+                if let Some(v) = added_non_neg {
+                    self.known_non_negative_vars.remove(&v);
+                }
 
                 for _ in 0..num_elide {
                     self.elide_index_list.pop();
@@ -1462,6 +1479,74 @@ impl<'types> Codegen<'types> {
                         return None;
                     }
                 };
+                let unroll_info = if wm.is_none() {
+                    Self::check_unrollable_counting_loop(cond, body)
+                } else {
+                    None
+                };
+                if let Some((i_var, limit_expr)) = unroll_info {
+                    let limit_k = self.kind_of(&limit_expr);
+                    if let Some(limit_w_raw) = self.lower_expr(&limit_expr) {
+                        let limit_w = Self::wir_convert(limit_w_raw, limit_k, Kind::I64);
+                        let limit_tmp = format!("__loop_limit_{id}");
+                        self.locals.insert(limit_tmp.clone(), Kind::I64);
+                        
+                        let unrolled_cond_not = W::Binary {
+                            op: witchy_wir::wir::BinOp::Ge,
+                            kind: witchy_wir::wir::Kind::I64,
+                            lhs: Box::new(W::Binary {
+                                op: witchy_wir::wir::BinOp::Add,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(W::GetLocal(i_var.clone())),
+                                rhs: Box::new(W::ConstI64(7)),
+                            }),
+                            rhs: Box::new(W::GetLocal(limit_tmp.clone())),
+                        };
+                        
+                        let clean_cond_not = W::Binary {
+                            op: witchy_wir::wir::BinOp::Ge,
+                            kind: witchy_wir::wir::Kind::I64,
+                            lhs: Box::new(W::GetLocal(i_var.clone())),
+                            rhs: Box::new(W::GetLocal(limit_tmp.clone())),
+                        };
+                        
+                        let unrolled_loop_body = vec![
+                            N::Br { target: format!("we{id}"), cond: Some(unrolled_cond_not) },
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Drop(W::Seq(body_seq.clone())),
+                            N::Br { target: format!("wl{id}"), cond: None },
+                        ];
+                        
+                        let clean_loop_body = vec![
+                            N::Br { target: format!("we_clean{id}"), cond: Some(clean_cond_not) },
+                            N::Drop(W::Seq(body_seq)),
+                            N::Br { target: format!("wl_clean{id}"), cond: None },
+                        ];
+                        
+                        let outer = vec![
+                            N::SetLocal { local: limit_tmp.clone(), value: limit_w },
+                            N::Block {
+                                label: format!("we{id}"),
+                                result: None,
+                                body: vec![N::Loop { label: format!("wl{id}"), body: unrolled_loop_body }],
+                            },
+                            N::Block {
+                                label: format!("we_clean{id}"),
+                                result: None,
+                                body: vec![N::Loop { label: format!("wl_clean{id}"), body: clean_loop_body }],
+                            },
+                            N::Push(W::ConstI32(0)),
+                        ];
+                        return Some(W::Seq(outer));
+                    }
+                }
+
                 let not_cond = match cond_w {
                     W::Binary { op, kind, lhs, rhs } if op.invert().is_some() => W::Binary {
                         op: op.invert().unwrap(),
@@ -2485,6 +2570,20 @@ impl<'types> Codegen<'types> {
                     let rhs_w = Self::wir_convert(self.lower_expr(rhs)?, rk, ck);
                     return Some(W::Call { func: func.into(), args: vec![lhs_w, rhs_w] });
                 }
+                if ck == Kind::I64 && *op == BinOp::Div {
+                    if let Expr::Int(n) = rhs.as_ref() {
+                        if *n > 0 && (*n & (*n - 1)) == 0 && self.is_guaranteed_non_negative(lhs) {
+                            let shift = n.trailing_zeros() as i64;
+                            let lhs_w = Self::wir_convert(self.lower_expr(lhs)?, lk, Kind::I64);
+                            return Some(W::Binary {
+                                op: witchy_wir::wir::BinOp::Shr,
+                                kind: witchy_wir::wir::Kind::I64,
+                                lhs: Box::new(lhs_w),
+                                rhs: Box::new(W::ConstI64(shift)),
+                            });
+                        }
+                    }
+                }
                 // The plain numeric path only. Every special case returns `None` so
                 // the legacy arm keeps its exact emission.
                 if ck == Kind::I64 && matches!(op, BinOp::Eq | BinOp::NotEq) {
@@ -3308,8 +3407,52 @@ impl<'types> Codegen<'types> {
                 self.is_guaranteed_non_negative(lhs)
             }
             Expr::Var(name) => {
-                self.known_length_vars.contains_key(name)
+                self.known_length_vars.contains_key(name) || self.known_non_negative_vars.contains(name)
             }
+            _ => false,
+        }
+    }
+
+    fn check_unrollable_counting_loop(cond: &Expr, body: &Block) -> Option<(String, Expr)> {
+        let (i_var, limit_expr) = match cond {
+            Expr::Binary { op: BinOp::Lt, lhs, rhs } => match lhs.as_ref() {
+                Expr::Var(v) => (v.clone(), rhs.as_ref().clone()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if body.stmts.len() < 2 {
+            return None;
+        }
+        let last = body.stmts.last()?;
+        match last {
+            Stmt::Assign { name, value } if name == &i_var => match value {
+                Expr::Binary { op: BinOp::Add, lhs, rhs } => match (lhs.as_ref(), rhs.as_ref()) {
+                    (Expr::Var(v), Expr::Int(1)) if v == &i_var => {}
+                    _ => return None,
+                },
+                _ => return None,
+            },
+            _ => return None,
+        }
+        for stmt in &body.stmts[..body.stmts.len() - 1] {
+            match stmt {
+                Stmt::Assign { name, value } if name != &i_var => {
+                    if !Self::is_pure_scalar_expr(value) {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some((i_var, limit_expr))
+    }
+
+    fn is_pure_scalar_expr(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) | Expr::Bool(_) | Expr::Var(_) => true,
+            Expr::Binary { lhs, rhs, .. } => Self::is_pure_scalar_expr(lhs) && Self::is_pure_scalar_expr(rhs),
+            Expr::Unary { expr, .. } => Self::is_pure_scalar_expr(expr),
             _ => false,
         }
     }

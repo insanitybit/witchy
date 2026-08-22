@@ -512,8 +512,8 @@ impl<'types> Codegen<'types> {
                         // The binding declaration is authoritative here: preserve
                         // the same typed carrier used by later list operations
                         // instead of lowering `[]` as the legacy i32 aggregate.
-                        let v = if let Expr::List(items) = value
-                            && items.is_empty()
+                        let v = if (matches!(value, Expr::List(items) if items.is_empty())
+                            || matches!(value, Expr::Call { name: callee, .. } if (callee == "list.with_capacity" || callee == "with_capacity" || callee == intrinsics::LIST_WITH_CAPACITY)))
                             && let Some(ty) = self.local_types.get(name)
                             && let Some((_, array_id, _)) = self.gc_reference_list_layout(ty)
                         {
@@ -522,6 +522,10 @@ impl<'types> Codegen<'types> {
                             self.lower_expr(value)?
                         };
                         seq.push(N::SetLocal { local: name.clone(), value: v });
+                        let evt = self.elem_val_type_of(value);
+                        if evt != ValType::Other {
+                            self.local_list_elem_valtype.insert(name.clone(), evt);
+                        }
                         // A fresh non-empty list literal is already uniquely owned
                         // with exactly its current length as capacity. Other
                         // accumulator bindings start at zero and re-own on their

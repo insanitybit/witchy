@@ -143,7 +143,9 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
 
 // A list of `n` copies of `x` (empty when `n <= 0`).
 pub fn repeat(x: a, n: Int) -> List(a):
-    var out = []
+    if n <= 0:
+        return []
+    var out = list.with_capacity(n)
     var i = 0
     while i < n:
         list.push(out, x)

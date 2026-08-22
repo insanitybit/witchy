@@ -3401,7 +3401,27 @@ impl<'types> Codegen<'types> {
     }
 
     fn elem_val_type_of(&self, iter: &Expr) -> ValType {
+        if let Some(t) = self.type_table.type_of(iter).and_then(witchy_types::typeck::ty_to_ast) {
+            let inner = match &t {
+                Type::Qualified(_, i) => i.as_ref(),
+                _ => &t,
+            };
+            if let Type::Named(name, args) = inner {
+                if (name == "List" || name == "Iter") && let Some(elem) = args.first() {
+                    let vt = ty_to_valtype(elem);
+                    if vt != ValType::Other {
+                        return vt;
+                    }
+                }
+            }
+        }
         match iter {
+            Expr::Call { name, args } if {
+                let sn = witchy_syntax::cap_ops::surface_name(name);
+                (sn == "list.repeat" || sn == "repeat") && args.len() == 2
+            } => {
+                self.val_type_of(&args[0])
+            }
             // Builtins that yield `List(String)` regardless of input. (`list` is
             // the Dir directory listing.)
             Expr::Call { name, .. }
