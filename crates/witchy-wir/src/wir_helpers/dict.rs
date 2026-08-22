@@ -350,6 +350,9 @@ pub(crate) fn dict_new_helper() -> WirFunc {
 
 /// `$dict_with_capacity(cap: i64) -> i32` — an empty dict with pre-allocated capacity `cap`:
 /// 8 reserved bytes (hidden index word at p-4, count at p) plus 16 bytes per preallocated entry.
+/// Scalar-capable roots also receive an initialized non-owning Swiss carrier so the
+/// first insertion does not pay a representation-construction rebuild. Compound-key
+/// modes continue to ignore the carrier and use the dense fallback.
 pub(crate) fn dict_with_capacity_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -363,6 +366,8 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
         locals: vec![
             WirLocal { name: "c".into(), ty: WirTy::Bool },
             WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "slots".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal {
@@ -388,6 +393,66 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
             },
             N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::Store { ptr: getl("p"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            // The key mode is not part of this intrinsic's public ABI.  The empty
+            // carrier is mode-neutral; later scalar operations select their normal
+            // hash/equality path, while compound modes leave it unused.
+            N::If {
+                cond: b(BinOp::Gt, getl("c"), i32c(0)),
+                then_: vec![
+                    N::SetLocal { local: "slots".into(), value: i32c(16) },
+                    N::Block {
+                        label: "size_done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "size_loop".into(),
+                            body: vec![
+                                N::Br {
+                                    target: "size_done".into(),
+                                    cond: Some(b(BinOp::Ge, getl("slots"), b(BinOp::Mul, getl("c"), i32c(2)))),
+                                },
+                                N::SetLocal { local: "slots".into(), value: b(BinOp::Mul, getl("slots"), i32c(2)) },
+                                N::Br { target: "size_loop".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::SetLocal {
+                        local: "idx".into(),
+                        value: E::Call {
+                            func: "bump_alloc".into(),
+                            args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(25)))],
+                        },
+                    },
+                    N::Store { ptr: getl("idx"), value: getl("slots"), kind: Kind::I32, offset: 0 },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), i32c(4)),
+                        value: i32c(0x80),
+                        len: b(BinOp::Add, getl("slots"), i32c(16)),
+                    },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))),
+                        value: i32c(0),
+                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                    },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(5)))),
+                        value: i32c(0),
+                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                    },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13)))),
+                        value: i32c(0),
+                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                    },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)))),
+                        value: i32c(0),
+                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                    },
+                    N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: getl("idx"), kind: Kind::I32, offset: 0 },
+                ],
+                els: vec![],
+                result: None,
+            },
             N::Push(getl("p")),
         ],
         raw_body: None,
