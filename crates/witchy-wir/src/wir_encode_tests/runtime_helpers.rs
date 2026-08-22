@@ -1613,6 +1613,17 @@
         {
             funcs.push(crate::wir_helpers::dict_ctrl_h2_helper());
         }
+        if funcs.iter().any(|func| func.name == "dict_get_or" || func.name == "dict_at") {
+            if !funcs.iter().any(|func| func.name == "dict_find_bucket") {
+                funcs.push(crate::wir_helpers::dict_find_bucket_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_ctrl_h2") {
+                funcs.push(crate::wir_helpers::dict_ctrl_h2_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_hash") {
+                funcs.push(crate::wir_helpers::dict_hash_helper());
+            }
+        }
         if funcs.iter().any(|func| func.name == "dict_insert") {
             if !funcs.iter().any(|func| func.name == "bump_alloc") {
                 funcs.push(crate::wir_helpers::bump_alloc_helper());
@@ -1622,6 +1633,12 @@
             }
             if !funcs.iter().any(|func| func.name == "dict_hash") {
                 funcs.push(crate::wir_helpers::dict_hash_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_index_update_value") {
+                funcs.push(crate::wir_helpers::dict_index_update_value_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_reindex") {
+                funcs.push(crate::wir_helpers::dict_reindex_helper());
             }
         }
         if funcs.iter().any(|func| func.name == "dict_remove")

@@ -11,9 +11,9 @@ pub(crate) use read::*;
 
 use crate::wir::*;
 
-/// `$dict_index_put(idx, slots, e, k, mode) -> i32` — record that entry `e` lives
+/// `$dict_index_put(idx, slots, e, k, v, mode)` — record that entry `e` lives
 /// at key `k` in the Swiss control/index carrier `idx`. The carrier stores
-/// `[slot_count][ctrl bytes + mirrored tail][entry indices][key slots]`; an index value is
+/// `[slot_count][ctrl bytes + mirrored tail][entry indices][key slots][value slots]`; an index value is
 /// `e+1`, while `0` means empty. The control byte stores H2, with `0x80` empty.
 /// This is the maintenance side of [`dict_find_helper`]'s probe; keeping the index
 /// current turns dict insert/lookup from the linear-scan fallback into O(1).
@@ -31,10 +31,12 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
     let ctrl_ptr = || b(BinOp::Add, ctrl_base(), getl("h"));
     let index_ptr = || b(BinOp::Add, index_base(), b(BinOp::Mul, getl("h"), i32c(4)));
     let key_ptr = || b(BinOp::Add, index_base(), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(8))));
+    let value_ptr = || b(BinOp::Add, index_base(), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(12)), b(BinOp::Mul, getl("h"), i32c(8))));
     let store_and_exit = vec![
         N::Store8 { ptr: ctrl_ptr(), value: getl("h2"), offset: 0 },
         N::Store { ptr: index_ptr(), value: b(BinOp::Add, getl("e"), i32c(1)), kind: Kind::I32, offset: 0 },
         N::Store { ptr: key_ptr(), value: getl("k"), kind: Kind::I64, offset: 0 },
+        N::Store { ptr: value_ptr(), value: getl("v"), kind: Kind::I64, offset: 0 },
         N::If {
             cond: b(BinOp::Lt, getl("h"), i32c(16)),
             then_: vec![N::Store8 { ptr: b(BinOp::Add, ctrl_base(), b(BinOp::Add, getl("slots"), getl("h"))), value: getl("h2"), offset: 0 }],
@@ -69,6 +71,7 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
             WirLocal { name: "e".into(), ty: WirTy::Bool },
             WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "v".into(), ty: WirTy::Int },
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![],
@@ -84,6 +87,56 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
             setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
             setl("attempt", i32c(0)),
             probe,
+        ],
+        raw_body: None,
+    }
+}
+
+/// Update the carrier-resident value for an existing dense entry. This is used
+/// by in-place/persistent replacement paths so shared immutable carriers never
+/// expose an older value.
+pub(crate) fn dict_index_update_value_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let index_base = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots")));
+    let value_base = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13))));
+    WirFunc {
+        name: "dict_index_update_value".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "slots".into(), ty: WirTy::Bool },
+            WirLocal { name: "e".into(), ty: WirTy::Bool },
+            WirLocal { name: "v".into(), ty: WirTy::Int },
+        ],
+        ret: vec![],
+        locals: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
+        body: vec![
+            setl("h", i32c(0)),
+            N::Block {
+                label: "done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "scan".into(),
+                    body: vec![
+                        N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("h"), getl("slots"))) },
+                        N::If {
+                            cond: b(BinOp::Eq, E::Load { ptr: Box::new(b(BinOp::Add, index_base.clone(), b(BinOp::Mul, getl("h"), i32c(4)))), kind: Kind::I32, offset: 0 }, b(BinOp::Add, getl("e"), i32c(1))),
+                            then_: vec![
+                                N::Store { ptr: b(BinOp::Add, value_base.clone(), b(BinOp::Mul, getl("h"), i32c(8))), value: getl("v"), kind: Kind::I64, offset: 0 },
+                                N::Br { target: "done".into(), cond: None },
+                            ],
+                            els: vec![],
+                            result: None,
+                        },
+                        setl("h", b(BinOp::Add, getl("h"), i32c(1))),
+                        N::Br { target: "scan".into(), cond: None },
+                    ],
+                }],
+            },
         ],
         raw_body: None,
     }
@@ -111,7 +164,7 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             args: vec![b(
                 BinOp::Add,
                 i32c(20),
-                b(BinOp::Mul, getl("slots"), i32c(13)),
+                b(BinOp::Mul, getl("slots"), i32c(21)),
             )],
         },
     };
@@ -182,6 +235,11 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                         value: i32c(0),
                         len: b(BinOp::Mul, getl("slots"), i32c(8)),
                     },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13)))),
+                        value: i32c(0),
+                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                    },
                     N::Store {
                         ptr: b(BinOp::Sub, getl("d"), i32c(4)),
                         value: getl("idx"),
@@ -210,6 +268,7 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                                         getl("slots"),
                                         getl("i"),
                                         E::Load { ptr: Box::new(entry(getl("i"))), kind: Kind::I64, offset: 4 },
+                                        E::Load { ptr: Box::new(entry(getl("i"))), kind: Kind::I64, offset: 12 },
                                         getl("mode"),
                                     ],
                                 }),
@@ -356,13 +415,18 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
                 then_: vec![
                     setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }),
                     N::If {
-                        cond: b(BinOp::Ge, getl("found"), i32c(0)),
-                        then_: vec![N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("idx"), kind: Kind::I32, offset: 0 }],
-                        els: vec![
-                            setl("newidx", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13)))] }),
-                            N::MemoryCopy { dest: getl("newidx"), src: getl("idx"), len: b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13))) },
+                    cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                        then_: vec![
+                            setl("newidx", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)))] }),
+                            N::MemoryCopy { dest: getl("newidx"), src: getl("idx"), len: b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21))) },
                             N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("newidx"), kind: Kind::I32, offset: 0 },
-                            N::Do(E::Call { func: "dict_index_put".into(), args: vec![getl("newidx"), getl("slots"), getl("count"), getl("k"), getl("mode")] }),
+                            N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("newidx"), getl("slots"), getl("found"), getl("v")] }),
+                        ],
+                        els: vec![
+                            setl("newidx", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)))] }),
+                            N::MemoryCopy { dest: getl("newidx"), src: getl("idx"), len: b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21))) },
+                            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("newidx"), kind: Kind::I32, offset: 0 },
+                            N::Do(E::Call { func: "dict_index_put".into(), args: vec![getl("newidx"), getl("slots"), getl("count"), getl("k"), getl("v"), getl("mode")] }),
                         ],
                         result: None,
                     },
@@ -386,6 +450,12 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
                     N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
                     N::Store { ptr: b(BinOp::Add, getl("new"), getl("bytes")), value: getl("k"), kind: Kind::I64, offset: 0 },
                     N::Store { ptr: b(BinOp::Add, getl("new"), getl("bytes")), value: getl("v"), kind: Kind::I64, offset: 8 },
+                    N::If {
+                        cond: b(BinOp::And, b(BinOp::Eq, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
+                        then_: vec![N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), b(BinOp::Add, getl("count"), i32c(1)), getl("mode")] })],
+                        els: vec![],
+                        result: None,
+                    },
                     N::Push(getl("new")),
                 ],
                 result: Some(WirTy::Bool),
@@ -512,6 +582,7 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                                             E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 },
                                             getl("count"),
                                             getl("k"),
+                                            getl("v"),
                                             getl("mode"),
                                         ],
                                     })],
@@ -678,6 +749,13 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
     // found >= 0 && cap > 0: overwrite the existing value slot in place.
     let update_inplace = vec![
         N::Store { ptr: entry("d", "found"), value: getl("v"), kind: Kind::I64, offset: 12 },
+        N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
+        N::If {
+            cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
+            then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }, getl("found"), getl("v")] })],
+            els: vec![],
+            result: None,
+        },
         N::SetLocal { local: "ret_ptr".into(), value: getl("d") },
         N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
     ];
@@ -722,6 +800,7 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
                     E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 },
                     getl("count"),
                     getl("k"),
+                    getl("v"),
                     getl("mode"),
                 ],
             })],

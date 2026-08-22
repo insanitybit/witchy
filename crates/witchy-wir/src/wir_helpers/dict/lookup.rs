@@ -351,6 +351,99 @@ pub(crate) fn dict_find_helper() -> WirFunc {
     }
 }
 
+/// `$dict_find_bucket(d, k, mode) -> i32` — return the Swiss bucket for a
+/// scalar key, or -1. Direct reads use this to fetch carrier-resident values;
+/// the dense entry index remains the projection and ownership identity.
+pub(crate) fn dict_find_bucket_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let index_at = |h: E| load(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Mul, h, i32c(4))))), 0);
+    let key_at = |h: E| {
+        let key_base = b(
+            BinOp::Add,
+            i32c(20),
+            b(BinOp::Add, getl("slots"), b(BinOp::Mul, getl("slots"), i32c(4))),
+        );
+        E::Load {
+            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, key_base, b(BinOp::Mul, h, i32c(8))))),
+            kind: Kind::I64,
+            offset: 0,
+        }
+    };
+    let probe = N::Block {
+        label: "miss".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "p".into(),
+            body: vec![
+                N::Br {
+                    target: "miss".into(),
+                    cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))),
+                },
+                N::If {
+                    cond: b(
+                        BinOp::Eq,
+                        E::Load8U {
+                            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("h")))),
+                            offset: 0,
+                        },
+                        i32c(0x80),
+                    ),
+                    then_: vec![N::Return(Some(i32c(-1)))],
+                    els: vec![N::If {
+                        cond: E::Call {
+                            func: "dict_ctrl_h2".into(),
+                            args: vec![getl("idx"), getl("h"), getl("h2")],
+                        },
+                        then_: vec![
+                            setl("e", index_at(getl("h"))),
+                            N::If {
+                                cond: b(
+                                    BinOp::And,
+                                    b(BinOp::Ne, getl("e"), i32c(0)),
+                                    E::Call {
+                                        func: "key_eq".into(),
+                                        args: vec![key_at(getl("h")), getl("k"), getl("mode")],
+                                    },
+                                ),
+                                then_: vec![N::Return(Some(getl("h")))],
+                                els: vec![],
+                                result: None,
+                            },
+                        ],
+                        els: vec![],
+                        result: None,
+                    }],
+                    result: None,
+                },
+                setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                setl("attempt", b(BinOp::Add, getl("attempt"), i32c(1))),
+                N::Br { target: "p".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "dict_find_bucket".into(),
+        params: vec![WirLocal { name: "d".into(), ty: WirTy::Bool }, WirLocal { name: "k".into(), ty: WirTy::Int }, WirLocal { name: "mode".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: vec!["idx", "slots", "h", "h2", "attempt", "e"].into_iter().map(|n| WirLocal { name: n.into(), ty: WirTy::Bool }).chain(std::iter::once(WirLocal { name: "hash".into(), ty: WirTy::Int })).collect(),
+        body: vec![
+            setl("idx", load(b(BinOp::Sub, getl("d"), i32c(4)), 0)),
+            N::If { cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("idx")) }, then_: vec![N::Return(Some(i32c(-1)))], els: vec![], result: None },
+            setl("slots", load(getl("idx"), 0)),
+            setl("hash", E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }),
+            setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
+            setl("attempt", i32c(0)), probe, N::Push(i32c(-1)),
+        ], raw_body: None,
+    }
+}
+
 /// `$dict_slice_eq(str_ptr, slice_ptr, slice_len) -> i32` — compare an existing
 /// `[len: i32][bytes...]` string against a raw `(slice_ptr, slice_len)` slice.
 pub(crate) fn dict_slice_eq_helper() -> WirFunc {

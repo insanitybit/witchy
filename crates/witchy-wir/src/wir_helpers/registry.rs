@@ -1195,7 +1195,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert" => Some(WirHelperSpec {
             func: dict_insert_helper(),
-            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put"],
+            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put", "dict_index_update_value", "dict_reindex"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -1218,7 +1218,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_get_or" => Some(WirHelperSpec {
             func: dict_get_or_helper(),
-            helper_deps: &["dict_find"],
+            helper_deps: &["dict_find", "dict_find_bucket"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1239,7 +1239,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert_cap" => Some(WirHelperSpec {
             func: dict_insert_cap_helper(),
-            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put", "dict_reindex"],
+            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put", "dict_index_update_value", "dict_reindex"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -1247,6 +1247,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "dict_index_put" => Some(WirHelperSpec {
             func: dict_index_put_helper(),
             helper_deps: &["dict_hash"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_index_update_value" => Some(WirHelperSpec {
+            func: dict_index_update_value_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_find_bucket" => Some(WirHelperSpec {
+            func: dict_find_bucket_helper(),
+            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,

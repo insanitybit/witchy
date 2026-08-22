@@ -21,7 +21,12 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Int],
-        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        locals: vec![
+            WirLocal { name: "found".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "bucket".into(), ty: WirTy::Bool },
+            WirLocal { name: "slots".into(), ty: WirTy::Bool },
+        ],
         body: vec![
             N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
             N::If {
@@ -30,12 +35,23 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
                 els: vec![],
                 result: None,
             },
-            // value slot: d + 12 + found*16.
-            N::Push(E::Load {
-                ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))),
-                kind: Kind::I64,
-                offset: 12,
-            }),
+            N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
+            N::If {
+                cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
+                then_: vec![
+                    N::SetLocal { local: "slots".into(), value: E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 } },
+                    N::SetLocal { local: "bucket".into(), value: E::Call { func: "dict_find_bucket".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+                    N::If {
+                        cond: b(BinOp::Ge, getl("bucket"), i32c(0)),
+                        then_: vec![N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(13)), b(BinOp::Mul, getl("bucket"), i32c(8)))))), kind: Kind::I64, offset: 0 }))],
+                        els: vec![],
+                        result: None,
+                    },
+                ],
+                els: vec![],
+                result: None,
+            },
+            N::Push(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))), kind: Kind::I64, offset: 12 }),
         ],
         raw_body: None,
     }
