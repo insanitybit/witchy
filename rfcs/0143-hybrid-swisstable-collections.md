@@ -213,16 +213,21 @@ root. Checked overflow guards cover every header, padding, control, bucket, and
 order-size calculation.
 
 `dict.new()` and `dict.with_capacity(0)` retain the current eight-byte empty
-root: the hidden word and count are both zero. Operations check the zero count
-before reading the larger header. The first insertion allocates the minimum
+root: the hidden word and count are both zero. For a nonempty Swiss root, the
+hidden word at `d - 4` holds the pointer to the Swiss allocation/header, and the
+count word remains the live-entry count used by the existing index-present
+check. Operations check the zero count before reading the larger header. The
+first insertion allocates the minimum
 16-bucket Swiss representation. `dict.with_capacity(n)` for positive `n`
 allocates enough buckets and order capacity for `n` live entries without a
 grow. Empty dictionaries therefore do not pay for a 16-bucket table.
 
 ### 4. Hash split and equality
 
-The compiler-internal scalar and byte hash helpers produce one 64-bit hash per
-semantic dictionary operation. The result is split as follows:
+The compiler-internal scalar and byte hash helpers must produce one 64-bit hash
+per semantic dictionary operation for this representation. Today
+`$dict_hash`/`$dict_hash_slice` return `i32`; Phase 1 widens that compiler-
+internal helper ABI (and its callers) before relying on the split below:
 
 ```text
 H2 = (hash >> 57) & 0x7f
@@ -232,7 +237,9 @@ initial_group = H1 & (bucket_count - 1)
 
 The stored `String` hash and the borrowed string-slice hash consume identical
 bytes, length, seed, and finalizer. A slice hit performs no owned-key allocation.
-Owned `Bytes` keys use the same byte-hash kernel with their own typed equality.
+`String` and `Bytes` use the existing mode-1 byte-oriented hashing/equality
+path (`$str_eq`); the representation does not invent a distinct Bytes equality
+operation. Their source-level types and diagnostics remain distinct.
 The hash is internal and fixed for reproducible compilation; this RFC makes no
 HashDoS-resistance claim.
 
@@ -348,8 +355,9 @@ rebuild may keep the same bucket count when live load fits.
 Growth allocates a new table, then visits the old `order` vector from first to
 last. Each entry is moved or duplicated according to the existing uniqueness
 proof, inserted into its new bucket, and appended to the new order vector. The
-new table has no tombstones. The root is replaced only after every owning slot
-and control byte is valid.
+new table has no tombstones. Even a same-size tombstone rebuild writes a fresh
+control/bucket/order allocation; it never rewrites the published table in place.
+The root is replaced only after every owning slot and control byte is valid.
 
 #### Iteration and projection
 
@@ -453,8 +461,11 @@ The optimized representation ships only when all of the following hold on the
 recorded reference host:
 
 1. every correctness and differential row below is green;
-2. the dict-heavy workload geometric-mean kernel time improves by at least 5%,
-   and at least one protected workload improves by at least 10%;
+2. the geometric-mean kernel time across the three protected complete
+   workloads (`dict_count`, `word_count`, and `knucleotide`) improves by at
+   least 5%, and at least one protected workload improves by at least 10%; the
+   full focused micro matrix remains attribution/control evidence rather than
+   entering this geometric mean;
 3. no protected kernel or wall workload has a statistically significant
    regression greater than 2%;
 4. ordered projection is reported separately and does not regress by more than
@@ -491,9 +502,14 @@ does not promote the representation on that evidence.
 
 1. Refresh the three public benchmarks and the focused operation matrix on the
    implementation base revision.
-2. Add counters for hashes, probe groups, H2 candidates, key comparisons,
-   rebuilds, grows, and index bytes.
-3. Record a function-level profile showing the current index probe and equality
+2. Add deterministic counters, following [RFC-0030](0030-perf-correctness-infra.md),
+   for hashes, probe groups, H2 candidates, key comparisons, rebuilds, grows,
+   index bytes, and `order_bytes_moved` (including remove search/shift and
+   projection copies).
+3. Implement and measure the vectorized-current-32-bit-index control row over
+   the same matrix. It is a required Phase-0 control, not an optional
+   afterthought.
+4. Record a function-level profile showing the current index probe and equality
    contribution to each protected workload.
 
 No representation change begins with an unmeasured whole-workload ceiling.
@@ -589,7 +605,8 @@ Swiss probing can be measured independently first.
 
 Scanning four current index buckets at a time avoids a representation rewrite,
 but it provides no H2 filter and still loads each candidate key through the
-dense-entry indirection. It remains a useful low-cost experiment in Phase 0.
+dense-entry indirection. It is the required low-cost Phase-0 control row,
+measured with the deterministic counters from [RFC-0030].
 
 ### Keep the current implementation
 
@@ -615,6 +632,8 @@ bar.
 
 ## Prior art
 
+- [RFC-0030](0030-perf-correctness-infra.md) defines Witchy's deterministic
+  counter and differential-measurement foundation used by Phase 0.
 - [Abseil Swiss Tables](https://abseil.io/about/design/swisstables) establish the
   H1/H2 split, one-byte control metadata, group matching, equality confirmation,
   and empty-versus-deleted probe rule.
