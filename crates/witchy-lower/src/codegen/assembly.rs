@@ -5664,6 +5664,14 @@ fn assemble_wir_module_with_structs_mode(
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_extract_drops".into()),
                     },
+                    // RFC-0143 deterministic Swiss-probe counters. They are
+                    // incremented only while extraction instrumentation is active,
+                    // keeping ordinary programs off the measurement path.
+                    WirGlobal { name: "__witchy_dict_hashes".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_hashes".into()) },
+                    WirGlobal { name: "__witchy_dict_probe_groups".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_probe_groups".into()) },
+                    WirGlobal { name: "__witchy_dict_h2_candidates".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_h2_candidates".into()) },
+                    WirGlobal { name: "__witchy_dict_rebuilds".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_rebuilds".into()) },
+                    WirGlobal { name: "__witchy_dict_grows".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_grows".into()) },
                 ]
             } else {
                 Vec::new()

@@ -1105,6 +1105,12 @@ impl Vm {
         self.i64_counter("__witchy_extract_drops")
     }
 
+    pub fn dict_hashes(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_hashes") }
+    pub fn dict_probe_groups(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_probe_groups") }
+    pub fn dict_h2_candidates(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_h2_candidates") }
+    pub fn dict_rebuilds(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_rebuilds") }
+    pub fn dict_grows(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_grows") }
+
     /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
     /// `__heap`): the live heap frontier in bytes at program end. With no
     /// region/watermark reclaim this is the peak. For a fixed program the delta

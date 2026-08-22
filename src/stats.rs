@@ -71,6 +71,12 @@ pub struct Stats {
     pub extract_retains: i64,
     /// RC-backed leaves released by extraction's structural repair.
     pub extract_drops: i64,
+    /// RFC-0143 Swiss probe attribution counters (active during extraction runs).
+    pub dict_hashes: i64,
+    pub dict_probe_groups: i64,
+    pub dict_h2_candidates: i64,
+    pub dict_rebuilds: i64,
+    pub dict_grows: i64,
     /// Checked program points carrying one or more active loan facts.
     pub loan_active_points: usize,
     /// Total active loan facts across those program points.
@@ -167,6 +173,11 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
         extract_retains: vm.extract_retains().unwrap_or(0),
         extract_drops: vm.extract_drops().unwrap_or(0),
+        dict_hashes: vm.dict_hashes().unwrap_or(0),
+        dict_probe_groups: vm.dict_probe_groups().unwrap_or(0),
+        dict_h2_candidates: vm.dict_h2_candidates().unwrap_or(0),
+        dict_rebuilds: vm.dict_rebuilds().unwrap_or(0),
+        dict_grows: vm.dict_grows().unwrap_or(0),
         loan_active_points: loan_telemetry.active_points,
         loan_active_events: loan_telemetry.active_events,
         loan_opens: loan_telemetry.opens,
