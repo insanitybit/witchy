@@ -1452,6 +1452,13 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
                                 offset: 12,
                             },
                             N::Store { ptr: getl("d"), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                            // Dense entries moved left, so every carrier bucket's
+                            // logical entry index and order metadata must be rebuilt
+                            // before the updated root is exposed to the next lookup.
+                            N::Do(E::Call {
+                                func: "dict_reindex".into(),
+                                args: vec![getl("d"), b(BinOp::Sub, getl("count"), i32c(1)), getl("mode")],
+                            }),
                         ],
                         els: vec![],
                         result: None,
