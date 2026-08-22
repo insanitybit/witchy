@@ -442,10 +442,11 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
                     N::If {
                     cond: b(BinOp::Ge, getl("found"), i32c(0)),
                         then_: vec![
-                            setl("newidx", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(25)))] }),
-                            N::MemoryCopy { dest: getl("newidx"), src: getl("idx"), len: b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(25))) },
-                            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("newidx"), kind: Kind::I32, offset: 0 },
-                            N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("newidx"), getl("slots"), getl("found"), getl("v")] }),
+                            // Replacement changes only the dense value slot. The
+                            // Swiss carrier's key/index/control metadata is
+                            // immutable and can be shared by the new RC root;
+                            // reads resolve the bucket back to that dense slot.
+                            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("idx"), kind: Kind::I32, offset: 0 },
                         ],
                         els: vec![
                             setl("newidx", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(25)))] }),
