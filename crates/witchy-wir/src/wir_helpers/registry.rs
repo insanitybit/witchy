@@ -1244,7 +1244,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_at" => Some(WirHelperSpec {
             func: dict_at_helper(),
-            helper_deps: &["dict_find"],
+            helper_deps: &["dict_find", "dict_find_bucket"],
             import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
