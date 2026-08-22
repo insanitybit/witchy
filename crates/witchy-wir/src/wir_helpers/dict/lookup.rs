@@ -361,7 +361,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                 }),
                 N::Br { target: "miss".into(), cond: Some(b(BinOp::Eq, getl("ctrl"), i32c(0x80))) },
                 N::If {
-                    cond: b(BinOp::Ne, b(BinOp::And, E::Call { func: "dict_ctrl_h2_mask".into(), args: vec![getl("idx"), getl("h"), getl("h2")] }, b(BinOp::Shl, i32c(1), b(BinOp::And, getl("h"), i32c(15)))), i32c(0)),
+                    cond: b(BinOp::Eq, getl("ctrl"), getl("h2")),
                     then_: vec![
                         N::If {
                             cond: E::GetGlobal("__witchy_extract_active".into()),
@@ -477,7 +477,7 @@ pub(crate) fn dict_find_bucket_helper() -> WirFunc {
                     ),
                     then_: vec![N::Return(Some(i32c(-1)))],
                     els: vec![N::If {
-                        cond: b(BinOp::Ne, b(BinOp::And, E::Call { func: "dict_ctrl_h2_mask".into(), args: vec![getl("idx"), getl("h"), getl("h2")] }, b(BinOp::Shl, i32c(1), b(BinOp::And, getl("h"), i32c(15)))), i32c(0)),
+                        cond: b(BinOp::Eq, E::Load8U { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("h")))), offset: 0 }, getl("h2")),
                         then_: vec![
                             setl("e", index_at(getl("h"))),
                             N::If {
@@ -806,7 +806,7 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
                     cond: b(BinOp::Eq, ctrl_at_h.clone(), i32c(0x80)),
                     then_: vec![N::Return(Some(i32c(-1)))],
                     els: vec![N::If {
-                    cond: b(BinOp::Ne, b(BinOp::And, E::Call { func: "dict_ctrl_h2_mask".into(), args: vec![getl("idx"), getl("h"), getl("h2")] }, b(BinOp::Shl, i32c(1), b(BinOp::And, getl("h"), i32c(15)))), i32c(0)),
+                        cond: b(BinOp::Eq, ctrl_at_h.clone(), getl("h2")),
                         then_: vec![
                             setl("e", slot_at_h.clone()),
                             N::If {

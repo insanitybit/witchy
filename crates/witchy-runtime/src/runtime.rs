@@ -232,7 +232,15 @@ fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let run = (|| -> Option<Vec<u8>> {
         std::fs::write(&inp, wasm).ok()?;
         let ok = std::process::Command::new("wasm-opt")
-            .args(["-O2", "--all-features", "-o"])
+            .args([
+                "-O4",
+                "--all-features",
+                "--inlining-optimizing",
+                "--inline-functions-with-loops",
+                "--flexible-inline-max-function-size=100",
+                "--one-caller-inline-max-function-size=200",
+                "-o",
+            ])
             .arg(&outp)
             .arg(&inp)
             .output()

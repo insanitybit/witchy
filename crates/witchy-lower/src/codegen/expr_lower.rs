@@ -2740,6 +2740,48 @@ impl<'types> Codegen<'types> {
                         }
                     }
                 }
+                if ck == Kind::I64 && *op == BinOp::Div {
+                    if let Expr::Int(n) = rhs.as_ref() {
+                        if *n > 0 && (*n & (*n - 1)) == 0 {
+                            let shift = n.trailing_zeros() as i64;
+                            let mask = *n - 1;
+                            let lhs_w = Self::wir_convert(self.lower_expr(lhs)?, lk, Kind::I64);
+                            if self.is_guaranteed_non_negative(lhs) {
+                                return Some(W::Binary {
+                                    op: witchy_wir::wir::BinOp::Shr,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(lhs_w),
+                                    rhs: Box::new(W::ConstI64(shift)),
+                                });
+                            } else if let Expr::Var(v) = lhs.as_ref() {
+                                let sign = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Shr,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(W::GetLocal(v.clone())),
+                                    rhs: Box::new(W::ConstI64(63)),
+                                };
+                                let bias = W::Binary {
+                                    op: witchy_wir::wir::BinOp::And,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(sign),
+                                    rhs: Box::new(W::ConstI64(mask)),
+                                };
+                                let sum = W::Binary {
+                                    op: witchy_wir::wir::BinOp::Add,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(W::GetLocal(v.clone())),
+                                    rhs: Box::new(bias),
+                                };
+                                return Some(W::Binary {
+                                    op: witchy_wir::wir::BinOp::Shr,
+                                    kind: witchy_wir::wir::Kind::I64,
+                                    lhs: Box::new(sum),
+                                    rhs: Box::new(W::ConstI64(shift)),
+                                });
+                            }
+                        }
+                    }
+                }
                 let wop = match op {
                     // `Add` is string concat when either operand is a `Str`.
                     BinOp::Add

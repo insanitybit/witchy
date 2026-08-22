@@ -98,6 +98,14 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
 /// by in-place/persistent replacement paths so shared immutable carriers never
 /// expose an older value.
 pub(crate) fn dict_index_update_value_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let order_ptr = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(21)), b(BinOp::Mul, getl("e"), i32c(4)))));
+    let value_base = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13))));
     WirFunc {
         name: "dict_index_update_value".into(),
         params: vec![
@@ -107,8 +115,16 @@ pub(crate) fn dict_index_update_value_helper() -> WirFunc {
             WirLocal { name: "v".into(), ty: WirTy::Int },
         ],
         ret: vec![],
-        locals: vec![],
-        body: vec![],
+        locals: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
+        body: vec![
+            setl("h", E::Load { ptr: Box::new(order_ptr), kind: Kind::I32, offset: 0 }),
+            N::Store {
+                ptr: b(BinOp::Add, value_base, b(BinOp::Mul, getl("h"), i32c(8))),
+                value: getl("v"),
+                kind: Kind::I64,
+                offset: 0,
+            },
+        ],
         raw_body: None,
     }
 }
@@ -1019,7 +1035,7 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
                 args: vec![getl("d"), getl("k"), getl("mode")],
             }),
             N::If {
-                cond: b(BinOp::And, b(BinOp::Ge, getl("found"), i32c(0)), b(BinOp::Gt, getl("cap"), i32c(0))),
+                cond: b(BinOp::Ge, getl("found"), i32c(0)),
                 then_: vec![
                     setl("new", call_clos(val_at("found"))),
                     N::Store {
@@ -1039,12 +1055,7 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
                     setl("ret_cap", getl("cap")),
                 ],
                 els: vec![
-                    N::If {
-                        cond: b(BinOp::Ge, getl("found"), i32c(0)),
-                        then_: vec![setl("new", call_clos(val_at("found")))],
-                        els: vec![setl("new", call_clos(getl("default")))],
-                        result: None,
-                    },
+                    setl("new", call_clos(getl("default"))),
                     N::CallStoreMulti {
                         func: "dict_insert_cap".into(),
                         args: vec![getl("d"), getl("k"), getl("new"), getl("mode"), getl("cap")],
@@ -1105,7 +1116,7 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
                 args: vec![getl("d"), getl("p"), getl("len")],
             }),
             N::If {
-                cond: b(BinOp::And, b(BinOp::Ge, getl("found"), i32c(0)), b(BinOp::Gt, getl("cap"), i32c(0))),
+                cond: b(BinOp::Ge, getl("found"), i32c(0)),
                 then_: vec![
                     setl("new", call_clos(val_at("found"))),
                     N::Store {
@@ -1125,12 +1136,7 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
                     setl("ret_cap", getl("cap")),
                 ],
                 els: vec![
-                    N::If {
-                        cond: b(BinOp::Ge, getl("found"), i32c(0)),
-                        then_: vec![setl("new", call_clos(val_at("found")))],
-                        els: vec![setl("new", call_clos(getl("default")))],
-                        result: None,
-                    },
+                    setl("new", call_clos(getl("default"))),
                     setl("k_str", E::Call {
                         func: "rc_alloc".into(),
                         args: vec![b(BinOp::Add, getl("len"), i32c(4))],

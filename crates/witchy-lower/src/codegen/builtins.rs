@@ -1294,67 +1294,60 @@ impl Codegen<'_> {
                             value: W::ToSlot(Box::new(value), Self::wir_kind(vk)),
                         },
                     ];
-                    if elide {
-                        use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind};
-                        let wi32 = WirKind::I32;
-                        let addr = W::Binary {
+                    use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind};
+                    let len_i64 = W::Convert {
+                        from: WirKind::I32,
+                        to: WirKind::I64,
+                        arg: Box::new(W::Load {
+                            ptr: Box::new(W::GetLocal(list_tmp.clone())),
+                            kind: WirKind::I32,
+                            offset: 0,
+                        }),
+                    };
+                    if !elide {
+                        nodes.push(N::If {
+                            cond: W::Binary {
+                                op: WirBinOp::GeU,
+                                kind: WirKind::I64,
+                                lhs: Box::new(W::GetLocal(index_tmp.clone())),
+                                rhs: Box::new(len_i64),
+                            },
+                            then_: vec![N::Drop(W::Call {
+                                func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_at").into(),
+                                args: vec![W::GetLocal(list_tmp.clone()), W::GetLocal(index_tmp.clone())],
+                            })],
+                            els: vec![],
+                            result: None,
+                        });
+                    }
+                    let wi32 = WirKind::I32;
+                    let addr = W::Binary {
+                        op: WirBinOp::Add,
+                        kind: wi32,
+                        lhs: Box::new(W::Binary {
                             op: WirBinOp::Add,
                             kind: wi32,
-                            lhs: Box::new(W::Binary {
-                                op: WirBinOp::Add,
-                                kind: wi32,
-                                lhs: Box::new(W::GetLocal(list_tmp.clone())),
-                                rhs: Box::new(W::ConstI32(4)),
-                            }),
-                            rhs: Box::new(W::Binary {
-                                op: WirBinOp::Mul,
-                                kind: wi32,
-                                lhs: Box::new(Self::wir_convert(
-                                    W::GetLocal(index_tmp),
-                                    Kind::I64,
-                                    Kind::I32,
-                                )),
-                                rhs: Box::new(W::ConstI32(8)),
-                            }),
-                        };
-                        nodes.push(N::Store {
-                            ptr: addr,
-                            value: W::GetLocal(value_tmp),
-                            kind: WirKind::I64,
-                            offset: 0,
-                        });
-                        nodes.push(N::Push(W::GetLocal(list_tmp)));
-                        return Some(W::Seq(nodes));
-                    }
-                    nodes.push(N::Drop(W::Call {
-                        func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_at")
-                            .into(),
-                        args: vec![
-                            W::GetLocal(list_tmp.clone()),
-                            W::GetLocal(index_tmp.clone()),
-                        ],
-                    }));
-                    nodes.extend([
-                        N::CallStoreMulti {
-                            func: intrinsic_helper_variant(
-                                intrinsics::LIST_SET_AT,
-                                "list_set_cap",
-                            )
-                            .into(),
-                            args: vec![
-                                W::GetLocal(list_tmp),
-                                Self::wir_convert(
-                                    W::GetLocal(index_tmp),
-                                    Kind::I64,
-                                    Kind::I32,
-                                ),
-                                W::GetLocal(value_tmp),
-                                W::ConstI32(0),
-                            ],
-                            dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
-                        },
-                        N::Push(W::GetLocal(TUPLE_TMP.to_string())),
-                    ]);
+                            lhs: Box::new(W::GetLocal(list_tmp.clone())),
+                            rhs: Box::new(W::ConstI32(4)),
+                        }),
+                        rhs: Box::new(W::Binary {
+                            op: WirBinOp::Mul,
+                            kind: wi32,
+                            lhs: Box::new(Self::wir_convert(
+                                W::GetLocal(index_tmp),
+                                Kind::I64,
+                                Kind::I32,
+                            )),
+                            rhs: Box::new(W::ConstI32(8)),
+                        }),
+                    };
+                    nodes.push(N::Store {
+                        ptr: addr,
+                        value: W::GetLocal(value_tmp),
+                        kind: WirKind::I64,
+                        offset: 0,
+                    });
+                    nodes.push(N::Push(W::GetLocal(list_tmp)));
                     W::Seq(nodes)
                 }
             }
@@ -1417,14 +1410,67 @@ impl Codegen<'_> {
                         }),
                         Self::wir_kind(ek),
                     )
-                } else {
-                    W::FromSlot(
-                        Box::new(call(
-                            intrinsic_helper_variant(intrinsics::LIST_AT, "list_at"),
-                            vec![list_w, idx_w],
-                        )),
-                        Self::wir_kind(ek),
-                    )
+                    } else {
+                        let level = self.assign_level;
+                        let list_tmp = assign_scratch("list", level);
+                        let idx_tmp = assign_scratch("index", level);
+                        use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind};
+                        let wi32 = WirKind::I32;
+                        let add = WirBinOp::Add;
+                        let addr = W::Binary {
+                            op: add,
+                            kind: wi32,
+                            lhs: Box::new(W::Binary {
+                                op: add,
+                                kind: wi32,
+                                lhs: Box::new(W::GetLocal(list_tmp.clone())),
+                                rhs: Box::new(W::ConstI32(4)),
+                            }),
+                            rhs: Box::new(W::Binary {
+                                op: WirBinOp::Mul,
+                                kind: wi32,
+                                lhs: Box::new(W::Convert {
+                                    from: WirKind::I64,
+                                    to: WirKind::I32,
+                                    arg: Box::new(W::GetLocal(idx_tmp.clone())),
+                                }),
+                                rhs: Box::new(W::ConstI32(8)),
+                            }),
+                        };
+                        let len_i64 = W::Convert {
+                            from: WirKind::I32,
+                            to: WirKind::I64,
+                            arg: Box::new(W::Load {
+                                ptr: Box::new(W::GetLocal(list_tmp.clone())),
+                                kind: WirKind::I32,
+                                offset: 0,
+                            }),
+                        };
+                        let oob_check = N::If {
+                            cond: W::Binary {
+                                op: WirBinOp::GeU,
+                                kind: WirKind::I64,
+                                lhs: Box::new(W::GetLocal(idx_tmp.clone())),
+                                rhs: Box::new(len_i64),
+                            },
+                            then_: vec![N::Drop(W::Call {
+                                func: intrinsic_helper_variant(intrinsics::LIST_AT, "list_at").into(),
+                                args: vec![W::GetLocal(list_tmp.clone()), W::GetLocal(idx_tmp.clone())],
+                            })],
+                            els: vec![],
+                            result: None,
+                        };
+                        let nodes = vec![
+                            N::SetLocal { local: list_tmp.clone(), value: list_w },
+                            N::SetLocal { local: idx_tmp.clone(), value: idx_w },
+                            oob_check,
+                            N::Push(W::Load {
+                                ptr: Box::new(addr),
+                                kind: WirKind::I64,
+                                offset: 0,
+                            }),
+                        ];
+                        W::FromSlot(Box::new(W::Seq(nodes)), Self::wir_kind(ek))
                     };
                 // (RFC-0035 step 1) The element read out of the container is now an OWNED
                 // reference sharing the object with the slot, so `$rc_dup` it — it returns the
