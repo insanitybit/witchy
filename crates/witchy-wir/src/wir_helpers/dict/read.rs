@@ -321,6 +321,20 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
             // above it and never overlaps a written slot.
             setl("list", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
             N::Store { ptr: getl("list"), value: getl("count"), kind: Kind::I32, offset: 0 },
+            N::If {
+                cond: E::GetGlobal("__witchy_extract_active".into()),
+                then_: vec![N::SetGlobal {
+                    global: "__witchy_dict_order_bytes_moved".into(),
+                    value: E::Binary {
+                        op: BinOp::Add,
+                        kind: Kind::I64,
+                        lhs: Box::new(E::GetGlobal("__witchy_dict_order_bytes_moved".into())),
+                        rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(b(BinOp::Mul, getl("count"), i32c(24))) }),
+                    },
+                }],
+                els: vec![],
+                result: None,
+            },
             setl("i", i32c(0)),
             scan,
             N::Push(getl("list")),

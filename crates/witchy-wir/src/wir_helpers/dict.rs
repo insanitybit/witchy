@@ -1360,6 +1360,15 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
                             }),
                             N::Store { ptr: entry("d", getl("found")), value: i64c(0), kind: Kind::I64, offset: 4 },
                             N::SetLocal { local: "suffix".into(), value: b(BinOp::Mul, b(BinOp::Sub, b(BinOp::Sub, getl("count"), getl("found")), i32c(1)), i32c(16)) },
+                            N::SetGlobal {
+                                global: "__witchy_dict_order_bytes_moved".into(),
+                                value: E::Binary {
+                                    op: BinOp::Add,
+                                    kind: Kind::I64,
+                                    lhs: Box::new(E::GetGlobal("__witchy_dict_order_bytes_moved".into())),
+                                    rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("suffix")) }),
+                                },
+                            },
                             N::MemoryCopy {
                                 dest: b(BinOp::Add, entry("d", getl("found")), i32c(4)),
                                 src: b(BinOp::Add, entry("d", b(BinOp::Add, getl("found"), i32c(1))), i32c(4)),
@@ -1422,6 +1431,15 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
                                     to: Kind::I64,
                                     arg: Box::new(b(BinOp::Add, getl("prefix"), getl("suffix"))),
                                 }),
+                            },
+                        },
+                        N::SetGlobal {
+                            global: "__witchy_dict_order_bytes_moved".into(),
+                            value: E::Binary {
+                                op: BinOp::Add,
+                                kind: Kind::I64,
+                                lhs: Box::new(E::GetGlobal("__witchy_dict_order_bytes_moved".into())),
+                                rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(b(BinOp::Add, getl("prefix"), getl("suffix"))) }),
                             },
                         },
                         N::SetLocal { local: "i".into(), value: i32c(0) },
