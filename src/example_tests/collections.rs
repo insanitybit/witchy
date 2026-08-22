@@ -271,6 +271,23 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), want);
     }
 
+    #[test]
+    fn dict_swiss_with_capacity_uses_the_preallocated_carrier() {
+        let src = r#"
+import dict
+fn main(console: Console):
+    var d = dict.with_capacity(64)
+    for i in 0..64:
+        dict.insert(d, i, i * 2)
+    console.print("${dict.get_or(d, 37, -1)}")
+    console.print("${dict.length(d)}")
+    console.print("${list.at(dict.keys(d), 63)}")
+"#;
+        let want = vec!["74", "64", "63"];
+        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverged from the interpreter");
+        assert_eq!(run_on_wasm(src), want);
+    }
+
     /// REGRESSION GUARD: `list.reverse`/`flatten`/`flat_map` are O(n), not O(n^2).
     /// They used to accumulate with `list.concat`, which copies the whole growing
     /// result each iteration — O(n^2) time AND allocation, which traps the WASM
