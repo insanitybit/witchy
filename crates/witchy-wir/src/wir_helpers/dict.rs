@@ -299,7 +299,8 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
 
 /// `$dict_insert(d, k, v, mode) -> i32` — a fresh dict like `d` with `k` set to
 /// `v`: the matching entry's value replaced, or `(k, v)` appended. Copies the
-/// existing block (resetting the hidden index word to 0), then writes in place.
+/// dense entry block and preserves or incrementally updates the non-owning
+/// Swiss carrier when the key mode supports it.
 pub(crate) fn dict_insert_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
