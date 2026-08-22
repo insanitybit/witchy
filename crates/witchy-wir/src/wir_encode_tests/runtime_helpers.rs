@@ -1611,6 +1611,7 @@
         if funcs.iter().any(|func| func.name == "dict_find" || func.name == "dict_find_slice")
             && !funcs.iter().any(|func| func.name == "dict_ctrl_h2")
         {
+            funcs.push(crate::wir_helpers::dict_ctrl_h2_mask_helper());
             funcs.push(crate::wir_helpers::dict_ctrl_h2_helper());
         }
         if funcs.iter().any(|func| func.name == "dict_get_or" || func.name == "dict_at") {
@@ -1618,6 +1619,7 @@
                 funcs.push(crate::wir_helpers::dict_find_bucket_helper());
             }
             if !funcs.iter().any(|func| func.name == "dict_ctrl_h2") {
+                funcs.push(crate::wir_helpers::dict_ctrl_h2_mask_helper());
                 funcs.push(crate::wir_helpers::dict_ctrl_h2_helper());
             }
             if !funcs.iter().any(|func| func.name == "dict_hash") {
