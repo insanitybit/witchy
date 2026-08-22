@@ -128,6 +128,12 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
         ],
         body: vec![
             N::If {
+                cond: E::GetGlobal("__witchy_extract_active".into()),
+                then_: vec![N::SetGlobal { global: "__witchy_dict_hashes".into(), value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_dict_hashes".into())), rhs: Box::new(i64c(1)) } }],
+                els: vec![],
+                result: None,
+            },
+            N::If {
                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("mode")) },
                 then_: vec![
                     setl("x", getl("k")),
@@ -141,12 +147,6 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             },
             setl("p", E::FromSlot(Box::new(getl("k")), Kind::I32)),
             setl("len", E::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
-            N::If {
-                cond: E::GetGlobal("__witchy_extract_active".into()),
-                then_: vec![N::SetGlobal { global: "__witchy_dict_hashes".into(), value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_dict_hashes".into())), rhs: Box::new(i64c(1)) } }],
-                els: vec![],
-                result: None,
-            },
             setl("x", i64c(-7046029254386353131i64)), // 0x9e3779b97f4a7c15 (golden-ratio seed)
             setl("i", i32c(0)),
             vec_loop,
