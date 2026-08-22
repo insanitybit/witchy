@@ -158,8 +158,8 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
 }
 
 /// `$dict_find(d, k, mode) -> i32` — the entry index of key `k`, or -1. Linear
-/// scan when the hidden index word is 0 (always, on the binary path); otherwise
-/// an open-addressing probe over the hash table.
+/// scan when the hidden index word is 0; otherwise probe the Swiss control
+/// bytes before loading candidate entry keys.
 pub(crate) fn dict_find_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -210,12 +210,30 @@ pub(crate) fn dict_find_helper() -> WirFunc {
             label: "p".into(),
             body: vec![
                 N::Br { target: "miss".into(), cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))) },
-                setl("e", slot_at_h.clone()),
-                N::Br { target: "miss".into(), cond: Some(E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) }) },
-                comparison_bump(),
+                setl("ctrl", E::Load8U {
+                    ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("h")))),
+                    offset: 0,
+                }),
+                N::Br { target: "miss".into(), cond: Some(b(BinOp::Eq, getl("ctrl"), i32c(0x80))) },
                 N::If {
-                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
-                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
+                    cond: b(BinOp::Eq, getl("ctrl"), getl("h2")),
+                    then_: vec![
+                        setl("e", slot_at_h.clone()),
+                        N::If {
+                            cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) },
+                            then_: vec![N::Br { target: "miss".into(), cond: None }],
+                            els: vec![
+                                comparison_bump(),
+                                N::If {
+                                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
+                                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
+                                    els: vec![],
+                                    result: None,
+                                },
+                            ],
+                            result: None,
+                        },
+                    ],
                     els: vec![],
                     result: None,
                 },
@@ -234,7 +252,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
         ],
         ret: vec![WirTy::Bool],
         locals: vec![
-            "idx", "count", "i", "slots", "h", "h2", "attempt", "e",
+            "idx", "count", "i", "slots", "h", "h2", "attempt", "e", "ctrl",
         ].into_iter().map(|n| WirLocal { name: n.into(), ty: WirTy::Bool })
         .chain(std::iter::once(WirLocal { name: "hash".into(), ty: WirTy::Int }))
         .collect(),
