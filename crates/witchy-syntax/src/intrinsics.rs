@@ -469,7 +469,7 @@ const fn encoding_host_call(selector: i32, input: WirHostInput) -> Option<WirHos
     Some(WirHostCall { helper: "encoding", selector, input })
 }
 
-pub(crate) const GENERATED_RENDER: &str = "@render";
+pub const GENERATED_RENDER: &str = "@render";
 pub const GENERATED_LIST_PUSH: &str = "@list_push";
 pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
 pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
@@ -2487,7 +2487,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::Builtin,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
-        wir_helpers: &["str_substring"],
+        wir_helpers: &["str_slice_fast"],
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: STRING_SLICE,

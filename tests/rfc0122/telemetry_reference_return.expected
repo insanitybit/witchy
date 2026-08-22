@@ -13,5 +13,5 @@ forced_copy.output=9 8
 interpreter.output=9 8
 optimized.metrics=1,1,1,1,2,0,833,0,0,0,0
 forced_copy.metrics=1,1,1,1,2,0,833,0,0,0,0
-optimized.runtime=136,0,0,0,0,0,0,7,7,0,0,7
-forced_copy.runtime=136,0,0,0,0,0,0,7,7,0,0,7
+optimized.runtime=110,0,0,0,0,0,0,5,5,0,0,5
+forced_copy.runtime=110,0,0,0,0,0,0,5,5,0,0,5

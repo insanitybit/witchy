@@ -300,8 +300,8 @@ mod tests {
         assert_eq!(small.region_rewind_calls, 0);
         assert_eq!(
             (small.rc_alloc_calls, small.bump_alloc_calls),
-            (4, 4),
-            "the checked workload has four fixed setup allocations and none per transition"
+            (3, 3),
+            "the checked workload has three fixed setup allocations (fused interpolation) and none per transition"
         );
     }
 

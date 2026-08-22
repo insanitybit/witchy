@@ -112,9 +112,9 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
     let optimized_runtime = runtime_row(&optimized);
     let forced_copy_runtime = runtime_row(&forced_copy);
     assert!(EXPECTED.contains(&format!("runtime_schema={}", RUNTIME_SCHEMA.join(","))));
-    assert!(EXPECTED.contains("optimized.runtime=136,0,0,0,0,0,0,7,7,0,0,7"));
-    assert!(EXPECTED.contains("forced_copy.runtime=136,0,0,0,0,0,0,7,7,0,0,7"));
-    assert_eq!(optimized_runtime, [136, 0, 0, 0, 0, 0, 0, 7, 7, 0, 0, 7]);
+    assert!(EXPECTED.contains("optimized.runtime=110,0,0,0,0,0,0,5,5,0,0,5"));
+    assert!(EXPECTED.contains("forced_copy.runtime=110,0,0,0,0,0,0,5,5,0,0,5"));
+    assert_eq!(optimized_runtime, [110, 0, 0, 0, 0, 0, 0, 5, 5, 0, 0, 5]);
     assert_eq!(forced_copy_runtime, optimized_runtime);
     assert_eq!(
         optimized_row,

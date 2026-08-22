@@ -799,3 +799,205 @@ pub(crate) fn char_to_byte_helper() -> WirFunc {
         raw_body: None,
     }
 }
+
+/// `$str_find_byte(s: i32, target: i32) -> i32` — SIMD 16-way accelerated byte search (RFC-0144).
+/// Returns 0-based byte index of first occurrence of `target` in `s`, or -1 if not found.
+pub(in crate::wir_helpers) fn str_find_byte_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let bin = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    let ptr_at = || bin(BinOp::Add, bin(BinOp::Add, getl("s"), i32c(4)), getl("i"));
+    let byte_at = || E::Load8U { ptr: Box::new(ptr_at()), offset: 0 };
+
+    WirFunc {
+        name: "str_find_byte".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "target".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "v".into(), ty: WirTy::V128 },
+            WirLocal { name: "target_vec".into(), ty: WirTy::V128 },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+            WirLocal { name: "b".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: load_i32(getl("s")) },
+            N::SetLocal { local: "i".into(), value: i32c(0) },
+            N::SetLocal {
+                local: "target_vec".into(),
+                value: E::Vector {
+                    op: VectorOp::I8x16Splat,
+                    args: vec![getl("target")],
+                },
+            },
+            // Vector loop: 16 bytes per cycle
+            N::Block {
+                label: "vdone".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "vl".into(),
+                    body: vec![
+                        N::Br {
+                            target: "vdone".into(),
+                            cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
+                        },
+                        N::SetLocal { local: "v".into(), value: load_v128(ptr_at()) },
+                        N::SetLocal {
+                            local: "mask".into(),
+                            value: E::Vector {
+                                op: VectorOp::I8x16Bitmask,
+                                args: vec![E::Vector {
+                                    op: VectorOp::I8x16Eq,
+                                    args: vec![getl("v"), getl("target_vec")],
+                                }],
+                            },
+                        },
+                        N::If {
+                            cond: bin(BinOp::Ne, getl("mask"), i32c(0)),
+                            then_: vec![
+                                N::Return(Some(bin(
+                                    BinOp::Add,
+                                    getl("i"),
+                                    E::Unary {
+                                        op: UnOp::Ctz,
+                                        kind: Kind::I32,
+                                        arg: Box::new(getl("mask")),
+                                    },
+                                ))),
+                            ],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: bin(BinOp::Add, getl("i"), i32c(16)),
+                        },
+                        N::Br { target: "vl".into(), cond: None },
+                    ],
+                }],
+            },
+            // Scalar tail
+            N::Block {
+                label: "sdone".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "sl".into(),
+                    body: vec![
+                        N::Br {
+                            target: "sdone".into(),
+                            cond: Some(bin(BinOp::Ge, getl("i"), getl("len"))),
+                        },
+                        N::If {
+                            cond: bin(BinOp::Eq, byte_at(), getl("target")),
+                            then_: vec![N::Return(Some(getl("i")))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: bin(BinOp::Add, getl("i"), i32c(1)),
+                        },
+                        N::Br { target: "sl".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Push(i32c(-1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$str_slice_fast(s: i32, start: i64, end: i64) -> i32` — byte-indexed O(1) substring slice (RFC-0144).
+/// Clamps `start` and `end` to valid byte bounds in O(1) without iterating characters, then calls `$substr`.
+pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I64,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    let nar = |e: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+
+    WirFunc {
+        name: "str_slice_fast".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Int },
+            WirLocal { name: "end".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
+            WirLocal { name: "lo".into(), ty: WirTy::Bool },
+            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            setl("slen", E::Load { ptr: Box::new(getl("s")), kind: Kind::I32, offset: 0 }),
+            // lo = clamp(start, 0, slen)
+            setl("lo", nar(getl("start"))),
+            N::If {
+                cond: b64(BinOp::Lt, getl("start"), E::ConstI64(0)),
+                then_: vec![setl("lo", i32c(0))],
+                els: vec![N::If {
+                    cond: b64(BinOp::Gt, getl("start"), ext(getl("slen"))),
+                    then_: vec![setl("lo", getl("slen"))],
+                    els: vec![],
+                    result: None,
+                }],
+                result: None,
+            },
+            // hi = clamp(end, lo, slen)
+            setl("hi", nar(getl("end"))),
+            N::If {
+                cond: b64(BinOp::Lt, getl("end"), ext(getl("lo"))),
+                then_: vec![setl("hi", getl("lo"))],
+                els: vec![N::If {
+                    cond: b64(BinOp::Gt, getl("end"), ext(getl("slen"))),
+                    then_: vec![setl("hi", getl("slen"))],
+                    els: vec![],
+                    result: None,
+                }],
+                result: None,
+            },
+            N::If {
+                cond: b(BinOp::Ge, getl("lo"), getl("hi")),
+                then_: vec![N::Push(E::Call {
+                    func: "substr".into(),
+                    args: vec![getl("s"), i32c(0), i32c(0)],
+                })],
+                els: vec![N::Push(E::Call {
+                    func: "substr".into(),
+                    args: vec![getl("s"), getl("lo"), b(BinOp::Sub, getl("hi"), getl("lo"))],
+                })],
+                result: Some(WirTy::Str),
+            },
+        ],
+        raw_body: None,
+    }
+}
+

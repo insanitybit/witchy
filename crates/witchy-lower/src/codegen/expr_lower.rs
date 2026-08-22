@@ -1432,6 +1432,56 @@ impl<'types> Codegen<'types> {
                                         valid_induction = check_induction(body, i_var, &mut num_assigns, &self.known_non_negative_vars);
                                         if valid_induction && num_assigns > 0 {
                                             elide_pairs.push((i_var.clone(), xs_var.clone()));
+                                            if let Expr::Var(hi_var) = rhs.as_ref() {
+                                                let mut hi_assigns = 0;
+                                                fn check_decrement(
+                                                    b: &witchy_syntax::ast::Block,
+                                                    hi_var: &str,
+                                                    num_assigns: &mut usize,
+                                                ) -> bool {
+                                                    for stmt in &b.stmts {
+                                                        match stmt {
+                                                            witchy_syntax::ast::Stmt::Assign { name, value } => {
+                                                                if name == hi_var {
+                                                                    *num_assigns += 1;
+                                                                    if let witchy_syntax::ast::Expr::Binary {
+                                                                        op: witchy_syntax::ast::BinOp::Sub,
+                                                                        lhs: alhs,
+                                                                        rhs: arhs,
+                                                                        ..
+                                                                    } = value {
+                                                                        if let witchy_syntax::ast::Expr::Var(vlhs) = alhs.as_ref() {
+                                                                            if vlhs == hi_var {
+                                                                                if let witchy_syntax::ast::Expr::Int(k) = arhs.as_ref() {
+                                                                                    if *k >= 0 { continue; }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    return false;
+                                                                }
+                                                            }
+                                                            witchy_syntax::ast::Stmt::Let { name, .. } => {
+                                                                if name == hi_var { return false; }
+                                                            }
+                                                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::While { body, .. }) => {
+                                                                if !check_decrement(body, hi_var, num_assigns) { return false; }
+                                                            }
+                                                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::If { then_block, else_block, .. }) => {
+                                                                if !check_decrement(then_block, hi_var, num_assigns) { return false; }
+                                                                if let Some(eb) = else_block {
+                                                                    if !check_decrement(eb, hi_var, num_assigns) { return false; }
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                    true
+                                                }
+                                                if check_decrement(body, hi_var, &mut hi_assigns) && hi_assigns > 0 {
+                                                    elide_pairs.push((hi_var.clone(), xs_var.clone()));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2387,6 +2437,24 @@ impl<'types> Codegen<'types> {
                 // `$concat` (only in a WIR-collecting scope; otherwise this falls
                 // through and the program is rejected as unsupported).
                 if self.collect_wir && *op == BinOp::Concat {
+                    // (RFC-0144) Fused prefix string + int formatting -> str_fmt_prefix_int
+                    if let Expr::Call { name: cname, args: cargs } = rhs.as_ref() {
+                        if (cname == intrinsics::GENERATED_RENDER
+                            || cname == "int_to_string"
+                            || cname == "to_string")
+                            && cargs.len() == 1
+                        {
+                            if self.val_type_of(&cargs[0]) == ValType::Int {
+                                let prefix = self.lower_expr(lhs)?;
+                                let ak = self.kind_of(&cargs[0]);
+                                let val = Self::wir_convert(self.lower_expr(&cargs[0])?, ak, Kind::I64);
+                                return Some(W::Call {
+                                    func: "str_fmt_prefix_int".to_string(),
+                                    args: vec![prefix, val],
+                                });
+                            }
+                        }
+                    }
                     let a = self.lower_expr(lhs)?;
                     let b = self.lower_expr(rhs)?;
                     return Some(W::Call { func: "concat".to_string(), args: vec![a, b] });

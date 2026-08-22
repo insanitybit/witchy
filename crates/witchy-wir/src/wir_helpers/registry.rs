@@ -178,6 +178,18 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                 uses_table: false,
             })
         }
+        "str_fmt_prefix_int" => {
+            let checked = heap_check_enabled();
+            let import_deps: &'static [&'static str] =
+                if checked { &["heap_register"] } else { &[] };
+            Some(WirHelperSpec {
+                func: str_fmt_prefix_int_helper(checked),
+                helper_deps: &["rc_alloc"],
+                import_deps,
+                uses_heap: true,
+                uses_table: false,
+            })
+        }
         "str_eq" => Some(WirHelperSpec {
             func: str_eq_helper(),
             helper_deps: &[],
@@ -237,6 +249,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "str_substring" => Some(WirHelperSpec {
             func: str_substring_helper(),
             helper_deps: &["char_to_byte", "substr"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_find_byte" => Some(WirHelperSpec {
+            func: str_find_byte_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_slice_fast" => Some(WirHelperSpec {
+            func: str_slice_fast_helper(),
+            helper_deps: &["substr"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,

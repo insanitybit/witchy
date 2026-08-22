@@ -18,14 +18,15 @@ fn main(let console: Console, let clock: Clock):
         let ch = if b == 0: 65 else: if b == 1: 67 else: if b == 2: 71 else: 84
         list.push(cs, ch)
         i = i + 1
-    let raw = match bytes.from_list(cs):
-        Ok(b) -> b
-        Err(_e) -> bytes.from_string("")
+    let seq = match bytes.from_list(cs):
+        Ok(b) -> bytes.to_string(b)
+        Err(_e) -> ""
+    let seq_str = string.as_str(&seq)
     var counts = dict.with_capacity(1000)
     var j = 0
     while j + k <= n:
-        let kmer = bytes.slice(raw, j, j + k)
-        dict.update(counts, kmer, 0, fn(c: Int): c + 1)
+        let kmer = string.slice(seq_str, j, j + k)
+        dict.update_str(counts, kmer, 0, fn(c: Int): c + 1)
         j = j + 1
     let bench_t1 = clock.now_monotonic()
     console.print("${dict.length(counts)}")

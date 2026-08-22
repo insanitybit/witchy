@@ -24,10 +24,8 @@ fn fannkuch(let n: Int) -> Int:
             list.set_at(count, r - 1, r)
             r = r - 1
         if list.at(perm1, 0) != 0:
-            var j = 0
-            while j < n:
+            for j in 0..n:
                 list.set_at(perm, j, list.at(perm1, j))
-                j = j + 1
             var flips = 0
             var k = list.at(perm, 0)
             while k != 0:
@@ -53,10 +51,8 @@ fn fannkuch(let n: Int) -> Int:
             if r == n:
                 return checksum * 1000 + max_flips
             let perm0 = list.at(perm1, 0)
-            var i = 0
-            while i < r:
+            for i in 0..r:
                 list.set_at(perm1, i, list.at(perm1, i + 1))
-                i = i + 1
             list.set_at(perm1, r, perm0)
             list.set_at(count, r, list.at(count, r) - 1)
             if list.at(count, r) > 0:

@@ -1130,7 +1130,7 @@ impl Codegen<'_> {
                     self.lower_expr(&args[0])?
                 }
             }
-            (intrinsics::STRING_SUBSTRING, 3) | (intrinsics::STRING_SLICE, 3) => {
+            (intrinsics::STRING_SUBSTRING, 3) => {
                 self.uses_substring = true;
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
@@ -1145,6 +1145,21 @@ impl Codegen<'_> {
                 // exactly like the interpreter. A prior narrow-to-i32 here wrapped huge
                 // indices (near the i64 extremes), diverging from the interpreter.
                 call("str_substring", vec![
+                    base,
+                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
+                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
+                ])
+            }
+            (intrinsics::STRING_SLICE, 3) => {
+                self.uses_substr = true;
+                let sk = self.kind_of(&args[1]);
+                let ek = self.kind_of(&args[2]);
+                let base = if self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID) {
+                    self.lower_place_reference_read(&args[0], Kind::I32, &args[0])?
+                } else {
+                    self.lower_expr(&args[0])?
+                };
+                call("str_slice_fast", vec![
                     base,
                     Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),

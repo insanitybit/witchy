@@ -15,8 +15,16 @@ impl<'types> Codegen<'types> {
         match value {
             Expr::Int(value) => *value >= 0,
             Expr::Var(name) => self.known_non_negative_vars.contains(name),
-            Expr::Binary { op: BinOp::Add, lhs, rhs, .. } => {
+            Expr::Call { name, .. } if name == intrinsics::LIST_LENGTH => true,
+            Expr::Binary { op: BinOp::Add | BinOp::Mul, lhs, rhs, .. } => {
                 self.expr_is_known_non_negative(lhs) && self.expr_is_known_non_negative(rhs)
+            }
+            Expr::Binary { op: BinOp::Div | BinOp::Mod, lhs, rhs, .. } => {
+                self.expr_is_known_non_negative(lhs) && match rhs.as_ref() {
+                    Expr::Int(k) => *k > 0,
+                    Expr::Var(n) => self.known_non_negative_vars.contains(n),
+                    _ => false,
+                }
             }
             _ => false,
         }
@@ -92,10 +100,18 @@ impl<'types> Codegen<'types> {
                             if let Expr::Var(xs_name) = &args[0] {
                                 self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
                             }
-                        } else if (fname == "list.repeat" || fname == "repeat") && args.len() == 2 {
-                            if let Expr::Var(n_name) = &args[1] {
+                        } else if (fname == "list.repeat" || fname == "repeat" || fname == intrinsics::LIST_WITH_CAPACITY) && !args.is_empty() {
+                            if let Expr::Var(n_name) = args.last().unwrap() {
                                 self.known_length_vars.entry(n_name.clone()).or_default().insert(name.clone());
                             }
+                        } else if fname == intrinsics::LIST_AT && args.len() == 2 {
+                            if let Expr::Var(xs_name) = &args[0] {
+                                self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
+                            }
+                        }
+                    } else if let Expr::Var(src_name) = value {
+                        if let Some(lists) = self.known_length_vars.get(src_name).cloned() {
+                            self.known_length_vars.entry(name.clone()).or_default().extend(lists);
                         }
                     }
                 }

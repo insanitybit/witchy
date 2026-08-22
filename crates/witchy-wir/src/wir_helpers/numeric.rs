@@ -268,6 +268,233 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
     }
 }
 
+/// `$str_fmt_prefix_int(prefix: i32, n: i64) -> i32` — formats `prefix + n` in a single
+/// allocation without intermediate strings (RFC-0144).
+pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let bin = |op: BinOp, k: Kind, l: E, r: E| E::Binary {
+        op,
+        kind: k,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let rz = if checked { HEAP_REDZONE as i32 } else { 0 };
+
+    let count_loop_32 = N::If {
+        cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(10)),
+        then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(1) }],
+        els: vec![N::If {
+            cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(100)),
+            then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(2) }],
+            els: vec![N::If {
+                cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(1000)),
+                then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(3) }],
+                els: vec![N::If {
+                    cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(10000)),
+                    then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(4) }],
+                    els: vec![N::If {
+                        cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(100000)),
+                        then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(5) }],
+                        els: vec![N::If {
+                            cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(1000000)),
+                            then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(6) }],
+                            els: vec![N::If {
+                                cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(10000000)),
+                                then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(7) }],
+                                els: vec![N::If {
+                                    cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(100000000)),
+                                    then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(8) }],
+                                    els: vec![N::If {
+                                        cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(1000000000)),
+                                        then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(9) }],
+                                        els: vec![N::SetLocal { local: "ndigits".into(), value: i32c(10) }],
+                                        result: None,
+                                    }],
+                                    result: None,
+                                }],
+                                result: None,
+                            }],
+                            result: None,
+                        }],
+                        result: None,
+                    }],
+                    result: None,
+                }],
+                result: None,
+            }],
+            result: None,
+        }],
+        result: None,
+    };
+
+    let count_loop_64 = N::Block {
+        label: "b1".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l1".into(),
+            body: vec![
+                N::Br { target: "b1".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
+                N::SetLocal { local: "ndigits".into(), value: bin(BinOp::Add, Kind::I32, getl("ndigits"), i32c(1)) },
+                N::SetLocal { local: "t".into(), value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)) },
+                N::Br { target: "l1".into(), cond: None },
+            ],
+        }],
+    };
+
+    let write_loop_32 = N::Block {
+        label: "b2_32".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l2_32".into(),
+            body: vec![
+                N::Br { target: "b2_32".into(), cond: Some(bin(BinOp::Eq, Kind::I32, getl("t32"), i32c(0))) },
+                N::SetLocal { local: "next32".into(), value: bin(BinOp::DivU, Kind::I32, getl("t32"), i32c(10)) },
+                N::Store8 {
+                    ptr: getl("p"),
+                    value: bin(
+                        BinOp::Add,
+                        Kind::I32,
+                        bin(BinOp::Sub, Kind::I32, getl("t32"), bin(BinOp::Mul, Kind::I32, getl("next32"), i32c(10))),
+                        i32c(48),
+                    ),
+                    offset: 0,
+                },
+                N::SetLocal { local: "p".into(), value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)) },
+                N::SetLocal { local: "t32".into(), value: getl("next32") },
+                N::Br { target: "l2_32".into(), cond: None },
+            ],
+        }],
+    };
+
+    let write_loop_64 = N::Block {
+        label: "b2_64".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l2_64".into(),
+            body: vec![
+                N::Br { target: "b2_64".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
+                N::Store8 {
+                    ptr: getl("p"),
+                    value: bin(
+                        BinOp::Add,
+                        Kind::I32,
+                        E::Convert {
+                            from: Kind::I64,
+                            to: Kind::I32,
+                            arg: Box::new(bin(BinOp::RemU, Kind::I64, getl("t"), i64c(10))),
+                        },
+                        i32c(48),
+                    ),
+                    offset: 0,
+                },
+                N::SetLocal { local: "p".into(), value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)) },
+                N::SetLocal { local: "t".into(), value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)) },
+                N::Br { target: "l2_64".into(), cond: None },
+            ],
+        }],
+    };
+
+    WirFunc {
+        name: "str_fmt_prefix_int".into(),
+        params: vec![
+            WirLocal { name: "prefix".into(), ty: WirTy::Str },
+            WirLocal { name: "n".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "plen".into(), ty: WirTy::Bool },
+            WirLocal { name: "mag".into(), ty: WirTy::Int },
+            WirLocal { name: "t".into(), ty: WirTy::Int },
+            WirLocal { name: "ndigits".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "total_len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "neg".into(), ty: WirTy::Bool },
+            WirLocal { name: "t32".into(), ty: WirTy::Bool },
+            WirLocal { name: "next32".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "plen".into(), value: E::Load { ptr: Box::new(getl("prefix")), kind: Kind::I32, offset: 0 } },
+            N::If {
+                cond: bin(BinOp::Eq, Kind::I64, getl("n"), i64c(0)),
+                then_: vec![
+                    N::SetLocal { local: "total_len".into(), value: bin(BinOp::Add, Kind::I32, getl("plen"), i32c(1)) },
+                    N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("total_len"))] } },
+                    N::Store { ptr: getl("res"), value: getl("total_len"), kind: Kind::I32, offset: 0 },
+                    N::MemoryCopy { dest: bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), src: bin(BinOp::Add, Kind::I32, getl("prefix"), i32c(4)), len: getl("plen") },
+                    N::Store8 { ptr: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("plen")), value: i32c(48), offset: 0 },
+                    N::Push(getl("res")),
+                ],
+                els: vec![
+                    N::SetLocal { local: "neg".into(), value: bin(BinOp::Lt, Kind::I64, getl("n"), i64c(0)) },
+                    N::SetLocal {
+                        local: "mag".into(),
+                        value: E::Control(Box::new(N::If {
+                            cond: getl("neg"),
+                            then_: vec![N::Push(bin(BinOp::Sub, Kind::I64, i64c(0), getl("n")))],
+                            els: vec![N::Push(getl("n"))],
+                            result: Some(WirTy::Int),
+                        })),
+                    },
+                    N::SetLocal { local: "ndigits".into(), value: i32c(0) },
+                    N::If {
+                        cond: bin(BinOp::LeU, Kind::I64, getl("mag"), i64c(0xFFFFFFFF)),
+                        then_: vec![
+                            N::SetLocal { local: "t32".into(), value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("mag")) } },
+                            count_loop_32,
+                        ],
+                        els: vec![
+                            N::SetLocal { local: "t".into(), value: getl("mag") },
+                            count_loop_64,
+                        ],
+                        result: None,
+                    },
+                    N::SetLocal { local: "len".into(), value: bin(BinOp::Add, Kind::I32, getl("ndigits"), getl("neg")) },
+                    N::SetLocal { local: "total_len".into(), value: bin(BinOp::Add, Kind::I32, getl("plen"), getl("len")) },
+                    N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("total_len"))] } },
+                    N::Store { ptr: getl("res"), value: getl("total_len"), kind: Kind::I32, offset: 0 },
+                    N::MemoryCopy { dest: bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), src: bin(BinOp::Add, Kind::I32, getl("prefix"), i32c(4)), len: getl("plen") },
+                    N::If {
+                        cond: getl("neg"),
+                        then_: vec![N::Store8 { ptr: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("plen")), value: i32c(45), offset: 0 }],
+                        els: vec![],
+                        result: None,
+                    },
+                    N::SetLocal {
+                        local: "p".into(),
+                        value: bin(
+                            BinOp::Sub,
+                            Kind::I32,
+                            bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("total_len")),
+                            i32c(1),
+                        ),
+                    },
+                    N::If {
+                        cond: bin(BinOp::LeU, Kind::I64, getl("mag"), i64c(0xFFFFFFFF)),
+                        then_: vec![
+                            N::SetLocal { local: "t32".into(), value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("mag")) } },
+                            write_loop_32,
+                        ],
+                        els: vec![
+                            N::SetLocal { local: "t".into(), value: getl("mag") },
+                            write_loop_64,
+                        ],
+                        result: None,
+                    },
+                    N::Push(getl("res")),
+                ],
+                result: Some(WirTy::Str),
+            },
+        ],
+        raw_body: None,
+    }
+}
+
 
 /// `$f_lt`/`$f_le`/`$f_gt`/`$f_ge`(a: f64, b: f64) -> i32 — a NaN-trapping float
 /// ordering compare. Witchy errors on ordering a NaN (the interpreter oracle
