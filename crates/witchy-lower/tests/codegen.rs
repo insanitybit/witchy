@@ -1310,6 +1310,32 @@ fn main() -> Int:
     }
 
     #[test]
+    fn borrowed_string_slice_keeps_pointer_and_length_without_substr() {
+        let string_module = parse_module(
+            witchy_syntax::linker::bundled_source("string").expect("bundled string module"),
+        ).expect("parse string module");
+        let app = parse_module(r#"
+mode opt
+import string
+fn main() -> Int:
+    let owned = "abcdef"
+    let view = string.as_str(&owned)
+    let s = string.slice(view, 1, 4)
+    string.len(s)
+"#).expect("parse slice app");
+        let module = link_test_modules(
+            vec![("string".into(), string_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 3);
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower borrowed slice"));
+        assert!(wat.contains("str_slice_view"), "slice binding should use pair helper: {wat}");
+        assert!(!wat.contains("call $substr"), "borrowed slice must not allocate via substr: {wat}");
+    }
+
+    #[test]
     fn confined_counted_packed_list_streams_exact_storage_and_cursor() {
         let source = r#"
 mode opt

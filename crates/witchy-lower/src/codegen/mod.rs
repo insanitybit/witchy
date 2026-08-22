@@ -6260,13 +6260,13 @@ impl<'types> Codegen<'types> {
         Some(name)
     }
 
-    fn ensure_packed_bool_set_helper(&mut self, id: LayoutId) -> Option<String> {
+    fn ensure_packed_scalar_set_helper(&mut self, id: LayoutId) -> Option<String> {
         use witchy_wir::wir::{BinOp as B, Kind as K, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
-        let name = Self::layout_helper_name("packed_bool_set", id, None);
+        let name = Self::layout_helper_name("packed_scalar_set", id, None);
         if self.layout_wir_funcs.contains_key(&name) { return Some(name); }
         let d = self.specialized_layouts.get(id)?.clone();
         let LayoutKind::PackedList { element, rc } = d.kind() else { return None };
-        if !matches!(self.specialized_layouts.get(*element)?.kind(), LayoutKind::Scalar(ScalarKind::Bool)) { return None; }
+        let LayoutKind::Scalar(scalar) = self.specialized_layouts.get(*element)?.kind() else { return None };
         let HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, .. } = d.header() else { return None };
         let LayoutSize::Dynamic { base, stride } = d.size() else { return None };
         let add = |a, b| W::Binary { op: B::Add, kind: K::I32, lhs: Box::new(a), rhs: Box::new(b) };
@@ -6277,7 +6277,12 @@ impl<'types> Codegen<'types> {
         body.clear();
         body.push(N::If {
             cond: W::Binary { op: B::Gt, kind: K::I32, lhs: Box::new(W::GetLocal("cap".into())), rhs: Box::new(W::ConstI32(0)) },
-            then_: vec![N::Store8 { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), offset: 0 }, N::SetLocal { local: "out_root".into(), value: W::GetLocal("root".into()) }, N::SetLocal { local: "out_cap".into(), value: W::GetLocal("cap".into()) }],
+            then_: vec![match scalar {
+                ScalarKind::Bool => N::Store8 { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), offset: 0 },
+                ScalarKind::Int | ScalarKind::Duration => N::Store { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::I64, offset: 0 },
+                ScalarKind::Float => N::Store { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::F64, offset: 0 },
+                _ => return None,
+            }, N::SetLocal { local: "out_root".into(), value: W::GetLocal("root".into()) }, N::SetLocal { local: "out_cap".into(), value: W::GetLocal("cap".into()) }],
             els: {
                 let new_cap = W::Load { ptr: Box::new(W::GetLocal("root".into())), kind: K::I32, offset: capacity_offset };
                 let size = add(W::ConstI32(base as i32), mul(new_cap.clone(), W::ConstI32(stride as i32)));
@@ -6285,7 +6290,12 @@ impl<'types> Codegen<'types> {
                 alloc.push(N::MemoryCopy { dest: add(nr.clone(), W::ConstI32(data_offset as i32)), src: add(W::GetLocal("root".into()), W::ConstI32(data_offset as i32)), len: mul(W::Load { ptr: Box::new(W::GetLocal("root".into())), kind: K::I32, offset: length_offset }, W::ConstI32(stride as i32)) });
                 alloc.push(N::Store { ptr: nr.clone(), value: W::Load { ptr: Box::new(W::GetLocal("root".into())), kind: K::I32, offset: length_offset }, kind: K::I32, offset: length_offset });
                 alloc.push(N::Store { ptr: nr.clone(), value: new_cap, kind: K::I32, offset: capacity_offset });
-                alloc.push(N::Store8 { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), offset: 0 });
+                alloc.push(match scalar {
+                    ScalarKind::Bool => N::Store8 { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), offset: 0 },
+                    ScalarKind::Int | ScalarKind::Duration => N::Store { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::I64, offset: 0 },
+                    ScalarKind::Float => N::Store { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::F64, offset: 0 },
+                    _ => return None,
+                });
                 alloc.push(N::SetLocal { local: "out_root".into(), value: nr });
                 alloc.push(N::SetLocal { local: "out_cap".into(), value: W::ConstI32(0) });
                 alloc
@@ -6294,7 +6304,29 @@ impl<'types> Codegen<'types> {
         });
         body.push(N::Push(W::GetLocal("out_root".into())));
         body.push(N::Push(W::GetLocal("out_cap".into())));
-        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "root".into(), ty: WirTy::Bool }, WirLocal { name: "index".into(), ty: WirTy::Bool }, WirLocal { name: "value".into(), ty: WirTy::Bool }, WirLocal { name: "cap".into(), ty: WirTy::Bool }], ret: vec![WirTy::Bool, WirTy::Bool], locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }, WirLocal { name: "out_root".into(), ty: WirTy::Bool }, WirLocal { name: "out_cap".into(), ty: WirTy::Bool }], body, raw_body: None });
+        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "root".into(), ty: WirTy::Bool }, WirLocal { name: "index".into(), ty: WirTy::Bool }, WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)) }, WirLocal { name: "cap".into(), ty: WirTy::Bool }], ret: vec![WirTy::Bool, WirTy::Bool], locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }, WirLocal { name: "out_root".into(), ty: WirTy::Bool }, WirLocal { name: "out_cap".into(), ty: WirTy::Bool }], body, raw_body: None });
+        Some(name)
+    }
+
+    fn ensure_packed_bytes_from_list_helper(&mut self, id: LayoutId) -> Option<String> {
+        use witchy_wir::wir::{BinOp as B, Kind as K, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = Self::layout_helper_name("packed_bytes_from_list", id, None);
+        if self.layout_wir_funcs.contains_key(&name) { return Some(name); }
+        let d = self.specialized_layouts.get(id)?.clone();
+        let LayoutKind::PackedList { element, .. } = d.kind() else { return None };
+        let LayoutKind::Scalar(scalar) = self.specialized_layouts.get(*element)?.kind() else { return None };
+        if !matches!(scalar, ScalarKind::Int | ScalarKind::Bool) { return None; }
+        let HeaderLayout::PackedList { length_offset, data_offset, .. } = d.header() else { return None };
+        let LayoutSize::Dynamic { stride, .. } = d.size() else { return None };
+        let get = |n: &str| W::GetLocal(n.into());
+        let add = |l, r| W::Binary { op: B::Add, kind: K::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let mul = |l, r| W::Binary { op: B::Mul, kind: K::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let len = W::Load { ptr: Box::new(get("list")), kind: K::I32, offset: length_offset };
+        let out = W::Call { func: "rc_alloc".into(), args: vec![add(len.clone(), W::ConstI32(4))] };
+        let mut body = vec![N::SetLocal { local: "out".into(), value: out }, N::Store { ptr: get("out"), value: len.clone(), kind: K::I32, offset: 0 }, N::SetLocal { local: "i".into(), value: W::ConstI32(0) }];
+        body.push(N::Block { label: "done".into(), result: None, body: vec![N::Loop { label: "loop".into(), body: vec![N::Br { target: "done".into(), cond: Some(W::Binary { op: B::GeU, kind: K::I32, lhs: Box::new(get("i")), rhs: Box::new(len.clone()) }) }, N::Store8 { ptr: add(get("out"), add(W::ConstI32(4), get("i"))), value: W::Convert { from: if matches!(scalar, ScalarKind::Bool) { K::I32 } else { K::I64 }, to: K::I32, arg: Box::new(W::Load { ptr: Box::new(add(get("list"), add(W::ConstI32(data_offset as i32), mul(get("i"), W::ConstI32(stride as i32))))), kind: if matches!(scalar, ScalarKind::Bool) { K::I32 } else { K::I64 }, offset: 0 }) }, offset: 0 }, N::SetLocal { local: "i".into(), value: add(get("i"), W::ConstI32(1)) }, N::Br { target: "loop".into(), cond: None }] }] });
+        body.push(N::Push(get("out")));
+        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "list".into(), ty: WirTy::Bool }], ret: vec![WirTy::Str], locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }, WirLocal { name: "i".into(), ty: WirTy::Bool }], body, raw_body: None });
         Some(name)
     }
 

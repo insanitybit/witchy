@@ -79,6 +79,14 @@ impl Codegen<'_> {
         )
     }
 
+    fn packed_list_bytes_from_list_is_materializable(&self, name: &str, args: &[Expr]) -> bool {
+        if name != intrinsics::BYTES_FROM_LIST || args.len() != 1 { return false; }
+        let Some(id) = self.specialized_layout_of_expr(&args[0]) else { return false; };
+        let Some(d) = self.specialized_layouts.get(id) else { return false; };
+        let LayoutKind::PackedList { element, .. } = d.kind() else { return false; };
+        matches!(self.specialized_layouts.get(*element).map(|e| e.kind()), Some(LayoutKind::Scalar(ScalarKind::Bool | ScalarKind::Int)))
+    }
+
     pub(super) fn reject_unsupported_specialized_boundary(&mut self, expr: &Expr) -> bool {
         let callable_detail = self.callable_layout_rejection_detail(expr);
         let capture_detail = match expr {
@@ -110,6 +118,7 @@ impl Codegen<'_> {
                     // field-by-field through the descriptor), so it is a
                     // supported boundary rather than an unsupported reshape.
                     && !self.packed_list_at_is_materializable(name, args)
+                    && !self.packed_list_bytes_from_list_is_materializable(name, args)
                     && self.intrinsic_host_layout_is_unsupported(
                         name,
                         args,

@@ -274,6 +274,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "str_slice_view" => Some(WirHelperSpec {
+            func: str_slice_view_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_view_to_string" => Some(WirHelperSpec {
+            func: str_view_to_string_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "bytes_slice" => Some(WirHelperSpec {
             func: bytes_slice_helper(),
             helper_deps: &["substr"],
@@ -1193,6 +1207,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "dict_update_slice_cap" => Some(WirHelperSpec {
             func: dict_update_slice_cap_helper(),
             helper_deps: &["rc_alloc", "dict_find_slice", "dict_insert_cap", "dict_index_update_value"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: true,
+        }),
+        "dict_update_slice" => Some(WirHelperSpec {
+            func: dict_update_slice_helper(),
+            helper_deps: &["dict_update_slice_cap"],
             import_deps: &[],
             uses_heap: true,
             uses_table: true,

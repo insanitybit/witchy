@@ -1173,6 +1173,33 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
     }
 }
 
+/// Single-result compatibility wrapper for the borrowed-string update surface.
+/// The caller owns the dictionary value; the cap-carrying implementation is
+/// retained as the source of truth and this wrapper supplies a zero token when
+/// no in-place capacity channel is available at the ordinary expression ABI.
+pub(crate) fn dict_update_slice_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let get = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "dict_update_slice".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "default".into(), ty: WirTy::Int },
+            WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }, WirLocal { name: "cap".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::CallStoreMulti { func: "dict_update_slice_cap".into(), args: vec![get("d"), get("p"), get("len"), get("default"), get("clos"), E::ConstI32(0)], dests: vec!["out".into(), "cap".into()] },
+            N::Push(get("out")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_update(d, k, default, mode, clos) -> i32` — apply the updater closure
 /// to the current value (or `default` when absent) and reinsert.
 pub(crate) fn dict_update_helper() -> WirFunc {

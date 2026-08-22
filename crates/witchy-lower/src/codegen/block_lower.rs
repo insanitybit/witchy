@@ -523,6 +523,31 @@ impl<'types> Codegen<'types> {
                         } else if executable_reference_result {
                             self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
                         }
+                        // RFC-0144 borrowed string slices carry their payload
+                        // pointer and byte length as two locals. Keep the view
+                        // out of the owning `[len][bytes]` representation; later
+                        // string/dict lowering can consume the pair directly.
+                        if let Expr::Call { name: callee, args } = value
+                            && callee == intrinsics::STRING_SLICE
+                            && args.len() == 3
+                        {
+                            let len_local = format!("{name}__slice_len");
+                            self.locals.insert(name.clone(), Kind::I32);
+                            self.locals.insert(len_local.clone(), Kind::I32);
+                            let sk = self.kind_of(&args[1]);
+                            let ek = self.kind_of(&args[2]);
+                            seq.push(N::CallStoreMulti {
+                                func: "str_slice_view".into(),
+                                args: vec![
+                                    self.lower_expr(&args[0])?,
+                                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
+                                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
+                                ],
+                                dests: vec![name.clone(), len_local],
+                            });
+                            tail_is_value = false;
+                            continue;
+                        }
                         // An empty typed reference list has no element expression
                         // from which `lower_expr` can recover its GC array layout.
                         // The binding declaration is authoritative here: preserve
@@ -1215,7 +1240,7 @@ impl<'types> Codegen<'types> {
                             .is_some()
                             && !matches!(
                                 (&op, self.local_types.get(name).and_then(|ty| self.specialized_layout_id(ty)).and_then(|id| self.specialized_layouts.get(id))) ,
-                                (analysis::InPlaceOp::SetAt(_, _), Some(d)) if matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool))))
+                                (analysis::InPlaceOp::SetAt(_, _), Some(d)) if matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool | ScalarKind::Int | ScalarKind::Float))))
                             )
                         {
                             let boundary = match &op {
@@ -1247,9 +1272,9 @@ impl<'types> Codegen<'types> {
                         };
                         match op {
                             analysis::InPlaceOp::SetAt(iexpr, vexpr)
-                                if self.local_types.get(name).and_then(|ty| self.specialized_layout_id(ty)).and_then(|id| self.specialized_layouts.get(id)).is_some_and(|d| matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool))))) => {
+                                if self.local_types.get(name).and_then(|ty| self.specialized_layout_id(ty)).and_then(|id| self.specialized_layouts.get(id)).is_some_and(|d| matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool | ScalarKind::Int | ScalarKind::Float))))) => {
                                 let id = self.specialized_layout_id(self.local_types.get(name)?)?;
-                                let helper = self.ensure_packed_bool_set_helper(id)?;
+                                let helper = self.ensure_packed_scalar_set_helper(id)?;
                                 let args = vec![W::GetLocal(name.clone()), Self::wir_convert(self.lower_expr(iexpr)?, self.kind_of(iexpr), Kind::I32), self.lower_expr(vexpr)?, if dirty { W::ConstI32(0) } else { W::GetLocal(format!("{name}__cap")) }];
                                 seq.push(N::CallStoreMulti { func: helper, args, dests: vec![name.clone(), format!("{name}__cap")] });
                             }

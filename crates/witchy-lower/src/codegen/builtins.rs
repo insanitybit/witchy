@@ -492,6 +492,15 @@ impl Codegen<'_> {
                 | (intrinsics::STRING_LEN, 1)
                 if self.collect_wir =>
             {
+                if let Expr::Var(name) = &args[0]
+                    && self.locals.contains_key(&format!("{name}__slice_len"))
+                {
+                    return Some(Self::wir_convert(
+                        W::GetLocal(format!("{name}__slice_len")),
+                        Kind::I32,
+                        Kind::I64,
+                    ));
+                }
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
                     W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
@@ -1133,6 +1142,15 @@ impl Codegen<'_> {
                 call(intrinsic_helper(name), vec![self.lower_expr(&args[0])?, W::ConstI32(up)])
             }
             (intrinsics::STRING_AS_STR, 1) | (intrinsics::STRING_TO_STRING, 1) => {
+                if name == intrinsics::STRING_TO_STRING
+                    && let Expr::Var(slice) = &args[0]
+                    && self.locals.contains_key(&format!("{slice}__slice_len"))
+                {
+                    return Some(call("str_view_to_string", vec![
+                        self.lower_expr(&args[0])?,
+                        W::GetLocal(format!("{slice}__slice_len")),
+                    ]));
+                }
                 if self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID) {
                     self.lower_place_reference_read(&args[0], Kind::I32, &args[0])?
                 } else {
@@ -1179,7 +1197,13 @@ impl Codegen<'_> {
             // UTF-8, so its bytes are the buffer verbatim.
             (intrinsics::BYTES_FROM_STRING, 1) => self.lower_expr(&args[0])?,
             (intrinsics::BYTES_FROM_LIST, 1) => {
-                call("bytes_from_list", vec![self.lower_expr(&args[0])?])
+                if let Some(id) = self.specialized_layout_of_expr(&args[0])
+                    && let Some(helper) = self.ensure_packed_bytes_from_list_helper(id)
+                {
+                    call(&helper, vec![self.lower_expr(&args[0])?])
+                } else {
+                    call("bytes_from_list", vec![self.lower_expr(&args[0])?])
+                }
             }
             // (parity, SEC-042) `to_string` is NOT identity: `Bytes` has no UTF-8
             // contract, so invalid sequences must be lossily normalized to U+FFFD to
@@ -1783,6 +1807,21 @@ impl Codegen<'_> {
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
+                if mode == 1
+                    && let Expr::Var(name) = &args[1]
+                    && self.locals.contains_key(&format!("{name}__slice_len"))
+                {
+                    self.uses_dict = true;
+                    return Some(W::FromSlot(
+                        Box::new(call("dict_get_slice_or", vec![
+                            self.lower_expr(&args[0])?,
+                            W::GetLocal(name.clone()),
+                            W::GetLocal(format!("{name}__slice_len")),
+                            self.lower_expr(&args[2])?,
+                        ])),
+                        Self::wir_kind(dk),
+                    ));
+                }
                 let inner = vec![
                     self.lower_expr(&args[0])?,
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
@@ -1811,6 +1850,16 @@ impl Codegen<'_> {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
+                if mode == 1
+                    && let Expr::Var(name) = &args[1]
+                    && self.locals.contains_key(&format!("{name}__slice_len"))
+                {
+                    return Some(call("dict_contains_slice", vec![
+                        self.lower_expr(&args[0])?,
+                        W::GetLocal(name.clone()),
+                        W::GetLocal(format!("{name}__slice_len")),
+                    ]));
+                }
                 call(intrinsic_helper(name), vec![
                     self.lower_expr(&args[0])?,
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),

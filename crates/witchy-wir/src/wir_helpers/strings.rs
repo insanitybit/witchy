@@ -1001,3 +1001,63 @@ pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
     }
 }
 
+/// `$str_slice_view(s, start, end) -> (ptr, len)` — byte-indexed borrowed view.
+/// The returned pointer addresses the first payload byte; unlike `str_slice_fast`
+/// this helper never allocates or constructs an owning string header.
+pub(crate) fn str_slice_view_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let get = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    let nar = |e: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
+    let set = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    WirFunc {
+        name: "str_slice_view".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Int },
+            WirLocal { name: "end".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
+            WirLocal { name: "lo".into(), ty: WirTy::Bool },
+            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            set("slen", E::Load { ptr: Box::new(get("s")), kind: Kind::I32, offset: 0 }),
+            set("lo", nar(get("start"))),
+            N::If { cond: b64(BinOp::Lt, get("start"), E::ConstI64(0)), then_: vec![set("lo", i32c(0))], els: vec![N::If { cond: b64(BinOp::Gt, get("start"), ext(get("slen"))), then_: vec![set("lo", get("slen"))], els: vec![], result: None }], result: None },
+            set("hi", nar(get("end"))),
+            N::If { cond: b64(BinOp::Lt, get("end"), ext(get("lo"))), then_: vec![set("hi", get("lo"))], els: vec![N::If { cond: b64(BinOp::Gt, get("end"), ext(get("slen"))), then_: vec![set("hi", get("slen"))], els: vec![], result: None }], result: None },
+            N::Push(b(BinOp::Add, b(BinOp::Add, get("s"), i32c(4)), get("lo"))),
+            N::Push(b(BinOp::Sub, get("hi"), get("lo"))),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$str_view_to_string(p, len) -> String` — materialize an owning string from
+/// a borrowed payload view when an API explicitly requests ownership.
+pub(crate) fn str_view_to_string_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let get = |n: &str| E::GetLocal(n.into());
+    let add = |l, r| E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "str_view_to_string".into(),
+        params: vec![WirLocal { name: "p".into(), ty: WirTy::Str }, WirLocal { name: "len".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Str],
+        locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal { local: "out".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(get("len"), E::ConstI32(4))] } },
+            N::Store { ptr: get("out"), value: get("len"), kind: Kind::I32, offset: 0 },
+            N::MemoryCopy { dest: add(get("out"), E::ConstI32(4)), src: get("p"), len: get("len") },
+            N::Push(get("out")),
+        ],
+        raw_body: None,
+    }
+}
