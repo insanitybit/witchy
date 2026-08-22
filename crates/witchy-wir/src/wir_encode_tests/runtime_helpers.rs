@@ -1607,6 +1607,54 @@
     }
 
     fn print_int_module(funcs: Vec<WirFunc>, globals: Vec<WirGlobal>) -> WirModule {
+        let mut funcs = funcs;
+        if funcs.iter().any(|func| func.name == "dict_find" || func.name == "dict_find_slice")
+            && !funcs.iter().any(|func| func.name == "dict_ctrl_h2")
+        {
+            funcs.push(crate::wir_helpers::dict_ctrl_h2_helper());
+        }
+        if funcs.iter().any(|func| func.name == "dict_insert") {
+            if !funcs.iter().any(|func| func.name == "bump_alloc") {
+                funcs.push(crate::wir_helpers::bump_alloc_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_index_put") {
+                funcs.push(crate::wir_helpers::dict_index_put_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_hash") {
+                funcs.push(crate::wir_helpers::dict_hash_helper());
+            }
+        }
+        if funcs.iter().any(|func| func.name == "dict_remove")
+            && !funcs.iter().any(|func| func.name == "dict_reindex")
+        {
+            funcs.push(crate::wir_helpers::dict_reindex_helper());
+            if !funcs.iter().any(|func| func.name == "bump_alloc") {
+                funcs.push(crate::wir_helpers::bump_alloc_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_index_put") {
+                funcs.push(crate::wir_helpers::dict_index_put_helper());
+            }
+            if !funcs.iter().any(|func| func.name == "dict_hash") {
+                funcs.push(crate::wir_helpers::dict_hash_helper());
+            }
+        }
+        let mut globals = globals;
+        // Dictionary helpers may carry RFC-0143 attribution sites even in
+        // synthetic encoder fixtures. Keep the fixture modules' global ABI in
+        // step with the production assembly without repeating these rows in
+        // every dictionary test.
+        for (name, kind, init) in [
+            ("__witchy_extract_active", Kind::I32, GlobalInit::I32(0)),
+            ("__witchy_dict_hashes", Kind::I64, GlobalInit::I64(0)),
+            ("__witchy_dict_probe_groups", Kind::I64, GlobalInit::I64(0)),
+            ("__witchy_dict_h2_candidates", Kind::I64, GlobalInit::I64(0)),
+            ("__witchy_dict_rebuilds", Kind::I64, GlobalInit::I64(0)),
+            ("__witchy_dict_grows", Kind::I64, GlobalInit::I64(0)),
+        ] {
+            if !globals.iter().any(|global| global.name == name) {
+                globals.push(WirGlobal { name: name.into(), kind, mutable: true, init, export: None });
+            }
+        }
         WirModule {
             imports: vec![WirImport {
                 name: "print_int".into(),
