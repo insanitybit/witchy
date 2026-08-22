@@ -77,6 +77,9 @@ pub struct Stats {
     pub dict_h2_candidates: i64,
     pub dict_rebuilds: i64,
     pub dict_grows: i64,
+    /// RFC-0143 bytes moved by ordered dictionary projections/removal repair.
+    pub dict_order_bytes_moved: i64,
+    pub dict_index_bytes: i64,
     /// Checked program points carrying one or more active loan facts.
     pub loan_active_points: usize,
     /// Total active loan facts across those program points.
@@ -178,6 +181,8 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         dict_h2_candidates: vm.dict_h2_candidates().unwrap_or(0),
         dict_rebuilds: vm.dict_rebuilds().unwrap_or(0),
         dict_grows: vm.dict_grows().unwrap_or(0),
+        dict_order_bytes_moved: vm.dict_order_bytes_moved().unwrap_or(0),
+        dict_index_bytes: vm.dict_index_bytes().unwrap_or(0),
         loan_active_points: loan_telemetry.active_points,
         loan_active_events: loan_telemetry.active_events,
         loan_opens: loan_telemetry.opens,

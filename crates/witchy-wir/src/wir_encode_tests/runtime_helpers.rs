@@ -1667,6 +1667,8 @@
             ("__witchy_dict_h2_candidates", Kind::I64, GlobalInit::I64(0)),
             ("__witchy_dict_rebuilds", Kind::I64, GlobalInit::I64(0)),
             ("__witchy_dict_grows", Kind::I64, GlobalInit::I64(0)),
+            ("__witchy_dict_order_bytes_moved", Kind::I64, GlobalInit::I64(0)),
+            ("__witchy_dict_index_bytes", Kind::I64, GlobalInit::I64(0)),
         ] {
             if !globals.iter().any(|global| global.name == name) {
                 globals.push(WirGlobal { name: name.into(), kind, mutable: true, init, export: None });

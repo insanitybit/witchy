@@ -28,13 +28,6 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
-            N::If {
-                cond: b(BinOp::Lt, getl("found"), i32c(0)),
-                then_: vec![N::Return(Some(getl("default")))],
-                els: vec![],
-                result: None,
-            },
             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
             N::If {
                 cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
@@ -44,14 +37,23 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
                     N::If {
                         cond: b(BinOp::Ge, getl("bucket"), i32c(0)),
                         then_: vec![N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(13)), b(BinOp::Mul, getl("bucket"), i32c(8)))))), kind: Kind::I64, offset: 0 }))],
-                        els: vec![],
+                        els: vec![N::Return(Some(getl("default")))],
                         result: None,
                     },
                 ],
-                els: vec![],
+                els: vec![
+                    N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+                    N::If {
+                        cond: b(BinOp::Lt, getl("found"), i32c(0)),
+                        then_: vec![N::Return(Some(getl("default")))],
+                        els: vec![],
+                        result: None,
+                    },
+                    N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))), kind: Kind::I64, offset: 12 })),
+                ],
                 result: None,
             },
-            N::Push(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))), kind: Kind::I64, offset: 12 }),
+            N::Push(getl("default")),
         ],
         raw_body: None,
     }
@@ -74,21 +76,39 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Int],
-        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        locals: vec![
+            WirLocal { name: "found".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "bucket".into(), ty: WirTy::Bool },
+            WirLocal { name: "slots".into(), ty: WirTy::Bool },
+        ],
         body: vec![
-            N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
             N::If {
-                cond: b(BinOp::Lt, getl("found"), i32c(0)),
-                then_: abort_nodes(DiagTemplate::DictMissing, i64c(0), i64c(0), i32c(0)),
-                els: vec![],
+                cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
+                then_: vec![
+                    N::SetLocal { local: "slots".into(), value: E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 } },
+                    N::SetLocal { local: "bucket".into(), value: E::Call { func: "dict_find_bucket".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+                    N::If {
+                        cond: b(BinOp::Lt, getl("bucket"), i32c(0)),
+                        then_: abort_nodes(DiagTemplate::DictMissing, i64c(0), i64c(0), i32c(0)),
+                        els: vec![N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(13)), b(BinOp::Mul, getl("bucket"), i32c(8)))))), kind: Kind::I64, offset: 0 }))],
+                        result: None,
+                    },
+                ],
+                els: vec![
+                    N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+                    N::If {
+                        cond: b(BinOp::Lt, getl("found"), i32c(0)),
+                        then_: abort_nodes(DiagTemplate::DictMissing, i64c(0), i64c(0), i32c(0)),
+                        els: vec![],
+                        result: None,
+                    },
+                    N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))), kind: Kind::I64, offset: 12 })),
+                ],
                 result: None,
             },
-            // value slot: d + 12 + found*16.
-            N::Push(E::Load {
-                ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))),
-                kind: Kind::I64,
-                offset: 12,
-            }),
+            N::Unreachable,
         ],
         raw_body: None,
     }
@@ -127,11 +147,28 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let src = E::Load {
+    let dense_src = E::Load {
         ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("i"), i32c(16)))),
         kind: Kind::I64,
         offset: entry_off,
     };
+    let order_bucket = {
+        let order_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)));
+        E::Load {
+            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, order_base, b(BinOp::Mul, getl("i"), i32c(4))))),
+            kind: Kind::I32,
+            offset: 0,
+        }
+    };
+    let carrier_src = {
+        let bucket_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), if entry_off == 4 { i32c(5) } else { i32c(13) }));
+        E::Load {
+            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, bucket_base, b(BinOp::Mul, order_bucket, i32c(8))))),
+            kind: Kind::I64,
+            offset: 0,
+        }
+    };
+    let output_ptr = b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("i"), i32c(8)));
     let scan = N::Block {
         label: "done".into(),
         result: None,
@@ -139,7 +176,12 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
-                N::Store { ptr: b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("i"), i32c(8))), value: src, kind: Kind::I64, offset: 4 },
+                N::If {
+                    cond: b(BinOp::Ne, getl("idx"), i32c(0)),
+                    then_: vec![N::Store { ptr: output_ptr.clone(), value: carrier_src.clone(), kind: Kind::I64, offset: 4 }],
+                    els: vec![N::Store { ptr: output_ptr, value: dense_src.clone(), kind: Kind::I64, offset: 4 }],
+                    result: None,
+                },
                 setl("i", b(BinOp::Add, getl("i"), i32c(1))),
                 N::Br { target: "l".into(), cond: None },
             ],
@@ -149,12 +191,33 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
         name: name.into(),
         params: vec![WirLocal { name: "d".into(), ty: WirTy::Bool }],
         ret: vec![WirTy::Bool],
-        locals: ["count", "i", "new"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        locals: ["count", "i", "new", "idx", "slots"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
+            N::If {
+                cond: b(BinOp::Ne, getl("idx"), i32c(0)),
+                then_: vec![setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 })],
+                els: vec![],
+                result: None,
+            },
             // (RFC-0016) allocate the projected list through `$rc_alloc` (header + reuse).
             setl("new", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
             N::Store { ptr: getl("new"), value: getl("count"), kind: Kind::I32, offset: 0 },
+            N::If {
+                cond: E::GetGlobal("__witchy_extract_active".into()),
+                then_: vec![N::SetGlobal {
+                    global: "__witchy_dict_order_bytes_moved".into(),
+                    value: E::Binary {
+                        op: BinOp::Add,
+                        kind: Kind::I64,
+                        lhs: Box::new(E::GetGlobal("__witchy_dict_order_bytes_moved".into())),
+                        rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(b(BinOp::Mul, getl("count"), i32c(8))) }),
+                    },
+                }],
+                els: vec![],
+                result: None,
+            },
             setl("i", i32c(0)),
             scan,
             N::Push(getl("new")),
@@ -178,6 +241,22 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
         kind: Kind::I64,
         offset: off,
     };
+    let carrier_entry = |off: u32| {
+        let bucket = {
+            let order_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)));
+            E::Load {
+                ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, order_base, b(BinOp::Mul, getl("i"), i32c(4))))),
+                kind: Kind::I32,
+                offset: 0,
+            }
+        };
+        let bucket_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), if off == 4 { i32c(5) } else { i32c(13) }));
+        E::Load {
+            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, bucket_base, b(BinOp::Mul, bucket, i32c(8))))),
+            kind: Kind::I64,
+            offset: 0,
+        }
+    };
     let scan = N::Block {
         label: "done".into(),
         result: None,
@@ -188,8 +267,18 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
                 // (RFC-0016) each pair tuple via `$rc_alloc` (20 bytes: [tag][key][value]).
                 setl("tup", E::Call { func: "rc_alloc".into(), args: vec![i32c(20)] }),
                 N::Store { ptr: getl("tup"), value: i32c(0), kind: Kind::I32, offset: 0 },
-                N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
-                N::Store { ptr: getl("tup"), value: entry(12), kind: Kind::I64, offset: 12 },
+                N::If {
+                    cond: b(BinOp::Ne, getl("idx"), i32c(0)),
+                    then_: vec![
+                        N::Store { ptr: getl("tup"), value: carrier_entry(4), kind: Kind::I64, offset: 4 },
+                        N::Store { ptr: getl("tup"), value: carrier_entry(12), kind: Kind::I64, offset: 12 },
+                    ],
+                    els: vec![
+                        N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
+                        N::Store { ptr: getl("tup"), value: entry(12), kind: Kind::I64, offset: 12 },
+                    ],
+                    result: None,
+                },
                 // list slot i ← tuple pointer (zero-extended into the i64 slot).
                 N::Store {
                     ptr: b(BinOp::Add, getl("list"), b(BinOp::Mul, getl("i"), i32c(8))),
@@ -206,9 +295,16 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
         name: "dict_pairs".into(),
         params: vec![WirLocal { name: "d".into(), ty: WirTy::Bool }],
         ret: vec![WirTy::Bool],
-        locals: ["count", "i", "list", "tup"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        locals: ["count", "i", "list", "tup", "idx", "slots"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
+            N::If {
+                cond: b(BinOp::Ne, getl("idx"), i32c(0)),
+                then_: vec![setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 })],
+                els: vec![],
+                result: None,
+            },
             // (RFC-0016) allocate the list through `$rc_alloc` (header + reuse); it bumps
             // `$heap` past the list, so each pair tuple's rc_alloc lands in a distinct block
             // above it and never overlaps a written slot.

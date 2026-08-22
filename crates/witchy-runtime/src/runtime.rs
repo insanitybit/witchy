@@ -1110,6 +1110,8 @@ impl Vm {
     pub fn dict_h2_candidates(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_h2_candidates") }
     pub fn dict_rebuilds(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_rebuilds") }
     pub fn dict_grows(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_grows") }
+    pub fn dict_order_bytes_moved(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_order_bytes_moved") }
+    pub fn dict_index_bytes(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_index_bytes") }
 
     /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
     /// `__heap`): the live heap frontier in bytes at program end. With no

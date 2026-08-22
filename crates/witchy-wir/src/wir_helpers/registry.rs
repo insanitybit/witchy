@@ -1174,7 +1174,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_update_slice_cap" => Some(WirHelperSpec {
             func: dict_update_slice_cap_helper(),
-            helper_deps: &["rc_alloc", "dict_find_slice", "dict_insert_cap"],
+            helper_deps: &["rc_alloc", "dict_find_slice", "dict_insert_cap", "dict_index_update_value"],
             import_deps: &[],
             uses_heap: true,
             uses_table: true,
@@ -1207,6 +1207,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                 "rc_free",
                 "dict_find",
                 "dict_index_put",
+                "dict_index_update_value",
                 "dict_reindex",
                 "leaf_dup",
                 "leaf_drop",
@@ -1302,7 +1303,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_update_cap" => Some(WirHelperSpec {
             func: dict_update_cap_helper(),
-            helper_deps: &["dict_get_or", "dict_insert_cap"],
+            helper_deps: &["dict_get_or", "dict_insert_cap", "dict_index_update_value"],
             import_deps: &[],
             uses_heap: true,
             uses_table: true,

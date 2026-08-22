@@ -5672,6 +5672,8 @@ fn assemble_wir_module_with_structs_mode(
                     WirGlobal { name: "__witchy_dict_h2_candidates".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_h2_candidates".into()) },
                     WirGlobal { name: "__witchy_dict_rebuilds".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_rebuilds".into()) },
                     WirGlobal { name: "__witchy_dict_grows".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_grows".into()) },
+                    WirGlobal { name: "__witchy_dict_order_bytes_moved".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_order_bytes_moved".into()) },
+                    WirGlobal { name: "__witchy_dict_index_bytes".into(), kind: WK::I64, mutable: true, init: GlobalInit::I64(0), export: Some("__witchy_dict_index_bytes".into()) },
                 ]
             } else {
                 Vec::new()
