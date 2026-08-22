@@ -157,6 +157,48 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
     }
 }
 
+/// `$dict_ctrl_h2(idx, h, h2) -> i32` — SIMD H2 membership for one control
+/// group. The scalar probe still owns empty-lane termination; this helper only
+/// turns the 16-byte equality into a candidate-lane bit test.
+pub(crate) fn dict_ctrl_h2_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_ctrl_h2".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "h2".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "group".into(), ty: WirTy::Bool },
+            WirLocal { name: "mask".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "group".into(), value: b(BinOp::And, getl("h"), i32c(-16)) },
+            N::SetLocal {
+                local: "mask".into(),
+                value: E::Vector {
+                    op: VectorOp::I8x16Bitmask,
+                    args: vec![E::Vector {
+                        op: VectorOp::I8x16Eq,
+                        args: vec![
+                            E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("group")))), kind: Kind::V128, offset: 0 },
+                            E::Vector { op: VectorOp::I8x16Splat, args: vec![getl("h2")] },
+                        ],
+                    }],
+                },
+            },
+            N::Push(b(BinOp::Ne, b(BinOp::And, getl("mask"), b(BinOp::Shl, i32c(1), b(BinOp::And, getl("h"), i32c(15)))), i32c(0))),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_find(d, k, mode) -> i32` — the entry index of key `k`, or -1. Linear
 /// scan when the hidden index word is 0; otherwise probe the Swiss control
 /// bytes before loading candidate entry keys.
@@ -226,7 +268,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                 }),
                 N::Br { target: "miss".into(), cond: Some(b(BinOp::Eq, getl("ctrl"), i32c(0x80))) },
                 N::If {
-                    cond: b(BinOp::Eq, getl("ctrl"), getl("h2")),
+                    cond: E::Call { func: "dict_ctrl_h2".into(), args: vec![getl("idx"), getl("h"), getl("h2")] },
                     then_: vec![
                         setl("e", slot_at_h.clone()),
                         N::If {
@@ -569,7 +611,7 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
                     cond: b(BinOp::Eq, ctrl_at_h.clone(), i32c(0x80)),
                     then_: vec![N::Return(Some(i32c(-1)))],
                     els: vec![N::If {
-                        cond: b(BinOp::Eq, ctrl_at_h.clone(), getl("h2")),
+                        cond: E::Call { func: "dict_ctrl_h2".into(), args: vec![getl("idx"), getl("h"), getl("h2")] },
                         then_: vec![
                             setl("e", slot_at_h.clone()),
                             N::If {
