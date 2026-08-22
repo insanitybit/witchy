@@ -249,6 +249,28 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["51", "true", "99", "40"]);
     }
 
+    #[test]
+    fn dict_swiss_order_metadata_preserves_projection_order() {
+        let src = r#"
+import dict
+fn main(console: Console):
+    var d = dict.new()
+    for i in 0..64:
+        dict.insert(d, i, i + 1000)
+    dict.remove(d, 7)
+    dict.insert(d, 7, 7007)
+    let ks = dict.keys(d)
+    let vs = dict.values(d)
+    console.print("${list.at(ks, 0)}")
+    console.print("${list.at(ks, 62)}")
+    console.print("${list.at(ks, 63)}")
+    console.print("${list.at(vs, 63)}")
+"#;
+        let want = vec!["0", "63", "7", "7007"];
+        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverged from interpreter");
+        assert_eq!(run_on_wasm(src), want);
+    }
+
     /// REGRESSION GUARD: `list.reverse`/`flatten`/`flat_map` are O(n), not O(n^2).
     /// They used to accumulate with `list.concat`, which copies the whole growing
     /// result each iteration — O(n^2) time AND allocation, which traps the WASM
