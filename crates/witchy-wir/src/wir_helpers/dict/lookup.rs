@@ -44,7 +44,7 @@ pub(crate) fn key_eq_helper() -> WirFunc {
         raw_body: None,
     }
 }
-/// `$dict_hash(k, mode) -> i32` — a 64-bit bit-mix for scalar keys (mode 0),
+/// `$dict_hash(k, mode) -> i64` — the full internal 64-bit mix.
 /// FNV-1a over the bytes for string keys (mode 1, `k` = string pointer). Only
 /// consulted by `$dict_find`'s (binary-path-dormant) hash probe.
 pub(crate) fn dict_hash_helper() -> WirFunc {
@@ -118,7 +118,7 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             WirLocal { name: "k".into(), ty: WirTy::Int },
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
-        ret: vec![WirTy::Bool],
+        ret: vec![WirTy::Int],
         locals: vec![
             WirLocal { name: "x".into(), ty: WirTy::Int },
             WirLocal { name: "w".into(), ty: WirTy::Int },
@@ -134,7 +134,7 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
                     setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(33)))),
                     setl("x", b64(BinOp::Mul, getl("x"), i64c(-49064778989728563))),
                     setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(33)))),
-                    N::Return(Some(E::FromSlot(Box::new(getl("x")), Kind::I32))),
+                    N::Return(Some(getl("x"))),
                 ],
                 els: vec![],
                 result: None,
@@ -151,7 +151,7 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             setl("x", b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("len")) })),
             setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32))), i64c(-4265267296055464877i64))),
             setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(29)))),
-            N::Push(E::FromSlot(Box::new(getl("x")), Kind::I32)),
+            N::Push(getl("x")),
         ],
         raw_body: None,
     }
@@ -199,15 +199,18 @@ pub(crate) fn dict_find_helper() -> WirFunc {
             ],
         }],
     };
-    // slot value at index table position h: idx + 4 + h*4.
-    let slot_at_h = load(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(4))), 0);
+    let slot_at_h = load(
+        b(BinOp::Add, b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))), b(BinOp::Mul, getl("h"), i32c(4))),
+        0,
+    );
     let probe = N::Block {
         label: "miss".into(),
         result: None,
         body: vec![N::Loop {
             label: "p".into(),
             body: vec![
-                setl("e", slot_at_h),
+                N::Br { target: "miss".into(), cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))) },
+                setl("e", slot_at_h.clone()),
                 N::Br { target: "miss".into(), cond: Some(E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) }) },
                 comparison_bump(),
                 N::If {
@@ -217,6 +220,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                     result: None,
                 },
                 setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                setl("attempt", b(BinOp::Add, getl("attempt"), i32c(1))),
                 N::Br { target: "p".into(), cond: None },
             ],
         }],
@@ -229,10 +233,11 @@ pub(crate) fn dict_find_helper() -> WirFunc {
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["idx", "count", "i", "slots", "h", "e"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![
+            "idx", "count", "i", "slots", "h", "h2", "attempt", "e",
+        ].into_iter().map(|n| WirLocal { name: n.into(), ty: WirTy::Bool })
+        .chain(std::iter::once(WirLocal { name: "hash".into(), ty: WirTy::Int }))
+        .collect(),
         body: vec![
             setl("idx", load(b(BinOp::Sub, getl("d"), i32c(4)), 0)),
             N::If {
@@ -247,7 +252,10 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                 result: None,
             },
             setl("slots", load(getl("idx"), 0)),
-            setl("h", b(BinOp::And, E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("hash", E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }),
+            setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
+            setl("attempt", i32c(0)),
             probe,
             N::Push(i32c(-1)),
         ],
@@ -400,7 +408,7 @@ pub(crate) fn dict_slice_eq_helper() -> WirFunc {
     }
 }
 
-/// `$dict_hash_slice(p, len) -> i32` — foldhash over raw `(p, len)` slice bytes.
+/// `$dict_hash_slice(p, len) -> i64` — the full slice hash.
 pub(crate) fn dict_hash_slice_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -464,7 +472,7 @@ pub(crate) fn dict_hash_slice_helper() -> WirFunc {
             WirLocal { name: "p".into(), ty: WirTy::Str },
             WirLocal { name: "len".into(), ty: WirTy::Bool },
         ],
-        ret: vec![WirTy::Bool],
+        ret: vec![WirTy::Int],
         locals: vec![
             WirLocal { name: "x".into(), ty: WirTy::Int },
             WirLocal { name: "w".into(), ty: WirTy::Int },
@@ -479,7 +487,7 @@ pub(crate) fn dict_hash_slice_helper() -> WirFunc {
             setl("x", b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("len")) })),
             setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32))), i64c(-4265267296055464877i64))),
             setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(29)))),
-            N::Push(E::FromSlot(Box::new(getl("x")), Kind::I32)),
+            N::Push(getl("x")),
         ],
         raw_body: None,
     }
@@ -509,22 +517,47 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
             ],
         }],
     };
-    let slot_at_h = load(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(4))), 0);
+    let ctrl_at_h = E::Load8U {
+        ptr: Box::new(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), getl("h"))),
+        offset: 0,
+    };
+    let slot_at_h = load(
+        b(BinOp::Add, b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))), b(BinOp::Mul, getl("h"), i32c(4))),
+        0,
+    );
     let probe = N::Block {
         label: "miss".into(),
         result: None,
         body: vec![N::Loop {
             label: "p".into(),
             body: vec![
-                setl("e", slot_at_h),
-                N::Br { target: "miss".into(), cond: Some(E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) }) },
+                N::Br { target: "miss".into(), cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))) },
                 N::If {
-                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
-                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
-                    els: vec![],
+                    cond: b(BinOp::Eq, ctrl_at_h.clone(), i32c(0x80)),
+                    then_: vec![N::Return(Some(i32c(-1)))],
+                    els: vec![N::If {
+                        cond: b(BinOp::Eq, ctrl_at_h.clone(), getl("h2")),
+                        then_: vec![
+                            setl("e", slot_at_h.clone()),
+                            N::If {
+                                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) },
+                                then_: vec![N::Return(Some(i32c(-1)))],
+                                els: vec![N::If {
+                                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
+                                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
+                                    els: vec![],
+                                    result: None,
+                                }],
+                                result: None,
+                            },
+                        ],
+                        els: vec![],
+                        result: None,
+                    }],
                     result: None,
                 },
                 setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                setl("attempt", b(BinOp::Add, getl("attempt"), i32c(1))),
                 N::Br { target: "p".into(), cond: None },
             ],
         }],
@@ -537,10 +570,11 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
             WirLocal { name: "len".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["idx", "count", "i", "slots", "h", "e"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![
+            "idx", "count", "i", "slots", "h", "h2", "attempt", "e",
+        ].into_iter().map(|n| WirLocal { name: n.into(), ty: WirTy::Bool })
+        .chain(std::iter::once(WirLocal { name: "hash".into(), ty: WirTy::Int }))
+        .collect(),
         body: vec![
             setl("idx", load(b(BinOp::Sub, getl("d"), i32c(4)), 0)),
             N::If {
@@ -555,7 +589,10 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
                 result: None,
             },
             setl("slots", load(getl("idx"), 0)),
-            setl("h", b(BinOp::And, E::Call { func: "dict_hash_slice".into(), args: vec![getl("p"), getl("len")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("hash", E::Call { func: "dict_hash_slice".into(), args: vec![getl("p"), getl("len")] }),
+            setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
+            setl("attempt", i32c(0)),
             probe,
             N::Push(i32c(-1)),
         ],
@@ -632,4 +669,3 @@ pub(crate) fn dict_contains_slice_helper() -> WirFunc {
         raw_body: None,
     }
 }
-

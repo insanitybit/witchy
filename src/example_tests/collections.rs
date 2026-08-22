@@ -230,6 +230,25 @@ use crate::{ast, codegen, interpreter, parser, typeck};
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
+    #[test]
+    fn dict_swiss_control_carrier_small_scalar_roundtrip() {
+        let src = r#"
+import dict
+fn main(console: Console):
+    var d = dict.new()
+    for i in 0..40:
+        dict.insert(d, i, i * 3)
+    console.print("${dict.get_or(d, 17, -1)}")
+    console.print("${dict.contains_key(d, 39)}")
+    dict.remove(d, 17)
+    dict.insert(d, 17, 99)
+    console.print("${dict.get_or(d, 17, -1)}")
+    console.print("${list.length(dict.keys(d))}")
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "compiled backend diverges from the interpreter oracle");
+        assert_eq!(run_on_wasm(src), vec!["51", "true", "99", "40"]);
+    }
+
     /// REGRESSION GUARD: `list.reverse`/`flatten`/`flat_map` are O(n), not O(n^2).
     /// They used to accumulate with `list.concat`, which copies the whole growing
     /// result each iteration — O(n^2) time AND allocation, which traps the WASM

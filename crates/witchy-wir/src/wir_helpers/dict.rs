@@ -12,11 +12,9 @@ pub(crate) use read::*;
 use crate::wir::*;
 
 /// `$dict_index_put(idx, slots, e, k, mode) -> i32` — record that entry `e` lives
-/// at key `k` in the open-addressing hash index `idx` (slot holds `e+1`, with `0`
-/// meaning empty) by probing from `hash(k) & (slots-1)`. The index is always sized
-/// to ≥ 2× the dict's entry capacity, so it is never more than half full and an
-/// empty slot is always reached — the probe cannot loop forever. The returned i32
-/// is unused (a uniform value-returning helper so callers can invoke it via `$Do`).
+/// at key `k` in the Swiss control/index carrier `idx`. The carrier stores
+/// `[slot_count][ctrl bytes + mirrored tail][entry indices]`; an index value is
+/// `e+1`, while `0` means empty. The control byte stores H2, with `0x80` empty.
 /// This is the maintenance side of [`dict_find_helper`]'s probe; keeping the index
 /// current turns dict insert/lookup from the linear-scan fallback into O(1).
 /// Void (like `$ensure`) so callers invoke it through `$Do` with no leftover
@@ -28,10 +26,19 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    // slot pointer for the current probe position h: idx + 4 + h*4.
-    let sp = || b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(4)));
+    let ctrl_base = || b(BinOp::Add, getl("idx"), i32c(4));
+    let index_base = || b(BinOp::Add, ctrl_base(), b(BinOp::Add, getl("slots"), i32c(16)));
+    let ctrl_ptr = || b(BinOp::Add, ctrl_base(), getl("h"));
+    let index_ptr = || b(BinOp::Add, index_base(), b(BinOp::Mul, getl("h"), i32c(4)));
     let store_and_exit = vec![
-        N::Store { ptr: sp(), value: b(BinOp::Add, getl("e"), i32c(1)), kind: Kind::I32, offset: 0 },
+        N::Store8 { ptr: ctrl_ptr(), value: getl("h2"), offset: 0 },
+        N::Store { ptr: index_ptr(), value: b(BinOp::Add, getl("e"), i32c(1)), kind: Kind::I32, offset: 0 },
+        N::If {
+            cond: b(BinOp::Lt, getl("h"), i32c(16)),
+            then_: vec![N::Store8 { ptr: b(BinOp::Add, ctrl_base(), b(BinOp::Add, getl("slots"), getl("h"))), value: getl("h2"), offset: 0 }],
+            els: vec![],
+            result: None,
+        },
         N::Br { target: "done".into(), cond: None },
     ];
     let probe = N::Block {
@@ -40,13 +47,15 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
         body: vec![N::Loop {
             label: "p".into(),
             body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))) },
                 N::If {
-                    cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(E::Load { ptr: Box::new(sp()), kind: Kind::I32, offset: 0 }) },
+                    cond: b(BinOp::Eq, E::Load8U { ptr: Box::new(ctrl_ptr()), offset: 0 }, i32c(0x80)),
                     then_: store_and_exit,
                     els: vec![],
                     result: None,
                 },
                 setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                setl("attempt", b(BinOp::Add, getl("attempt"), i32c(1))),
                 N::Br { target: "p".into(), cond: None },
             ],
         }],
@@ -61,9 +70,17 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![],
-        locals: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
+        locals: vec![
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "h2".into(), ty: WirTy::Bool },
+            WirLocal { name: "attempt".into(), ty: WirTy::Bool },
+            WirLocal { name: "hash".into(), ty: WirTy::Int },
+        ],
         body: vec![
-            setl("h", b(BinOp::And, E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("hash", E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }),
+            setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
+            setl("attempt", i32c(0)),
             probe,
         ],
         raw_body: None,
@@ -91,8 +108,8 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             func: "bump_alloc".into(),
             args: vec![b(
                 BinOp::Add,
-                i32c(4),
-                b(BinOp::Mul, getl("slots"), i32c(4)),
+                i32c(20),
+                b(BinOp::Mul, getl("slots"), i32c(5)),
             )],
         },
     };
@@ -109,14 +126,7 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
             .collect(),
         body: vec![
-            N::SetLocal {
-                local: "idx".into(),
-                value: E::Load {
-                    ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))),
-                    kind: Kind::I32,
-                    offset: 0,
-                },
-            },
+            N::SetLocal { local: "idx".into(), value: i32c(0) },
             N::If {
                 cond: b(
                     BinOp::And,
@@ -147,28 +157,15 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                             ],
                         }],
                     },
-                    N::If {
-                        cond: b(BinOp::Eq, getl("idx"), i32c(0)),
-                        then_: vec![allocate_index()],
-                        els: vec![N::If {
-                            cond: b(
-                                BinOp::Lt,
-                                E::Load {
-                                    ptr: Box::new(getl("idx")),
-                                    kind: Kind::I32,
-                                    offset: 0,
-                                },
-                                getl("slots"),
-                            ),
-                            then_: vec![allocate_index()],
-                            els: vec![],
-                            result: None,
-                        }],
-                        result: None,
-                    },
+                    allocate_index(),
                     N::Store { ptr: getl("idx"), value: getl("slots"), kind: Kind::I32, offset: 0 },
                     N::MemoryFill {
                         dest: b(BinOp::Add, getl("idx"), i32c(4)),
+                        value: i32c(0x80),
+                        len: b(BinOp::Add, getl("slots"), i32c(16)),
+                    },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))),
                         value: i32c(0),
                         len: b(BinOp::Mul, getl("slots"), i32c(4)),
                     },
@@ -725,68 +722,7 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
             ],
             result: None,
         },
-        // Build a fresh hash index only for modes `$dict_hash` understands
-        // (0 = bits, 1 = string, 2 = float). Structural key modes use the hidden
-        // index word's zero value and `dict_find`'s linear scan; hashing a record
-        // pointer as a string would be both wrong and unsafe.
-        N::If {
-            cond: b(BinOp::Le, getl("mode"), i32c(2)),
-            then_: vec![
-                N::SetLocal { local: "icount".into(), value: E::Load { ptr: Box::new(getl("new")), kind: Kind::I32, offset: 0 } },
-                N::SetLocal { local: "islots".into(), value: i32c(16) },
-                N::Block {
-                    label: "isz".into(),
-                    result: None,
-                    body: vec![N::Loop {
-                        label: "isl".into(),
-                        body: vec![
-                            N::Br { target: "isz".into(), cond: Some(b(BinOp::Ge, getl("islots"), b(BinOp::Mul, getl("newcap"), i32c(2)))) },
-                            N::SetLocal { local: "islots".into(), value: b(BinOp::Mul, getl("islots"), i32c(2)) },
-                            N::Br { target: "isl".into(), cond: None },
-                        ],
-                    }],
-                },
-                // (RFC-0051 I2) Allocate the index block through `$bump_alloc` — the single
-                // ensure-prefixed allocator — instead of a raw ensure+bump pair here. The
-                // index block is header-less scratch (rebuilt on every grow), so it takes
-                // the bump core, not `$rc_alloc`.
-                N::SetLocal {
-                    local: "iptr".into(),
-                    value: E::Call {
-                        func: "bump_alloc".into(),
-                        args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))],
-                    },
-                },
-                N::Store { ptr: getl("iptr"), value: getl("islots"), kind: Kind::I32, offset: 0 },
-                N::MemoryFill { dest: b(BinOp::Add, getl("iptr"), i32c(4)), value: i32c(0), len: b(BinOp::Mul, getl("islots"), i32c(4)) },
-                N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("iptr"), kind: Kind::I32, offset: 0 },
-                N::SetLocal { local: "ie".into(), value: i32c(0) },
-                N::Block {
-                    label: "ipd".into(),
-                    result: None,
-                    body: vec![N::Loop {
-                        label: "ipl".into(),
-                        body: vec![
-                            N::Br { target: "ipd".into(), cond: Some(b(BinOp::Ge, getl("ie"), getl("icount"))) },
-                            N::Do(E::Call {
-                                func: "dict_index_put".into(),
-                                args: vec![
-                                    getl("iptr"),
-                                    getl("islots"),
-                                    getl("ie"),
-                                    E::Load { ptr: Box::new(entry("new", "ie")), kind: Kind::I64, offset: 4 },
-                                    getl("mode"),
-                                ],
-                            }),
-                            N::SetLocal { local: "ie".into(), value: b(BinOp::Add, getl("ie"), i32c(1)) },
-                            N::Br { target: "ipl".into(), cond: None },
-                        ],
-                    }],
-                },
-            ],
-            els: vec![],
-            result: None,
-        },
+        N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), getl("newcap"), getl("mode")] }),
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
     ];
@@ -1123,6 +1059,7 @@ pub(crate) fn dict_remove_helper() -> WirFunc {
             setl("n", i32c(0)),
             scan,
             N::Store { ptr: getl("new"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), getl("n"), getl("mode")] }),
             // `$rc_alloc` reserved the FULL `count`-slot capacity (the size arg above)
             // and already advanced `$heap`, so the count-n slack stays reserved for a
             // later in-place insert — no manual bump.
