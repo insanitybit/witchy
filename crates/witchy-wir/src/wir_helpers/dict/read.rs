@@ -192,22 +192,6 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
         kind: Kind::I64,
         offset: entry_off,
     };
-    let order_bucket = {
-        let order_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)));
-        E::Load {
-            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, order_base, b(BinOp::Mul, getl("i"), i32c(4))))),
-            kind: Kind::I32,
-            offset: 0,
-        }
-    };
-    let carrier_src = {
-        let bucket_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), if entry_off == 4 { i32c(5) } else { i32c(13) }));
-        E::Load {
-            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, bucket_base, b(BinOp::Mul, order_bucket, i32c(8))))),
-            kind: Kind::I64,
-            offset: 0,
-        }
-    };
     let output_ptr = b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("i"), i32c(8)));
     let scan = N::Block {
         label: "done".into(),
@@ -218,7 +202,10 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
                 N::If {
                     cond: b(BinOp::Ne, getl("idx"), i32c(0)),
-                    then_: vec![N::Store { ptr: output_ptr.clone(), value: carrier_src.clone(), kind: Kind::I64, offset: 4 }],
+                    // The dense entry is the owning source of truth. The
+                    // carrier's value lane is maintenance metadata and may be
+                    // shared across persistent replacements.
+                    then_: vec![N::Store { ptr: output_ptr.clone(), value: dense_src.clone(), kind: Kind::I64, offset: 4 }],
                     els: vec![N::Store { ptr: output_ptr, value: dense_src.clone(), kind: Kind::I64, offset: 4 }],
                     result: None,
                 },
@@ -281,22 +268,6 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
         kind: Kind::I64,
         offset: off,
     };
-    let carrier_entry = |off: u32| {
-        let bucket = {
-            let order_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)));
-            E::Load {
-                ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, order_base, b(BinOp::Mul, getl("i"), i32c(4))))),
-                kind: Kind::I32,
-                offset: 0,
-            }
-        };
-        let bucket_base = b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), if off == 4 { i32c(5) } else { i32c(13) }));
-        E::Load {
-            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, bucket_base, b(BinOp::Mul, bucket, i32c(8))))),
-            kind: Kind::I64,
-            offset: 0,
-        }
-    };
     let scan = N::Block {
         label: "done".into(),
         result: None,
@@ -310,8 +281,8 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
                 N::If {
                     cond: b(BinOp::Ne, getl("idx"), i32c(0)),
                     then_: vec![
-                        N::Store { ptr: getl("tup"), value: carrier_entry(4), kind: Kind::I64, offset: 4 },
-                        N::Store { ptr: getl("tup"), value: carrier_entry(12), kind: Kind::I64, offset: 12 },
+                        N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
+                        N::Store { ptr: getl("tup"), value: entry(12), kind: Kind::I64, offset: 12 },
                     ],
                     els: vec![
                         N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
