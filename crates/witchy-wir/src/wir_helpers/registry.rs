@@ -67,6 +67,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                 uses_table: false,
             })
         }
+        "raw_buffer_copy" => Some(WirHelperSpec {
+            func: raw_buffer_copy_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
         // (RFC-0023) Only ever reached when the checked codegen emits a call to it.
         "__heap_reclaim" => Some(WirHelperSpec {
             func: heap_reclaim_helper(),
@@ -283,7 +290,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "str_view_to_string" => Some(WirHelperSpec {
             func: str_view_to_string_helper(),
-            helper_deps: &["rc_alloc"],
+            helper_deps: &["rc_alloc", "raw_buffer_copy"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

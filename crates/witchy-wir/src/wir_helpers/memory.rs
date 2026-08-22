@@ -82,6 +82,57 @@ pub(super) fn heap_reclaim_helper() -> WirFunc {
 
 pub(super) use crate::layout::{slot_offset, slot_record_size, HEAP_REDZONE, RC_SIZE_MASK};
 
+/// `$raw_buffer_copy(dst, src, len)` — copy a byte buffer using 16-byte SIMD
+/// blocks, followed by a scalar tail.  This is deliberately independent of
+/// allocation and ownership: callers use it for packed-list/string payloads
+/// whose bounds have already been established.
+pub(crate) fn raw_buffer_copy_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let get = |name: &str| E::GetLocal(name.into());
+    let i32c = E::ConstI32;
+    let bin = |op: BinOp, lhs: E, rhs: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    let load_vec = E::Load { ptr: Box::new(get("src")), kind: Kind::V128, offset: 0 };
+    let store_vec = N::Store { ptr: get("dst"), value: load_vec, kind: Kind::V128, offset: 0 };
+    WirFunc {
+        name: "raw_buffer_copy".into(),
+        params: vec![
+            WirLocal { name: "dst".into(), ty: WirTy::Bool },
+            WirLocal { name: "src".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![],
+        locals: vec![],
+        body: vec![
+            N::Block {
+                label: "simd_done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "simd_loop".into(),
+                    body: vec![
+                        N::Br {
+                            target: "simd_done".into(),
+                            cond: Some(bin(BinOp::LtU, get("len"), i32c(16))),
+                        },
+                        store_vec,
+                        N::SetLocal { local: "dst".into(), value: bin(BinOp::Add, get("dst"), i32c(16)) },
+                        N::SetLocal { local: "src".into(), value: bin(BinOp::Add, get("src"), i32c(16)) },
+                        N::SetLocal { local: "len".into(), value: bin(BinOp::Sub, get("len"), i32c(16)) },
+                        N::Br { target: "simd_loop".into(), cond: None },
+                    ],
+                }],
+            },
+            N::MemoryCopy { dest: get("dst"), src: get("src"), len: get("len") },
+        ],
+        raw_body: None,
+    }
+}
+
 /// (RFC-0023) Whether the opt-in checked heap is selected for this compile. Read from
 /// the environment like the other codegen toggles (`WITCHY_OPT`, `WIRDIAG`), so a
 /// single `WITCHY_HEAP_CHECK=1` makes both the codegen instrument allocations and the

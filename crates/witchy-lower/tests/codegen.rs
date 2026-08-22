@@ -1321,7 +1321,8 @@ fn main() -> Int:
     let owned = "abcdef"
     let view = string.as_str(&owned)
     let s = string.slice(view, 1, 4)
-    string.len(s)
+    let owned_again = string.to_string(s)
+    string.length(owned_again)
 "#).expect("parse slice app");
         let module = link_test_modules(
             vec![("string".into(), string_module), ("app".into(), app)],
@@ -1333,6 +1334,7 @@ fn main() -> Int:
         let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower borrowed slice"));
         assert!(wat.contains("str_slice_view"), "slice binding should use pair helper: {wat}");
         assert!(!wat.contains("call $substr"), "borrowed slice must not allocate via substr: {wat}");
+        assert!(wat.contains("v128.load") && wat.contains("v128.store"), "view materialization should use SIMD raw-buffer copy: {wat}");
     }
 
     #[test]

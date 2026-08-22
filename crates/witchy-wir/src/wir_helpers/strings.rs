@@ -1055,7 +1055,7 @@ pub(crate) fn str_view_to_string_helper() -> WirFunc {
         body: vec![
             N::SetLocal { local: "out".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(get("len"), E::ConstI32(4))] } },
             N::Store { ptr: get("out"), value: get("len"), kind: Kind::I32, offset: 0 },
-            N::MemoryCopy { dest: add(get("out"), E::ConstI32(4)), src: get("p"), len: get("len") },
+            N::Do(E::Call { func: "raw_buffer_copy".into(), args: vec![add(get("out"), E::ConstI32(4)), get("p"), get("len")] }),
             N::Push(get("out")),
         ],
         raw_body: None,
