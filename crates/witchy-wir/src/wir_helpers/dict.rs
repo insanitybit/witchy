@@ -316,7 +316,7 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["count", "found", "new", "bytes"]
+        locals: ["count", "found", "new", "bytes", "idx", "slots", "newidx"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
@@ -330,6 +330,32 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
             setl("new", b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4))),
             N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
+            // The dense entries are copied, but the Swiss metadata is non-owning.
+            // Replacements can share the immutable carrier; an append copies the
+            // carrier once and inserts only the new entry instead of rehashing all
+            // existing keys on every persistent insert.
+            setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
+            N::If {
+                cond: b(BinOp::And,
+                    b(BinOp::Ne, getl("idx"), i32c(0)),
+                    b(BinOp::Le, getl("mode"), i32c(2))),
+                then_: vec![
+                    setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }),
+                    N::If {
+                        cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                        then_: vec![N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("idx"), kind: Kind::I32, offset: 0 }],
+                        els: vec![
+                            setl("newidx", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(5)))] }),
+                            N::MemoryCopy { dest: getl("newidx"), src: getl("idx"), len: b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(5))) },
+                            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("newidx"), kind: Kind::I32, offset: 0 },
+                            N::Do(E::Call { func: "dict_index_put".into(), args: vec![getl("newidx"), getl("slots"), getl("count"), getl("k"), getl("mode")] }),
+                        ],
+                        result: None,
+                    },
+                ],
+                els: vec![],
+                result: None,
+            },
             N::If {
                 cond: b(BinOp::Ge, getl("found"), i32c(0)),
                 then_: vec![

@@ -1188,7 +1188,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert" => Some(WirHelperSpec {
             func: dict_insert_helper(),
-            helper_deps: &["rc_alloc", "dict_find"],
+            helper_deps: &["rc_alloc", "dict_find", "bump_alloc", "dict_index_put"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
