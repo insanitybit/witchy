@@ -1465,23 +1465,54 @@ impl<'types> Codegen<'types> {
                                 };
                                 let kw = self.lower_expr(kexpr)?;
                                 let vw = self.lower_expr(vexpr)?;
-                                self.uses_dict_insert_cap = true;
-                                seq.push(N::CallStoreMulti {
-                                    func: intrinsics::declared_wir_helper(
-                                        intrinsics::DICT_INSERT,
-                                        "dict_insert_cap",
-                                    )
-                                    .expect("dict insert catalog declares optimized helper")
-                                    .to_string(),
-                                    args: vec![
-                                        W::GetLocal(name.clone()),
-                                        W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
-                                        W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
-                                        W::ConstI32(mode as i32),
-                                        cap,
-                                    ],
-                                    dests: vec![name.clone(), format!("{name}__cap")],
-                                });
+                                if dirty {
+                                    // A forced-copy root has no owned slack.  Keep this
+                                    // path on the established persistent helper: it copies
+                                    // the dense root and carrier with the same ownership
+                                    // rules as every other persistent dict operation.  The
+                                    // cap helper is reserved for roots whose analysis proved
+                                    // an owned buffer, where its append/update fast paths are
+                                    // valid and materially cheaper.
+                                    seq.push(N::SetLocal {
+                                        local: name.clone(),
+                                        value: W::Call {
+                                            func: intrinsics::declared_wir_helper(
+                                                intrinsics::DICT_INSERT,
+                                                "dict_insert",
+                                            )
+                                            .expect("dict insert catalog declares persistent helper")
+                                            .to_string(),
+                                            args: vec![
+                                                W::GetLocal(name.clone()),
+                                                W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                                                W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                                                W::ConstI32(mode as i32),
+                                            ],
+                                        },
+                                    });
+                                    seq.push(N::SetLocal {
+                                        local: format!("{name}__cap"),
+                                        value: W::ConstI32(0),
+                                    });
+                                } else {
+                                    self.uses_dict_insert_cap = true;
+                                    seq.push(N::CallStoreMulti {
+                                        func: intrinsics::declared_wir_helper(
+                                            intrinsics::DICT_INSERT,
+                                            "dict_insert_cap",
+                                        )
+                                        .expect("dict insert catalog declares optimized helper")
+                                        .to_string(),
+                                        args: vec![
+                                            W::GetLocal(name.clone()),
+                                            W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                                            W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                                            W::ConstI32(mode as i32),
+                                            cap,
+                                        ],
+                                        dests: vec![name.clone(), format!("{name}__cap")],
+                                    });
+                                }
                             }
                             analysis::InPlaceOp::Update(kexpr, dexpr, fexpr) => {
                                 // `dict.update(d, k, dflt, f)`: the in-place upsert via

@@ -396,8 +396,8 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
 
 /// `$dict_insert(d, k, v, mode) -> i32` — a fresh dict like `d` with `k` set to
 /// `v`: the matching entry's value replaced, or `(k, v)` appended. Copies the
-/// dense entry block and preserves or incrementally updates the non-owning
-/// Swiss carrier when the key mode supports it.
+/// dense entry block; persistent roots remain dense and leave Swiss-carrier
+/// promotion to the later owned/in-place path.
 pub(crate) fn dict_insert_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -428,11 +428,16 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
             setl("new", b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4))),
             N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
-            // The dense entries are copied, but the Swiss metadata is non-owning.
-            // Replacements can share the immutable carrier; an append copies the
-            // carrier once and inserts only the new entry instead of rehashing all
-            // existing keys on every persistent insert.
+            // Persistent copies intentionally discard carrier metadata.  The
+            // carrier is an acceleration structure for owned roots, not part of
+            // the dense value representation.
             setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
+            // Persistent roots deliberately remain dense.  The carrier belongs
+            // to an owned/in-place root; copying it here can retain bucket
+            // metadata whose entry projection no longer matches the new root.
+            // The next in-place mutation will promote/rebuild from the dense
+            // entries when it has proven ownership.
+            setl("idx", i32c(0)),
             N::If {
                 cond: b(BinOp::And,
                     b(BinOp::Ne, getl("idx"), i32c(0)),
