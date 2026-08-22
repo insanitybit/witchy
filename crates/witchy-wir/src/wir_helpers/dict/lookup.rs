@@ -223,6 +223,39 @@ pub(crate) fn dict_ctrl_h2_helper() -> WirFunc {
     }
 }
 
+/// `$dict_index_eq4(idx, h, needle) -> i32` — Phase-0 control row for the
+/// existing four-byte dense index. It compares four adjacent 32-bit entry
+/// indices with one SIMD lane operation, preserving the old indirection and
+/// insertion-order representation while measuring the low-risk control.
+pub(crate) fn dict_index_eq4_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_index_eq4".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "needle".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::Push(E::Vector {
+            op: VectorOp::I32x4Bitmask,
+            args: vec![E::Vector {
+                op: VectorOp::I32x4Eq,
+                args: vec![
+                    E::Load { ptr: Box::new(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(20)), b(BinOp::Mul, getl("h"), i32c(4)))), kind: Kind::V128, offset: 0 },
+                    E::Vector { op: VectorOp::I32x4Splat, args: vec![getl("needle")] },
+                ],
+            }],
+        })],
+        raw_body: None,
+    }
+}
+
 /// `$dict_find(d, k, mode) -> i32` — the entry index of key `k`, or -1. Linear
 /// scan when the hidden index word is 0; otherwise probe the Swiss control
 /// bytes before loading candidate entry keys.

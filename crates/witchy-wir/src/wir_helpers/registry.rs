@@ -1273,6 +1273,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "dict_index_eq4" => Some(WirHelperSpec {
+            func: dict_index_eq4_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "dict_reindex" => Some(WirHelperSpec {
             func: dict_reindex_helper(),
             helper_deps: &["bump_alloc", "dict_index_put"],

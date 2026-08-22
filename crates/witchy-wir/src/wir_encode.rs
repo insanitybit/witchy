@@ -1574,6 +1574,8 @@ fn vector_op_instr(op: VectorOp) -> Instruction<'static> {
         VectorOp::I8x16Eq => Instruction::I8x16Eq,
         VectorOp::I8x16Ne => Instruction::I8x16Ne,
         VectorOp::I8x16Bitmask => Instruction::I8x16Bitmask,
+        VectorOp::I32x4Eq => Instruction::I32x4Eq,
+        VectorOp::I32x4Bitmask => Instruction::I32x4Bitmask,
         VectorOp::I8x16Swizzle => Instruction::I8x16Swizzle,
         VectorOp::I8x16RelaxedSwizzle => Instruction::I8x16RelaxedSwizzle,
         VectorOp::V128And => Instruction::V128And,
