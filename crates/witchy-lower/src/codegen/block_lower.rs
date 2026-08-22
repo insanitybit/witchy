@@ -528,7 +528,17 @@ impl<'types> Codegen<'types> {
                         // The binding declaration is authoritative here: preserve
                         // the same typed carrier used by later list operations
                         // instead of lowering `[]` as the legacy i32 aggregate.
-                        let v = if (matches!(value, Expr::List(items) if items.is_empty())
+                        let v = if let Expr::Call { name: callee, args } = value
+                            && (callee == "list.with_capacity" || callee == "with_capacity" || callee == intrinsics::LIST_WITH_CAPACITY)
+                            && let Some(ty) = self.local_types.get(name)
+                            && let Some(id) = self.specialized_layout_id(ty)
+                            && matches!(self.specialized_layouts.get(id).map(|d| d.kind()), Some(LayoutKind::PackedList { .. }))
+                            && args.len() == 1
+                        {
+                            let helper = self.ensure_packed_list_capacity_helper(id)?;
+                            let cap = Self::wir_convert(self.lower_expr(&args[0])?, self.kind_of(&args[0]), Kind::I32);
+                            W::Call { func: helper, args: vec![cap] }
+                        } else if (matches!(value, Expr::List(items) if items.is_empty())
                             || matches!(value, Expr::Call { name: callee, .. } if (callee == "list.with_capacity" || callee == "with_capacity" || callee == intrinsics::LIST_WITH_CAPACITY)))
                             && let Some(ty) = self.local_types.get(name)
                             && let Some((_, array_id, _)) = self.gc_reference_list_layout(ty)
@@ -1203,6 +1213,10 @@ impl<'types> Codegen<'types> {
                             .get(name)
                             .and_then(|ty| self.specialized_layout_id(ty))
                             .is_some()
+                            && !matches!(
+                                (&op, self.local_types.get(name).and_then(|ty| self.specialized_layout_id(ty)).and_then(|id| self.specialized_layouts.get(id))) ,
+                                (analysis::InPlaceOp::SetAt(_, _), Some(d)) if matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool))))
+                            )
                         {
                             let boundary = match &op {
                                 analysis::InPlaceOp::Push(_) => "list.push",
@@ -1232,6 +1246,13 @@ impl<'types> Codegen<'types> {
                             _ => true,
                         };
                         match op {
+                            analysis::InPlaceOp::SetAt(iexpr, vexpr)
+                                if self.local_types.get(name).and_then(|ty| self.specialized_layout_id(ty)).and_then(|id| self.specialized_layouts.get(id)).is_some_and(|d| matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool))))) => {
+                                let id = self.specialized_layout_id(self.local_types.get(name)?)?;
+                                let helper = self.ensure_packed_bool_set_helper(id)?;
+                                let args = vec![W::GetLocal(name.clone()), Self::wir_convert(self.lower_expr(iexpr)?, self.kind_of(iexpr), Kind::I32), self.lower_expr(vexpr)?, if dirty { W::ConstI32(0) } else { W::GetLocal(format!("{name}__cap")) }];
+                                seq.push(N::CallStoreMulti { func: helper, args, dests: vec![name.clone(), format!("{name}__cap")] });
+                            }
                             analysis::InPlaceOp::Push(elem) => {
                                 // Only the list-push shape has an in-place fast path. A dict/
                                 // string self-assign falls through to the plain value-rebind

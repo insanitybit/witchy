@@ -266,7 +266,7 @@ impl Codegen<'_> {
         Some(W::Seq(seq))
     }
 
-    pub(crate) fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+    pub(crate) fn lower_call(&mut self, expr: &Expr, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
         use witchy_syntax::ast::is_render_intrinsic;
@@ -762,7 +762,16 @@ impl Codegen<'_> {
                 }
             }
             (intrinsics::LIST_WITH_CAPACITY, 1) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
+                if let Some(id) = self.specialized_boundary_result_layout(expr)
+                    && self.specialized_layouts.get(id).is_some_and(|d| matches!(d.kind(), LayoutKind::PackedList { .. }))
+                {
+                    let helper = self.ensure_packed_list_capacity_helper(id)?;
+                    let cap = self.lower_expr(&args[0])?;
+                    let cap = Self::wir_convert(cap, self.kind_of(&args[0]), Kind::I32);
+                    W::Call { func: helper, args: vec![cap] }
+                } else {
+                    call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
+                }
             }
             (intrinsics::DICT_NEW, 0) => {
                 self.uses_dict = true;

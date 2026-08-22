@@ -1208,6 +1208,108 @@ fn main() -> Int:
     }
 
     #[test]
+    fn bool_list_uses_byte_packed_layout() {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list").expect("bundled list module"),
+        ).expect("parse list module");
+        let app = parse_module(r#"
+mode opt
+import list
+fn main() -> Int:
+    let xs = [true, false, true]
+    if list.at(xs, 0):
+        1
+    else:
+        0
+"#).expect("parse bool list app");
+        let module = link_test_modules(
+            vec![("list".into(), list_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 1);
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower bool list"),
+        );
+        assert!(wat.contains("__witchy_packed_list_"), "bool list should use packed helper: {wat}");
+        assert!(wat.contains("i32.load8_u"), "bool list read should be byte-wide: {wat}");
+    }
+
+    #[test]
+    fn bool_list_push_uses_byte_packed_layout() {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list").expect("bundled list module"),
+        ).expect("parse list module");
+        let app = parse_module(r#"
+mode opt
+import list
+fn main() -> Int:
+    var xs = [false]
+    list.push(xs, true)
+    if list.at(xs, 1):
+        7
+    else:
+        0
+"#).expect("parse bool push app");
+        let module = link_test_modules(
+            vec![("list".into(), list_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 7);
+    }
+
+    #[test]
+    fn bool_list_with_capacity_uses_packed_header() {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list").expect("bundled list module"),
+        ).expect("parse list module");
+        let app = parse_module(r#"
+mode opt
+import list
+fn main() -> Int:
+    let xs: List(Bool) = list.with_capacity(2)
+    list.length(xs)
+"#).expect("parse bool capacity app");
+        let module = link_test_modules(
+            vec![("list".into(), list_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 0);
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower bool capacity"));
+        assert!(!wat.contains("call $list_with_capacity"), "capacity should not use universal slots: {wat}");
+    }
+
+    #[test]
+    fn bool_list_set_at_preserves_byte_layout() {
+        let list_module = parse_module(
+            witchy_syntax::linker::bundled_source("list").expect("bundled list module"),
+        ).expect("parse list module");
+        let app = parse_module(r#"
+mode opt
+import list
+fn main() -> Int:
+    var xs: List(Bool) = [false, false]
+    list.set_at(xs, 1, true)
+    if list.at(xs, 1):
+        7
+    else:
+        0
+"#).expect("parse bool set app");
+        let module = link_test_modules(
+            vec![("list".into(), list_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 7);
+    }
+
+    #[test]
     fn confined_counted_packed_list_streams_exact_storage_and_cursor() {
         let source = r#"
 mode opt

@@ -75,7 +75,7 @@ impl Codegen<'_> {
         };
         matches!(
             self.specialized_layouts.get(*element).map(|d| d.kind()),
-            Some(LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
+            Some(LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } | LayoutKind::Scalar(_))
         )
     }
 

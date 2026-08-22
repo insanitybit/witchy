@@ -85,9 +85,13 @@ fn type_requests_specialized_layout(
     resolver: &ModuleLayoutResolver<'_>,
 ) -> bool {
     match ty.unqualified() {
-        Type::Named(name, arguments) if name == "List" => arguments
-            .first()
-            .is_some_and(|element| type_requests_specialized_layout(element, resolver)),
+        Type::Named(name, arguments) if name == "List" => arguments.first().is_some_and(|element| {
+            // Scalar lists are physically specialized too: Bool is stored as a
+            // byte rather than an 8-byte universal slot.  Keep the existing
+            // recursive rule for packed records/tuples.
+            matches!(element.unqualified(), Type::Named(kind, args) if args.is_empty() && kind == "Bool")
+                || type_requests_specialized_layout(element, resolver)
+        }),
         Type::Named(name, _) => resolver.definition(name).is_some_and(|definition| definition.packed),
         // Tuples have no qualifier of their own. A closed tuple participates
         // when it contains a declared-packed component; scalar-only tuples keep

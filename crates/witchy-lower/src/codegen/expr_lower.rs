@@ -3261,7 +3261,7 @@ impl<'types> Codegen<'types> {
                     let target = self.kind_of(e);
                     return self.lower_message_unerase(&args[0], target);
                 }
-                if let Some(w) = self.lower_call(name, args) {
+                if let Some(w) = self.lower_call(e, name, args) {
                     return Some(w);
                 }
                 // `borrow.Owned` is authenticated during type checking and
