@@ -169,8 +169,18 @@ pub(crate) fn dict_find_helper() -> WirFunc {
     let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     // key slot of entry `e`: d + 4 + e*16.
-    let key_at = |e: E| E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 };
-    let keq = |e: E| E::Call { func: "key_eq".into(), args: vec![key_at(e), getl("k"), getl("mode")] };
+    let dense_key_at = |e: E| E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 };
+    let indexed_key_at = |h: E| E::Load {
+        ptr: Box::new(b(
+            BinOp::Add,
+            getl("idx"),
+            b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, h, i32c(8))))),
+        )),
+        kind: Kind::I64,
+        offset: 0,
+    };
+    let keq = |e: E| E::Call { func: "key_eq".into(), args: vec![dense_key_at(e), getl("k"), getl("mode")] };
+    let indexed_keq = |h: E| E::Call { func: "key_eq".into(), args: vec![indexed_key_at(h), getl("k"), getl("mode")] };
     let comparison_bump = || N::If {
         cond: E::GetGlobal("__witchy_extract_active".into()),
         then_: vec![N::SetGlobal {
@@ -225,7 +235,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                             els: vec![
                                 comparison_bump(),
                                 N::If {
-                                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
+                                    cond: indexed_keq(getl("h")),
                                     then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
                                     els: vec![],
                                     result: None,
@@ -520,8 +530,13 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |ptr: E, off: u32| E::Load { ptr: Box::new(ptr), kind: Kind::I32, offset: off };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let key_at = |e: E| E::FromSlot(Box::new(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 }), Kind::I32);
-    let keq = |e: E| E::Call { func: "dict_slice_eq".into(), args: vec![key_at(e), getl("p"), getl("len")] };
+    let dense_key_at = |e: E| E::FromSlot(Box::new(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 }), Kind::I32);
+    let indexed_key_at = |h: E| {
+        let ptr = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, h, i32c(8))))));
+        E::FromSlot(Box::new(E::Load { ptr: Box::new(ptr), kind: Kind::I64, offset: 0 }), Kind::I32)
+    };
+    let keq = |e: E| E::Call { func: "dict_slice_eq".into(), args: vec![dense_key_at(e), getl("p"), getl("len")] };
+    let indexed_keq = |h: E| E::Call { func: "dict_slice_eq".into(), args: vec![indexed_key_at(h), getl("p"), getl("len")] };
     let linear = N::Block {
         label: "done".into(),
         result: None,
@@ -561,7 +576,7 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
                                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) },
                                 then_: vec![N::Return(Some(i32c(-1)))],
                                 els: vec![N::If {
-                                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
+                                    cond: indexed_keq(getl("h")),
                                     then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
                                     els: vec![],
                                     result: None,
