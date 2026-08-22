@@ -1626,7 +1626,7 @@
                 funcs.push(crate::wir_helpers::dict_hash_helper());
             }
         }
-        if funcs.iter().any(|func| func.name == "dict_insert") {
+        if funcs.iter().any(|func| func.name == "dict_insert" || func.name == "dict_insert_extract") {
             if !funcs.iter().any(|func| func.name == "bump_alloc") {
                 funcs.push(crate::wir_helpers::bump_alloc_helper());
             }
