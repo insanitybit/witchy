@@ -309,17 +309,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     // key slot of entry `e`: d + 4 + e*16.
     let dense_key_at = |e: E| E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 };
-    let indexed_key_at = |h: E| E::Load {
-        ptr: Box::new(b(
-            BinOp::Add,
-            getl("idx"),
-            b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, h, i32c(8))))),
-        )),
-        kind: Kind::I64,
-        offset: 0,
-    };
     let keq = |e: E| E::Call { func: "key_eq".into(), args: vec![dense_key_at(e), getl("k"), getl("mode")] };
-    let indexed_keq = |h: E| E::Call { func: "key_eq".into(), args: vec![indexed_key_at(h), getl("k"), getl("mode")] };
     let comparison_bump = || N::If {
         cond: E::GetGlobal("__witchy_extract_active".into()),
         then_: vec![N::SetGlobal {
@@ -386,7 +376,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                             els: vec![
                                 comparison_bump(),
                                 N::If {
-                                    cond: indexed_keq(getl("h")),
+                                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
                                     then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
                                     els: vec![],
                                     result: None,

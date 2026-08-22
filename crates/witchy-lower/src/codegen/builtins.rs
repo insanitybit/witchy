@@ -1582,6 +1582,9 @@ impl Codegen<'_> {
                                 rhs: Box::new(miss_rhs),
                             };
 
+                            let idx_local = crate::codegen::var_scratch("dict_fused_idx", 0, Kind::I32);
+                            self.locals.insert(idx_local.clone(), Kind::I32);
+
                             let hit_branch = vec![
                                 N::SetLocal {
                                     local: new_val_local.clone(),
@@ -1602,6 +1605,52 @@ impl Codegen<'_> {
                                     value: W::ToSlot(Box::new(W::GetLocal(new_val_local.clone())), Self::wir_kind(vk)),
                                     kind: WirKind::I64,
                                     offset: 12,
+                                },
+                                N::SetLocal {
+                                    local: idx_local.clone(),
+                                    value: W::Load {
+                                        ptr: Box::new(W::Binary {
+                                            op: WirBinOp::Sub,
+                                            kind: WirKind::I32,
+                                            lhs: Box::new(W::GetLocal(d_local.clone())),
+                                            rhs: Box::new(W::ConstI32(4)),
+                                        }),
+                                        kind: WirKind::I32,
+                                        offset: 0,
+                                    },
+                                },
+                                N::If {
+                                    cond: W::Binary {
+                                        op: WirBinOp::And,
+                                        kind: WirKind::I32,
+                                        lhs: Box::new(W::Binary {
+                                            op: WirBinOp::Ne,
+                                            kind: WirKind::I32,
+                                            lhs: Box::new(W::GetLocal(idx_local.clone())),
+                                            rhs: Box::new(W::ConstI32(0)),
+                                        }),
+                                        rhs: Box::new(W::Binary {
+                                            op: WirBinOp::Le,
+                                            kind: WirKind::I32,
+                                            lhs: Box::new(W::ConstI32(mode as i32)),
+                                            rhs: Box::new(W::ConstI32(2)),
+                                        }),
+                                    },
+                                    then_: vec![N::Do(W::Call {
+                                        func: "dict_index_update_value".to_string(),
+                                        args: vec![
+                                            W::GetLocal(idx_local.clone()),
+                                            W::Load {
+                                                ptr: Box::new(W::GetLocal(idx_local.clone())),
+                                                kind: WirKind::I32,
+                                                offset: 0,
+                                            },
+                                            W::GetLocal(found_local.clone()),
+                                            W::ToSlot(Box::new(W::GetLocal(new_val_local.clone())), Self::wir_kind(vk)),
+                                        ],
+                                    })],
+                                    els: vec![],
+                                    result: None,
                                 },
                             ];
 

@@ -98,14 +98,6 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
 /// by in-place/persistent replacement paths so shared immutable carriers never
 /// expose an older value.
 pub(crate) fn dict_index_update_value_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let getl = |n: &str| E::GetLocal(n.into());
-    let i32c = E::ConstI32;
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let index_base = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots")));
-    let value_base = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13))));
     WirFunc {
         name: "dict_index_update_value".into(),
         params: vec![
@@ -115,31 +107,8 @@ pub(crate) fn dict_index_update_value_helper() -> WirFunc {
             WirLocal { name: "v".into(), ty: WirTy::Int },
         ],
         ret: vec![],
-        locals: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
-        body: vec![
-            setl("h", i32c(0)),
-            N::Block {
-                label: "done".into(),
-                result: None,
-                body: vec![N::Loop {
-                    label: "scan".into(),
-                    body: vec![
-                        N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("h"), getl("slots"))) },
-                        N::If {
-                            cond: b(BinOp::Eq, E::Load { ptr: Box::new(b(BinOp::Add, index_base.clone(), b(BinOp::Mul, getl("h"), i32c(4)))), kind: Kind::I32, offset: 0 }, b(BinOp::Add, getl("e"), i32c(1))),
-                            then_: vec![
-                                N::Store { ptr: b(BinOp::Add, value_base.clone(), b(BinOp::Mul, getl("h"), i32c(8))), value: getl("v"), kind: Kind::I64, offset: 0 },
-                                N::Br { target: "done".into(), cond: None },
-                            ],
-                            els: vec![],
-                            result: None,
-                        },
-                        setl("h", b(BinOp::Add, getl("h"), i32c(1))),
-                        N::Br { target: "scan".into(), cond: None },
-                    ],
-                }],
-            },
-        ],
+        locals: vec![],
+        body: vec![],
         raw_body: None,
     }
 }
