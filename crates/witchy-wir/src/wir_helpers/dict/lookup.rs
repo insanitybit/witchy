@@ -163,9 +163,43 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
     }
 }
 
-/// `$dict_ctrl_h2(idx, h, h2) -> i32` — SIMD H2 membership for one control
-/// group. The scalar probe still owns empty-lane termination; this helper only
-/// turns the 16-byte equality into a candidate-lane bit test.
+/// `$dict_ctrl_h2_mask(idx, h, h2) -> i32` — SIMD H2 match mask for the full
+/// 16-byte control group containing `h`. Callers can scan the set bits with
+/// `ctz`; the scalar probe retains empty-lane termination semantics.
+pub(crate) fn dict_ctrl_h2_mask_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_ctrl_h2_mask".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "h2".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "group".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal { local: "group".into(), value: b(BinOp::And, getl("h"), i32c(-16)) },
+            N::Push(E::Vector {
+                op: VectorOp::I8x16Bitmask,
+                args: vec![E::Vector {
+                    op: VectorOp::I8x16Eq,
+                    args: vec![
+                        E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("group")))), kind: Kind::V128, offset: 0 },
+                        E::Vector { op: VectorOp::I8x16Splat, args: vec![getl("h2")] },
+                    ],
+                }],
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_ctrl_h2(idx, h, h2) -> i32` — membership for the current lane,
+/// retained as a compatibility wrapper over the full group mask.
 pub(crate) fn dict_ctrl_h2_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -180,25 +214,9 @@ pub(crate) fn dict_ctrl_h2_helper() -> WirFunc {
             WirLocal { name: "h2".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool],
-        locals: vec![
-            WirLocal { name: "group".into(), ty: WirTy::Bool },
-            WirLocal { name: "mask".into(), ty: WirTy::Bool },
-        ],
+        locals: vec![WirLocal { name: "mask".into(), ty: WirTy::Bool }],
         body: vec![
-            N::SetLocal { local: "group".into(), value: b(BinOp::And, getl("h"), i32c(-16)) },
-            N::SetLocal {
-                local: "mask".into(),
-                value: E::Vector {
-                    op: VectorOp::I8x16Bitmask,
-                    args: vec![E::Vector {
-                        op: VectorOp::I8x16Eq,
-                        args: vec![
-                            E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("group")))), kind: Kind::V128, offset: 0 },
-                            E::Vector { op: VectorOp::I8x16Splat, args: vec![getl("h2")] },
-                        ],
-                    }],
-                },
-            },
+            N::SetLocal { local: "mask".into(), value: E::Call { func: "dict_ctrl_h2_mask".into(), args: vec![getl("idx"), getl("h"), getl("h2")] } },
             N::Push(b(BinOp::Ne, b(BinOp::And, getl("mask"), b(BinOp::Shl, i32c(1), b(BinOp::And, getl("h"), i32c(15)))), i32c(0))),
         ],
         raw_body: None,

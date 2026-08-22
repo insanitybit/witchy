@@ -1125,6 +1125,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_ctrl_h2" => Some(WirHelperSpec {
             func: dict_ctrl_h2_helper(),
+            helper_deps: &["dict_ctrl_h2_mask"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_ctrl_h2_mask" => Some(WirHelperSpec {
+            func: dict_ctrl_h2_mask_helper(),
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
