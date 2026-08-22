@@ -92,6 +92,10 @@ impl<'types> Codegen<'types> {
                             if let Expr::Var(xs_name) = &args[0] {
                                 self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
                             }
+                        } else if (fname == "list.repeat" || fname == "repeat") && args.len() == 2 {
+                            if let Expr::Var(n_name) = &args[1] {
+                                self.known_length_vars.entry(n_name.clone()).or_default().insert(name.clone());
+                            }
                         }
                     }
                 }
@@ -1355,16 +1359,20 @@ impl<'types> Codegen<'types> {
                                     }));
                                 }
                                 then_body.push(N::Store { ptr: slot_ptr(), value: sv(), kind: witchy_wir::wir::Kind::I64, offset: 0 });
-                                seq.push(N::If {
-                                    cond,
-                                    then_: then_body,
-                                    els: vec![N::CallStoreMulti {
-                                        func: "list_set_cap".to_string(),
-                                        args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
-                                        dests: vec![name.clone(), format!("{name}__cap")],
-                                    }],
-                                    result: None,
-                                });
+                                if proven_index && !dirty {
+                                    seq.extend(then_body);
+                                } else {
+                                    seq.push(N::If {
+                                        cond,
+                                        then_: then_body,
+                                        els: vec![N::CallStoreMulti {
+                                            func: "list_set_cap".to_string(),
+                                            args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
+                                            dests: vec![name.clone(), format!("{name}__cap")],
+                                        }],
+                                        result: None,
+                                    });
+                                }
                             }
                             analysis::InPlaceOp::UpdateAt(iexpr, fexpr) => {
                                 // `list.update_at(xs, i, f)`: in-place element update

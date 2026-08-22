@@ -42,25 +42,52 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
         then_zero.push(reg(getl("res"), bin(BinOp::Add, Kind::I32, getl("res"), i32c(5))));
     }
     then_zero.push(N::Push(getl("res")));
-    // Count digits of `t` (mutated to 0): `while t != 0 { ndigits++; t /= 10 }`.
-    let count_loop_32 = N::Block {
-        label: "b1_32".into(),
-        result: None,
-        body: vec![N::Loop {
-            label: "l1_32".into(),
-            body: vec![
-                N::Br { target: "b1_32".into(), cond: Some(bin(BinOp::Eq, Kind::I32, getl("t32"), i32c(0))) },
-                N::SetLocal {
-                    local: "ndigits".into(),
-                    value: bin(BinOp::Add, Kind::I32, getl("ndigits"), i32c(1)),
-                },
-                N::SetLocal {
-                    local: "t32".into(),
-                    value: bin(BinOp::DivU, Kind::I32, getl("t32"), i32c(10)),
-                },
-                N::Br { target: "l1_32".into(), cond: None },
-            ],
+    // Fast digit count for 32-bit integers without division loops
+    let count_loop_32 = N::If {
+        cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(10)),
+        then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(1) }],
+        els: vec![N::If {
+            cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(100)),
+            then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(2) }],
+            els: vec![N::If {
+                cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(1000)),
+                then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(3) }],
+                els: vec![N::If {
+                    cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(10000)),
+                    then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(4) }],
+                    els: vec![N::If {
+                        cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(100000)),
+                        then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(5) }],
+                        els: vec![N::If {
+                            cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(1000000)),
+                            then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(6) }],
+                            els: vec![N::If {
+                                cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(10000000)),
+                                then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(7) }],
+                                els: vec![N::If {
+                                    cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(100000000)),
+                                    then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(8) }],
+                                    els: vec![N::If {
+                                        cond: bin(BinOp::LtU, Kind::I32, getl("t32"), i32c(1000000000)),
+                                        then_: vec![N::SetLocal { local: "ndigits".into(), value: i32c(9) }],
+                                        els: vec![N::SetLocal { local: "ndigits".into(), value: i32c(10) }],
+                                        result: None,
+                                    }],
+                                    result: None,
+                                }],
+                                result: None,
+                            }],
+                            result: None,
+                        }],
+                        result: None,
+                    }],
+                    result: None,
+                }],
+                result: None,
+            }],
+            result: None,
         }],
+        result: None,
     };
     let count_loop_64 = N::Block {
         label: "b1_64".into(),
