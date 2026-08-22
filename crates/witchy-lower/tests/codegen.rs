@@ -1338,6 +1338,61 @@ fn main() -> Int:
     }
 
     #[test]
+    fn dict_query_consumes_a_materialized_slice_without_recloning() {
+        let dict_module = parse_module(
+            witchy_syntax::linker::bundled_source("dict").expect("bundled dict module"),
+        ).expect("parse dict module");
+        let string_module = parse_module(
+            witchy_syntax::linker::bundled_source("string").expect("bundled string module"),
+        ).expect("parse string module");
+        let app = parse_module(r#"
+mode opt
+import dict
+import string
+fn main() -> Int:
+    let owned = "abcdef"
+    let view = string.slice(string.as_str(&owned), 1, 4)
+    let d: Dict(String, Int) = dict.new()
+    dict.get_or(d, string.to_string(view), 41)
+"#).expect("parse dict slice app");
+        let module = link_test_modules(
+            vec![("dict".into(), dict_module), ("string".into(), string_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 41);
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower dict slice query"));
+        assert!(wat.contains("call $dict_get_slice_or"), "dict query should use the borrowed slice helper: {wat}");
+    }
+
+    #[test]
+    fn dict_interpolation_query_uses_a_rewindable_format_view() {
+        let dict_module = parse_module(
+            witchy_syntax::linker::bundled_source("dict").expect("bundled dict module"),
+        ).expect("parse dict module");
+        let app = parse_module(r#"
+mode opt
+import dict
+fn main() -> Int:
+    var d: Dict(String, Int) = dict.new()
+    let inserted = dict.get_or_insert(d, "word7", 99)
+    let i = 7
+    dict.get_or(d, "word${i}", 42)
+"#).expect("parse interpolation dict app");
+        let module = link_test_modules(
+            vec![("dict".into(), dict_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 99);
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower interpolation dict query"));
+        assert!(wat.contains("call $str_fmt_prefix_int_view"), "interpolation should use a borrowed format view: {wat}");
+        assert!(wat.contains("call $dict_get_slice_or"), "interpolation query should consume the view directly: {wat}");
+    }
+
+    #[test]
     fn confined_counted_packed_list_streams_exact_storage_and_cursor() {
         let source = r#"
 mode opt

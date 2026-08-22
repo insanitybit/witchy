@@ -204,6 +204,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
                 uses_table: false,
             })
         }
+        "str_fmt_prefix_int_view" => Some(WirHelperSpec {
+            func: str_fmt_prefix_int_view_helper(),
+            helper_deps: &["bump_alloc", "raw_buffer_copy"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "str_eq" => Some(WirHelperSpec {
             func: str_eq_helper(),
             helper_deps: &[],

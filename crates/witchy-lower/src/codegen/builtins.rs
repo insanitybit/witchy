@@ -5,7 +5,92 @@
 
 use super::*;
 
+fn interpolation_prefix_int(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    match expr {
+        Expr::Binary { op: witchy_syntax::ast::BinOp::Concat | witchy_syntax::ast::BinOp::Add, lhs, rhs, .. }
+            if matches!(rhs.as_ref(), Expr::Str(text) if text.is_empty()) => interpolation_prefix_int(lhs),
+        Expr::Binary { op: witchy_syntax::ast::BinOp::Concat | witchy_syntax::ast::BinOp::Add, lhs, rhs, .. }
+            if matches!(rhs.as_ref(), Expr::Call { name, args } if (witchy_syntax::ast::is_render_intrinsic(name) || name == "int_to_string" || name == "to_string") && args.len() == 1) =>
+        {
+            let Expr::Call { args, .. } = rhs.as_ref() else { unreachable!() };
+            Some((lhs.as_ref(), &args[0]))
+        }
+        _ => None,
+    }
+}
+
 impl Codegen<'_> {
+    /// Lower an expression that can be consumed as a borrowed UTF-8 view.
+    /// Returns setup nodes, pointer local, length local, and cleanup nodes. The
+    /// cleanup rewinds the bump frontier for temporary interpolation buffers;
+    /// ordinary slice bindings do not allocate and therefore have no cleanup.
+    fn lower_borrowed_string_pair(
+        &mut self,
+        key: &Expr,
+    ) -> Option<(Vec<witchy_wir::wir::WirNode>, String, String, Vec<witchy_wir::wir::WirNode>)> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let level = self.assign_level;
+        let ptr = assign_scratch("dict_slice_ptr", level);
+        let len = assign_scratch("dict_slice_len", level);
+        let wm = assign_scratch("dict_slice_wm", level);
+        self.locals.insert(ptr.clone(), Kind::I32);
+        self.locals.insert(len.clone(), Kind::I32);
+        self.locals.insert(wm.clone(), Kind::I32);
+        let mut setup = Vec::new();
+        let mut cleanup = Vec::new();
+        if let Some((prefix, value)) = interpolation_prefix_int(key)
+            && self.val_type_of(value) == ValType::Int
+        {
+            let ak = self.kind_of(value);
+            setup.push(N::SetLocal { local: wm.clone(), value: W::GetGlobal("heap".into()) });
+            setup.push(N::CallStoreMulti {
+                func: "str_fmt_prefix_int_view".into(),
+                args: vec![self.lower_expr(prefix)?, Self::wir_convert(self.lower_expr(value)?, ak, Kind::I64)],
+                dests: vec![ptr.clone(), len.clone()],
+            });
+            cleanup.push(N::SetGlobal { global: "heap".into(), value: W::GetLocal(wm.clone()) });
+            return Some((setup, ptr, len, cleanup));
+        }
+        match key {
+            Expr::Call { name, args } if name == intrinsics::STRING_TO_STRING && args.len() == 1
+                && matches!(&args[0], Expr::Var(local) if self.locals.contains_key(&format!("{local}__slice_len"))) =>
+            {
+                let Expr::Var(local) = &args[0] else { unreachable!() };
+                setup.push(N::SetLocal { local: ptr.clone(), value: self.lower_expr(&args[0])? });
+                setup.push(N::SetLocal { local: len.clone(), value: W::GetLocal(format!("{local}__slice_len")) });
+            }
+            Expr::Var(name) if self.locals.contains_key(&format!("{name}__slice_len")) => {
+                setup.push(N::SetLocal { local: ptr.clone(), value: self.lower_expr(key)? });
+                setup.push(N::SetLocal { local: len.clone(), value: W::GetLocal(format!("{name}__slice_len")) });
+            }
+            Expr::Call { name, args } if name == intrinsics::STRING_SLICE && args.len() == 3 => {
+                let sk = self.kind_of(&args[1]);
+                let ek = self.kind_of(&args[2]);
+                let base = self.lower_expr(&args[0])?;
+                setup.push(N::CallStoreMulti {
+                    func: "str_slice_view".into(),
+                    args: vec![base, Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64), Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64)],
+                    dests: vec![ptr.clone(), len.clone()],
+                });
+            }
+            Expr::Binary { op: witchy_syntax::ast::BinOp::Concat | witchy_syntax::ast::BinOp::Add, lhs, rhs, .. }
+                if matches!(rhs.as_ref(), Expr::Call { name, args } if (name == intrinsics::GENERATED_RENDER || name == "int_to_string" || name == "to_string") && args.len() == 1 && self.val_type_of(&args[0]) == ValType::Int) =>
+            {
+                let Expr::Call { args, .. } = rhs.as_ref() else { unreachable!() };
+                let ak = self.kind_of(&args[0]);
+                setup.push(N::SetLocal { local: wm.clone(), value: W::GetGlobal("heap".into()) });
+                setup.push(N::CallStoreMulti {
+                    func: "str_fmt_prefix_int_view".into(),
+                    args: vec![self.lower_expr(lhs)?, Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64)],
+                    dests: vec![ptr.clone(), len.clone()],
+                });
+                cleanup.push(N::SetGlobal { global: "heap".into(), value: W::GetLocal(wm.clone()) });
+            }
+            _ => return None,
+        }
+        Some((setup, ptr, len, cleanup))
+    }
+
     pub(crate) fn lower_message_erase(
         &mut self,
         value: &Expr,
@@ -1808,6 +1893,24 @@ impl Codegen<'_> {
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
                 if mode == 1
+                    && let Some((mut setup, ptr, len, cleanup)) = self.lower_borrowed_string_pair(&args[1])
+                {
+                    let result = assign_scratch("dict_slice_result", self.assign_level);
+                    self.locals.insert(result.clone(), dk);
+                    setup.push(N::SetLocal {
+                        local: result.clone(),
+                        value: W::FromSlot(Box::new(call("dict_get_slice_or", vec![
+                            self.lower_expr(&args[0])?,
+                            W::GetLocal(ptr),
+                            W::GetLocal(len),
+                            self.lower_expr(&args[2])?,
+                        ])), Self::wir_kind(dk)),
+                    });
+                    setup.extend(cleanup);
+                    setup.push(N::Push(W::GetLocal(result)));
+                    return Some(W::Seq(setup));
+                }
+                if mode == 1
                     && let Expr::Var(name) = &args[1]
                     && self.locals.contains_key(&format!("{name}__slice_len"))
                 {
@@ -1850,6 +1953,23 @@ impl Codegen<'_> {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
+                if mode == 1
+                    && let Some((mut setup, ptr, len, cleanup)) = self.lower_borrowed_string_pair(&args[1])
+                {
+                    let result = assign_scratch("dict_slice_result", self.assign_level);
+                    self.locals.insert(result.clone(), Kind::I32);
+                    setup.push(N::SetLocal {
+                        local: result.clone(),
+                        value: call("dict_contains_slice", vec![
+                            self.lower_expr(&args[0])?,
+                            W::GetLocal(ptr),
+                            W::GetLocal(len),
+                        ]),
+                    });
+                    setup.extend(cleanup);
+                    setup.push(N::Push(W::GetLocal(result)));
+                    return Some(W::Seq(setup));
+                }
                 if mode == 1
                     && let Expr::Var(name) = &args[1]
                     && self.locals.contains_key(&format!("{name}__slice_len"))

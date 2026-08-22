@@ -495,6 +495,85 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
     }
 }
 
+/// `$str_fmt_prefix_int_view(prefix, n) -> (ptr, len)` — format an integer into
+/// a temporary bump-allocated byte buffer and return a borrowed payload view.
+/// The caller owns the heap watermark and must rewind it after consuming the
+/// view; unlike `str_fmt_prefix_int`, this helper never creates an RC string.
+pub(crate) fn str_fmt_prefix_int_view_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let get = |name: &str| E::GetLocal(name.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, lhs: E, rhs: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    let b64 = |op: BinOp, lhs: E, rhs: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    let i64_to_i32 = |e: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
+    WirFunc {
+        name: "str_fmt_prefix_int_view".into(),
+        params: vec![
+            WirLocal { name: "prefix".into(), ty: WirTy::Str },
+            WirLocal { name: "n".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "plen".into(), ty: WirTy::Bool },
+            WirLocal { name: "neg".into(), ty: WirTy::Bool },
+            WirLocal { name: "mag".into(), ty: WirTy::Int },
+            WirLocal { name: "t".into(), ty: WirTy::Int },
+            WirLocal { name: "digits".into(), ty: WirTy::Bool },
+            WirLocal { name: "total".into(), ty: WirTy::Bool },
+            WirLocal { name: "buf".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "next".into(), ty: WirTy::Int },
+        ],
+        body: vec![
+            N::SetLocal { local: "plen".into(), value: E::Load { ptr: Box::new(get("prefix")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "neg".into(), value: b64(BinOp::Lt, get("n"), i64c(0)) },
+            N::SetLocal { local: "mag".into(), value: E::Control(Box::new(N::If {
+                cond: get("neg"),
+                then_: vec![N::Push(b64(BinOp::Sub, i64c(0), get("n")))],
+                els: vec![N::Push(get("n"))],
+                result: Some(WirTy::Int),
+            })) },
+            N::SetLocal { local: "digits".into(), value: i32c(1) },
+            N::SetLocal { local: "t".into(), value: get("mag") },
+            N::Block { label: "count_done".into(), result: None, body: vec![N::Loop {
+                label: "count_loop".into(),
+                body: vec![
+                    N::Br { target: "count_done".into(), cond: Some(b64(BinOp::Lt, get("t"), i64c(10))) },
+                    N::SetLocal { local: "digits".into(), value: b32(BinOp::Add, get("digits"), i32c(1)) },
+                    N::SetLocal { local: "t".into(), value: b64(BinOp::DivU, get("t"), i64c(10)) },
+                    N::Br { target: "count_loop".into(), cond: None },
+                ],
+            }] },
+            N::SetLocal { local: "total".into(), value: b32(BinOp::Add, b32(BinOp::Add, get("plen"), get("digits")), get("neg")) },
+            N::SetLocal { local: "buf".into(), value: E::Call { func: "bump_alloc".into(), args: vec![get("total")] } },
+            N::Do(E::Call { func: "raw_buffer_copy".into(), args: vec![get("buf"), b32(BinOp::Add, get("prefix"), i32c(4)), get("plen")] }),
+            N::SetLocal { local: "p".into(), value: b32(BinOp::Add, get("buf"), get("total")) },
+            N::If {
+                cond: get("neg"),
+                then_: vec![N::SetLocal { local: "p".into(), value: b32(BinOp::Sub, get("p"), i32c(1)) }, N::Store8 { ptr: get("p"), value: i32c(45), offset: 0 }],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "t".into(), value: get("mag") },
+            N::Block { label: "write_done".into(), result: None, body: vec![N::Loop {
+                label: "write_loop".into(),
+                body: vec![
+                    N::SetLocal { local: "p".into(), value: b32(BinOp::Sub, get("p"), i32c(1)) },
+                    N::Store8 { ptr: get("p"), value: b32(BinOp::Add, i64_to_i32(b64(BinOp::RemU, get("t"), i64c(10))), i32c(48)), offset: 0 },
+                    N::SetLocal { local: "t".into(), value: b64(BinOp::DivU, get("t"), i64c(10)) },
+                    N::Br { target: "write_done".into(), cond: Some(b64(BinOp::Eq, get("t"), i64c(0))) },
+                    N::Br { target: "write_loop".into(), cond: None },
+                ],
+            }] },
+            N::Push(get("buf")),
+            N::Push(get("total")),
+        ],
+        raw_body: None,
+    }
+}
+
 
 /// `$f_lt`/`$f_le`/`$f_gt`/`$f_ge`(a: f64, b: f64) -> i32 — a NaN-trapping float
 /// ordering compare. Witchy errors on ordering a NaN (the interpreter oracle
