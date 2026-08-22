@@ -130,6 +130,12 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
         body: vec![
             N::SetLocal { local: "idx".into(), value: i32c(0) },
             N::If {
+                cond: E::GetGlobal("__witchy_extract_active".into()),
+                then_: vec![N::SetGlobal { global: "__witchy_dict_rebuilds".into(), value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_dict_rebuilds".into())), rhs: Box::new(E::ConstI64(1)) } }],
+                els: vec![],
+                result: None,
+            },
+            N::If {
                 cond: b(
                     BinOp::And,
                     b(BinOp::Gt, getl("cap"), i32c(0)),
@@ -727,6 +733,12 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
     ];
     // else: copy to a doubled buffer (index word reset to 0), then upsert.
     let grow = vec![
+        N::If {
+            cond: E::GetGlobal("__witchy_extract_active".into()),
+            then_: vec![N::SetGlobal { global: "__witchy_dict_grows".into(), value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_dict_grows".into())), rhs: Box::new(E::ConstI64(1)) } }],
+            els: vec![],
+            result: None,
+        },
         N::SetLocal {
             local: "newcap".into(),
             value: b(BinOp::Mul, b(BinOp::Add, getl("count"), i32c(1)), i32c(2)),
