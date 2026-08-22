@@ -1136,6 +1136,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             } else {
                 dict_ctrl_h2_helper()
             },
+            helper_deps: &["dict_ctrl_h2_mask"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_ctrl_h2_mask" => Some(WirHelperSpec {
+            func: dict_ctrl_h2_mask_helper(),
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
@@ -1143,7 +1150,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find" => Some(WirHelperSpec {
             func: dict_find_helper(),
-            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2"],
+            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2_mask"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1164,7 +1171,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find_slice" => Some(WirHelperSpec {
             func: dict_find_slice_helper(),
-            helper_deps: &["dict_slice_eq", "dict_hash_slice", "dict_ctrl_h2"],
+            helper_deps: &["dict_slice_eq", "dict_hash_slice", "dict_ctrl_h2_mask"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1272,7 +1279,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find_bucket" => Some(WirHelperSpec {
             func: dict_find_bucket_helper(),
-            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2"],
+            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2_mask"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
