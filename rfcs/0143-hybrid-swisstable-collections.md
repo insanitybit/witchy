@@ -218,9 +218,12 @@ hidden word at `d - 4` holds the pointer to the Swiss allocation/header, and the
 count word remains the live-entry count used by the existing index-present
 check. Operations check the zero count before reading the larger header. The
 first insertion allocates the minimum
-16-bucket Swiss representation. `dict.with_capacity(n)` for positive `n`
-allocates enough buckets and order capacity for `n` live entries without a
-grow. Empty dictionaries therefore do not pay for a 16-bucket table.
+16-bucket Swiss representation once a transient scalar root reaches two live
+entries; a one-entry root remains on the dense path so insert/remove churn does
+not retain an unreclaimable carrier allocation. `dict.with_capacity(n)` for
+positive `n` allocates and initializes enough buckets and order capacity for
+`n` live entries without a grow, including the one-entry case. Empty
+dictionaries therefore do not pay for a 16-bucket table.
 
 ### 4. Hash split and equality
 

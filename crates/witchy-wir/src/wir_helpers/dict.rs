@@ -147,6 +147,10 @@ pub(crate) fn dict_index_update_value_helper() -> WirFunc {
 /// `$dict_reindex(d, cap, mode)` — rebuild the hidden open-addressing index
 /// after a structural copy or grow. Rehashing existing entries is maintenance,
 /// not a second semantic lookup. Compound key modes keep the index disabled.
+/// A one-entry transient root stays dense: delaying promotion until two live
+/// entries prevents insert/remove churn from allocating an unreclaimable carrier
+/// for every ephemeral root. `dict.with_capacity` still provisions its carrier
+/// immediately, so explicitly reserved tables retain their fast first lookup.
 pub(crate) fn dict_reindex_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -184,6 +188,10 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             .collect(),
         body: vec![
             N::SetLocal { local: "idx".into(), value: i32c(0) },
+            N::SetLocal {
+                local: "count".into(),
+                value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 },
+            },
             N::If {
                 cond: E::GetGlobal("__witchy_extract_active".into()),
                 then_: vec![N::SetGlobal { global: "__witchy_dict_rebuilds".into(), value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_dict_rebuilds".into())), rhs: Box::new(E::ConstI64(1)) } }],
@@ -193,7 +201,7 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             N::If {
                 cond: b(
                     BinOp::And,
-                    b(BinOp::Gt, getl("cap"), i32c(0)),
+                    b(BinOp::And, b(BinOp::Gt, getl("cap"), i32c(0)), b(BinOp::Gt, getl("count"), i32c(1))),
                     b(BinOp::Le, getl("mode"), i32c(2)),
                 ),
                 then_: vec![
@@ -266,10 +274,6 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                         value: getl("idx"),
                         kind: Kind::I32,
                         offset: 0,
-                    },
-                    N::SetLocal {
-                        local: "count".into(),
-                        value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 },
                     },
                     N::SetLocal { local: "i".into(), value: i32c(0) },
                     N::Block {
