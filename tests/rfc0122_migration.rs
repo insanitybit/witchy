@@ -218,7 +218,7 @@ fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
     ) in [
         ("shared call", LEGACY_SHARED_CALL, vec!["text"], ["value"], 0, 0),
         ("mutable parameter", LEGACY_MUTABLE_PARAMETER, vec!["value"], ["value"], 0, 0),
-        ("parser shell", LEGACY_PARSER_SHELL, vec!["input"], ["5"], 3, 3),
+        ("parser shell", LEGACY_PARSER_SHELL, vec!["input"], ["5"], 2, 2),
         ("aggregate carrier", LEGACY_AGGREGATE_CARRIER, vec!["text"], ["first"], 0, 0),
     ] {
         let Some(migration) = migrate_references(legacy) else {
