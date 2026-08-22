@@ -223,6 +223,46 @@ pub(crate) fn dict_ctrl_h2_helper() -> WirFunc {
     }
 }
 
+/// Scalar control-byte equivalent of [`dict_ctrl_h2_helper`].  The helper keeps
+/// the same ABI so probe lowering is representation-identical; the compile-time
+/// selector in the registry simply removes the SIMD instructions for targets
+/// whose Wasm feature set does not include fixed-width SIMD.
+pub(crate) fn dict_ctrl_h2_scalar_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "dict_ctrl_h2".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "h2".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::Push(E::Binary {
+            op: BinOp::Eq,
+            kind: Kind::I32,
+            lhs: Box::new(E::Load8U {
+                ptr: Box::new(E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(getl("idx")),
+                    rhs: Box::new(E::Binary {
+                        op: BinOp::Add,
+                        kind: Kind::I32,
+                        lhs: Box::new(E::ConstI32(4)),
+                        rhs: Box::new(getl("h")),
+                    }),
+                }),
+                offset: 0,
+            }),
+            rhs: Box::new(getl("h2")),
+        })],
+        raw_body: None,
+    }
+}
+
 /// `$dict_index_eq4(idx, h, needle) -> i32` — Phase-0 control row for the
 /// existing four-byte dense index. It compares four adjacent 32-bit entry
 /// indices with one SIMD lane operation, preserving the old indirection and

@@ -13,6 +13,13 @@ use super::host::{
 };
 use crate::wir::*;
 
+/// Select the no-SIMD dictionary control probe at compile time.  The normal
+/// compiler path emits the RFC-0140 vector probe; release/portability jobs can
+/// set this variable when their target feature set excludes `simd128`.
+fn scalar_wasm_target() -> bool {
+    std::env::var_os("WITCHY_WASM_SCALAR").is_some()
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1124,14 +1131,11 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         "dict_ctrl_h2" => Some(WirHelperSpec {
-            func: dict_ctrl_h2_helper(),
-            helper_deps: &["dict_ctrl_h2_mask"],
-            import_deps: &[],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dict_ctrl_h2_mask" => Some(WirHelperSpec {
-            func: dict_ctrl_h2_mask_helper(),
+            func: if scalar_wasm_target() {
+                dict_ctrl_h2_scalar_helper()
+            } else {
+                dict_ctrl_h2_helper()
+            },
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
@@ -1139,7 +1143,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find" => Some(WirHelperSpec {
             func: dict_find_helper(),
-            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2_mask"],
+            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1160,7 +1164,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find_slice" => Some(WirHelperSpec {
             func: dict_find_slice_helper(),
-            helper_deps: &["dict_slice_eq", "dict_hash_slice", "dict_ctrl_h2_mask"],
+            helper_deps: &["dict_slice_eq", "dict_hash_slice", "dict_ctrl_h2"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1233,7 +1237,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_at" => Some(WirHelperSpec {
             func: dict_at_helper(),
-            helper_deps: &["dict_find", "dict_find_bucket"],
+            helper_deps: &["dict_find"],
             import_deps: &["__witchy_abort"],
             uses_heap: false,
             uses_table: false,
@@ -1268,7 +1272,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find_bucket" => Some(WirHelperSpec {
             func: dict_find_bucket_helper(),
-            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2_mask"],
+            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
