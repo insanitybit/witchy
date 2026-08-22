@@ -12,6 +12,32 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let bucket_index = || E::Load {
+        ptr: Box::new(b(
+            BinOp::Add,
+            getl("idx"),
+            b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Mul, getl("bucket"), i32c(4)))),
+        )),
+        kind: Kind::I32,
+        offset: 0,
+    };
+    let dense_value_at_bucket = || E::Load {
+        ptr: Box::new(b(
+            BinOp::Add,
+            getl("d"),
+            b(
+                BinOp::Mul,
+                b(
+                    BinOp::Sub,
+                    bucket_index(),
+                    i32c(1),
+                ),
+                i32c(16),
+            ),
+        )),
+        kind: Kind::I64,
+        offset: 12,
+    };
     WirFunc {
         name: "dict_get_or".into(),
         params: vec![
@@ -36,7 +62,7 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
                     N::SetLocal { local: "bucket".into(), value: E::Call { func: "dict_find_bucket".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
                     N::If {
                         cond: b(BinOp::Ge, getl("bucket"), i32c(0)),
-                        then_: vec![N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(13)), b(BinOp::Mul, getl("bucket"), i32c(8)))))), kind: Kind::I64, offset: 0 }))],
+                        then_: vec![N::Return(Some(dense_value_at_bucket()))],
                         els: vec![N::Return(Some(getl("default")))],
                         result: None,
                     },
@@ -68,6 +94,20 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let bucket_index = || E::Load {
+        ptr: Box::new(b(
+            BinOp::Add,
+            getl("idx"),
+            b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Mul, getl("bucket"), i32c(4)))),
+        )),
+        kind: Kind::I32,
+        offset: 0,
+    };
+    let dense_value_at_bucket = || E::Load {
+        ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, b(BinOp::Sub, bucket_index(), i32c(1)), i32c(16)))),
+        kind: Kind::I64,
+        offset: 12,
+    };
     WirFunc {
         name: "dict_at".into(),
         params: vec![
@@ -92,7 +132,7 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
                     N::If {
                         cond: b(BinOp::Lt, getl("bucket"), i32c(0)),
                         then_: abort_nodes(DiagTemplate::DictMissing, i64c(0), i64c(0), i32c(0)),
-                        els: vec![N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(13)), b(BinOp::Mul, getl("bucket"), i32c(8)))))), kind: Kind::I64, offset: 0 }))],
+                        els: vec![N::Return(Some(dense_value_at_bucket()))],
                         result: None,
                     },
                 ],
