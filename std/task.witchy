@@ -46,6 +46,9 @@ sealed type Step(a):
     Push(Int, __Msg, fn(Nil) -> Task(a))
     Pull(Int, fn(Option(__Msg)) -> Task(a))
     Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))
+    // Compiler-owned ready-path probe. The executor checks both channels before
+    // parking; an empty pair is converted to the ordinary Wait2 path.
+    Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))
     PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))
     Wait(Int, fn(Nil) -> Task(a))
     Cancel(Int, fn(Nil) -> Task(a))
@@ -90,6 +93,7 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Push(ch, msg, cont) -> Push(ch, msg, fn(u): and_then(cont(u), k))
         Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
         Pull2(ch0, ch1, cont) -> Pull2(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
+        Pull2Ready(ch0, ch1, cont) -> Pull2Ready(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
         PullAny(chs, cont) -> PullAny(chs, fn(o): and_then(cont(o), k))
         Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
         Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
@@ -139,13 +143,13 @@ fn __channel_select2(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) 
     match a:
         ChannelId(ia) ->
             match b:
-                ChannelId(ib) -> Task(fn(): Pull2(ia, ib, decode))
+                ChannelId(ib) -> Task(fn(): Pull2Ready(ia, ib, decode))
 
 pub fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a):
     match a:
         ChannelId(ia) ->
             match b:
-                ChannelId(ib) -> Task(fn(): Pull2(ia, ib, decode))
+                ChannelId(ib) -> Task(fn(): Pull2Ready(ia, ib, decode))
 
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
     Task(fn(): PullAny(channel_ids(channels), k))
@@ -336,6 +340,9 @@ pub fn run(root: Task(Nil)):
                             list.set_at(slots, i, Active(cont(Some((k, msg)))))
                             prog = true
                         None -> unit()
+                        // The ready probe is deliberately a strict
+                        // specialization of Pull2: first arm wins ties,
+                        // and an empty pair parks in the same Wait2 slot.
                 WaitJoin(t, cont) ->
                     match list.at(slots, t):
                         Ended ->
@@ -379,6 +386,24 @@ pub fn run(root: Task(Nil)):
                             else:
                                 list.set_at(slots, i, WaitRecv(ch, cont))
                         Pull2(ch0, ch1, cont) ->
+                            let (buf0, head0, count0, cap0) = list.at(channels, ch0)
+                            if count0 > 0:
+                                let msg = list.at(buf0, head0)
+                                let physcap = list.length(buf0)
+                                list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                                list.set_at(slots, i, Active(cont(0, Some(msg))))
+                                prog = true
+                            else:
+                                let (buf1, head1, count1, cap1) = list.at(channels, ch1)
+                                if count1 > 0:
+                                    let msg = list.at(buf1, head1)
+                                    let physcap = list.length(buf1)
+                                    list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                                    list.set_at(slots, i, Active(cont(1, Some(msg))))
+                                    prog = true
+                                else:
+                                    list.set_at(slots, i, Wait2(ch0, ch1, cont))
+                        Pull2Ready(ch0, ch1, cont) ->
                             let (buf0, head0, count0, cap0) = list.at(channels, ch0)
                             if count0 > 0:
                                 let msg = list.at(buf0, head0)
