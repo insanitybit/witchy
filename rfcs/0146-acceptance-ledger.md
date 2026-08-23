@@ -40,7 +40,7 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | Ownership and deoptimization safety | clean exact-proof sites emit direct `store8`; dirty, non-Bool, opaque, and unproven sites retain the existing packed scalar helper and copy path | accepted |
 | Correctness/parity/traps | `host_layout_tests` 11 passed; candidate outputs match Go for `nsieve`, `list_sum`, and `list_index`; the exact path is gated by `sequence_element_address`, so non-proven accesses retain checked lowering | locally verified |
 | Matched promotion matrix | durable schema-1 artifact and paired raw TSVs at `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track6-2b065c24`; candidate source `2b065c24`, predecessor source `99c0045f`, binary hashes recorded | accepted; merged as `0d3e0589ec6b16f0351de7fa0b773683bfa20573` |
-| 7 borrowed string/hash residual | entry criterion not evaluated | pending | pending | pending | `knucleotide`, `dict_count`, `word_count` | pending | pending |
+| 7 borrowed string/hash residual | deferred: entry criterion not met; schema 1 audit `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track7-audit-d86b5ff5/track7-schema1.json` (`sha256:58b60fdaa0d23f33c8dd4f0d4ce88c96aff6773d0ce32d560a47bdd624e7f35d`) | matched 12-sample baseline and deterministic hash/probe counters; no symbolized function-level profile attribution >=10% of `knucleotide` to an eligible residual | phase0 harness + temporary stats counter activation; Samply Wasmtime JIT profile retained but unsymbolicated; no implementation proposed | baseline: `dict_count` 25.288 ms, `word_count` 22.701 ms, `knucleotide` 17.543 ms median | audit/rfc0146-track7 | not applicable: deferred before implementation; RFC-0143 remains proposed |
 
 ## Track 4 safety repair (not performance acceptance)
 
@@ -106,6 +106,36 @@ ms, so the RFC's 15% Collatz threshold was not met.
 Before closing a performance track, copy its raw local artifact bundle to a
 durable path outside the repository and replace `pending` in its row with that
 path. The ledger records summaries and hashes, not machine-specific raw data.
+
+### Track 7 deferred audit
+
+The Track 7 entry audit ran on `d86b5ff5` with the release binary identified in
+the row above. Twelve phase-0 samples (two warmups) had medians of 25.288 ms
+for `dict_count`, 22.701 ms for `word_count`, and 17.543 ms for `knucleotide`.
+With the deterministic Swiss counters enabled for the audit-only stats build,
+the workloads performed respectively 6,003,254, 1,003,254, and 870,487 hash
+operations. Probe-group counts were 3,786,429, 1,314, and 231,797; H2
+candidate counts were 2,999,001, 1, and 483. These counts establish workload
+shape but do not establish kernel-time attribution. The available Samply
+capture was unsymbolicated for Wasmtime JIT frames, so it cannot prove that an
+eligible residual consumes at least 10% of the `knucleotide` kernel; the
+attribution requirement therefore remains unmet rather than being inferred
+from counter volume. The existing borrowed-view path already avoids owned-key
+materialization on hits, and the audit found no sound cache or length-hoisting
+seam. Track 7 is therefore deferred without an implementation or queue event.
+The raw samples and counter outputs are retained under the external artifact
+directory recorded in the Track 7 row.
+
+This audit does not accept RFC-0143. The current master contains Swiss control
+metadata, SIMD H2 probing, ordered projection routing, and borrowed String
+lookups from earlier implementation work, but RFC-0143 still lacks its
+requirement-level promotion evidence: the complete size/hit/miss/churn/key-mode
+matrix, scalar/SIMD and interpreter differential rows, ownership and retained
+heap measurements, ordered-projection limits, bytes-per-entry comparison,
+portable SIMD/scalar release artifacts, and the matched whole-workload
+geomean/no-regression gate. Existing code and counters are implementation
+evidence only; the RFC header remains `proposed` until that separate acceptance
+ledger is completed.
 
 ## Track 0 local verification
 
