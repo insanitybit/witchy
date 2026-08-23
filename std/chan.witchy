@@ -346,14 +346,16 @@ pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> T
     match a:
         Receiver(ia) ->
             match b:
-                Receiver(ib) -> task.__channel_select2_map(ia, ib, fn(tag, o):
-                    match o:
-                        Some(msg) ->
-                            if tag == 0:
-                                k(First(__unerase(msg)))
-                            else:
-                                k(Second(__unerase(msg)))
-                        None -> k(Closed))
+                Receiver(ib) -> task.__channel_select2_map(ia, ib, fn(tag, o): __select2_decode(k, tag, o))
+
+fn __select2_decode(k: fn(own Selected(m)) -> Task(n), tag: Int, o: Option(__Msg)) -> Task(n):
+    match o:
+        Some(msg) ->
+            if tag == 0:
+                k(First(__unerase(msg)))
+            else:
+                k(Second(__unerase(msg)))
+        None -> k(Closed)
 
 fn select2_result(k: Int, o: Option(__Msg)) -> Task(Selected(m)):
     match o:
