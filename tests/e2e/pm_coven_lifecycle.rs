@@ -1141,6 +1141,58 @@ fn install_fetches_verifies_and_writes_a_trusted_exe() {
     assert!(installed.exists(), "the trusted-exe must be installed into $WITCHY_HOME/bin");
     assert_eq!(std::fs::read(&installed).unwrap(), b"hello", "installed bytes match the published, signed artifact");
 
+    // A compromised artifact store can still serve bytes that disagree with
+    // the signed manifest. Reinstallation must reject them without replacing
+    // the last verified executable.
+    fn find_named(root: &Path, name: &str) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(root).ok()? {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                if let Some(found) = find_named(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|value| value.to_str()) == Some(name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+    let stored = find_named(&server.regroot, "aarch64-apple-darwin.part.0")
+        .expect("published artifact chunk in hermetic registry storage");
+    std::fs::write(stored, b"pwned").unwrap();
+    let rejected = fe.pm(&consumer, &["install", "acme/wrg", "--target", "aarch64-apple-darwin"], None);
+    assert!(!rejected.status.success(), "tampered reinstall must be rejected");
+    assert!(stdout(&rejected).contains("do not match the signed sha256"), "{}", stdout(&rejected));
+    assert_eq!(
+        std::fs::read(&installed).unwrap(),
+        b"hello",
+        "a rejected replacement must preserve the previously verified executable"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_ne!(
+            std::fs::metadata(&installed).unwrap().permissions().mode() & 0o111,
+            0,
+            "the preserved verified command remains executable"
+        );
+        let staged = std::fs::read_dir(fe.home().join("bin"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".wrg.install-"))
+            })
+            .expect("rejected bytes remain only in a staging file");
+        assert_eq!(
+            std::fs::metadata(staged).unwrap().permissions().mode() & 0o111,
+            0,
+            "unverified staging bytes must never become executable"
+        );
+    }
+
     // A source-only package has nothing to install → refused.
     let libsrc = fe.lib("acme/plain", "0.1.0", "pub fn go() -> String:\n    \"hi\"\n");
     let ci2 = server.ci_token("acme-wrg-repo", "release.yml");
