@@ -6,6 +6,70 @@
 
 use super::*;
 
+fn statement_value(statement: &Stmt) -> Option<&Expr> {
+    match statement {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Yield(value)
+        | Stmt::Expr(value) => Some(value),
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => None,
+    }
+}
+
+fn is_borrowed_dict_consumer(statement: &Stmt, local: &str) -> bool {
+    let Some(expression) = statement_value(statement) else {
+        return false;
+    };
+    if let Stmt::Assign { name: receiver, .. } = statement
+        && matches!(
+            analysis::self_inplace_op(receiver, expression),
+            Some(analysis::InPlaceOp::Update(Expr::Var(key), _, _)) if key == local
+        )
+    {
+        return true;
+    }
+    let Expr::Call { name, args } = expression else {
+        return false;
+    };
+    if !matches!(args.get(1), Some(Expr::Var(name)) if name == local) {
+        return false;
+    }
+    matches!(name.as_str(), intrinsics::DICT_GET_OR | intrinsics::DICT_CONTAINS_KEY)
+}
+
+/// A stack-backed interpolation view is valid only through its immediate
+/// consumer. Prove that the next statement is the sole read and that it is a
+/// dictionary operation with a `(ptr,len)` lowering before selecting the view
+/// representation. All other locals retain the ordinary owning String ABI.
+fn local_interpolation_has_single_borrowed_use(
+    block: &Block,
+    index: usize,
+    local: &str,
+) -> bool {
+    let Some(next) = block.stmts.get(index + 1) else {
+        return false;
+    };
+    if !is_borrowed_dict_consumer(next, local) {
+        return false;
+    }
+
+    let mut reads = 0usize;
+    for statement in block.stmts.iter().skip(index + 1) {
+        let Some(value) = statement_value(statement) else {
+            continue;
+        };
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_expr(value, &mut |expression| {
+            if matches!(expression, Expr::Var(name) if name == local) {
+                reads += 1;
+            }
+            Ok(())
+        });
+    }
+    reads == 1
+}
+
 impl<'types> Codegen<'types> {
     /// Conservative local fact used by the loop bounds proof. Addition cannot
     /// produce a negative result from two non-negative operands (overflow traps
@@ -554,6 +618,7 @@ impl<'types> Codegen<'types> {
                         if let Some((prefix, int_value)) =
                             super::builtins::interpolation_prefix_int(value)
                             && self.val_type_of(int_value) == ValType::Int
+                            && local_interpolation_has_single_borrowed_use(block, i, name)
                         {
                             let len_local = format!("{name}__slice_len");
                             let wm_local = format!("{name}__slice_wm");

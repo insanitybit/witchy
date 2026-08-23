@@ -1425,6 +1425,40 @@ fn main() -> Int:
         assert!(wat.contains("call $str_fmt_prefix_int_view"), "update key should use a borrowed format view: {wat}");
         assert!(wat.contains("call $dict_update_slice_cap"), "update should consume the view directly: {wat}");
         assert!(!wat.contains("call $str_fmt_prefix_int\n"), "update path should not materialize an owned key: {wat}");
+        let update = wat.find("call $dict_update_slice_cap").expect("slice update call");
+        let rewind = wat[update..]
+            .find("global.set $fmt_stack_top")
+            .expect("format arena is rewound after the update");
+        assert!(rewind < 512, "format arena rewind must immediately follow the borrowed update: {}", &wat[update..update + rewind]);
+    }
+
+    #[test]
+    fn local_interpolation_with_ordinary_string_use_stays_owned() {
+        let string_module = parse_module(
+            witchy_syntax::linker::bundled_source("string").expect("bundled string module"),
+        ).expect("parse string module");
+        let app = parse_module(r#"
+mode opt
+import string
+fn render(n: Int) -> String:
+    let s = "${n}"
+    s
+
+fn main() -> Int:
+    string.length(render(0))
+"#).expect("parse owned interpolation app");
+        let module = link_test_modules(
+            vec![("string".into(), string_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 1, "ordinary String operations require the owning [len][bytes] ABI");
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower owned local interpolation"),
+        );
+        assert!(wat.contains("call $str_fmt_prefix_int"), "local must materialize an owned string: {wat}");
+        assert!(!wat.contains("call $str_fmt_prefix_int_view"), "ordinary local must not carry a borrowed view: {wat}");
     }
 
     #[test]
