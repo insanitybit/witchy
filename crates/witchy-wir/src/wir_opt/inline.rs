@@ -104,7 +104,9 @@ fn collect_assigned_locals_node(node: &WirNode, assigned: &mut HashSet<String>) 
             collect_assigned_locals_expr(value, assigned);
             collect_assigned_locals_expr(len, assigned);
         }
-        _ => {}
+        WirNode::Br { cond: None, .. }
+        | WirNode::Return(None)
+        | WirNode::Unreachable => {}
     }
 }
 
@@ -151,7 +153,15 @@ fn collect_assigned_locals_expr(expr: &WirExpr, assigned: &mut HashSet<String>) 
             }
             collect_assigned_locals_expr(index, assigned);
         }
-        _ => {}
+        WirExpr::ConstI64(_)
+        | WirExpr::ConstF64(_)
+        | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
+        | WirExpr::StrPtr(_)
+        | WirExpr::GetLocal(_)
+        | WirExpr::GetGlobal(_)
+        | WirExpr::MemorySize
+        | WirExpr::RefNull(_) => {}
     }
 }
 
@@ -165,8 +175,21 @@ fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<Stri
                 closures.remove(local);
             }
         }
-        WirNode::Source { body, .. } | WirNode::Block { body, .. } => {
+        WirNode::Source { body, .. } => {
             devirt_seq(body, funcs, closures, changed);
+        }
+        WirNode::Block { body, .. } => {
+            // A forward branch may leave the block before any later assignment.
+            // Treat every local assigned in the body as unknown at entry and at
+            // the block exit; only fallthrough statements within the isolated
+            // body may learn a more precise target.
+            let mut assigned = HashSet::new();
+            collect_assigned_locals_seq(body, &mut assigned);
+            for local in &assigned {
+                closures.remove(local);
+            }
+            let mut body_closures = closures.clone();
+            devirt_seq(body, funcs, &mut body_closures, changed);
         }
         WirNode::Loop { body, .. } => {
             let mut assigned = HashSet::new();

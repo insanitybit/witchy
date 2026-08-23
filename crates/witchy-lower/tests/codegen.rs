@@ -4353,6 +4353,33 @@ fn main() -> Int:
     }
 
     #[test]
+    fn match_exit_rebound_closure_keeps_dynamic_dispatch() {
+        let src = r#"
+fn main() -> Int:
+    var f = fn(x: Int): x * 2
+    let selected = 0
+    let _ = match selected:
+        0 -> 0
+        _ ->:
+            f = fn(x: Int): x * 3
+            1
+    f(10)
+"#;
+        let direct = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide);
+        witchy_syntax::opt::set_for_tests(Some(direct));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 20, "the first match arm must retain the incoming closure");
+
+        let (_, indirect, _) = call_shape(src, direct);
+        assert!(
+            indirect > 0,
+            "a closure rebound only on a later match arm must retain table dispatch",
+        );
+    }
+
+    #[test]
     fn elides_bounds_check_in_counted_loop() {
         // (RFC-0034 L2 / BUG-008) Inside `for i in 0..list.length(xs)` over an
         // unreassigned `xs`, the compiler-managed counter satisfies `0 <= i < length(xs)`

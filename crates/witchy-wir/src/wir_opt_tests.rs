@@ -122,6 +122,67 @@
     }
 
     #[test]
+    fn closure_devirtualization_kills_block_rebinds_across_conditional_exit() {
+        let mut module = module_with(WirFunc {
+            name: "main".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "stable".into(),
+                    value: closure_value(0),
+                },
+                WirNode::SetLocal {
+                    local: "rebound".into(),
+                    value: closure_value(0),
+                },
+                WirNode::Block {
+                    label: "exit".into(),
+                    result: None,
+                    body: vec![
+                        WirNode::Br {
+                            target: "exit".into(),
+                            cond: Some(WirExpr::ConstI32(1)),
+                        },
+                        WirNode::SetLocal {
+                            local: "rebound".into(),
+                            value: closure_value(1),
+                        },
+                        WirNode::Do(indirect_closure_call("rebound")),
+                    ],
+                },
+                WirNode::Do(indirect_closure_call("stable")),
+                WirNode::Do(indirect_closure_call("rebound")),
+            ],
+            raw_body: None,
+        });
+        module.table = Some(WirTable {
+            funcs: vec!["first".into(), "second".into()],
+        });
+
+        inline_direct_calls(&mut module);
+
+        let [_, _, WirNode::Block { body, .. }, WirNode::Do(stable), WirNode::Do(rebound)] =
+            module.funcs[0].body.as_slice()
+        else {
+            panic!("unexpected optimized body: {:?}", module.funcs[0].body);
+        };
+        assert!(
+            matches!(&body[2], WirNode::Do(WirExpr::Call { func, .. }) if func == "second"),
+            "the fallthrough path may learn the closure assigned after the branch: {body:?}",
+        );
+        assert!(
+            matches!(stable, WirExpr::Call { func, .. } if func == "first"),
+            "a closure never assigned by the block remains directly callable: {stable:?}",
+        );
+        assert!(
+            matches!(rebound, WirExpr::CallIndirect { .. }),
+            "a conditional block exit must join the incoming and rebound targets: {rebound:?}",
+        );
+    }
+
+    #[test]
     fn closure_devirtualization_kills_conditional_multi_result_destinations() {
         let mut module = module_with(WirFunc {
             name: "main".into(),
