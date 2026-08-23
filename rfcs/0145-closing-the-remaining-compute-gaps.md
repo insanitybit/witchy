@@ -1,8 +1,9 @@
 ---
 rfc: 0145
 title: "Unified Compute Parity Roadmap: Zero-Allocation Async Select, Fused In-Place Dictionary Mutation, Monomorphized Unboxed Sequences, Stack-Buffered String Views, and Leaf Inlining"
-status: proposed
+status: superseded
 created: 2026-08-22
+superseded-by: "0146-post-hybrid-performance-program"
 related:
   - "0016 (reference counting and reclamation floor)"
   - "0017 (codegen performance constant factors)"
