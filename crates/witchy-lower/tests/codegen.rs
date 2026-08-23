@@ -4629,6 +4629,33 @@ fn main() -> Int:
     }
 
     #[test]
+    fn sequence_guard_coalescing_uses_only_the_matching_nested_cursor() {
+        let source = r#"
+fn main() -> Int:
+    var values = [1, 2, 3]
+    var r = 1
+    while r < 3:
+        let saved = values[r]
+        for i in 0..r:
+            values[i] = values[i + 1]
+        values[r] = saved
+        r = r + 1
+    values[0]
+"#;
+        assert_eq!(run_int(source), 2);
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        let inner = main.split("block $fe").nth(1).expect("inner counted loop");
+        let inner = inner.split("br $fl").next().expect("one inner iteration");
+        assert_eq!(
+            inner.matches("call $list_at").count(),
+            1,
+            "the inner i+1 lane needs one guard, not one per outer same-root plan:\n{main}",
+        );
+    }
+
+    #[test]
     fn production_sequence_wat_omits_deterministic_counter_instrumentation() {
         let source = r#"
 fn main() -> Int:

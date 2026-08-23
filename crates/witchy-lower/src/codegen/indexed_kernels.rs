@@ -390,6 +390,9 @@ impl<'types> Codegen<'types> {
         let mut guards = Vec::new();
         let mut coalesced_groups = 0;
         for plan in self.sequence_access_plans.iter_mut() {
+            if !plan.cursors.contains_key(index) {
+                continue;
+            }
             let Some(&(minimum_offset, maximum_offset)) = scan
                 .direct_indexed_accesses
                 .get(&(index.to_string(), plan.owner_root.clone()))
