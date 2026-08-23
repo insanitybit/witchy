@@ -7048,6 +7048,19 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn task_source_declares_reusable_select_frame_fallbacks() {
+        let source = include_str!("../../../../std/task.witchy");
+        for marker in [
+            "Pull2Frame(Int, Int, List(Int)",
+            "Wait2Frame(Int, Int, List(Int)",
+            "Pull2Frame(ch0, ch1, frame, step, done_task)",
+            "Wait2Frame(ch0, ch1, frame, step, done_task)",
+        ] {
+            assert!(source.contains(marker), "missing reusable frame ABI marker: {marker}");
+        }
+    }
+
+    #[test]
     fn direct_carrier_does_not_retype_a_transitive_helper_list() {
         let checked = authenticated_checked(
             "import task\n\nfn first(xs: List(Int)) -> Int:\n    xs[0]\n\nasync fn main():\n    let value = task.done(7).await\n    let _observed = first([value])\n",
