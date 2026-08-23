@@ -176,6 +176,18 @@ const UNIQUE_RESULT_CAP_TMP: &str = "__witchy_unique_result_cap";
 const DESTINATION_PARAM: &str = "__witchy_destination";
 const DESTINATION_RESULT_TMP: &str = "__witchy_destination_result";
 
+const HOT_COUNTERS: [(&str, &str); 9] = [
+    ("__witchy_destination_candidates_forwarded", "destination"),
+    ("__witchy_region_rewind_calls", "rewind"),
+    ("__witchy_checked_indexed_loads", "indexed_load"),
+    ("__witchy_checked_indexed_stores", "indexed_store"),
+    ("__witchy_cursorized_indexed_accesses", "cursor"),
+    ("__witchy_sequence_bounds_checks_coalesced", "coalesced"),
+    ("__witchy_sequence_forwarded_loads", "forwarded"),
+    ("__witchy_list_header_loads", "header"),
+    ("__witchy_sequence_small_loops_unrolled", "small_unroll"),
+];
+
 fn assign_scratch(component: &str, level: usize) -> String {
     format!("__witchy_assign_{component}_{level}")
 }
@@ -1156,8 +1168,8 @@ struct Codegen<'types> {
     destination_scratch_sites: HashMap<usize, (String, LayoutId)>,
     /// Active counted-range counter-batch slots, innermost last.
     counter_batch_stack: Vec<usize>,
-    /// `(destination, rewind)` counters actually touched by each active batch.
-    counter_batch_used: Vec<(bool, bool)>,
+    /// Fixed-order bitsets of counters actually touched by each active batch.
+    counter_batch_used: Vec<u16>,
     /// (RFC-0035 step 3) `let x = list.at(xs, i)` bindings whose read was `$rc_dup`'d
     /// (the SAME per-type gate as the dup site — offset-0 element, `rc-floor` on), so `x`
     /// owns a reference and must be `$rc_drop`'d at its last use. Recording the ownership
@@ -4779,14 +4791,12 @@ impl<'types> Codegen<'types> {
         });
         for i in 0..WM_POOL {
             locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
-            locals.push(WirLocal {
-                name: Self::counter_batch_local("destination", i),
-                ty: i64t(),
-            });
-            locals.push(WirLocal {
-                name: Self::counter_batch_local("rewind", i),
-                ty: i64t(),
-            });
+            for (_, kind) in HOT_COUNTERS {
+                locals.push(WirLocal {
+                    name: Self::counter_batch_local(kind, i),
+                    ty: i64t(),
+                });
+            }
         }
         for i in 0..APPLY_POOL {
             locals.push(WirLocal {
@@ -9500,14 +9510,12 @@ impl<'types> Codegen<'types> {
                 });
                 for i in 0..WM_POOL {
                     locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
-                    locals.push(WirLocal {
-                        name: Self::counter_batch_local("destination", i),
-                        ty: WirTy::Int,
-                    });
-                    locals.push(WirLocal {
-                        name: Self::counter_batch_local("rewind", i),
-                        ty: WirTy::Int,
-                    });
+                    for (_, kind) in HOT_COUNTERS {
+                        locals.push(WirLocal {
+                            name: Self::counter_batch_local(kind, i),
+                            ty: WirTy::Int,
+                        });
+                    }
                 }
                 for i in 0..APPLY_POOL {
                     locals.push(WirLocal {
@@ -10060,20 +10068,16 @@ impl<'types> Codegen<'types> {
 
     fn increment_hot_counter(&mut self, name: &str) -> witchy_wir::wir::WirNode {
         use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirNode as N};
-        let kind = match name {
-            "__witchy_destination_candidates_forwarded" => "destination",
-            "__witchy_region_rewind_calls" => "rewind",
-            _ => return Self::increment_counter(name),
-        };
+        let Some((counter_index, (_, kind))) = HOT_COUNTERS
+            .iter()
+            .enumerate()
+            .find(|(_, (global, _))| *global == name)
+        else { return Self::increment_counter(name) };
         let Some(level) = self.counter_batch_stack.last().copied() else {
             return Self::increment_counter(name);
         };
-        if let Some((destination, rewind)) = self.counter_batch_used.last_mut() {
-            match kind {
-                "destination" => *destination = true,
-                "rewind" => *rewind = true,
-                _ => unreachable!(),
-            }
+        if let Some(used) = self.counter_batch_used.last_mut() {
+            *used |= 1 << counter_index;
         }
         let local = Self::counter_batch_local(kind, level);
         N::SetLocal {
@@ -10098,6 +10102,30 @@ impl<'types> Codegen<'types> {
                 rhs: Box::new(W::GetLocal(local)),
             },
         }
+    }
+
+    fn initialize_counter_batch(level: usize, used: u16) -> witchy_wir::wir::WirSeq {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        HOT_COUNTERS
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| used & (1 << index) != 0)
+            .map(|(_, (_, kind))| N::SetLocal {
+                local: Self::counter_batch_local(kind, level),
+                value: W::ConstI64(0),
+            })
+            .collect()
+    }
+
+    fn commit_used_counter_batch(level: usize, used: u16) -> witchy_wir::wir::WirSeq {
+        HOT_COUNTERS
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| used & (1 << index) != 0)
+            .map(|(_, (global, kind))| {
+                Self::commit_counter_batch(global, Self::counter_batch_local(kind, level))
+            })
+            .collect()
     }
 
     fn loop_arena_resettable(&self, body: &Block) -> bool {

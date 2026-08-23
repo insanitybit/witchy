@@ -275,6 +275,7 @@ impl<'types> Codegen<'types> {
                 || !all_accesses_proven_exact
                 || scan.length_reads.contains(&owner_root)
             {
+                setup.push(self.increment_hot_counter("__witchy_list_header_loads"));
                 setup.push(N::SetLocal {
                     local: length.clone(),
                     value: W::Load {
@@ -387,6 +388,7 @@ impl<'types> Codegen<'types> {
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
         let mut guards = Vec::new();
+        let mut coalesced_groups = 0;
         for plan in self.sequence_access_plans.iter_mut() {
             let Some(&(minimum_offset, maximum_offset)) = scan
                 .direct_indexed_accesses
@@ -449,6 +451,12 @@ impl<'types> Codegen<'types> {
                     maximum_offset,
                 });
             }
+            coalesced_groups += 1;
+        }
+        for _ in 0..coalesced_groups {
+            guards.push(self.increment_hot_counter(
+                "__witchy_sequence_bounds_checks_coalesced",
+            ));
         }
         if !guards.is_empty() {
             self.note_sequence_backend_policy(SEQUENCE_POLICY_GENERALIZED);
@@ -653,10 +661,10 @@ impl<'types> Codegen<'types> {
             offset,
         ))?;
         self.note_sequence_backend_policy(SEQUENCE_POLICY_GENERALIZED);
-        Some(W::FromSlot(
-            Box::new(W::GetLocal(local)),
-            element_kind,
-        ))
+        Some(W::Seq(vec![
+            self.increment_hot_counter("__witchy_sequence_forwarded_loads"),
+            N::Push(W::FromSlot(Box::new(W::GetLocal(local)), element_kind)),
+        ]))
     }
 
     pub(super) fn clear_forwarded_sequence_values(&mut self) {

@@ -1562,7 +1562,9 @@ impl Codegen<'_> {
                         ),
                         _ => None,
                     };
+                    let cursorized = proven_address.is_some() || planned_address.is_some();
                     let elide = existing_elision || proven_address.is_some();
+                    let checked_planned = !elide && planned_address.is_some();
                     let list_w = self.lower_expr(&args[0])?;
                 // Lower the index ONCE (it may be a side-effecting call), then widen
                 // to the kind the chosen path needs. The elide path does i32 address
@@ -1572,7 +1574,7 @@ impl Codegen<'_> {
                 // and a latent i32-wrap hole this closes).
                     let idx_target = if elide { Kind::I32 } else { Kind::I64 };
                     let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, idx_target);
-                    let read = if elide {
+                    let mut read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;
                     let addr = proven_address.unwrap_or_else(|| W::Binary {
@@ -1668,6 +1670,18 @@ impl Codegen<'_> {
                         ];
                         W::FromSlot(Box::new(W::Seq(nodes)), Self::wir_kind(ek))
                     };
+                    if cursorized {
+                        let mut counted = vec![self.increment_hot_counter(
+                            "__witchy_cursorized_indexed_accesses",
+                        )];
+                        if checked_planned {
+                            counted.push(self.increment_hot_counter(
+                                "__witchy_checked_indexed_loads",
+                            ));
+                        }
+                        counted.push(N::Push(read));
+                        read = W::Seq(counted);
+                    }
                 // (RFC-0035 step 1) The element read out of the container is now an OWNED
                 // reference sharing the object with the slot, so `$rc_dup` it — it returns the
                 // pointer, wrapping the read in place. Gated `rc-floor`; only i32-kinded

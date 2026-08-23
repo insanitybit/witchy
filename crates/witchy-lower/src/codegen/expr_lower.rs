@@ -1346,6 +1346,14 @@ impl<'types> Codegen<'types> {
                 self.next_label += 1;
                 let elide_pairs = self.while_bounds_elide_pairs(cond, body);
                 let sequence_indices = self.sequence_candidate_indices(body);
+                let batch_level = (!sequence_indices.is_empty()
+                    && self.loop_unroll_safe(body)
+                    && self.counter_batch_stack.len() < WM_POOL)
+                    .then_some(self.counter_batch_stack.len());
+                if let Some(level) = batch_level {
+                    self.counter_batch_stack.push(level);
+                    self.counter_batch_used.push(0);
+                }
                 let num_elide = elide_pairs.len();
                 for pair in &elide_pairs {
                     self.elide_index_list.push(pair.clone());
@@ -1360,6 +1368,10 @@ impl<'types> Codegen<'types> {
                 let cond_w = match self.lower_expr(cond) {
                     Some(c) => c,
                     None => {
+                        if batch_level.is_some() {
+                            self.counter_batch_stack.pop();
+                            self.counter_batch_used.pop();
+                        }
                         self.pop_sequence_access_plans(sequence_plan_count);
                         for _ in 0..num_elide {
                             self.elide_index_list.pop();
@@ -1389,6 +1401,12 @@ impl<'types> Codegen<'types> {
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
                 self.pop_sequence_access_plans(sequence_plan_count);
+                let batch_used = if batch_level.is_some() {
+                    self.counter_batch_stack.pop();
+                    self.counter_batch_used.pop().unwrap_or(0)
+                } else {
+                    0
+                };
 
                 if let Some(v) = added_non_neg {
                     self.known_non_negative_vars.remove(&v);
@@ -1458,7 +1476,11 @@ impl<'types> Codegen<'types> {
                             N::Br { target: format!("wl_clean{id}"), cond: None },
                         ];
                         
-                        let mut outer = sequence_setup.clone();
+                        let mut outer = Vec::new();
+                        if let Some(level) = batch_level {
+                            outer.extend(Self::initialize_counter_batch(level, batch_used));
+                        }
+                        outer.extend(sequence_setup.clone());
                         outer.extend([
                             N::SetLocal { local: limit_tmp.clone(), value: limit_w },
                             N::Block {
@@ -1471,8 +1493,11 @@ impl<'types> Codegen<'types> {
                                 result: None,
                                 body: vec![N::Loop { label: format!("wl_clean{id}"), body: clean_loop_body }],
                             },
-                            N::Push(W::ConstI32(0)),
                         ]);
+                        if let Some(level) = batch_level {
+                            outer.extend(Self::commit_used_counter_batch(level, batch_used));
+                        }
+                        outer.push(N::Push(W::ConstI32(0)));
                         return Some(W::Seq(outer));
                     }
                 }
@@ -1499,7 +1524,11 @@ impl<'types> Codegen<'types> {
                     loop_body.extend(reset.clone());
                 }
                 loop_body.push(N::Br { target: format!("wl{id}"), cond: None });
-                let mut outer: witchy_wir::wir::WirSeq = sequence_setup;
+                let mut outer: witchy_wir::wir::WirSeq = Vec::new();
+                if let Some(level) = batch_level {
+                    outer.extend(Self::initialize_counter_batch(level, batch_used));
+                }
+                outer.extend(sequence_setup);
                 if let Some((capture, _)) = &wm {
                     outer.push(capture.clone());
                 }
@@ -1508,6 +1537,9 @@ impl<'types> Codegen<'types> {
                     result: None,
                     body: vec![N::Loop { label: format!("wl{id}"), body: loop_body }],
                 });
+                if let Some(level) = batch_level {
+                    outer.extend(Self::commit_used_counter_batch(level, batch_used));
+                }
                 outer.push(N::Push(W::ConstI32(0)));
                 W::Seq(outer)
             },
@@ -1540,14 +1572,20 @@ impl<'types> Codegen<'types> {
                         return None;
                     }
                 };
+                let body_batch_safe = self.loop_unroll_safe(body);
                 let unroll_safe = witchy_syntax::opt::enabled(
                     witchy_syntax::opt::Opt::LoopUnroll,
-                ) && self.loop_unroll_safe(body);
-                let batch_level = (unroll_safe && self.counter_batch_stack.len() < WM_POOL)
+                ) && body_batch_safe;
+                let has_sequence_candidate = self.sequence_candidate_indices(body)
+                    .iter()
+                    .any(|candidate| candidate == var);
+                let batch_level = ((unroll_safe || has_sequence_candidate)
+                    && body_batch_safe
+                    && self.counter_batch_stack.len() < WM_POOL)
                     .then_some(self.counter_batch_stack.len());
                 if let Some(level) = batch_level {
                     self.counter_batch_stack.push(level);
-                    self.counter_batch_used.push((false, false));
+                    self.counter_batch_used.push(0);
                 }
                 // Per-iteration arena reset (the watermark optimization): save
                 // `$heap` before the loop, restore it after each body. `None` when
@@ -1592,9 +1630,9 @@ impl<'types> Codegen<'types> {
                 self.active_direct_list_builder = saved_builder;
                 let batch_used = if batch_level.is_some() {
                     self.counter_batch_stack.pop();
-                    self.counter_batch_used.pop().unwrap_or((false, false))
+                    self.counter_batch_used.pop().unwrap_or(0)
                 } else {
-                    (false, false)
+                    0
                 };
                 if elide_pair.is_some() {
                     self.elide_index_list.pop();
@@ -1622,21 +1660,13 @@ impl<'types> Codegen<'types> {
                         N::SetLocal { local: ctr, value: lo_w },
                         N::SetLocal { local: end, value: hi_w },
                     ];
-                    outer.extend(sequence_setup);
                     if let Some(level) = batch_level {
-                        if batch_used.0 {
-                            outer.push(N::SetLocal {
-                                local: Self::counter_batch_local("destination", level),
-                                value: W::ConstI64(0),
-                            });
-                        }
-                        if batch_used.1 {
-                            outer.push(N::SetLocal {
-                                local: Self::counter_batch_local("rewind", level),
-                                value: W::ConstI64(0),
-                            });
-                        }
+                        outer.extend(Self::initialize_counter_batch(level, batch_used));
                     }
+                    outer.extend(sequence_setup);
+                    outer.push(self.increment_hot_counter(
+                        "__witchy_sequence_small_loops_unrolled",
+                    ));
                     if let Some((capture, _)) = &wm {
                         outer.push(capture.clone());
                     }
@@ -1656,18 +1686,7 @@ impl<'types> Codegen<'types> {
                         }
                     }
                     if let Some(level) = batch_level {
-                        if batch_used.0 {
-                            outer.push(Self::commit_counter_batch(
-                                "__witchy_destination_candidates_forwarded",
-                                Self::counter_batch_local("destination", level),
-                            ));
-                        }
-                        if batch_used.1 {
-                            outer.push(Self::commit_counter_batch(
-                                "__witchy_region_rewind_calls",
-                                Self::counter_batch_local("rewind", level),
-                            ));
-                        }
+                        outer.extend(Self::commit_used_counter_batch(level, batch_used));
                     }
                     outer.push(N::Push(W::ConstI32(0)));
                     return Some(W::Seq(outer));
@@ -1780,22 +1799,11 @@ impl<'types> Codegen<'types> {
                     N::SetLocal { local: ctr, value: lo_w },
                     N::SetLocal { local: end, value: hi_w },
                 ];
+                if let Some(level) = batch_level {
+                    outer.extend(Self::initialize_counter_batch(level, batch_used));
+                }
                 outer.extend(sequence_setup);
                 outer.extend(sequence_cursor_init);
-                if let Some(level) = batch_level {
-                    if batch_used.0 {
-                        outer.push(N::SetLocal {
-                            local: Self::counter_batch_local("destination", level),
-                            value: W::ConstI64(0),
-                        });
-                    }
-                    if batch_used.1 {
-                        outer.push(N::SetLocal {
-                            local: Self::counter_batch_local("rewind", level),
-                            value: W::ConstI64(0),
-                        });
-                    }
-                }
                 if let Some((capture, _)) = &wm {
                     outer.push(capture.clone());
                 }
@@ -1813,18 +1821,7 @@ impl<'types> Codegen<'types> {
                     });
                 }
                 if let Some(level) = batch_level {
-                    if batch_used.0 {
-                        outer.push(Self::commit_counter_batch(
-                            "__witchy_destination_candidates_forwarded",
-                            Self::counter_batch_local("destination", level),
-                        ));
-                    }
-                    if batch_used.1 {
-                        outer.push(Self::commit_counter_batch(
-                            "__witchy_region_rewind_calls",
-                            Self::counter_batch_local("rewind", level),
-                        ));
-                    }
+                    outer.extend(Self::commit_used_counter_batch(level, batch_used));
                 }
                 outer.push(N::Push(W::ConstI32(0)));
                 W::Seq(outer)

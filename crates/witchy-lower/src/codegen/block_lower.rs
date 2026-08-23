@@ -1495,6 +1495,8 @@ impl<'types> Codegen<'types> {
                                     iexpr,
                                     Self::wir_kind(self.list_elem_kind(&Expr::Var(name.clone()))),
                                 );
+                                let cursorized_store =
+                                    proven_slot.is_some() || planned_slot.is_some();
                                 let proven_index = existing_proof || proven_slot.is_some();
                                 let cond = bin(BinOp::Gt, cap.clone(), W::ConstI32(0));
                                 let slot_ptr = || planned_slot.clone().unwrap_or_else(|| bin(
@@ -1524,7 +1526,17 @@ impl<'types> Codegen<'types> {
                                 // `list index {i} out of bounds (length {len})` diagnostic
                                 // (and carries the `__witchy_abort` import); the result is
                                 // unreachable (the call always traps here) so it is dropped.
+                                if cursorized_store {
+                                    seq.push(self.increment_hot_counter(
+                                        "__witchy_cursorized_indexed_accesses",
+                                    ));
+                                }
                                 if !proven_index {
+                                    if planned_slot.is_some() {
+                                        seq.push(self.increment_hot_counter(
+                                            "__witchy_checked_indexed_stores",
+                                        ));
+                                    }
                                     let set_len = || self.sequence_length(name).unwrap_or_else(|| W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 });
                                     seq.push(N::If {
                                         cond: bin(BinOp::GeU, si(), set_len()),

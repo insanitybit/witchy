@@ -1155,6 +1155,34 @@ impl Vm {
         self.i64_counter("__witchy_region_rewind_calls")
     }
 
+    pub fn list_header_loads(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_list_header_loads")
+    }
+
+    pub fn checked_indexed_loads(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_checked_indexed_loads")
+    }
+
+    pub fn checked_indexed_stores(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_checked_indexed_stores")
+    }
+
+    pub fn cursorized_indexed_accesses(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_cursorized_indexed_accesses")
+    }
+
+    pub fn sequence_bounds_checks_coalesced(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_sequence_bounds_checks_coalesced")
+    }
+
+    pub fn sequence_forwarded_loads(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_sequence_forwarded_loads")
+    }
+
+    pub fn sequence_small_loops_unrolled(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_sequence_small_loops_unrolled")
+    }
+
     pub fn extract_searches(&mut self) -> Option<i64> {
         self.i64_counter("__witchy_extract_searches")
     }

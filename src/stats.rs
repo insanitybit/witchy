@@ -61,6 +61,16 @@ pub struct Stats {
     pub rc_reuse_calls: i64,
     pub rc_free_calls: i64,
     pub region_rewind_calls: i64,
+    /// RFC-0146 indexed-sequence kernel operations. Header loads happen once
+    /// per entered stable plan; the remaining counts are dynamic accesses or
+    /// transformations performed by the loop-local plan.
+    pub list_header_loads: i64,
+    pub checked_indexed_loads: i64,
+    pub checked_indexed_stores: i64,
+    pub cursorized_indexed_accesses: i64,
+    pub sequence_bounds_checks_coalesced: i64,
+    pub sequence_forwarded_loads: i64,
+    pub sequence_small_loops_unrolled: i64,
     /// RFC-0088 semantic dictionary searches performed by fused extraction.
     pub extract_searches: i64,
     /// Key comparisons made within those searches.
@@ -171,6 +181,13 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         rc_reuse_calls: vm.rc_reuse_calls().unwrap_or(0),
         rc_free_calls: vm.rc_free_calls().unwrap_or(0),
         region_rewind_calls: vm.region_rewind_calls().unwrap_or(0),
+        list_header_loads: vm.list_header_loads().unwrap_or(0),
+        checked_indexed_loads: vm.checked_indexed_loads().unwrap_or(0),
+        checked_indexed_stores: vm.checked_indexed_stores().unwrap_or(0),
+        cursorized_indexed_accesses: vm.cursorized_indexed_accesses().unwrap_or(0),
+        sequence_bounds_checks_coalesced: vm.sequence_bounds_checks_coalesced().unwrap_or(0),
+        sequence_forwarded_loads: vm.sequence_forwarded_loads().unwrap_or(0),
+        sequence_small_loops_unrolled: vm.sequence_small_loops_unrolled().unwrap_or(0),
         extract_searches: vm.extract_searches().unwrap_or(0),
         extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
         extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
@@ -616,6 +633,55 @@ mod tests {
         let stats = accepted_opt_stats(SOURCE, "arbitrary Apply var call");
         assert_eq!(stats.output, ["[1, 9]"]);
         assert_eq!(stats.reowns, 0, "the exact Apply fact must forward xs__cap");
+    }
+
+    #[test]
+    fn indexed_sequence_counters_are_exact_and_repeatable() {
+        const RMW: &str = r#"fn main(console: Console):
+    var values = [3, 2]
+    var i = 0
+    var total = 0
+    while i < 2:
+        values[i] = values[i] - 1
+        total = total + values[i]
+        i = i + 1
+    console.print("${total}")
+"#;
+        let runs = [compute(RMW).unwrap(), compute(RMW).unwrap(), compute(RMW).unwrap()];
+        assert_eq!(runs[0], runs[1]);
+        assert_eq!(runs[1], runs[2]);
+        let stats = &runs[0];
+        assert_eq!(stats.output, ["3"]);
+        assert_eq!(stats.list_header_loads, 1);
+        assert_eq!(stats.checked_indexed_loads, 2);
+        assert_eq!(stats.checked_indexed_stores, 2);
+        assert_eq!(stats.cursorized_indexed_accesses, 4);
+        assert_eq!(stats.sequence_forwarded_loads, 2);
+
+        const COALESCED: &str = r#"fn main(console: Console):
+    let source = [10, 20, 30]
+    var destination = [0, 0, 0]
+    for i in 0..2:
+        destination[i] = source[i + 1]
+    console.print("${destination[0] + destination[1]}")
+"#;
+        let coalesced = compute(COALESCED).unwrap();
+        assert_eq!(coalesced.output, ["50"]);
+        assert_eq!(coalesced.list_header_loads, 2);
+        assert_eq!(coalesced.sequence_bounds_checks_coalesced, 4);
+        assert_eq!(coalesced.cursorized_indexed_accesses, 4);
+
+        const TINY: &str = r#"fn main(console: Console):
+    let values = [1, 2, 3]
+    var total = 0
+    for i in 0..3:
+        total = total + values[i]
+    console.print("${total}")
+"#;
+        let tiny = compute(TINY).unwrap();
+        assert_eq!(tiny.output, ["6"]);
+        assert_eq!(tiny.sequence_small_loops_unrolled, 1);
+        assert_eq!(tiny.cursorized_indexed_accesses, 3);
     }
 
     #[test]
