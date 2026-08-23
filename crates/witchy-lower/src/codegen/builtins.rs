@@ -369,6 +369,20 @@ impl Codegen<'_> {
             return None;
         }
         let name = intrinsics::canonical_operation_name(name);
+        // The generic stdlib `list.repeat` implementation builds through
+        // `list.with_capacity`/`list.push`, whose ordinary ABI is slot-backed.
+        // When its result is concretely `List(Bool)`, route the call through the
+        // packed constructor so the returned root has the byte layout expected
+        // by specialized `list.at`/`list.set_at` paths.
+        if name == "list.repeat" || name.starts_with("list.repeat__")
+            && args.len() == 2
+            && self.ast_type_of_expr(expr).is_some_and(|ty| matches!(ty.unqualified(), Type::Named(n, a) if n == "List" && matches!(a.first().map(Type::unqualified), Some(Type::Named(e, ea)) if e == "Bool" && ea.is_empty())))
+        {
+            return Some(W::Call {
+                func: "list_repeat_bool".into(),
+                args: vec![self.lower_expr(&args[0])?, Self::wir_convert(self.lower_expr(&args[1])?, self.kind_of(&args[1]), Kind::I64)],
+            });
+        }
         if let Some((callback_index, diagnostic)) =
             witchy_types::typeck::isolated_vm_callback_contract(name, args.len())
             && !self.is_top_level_fn_ref(&args[callback_index])

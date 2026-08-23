@@ -5,6 +5,37 @@ use crate::layout::RC_SIZE_MASK;
 use crate::wir::*;
 use witchy_syntax::diag::DiagTemplate;
 
+/// `$list_repeat_bool(value, n) -> List(Bool)` — construct the byte-packed
+/// boolean list representation used by the monomorphized Bool path.  This
+/// compiler-owned adapter is needed because the generic source-level
+/// `list.repeat` body cannot know its element stride before specialization.
+pub(crate) fn list_repeat_bool_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let get = |name: &str| E::GetLocal(name.into());
+    let i32c = E::ConstI32;
+    let add = |lhs: E, rhs: E| E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    WirFunc {
+        name: "list_repeat_bool".into(),
+        params: vec![
+            WirLocal { name: "value".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "count".into(), ty: WirTy::Bool }, WirLocal { name: "root".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal { local: "count".into(), value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(get("n")) } },
+            N::If { cond: E::Binary { op: BinOp::Lt, kind: Kind::I32, lhs: Box::new(get("count")), rhs: Box::new(i32c(0)) }, then_: vec![N::SetLocal { local: "count".into(), value: i32c(0) }], els: vec![], result: None },
+            N::SetLocal { local: "root".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(i32c(8), get("count"))] } },
+            N::Store { ptr: get("root"), value: get("count"), kind: Kind::I32, offset: 0 },
+            N::Store { ptr: get("root"), value: get("count"), kind: Kind::I32, offset: 4 },
+            N::MemoryFill { dest: add(get("root"), i32c(8)), value: get("value"), len: get("count") },
+            N::Push(get("root")),
+        ],
+        raw_body: None,
+    }
+}
+
 // Helpers below realize a confined slice *view* (RFC-0028 confined Views): a
 // `let w = list.slice(src, lo, hi)` whose copy was elided keeps only `src`, `lo`,
 // `hi`, and reads through them. Both recompute the clamped window

@@ -595,6 +595,14 @@ impl<'types> Codegen<'types> {
                                 Self::wir_convert(cap_w, cap_k, Kind::I32)
                             } else if self.expression_returns_unique_capacity(value) {
                                 W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                            } else if let Expr::Call { name: callee, args } = value
+                                && (callee == "list.repeat" || callee.starts_with("list.repeat__"))
+                                && args.len() == 2
+                                && self.local_types.get(name).is_some_and(|ty| matches!(ty.unqualified(), Type::Named(n, a) if n == "List" && matches!(a.first().map(Type::unqualified), Some(Type::Named(e, ea)) if e == "Bool" && ea.is_empty())))
+                            {
+                                let cap_w = self.lower_expr(&args[1])?;
+                                let cap_k = self.kind_of(&args[1]);
+                                Self::wir_convert(cap_w, cap_k, Kind::I32)
                             } else {
                                 W::ConstI32(initial_cap)
                             };

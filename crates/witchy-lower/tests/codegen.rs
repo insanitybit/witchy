@@ -1393,6 +1393,27 @@ fn main() -> Int:
     }
 
     #[test]
+    fn bool_repeat_returns_the_packed_root_and_capacity_token() {
+        let source = r#"
+mode opt
+import list
+fn main() -> Int:
+    var xs = list.repeat(true, 100)
+    list.set_at(xs, 37, false)
+    if list.at(xs, 37):
+        0
+    else:
+        list.length(xs)
+"#;
+        let module = link_list_app(source);
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 100);
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower packed bool repeat"));
+        assert!(wat.contains("call $list_repeat_bool"), "repeat should construct the packed root directly: {wat}");
+        assert!(wat.contains("local.get $xs__cap"), "the repeat count should seed the in-place capacity token: {wat}");
+    }
+
+    #[test]
     fn confined_counted_packed_list_streams_exact_storage_and_cursor() {
         let source = r#"
 mode opt

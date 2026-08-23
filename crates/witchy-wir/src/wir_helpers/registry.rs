@@ -152,6 +152,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "list_repeat_bool" => Some(WirHelperSpec {
+            func: list_repeat_bool_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "list_at_view" => Some(WirHelperSpec {
             func: list_at_view_helper(),
             helper_deps: &[],
