@@ -1,3 +1,4 @@
+use crate::wir_opt::seq_size;
 use std::collections::HashMap;
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq, CLOSURE_CODE_FIELD};
 
@@ -13,7 +14,7 @@ pub fn inline_direct_calls(module: &mut WirModule) {
     }
 }
 
-fn devirtualize_closures(module: &mut WirModule, _changed: &mut bool) {
+fn devirtualize_closures(module: &mut WirModule, changed: &mut bool) {
     let table = match &module.table {
         Some(t) => t,
         None => return,
@@ -27,13 +28,13 @@ fn devirtualize_closures(module: &mut WirModule, _changed: &mut bool) {
     }
 }
 
-fn devirt_seq(seq: &mut WirSeq, funcs: &[String], closures: &mut HashMap<String, String>, _changed: &mut bool) {
+fn devirt_seq(seq: &mut WirSeq, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
     for node in seq {
         devirt_node(node, funcs, closures, changed);
     }
 }
 
-fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<String, String>, _changed: &mut bool) {
+fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
     match node {
         WirNode::SetLocal { local, value } => {
             devirt_expr(value, funcs, closures, changed);
@@ -87,7 +88,7 @@ fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<Stri
     }
 }
 
-fn devirt_expr(expr: &mut WirExpr, funcs: &[String], closures: &mut HashMap<String, String>, _changed: &mut bool) {
+fn devirt_expr(expr: &mut WirExpr, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
     match expr {
         WirExpr::ToSlot(inner, _) | WirExpr::FromSlot(inner, _) | WirExpr::Unary { arg: inner, .. }
         | WirExpr::Convert { arg: inner, .. } | WirExpr::Load { ptr: inner, .. }
@@ -182,7 +183,7 @@ fn has_call_expr(expr: &WirExpr) -> bool {
     }
 }
 
-fn prune_unused_functions(module: &mut WirModule, _changed: &mut bool) {
+fn prune_unused_functions(module: &mut WirModule, changed: &mut bool) {
     let mut called = std::collections::HashSet::new();
     // 1. collect from table
     if let Some(t) = &module.table {
