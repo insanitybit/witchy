@@ -225,6 +225,19 @@ def benchmark_record(build_dir, benchmark, mode, expected_count):
     kernel_count = 0 if benchmark in WALL_ONLY else expected_count
     witchy = raw_kernel_samples(build_dir, benchmark, "witchy", kernel_count)
     go = raw_kernel_samples(build_dir, benchmark, "go", kernel_count)
+    
+    node_samples = []
+    try:
+        node_samples = raw_kernel_samples(build_dir, benchmark, "node", kernel_count)
+    except ValueError:
+        pass
+
+    ruby_samples = []
+    try:
+        ruby_samples = raw_kernel_samples(build_dir, benchmark, "ruby", kernel_count)
+    except ValueError:
+        pass
+
     def saved_result(suffix):
         try:
             return (build_dir / f"{benchmark}{suffix}.result").read_text()
@@ -239,6 +252,8 @@ def benchmark_record(build_dir, benchmark, mode, expected_count):
         raise ValueError(f"{benchmark}: Witchy and Go results do not match")
     witchy_summary = sample_summary(witchy)
     go_summary = sample_summary(go)
+    node_summary = sample_summary(node_samples) if node_samples else None
+    ruby_summary = sample_summary(ruby_samples) if ruby_samples else None
     ratio = None
     interval = None
     if witchy and go:
@@ -256,8 +271,12 @@ def benchmark_record(build_dir, benchmark, mode, expected_count):
         "kernel_ns": {
             "witchy_samples": witchy,
             "go_samples": go,
+            "node_samples": node_samples,
+            "ruby_samples": ruby_samples,
             "witchy_summary": witchy_summary,
             "go_summary": go_summary,
+            "node_summary": node_summary,
+            "ruby_summary": ruby_summary,
             "witchy_go_median_ratio": ratio,
             "paired_bootstrap_95_percent_ci": interval,
         },
@@ -274,13 +293,15 @@ def render_markdown(artifact):
         "The machine-readable sibling artifact retains build identity, inputs,",
         "checksums, every sample, variability, and the paired ratio interval.",
         "",
-        "| benchmark | kernel witchy | kernel go | kernel vs go | wall witchy | wall go |",
-        "|-----------|--------------:|----------:|------------:|------------:|--------:|",
+        "| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel vs go | wall witchy | wall go |",
+        "|-----------|--------------:|----------:|------------:|------------:|-------------:|------------:|--------:|",
     ]
     for benchmark in artifact["benchmarks"]:
         kernel = benchmark["kernel_ns"]
         ws = kernel["witchy_summary"]
         gs = kernel["go_summary"]
+        ns = kernel.get("node_summary")
+        rs = kernel.get("ruby_summary")
         wall = benchmark["wall_ms"]
         wm = statistics.median(wall["witchy"]) if wall["witchy"] else None
         gm = statistics.median(wall["go"]) if wall["go"] else None
@@ -289,7 +310,8 @@ def render_markdown(artifact):
         ratio_text = "—" if ratio is None else f"{ratio:.2f}x"
         lines.append(
             f"| {benchmark['name']} | {value(ws['median'] / 1e6 if ws else None)} | "
-            f"{value(gs['median'] / 1e6 if gs else None)} | {ratio_text} | "
+            f"{value(gs['median'] / 1e6 if gs else None)} | {value(ns['median'] / 1e6 if ns else None)} | "
+            f"{value(rs['median'] / 1e6 if rs else None)} | {ratio_text} | "
             f"{value(wm)} | {value(gm)} |"
         )
     return "\n".join(lines) + "\n"
