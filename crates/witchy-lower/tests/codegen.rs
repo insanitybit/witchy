@@ -4683,6 +4683,25 @@ fn main() -> Int:
     }
 
     #[test]
+    fn sequence_plan_stores_proven_scalars_without_shared_scratch() {
+        let source = r#"
+fn main() -> Int:
+    var values = [1, 2, 3, 4]
+    let replacement = 9
+    for i in 0..list.length(values):
+        values[i] = replacement
+    values[0] + values[3]
+"#;
+        assert_eq!(run_int(source), 18);
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        assert!(!main.contains("local.set $__witchy_set_idx"), "proven swap indexes need no scratch:\n{main}");
+        assert!(!main.contains("local.set $__witchy_set_val"), "dead scalar forwarding scratch is pruned:\n{main}");
+        assert_eq!(main.matches("i64.store").count(), 1, "the proven lane stores directly:\n{main}");
+    }
+
+    #[test]
     fn sequence_plan_forwards_same_address_into_following_if_condition() {
         let source = r#"
 fn main() -> Int:

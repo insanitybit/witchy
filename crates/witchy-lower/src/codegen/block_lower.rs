@@ -210,6 +210,19 @@ impl<'types> Codegen<'types> {
                 _ => None,
             };
             let analyzed_stmt = stmt;
+            let forward_sequence_store = if let Stmt::Assign { name, value } = analyzed_stmt {
+                match crate::analysis::self_inplace_op(name, value) {
+                    Some(crate::analysis::InPlaceOp::SetAt(index, _))
+                        if self.next_statement_reads_sequence_value(
+                            block.stmts.get(i + 1),
+                            name,
+                            index,
+                        ) => Some((name.as_str(), index)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             let stmt_start = seq.len();
             self.active_loan_events = self.loan_facts.active_at(analyzed_stmt).to_vec();
             if let Some(mutation) = self.loan_facts.shell_mutation_after(analyzed_stmt) {
@@ -1462,21 +1475,6 @@ impl<'types> Codegen<'types> {
                                 use witchy_wir::wir::BinOp;
                                 let iw = self.lower_expr(iexpr)?;
                                 let vw = self.lower_expr(vexpr)?;
-                                // Stash index (i32) + value (i64 slot) into scratch locals,
-                                // then store IN PLACE inline when in-bounds and owned, else
-                                // fall back to `$list_set_cap` (OOB no-op / re-own-and-copy).
-                                // Eliding the helper CALL on the hot path is RFC-0016 R2
-                                // static elision; the proven helper still covers the cold path.
-                                seq.push(N::SetLocal {
-                                    local: "__witchy_set_idx".into(),
-                                    value: Self::wir_convert(iw, ik, Kind::I32),
-                                });
-                                seq.push(N::SetLocal {
-                                    local: "__witchy_set_val".into(),
-                                    value: W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
-                                });
-                                let si = || W::GetLocal("__witchy_set_idx".to_string());
-                                let sv = || W::GetLocal("__witchy_set_val".to_string());
                                 let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
                                 // `elide_index_list` is populated only while lowering an
                                 // eligible loop whose counter is non-negative and below the
@@ -1498,6 +1496,37 @@ impl<'types> Codegen<'types> {
                                 let cursorized_store =
                                     proven_slot.is_some() || planned_slot.is_some();
                                 let proven_index = existing_proof || proven_slot.is_some();
+                                // A proven cursor store of a scalar local/literal has no
+                                // guard or fallback consumer for its index scratch. Feed
+                                // the scalar directly to the store; retain one scratch
+                                // definition only so the existing immediate-successor
+                                // forwarding rule can capture it when needed. WIR DCE
+                                // removes that definition for swap lanes with no consumer.
+                                let direct_scalar = proven_index
+                                    && planned_slot.is_some()
+                                    && !dirty
+                                    && forward_sequence_store.is_none()
+                                    && Self::wir_kind(vk) == witchy_wir::wir::Kind::I64
+                                    && matches!(vexpr, Expr::Var(_) | Expr::Int(_) | Expr::Bool(_));
+                                if !direct_scalar {
+                                    seq.push(N::SetLocal {
+                                        local: "__witchy_set_idx".into(),
+                                        value: Self::wir_convert(iw, ik, Kind::I32),
+                                    });
+                                }
+                                let slot_value = W::ToSlot(Box::new(vw), Self::wir_kind(vk));
+                                if !direct_scalar {
+                                    seq.push(N::SetLocal {
+                                        local: "__witchy_set_val".into(),
+                                        value: slot_value.clone(),
+                                    });
+                                }
+                                let si = || W::GetLocal("__witchy_set_idx".to_string());
+                                let sv = || if direct_scalar {
+                                    slot_value.clone()
+                                } else {
+                                    W::GetLocal("__witchy_set_val".to_string())
+                                };
                                 let cond = bin(BinOp::Gt, cap.clone(), W::ConstI32(0));
                                 let slot_ptr = || planned_slot.clone().unwrap_or_else(|| bin(
                                     BinOp::Add,
@@ -2111,21 +2140,8 @@ impl<'types> Codegen<'types> {
                 _ => return None,
             }
             self.clear_forwarded_sequence_values();
-            let forwarded_store = if let Stmt::Assign { name, value } = analyzed_stmt {
-                match crate::analysis::self_inplace_op(name, value) {
-                    Some(crate::analysis::InPlaceOp::SetAt(index, _))
-                        if self.next_statement_reads_sequence_value(
-                            block.stmts.get(i + 1),
-                            name,
-                            index,
-                        ) => {
-                        self.remember_sequence_store(name, index)
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let forwarded_store = forward_sequence_store
+                .and_then(|(name, index)| self.remember_sequence_store(name, index));
             if let Some(capture) = forwarded_store {
                 seq.push(capture);
             }
