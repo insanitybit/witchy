@@ -23,7 +23,7 @@ impl Codegen<'_> {
         match production_host_layout_policy(boundary)
             .decide(&self.specialized_layouts, layout)
         {
-            HostLayoutDecision::Exact => false,
+            HostLayoutDecision::Exact | HostLayoutDecision::ExactMultiValue => false,
             // A registered marshal decision is not permission to emit a raw
             // pointer call. Until the matching generated adapter consumes the
             // decision and increments its named metric, this code path rejects.

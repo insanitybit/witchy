@@ -4875,6 +4875,7 @@ mod fip_tests {
     }
 
     #[test]
+    fn non_tail_recursion_and_replacement_owner_are_rejected() {
         let non_tail = format!(
             "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
              \x20   if n == 0:\n\
