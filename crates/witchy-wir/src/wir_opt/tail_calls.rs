@@ -1,7 +1,7 @@
 //! Proper-tail-call lowering to typed WIR state machines.
 
 mod analysis;
-mod hygiene;
+pub(crate) mod hygiene;
 
 pub(in crate::wir_opt) use analysis::collect_function_tail_calls;
 use analysis::{

@@ -29,6 +29,8 @@ mod tail_calls;
 pub use tail_calls::lower_direct_tail_calls;
 mod recursive_inline;
 pub use recursive_inline::inline_recursive_calls;
+mod inline;
+pub use inline::inline_direct_calls;
 
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq};
 
@@ -288,11 +290,11 @@ fn module_size(module: &WirModule) -> usize {
         .sum()
 }
 
-fn seq_size(seq: &WirSeq) -> usize {
+pub(crate) fn seq_size(seq: &WirSeq) -> usize {
     seq.iter().map(node_size).sum()
 }
 
-fn node_size(node: &WirNode) -> usize {
+pub(crate) fn node_size(node: &WirNode) -> usize {
     1 + match node {
         WirNode::Source { body, .. } => seq_size(body),
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => expr_size(value),
@@ -325,7 +327,7 @@ fn node_size(node: &WirNode) -> usize {
     }
 }
 
-fn expr_size(expr: &WirExpr) -> usize {
+pub(crate) fn expr_size(expr: &WirExpr) -> usize {
     1 + match expr {
         WirExpr::ToSlot(inner, _)
         | WirExpr::FromSlot(inner, _)

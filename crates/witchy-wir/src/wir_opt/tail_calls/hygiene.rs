@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::wir::{Kind, WirExpr, WirFunc, WirModule, WirNode, WirSeq};
 
-pub(super) fn unique_function_name(module: &WirModule, added: &[WirFunc], stem: &str) -> String {
+pub(crate) fn unique_function_name(module: &WirModule, added: &[WirFunc], stem: &str) -> String {
     let occupied = |candidate: &str| {
         module.funcs.iter().chain(added).any(|function| function.name == candidate)
     };
@@ -21,7 +21,7 @@ pub(super) fn unique_function_name(module: &WirModule, added: &[WirFunc], stem: 
 }
 
 
-pub(super) fn adapt_function_result_to_slot(seq: &mut WirSeq, kind: Kind) {
+pub(crate) fn adapt_function_result_to_slot(seq: &mut WirSeq, kind: Kind) {
     adapt_explicit_returns_seq(seq, kind);
     if let Some(last) = seq.last_mut() {
         match last {
@@ -175,7 +175,7 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
     }
 }
 
-pub(super) fn rename_seq_locals(seq: &mut WirSeq, renames: &HashMap<String, String>) {
+pub(crate) fn rename_seq_locals(seq: &mut WirSeq, renames: &HashMap<String, String>) {
     for node in seq {
         rename_node_locals(node, renames);
     }
@@ -311,7 +311,7 @@ pub(in crate::wir_opt) fn rename_expr_locals(
     }
 }
 
-pub(super) fn unique_dispatch_label(functions: &[WirFunc], stem: &str) -> String {
+pub(crate) fn unique_dispatch_label(functions: &[WirFunc], stem: &str) -> String {
     let mut labels = HashSet::new();
     for function in functions {
         collect_labels(&function.body, &mut labels);
@@ -344,7 +344,7 @@ fn collect_labels(seq: &WirSeq, labels: &mut HashSet<String>) {
     }
 }
 
-pub(super) fn unique_local_name(func: &WirFunc, stem: &str) -> String {
+pub(crate) fn unique_local_name(func: &WirFunc, stem: &str) -> String {
     let occupied = |candidate: &str| {
         func.params.iter().chain(&func.locals).any(|local| local.name == candidate)
     };
@@ -360,7 +360,7 @@ pub(super) fn unique_local_name(func: &WirFunc, stem: &str) -> String {
     unreachable!("the local-name suffix space is finite")
 }
 
-pub(super) fn unique_label(func: &WirFunc, stem: &str) -> String {
+pub(crate) fn unique_label(func: &WirFunc, stem: &str) -> String {
     let mut labels = HashSet::new();
     collect_labels(&func.body, &mut labels);
     if !labels.contains(stem) {
