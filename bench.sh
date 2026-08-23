@@ -195,7 +195,11 @@ fi
 if [[ "$ARTIFACT_JSON" != /* ]]; then
     ARTIFACT_JSON="$ROOT_DIR/$ARTIFACT_JSON"
 fi
-BENCH_DRIVER_ARGV=$(printf '%s\034' "$0" "${ORIGINAL_ARGS[@]}")
+if [ ${#ORIGINAL_ARGS[@]} -eq 0 ]; then
+    BENCH_DRIVER_ARGV=$(printf '%s\034' "$0")
+else
+    BENCH_DRIVER_ARGV=$(printf '%s\034' "$0" "${ORIGINAL_ARGS[@]}")
+fi
 export BENCH_DRIVER_ARGV
 
 # 2. Build required Go binaries
