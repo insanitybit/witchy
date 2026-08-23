@@ -146,7 +146,7 @@ fn do_inlining(module: &mut WirModule, changed: &mut bool) {
         if func.raw_body.is_none() && seq_size(&func.body) < 30 {
             // Check if it's a leaf (no Call, CallIndirect, CallHost except maybe tiny ones? Let's just say no Call for simplicity)
             if !has_call_seq(&func.body) {
-                inlineable.put(func.name.clone(), func.clone());
+                inlineable.insert(func.name.clone(), func.clone());
             }
         }
     }
