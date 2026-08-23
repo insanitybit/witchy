@@ -4216,6 +4216,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Push(Int, __Msg, fn(Nil) -> Task(a))`
 - `Pull(Int, fn(Option(__Msg)) -> Task(a))`
 - `Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
+- `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
