@@ -547,7 +547,7 @@ pub(crate) fn str_fmt_prefix_int_view_helper() -> WirFunc {
                 ],
             }] },
             N::SetLocal { local: "total".into(), value: b32(BinOp::Add, b32(BinOp::Add, get("plen"), get("digits")), get("neg")) },
-            N::SetLocal { local: "buf".into(), value: E::Call { func: "bump_alloc".into(), args: vec![get("total")] } },
+            N::SetLocal { local: "buf".into(), value: E::Call { func: "fmt_stack_alloc".into(), args: vec![get("total")] } },
             N::Do(E::Call { func: "raw_buffer_copy".into(), args: vec![get("buf"), b32(BinOp::Add, get("prefix"), i32c(4)), get("plen")] }),
             N::SetLocal { local: "p".into(), value: b32(BinOp::Add, get("buf"), get("total")) },
             N::If {

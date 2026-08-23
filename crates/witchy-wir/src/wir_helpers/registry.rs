@@ -89,6 +89,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "fmt_stack_alloc" => Some(WirHelperSpec {
+            func: fmt_stack_alloc_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "rc_alloc" => Some(WirHelperSpec {
             func: rc_alloc_helper(),
             helper_deps: &["ensure", "bump_alloc"],
@@ -213,7 +220,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }
         "str_fmt_prefix_int_view" => Some(WirHelperSpec {
             func: str_fmt_prefix_int_view_helper(),
-            helper_deps: &["bump_alloc", "raw_buffer_copy"],
+            helper_deps: &["fmt_stack_alloc", "raw_buffer_copy"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

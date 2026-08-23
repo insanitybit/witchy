@@ -42,13 +42,13 @@ impl Codegen<'_> {
             && self.val_type_of(value) == ValType::Int
         {
             let ak = self.kind_of(value);
-            setup.push(N::SetLocal { local: wm.clone(), value: W::GetGlobal("heap".into()) });
+            setup.push(N::SetLocal { local: wm.clone(), value: W::GetGlobal("fmt_stack_top".into()) });
             setup.push(N::CallStoreMulti {
                 func: "str_fmt_prefix_int_view".into(),
                 args: vec![self.lower_expr(prefix)?, Self::wir_convert(self.lower_expr(value)?, ak, Kind::I64)],
                 dests: vec![ptr.clone(), len.clone()],
             });
-            cleanup.push(N::SetGlobal { global: "heap".into(), value: W::GetLocal(wm.clone()) });
+            cleanup.push(N::SetGlobal { global: "fmt_stack_top".into(), value: W::GetLocal(wm.clone()) });
             return Some((setup, ptr, len, cleanup));
         }
         match key {
@@ -64,7 +64,7 @@ impl Codegen<'_> {
                 setup.push(N::SetLocal { local: len.clone(), value: W::GetLocal(format!("{name}__slice_len")) });
                 if self.locals.contains_key(&format!("{name}__slice_wm")) {
                     cleanup.push(N::SetGlobal {
-                        global: "heap".into(),
+                        global: "fmt_stack_top".into(),
                         value: W::GetLocal(format!("{name}__slice_wm")),
                     });
                 }
@@ -84,13 +84,13 @@ impl Codegen<'_> {
             {
                 let Expr::Call { args, .. } = rhs.as_ref() else { unreachable!() };
                 let ak = self.kind_of(&args[0]);
-                setup.push(N::SetLocal { local: wm.clone(), value: W::GetGlobal("heap".into()) });
+                setup.push(N::SetLocal { local: wm.clone(), value: W::GetGlobal("fmt_stack_top".into()) });
                 setup.push(N::CallStoreMulti {
                     func: "str_fmt_prefix_int_view".into(),
                     args: vec![self.lower_expr(lhs)?, Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64)],
                     dests: vec![ptr.clone(), len.clone()],
                 });
-                cleanup.push(N::SetGlobal { global: "heap".into(), value: W::GetLocal(wm.clone()) });
+                cleanup.push(N::SetGlobal { global: "fmt_stack_top".into(), value: W::GetLocal(wm.clone()) });
             }
             _ => return None,
         }

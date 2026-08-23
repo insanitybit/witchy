@@ -563,7 +563,7 @@ impl<'types> Codegen<'types> {
                             let ak = self.kind_of(int_value);
                             seq.push(N::SetLocal {
                                 local: wm_local,
-                                value: W::GetGlobal("heap".into()),
+                                value: W::GetGlobal("fmt_stack_top".into()),
                             });
                             seq.push(N::CallStoreMulti {
                                 func: "str_fmt_prefix_int_view".into(),
@@ -1643,14 +1643,11 @@ impl<'types> Codegen<'types> {
                                             fw,
                                             cap,
                                         ],
-                                        dests: vec![name.clone(), format!("{name}__cap"), safe.clone()],
+                                        dests: vec![name.clone(), format!("{name}__cap"), safe],
                                     });
-                                    seq.push(N::If {
-                                        cond: W::GetLocal(safe),
-                                        then_: cleanup,
-                                        els: vec![],
-                                        result: None,
-                                    });
+                                    // The format arena is disjoint from the RC heap,
+                                    // so the copied-key miss path is safe to rewind too.
+                                    seq.extend(cleanup);
                                 } else {
                                     let kw = self.lower_expr(kexpr)?;
                                     self.uses_dict_update_cap = true;

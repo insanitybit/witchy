@@ -341,6 +341,45 @@ pub(crate) fn bump_alloc_helper() -> WirFunc {
     }
 }
 
+/// `$fmt_stack_alloc(size) -> ptr` — reserve temporary bytes in the compiler's
+/// shadow-format stack. The assembler places this arena below the ordinary heap;
+/// callers restore `$fmt_stack_top` after consuming the borrowed view, so these
+/// bytes never become RC-owned allocations or bump-allocator traffic.
+pub(crate) fn fmt_stack_alloc_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let p = E::GetLocal("p".into());
+    let next = E::Binary {
+        op: BinOp::Add,
+        kind: Kind::I32,
+        lhs: Box::new(p.clone()),
+        rhs: Box::new(E::GetLocal("size".into())),
+    };
+    WirFunc {
+        name: "fmt_stack_alloc".into(),
+        params: vec![WirLocal { name: "size".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal { local: "p".into(), value: E::GetGlobal("fmt_stack_top".into()) },
+            N::If {
+                cond: E::Binary {
+                    op: BinOp::GtU,
+                    kind: Kind::I32,
+                    lhs: Box::new(next.clone()),
+                    rhs: Box::new(E::GetGlobal("fmt_stack_limit".into())),
+                },
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::SetGlobal { global: "fmt_stack_top".into(), value: next },
+            N::Push(p),
+        ],
+        raw_body: None,
+    }
+}
+
 /// (RFC-0016) `$rc_alloc(size: i32) -> i32` — the central heap allocator: reuse a
 /// freed block from the size-classed free-list (first-fit: the first block whose
 /// stored byte-size ≥ `size`), else bump `$heap` like the inline allocators did.

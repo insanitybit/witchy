@@ -1390,6 +1390,11 @@ fn main() -> Int:
         let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower interpolation dict query"));
         assert!(wat.contains("call $str_fmt_prefix_int_view"), "interpolation should use a borrowed format view: {wat}");
         assert!(wat.contains("call $dict_get_slice_or"), "interpolation query should consume the view directly: {wat}");
+        let fmt = wat.find("(func $str_fmt_prefix_int_view").expect("format helper should be emitted");
+        let fmt_end = wat[fmt + 1..].find("(func ").map(|end| fmt + 1 + end).unwrap_or(wat.len());
+        let fmt_wat = &wat[fmt..fmt_end];
+        assert!(fmt_wat.contains("call $fmt_stack_alloc"), "format helper should use the reserved stack arena: {fmt_wat}");
+        assert!(!fmt_wat.contains("call $bump_alloc"), "format helper must not consume ordinary heap scratch: {fmt_wat}");
     }
 
     #[test]

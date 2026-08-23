@@ -11,6 +11,12 @@ use super::glamour_metadata::{
 };
 use sha2::{Digest, Sha256};
 
+// Reserved below the ordinary heap for short-lived borrowed interpolation
+// buffers. The format view rewinds this arena after its immediate consumer;
+// keeping it below `heap_base` makes it impossible for RC cleanup to treat a
+// scratch pointer as an owning object.
+const FMT_STACK_BYTES: u32 = 8192;
+
 struct ModuleLayoutResolver<'a> {
     definitions: BTreeMap<&'a str, &'a witchy_syntax::ast::TypeDef>,
     header_free_lists: Vec<Type>,
@@ -5475,13 +5481,28 @@ fn assemble_wir_module_with_structs_mode(
                     cg.uses_diagnostic_sites = true;
                 }
             }
+            let heap_start = cg.next_offset.saturating_add(FMT_STACK_BYTES);
             let mut pruned_globals = if uses_heap {
                 vec![
+                    WirGlobal {
+                        name: "fmt_stack_top".into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(cg.next_offset as i32),
+                        export: None,
+                    },
+                    WirGlobal {
+                        name: "fmt_stack_limit".into(),
+                        kind: WK::I32,
+                        mutable: false,
+                        init: GlobalInit::I32(heap_start as i32),
+                        export: None,
+                    },
                     WirGlobal {
                         name: "heap".into(),
                         kind: WK::I32,
                         mutable: true,
-                        init: GlobalInit::I32(cg.next_offset as i32),
+                        init: GlobalInit::I32(heap_start as i32),
                         // Exported so a long-lived host (the glamour MVU run loop, which calls a
                         // `String -> String` export once per event) can RESET the bump allocator to
                         // its base after each call. Every `export_*` call is pure — its input,
@@ -5504,7 +5525,7 @@ fn assemble_wir_module_with_structs_mode(
                         name: "heap_base".into(),
                         kind: WK::I32,
                         mutable: false,
-                        init: GlobalInit::I32(cg.next_offset as i32),
+                        init: GlobalInit::I32(heap_start as i32),
                         export: None,
                     },
                     WirGlobal {
@@ -5872,7 +5893,7 @@ fn assemble_wir_module_with_structs_mode(
             let mut wir_module = WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
-                memory_pages: cg.next_offset.div_ceil(64 * 1024).max(1),
+                memory_pages: heap_start.div_ceil(64 * 1024).max(1),
                 data,
                 globals: pruned_globals,
                 table: if existential_table_entries.is_empty() && cg.lambda_wir_funcs.is_empty() {
