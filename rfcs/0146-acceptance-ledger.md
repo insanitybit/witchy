@@ -24,30 +24,43 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | Track | State | Baseline artifact | Profile and counters | Focused checks | Protected workloads | Branch | Terminal queue evidence |
 |---|---|---|---|---|---|---|---|
 | 0 measurement integrity | merged | `/tmp/rfc0146-track0-quick-all.json` (`sha256:5a8e32f1bc12665170542503be0c23405b3b08137d23e67910172cb35bf4f85a`) | `stats::tests::deterministic_counters_repeat_exactly`; profile not applicable to harness correctness | 54-test `stats::tests` shard; five focused Python integrity tests; 17-result quick sweep | all 17 benchmark results | `fix/rfc0146-causal-integration` | merged as `dd7cb6f3c53db37d552dc6f05a4231b5cecf23b8` at `2026-08-23T06:20:49Z`; journal line 8567 and gate log `state/merge-queue/logs/20260823-021554-fix~rfc0146-causal-integration-74028-32.log` |
-| 1 awaited select fusion | partial infrastructure: 1B + ready-path 1C + pure-lane proof + typed Int payload projection; allocation-free 1D emitter/frame ABI remains open | `/tmp/rfc0146-track1-1b-20260823.tsv`; ready-path spot pair; no new timing claim for the typed lane | `scalar_lane_update_sequence` proof and typed `Receiver(Int)` lane contract with positive/negative tests; no emitter/counter evidence yet | syntax fusion/deopt, WIR plan, carrier tests, semantic output/parity, pure-lane proof, and typed payload-lane tests passed | no performance claim for the typed lane prerequisite | `impl/rfc0146-track1-payload`, landed as `d7f682b7` | merged through queue; Track 1 remains open pending the allocation-free emitter and scheduler/frame ABI |
-
-#### Track 1D prerequisite detail
-
-The landed proof is deliberately conservative: it accepts only local lane
-writes, integer constants/locals, arithmetic, and structured control flow. It
-rejects direct and indirect calls, stores, allocation-producing expressions,
-host effects, and unsupported nodes, preserving the ordinary Task/Step
-scheduler as fallback. It is an emitter prerequisite, not an allocation-free
-select optimization and carries no performance claim.
-
-The follow-on typed projection slice landed as `d7f682b7`. Carrier transition
-collection now consults finalized expression types and records an explicit
-`I64` payload lane only when both receiver endpoints are proven
-`Receiver(Int)`; unknown, non-integer, and missing endpoint facts retain the
-erased-message fallback. Lowerer WAT tests pin the positive `select_fanin`
-plan and type-level negative cases. This still carries no performance claim:
-the compiler-owned frame emitter and scheduler path that consume the lane have
-not landed.
+| 1 awaited select fusion | partial infrastructure: 1B + ready-path 1C + pure-lane proof + typed Int payload projection + direct typed decode; allocation-free 1D emitter/frame ABI remains open | schema-1 prerequisite artifact `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track1-direct-decode-ea279f45/acceptance-schema1.json` (`sha256:48e3cc3b006f67a54d5d4393e82545ec83dbe9d0c6b7874042a842468f791f4d`) | carrier/WAT assertion, RFC-0129 channel contract, deterministic schedule parity; no zero-allocation counter proof yet | `select_fanin` 20.754 to 12.183 ms median (41.30% faster); 24-sample `chan_throughput` wall medians equal; full Track 1 gate still open | `impl/rfc0146-track1-emitter`, implementation `ea279f45`; no promotion claim | pending queue submission; this prerequisite does not close Track 1 |
 | 2 sequence plans | merged | schema 1 artifact `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track2-f77e84f-21c6a9e1/acceptance-f77-schema1.json` (`sha256:ab3ca448d25476cbac1123d5d5a483aec77fb34d19fddfed601b8407ea9fad83`) | pre-change Samply capture plus integrated raw-WAT reconciliation; three exact counter payloads (`sha256:5152cd4a5c07e10ff204828e2b44b492b097c2bd6d1b22ba504acc8f73813744`) | sequence-plan correctness/trap/deopt/WAT tests, exact stats fixture, runtime policy tests, and differential golden output | shipping: `fannkuch` +21.677796%, `list_index` +37.426176%, `list_sum` +5.651316%, `binary_trees` +0.464728% | `impl/rfc0146-track2`; implementation `21c6a9e1`, measured source `9a7b607d` on baseline `f77e84f` | merged as `c372d53956035188622e52ff7f8d6343594c6f8b` at `2026-08-23T09:20:15Z`; journal line 8580 and gate log `state/merge-queue/logs/20260823-051537-impl~rfc0146-track2-74028-37.log` |
 | 3 WIR inlining | rejected: scalar-leaf candidate removes a direct closure call but misses the whole-workload gate | `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track3-next-5e120cec/track3exact-closure_calls.tsv` (`sha256:5b6ef21d3a1e3f78d19b7e9a9c52ab16ff4103ce329d460baa3288cff228b3a3`), plus exact `expr_eval` and `binary_trees` pairs; baseline binary `sha256:5182e3aa46a4a9672aa721f43f56812cbc60efdfce6422af58cb6a46a39a9349`; candidate `sha256:f615181d838740b63d57576f7166c13ebd7334c503905187064c96ae9d8602df` | `witchy-wir` native scalar-leaf positive/negative WAT and multi-result envelope tests: 2 passed; candidate WAT has no hot `call $__lamt0`, negative envelope retains the call | Fresh 12-pair medians: `closure_calls` 3.725 to 3.713 ms (+0.33%), `expr_eval` 11.151 to 11.241 ms (-0.81%), `binary_trees` 53.022 to 52.660 ms (+0.68%). RFC requires closure_calls >=20% and protected rows <=5%; no promotion claim | detached current-master experiment; implementation not queued | no terminal queue event; do not queue without a reproducible whole-workload gain |
 | 4 strength reduction | performance rejected; safety repair merged separately | `/tmp/rfc0146-track4-{master,candidate}-*.tsv` (12 paired samples; raw hashes in the safety note below) | prior pass removed from default pipeline; no promotable profile attribution | `witchy-wir` 42 tests; workspace fast gate 3051 passed; Wasm shard green | Collatz gain 0.4%; controls: `loop_sum` +5.9%, `mandelbrot` +1.0%, `expr_eval` +0.4% (candidate/master) | `perf/rfc0146-strength-reduce` at `992a77af` | merged as `c09dd6d5a704cdd40858cf0b0a6589e7cc7a51da` at `2026-08-23T14:16:47Z`; journal line recorded under `mq-557e507b21e2fdf26b02a0fe0ac3c664b1e6a980`; gate log `state/merge-queue/logs/20260823-101617-perf~rfc0146-strength-reduce-74028-39.log` |
 | 5 recursive inlining | deferred: entry criterion remains unavailable on current macOS host | durable prior profile plus current-master Samply/JIT-marker probes under `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track5-current-67563a1a/`; current release binary `sha256:67563a1a7a9389932151c2c3044b7e39b7faecbfb652f4a0ae76f50ffadc6406` | Current master `7d70f4bc` long fixture (`fib(35)` x96, checksum `885836640`) was profiled with Samply `--jit-markers --unstable-presymbolicate`; profile remains `symbolicated=false` and the sidecar contains no fib/Wasm JIT symbols. Wasmtime `jitdump`, VTune, and Pulley probes are explicitly unsupported on this macOS build; perf-map produces no usable attributable samples. No call/return percentage can be established. | RFC requires native attribution of >=10% call/return overhead before implementation; no bounded recursive implementation or promotion evidence | `perf/rfc0146-recursive-inline`; no implementation changes | no terminal queue event; keep deferred until a Linux/Wasmtime symbolized profile or equivalent attribution is available |
 | 6 packed Bool kernels | merged | `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track6-2b065c24/track6-schema1.json` (`sha256:854d6528fc0a7e05622ab7cb6118b9eac1700f48d8341b5b0f69cfceafbf2361`) | candidate WAT `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track6-2b065c24/candidate.wat` (`sha256:05fb7d37b0735d53494a41f7a8c9dd48431407d6209b237907a9d4c7fffa77c2`); exact packed Bool cursor read/store shape and no scalar-set helper call in promoted loop | `witchy-lower` host-layout shard (11 passed), `cargo check -p witchy-lower`, parity/result checks, trap/deopt fallback retained | `nsieve` 4.814 to 3.845 ms (20.08% faster); `list_sum` 8.798 to 8.882 ms (0.95% regression); `list_index` 3.210 to 2.639 ms (17.86% faster) | `perf/rfc0146-packed-bool` @ `2b065c24` | merged as `0d3e0589ec6b16f0351de7fa0b773683bfa20573` at `2026-08-23T14:22:07Z`; journal line 8592 and gate log `state/merge-queue/logs/20260823-102106-perf~rfc0146-packed-bool-74028-41.log` |
+
+#### Track 1E direct typed decode prerequisite
+
+Commit `ea279f45` changes only the fused `chan.__select2_map` decoder. Instead
+of constructing `Task(Selected(m))` and immediately sequencing it through
+`task.and_then`, the decoder recovers the typed message and invokes the existing
+continuation directly for `First`, `Second`, or `Closed`. The ordinary
+`chan.select` path remains unchanged. The focused WAT assertion proves that the
+fused map module no longer calls `chan.select2_result__Int`; RFC-0129's typed
+channel contract and deterministic schedule parity tests pass.
+
+The schema-1 exploratory artifact is retained at
+`/Users/cobrien/.local/share/witchy/evidence/rfc0146/track1-direct-decode-ea279f45/`.
+Its 12 paired kernel samples improve `select_fanin` by 41.30% (20.754 ms to
+12.183 ms median), while a separate 24-sample wall control leaves
+`chan_throughput` unchanged at a 0.11 s median. Correctness output hashes match
+for both workloads. This is not Track 1 acceptance: the workload remains far
+above the RFC's 2x-Go ceiling and the compiler-owned frame/scheduler emitter
+and zero-steady-state-allocation counter proof are still missing. The slice is
+therefore a landable prerequisite, not a promotion claim.
+
+#### Track 1D prerequisite detail
+
+The landed proof is deliberately conservative: it accepts only local lane
+writes, integer constants/locals, arithmetic, and structured control flow. It
+rejects calls, stores, allocation-producing expressions, host effects, and
+unsupported nodes, preserving the ordinary Task/Step scheduler as fallback.
+The typed projection records an explicit `I64` payload lane only when both
+receiver endpoints are proven `Receiver(Int)`; unknown or non-integer facts
+retain the erased-message fallback. The compiler-owned frame emitter and
+scheduler path that consume the lane have not landed.
 
 ### Track 1 rejection detail
 
