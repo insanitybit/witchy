@@ -16,7 +16,7 @@ related:
   - "0135 (stable observable semantics converge before support)"
   - "0139 (heterogeneous dictionary lookup and entry fusion)"
   - "0140 (Wasm SIMD instruction support and control-byte probing)"
-tracking: "Proposes flat compiled-Wasm Dict buckets with a SwissTable control index, an off-hot-path insertion-order vector, scalar and SIMD probe paths, and measured promotion gates. Public Dict and Set APIs remain unchanged."
+tracking: "Proposes flat compiled-Wasm Dict buckets with a SwissTable control index, an off-hot-path insertion-order vector, scalar and SIMD probe paths, and measured promotion gates. Public Dict and Set APIs remain unchanged. Acceptance remains open; see [the RFC-0143 acceptance ledger](0143-acceptance-ledger.md)."
 ---
 
 # RFC-0143: SIMD SwissTable dictionary storage with stable observable iteration
