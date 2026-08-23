@@ -371,6 +371,39 @@ fn active_opt_key() -> String {
     witchy_syntax::opt::active_schema_key().to_string()
 }
 
+/// Best-effort publication for compiler caches. The temporary is created
+/// exclusively under an unpredictable same-directory name, so an existing
+/// path is never followed or truncated. Rename remains the single visibility
+/// point for readers.
+fn publish_cache_file(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+
+    for _ in 0..32 {
+        let mut random = [0u8; 16];
+        if getrandom::fill(&mut random).is_err() {
+            return;
+        }
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let temporary = path.with_extension(format!("{suffix}.tmp"));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return,
+        };
+        let published = file.write_all(bytes).is_ok()
+            && file.sync_all().is_ok()
+            && std::fs::rename(&temporary, path).is_ok();
+        if !published {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        return;
+    }
+}
+
 /// The wasm for an EMBEDDED program (`witchy pm`, `coven-serve`), cached across
 /// the WHOLE front-end pipeline — parse, link, typecheck, AND codegen. The
 /// embedded sources are `include_str!` constants, so the binary fingerprint
@@ -420,12 +453,7 @@ pub(crate) fn embedded_wasm_cached(
         codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
     };
     if let Some(p) = &path {
-        // Write-then-rename, pid-tagged temp: same publish discipline as the
-        // source cache below.
-        let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, &wasm).is_ok() {
-            let _ = std::fs::rename(&tmp, p);
-        }
+        publish_cache_file(p, &wasm);
     }
     Ok(wasm)
 }
@@ -500,12 +528,7 @@ fn compile_to_wasm_cached(
     }
     let wasm = compile()?;
     if let Some(p) = &path {
-        // Write-then-rename so a concurrent reader never sees a partial file; the
-        // pid-tagged temp keeps two processes from racing on one path.
-        let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, &wasm).is_ok() {
-            let _ = std::fs::rename(&tmp, p);
-        }
+        publish_cache_file(p, &wasm);
     }
     Ok(wasm)
 }
@@ -566,4 +589,41 @@ pub(crate) fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
     let binary = compile_checked_to_wasm(&checked)?;
     std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cache_publication_tests {
+    use super::publish_cache_file;
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_publication_never_follows_the_legacy_pid_temporary_symlink() {
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "witchy-cache-publication-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let path = root.join("cache.wasm");
+        let outside = root.join("outside-sentinel");
+        std::fs::write(&outside, b"outside-original").unwrap();
+        let legacy = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::os::unix::fs::symlink(&outside, legacy).unwrap();
+
+        publish_cache_file(&path, b"compiled-wasm");
+
+        assert_eq!(std::fs::read(outside).unwrap(), b"outside-original");
+        assert_eq!(std::fs::read(&path).unwrap(), b"compiled-wasm");
+        assert!(!std::fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+    }
 }
