@@ -26,6 +26,7 @@ scalar/SIMD-equivalent representation and promotion gate.
 | Ownership, traps, rebuild, and memory | **NOT ACCEPTED** | Existing ownership/trap tests cover portions of the dense path. No complete unique/shared/COW/grow/rebuild/failure matrix, requested/transient/retained byte measurements, or bytes-per-live-entry comparison proves the RFC gate. |
 | Portability | **NOT EVIDENCED** | No durable Wasmtime/browser SIMD artifact paired with a scalar no-SIMD artifact is recorded, and no emitted-Wasm assertion proves vector instructions only in the SIMD build. |
 | Protected workload promotion | **DEFERRED** | The durable RFC-0146 Track-7 audit at `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track7-audit-d86b5ff5/track7-schema1.json` records 12-sample `dict_count`, `word_count`, and `knucleotide` baselines plus counters, but explicitly lacks RFC-0143's matched before/after representation matrix and therefore cannot promote this RFC. |
+| Narrow Int/Bool group-mask experiment (`0d468de5`) | **REJECTED** | Focused WIR/WAT tests passed, but the 12-sample phase-0 candidate did not improve `dict_count` (28.665 ms vs 29.230 ms predecessor) and regressed protected String/Bytes workloads: `word_count` 428.817 ms vs 27.919 ms and `knucleotide` 136.726 ms vs 26.325 ms. Raw candidate and binary are retained under `/Users/cobrien/.local/share/witchy/evidence/rfc0143/simd-probe-int-only-0d468de5/`; no queue submission. |
 
 ## Decision
 
