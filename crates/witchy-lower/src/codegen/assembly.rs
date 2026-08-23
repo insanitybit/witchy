@@ -102,20 +102,20 @@ pub(super) fn type_requests_specialized_layout(
             // recursive rule for packed records/tuples, but never make an
             // outer dynamic list inline merely because its element list has a
             // specialized representation of its own.
-            !type_contains_dynamic_list(element, resolver)
-                && ((resolver.specialize_bool_lists
-                    && matches!(element.unqualified(), Type::Named(kind, args) if args.is_empty() && kind == "Bool"))
-                    || type_requests_specialized_layout(element, resolver))
+            (resolver.specialize_bool_lists
+                && matches!(element.unqualified(), Type::Named(kind, args) if args.is_empty() && kind == "Bool"))
+                || (!bool_list_wrapper_requires_uniform(element, resolver)
+                    && type_requests_specialized_layout(element, resolver))
         }),
         Type::Named(name, _) => {
-            !type_contains_dynamic_list(ty, resolver)
+            !bool_list_wrapper_requires_uniform(ty, resolver)
                 && resolver.definition(name).is_some_and(|definition| definition.packed)
         }
         // Tuples have no qualifier of their own. A closed tuple participates
         // when it contains a declared-packed component; scalar-only tuples keep
         // the existing uniform ABI until a source contract selects them.
         Type::Tuple(fields) => {
-            !type_contains_dynamic_list(ty, resolver)
+            !bool_list_wrapper_requires_uniform(ty, resolver)
                 && fields
                     .iter()
                     .any(|field| type_requests_specialized_layout(field, resolver))
@@ -292,6 +292,13 @@ fn contains_bool_list(ty: &Type, resolver: &ModuleLayoutResolver<'_>) -> bool {
     }
 
     visit(ty, resolver, &BTreeMap::new(), &mut BTreeSet::new())
+}
+
+fn bool_list_wrapper_requires_uniform(
+    ty: &Type,
+    resolver: &ModuleLayoutResolver<'_>,
+) -> bool {
+    type_contains_dynamic_list(ty, resolver) && contains_bool_list(ty, resolver)
 }
 
 fn expression_has_bool_list_type(
@@ -478,7 +485,7 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
                     && witchy_syntax::ast::effective_type_def_params(definition).is_empty() =>
             {
                 let ty = Type::Named(definition.name.clone(), Vec::new());
-                if !type_contains_dynamic_list(&ty, &resolver) {
+                if !bool_list_wrapper_requires_uniform(&ty, &resolver) {
                     requested.push(ty.clone());
                     requested.push(Type::Named("List".into(), vec![ty]));
                 }
