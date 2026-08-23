@@ -380,9 +380,23 @@ impl Codegen<'_> {
         // When its result is concretely `List(Bool)`, route the call through the
         // packed constructor so the returned root has the byte layout expected
         // by specialized `list.at`/`list.set_at` paths.
-        if name == "list.repeat" || name.starts_with("list.repeat__")
+        if (name == "list.repeat" || name.starts_with("list.repeat__"))
             && args.len() == 2
-            && self.ast_type_of_expr(expr).is_some_and(|ty| matches!(ty.unqualified(), Type::Named(n, a) if n == "List" && matches!(a.first().map(Type::unqualified), Some(Type::Named(e, ea)) if e == "Bool" && ea.is_empty())))
+            && self
+                .ast_type_of_expr(expr)
+                .and_then(|result| {
+                    self.specialized_type_ids
+                        .iter()
+                        .find(|(known, _)| known.unqualified() == result.unqualified())
+                        .map(|(_, id)| *id)
+                })
+                .and_then(|id| self.specialized_layouts.get(id))
+                .is_some_and(|descriptor| {
+                    matches!(descriptor.kind(), LayoutKind::PackedList { element, .. }
+                        if self.specialized_layouts.get(*element).is_some_and(|element| {
+                            matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Bool))
+                        }))
+                })
         {
             return Some(W::Call {
                 func: "list_repeat_bool".into(),

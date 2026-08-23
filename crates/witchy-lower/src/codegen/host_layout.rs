@@ -18,6 +18,29 @@ pub(super) fn boundary_layout_is_unsupported(
     arguments.chain(result).any(&mut unsupported)
 }
 
+/// Operations whose lowering already consumes a packed `List(Bool)` without
+/// crossing the universal-slot ABI. This is deliberately an allow-list of
+/// materialization paths, not a list of stdlib owners: every ordinary emitted
+/// callable remains a boundary and therefore forces the uniform fallback.
+pub(super) fn packed_bool_list_operation_is_materializable(name: &str, arity: usize) -> bool {
+    use witchy_syntax::intrinsics;
+
+    let monomorphized = |base: &str| {
+        name == base || name.strip_prefix(base).is_some_and(|suffix| suffix.starts_with("__"))
+    };
+    match arity {
+        1 => monomorphized(intrinsics::LIST_LENGTH)
+            || monomorphized(intrinsics::LIST_WITH_CAPACITY),
+        2 => {
+            monomorphized(intrinsics::LIST_AT)
+                || monomorphized(intrinsics::LIST_PUSH)
+                || monomorphized("list.repeat")
+        }
+        3 => monomorphized(intrinsics::LIST_SET_AT),
+        _ => false,
+    }
+}
+
 impl Codegen<'_> {
     fn host_layout_is_unsupported(&self, boundary: &str, layout: LayoutId) -> bool {
         match production_host_layout_policy(boundary)

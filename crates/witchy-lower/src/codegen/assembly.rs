@@ -17,20 +17,25 @@ use sha2::{Digest, Sha256};
 // scratch pointer as an owning object.
 const FMT_STACK_BYTES: u32 = 8192;
 
-struct ModuleLayoutResolver<'a> {
+pub(super) struct ModuleLayoutResolver<'a> {
     definitions: BTreeMap<&'a str, &'a witchy_syntax::ast::TypeDef>,
     header_free_lists: Vec<Type>,
+    specialize_bool_lists: bool,
 }
 
 impl<'a> ModuleLayoutResolver<'a> {
-    fn new(module: &'a Module, header_free_lists: Vec<Type>) -> Self {
+    pub(super) fn new(
+        module: &'a Module,
+        header_free_lists: Vec<Type>,
+        specialize_bool_lists: bool,
+    ) -> Self {
         let mut definitions = BTreeMap::new();
         for item in &module.items {
             if let Item::Type(definition) = item {
                 definitions.insert(definition.name.as_str(), definition);
             }
         }
-        Self { definitions, header_free_lists }
+        Self { definitions, header_free_lists, specialize_bool_lists }
     }
 
     fn definition(&self, name: &str) -> Option<&'a witchy_syntax::ast::TypeDef> {
@@ -86,7 +91,7 @@ impl witchy_wir::layout::ClosedTypeResolver for ModuleLayoutResolver<'_> {
     }
 }
 
-fn type_requests_specialized_layout(
+pub(super) fn type_requests_specialized_layout(
     ty: &Type,
     resolver: &ModuleLayoutResolver<'_>,
 ) -> bool {
@@ -94,19 +99,303 @@ fn type_requests_specialized_layout(
         Type::Named(name, arguments) if name == "List" => arguments.first().is_some_and(|element| {
             // Scalar lists are physically specialized too: Bool is stored as a
             // byte rather than an 8-byte universal slot.  Keep the existing
-            // recursive rule for packed records/tuples.
-            matches!(element.unqualified(), Type::Named(kind, args) if args.is_empty() && kind == "Bool")
-                || type_requests_specialized_layout(element, resolver)
+            // recursive rule for packed records/tuples, but never make an
+            // outer dynamic list inline merely because its element list has a
+            // specialized representation of its own.
+            !type_contains_dynamic_list(element, resolver)
+                && ((resolver.specialize_bool_lists
+                    && matches!(element.unqualified(), Type::Named(kind, args) if args.is_empty() && kind == "Bool"))
+                    || type_requests_specialized_layout(element, resolver))
         }),
-        Type::Named(name, _) => resolver.definition(name).is_some_and(|definition| definition.packed),
+        Type::Named(name, _) => {
+            !type_contains_dynamic_list(ty, resolver)
+                && resolver.definition(name).is_some_and(|definition| definition.packed)
+        }
         // Tuples have no qualifier of their own. A closed tuple participates
         // when it contains a declared-packed component; scalar-only tuples keep
         // the existing uniform ABI until a source contract selects them.
-        Type::Tuple(fields) => fields
-            .iter()
-            .any(|field| type_requests_specialized_layout(field, resolver)),
+        Type::Tuple(fields) => {
+            !type_contains_dynamic_list(ty, resolver)
+                && fields
+                    .iter()
+                    .any(|field| type_requests_specialized_layout(field, resolver))
+        }
         _ => false,
     }
+}
+pub(super) fn type_contains_dynamic_list(
+    ty: &Type,
+    resolver: &ModuleLayoutResolver<'_>,
+) -> bool {
+    fn visit(
+        ty: &Type,
+        resolver: &ModuleLayoutResolver<'_>,
+        substitutions: &BTreeMap<String, Type>,
+        visiting: &mut BTreeSet<String>,
+    ) -> bool {
+        match ty.unqualified() {
+            Type::Named(name, arguments) if name == "List" => true,
+            Type::Named(name, arguments) => {
+                if arguments.is_empty()
+                    && let Some(substitution) = substitutions.get(name)
+                {
+                    let key = format!("type-variable:{name}");
+                    if !visiting.insert(key.clone()) {
+                        return false;
+                    }
+                    let contains = visit(substitution, resolver, substitutions, visiting);
+                    visiting.remove(&key);
+                    return contains;
+                }
+                let Some(definition) = resolver.definition(name) else {
+                    return arguments
+                        .iter()
+                        .any(|argument| visit(argument, resolver, substitutions, visiting));
+                };
+                let key = format!("{name}{arguments:?}");
+                if !visiting.insert(key.clone()) {
+                    return false;
+                }
+                let mut nested = substitutions.clone();
+                for (parameter, argument) in
+                    witchy_syntax::ast::effective_type_def_params(definition)
+                        .into_iter()
+                        .zip(arguments.iter())
+                {
+                    nested.insert(parameter, argument.clone());
+                }
+                let contains = definition.variants.iter().any(|variant| {
+                    variant
+                        .fields
+                        .iter()
+                        .any(|field| visit(field, resolver, &nested, visiting))
+                });
+                visiting.remove(&key);
+                contains
+            }
+            Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments
+                .iter()
+                .any(|argument| visit(argument, resolver, substitutions, visiting)),
+            Type::Slice(inner) | Type::Qualified(_, inner) => {
+                visit(inner, resolver, substitutions, visiting)
+            }
+            Type::Fn(parameters, result, _, _) => {
+                parameters
+                    .iter()
+                    .any(|parameter| visit(parameter, resolver, substitutions, visiting))
+                    || visit(result, resolver, substitutions, visiting)
+            }
+            Type::RecordCompose { base, fields } => {
+                visit(base, resolver, substitutions, visiting)
+                    || fields
+                        .iter()
+                        .any(|(_, field)| visit(field, resolver, substitutions, visiting))
+            }
+        }
+    }
+
+    visit(ty, resolver, &BTreeMap::new(), &mut BTreeSet::new())
+}
+
+fn contains_bool_list(ty: &Type, resolver: &ModuleLayoutResolver<'_>) -> bool {
+    fn is_bool(
+        ty: &Type,
+        substitutions: &BTreeMap<String, Type>,
+        visiting: &mut BTreeSet<String>,
+    ) -> bool {
+        match ty.unqualified() {
+            Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => true,
+            Type::Named(name, arguments) if arguments.is_empty() => {
+                let Some(substitution) = substitutions.get(name) else { return false };
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let result = is_bool(substitution, substitutions, visiting);
+                visiting.remove(name);
+                result
+            }
+            _ => false,
+        }
+    }
+
+    fn visit(
+        ty: &Type,
+        resolver: &ModuleLayoutResolver<'_>,
+        substitutions: &BTreeMap<String, Type>,
+        visiting: &mut BTreeSet<String>,
+    ) -> bool {
+        match ty.unqualified() {
+            Type::Named(name, arguments) => {
+                if name == "List"
+                    && arguments.first().is_some_and(|element| {
+                        is_bool(element, substitutions, &mut BTreeSet::new())
+                    })
+                {
+                    return true;
+                }
+                if arguments.is_empty()
+                    && let Some(substitution) = substitutions.get(name)
+                {
+                    let key = format!("type-variable:{name}");
+                    if !visiting.insert(key.clone()) {
+                        return false;
+                    }
+                    let contains = visit(substitution, resolver, substitutions, visiting);
+                    visiting.remove(&key);
+                    return contains;
+                }
+                let Some(definition) = resolver.definition(name) else {
+                    return arguments
+                        .iter()
+                        .any(|argument| visit(argument, resolver, substitutions, visiting));
+                };
+                let key = format!("{name}{arguments:?}");
+                if !visiting.insert(key.clone()) {
+                    return false;
+                }
+                let mut nested = substitutions.clone();
+                for (parameter, argument) in
+                    witchy_syntax::ast::effective_type_def_params(definition)
+                        .into_iter()
+                        .zip(arguments.iter())
+                {
+                    nested.insert(parameter, argument.clone());
+                }
+                let contains = definition.variants.iter().any(|variant| {
+                    variant
+                        .fields
+                        .iter()
+                        .any(|field| visit(field, resolver, &nested, visiting))
+                });
+                visiting.remove(&key);
+                contains
+            }
+            Type::Dyn(_, arguments) | Type::Tuple(arguments) => arguments
+                .iter()
+                .any(|argument| visit(argument, resolver, substitutions, visiting)),
+            Type::Slice(inner) | Type::Qualified(_, inner) => {
+                visit(inner, resolver, substitutions, visiting)
+            }
+            Type::Fn(parameters, result, _, _) => {
+                parameters
+                    .iter()
+                    .any(|parameter| visit(parameter, resolver, substitutions, visiting))
+                    || visit(result, resolver, substitutions, visiting)
+            }
+            Type::RecordCompose { base, fields } => {
+                visit(base, resolver, substitutions, visiting)
+                    || fields
+                        .iter()
+                        .any(|(_, field)| visit(field, resolver, substitutions, visiting))
+            }
+        }
+    }
+
+    visit(ty, resolver, &BTreeMap::new(), &mut BTreeSet::new())
+}
+
+fn expression_has_bool_list_type(
+    cg: &Codegen<'_>,
+    expression: &Expr,
+    resolver: &ModuleLayoutResolver<'_>,
+) -> bool {
+    cg.ast_type_of_expr(expression)
+        .is_some_and(|ty| contains_bool_list(&ty, resolver))
+}
+
+fn function_is_bundled(function: &witchy_syntax::ast::Function) -> bool {
+    function
+        .name
+        .split_once('.')
+        .is_some_and(|(owner, _)| witchy_syntax::linker::bundled_source(owner).is_some())
+}
+
+fn bool_lists_cross_callable_boundary(
+    cg: &Codegen<'_>,
+    module: &Module,
+    resolver: &ModuleLayoutResolver<'_>,
+) -> bool {
+    module.items.iter().any(|item| {
+        let Item::Function(function) = item else { return false };
+        // Bundled declarations are templates, not an assertion that every
+        // concrete operation has a packed adapter. Actual typed call sites in
+        // user bodies are checked below against the materialization catalog.
+        if function_is_bundled(function) {
+            return false;
+        }
+        let declared_boundary = function
+            .params
+            .iter()
+            .filter_map(|parameter| parameter.ty.as_ref())
+            .any(|ty| contains_bool_list(ty, resolver))
+            || function.ret.as_ref().is_some_and(|ty| contains_bool_list(ty, resolver));
+        let mut expression_boundary = false;
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
+            &function.body,
+            &mut |expression| {
+                if let Expr::Lambda { params, ret, .. } = expression
+                    && (params
+                        .iter()
+                        .filter_map(|parameter| parameter.ty.as_ref())
+                        .any(|ty| contains_bool_list(ty, resolver))
+                        || ret.as_ref().is_some_and(|ty| contains_bool_list(ty, resolver))
+                        || cg.ast_type_of_expr(expression).is_some_and(|ty| {
+                            matches!(ty.unqualified(), Type::Fn(parameters, result, _, _)
+                                if parameters.iter().any(|ty| contains_bool_list(ty, resolver))
+                                    || contains_bool_list(result, resolver))
+                        }))
+                {
+                    expression_boundary = true;
+                }
+                if let Expr::Call { name, args } = expression {
+                    let carries_bool_list = args
+                        .iter()
+                        .any(|argument| expression_has_bool_list_type(cg, argument, resolver))
+                        || expression_has_bool_list_type(cg, expression, resolver);
+                    if carries_bool_list
+                        && !host_layout::packed_bool_list_operation_is_materializable(
+                            name,
+                            args.len(),
+                        )
+                    {
+                        expression_boundary = true;
+                    }
+                } else {
+                    let ordinary_boundary = match expression {
+                        Expr::Apply { func, args } => {
+                            expression_has_bool_list_type(cg, func, resolver)
+                                || args.iter().any(|arg| expression_has_bool_list_type(cg, arg, resolver))
+                                || expression_has_bool_list_type(cg, expression, resolver)
+                        }
+                        Expr::MethodCall { receiver, args, .. }
+                        | Expr::ExistentialCall { receiver, args, .. } => {
+                            expression_has_bool_list_type(cg, receiver, resolver)
+                                || args.iter().any(|arg| expression_has_bool_list_type(cg, arg, resolver))
+                                || expression_has_bool_list_type(cg, expression, resolver)
+                        }
+                        Expr::LabeledMethodCall { receiver, args, .. } => {
+                            expression_has_bool_list_type(cg, receiver, resolver)
+                                || args
+                                    .iter()
+                                    .any(|(_, arg)| expression_has_bool_list_type(cg, arg, resolver))
+                                || expression_has_bool_list_type(cg, expression, resolver)
+                        }
+                        Expr::LabeledCall { args, .. } => {
+                            args.iter()
+                                .any(|(_, arg)| expression_has_bool_list_type(cg, arg, resolver))
+                                || expression_has_bool_list_type(cg, expression, resolver)
+                        }
+                        _ => false,
+                    };
+                    if ordinary_boundary {
+                        expression_boundary = true;
+                    }
+                }
+                Ok(())
+            },
+        );
+        declared_boundary || expression_boundary
+    })
 }
 
 /// Collect every closed physical shape nested in a checked type. Callable
@@ -168,7 +457,19 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
         cg.type_table,
         &cg.loan_facts,
     );
-    let resolver = ModuleLayoutResolver::new(module, header_free_lists);
+    // The byte-packed Bool-list ABI currently depends on the in-place mutation
+    // machinery for its complete push/set/update surface. Keep `unbox` alone a
+    // sound no-op for Bool lists; the production set enables both levers.
+    // Passing or returning a Bool list through a user callable boundary has no
+    // exact adapter yet.
+    // Since specialization identity is type-global in one compilation, retain
+    // the uniform representation for that module rather than assigning one
+    // logical type two incompatible layouts. Nested dynamic lists are handled
+    // separately above: the outer list remains uniform.
+    let mut resolver = ModuleLayoutResolver::new(module, header_free_lists, true);
+    let specialize_bool_lists = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::InPlace)
+        && !bool_lists_cross_callable_boundary(cg, module, &resolver);
+    resolver.specialize_bool_lists = specialize_bool_lists;
     let mut requested = Vec::new();
     for item in &module.items {
         match item {
@@ -177,8 +478,10 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
                     && witchy_syntax::ast::effective_type_def_params(definition).is_empty() =>
             {
                 let ty = Type::Named(definition.name.clone(), Vec::new());
-                requested.push(ty.clone());
-                requested.push(Type::Named("List".into(), vec![ty]));
+                if !type_contains_dynamic_list(&ty, &resolver) {
+                    requested.push(ty.clone());
+                    requested.push(Type::Named("List".into(), vec![ty]));
+                }
             }
             Item::Function(function) => {
                 for ty in function.params.iter().filter_map(|parameter| parameter.ty.as_ref()) {
