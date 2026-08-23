@@ -150,6 +150,7 @@ impl LayoutBundle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostLayoutDecision {
     Exact,
+    ExactMultiValue,
     Marshal {
         accepted: LayoutId,
         metric: HostMarshalMetric,

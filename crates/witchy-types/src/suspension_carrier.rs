@@ -101,12 +101,28 @@ pub struct ScalarExecutorSlot {
 /// matches, and ordinary scalar statements remain in the state body; this is
 /// the effect/jump ABI the closure-free dispatcher must implement at each leaf.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectResultUse {
+    ImmediateMatch,
+    Escape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitSelect2Plan {
+    pub first_channel: String,
+    pub second_channel: String,
+    pub payload_layout: usize,
+    pub resume_target: usize,
+    pub result_use: SelectResultUse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarTransition {
     Jump { target: usize },
     Done,
     ChannelOpen { resume: usize },
     ChannelSend { resume: usize },
     ChannelReceive { resume: usize },
+    ChannelSelect2(AwaitSelect2Plan),
     Spawn { child: usize, resume: usize },
     Join { resume: usize },
     Yield { resume: usize },
@@ -494,6 +510,22 @@ fn collect_task_expression(
         ScalarTransition::ChannelSend { resume }
     } else if call_family(name, "chan.recv") {
         ScalarTransition::ChannelReceive { resume }
+    } else if call_family(name, "task.__channel_select2") {
+        let first_channel = match args.get(0) {
+            Some(ast::Expr::Var(v)) => v.clone(),
+            _ => "unknown".to_string(),
+        };
+        let second_channel = match args.get(1) {
+            Some(ast::Expr::Var(v)) => v.clone(),
+            _ => "unknown".to_string(),
+        };
+        ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
+            first_channel,
+            second_channel,
+            payload_layout: 0,
+            resume_target: resume,
+            result_use: SelectResultUse::ImmediateMatch,
+        })
     } else if call_family(name, "chan.spawn") {
         let child = args
             .first()
