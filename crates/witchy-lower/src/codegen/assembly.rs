@@ -3256,6 +3256,15 @@ pub fn compile_checked_module_binary(
     compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref(), None)
 }
 
+/// Compile a checked module with RFC-0030 deterministic sequence counters.
+/// Ordinary production compilation omits their hot-path bookkeeping entirely;
+/// `witchy stats` opts in explicitly and still receives exported exact counts.
+pub fn compile_checked_module_binary_with_deterministic_counters(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> LoweringOutcome<Vec<u8>> {
+    super::with_deterministic_sequence_counters(|| compile_checked_module_binary(checked))
+}
+
 /// Compile a generated test driver that was proved to differ from its checked
 /// source program only at `main`. Keeping this boundary distinct prevents the
 /// post-link rewrite from impersonating a production `CheckedModule`.
@@ -5961,55 +5970,6 @@ fn assemble_wir_module_with_structs_mode(
                         export: Some("__witchy_region_rewind_calls".into()),
                     },
                     WirGlobal {
-                        name: "__witchy_list_header_loads".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_list_header_loads".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_checked_indexed_loads".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_checked_indexed_loads".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_checked_indexed_stores".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_checked_indexed_stores".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_cursorized_indexed_accesses".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_cursorized_indexed_accesses".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_sequence_bounds_checks_coalesced".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_sequence_bounds_checks_coalesced".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_sequence_forwarded_loads".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_sequence_forwarded_loads".into()),
-                    },
-                    WirGlobal {
-                        name: "__witchy_sequence_small_loops_unrolled".into(),
-                        kind: WK::I64,
-                        mutable: true,
-                        init: GlobalInit::I64(0),
-                        export: Some("__witchy_sequence_small_loops_unrolled".into()),
-                    },
-                    WirGlobal {
                         name: "__witchy_extract_active".into(),
                         kind: WK::I32,
                         mutable: true,
@@ -6065,6 +6025,25 @@ fn assemble_wir_module_with_structs_mode(
             } else {
                 Vec::new()
             };
+            if super::deterministic_sequence_counters_enabled() {
+                for counter in [
+                    "__witchy_list_header_loads",
+                    "__witchy_checked_indexed_loads",
+                    "__witchy_checked_indexed_stores",
+                    "__witchy_cursorized_indexed_accesses",
+                    "__witchy_sequence_bounds_checks_coalesced",
+                    "__witchy_sequence_forwarded_loads",
+                    "__witchy_sequence_small_loops_unrolled",
+                ] {
+                    pruned_globals.push(WirGlobal {
+                        name: counter.into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some(counter.into()),
+                    });
+                }
+            }
             // Binaryen can materially improve recursive/indirect-call modules,
             // while some sequence-plan loop shapes are faster when preserved for
             // Cranelift. Select PreserveRaw only when the compiler consumed such

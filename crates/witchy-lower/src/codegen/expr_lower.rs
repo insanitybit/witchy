@@ -1664,7 +1664,7 @@ impl<'types> Codegen<'types> {
                         outer.extend(Self::initialize_counter_batch(level, batch_used));
                     }
                     outer.extend(sequence_setup);
-                    outer.push(self.increment_hot_counter(
+                    outer.extend(self.increment_sequence_counter(
                         "__witchy_sequence_small_loops_unrolled",
                     ));
                     if let Some((capture, _)) = &wm {

@@ -1527,13 +1527,13 @@ impl<'types> Codegen<'types> {
                                 // (and carries the `__witchy_abort` import); the result is
                                 // unreachable (the call always traps here) so it is dropped.
                                 if cursorized_store {
-                                    seq.push(self.increment_hot_counter(
+                                    seq.extend(self.increment_sequence_counter(
                                         "__witchy_cursorized_indexed_accesses",
                                     ));
                                 }
                                 if !proven_index {
                                     if planned_slot.is_some() {
-                                        seq.push(self.increment_hot_counter(
+                                        seq.extend(self.increment_sequence_counter(
                                             "__witchy_checked_indexed_stores",
                                         ));
                                     }

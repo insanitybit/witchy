@@ -146,7 +146,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         .map_err(|error| error.message)?
         .telemetry();
     let checker_time_us = checker_started.elapsed().as_micros();
-    let bytes = match codegen::compile_checked_module_binary(&checked) {
+    let bytes = match codegen::compile_checked_module_binary_with_deterministic_counters(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),

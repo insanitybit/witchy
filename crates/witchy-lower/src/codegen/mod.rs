@@ -62,9 +62,35 @@ pub use assembly::{
     assemble_checked_optimized_wir_module, compile_checked_build_module,
     compile_checked_development_module, compile_checked_glamour_island_binary,
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
+    compile_checked_module_binary_with_deterministic_counters,
     compile_checked_test_driver_binary,
     CompiledDevelopmentModule, GlamourDevelopmentField, GlamourDevelopmentMetadata,
 };
+
+thread_local! {
+    static DETERMINISTIC_SEQUENCE_COUNTERS: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+fn with_deterministic_sequence_counters<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DETERMINISTIC_SEQUENCE_COUNTERS.with(|enabled| enabled.set(self.0));
+        }
+    }
+    DETERMINISTIC_SEQUENCE_COUNTERS.with(|enabled| {
+        let restore = Restore(enabled.replace(true));
+        let result = f();
+        drop(restore);
+        result
+    })
+}
+
+fn deterministic_sequence_counters_enabled() -> bool {
+    DETERMINISTIC_SEQUENCE_COUNTERS.with(std::cell::Cell::get)
+}
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub use assembly::{
     assemble_optimized_wir_module, assemble_wir_module, compile_build_module,
@@ -10089,6 +10115,13 @@ impl<'types> Codegen<'types> {
                 rhs: Box::new(W::ConstI64(1)),
             },
         }
+    }
+
+    fn increment_sequence_counter(&mut self, name: &str) -> witchy_wir::wir::WirSeq {
+        deterministic_sequence_counters_enabled()
+            .then(|| self.increment_hot_counter(name))
+            .into_iter()
+            .collect()
     }
 
     fn commit_counter_batch(name: &str, local: String) -> witchy_wir::wir::WirNode {

@@ -275,7 +275,7 @@ impl<'types> Codegen<'types> {
                 || !all_accesses_proven_exact
                 || scan.length_reads.contains(&owner_root)
             {
-                setup.push(self.increment_hot_counter("__witchy_list_header_loads"));
+                setup.extend(self.increment_sequence_counter("__witchy_list_header_loads"));
                 setup.push(N::SetLocal {
                     local: length.clone(),
                     value: W::Load {
@@ -454,7 +454,7 @@ impl<'types> Codegen<'types> {
             coalesced_groups += 1;
         }
         for _ in 0..coalesced_groups {
-            guards.push(self.increment_hot_counter(
+            guards.extend(self.increment_sequence_counter(
                 "__witchy_sequence_bounds_checks_coalesced",
             ));
         }
@@ -661,10 +661,9 @@ impl<'types> Codegen<'types> {
             offset,
         ))?;
         self.note_sequence_backend_policy(SEQUENCE_POLICY_GENERALIZED);
-        Some(W::Seq(vec![
-            self.increment_hot_counter("__witchy_sequence_forwarded_loads"),
-            N::Push(W::FromSlot(Box::new(W::GetLocal(local)), element_kind)),
-        ]))
+        let mut nodes = self.increment_sequence_counter("__witchy_sequence_forwarded_loads");
+        nodes.push(N::Push(W::FromSlot(Box::new(W::GetLocal(local)), element_kind)));
+        Some(W::Seq(nodes))
     }
 
     pub(super) fn clear_forwarded_sequence_values(&mut self) {

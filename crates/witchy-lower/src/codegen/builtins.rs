@@ -1671,11 +1671,11 @@ impl Codegen<'_> {
                         W::FromSlot(Box::new(W::Seq(nodes)), Self::wir_kind(ek))
                     };
                     if cursorized {
-                        let mut counted = vec![self.increment_hot_counter(
+                        let mut counted = self.increment_sequence_counter(
                             "__witchy_cursorized_indexed_accesses",
-                        )];
+                        );
                         if checked_planned {
-                            counted.push(self.increment_hot_counter(
+                            counted.extend(self.increment_sequence_counter(
                                 "__witchy_checked_indexed_loads",
                             ));
                         }

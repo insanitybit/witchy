@@ -4629,6 +4629,30 @@ fn main() -> Int:
     }
 
     #[test]
+    fn production_sequence_wat_omits_deterministic_counter_instrumentation() {
+        let source = r#"
+fn main() -> Int:
+    let values = [1, 2, 3]
+    var total = 0
+    for i in 0..3:
+        total = total + values[i]
+    total
+"#;
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        for counter in [
+            "__witchy_list_header_loads",
+            "__witchy_checked_indexed_loads",
+            "__witchy_checked_indexed_stores",
+            "__witchy_cursorized_indexed_accesses",
+            "__witchy_sequence_bounds_checks_coalesced",
+            "__witchy_sequence_forwarded_loads",
+            "__witchy_sequence_small_loops_unrolled",
+        ] {
+            assert!(!wat.contains(counter), "production WAT retained {counter}:\n{wat}");
+        }
+    }
+
+    #[test]
     fn sequence_plan_forwards_one_same_address_scalar_load() {
         let source = r#"
 fn main() -> Int:
