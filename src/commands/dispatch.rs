@@ -178,6 +178,22 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 println!("rc_reuse_calls {}", s.rc_reuse_calls);
                 println!("rc_free_calls {}", s.rc_free_calls);
                 println!("region_rewind_calls {}", s.region_rewind_calls);
+                println!("list_header_loads {}", s.list_header_loads);
+                println!("checked_indexed_loads {}", s.checked_indexed_loads);
+                println!("checked_indexed_stores {}", s.checked_indexed_stores);
+                println!(
+                    "cursorized_indexed_accesses {}",
+                    s.cursorized_indexed_accesses
+                );
+                println!(
+                    "sequence_bounds_checks_coalesced {}",
+                    s.sequence_bounds_checks_coalesced
+                );
+                println!("sequence_forwarded_loads {}", s.sequence_forwarded_loads);
+                println!(
+                    "sequence_small_loops_unrolled {}",
+                    s.sequence_small_loops_unrolled
+                );
                 println!("extract_searches {}", s.extract_searches);
                 println!("extract_key_comparisons {}", s.extract_key_comparisons);
                 println!("extract_copied_bytes {}", s.extract_copied_bytes);

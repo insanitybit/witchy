@@ -1313,8 +1313,24 @@ impl<'types> Codegen<'types> {
                     // ending in `return` has no stack result, so treating its
                     // fallback block kind as a peer would erase a reference kind.
                     let ck = self.kind_of(e);
-                    let then_ = Self::convert_block_tail(self.lower_block(then_block)?, tk, ck);
-                    let els = Self::convert_block_tail(self.lower_block(eb)?, ek, ck);
+                    // Runtime evaluates the condition before entering either
+                    // branch, even though deterministic interning requires us
+                    // to lower the branch WIR first. Preserve an immediately
+                    // preceding same-address store fact across that compiler-
+                    // only traversal; each branch still starts and ends with an
+                    // empty cache and the condition gets the one permitted use.
+                    let forwarded = std::mem::take(&mut self.sequence_forwarded_values);
+                    let Some(then_result) = self.lower_block(then_block) else {
+                        self.sequence_forwarded_values = forwarded;
+                        return None;
+                    };
+                    let Some(else_result) = self.lower_block(eb) else {
+                        self.sequence_forwarded_values = forwarded;
+                        return None;
+                    };
+                    self.sequence_forwarded_values = forwarded;
+                    let then_ = Self::convert_block_tail(then_result, tk, ck);
+                    let els = Self::convert_block_tail(else_result, ek, ck);
                     let cond = self.lower_expr(cond)?;
                     W::Control(Box::new(N::If {
                         cond,

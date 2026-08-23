@@ -4683,6 +4683,34 @@ fn main() -> Int:
     }
 
     #[test]
+    fn sequence_plan_forwards_same_address_into_following_if_condition() {
+        let source = r#"
+fn main() -> Int:
+    var values = [3, 2]
+    var i = 0
+    var total = 0
+    while i < 2:
+        values[i] = values[i] - 1
+        if values[i] > 0:
+            total = total + 1
+        else:
+            total = total - 1
+        i = i + 1
+    total
+"#;
+        assert_eq!(run_int(source), 2);
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        assert!(main.contains("__seq_forward_"), "the store value is retained:\n{main}");
+        assert_eq!(
+            main.matches("i64.load").count(),
+            1,
+            "the RMW source loads once and the following condition reuses it:\n{main}",
+        );
+    }
+
+    #[test]
     fn sequence_forwarding_declines_alias_and_control_boundaries() {
         let different_offset = r#"
 fn main() -> Int:
