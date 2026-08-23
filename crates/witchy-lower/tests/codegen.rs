@@ -2213,8 +2213,6 @@ fn main(console: Console):
     fn aliased_list_builder_keeps_growth_fallback() {
         let source = r#"
 mode opt
-import list
-
 fn main() -> Int:
     var values = []
     let alias = values
@@ -4502,6 +4500,276 @@ fn main() -> Int:
             shortening.contains("list_at"),
             "a potentially length-changing rebinding must retain the indexed-write trap (got {shortening:?})",
         );
+    }
+
+    fn optimized_wir_wat(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let module = parse_module(source).expect("parse indexed-kernel fixture");
+        let wir = assemble_wir_module(&module).expect_lowered("lower indexed-kernel fixture");
+        witchy_syntax::opt::set_for_tests(None);
+        witchy_wir::wir::to_wat(&wir)
+    }
+
+    fn compiled_trap(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let module = parse_module(source).expect("parse indexed trap fixture");
+        let bytes = compile_module_binary(&module).expect_lowered("lower indexed trap fixture");
+        witchy_syntax::opt::set_for_tests(None);
+        let engine = gc_wasmtime_engine();
+        let wt = WtModule::new(&engine, &bytes).expect("valid indexed trap wasm");
+        let mut linker = Linker::new(&engine);
+        define_abort(&mut linker);
+        linker.func_wrap("witchy", "print_int", |_n: i64| {}).unwrap();
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &wt).expect("instantiate indexed trap");
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect_err("fixture must trap")
+            .to_string()
+    }
+
+    #[test]
+    fn sequence_plan_hoists_unproven_affine_counted_accesses() {
+        let source = r#"
+fn copy(let n: Int) -> Int:
+    var source = [10, 20, 30]
+    var destination = [0, 0, 0]
+    for i in 0..n - 1:
+        destination[i] = source[i + 1]
+    destination[0] + destination[1]
+
+fn main() -> Int:
+    copy(3)
+"#;
+        assert_eq!(run_int(source), 50);
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let copy = wat.split("(func $copy").nth(1).expect("copy WAT");
+        let copy = copy.split("(func $").next().expect("copy body");
+        assert!(copy.contains("__seq_base_"), "stable roots hoist payload bases:\n{copy}");
+        assert!(copy.contains("__seq_len_"), "stable roots hoist lengths:\n{copy}");
+        assert!(copy.contains("__seq_cursor_"), "affine accesses consume cursors:\n{copy}");
+        let loop_body = copy.split("block $fe").nth(1).expect("counted loop");
+        let loop_body = loop_body.split("br $fl").next().expect("one loop iteration");
+        assert_eq!(
+            loop_body.matches("call $list_at").count(),
+            2,
+            "one dominating cold trap guard per root covers i and i+1:\n{copy}",
+        );
+    }
+
+    #[test]
+    fn sequence_plan_forwards_one_same_address_scalar_load() {
+        let source = r#"
+fn main() -> Int:
+    var values = [3, 2]
+    var i = 0
+    var total = 0
+    while i < 2:
+        values[i] = values[i] - 1
+        total = total + values[i]
+        i = i + 1
+    total
+"#;
+        assert_eq!(run_int(source), 3);
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        assert!(main.contains("__seq_forward_"), "the stored scalar is retained in a local:\n{main}");
+        assert_eq!(
+            main.matches("i64.load").count(),
+            1,
+            "the RMW source loads once; the first successor read is forwarded:\n{main}",
+        );
+        assert_eq!(
+            main.matches("call $list_at").count(),
+            2,
+            "the RMW read and store keep their guards; the forwarded successor adds none:\n{main}",
+        );
+    }
+
+    #[test]
+    fn sequence_forwarding_declines_alias_and_control_boundaries() {
+        let different_offset = r#"
+fn main() -> Int:
+    var values = [3, 2]
+    var i = 0
+    var total = 0
+    while i < 1:
+        values[i] = values[i] - 1
+        total = total + values[i + 1]
+        i = i + 1
+    total
+"#;
+        let offset_wat = optimized_wir_wat(
+            different_offset,
+            witchy_syntax::opt::OptSet::default_set(),
+        );
+        assert!(!offset_wat.contains("__seq_forward_"), "a different affine lane is not forwarded");
+
+        let different_root = r#"
+fn main() -> Int:
+    var left = [3]
+    let right = [9]
+    var i = 0
+    while i < 1:
+        left[i] = left[i] - 1
+        i = right[i]
+    i
+"#;
+        let root_wat = optimized_wir_wat(
+            different_root,
+            witchy_syntax::opt::OptSet::default_set(),
+        );
+        assert!(!root_wat.contains("__seq_forward_"), "a different root is not forwarded");
+
+        let intervening_call = r#"
+fn observe() -> Nil:
+    return
+
+fn main() -> Int:
+    var values = [3]
+    var i = 0
+    while i < 1:
+        values[i] = values[i] - 1
+        observe()
+        i = values[i]
+    i
+"#;
+        let call_wat = optimized_wir_wat(
+            intervening_call,
+            witchy_syntax::opt::OptSet::default_set(),
+        );
+        assert!(!call_wat.contains("__seq_forward_"), "an intervening call declines forwarding");
+
+        let conditional_store = r#"
+fn main() -> Int:
+    var values = [3]
+    var i = 0
+    while i < 1:
+        if i == 0:
+            values[i] = values[i] - 1
+        i = values[i]
+    i
+"#;
+        let conditional_wat = optimized_wir_wat(
+            conditional_store,
+            witchy_syntax::opt::OptSet::default_set(),
+        );
+        assert!(!conditional_wat.contains("__seq_forward_"), "a conditional store cannot seed its successor");
+    }
+
+    #[test]
+    fn sequence_plan_rejects_root_escape_and_length_mutation() {
+        let escaped = r#"
+fn observe(let values: List(Int)) -> Nil:
+    return
+
+fn main() -> Int:
+    let values = [1, 2, 3]
+    var total = 0
+    for i in 0..list.length(values):
+        observe(values)
+        total = total + values[i]
+    total
+"#;
+        let escaped_wat = optimized_wir_wat(escaped, witchy_syntax::opt::OptSet::default_set());
+        assert!(!escaped_wat.contains("__seq_base_"), "an opaque root call rejects the plan");
+
+        let resized = r#"
+import list
+
+fn main() -> Int:
+    var values = [1, 2, 3]
+    var total = 0
+    for i in 0..3:
+        values = list.__push(values, i)
+        total = total + values[i]
+    total
+"#;
+        let resized_wat = optimized_wir_wat(resized, witchy_syntax::opt::OptSet::default_set());
+        assert!(!resized_wat.contains("__seq_base_"), "length mutation rejects the plan");
+    }
+
+    #[test]
+    fn sequence_affine_guard_preserves_deoptimized_trap() {
+        let source = r#"
+fn main() -> Int:
+    let values = [7, 8]
+    var total = 0
+    for i in 0..2:
+        total = total + values[i + 1]
+    total
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let optimized = compiled_trap(source, default);
+        let deoptimized = compiled_trap(
+            source,
+            default.without(witchy_syntax::opt::Opt::BoundsElide),
+        );
+        assert!(optimized.contains("list_at"), "optimized path traps at the indexed guard: {optimized}");
+        assert!(deoptimized.contains("list_at"), "deoptimized path traps at an indexed guard: {deoptimized}");
+    }
+
+    #[test]
+    fn sequence_plan_eliminates_in_loop_length_loads() {
+        let source = r#"
+fn main() -> Int:
+    let values = [4, 5, 6]
+    var i = 0
+    var total = 0
+    while i < list.length(values):
+        total = total + list.length(values) + values[i]
+        i = i + 1
+    total
+"#;
+        assert_eq!(run_int(source), 24);
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        assert_eq!(
+            main.matches("local.get $values\n    i32.load").count(),
+            1,
+            "the loop setup loads length once and condition/body reuse the plan local:\n{main}",
+        );
+    }
+
+    #[test]
+    fn sequence_plan_fully_unrolls_only_tiny_budgeted_ranges() {
+        let tiny = r#"
+fn main() -> Int:
+    let values = [1, 2, 3]
+    var total = 0
+    for i in 0..3:
+        total = total + values[i]
+    total
+"#;
+        assert_eq!(run_int(tiny), 6);
+        let tiny_wat = optimized_wir_wat(tiny, witchy_syntax::opt::OptSet::default_set());
+        let main = tiny_wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        assert!(!main.contains("loop $fl"), "three budgeted iterations are fully unrolled:\n{main}");
+        assert_eq!(main.matches("i64.load").count(), 3, "one direct load per literal lane");
+
+        let over_budget = r#"
+fn main() -> Int:
+    let values = [1, 2, 3, 4, 5, 6, 7, 8]
+    var total = 0
+    for i in 0..8:
+        total = total + values[i]
+        total = total + 1
+        total = total - 1
+        total = total + 1
+        total = total - 1
+        total = total + 1
+        total = total - 1
+    total
+"#;
+        let budget_wat = optimized_wir_wat(over_budget, witchy_syntax::opt::OptSet::default_set());
+        let main = budget_wat.split("(func $main").nth(1).expect("budget main WAT");
+        let main = main.split("(func $").next().expect("budget main body");
+        assert!(main.contains("loop $fl"), "body cost over 48 WIR statements keeps a loop");
     }
 
     /// Run `src` on the COMPILED backend under a specific optimization set (for value-

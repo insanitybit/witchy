@@ -7,7 +7,7 @@
 
 use super::EqShape;
 use foldhash::{HashMap, HashSet};
-use witchy_syntax::ast::{Block, Expr, Stmt, Type};
+use witchy_syntax::ast::{BinOp, Block, Expr, Stmt, Type};
 use witchy_syntax::intrinsics;
 use witchy_syntax::lambda_scan::collect_pattern_vars;
 
@@ -143,9 +143,31 @@ pub(crate) struct DevirtScan {
     /// rebinding is deliberately excluded: it changes an element but preserves
     /// the list length, so it cannot invalidate a `i < list.length(xs)` proof.
     pub(crate) length_changing_reassigned: HashSet<String>,
+    /// Syntactic `(induction, list-root)` identities used by typed list reads
+    /// and writes. Sequence planning consumes these as physical candidates;
+    /// bounds-elision remains a separate proof.
+    pub(crate) indexed_accesses: HashMap<(String, String), (i64, i64)>,
+    pub(crate) direct_indexed_accesses: HashMap<(String, String), (i64, i64)>,
+    /// List roots passed to a call whose mutation envelope is not one of the
+    /// typed length/read/same-length-write operations understood here.
+    pub(crate) opaque_call_roots: HashSet<String>,
+    pub(crate) length_reads: HashSet<String>,
+    nested_loop_depth: usize,
 }
 
 impl DevirtScan {
+    fn record_indexed_access(&mut self, index: &str, list: &str, offset: i64) {
+        let key = (index.to_string(), list.to_string());
+        let range = self.indexed_accesses.entry(key.clone()).or_insert((offset, offset));
+        range.0 = range.0.min(offset);
+        range.1 = range.1.max(offset);
+        if self.nested_loop_depth == 0 {
+            let range = self.direct_indexed_accesses.entry(key).or_insert((offset, offset));
+            range.0 = range.0.min(offset);
+            range.1 = range.1.max(offset);
+        }
+    }
+
     pub(crate) fn walk_block(&mut self, b: &Block) {
         for stmt in &b.stmts {
             match stmt {
@@ -187,25 +209,66 @@ impl DevirtScan {
             | Expr::Var(_)
             | Expr::TaggedLit { .. } => {}
             Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| self.walk_expr(x)),
-            Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            Expr::Call { name, args } => {
+                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::LIST_SET_AT)
+                    && args.len() >= 2
+                {
+                    if let (Expr::Var(list), Some((index, offset))) = (&args[0], affine_index(&args[1])) {
+                        self.record_indexed_access(index, list, offset);
+                    }
+                } else if name == intrinsics::LIST_LENGTH {
+                    if let Some(Expr::Var(root)) = args.first() {
+                        self.length_reads.insert(root.clone());
+                    }
+                } else {
+                    for argument in args {
+                        if let Expr::Var(root) = argument {
+                            self.opaque_call_roots.insert(root.clone());
+                        }
+                    }
+                }
                 args.iter().for_each(|a| self.walk_expr(a))
             }
-            Expr::LabeledCall { args, .. } => args.iter().for_each(|(_, a)| self.walk_expr(a)),
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+                args.iter().for_each(|a| self.walk_expr(a))
+            }
+            Expr::LabeledCall { args, .. } => {
+                for (_, argument) in args {
+                    if let Expr::Var(root) = argument {
+                        self.opaque_call_roots.insert(root.clone());
+                    }
+                    self.walk_expr(argument);
+                }
+            }
             Expr::LabeledMethodCall { receiver, args, .. } => {
+                if let Expr::Var(root) = receiver.as_ref() {
+                    self.opaque_call_roots.insert(root.clone());
+                }
                 self.walk_expr(receiver);
                 args.iter().for_each(|(_, a)| self.walk_expr(a))
             }
             Expr::MethodCall { receiver, args, .. } => {
+                if let Expr::Var(root) = receiver.as_ref() {
+                    self.opaque_call_roots.insert(root.clone());
+                }
                 self.walk_expr(receiver);
                 args.iter().for_each(|a| self.walk_expr(a));
             }
             Expr::ExistentialCall { receiver, args, .. } => {
+                if let Expr::Var(root) = receiver.as_ref() {
+                    self.opaque_call_roots.insert(root.clone());
+                }
                 self.walk_expr(receiver);
                 args.iter().for_each(|a| self.walk_expr(a));
             }
             Expr::Apply { func, args } => {
                 self.walk_expr(func);
-                args.iter().for_each(|a| self.walk_expr(a));
+                for argument in args {
+                    if let Expr::Var(root) = argument {
+                        self.opaque_call_roots.insert(root.clone());
+                    }
+                    self.walk_expr(argument);
+                }
             }
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
@@ -217,7 +280,9 @@ impl DevirtScan {
                 for p in params {
                     self.other_bind.insert(p.name.clone());
                 }
+                self.nested_loop_depth += 1;
                 self.walk_block(body);
+                self.nested_loop_depth -= 1;
             }
             Expr::RecordUpdate {
                 name: _,
@@ -233,12 +298,16 @@ impl DevirtScan {
                     self.walk_expr(s);
                 }
             }
-            Expr::Binary { lhs, rhs, .. }
-            | Expr::Index {
-                base: lhs,
-                index: rhs,
+            Expr::Index { base, index } => {
+                if let (Expr::Var(list), Some((index, offset))) =
+                    (base.as_ref(), affine_index(index))
+                {
+                    self.record_indexed_access(index, list, offset);
+                }
+                self.walk_expr(base);
+                self.walk_expr(index);
             }
-            | Expr::Range {
+            Expr::Binary { lhs, rhs, .. } | Expr::Range {
                 lo: lhs, hi: rhs, ..
             } => {
                 self.walk_expr(lhs);
@@ -267,13 +336,17 @@ impl DevirtScan {
             }
             Expr::Block(b) => self.walk_block(b),
             Expr::While { cond, body } => {
+                self.nested_loop_depth += 1;
                 self.walk_expr(cond);
                 self.walk_block(body);
+                self.nested_loop_depth -= 1;
             }
             Expr::For { var, iter, body } => {
                 self.other_bind.insert(var.clone());
+                self.nested_loop_depth += 1;
                 self.walk_expr(iter);
                 self.walk_block(body);
+                self.nested_loop_depth -= 1;
             }
             Expr::WhileLet {
                 pattern,
@@ -281,10 +354,48 @@ impl DevirtScan {
                 body,
             } => {
                 collect_pattern_vars(pattern, &mut self.other_bind);
+                self.nested_loop_depth += 1;
                 self.walk_expr(scrutinee);
                 self.walk_block(body);
+                self.nested_loop_depth -= 1;
             }
         }
+    }
+}
+
+fn affine_index(expr: &Expr) -> Option<(&str, i64)> {
+    match expr {
+        Expr::Var(index) => Some((index, 0)),
+        Expr::Binary { op: BinOp::Add | BinOp::Sub, lhs, rhs }
+            if matches!(rhs.as_ref(), Expr::Int(_)) =>
+        {
+            match lhs.as_ref() {
+                Expr::Var(index) => match expr {
+                    Expr::Binary { op: BinOp::Add, rhs, .. } => {
+                        let Expr::Int(offset) = rhs.as_ref() else { unreachable!() };
+                        Some((index, *offset))
+                    }
+                    Expr::Binary { op: BinOp::Sub, rhs, .. } => {
+                        let Expr::Int(offset) = rhs.as_ref() else { unreachable!() };
+                        Some((index, offset.checked_neg()?))
+                    }
+                    _ => unreachable!(),
+                },
+                _ => None,
+            }
+        }
+        Expr::Binary { op: BinOp::Add, lhs, rhs }
+            if matches!(lhs.as_ref(), Expr::Int(_)) =>
+        {
+            match rhs.as_ref() {
+                Expr::Var(index) => {
+                    let Expr::Int(offset) = lhs.as_ref() else { unreachable!() };
+                    Some((index, *offset))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -341,6 +452,21 @@ pub(super) fn bounds_elide_pair(
         Expr::Call { name, args } if name == intrinsics::LIST_LENGTH && args.len() == 1 => {
             match &args[0] {
                 Expr::Var(x) => x.clone(),
+                _ => return None,
+            }
+        }
+        Expr::Binary { op: witchy_syntax::ast::BinOp::Sub, lhs, rhs }
+            if matches!(rhs.as_ref(), Expr::Int(slack) if *slack >= 0) =>
+        {
+            match lhs.as_ref() {
+                Expr::Call { name, args }
+                    if name == intrinsics::LIST_LENGTH && args.len() == 1 =>
+                {
+                    match &args[0] {
+                        Expr::Var(x) => x.clone(),
+                        _ => return None,
+                    }
+                }
                 _ => return None,
             }
         }

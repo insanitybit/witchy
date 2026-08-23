@@ -113,7 +113,12 @@ impl<'types> Codegen<'types> {
     pub(crate) fn lower_block(&mut self, block: &Block) -> Option<witchy_wir::wir::WirSeq> {
         let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
         let saved_loans = std::mem::take(&mut self.active_loan_events);
+        // A control-flow boundary never imports or exports a speculative
+        // store-to-load forwarding fact. Straight-line statements inside this
+        // block may still forward to their immediate successor.
+        self.clear_forwarded_sequence_values();
         let result = self.lower_block_inner(block);
+        self.clear_forwarded_sequence_values();
         self.active_loan_events = saved_loans;
         if result.is_none() {
             if let (Some((k, s)), Some(top)) = (snap, self.facts_stack.last_mut()) {
@@ -1471,14 +1476,25 @@ impl<'types> Codegen<'types> {
                                 // unchanged length of this exact list binding. Its indexed
                                 // self-write therefore needs neither the explicit trap call
                                 // nor a second range branch before the owned-capacity store.
-                                let proven_index = matches!(iexpr, Expr::Var(index)
+                                let existing_proof = matches!(iexpr, Expr::Var(index)
                                     if self.elide_index_list.iter().any(|(i, list)| i == index && list == name));
+                                let proven_slot = self.sequence_element_address(
+                                    name,
+                                    iexpr,
+                                    Self::wir_kind(self.list_elem_kind(&Expr::Var(name.clone()))),
+                                );
+                                let planned_slot = self.planned_sequence_element_address(
+                                    name,
+                                    iexpr,
+                                    Self::wir_kind(self.list_elem_kind(&Expr::Var(name.clone()))),
+                                );
+                                let proven_index = existing_proof || proven_slot.is_some();
                                 let cond = bin(BinOp::Gt, cap.clone(), W::ConstI32(0));
-                                let slot_ptr = || bin(
+                                let slot_ptr = || planned_slot.clone().unwrap_or_else(|| bin(
                                     BinOp::Add,
                                     bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
                                     bin(BinOp::Mul, si(), W::ConstI32(8)),
-                                );
+                                ));
                                 // (RFC-0035 step 2) Drop the element this store DISPLACES: load the
                                 // old i32 slot and `$rc_drop` it before overwriting. Sound because
                                 // dup-at-read (step 1) already counted every reader — the count is
@@ -1502,7 +1518,7 @@ impl<'types> Codegen<'types> {
                                 // (and carries the `__witchy_abort` import); the result is
                                 // unreachable (the call always traps here) so it is dropped.
                                 if !proven_index {
-                                    let set_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
+                                    let set_len = || self.sequence_length(name).unwrap_or_else(|| W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 });
                                     seq.push(N::If {
                                         cond: bin(BinOp::GeU, si(), set_len()),
                                         then_: vec![N::Drop(W::Call {
@@ -2074,6 +2090,28 @@ impl<'types> Codegen<'types> {
                 }
                 // Yield → legacy (rewritten away before codegen anyway).
                 _ => return None,
+            }
+            self.clear_forwarded_sequence_values();
+            let forwarded_store = if let Stmt::Assign { name, value } = analyzed_stmt {
+                match crate::analysis::self_inplace_op(name, value) {
+                    Some(crate::analysis::InPlaceOp::SetAt(index, _))
+                        if self.next_statement_reads_sequence_value(
+                            block.stmts.get(i + 1),
+                            name,
+                            index,
+                        ) => {
+                        self.remember_sequence_store(name, index)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(capture) = forwarded_store {
+                seq.push(capture);
+            }
+            if let Stmt::Assign { name, value } = analyzed_stmt {
+                seq.extend(self.synchronize_sequence_cursors(name, value));
             }
             // Derive source-site propagation from the lowered artifact, not from
             // a second list of language operations. Host-backed helpers receive

@@ -1343,157 +1343,32 @@ impl<'types> Codegen<'types> {
                 let saved = self.next_label;
                 let id = self.next_label;
                 self.next_label += 1;
+                let elide_pairs = self.while_bounds_elide_pairs(cond, body);
+                let sequence_indices = self.sequence_candidate_indices(body);
+                let num_elide = elide_pairs.len();
+                for pair in &elide_pairs {
+                    self.elide_index_list.push(pair.clone());
+                }
+                let (sequence_plan_count, sequence_setup) =
+                    self.install_sequence_access_plans(
+                        &elide_pairs,
+                        &sequence_indices,
+                        body,
+                        true,
+                    );
                 let cond_w = match self.lower_expr(cond) {
                     Some(c) => c,
                     None => {
+                        self.pop_sequence_access_plans(sequence_plan_count);
+                        for _ in 0..num_elide {
+                            self.elide_index_list.pop();
+                        }
                         self.next_label = saved;
                         return None;
                     }
                 };
                 // Per-iteration arena reset (the watermark), if the body is
                 // resettable — same treatment as the for-loops.
-
-                let mut elide_pairs = Vec::new();
-                if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
-                    if let Expr::Binary { op: witchy_syntax::ast::BinOp::Lt, lhs, rhs, .. } = cond.as_ref() {
-                        if let Expr::Var(i_var) = lhs.as_ref() {
-                            if self.known_non_negative_vars.contains(i_var) {
-                                let candidate_lists: Vec<String> = if let Expr::Call { name, args } = rhs.as_ref() {
-                                    if name == intrinsics::LIST_LENGTH && args.len() == 1 {
-                                        if let Expr::Var(xs_var) = &args[0] {
-                                            vec![xs_var.clone()]
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    } else {
-                                        Vec::new()
-                                    }
-                                } else if let Expr::Var(n_var) = rhs.as_ref() {
-                                    self.known_length_vars.get(n_var).cloned().unwrap_or_default().into_iter().collect()
-                                } else {
-                                    Vec::new()
-                                };
-
-                                for xs_var in &candidate_lists {
-                                    let mut scan = crate::codegen::type_vars::DevirtScan::default();
-                                    scan.walk_block(body);
-                                    
-                                    let xs_stable = !scan.let_bind.contains_key(xs_var)
-                                        && !scan.other_bind.contains(xs_var)
-                                        && !scan.length_changing_reassigned.contains(xs_var);
-                                        
-                                    if xs_stable {
-                                        let mut num_assigns = 0;
-                                        let valid_induction;
-                                        
-                                        fn check_induction<S: std::hash::BuildHasher>(
-                                            b: &witchy_syntax::ast::Block,
-                                            i_var: &str,
-                                            num_assigns: &mut usize,
-                                            known: &std::collections::HashSet<String, S>
-                                        ) -> bool {
-                                            for stmt in &b.stmts {
-                                                match stmt {
-                                                    witchy_syntax::ast::Stmt::Assign { name, value } => {
-                                                        if name == i_var {
-                                                            *num_assigns += 1;
-                                                            if let witchy_syntax::ast::Expr::Binary { op: witchy_syntax::ast::BinOp::Add, lhs: alhs, rhs: arhs, .. } = value {
-                                                                if let witchy_syntax::ast::Expr::Var(vlhs) = alhs.as_ref() {
-                                                                    if vlhs == i_var {
-                                                                        match arhs.as_ref() {
-                                                                            witchy_syntax::ast::Expr::Int(k) if *k >= 0 => continue,
-                                                                            witchy_syntax::ast::Expr::Var(v) if known.contains(v) => continue,
-                                                                            _ => return false,
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            return false;
-                                                        }
-                                                    }
-                                                    witchy_syntax::ast::Stmt::Let { name, .. } => {
-                                                        if name == i_var { return false; }
-                                                    }
-                                                    witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::While { body, .. }) => {
-                                                        if !check_induction(body, i_var, num_assigns, known) { return false; }
-                                                    }
-                                                    witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::If { then_block, else_block, .. }) => {
-                                                        if !check_induction(then_block, i_var, num_assigns, known) { return false; }
-                                                        if let Some(eb) = else_block {
-                                                            if !check_induction(eb, i_var, num_assigns, known) { return false; }
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                            true
-                                        }
-                                        
-                                        valid_induction = check_induction(body, i_var, &mut num_assigns, &self.known_non_negative_vars);
-                                        if valid_induction && num_assigns > 0 {
-                                            elide_pairs.push((i_var.clone(), xs_var.clone()));
-                                            if let Expr::Var(hi_var) = rhs.as_ref() {
-                                                let mut hi_assigns = 0;
-                                                fn check_decrement(
-                                                    b: &witchy_syntax::ast::Block,
-                                                    hi_var: &str,
-                                                    num_assigns: &mut usize,
-                                                ) -> bool {
-                                                    for stmt in &b.stmts {
-                                                        match stmt {
-                                                            witchy_syntax::ast::Stmt::Assign { name, value } => {
-                                                                if name == hi_var {
-                                                                    *num_assigns += 1;
-                                                                    if let witchy_syntax::ast::Expr::Binary {
-                                                                        op: witchy_syntax::ast::BinOp::Sub,
-                                                                        lhs: alhs,
-                                                                        rhs: arhs,
-                                                                        ..
-                                                                    } = value {
-                                                                        if let witchy_syntax::ast::Expr::Var(vlhs) = alhs.as_ref() {
-                                                                            if vlhs == hi_var {
-                                                                                if let witchy_syntax::ast::Expr::Int(k) = arhs.as_ref() {
-                                                                                    if *k >= 0 { continue; }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    return false;
-                                                                }
-                                                            }
-                                                            witchy_syntax::ast::Stmt::Let { name, .. } => {
-                                                                if name == hi_var { return false; }
-                                                            }
-                                                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::While { body, .. }) => {
-                                                                if !check_decrement(body, hi_var, num_assigns) { return false; }
-                                                            }
-                                                            witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::If { then_block, else_block, .. }) => {
-                                                                if !check_decrement(then_block, hi_var, num_assigns) { return false; }
-                                                                if let Some(eb) = else_block {
-                                                                    if !check_decrement(eb, hi_var, num_assigns) { return false; }
-                                                                }
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                if check_decrement(body, hi_var, &mut hi_assigns) && hi_assigns > 0 {
-                                                    elide_pairs.push((hi_var.clone(), xs_var.clone()));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                let num_elide = elide_pairs.len();
-                for p in &elide_pairs {
-                    self.elide_index_list.push(p.clone());
-                }
                 let mut added_non_neg = None;
                 if let Expr::Binary { op, lhs, rhs } = cond.as_ref() {
                     if matches!(op, BinOp::Gt | BinOp::GtEq) {
@@ -1511,6 +1386,7 @@ impl<'types> Codegen<'types> {
                 self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                self.pop_sequence_access_plans(sequence_plan_count);
 
                 if let Some(v) = added_non_neg {
                     self.known_non_negative_vars.remove(&v);
@@ -1579,7 +1455,8 @@ impl<'types> Codegen<'types> {
                             N::Br { target: format!("wl_clean{id}"), cond: None },
                         ];
                         
-                        let outer = vec![
+                        let mut outer = sequence_setup.clone();
+                        outer.extend([
                             N::SetLocal { local: limit_tmp.clone(), value: limit_w },
                             N::Block {
                                 label: format!("we{id}"),
@@ -1592,7 +1469,7 @@ impl<'types> Codegen<'types> {
                                 body: vec![N::Loop { label: format!("wl_clean{id}"), body: clean_loop_body }],
                             },
                             N::Push(W::ConstI32(0)),
-                        ];
+                        ]);
                         return Some(W::Seq(outer));
                     }
                 }
@@ -1619,7 +1496,7 @@ impl<'types> Codegen<'types> {
                     loop_body.extend(reset.clone());
                 }
                 loop_body.push(N::Br { target: format!("wl{id}"), cond: None });
-                let mut outer: witchy_wir::wir::WirSeq = Vec::new();
+                let mut outer: witchy_wir::wir::WirSeq = sequence_setup;
                 if let Some((capture, _)) = &wm {
                     outer.push(capture.clone());
                 }
@@ -1678,6 +1555,22 @@ impl<'types> Codegen<'types> {
                 if let Some(p) = &elide_pair {
                     self.elide_index_list.push(p.clone());
                 }
+                let sequence_pairs: Vec<_> = elide_pair.iter().cloned().collect();
+                let (sequence_plan_count, sequence_setup) =
+                    self.install_sequence_access_plans(
+                        &sequence_pairs,
+                        std::slice::from_ref(var),
+                        body,
+                        false,
+                    );
+                if let Some((index, list)) = &elide_pair {
+                    self.refine_counted_sequence_domain(index, list, lo, hi);
+                }
+                let sequence_bounds_guards =
+                    self.coalesce_counted_sequence_guards(var, lo, body);
+                let sequence_cursor_init =
+                    self.initialize_sequence_cursors_from(var, &ctr);
+                let sequence_cursor_advance = self.advance_sequence_cursors(var, 1);
                 let builder_plan = self
                     .direct_list_builder_loops
                     .get(&((e as *const Expr) as usize))
@@ -1689,6 +1582,7 @@ impl<'types> Codegen<'types> {
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                self.pop_sequence_access_plans(sequence_plan_count);
                 self.active_direct_list_builder = saved_builder;
                 let batch_used = if batch_level.is_some() {
                     self.counter_batch_stack.pop();
@@ -1710,6 +1604,67 @@ impl<'types> Codegen<'types> {
                     }
                 };
                 let i64k = witchy_wir::wir::Kind::I64;
+                let small_trip_count = (sequence_plan_count > 0
+                    && unroll_safe
+                    && builder_plan.is_none())
+                    .then(|| self.small_constant_trip_count(lo, hi, *inclusive, &body_seq))
+                    .flatten();
+                if let Some(trips) = small_trip_count {
+                    let Expr::Int(lower) = lo.as_ref() else { unreachable!() };
+                    let mut outer: witchy_wir::wir::WirSeq = vec![
+                        N::SetLocal { local: ctr, value: lo_w },
+                        N::SetLocal { local: end, value: hi_w },
+                    ];
+                    outer.extend(sequence_setup);
+                    if let Some(level) = batch_level {
+                        if batch_used.0 {
+                            outer.push(N::SetLocal {
+                                local: Self::counter_batch_local("destination", level),
+                                value: W::ConstI64(0),
+                            });
+                        }
+                        if batch_used.1 {
+                            outer.push(N::SetLocal {
+                                local: Self::counter_batch_local("rewind", level),
+                                value: W::ConstI64(0),
+                            });
+                        }
+                    }
+                    if let Some((capture, _)) = &wm {
+                        outer.push(capture.clone());
+                    }
+                    outer.extend(sequence_cursor_init.clone());
+                    for lane in 0..trips {
+                        outer.push(N::SetLocal {
+                            local: var.clone(),
+                            value: W::ConstI64(lower + i64::from(lane)),
+                        });
+                        outer.extend(sequence_bounds_guards.clone());
+                        outer.push(N::Drop(W::Seq(body_seq.clone())));
+                        if let Some((_, reset)) = &wm {
+                            outer.extend(reset.clone());
+                        }
+                        if lane + 1 < trips {
+                            outer.extend(sequence_cursor_advance.clone());
+                        }
+                    }
+                    if let Some(level) = batch_level {
+                        if batch_used.0 {
+                            outer.push(Self::commit_counter_batch(
+                                "__witchy_destination_candidates_forwarded",
+                                Self::counter_batch_local("destination", level),
+                            ));
+                        }
+                        if batch_used.1 {
+                            outer.push(Self::commit_counter_batch(
+                                "__witchy_region_rewind_calls",
+                                Self::counter_batch_local("rewind", level),
+                            ));
+                        }
+                    }
+                    outer.push(N::Push(W::ConstI32(0)));
+                    return Some(W::Seq(outer));
+                }
                 let cmp = |op, l: &str, r: &str| W::Binary {
                     op,
                     kind: i64k,
@@ -1748,6 +1703,7 @@ impl<'types> Codegen<'types> {
                             }
                         };
                         loop_body.push(N::SetLocal { local: var.clone(), value });
+                        loop_body.extend(sequence_bounds_guards.clone());
                         loop_body.push(N::Block {
                             label: format!("fc{id}"),
                             result: None,
@@ -1758,6 +1714,7 @@ impl<'types> Codegen<'types> {
                         if let Some((_, reset)) = &wm {
                             loop_body.extend(reset.clone());
                         }
+                        loop_body.extend(sequence_cursor_advance.clone());
                     }
                     loop_body.push(N::SetLocal {
                         local: ctr.clone(),
@@ -1781,6 +1738,7 @@ impl<'types> Codegen<'types> {
                             local: var.clone(),
                             value: W::GetLocal(ctr.clone()),
                         });
+                        loop_body.extend(sequence_bounds_guards.clone());
                         loop_body.push(N::Block {
                             label: format!("fc{id}"),
                             result: None,
@@ -1798,6 +1756,7 @@ impl<'types> Codegen<'types> {
                                 cond: Some(cmp(witchy_wir::wir::BinOp::Eq, &ctr, &end)),
                             });
                         }
+                        loop_body.extend(sequence_cursor_advance.clone());
                         loop_body.push(N::SetLocal {
                             local: ctr.clone(),
                             value: W::Binary {
@@ -1814,6 +1773,8 @@ impl<'types> Codegen<'types> {
                     N::SetLocal { local: ctr, value: lo_w },
                     N::SetLocal { local: end, value: hi_w },
                 ];
+                outer.extend(sequence_setup);
+                outer.extend(sequence_cursor_init);
                 if let Some(level) = batch_level {
                     if batch_used.0 {
                         outer.push(N::SetLocal {

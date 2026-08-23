@@ -607,6 +607,17 @@ impl Codegen<'_> {
                 )
             }
             (intrinsics::LIST_LENGTH, 1)
+                if self.collect_wir
+                    && matches!(&args[0], Expr::Var(list) if self.sequence_length(list).is_some()) =>
+            {
+                let Expr::Var(list) = &args[0] else { unreachable!() };
+                Self::wir_convert(
+                    self.sequence_length(list).expect("guarded sequence length"),
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
+            (intrinsics::LIST_LENGTH, 1)
                 | (intrinsics::STRING_LENGTH, 1)
                 | (intrinsics::STRING_LEN, 1)
                 if self.collect_wir =>
@@ -1518,14 +1529,40 @@ impl Codegen<'_> {
                 } else {
                     let ek = self.list_elem_kind(&args[0]);
                     let ik = self.kind_of(&args[1]);
+                    if let Expr::Var(list) = &args[0] {
+                        if let Some(forwarded) = self.take_forwarded_sequence_value(
+                            list,
+                            &args[1],
+                            Self::wir_kind(ek),
+                        ) {
+                            return Some(forwarded);
+                        }
+                    }
                 // (RFC-0034 L2) Bounds-check elision: when the For lowering proved this
                 // exact `list.at(xs, i)` is in range (a registered `(i, xs)` pair), emit
                 // the unchecked element load — `load_i64( (xs + 4) + i*8 )`, the same
                 // address `$list_at` computes, minus the `i < 0 || i >= len` trap guard.
                 // Both args are lowered once either way, so string-offset interning is
                 // identical to the checked path.
-                    let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
+                    let existing_elision = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
+                    let proven_address = match &args[0] {
+                        Expr::Var(list) => self.sequence_element_address(
+                            list,
+                            &args[1],
+                            Self::wir_kind(ek),
+                        ),
+                        _ => None,
+                    };
+                    let planned_address = match &args[0] {
+                        Expr::Var(list) => self.planned_sequence_element_address(
+                            list,
+                            &args[1],
+                            Self::wir_kind(ek),
+                        ),
+                        _ => None,
+                    };
+                    let elide = existing_elision || proven_address.is_some();
                     let list_w = self.lower_expr(&args[0])?;
                 // Lower the index ONCE (it may be a side-effecting call), then widen
                 // to the kind the chosen path needs. The elide path does i32 address
@@ -1538,7 +1575,7 @@ impl Codegen<'_> {
                     let read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;
-                    let addr = W::Binary {
+                    let addr = proven_address.unwrap_or_else(|| W::Binary {
                         op: add,
                         kind: wi32,
                         lhs: Box::new(W::Binary {
@@ -1553,7 +1590,7 @@ impl Codegen<'_> {
                             lhs: Box::new(idx_w),
                             rhs: Box::new(W::ConstI32(8)),
                         }),
-                    };
+                    });
                     W::FromSlot(
                         Box::new(W::Load {
                             ptr: Box::new(addr),
@@ -1569,7 +1606,7 @@ impl Codegen<'_> {
                         use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind};
                         let wi32 = WirKind::I32;
                         let add = WirBinOp::Add;
-                        let addr = W::Binary {
+                        let addr = planned_address.unwrap_or_else(|| W::Binary {
                             op: add,
                             kind: wi32,
                             lhs: Box::new(W::Binary {
@@ -1588,14 +1625,21 @@ impl Codegen<'_> {
                                 }),
                                 rhs: Box::new(W::ConstI32(8)),
                             }),
-                        };
+                        });
                         let len_i64 = W::Convert {
                             from: WirKind::I32,
                             to: WirKind::I64,
-                            arg: Box::new(W::Load {
-                                ptr: Box::new(W::GetLocal(list_tmp.clone())),
-                                kind: WirKind::I32,
-                                offset: 0,
+                            arg: Box::new(match &args[0] {
+                                Expr::Var(list) => self.sequence_length(list).unwrap_or_else(|| W::Load {
+                                    ptr: Box::new(W::GetLocal(list_tmp.clone())),
+                                    kind: WirKind::I32,
+                                    offset: 0,
+                                }),
+                                _ => W::Load {
+                                    ptr: Box::new(W::GetLocal(list_tmp.clone())),
+                                    kind: WirKind::I32,
+                                    offset: 0,
+                                },
                             }),
                         };
                         let oob_check = N::If {

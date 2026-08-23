@@ -45,6 +45,7 @@ mod expr_lower;
 mod match_lower;
 mod block_lower;
 mod header_elision;
+mod indexed_kernels;
 mod specialization;
 mod glamour_metadata;
 mod scalar_executor;
@@ -826,6 +827,12 @@ struct SavedScope {
     closure_elide_called: HashSet<String>,
     closure_elide_reassigned: HashSet<String>,
     elide_index_list: Vec<(String, String)>,
+    /// RFC-0146 loop-scoped sequence plans. A plan exists only while lowering a
+    /// loop whose existing typed bounds proof also proves the owner root stable.
+    /// Indexed reads/writes consume the plan uniformly; no method identity is
+    /// recorded here.
+    sequence_access_plans: Vec<indexed_kernels::SequenceAccessPlan>,
+    sequence_forwarded_values: HashMap<(String, String, i64), String>,
     /// Local first-class references whose referent is a statically recoverable
     /// caller place. The WIR reference descriptor is the cross-backend contract;
     /// this map is the initial forced-copy lowering that materializes its write
@@ -1098,6 +1105,10 @@ struct Codegen<'types> {
     /// push their own pair (a same-named inner loop disqualifies the outer, so a stale
     /// pair never shadows). Empty ⇒ every `list.at` keeps its trap guard.
     elide_index_list: Vec<(String, String)>,
+    /// RFC-0146 loop-scoped sequence plans. A plan exists only while lowering a
+    /// loop whose existing typed bounds proof also proves the owner root stable.
+    sequence_access_plans: Vec<indexed_kernels::SequenceAccessPlan>,
+    sequence_forwarded_values: HashMap<(String, String, i64), String>,
     /// Local first-class references whose referent is a statically recoverable
     /// caller place. The WIR reference descriptor is the cross-backend contract;
     /// this map is the initial forced-copy lowering that materializes its write
@@ -1671,6 +1682,8 @@ impl<'types> Codegen<'types> {
             closure_elide_called: HashSet::new(),
             closure_elide_reassigned: HashSet::new(),
             elide_index_list: Vec::new(),
+            sequence_access_plans: Vec::new(),
+            sequence_forwarded_values: HashMap::new(),
             reference_places: HashMap::new(),
             reference_cells: HashMap::new(),
             view_candidates: HashSet::new(),
@@ -9784,6 +9797,8 @@ impl<'types> Codegen<'types> {
             closure_elide_called: std::mem::take(&mut self.closure_elide_called),
             closure_elide_reassigned: std::mem::take(&mut self.closure_elide_reassigned),
             elide_index_list: std::mem::take(&mut self.elide_index_list),
+            sequence_access_plans: std::mem::take(&mut self.sequence_access_plans),
+            sequence_forwarded_values: std::mem::take(&mut self.sequence_forwarded_values),
             reference_places: std::mem::take(&mut self.reference_places),
             reference_cells: std::mem::take(&mut self.reference_cells),
         }
@@ -9841,6 +9856,8 @@ impl<'types> Codegen<'types> {
         self.closure_elide_called = s.closure_elide_called;
         self.closure_elide_reassigned = s.closure_elide_reassigned;
         self.elide_index_list = s.elide_index_list;
+        self.sequence_access_plans = s.sequence_access_plans;
+        self.sequence_forwarded_values = s.sequence_forwarded_values;
         self.reference_places = s.reference_places;
         self.reference_cells = s.reference_cells;
     }
@@ -10280,8 +10297,8 @@ impl<'types> Codegen<'types> {
             }
             Expr::Block(block) => self.loop_unroll_safe(block),
             Expr::Call { name, args } => {
-                self.emitted_funcs.contains(name)
-                    && !self.locals.contains_key(name)
+                ((self.emitted_funcs.contains(name) && !self.locals.contains_key(name))
+                    || matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::LIST_LENGTH))
                     && args.iter().all(|argument| self.loop_unroll_safe_expr(argument))
             }
             Expr::List(items)
