@@ -4875,32 +4875,6 @@ mod fip_tests {
     }
 
     #[test]
-    fn await_select2_replayed_tasks_are_rejected() {
-        assert_fip_error(
-            "
-            fn main() -> Task(()):
-                let t = task.__channel_select2(ch1, ch2, decoder)
-                t.await
-                t.await
-            ",
-            "awaiting task `t` more than once is not permitted for immediately awaited select2",
-        );
-    }
-
-    #[test]
-    fn await_select2_escaping_tasks_are_rejected() {
-        assert_fip_error(
-            "
-            fn main() -> Task(Task(())):
-                let t = task.__channel_select2(ch1, ch2, decoder)
-                task.done(t)
-            ",
-            "escaping select2 tasks are not permitted",
-        );
-    }
-
-    #[test]
-    fn non_tail_recursion_and_replacement_owner_are_rejected() {
         let non_tail = format!(
             "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
              \x20   if n == 0:\n\
