@@ -5408,6 +5408,13 @@ impl<'types> Codegen<'types> {
     ) -> Vec<LoanRoot> {
         let mut roots = Vec::new();
         for event in events {
+            // RFC-0144 borrowed string views are raw `(ptr, len)` pairs, not
+            // owning substring buffers.  Their lexical loan event is retained
+            // for borrow checking, but there is no rc root to duplicate/drop.
+            // The synthetic length local is the codegen marker for this ABI.
+            if self.locals.contains_key(&format!("{}__slice_len", event.view)) {
+                continue;
+            }
             match Self::loan_root(event) {
                 Ok(Some(root)) => {
                     if !self.loan_root_is_carrier(&root) {
@@ -7800,6 +7807,7 @@ impl<'types> Codegen<'types> {
         args: &[Expr],
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
         // A generic call target is a physical specialization whose ABI retains
         // the checked callable's compatibility state channels. The logical name
         // may also have a callable layout entry, but applying that exact-layout
@@ -7849,17 +7857,33 @@ impl<'types> Codegen<'types> {
                         &producer_access,
                     )?
                 }
-                None => match self.lower_expr(arg) {
-                    Some(value) => value,
-                    None => {
-                        if std::env::var_os("WIRDIAG").is_some() {
-                            eprintln!(
-                                "WIRBAIL user-call-arg: callee={name} index={i} arg={arg:?}"
-                            );
+                None => {
+                    let lowered = match (name == "dict.update_str", i == 1, arg) {
+                        (true, true, Expr::Var(view))
+                            if self.locals.contains_key(&format!("{view}__slice_len")) =>
+                        {
+                            Some(W::Call {
+                                func: "str_view_to_string".into(),
+                                args: vec![
+                                    self.lower_expr(arg)?,
+                                    W::GetLocal(format!("{view}__slice_len")),
+                                ],
+                            })
                         }
-                        return None;
+                        _ => self.lower_expr(arg),
+                    };
+                    match lowered {
+                        Some(value) => value,
+                        None => {
+                            if std::env::var_os("WIRDIAG").is_some() {
+                                eprintln!(
+                                    "WIRBAIL user-call-arg: callee={name} index={i} arg={arg:?}"
+                                );
+                            }
+                            return None;
+                        }
                     }
-                },
+                }
             };
             args_w.push(match param_kinds.get(i) {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
@@ -8343,6 +8367,31 @@ impl<'types> Codegen<'types> {
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        // The physical `var` specialization of `dict.update_str` must retain
+        // the borrowed `(ptr, len)` ABI.  Falling through to the ordinary
+        // string specialization would interpret the pointer as an owning
+        // `[len][bytes]` object (and trap in the hash probe).
+        if name.starts_with("dict.update_str")
+            && args.len() == 4
+            && let Expr::Var(view) = &args[1]
+            && self.locals.contains_key(&format!("{view}__slice_len"))
+            && let Expr::Var(root) = &args[0]
+        {
+            let d = self.lower_expr(&args[0])?;
+            let ptr = self.lower_expr(&args[1])?;
+            let len = W::GetLocal(format!("{view}__slice_len"));
+            let default = self.lower_expr(&args[2])?;
+            let clos = self.lower_expr(&args[3])?;
+            let cap = W::GetLocal(format!("{root}__cap"));
+            return Some(W::Seq(vec![
+                N::CallStoreMulti {
+                    func: "dict_update_slice_cap".into(),
+                    args: vec![d, ptr, len, default, clos, cap],
+                    dests: vec![root.clone(), format!("{root}__cap")],
+                },
+                N::Push(W::ConstI32(0)),
+            ]));
+        }
         let physical_name = emitted_name.strip_suffix("$repair").unwrap_or(emitted_name);
         let ownership = if physical_name != name {
             Self::ownership_envelope_for_signature(access)
@@ -8401,7 +8450,18 @@ impl<'types> Codegen<'types> {
                     W::Seq(prelude)
                 }
             } else {
-                self.lower_expr(arg)?
+                if name == "dict.update_str"
+                    && i == 1
+                    && let Expr::Var(view) = arg
+                    && self.locals.contains_key(&format!("{view}__slice_len"))
+                {
+                    W::Call {
+                        func: "str_view_to_string".into(),
+                        args: vec![self.lower_expr(arg)?, W::GetLocal(format!("{view}__slice_len"))],
+                    }
+                } else {
+                    self.lower_expr(arg)?
+                }
             };
             args_w.push(match param_kinds.get(i) {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
