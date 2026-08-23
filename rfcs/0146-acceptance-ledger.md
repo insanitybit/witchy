@@ -23,9 +23,9 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 
 | Track | State | Baseline artifact | Profile and counters | Focused checks | Protected workloads | Branch | Terminal queue evidence |
 |---|---|---|---|---|---|---|---|
-| 0 measurement integrity | locally verified | `/tmp/rfc0146-track0-quick-all.json` (`sha256:5a8e32f1bc12665170542503be0c23405b3b08137d23e67910172cb35bf4f85a`) | `stats::tests::deterministic_counters_repeat_exactly`; profile not applicable to harness correctness | 54-test `stats::tests` shard; five focused Python integrity tests; 17-result quick sweep | all 17 benchmark results | `fix/bench-stale-binary` | pending submission |
+| 0 measurement integrity | merged | `/tmp/rfc0146-track0-quick-all.json` (`sha256:5a8e32f1bc12665170542503be0c23405b3b08137d23e67910172cb35bf4f85a`) | `stats::tests::deterministic_counters_repeat_exactly`; profile not applicable to harness correctness | 54-test `stats::tests` shard; five focused Python integrity tests; 17-result quick sweep | all 17 benchmark results | `fix/rfc0146-causal-integration` | merged as `dd7cb6f3c53db37d552dc6f05a4231b5cecf23b8` at `2026-08-23T06:20:49Z`; journal line 8567 and gate log `state/merge-queue/logs/20260823-021554-fix~rfc0146-causal-integration-74028-32.log` |
 | 1 awaited select fusion | not started | pending | pending | pending | `select_fanin`, `chan_throughput` | pending | pending |
-| 2 sequence plans | not started | pending | pending | pending | `fannkuch`, `list_index`, `list_sum`, `binary_trees` | pending | pending |
+| 2 sequence plans | locally accepted | schema 1 artifact `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track2-f77e84f-21c6a9e1/acceptance-f77-schema1.json` (`sha256:ab3ca448d25476cbac1123d5d5a483aec77fb34d19fddfed601b8407ea9fad83`) | pre-change Samply capture plus integrated raw-WAT reconciliation; three exact counter payloads (`sha256:5152cd4a5c07e10ff204828e2b44b492b097c2bd6d1b22ba504acc8f73813744`) | sequence-plan correctness/trap/deopt/WAT tests, exact stats fixture, runtime policy tests, and differential golden output | shipping: `fannkuch` +21.677796%, `list_index` +37.426176%, `list_sum` +5.651316%, `binary_trees` +0.464728% | `impl/rfc0146-track2`; implementation `21c6a9e1`, measured source `9a7b607d` on baseline `f77e84f` | pending submission |
 | 3 WIR inlining | not started | pending | pending | pending | `closure_calls`, `expr_eval`, `binary_trees` | pending | pending |
 | 4 strength reduction | independently owned | pending | pending | pending | `collatz`, `loop_sum`, `mandelbrot`, `expr_eval` | `impl/rfc0146-track4-range` | pending |
 | 5 recursive inlining | not started | pending | pending | pending | `fib`, `binary_trees`, `expr_eval` | pending | pending |
@@ -44,6 +44,24 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | Fixed-arena-aware memory assertions | all heap ratios compare workload deltas; fixed-memory fixtures compare two sizes with a 64-byte tolerance | locally verified |
 | Deterministic counters | three complete `Stats` values agree exactly | locally verified |
 | Result correctness | `taskpolicy -c utility ./bench.sh --quick --json /tmp/rfc0146-track0-quick-all.json`: 17/17, artifact hash `5a8e32f1bc12665170542503be0c23405b3b08137d23e67910172cb35bf4f85a` | locally verified |
+| Merge queue | terminal journal event at line 8567; gate log `state/merge-queue/logs/20260823-021554-fix~rfc0146-causal-integration-74028-32.log` records the complete seven-stage gate | merged as `dd7cb6f3c53db37d552dc6f05a4231b5cecf23b8` at `2026-08-23T06:20:49Z` |
+
+## Track 2 acceptance detail
+
+| Requirement | Evidence | State |
+|---|---|---|
+| Stable sequence plan contract | plans carry root, payload base, length, data offset, stride, element kind, proven domains, cursors, and conservative invalidation; nested plans reuse only matching initialized ancestor metadata | locally verified |
+| Header and length elimination | parent stable-root metadata reuse and in-plan `list.length` consumption reduce the final `fannkuch` dynamic `list_header_loads` count from 45,822,974 to 3 | locally verified |
+| Bounds-check coalescing | exact affine domains and structural counted-builder provenance coalesce 9,864,090 checks in `fannkuch`; reassigned/opaque bounds, disabled bounds elision, shadowing, overflow, and root mutation remain guarded | locally verified |
+| Pointer cursorization | final `fannkuch` evidence records 338,344,833 cursorized indexed accesses; WAT retains exact traps for negative, out-of-range, and affine-overflow cases | locally verified |
+| Safe load/store forwarding | same-root and same-affine-address forwarding records 6,235,300 dynamic loads; calls, distinct roots/offsets, conditional stores, merges, and invalidated plans decline | locally verified |
+| Small constant-trip unrolling | cost-budgeted existing unroll is consumed only by an active sequence plan; the protected `fannkuch` fixture correctly records zero dynamic unrolls | locally verified |
+| Backend policy | versioned `witchy.optimizer-policy` is set transactionally only when a plan is consumed; runtime parsing is fail-closed and cache identity includes the policy | locally verified |
+| Production instrumentation isolation | production code emits neither counter globals nor placeholder `const/drop` WIR; stats mode batches deterministic loop-local counts | locally verified |
+| Counter repeatability | three byte-identical deterministic `fannkuch` payloads each have `sha256:5152cd4a5c07e10ff204828e2b44b492b097c2bd6d1b22ba504acc8f73813744` | accepted |
+| Promotion sampling | two warmups and twelve paired, interleaved samples for shipping and raw modes; schema 1 identity includes both source revisions, binary hashes, configurations, samples, median, range, MAD, deterministic 10,000-resample bootstrap interval, and correctness hashes | accepted |
+| Shipping performance | integrated medians: `fannkuch` 180.700 to 141.529 ms (+21.677796%); `list_index` 4.540 to 2.841 ms (+37.426176%); `list_sum` 8.309 to 7.839 ms (+5.651316%); `binary_trees` 52.006 to 51.765 ms (+0.464728%) | accepted |
+| External retention | `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track2-f77e84f-21c6a9e1`; bundle `SHA256SUMS` file hash `fdc6301c74b1224323fb9cac4f3d3f43ee730e891e78440abe718e2b7edd2033` | accepted |
 | Merge queue | terminal merged event and landed commit | pending submission |
 
 ## External artifact retention
@@ -62,3 +80,26 @@ path. The ledger records summaries and hashes, not machine-specific raw data.
 - `python3` artifact invariant check: complete suite, seventeen records, matching
   output hashes, one positive sample per kernel benchmark, and the declared
   wall-only exception.
+
+## Track 2 local verification
+
+- `state/agents/rfc0146-track2/acceptance-f77-schema1.json` is the source
+  identity artifact for baseline `f77e84f87fb6af4f615453b7ce88ae7269ffb9d3`
+  and measured candidate `9a7b607d308acf47878a0be7310f140153062b45`;
+  its retained external copy has
+  `sha256:ab3ca448d25476cbac1123d5d5a483aec77fb34d19fddfed601b8407ea9fad83`.
+- `state/agents/rfc0146-track2/acceptance-f77-shipping.tsv` has
+  `sha256:3c4d64c2eb406683d5a4d61dab59f6e2103029b4d4ccfe80df4ac45039230957`;
+  the raw control has
+  `sha256:0d42b83076654c48da4bfa40fa45865902ddf09ac5b9a3e288e0f134ab957679`.
+- Integrated raw WAT has
+  `sha256:c244c0895b4eca3a739f867244426ff3e09dae80bddcb61ffa22dd45a713709f`.
+- The retained pre-change Samply capture has unsymbolized Wasmtime JIT PCs;
+  generated-WAT reconciliation and exact dynamic counters provide the
+  mechanism-level attribution.
+- Three exact counter repetitions agree on `list_header_loads=3`,
+  `checked_indexed_loads=6235300`, `checked_indexed_stores=15077101`,
+  `cursorized_indexed_accesses=338344833`,
+  `sequence_bounds_checks_coalesced=9864090`,
+  `sequence_forwarded_loads=6235300`, and
+  `sequence_small_loops_unrolled=0`.
