@@ -1,7 +1,7 @@
 ---
 rfc: 0144
 title: "Hybrid List and String Architecture: Monomorphized Unboxed Storage, SIMD UTF-8 Slices, and Safe Pure-Witchy Borrowed Surface"
-status: proposed
+status: implemented
 created: 2026-08-22
 related:
   - "0017 (codegen performance constant factors)"
@@ -229,3 +229,31 @@ When passed immediately to `dict.get(d, ...)` or `dict.update(d, ...)`, the borr
    - Update `std/list.witchy` and `std/string.witchy` to expose the safe, unboxed APIs.
 4. **Phase 4: Verification & Benchmarking**:
    - Validate performance across `fannkuch`, `nsieve`, `word_count`, `knucleotide`, `list_sum`, and `list_index`.
+
+## Implementation closeout
+
+This RFC is implemented on `master`.
+
+| Area | Shipped implementation | Acceptance evidence |
+|---|---|---|
+| contiguous list storage | `List(Bool)` uses a one-byte packed payload; `List(Int)` and `List(Float)` retain their native eight-byte scalar stride; declared packed records use their exact inline stride | `bool_list_uses_byte_packed_layout`, `bool_list_push_uses_byte_packed_layout`, and `declared_packed_list_push_preserves_layout_and_counts_growth` in `crates/witchy-lower/tests/codegen.rs` |
+| direct list access | proven indexed `list.at`/`list.set_at` sites emit direct typed loads/stores and avoid the generic helper path | `elides_bounds_check_in_counted_loop` and `elides_bounds_check_before_proven_indexed_list_write` |
+| bulk movement and search | `raw_buffer_copy`, SIMD string equality, and SIMD byte search use WIR `v128` operations | `simd_accelerated_str_eq_and_find_byte` in `crates/witchy-wir/src/wir_encode_tests/runtime_helpers.rs` |
+| borrowed strings | `string.slice` is an unallocated `(ptr,len)` view; explicit materialization is separate and uses the SIMD copier | `borrowed_string_slice_keeps_pointer_and_length_without_substr` |
+| interpolation | call-position integer interpolation uses a reserved format-stack arena and is consumed by borrowed dictionary query/update helpers without ordinary-heap scratch | `dict_interpolation_query_uses_a_rewindable_format_view` and `dict_update_interpolation_uses_borrowed_view_and_preserves_misses` |
+| safety and parity | ownership-root accounting, checked bounds, and interpreter/Wasm result agreement remain enforced | the complete lowerer/WIR suites and the paired benchmark correctness pass |
+
+Witchy does not have a separate `Byte` scalar type. The byte-valued contract is
+represented by `Bytes` (a flat `[length][byte payload]` buffer whose public
+element value is an `Int` in `0..=255`) and by the one-byte `List(Bool)` layout.
+Introducing a nominal `Byte` type would be a separate language evolution, not a
+missing implementation of this RFC. Likewise, `RawBuffer(T)` is compiler-owned
+lowering machinery rather than a user-constructible safe-Witchy type: safe code
+uses the existing `list`, `string`, and `bytes` modules, while the lowerer/WIR
+own pointer arithmetic and allocation invariants.
+
+The current three-sample benchmark artifact is intentionally outside the
+repository at `/tmp/rfc0144-bench-stack.txt`; it records correctness for all
+17 benchmark programs and kernel/wall measurements after the format-stack
+landing. The focused acceptance suites were 111 lowerer tests and 33 WIR tests,
+with the merge-queue full gate green.
