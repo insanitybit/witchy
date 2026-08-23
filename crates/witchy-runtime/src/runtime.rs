@@ -209,12 +209,17 @@ fn optimized_wasm_input_hash(wasm: &[u8], binaryen_version: &[u8]) -> [u8; 32] {
     digest.finalize().into()
 }
 
-fn binaryen_version() -> Option<Vec<u8>> {
-    let output = std::process::Command::new("wasm-opt")
-        .arg("--version")
-        .output()
-        .ok()?;
-    output.status.success().then_some(output.stdout)
+fn binaryen_version() -> Option<&'static [u8]> {
+    static VERSION: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let output = std::process::Command::new("wasm-opt")
+                .arg("--version")
+                .output()
+                .ok()?;
+            output.status.success().then_some(output.stdout)
+        })
+        .as_deref()
 }
 
 /// Bind cached optimized wasm to both its original input and its own contents.
@@ -325,12 +330,9 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
     }
     let binaryen_version = binaryen_enabled().then(binaryen_version).flatten();
     let input_hash = binaryen_version
-        .as_deref()
         .map(|version| optimized_wasm_input_hash(opt_wasm, version))
         .unwrap_or_else(|| sha256(opt_wasm));
-    let path = binaryen_version
-        .as_ref()
-        .and_then(|_| optimized_wasm_cache_path(&input_hash));
+    let path = binaryen_version.and_then(|_| optimized_wasm_cache_path(&input_hash));
     if let Some(path) = &path {
         if let Ok(envelope) = std::fs::read(path) {
             if let Some(cached_wasm) = decode_optimized_wasm(&input_hash, &envelope) {
