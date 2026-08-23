@@ -28,7 +28,7 @@ const LOAN_SCHEMA: &[&str] = &[
 ];
 
 const RUNTIME_SCHEMA: &[&str] = &[
-    "heap_bytes",
+    "workload_heap_bytes",
     "reowns",
     "indirect_ownership_calls",
     "boundary_reown_copies",
@@ -41,6 +41,8 @@ const RUNTIME_SCHEMA: &[&str] = &[
     "rc_free_calls",
     "live_cells",
 ];
+
+const FORMAT_ARENA_BYTES: i64 = 8 * 1024;
 
 fn run(optimizations: OptSet) -> Stats {
     opt::set_for_tests(Some(optimizations));
@@ -73,8 +75,12 @@ fn metric_row(stats: &Stats) -> Vec<i64> {
 }
 
 fn runtime_row(stats: &Stats) -> Vec<i64> {
+    assert!(
+        stats.heap_bytes >= FORMAT_ARENA_BYTES,
+        "formatted telemetry must include the fixed format arena"
+    );
     vec![
-        stats.heap_bytes,
+        stats.heap_bytes - FORMAT_ARENA_BYTES,
         stats.reowns,
         stats.indirect_ownership_calls,
         stats.boundary_reown_copies,
@@ -114,6 +120,8 @@ fn reference_return_telemetry_corpus_pins_schema_and_copy_parity() {
     assert!(EXPECTED.contains(&format!("runtime_schema={}", RUNTIME_SCHEMA.join(","))));
     assert!(EXPECTED.contains("optimized.runtime=110,0,0,0,0,0,0,5,5,0,0,5"));
     assert!(EXPECTED.contains("forced_copy.runtime=110,0,0,0,0,0,0,5,5,0,0,5"));
+    assert_eq!(optimized.heap_bytes, FORMAT_ARENA_BYTES + 110);
+    assert_eq!(forced_copy.heap_bytes, FORMAT_ARENA_BYTES + 110);
     assert_eq!(optimized_runtime, [110, 0, 0, 0, 0, 0, 0, 5, 5, 0, 0, 5]);
     assert_eq!(forced_copy_runtime, optimized_runtime);
     assert_eq!(
@@ -155,6 +163,8 @@ fn aggregate_reference_telemetry_corpus_pins_schema_and_copy_parity() {
     assert!(LIST_EXPECTED.contains(&format!("runtime_schema={}", RUNTIME_SCHEMA.join(","))));
     assert!(LIST_EXPECTED.contains("optimized.runtime=157,0,0,0,0,0,0,4,4,0,0,4"));
     assert!(LIST_EXPECTED.contains("forced_copy.runtime=157,0,0,0,0,0,0,4,4,0,0,4"));
+    assert_eq!(optimized.heap_bytes, FORMAT_ARENA_BYTES + 157);
+    assert_eq!(forced_copy.heap_bytes, FORMAT_ARENA_BYTES + 157);
     assert_eq!(optimized_runtime, [157, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 4]);
     assert_eq!(forced_copy_runtime, optimized_runtime);
     assert_eq!(forced_copy_row, optimized_row, "forced-copy lowering must retain the same source loan facts");

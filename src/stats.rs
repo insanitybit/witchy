@@ -206,6 +206,29 @@ mod tests {
     use super::*;
     use witchy_syntax::opt::{self, Opt, OptSet};
 
+    // RFC-0144 reserves this arena once per compiled module. `heap_bytes` is a
+    // high-water frontier, so comparisons about workload growth must remove the
+    // fixed component instead of weakening ratios until they happen to pass.
+    const FORMAT_ARENA_BYTES: i64 = 8 * 1024;
+
+    fn workload_heap_bytes(stats: &Stats) -> i64 {
+        assert!(
+            stats.heap_bytes >= FORMAT_ARENA_BYTES,
+            "formatted workload heap must include the fixed format arena: {}",
+            stats.heap_bytes
+        );
+        stats.heap_bytes - FORMAT_ARENA_BYTES
+    }
+
+    fn assert_bounded_workload_growth(small: &Stats, large: &Stats, tolerance: i64, label: &str) {
+        let small_workload = workload_heap_bytes(small);
+        let large_workload = workload_heap_bytes(large);
+        assert!(
+            large_workload <= small_workload + tolerance,
+            "{label}: workload heap grew beyond tolerance: small={small_workload}, large={large_workload}, tolerance={tolerance}"
+        );
+    }
+
     #[test]
     fn timed_stats_keep_durations_separate_from_deterministic_counters() {
         let timed = compute_timed("fn main(console: Console):\n    console.print(\"ok\")\n")
@@ -240,6 +263,40 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_counters_repeat_exactly() {
+        const SOURCE: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 64:\n        xs.push(i)\n        i = i + 1\n    console.print(\"${xs.length()}\")\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let first = compute(SOURCE).expect("first deterministic counter run");
+        let second = compute(SOURCE).expect("second deterministic counter run");
+        let third = compute(SOURCE).expect("third deterministic counter run");
+        opt::set_for_tests(None);
+        assert_eq!(first.output, ["64"]);
+        assert_eq!(first, second, "counter run one and two must agree exactly");
+        assert_eq!(second, third, "counter run two and three must agree exactly");
+    }
+
+    #[test]
+    fn format_arena_is_one_fixed_reservation() {
+        const MINIMAL_FORMAT_WORKLOAD_BYTES: i64 = 44;
+        const DIRECT: &str = "fn identity(s: String) -> String:\n    s\nfn main(console: Console):\n    console.print(identity(\"\"))\n";
+        const FORMATTED: &str = "fn identity(s: String) -> String:\n    s\nfn main(console: Console):\n    console.print(\"${identity(\"\")}\")\n";
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Fold)));
+        let direct = compute(DIRECT).expect("minimal direct-string control");
+        let formatted = compute(FORMATTED).expect("minimal format-arena control");
+        opt::set_for_tests(None);
+        assert_eq!(direct.output, formatted.output);
+        assert_eq!(direct.output, [""]);
+        assert_eq!(direct.heap_bytes, 0, "the no-format control must reserve no arena");
+        assert_eq!(
+            formatted.heap_bytes,
+            FORMAT_ARENA_BYTES + MINIMAL_FORMAT_WORKLOAD_BYTES,
+            "the minimal formatting control must contain one fixed arena plus its separately pinned workload bytes: direct={}, formatted={}",
+            direct.heap_bytes,
+            formatted.heap_bytes,
+        );
+    }
+
+    #[test]
     fn reference_stats_include_checked_loan_fact_totals() {
         let stats = compute(
             "mode opt\n\nfn first(text: &'a String) -> &'a String:\n    text\n\nfn main(console: Console):\n    var text = \"value\"\n    let view = first(&text)\n    console.print(*view)\n",
@@ -262,7 +319,9 @@ mod tests {
     // A soak loop: per-iteration scratch that never escapes. The `region`
     // (loop-watermark) reclaim resets the arena each iteration, so heap stays
     // CONSTANT no matter how many iterations; with it off the same program leaks.
-    const SOAK: &str = "fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < 5000:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    console.print(\"${sum}\")\n";
+    fn soak(iterations: usize) -> String {
+        format!("fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < {iterations}:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    console.print(\"${{sum}}\")\n")
+    }
 
     fn fip_kernel(steps: usize) -> String {
         format!(
@@ -414,7 +473,7 @@ mod tests {
         assert!(on.reowns <= 2, "in-place accumulation barely re-owns: {}", on.reowns);
         // The allocation proof: in-place is O(n) where forced-copy is O(n^2).
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "forced-copy must allocate far more heap: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -453,7 +512,7 @@ mod tests {
             off.extract_copied_bytes
         );
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "forced-copy extraction must allocate materially more: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -855,7 +914,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "in-place must not change output");
         assert_eq!(on.output, vec!["400".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "forced-copy reallocs a record per field update: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -878,7 +937,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "own-ABI threading must not change output");
         assert_eq!(on.output, vec!["400".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "own-ABI must thread the record in place across the call: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -902,7 +961,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "in-place field push must not change output");
         assert_eq!(on.output, vec!["200".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "forced-copy reallocs the field list per push: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -916,22 +975,24 @@ fn main(console: Console):
     #[test]
     fn region_reclaim_keeps_soak_bounded() {
         opt::set_for_tests(Some(OptSet::default_set()));
-        let on = compute(SOAK).expect("compute with region on");
+        let small = compute(&soak(500)).expect("compute small with region on");
+        let large = compute(&soak(5000)).expect("compute large with region on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
-        let off = compute(SOAK).expect("compute with region off");
+        let off = compute(&soak(5000)).expect("compute large with region off");
         opt::set_for_tests(None);
 
-        assert_eq!(on.output, off.output, "the optimization must not change output");
-        assert_eq!(on.output, vec!["20000".to_string()]);
-        assert_eq!(on.region_rewind_calls, 5000, "one rewind per completed iteration");
+        assert_eq!(large.output, off.output, "the optimization must not change output");
+        assert_eq!(small.output, vec!["2000".to_string()]);
+        assert_eq!(large.output, vec!["20000".to_string()]);
+        assert_eq!(small.region_rewind_calls, 500, "one rewind per completed iteration");
+        assert_eq!(large.region_rewind_calls, 5000, "one rewind per completed iteration");
         assert_eq!(off.region_rewind_calls, 0, "disabled region lowering emits no rewinds");
-        // Bounded heap regardless of iteration count — the never-OOM floor.
-        assert!(on.heap_bytes < 4096, "region reclaim must bound the soak heap: {}", on.heap_bytes);
+        assert_bounded_workload_growth(&small, &large, 64, "region reclaim must bound the soak heap");
         // ... and far below the leaking build.
         assert!(
-            off.heap_bytes > on.heap_bytes * 10,
+            workload_heap_bytes(&off) > workload_heap_bytes(&large) * 10,
             "without region the soak leaks O(n): on={} off={}",
-            on.heap_bytes,
+            large.heap_bytes,
             off.heap_bytes
         );
     }
@@ -1111,15 +1172,10 @@ fn main(console: Console):
         assert_eq!(big.output, vec!["3".to_string()]);
         // Bounded: after the buffer ratchets to length 3 (one realloc), every further
         // iteration reuses it — so 6× the iterations is ~the same heap.
-        assert!(
-            big.heap_bytes < small.heap_bytes * 2,
-            "capacity-resizing reuse must bound the loop: n=500 heap={}, n=3000 heap={}",
-            small.heap_bytes,
-            big.heap_bytes
-        );
+        assert_bounded_workload_growth(&small, &big, 64, "capacity-resizing reuse must bound the loop");
         // ... and far below the leaking (rc-elide off) build.
         assert!(
-            off_big.heap_bytes > big.heap_bytes * 2,
+            workload_heap_bytes(&off_big) > workload_heap_bytes(&big) * 2,
             "without rc-elide the non-uniform loop leaks O(n): on={} off={}",
             big.heap_bytes,
             off_big.heap_bytes
@@ -1151,15 +1207,10 @@ fn main(console: Console):
         assert_eq!(on_big.output, off_big.output, "rc-elide must not change output");
         assert_eq!(on_big.output, vec![(2 * 3000 + 3).to_string()]);
         // Bounded: 6× the iterations is ~the same heap with reuse on.
-        assert!(
-            on_big.heap_bytes < on_small.heap_bytes * 2,
-            "rc-elide must bound the build-and-drop loop: n=500 heap={}, n=3000 heap={}",
-            on_small.heap_bytes,
-            on_big.heap_bytes
-        );
+        assert_bounded_workload_growth(&on_small, &on_big, 64, "rc-elide must bound the build-and-drop loop");
         // ... and far below the leaking (rc-elide off) build at the same count.
         assert!(
-            off_big.heap_bytes > on_big.heap_bytes * 2,
+            workload_heap_bytes(&off_big) > workload_heap_bytes(&on_big) * 2,
             "without rc-elide the same loop leaks O(n): on={} off={}",
             on_big.heap_bytes,
             off_big.heap_bytes
@@ -1187,14 +1238,9 @@ fn main(console: Console):
         // last iter p = Point(n-1, (n-1)*2); x+y = (n-1)*3.
         assert_eq!(on_big.output, off_big.output, "rc-elide must not change output");
         assert_eq!(on_big.output, vec![((3000 - 1) * 3).to_string()]);
+        assert_bounded_workload_growth(&on_small, &on_big, 64, "record reuse must bound the loop");
         assert!(
-            on_big.heap_bytes < on_small.heap_bytes * 2,
-            "record reuse must bound the loop: n=500 heap={}, n=3000 heap={}",
-            on_small.heap_bytes,
-            on_big.heap_bytes
-        );
-        assert!(
-            off_big.heap_bytes > on_big.heap_bytes * 2,
+            workload_heap_bytes(&off_big) > workload_heap_bytes(&on_big) * 2,
             "without rc-elide the record loop leaks O(n): on={} off={}",
             on_big.heap_bytes,
             off_big.heap_bytes
@@ -1224,13 +1270,7 @@ fn main(console: Console):
         // 6× the iterations over the same 8 keys → ~constant heap (in-place reuse),
         // unlike the escaping-reassignment leak. This is the never-OOM property
         // HOLDING for the bounded-working-set case.
-        assert!(
-            big.heap_bytes < small.heap_bytes * 2,
-            "bounded-keyset dict cache must stay bounded (in-place), but heap scaled \
-             with iterations: n=500 heap={}, n=3000 heap={}",
-            small.heap_bytes,
-            big.heap_bytes
-        );
+        assert_bounded_workload_growth(&small, &big, 64, "bounded-keyset dict cache must stay bounded");
     }
 
     /// RFC-0016 never-OOM RESIDUAL (the pin the per-object RC floor must clear): a
@@ -1273,7 +1313,7 @@ fn main(console: Console):
         }
         // OFF: the pinned leak still holds (the lever is doing real work, not a no-op).
         assert!(
-            big_off.heap_bytes > small_off.heap_bytes * 3,
+            workload_heap_bytes(&big_off) > workload_heap_bytes(&small_off) * 3,
             "without rc-floor the eviction garbage must still leak O(n): \
              n=500 heap={}, n=3000 heap={}",
             small_off.heap_bytes,
@@ -1281,13 +1321,7 @@ fn main(console: Console):
         );
         // ON: bounded — 6× the iterations stays within ~2× the heap (mirroring the
         // bounded-keyset pin), proving the floor reclaims the escaping garbage.
-        assert!(
-            big_on.heap_bytes < small_on.heap_bytes * 2,
-            "rc-floor must bound the eviction loop, but heap scaled with iterations: \
-             n=500 heap={}, n=3000 heap={}",
-            small_on.heap_bytes,
-            big_on.heap_bytes
-        );
+        assert_bounded_workload_growth(&small_on, &big_on, 64, "rc-floor must bound the eviction loop");
         // DoD counter (b): the `__rc_reused_bytes` stats counter PROVES the floor
         // fired — OFF it never reclaims (0), ON it recycles bytes that scale with
         // iteration count (every freed buffer is reused by the next allocation).
@@ -1327,17 +1361,12 @@ fn main(console: Console):
             assert_eq!(r.output, vec!["25".to_string()], "transform preserves length");
         }
         assert!(
-            big_off.heap_bytes > small_off.heap_bytes * 3,
+            workload_heap_bytes(&big_off) > workload_heap_bytes(&small_off) * 3,
             "without rc-floor the string churn must leak O(n): n=500 {}, n=3000 {}",
             small_off.heap_bytes,
             big_off.heap_bytes
         );
-        assert!(
-            big_on.heap_bytes < small_on.heap_bytes * 2,
-            "rc-floor must bound the string churn: n=500 {}, n=3000 {}",
-            small_on.heap_bytes,
-            big_on.heap_bytes
-        );
+        assert_bounded_workload_growth(&small_on, &big_on, 64, "rc-floor must bound string churn");
         assert_eq!(big_off.rc_reused_bytes, 0, "rc-floor off must not reclaim");
         assert!(big_on.rc_reused_bytes > 0, "rc-floor must reclaim string buffers");
     }
@@ -1558,7 +1587,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "for var output must not depend on the optimization");
         assert_eq!(on.output, vec!["1".to_string(), "300".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 2,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 2,
             "for var write-back must use the in-place path: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -1594,7 +1623,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output);
         assert_eq!(on.output, vec!["300".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 2,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 2,
             "push statement must use the in-place path: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -1631,7 +1660,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "SROA must not change output");
         assert_eq!(on.output, vec!["90000".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "SROA must remove the per-iteration record alloc: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -1652,7 +1681,7 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "mutable-record SROA must not change output");
         assert_eq!(on.output, vec!["135450".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
             "mutable-record SROA must remove the per-iteration alloc: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
@@ -1674,8 +1703,8 @@ fn main(console: Console):
         assert_eq!(on.output, off.output, "fold must not change output");
         assert_eq!(on.output, vec!["5400".to_string()]);
         assert!(
-            off.heap_bytes > on.heap_bytes * 4,
-            "fold must elide constant-concat allocations: on={} off={}",
+            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
+            "fold must elide constant-concat allocations by 4x: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
         );
@@ -1687,15 +1716,18 @@ fn main(console: Console):
     /// regardless of iteration count. 5000 iterations stay under a tiny budget.
     #[test]
     fn never_oom_long_loop_stays_bounded() {
-        let src = "fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + \"${n}\".length()\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 5000:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(\"${total}\")\n";
+        let source = |iterations: usize| format!("fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + \"${{n}}\".length()\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < {iterations}:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(\"${{total}}\")\n");
         opt::set_for_tests(Some(OptSet::default_set()));
-        let s = compute(src).expect("compute");
+        let small = compute(&source(500)).expect("compute 500 iterations");
+        let large = compute(&source(5000)).expect("compute 5000 iterations");
         opt::set_for_tests(None);
-        assert_eq!(s.output, vec!["43890".to_string()]);
-        assert!(
-            s.heap_bytes < 4096,
-            "never-OOM: 5000 iterations must stay in bounded heap, got {}",
-            s.heap_bytes
+        assert_eq!(small.output, vec!["3890".to_string()]);
+        assert_eq!(large.output, vec!["43890".to_string()]);
+        assert_bounded_workload_growth(
+            &small,
+            &large,
+            64,
+            "never-OOM scratch loop must remain bounded",
         );
     }
 
