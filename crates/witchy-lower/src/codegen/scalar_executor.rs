@@ -444,6 +444,45 @@ fn visit_expr<'a>(expression: &'a E, visitor: &mut impl FnMut(&'a E)) {
     }
 }
 
+/// Conservative proof used by the future Select2 lane-transfer emitter.  An
+/// arm continuation may only contain local lane writes, integer expressions,
+/// structured control flow, and branches.  Calls (including indirect calls),
+/// stores, allocation-producing expressions, and host effects are rejected so
+/// the ordinary Task/Step scheduler remains the fallback.
+#[allow(dead_code)]
+fn scalar_lane_update_sequence(sequence: &[N]) -> bool {
+    sequence.iter().all(|node| match node {
+        N::Source { body, .. } | N::Block { body, .. } | N::Loop { body, .. } => {
+            scalar_lane_update_sequence(body)
+        }
+        N::SetLocal { value, .. } | N::Drop(value) | N::Do(value) | N::Push(value) => {
+            scalar_lane_update_expression(value)
+        }
+        N::If { cond, then_, els, .. } => {
+            scalar_lane_update_expression(cond)
+                && scalar_lane_update_sequence(then_)
+                && scalar_lane_update_sequence(els)
+        }
+        N::Br { cond, .. } => cond.as_ref().is_none_or(scalar_lane_update_expression),
+        N::Unreachable => true,
+        _ => false,
+    })
+}
+
+#[allow(dead_code)]
+fn scalar_lane_update_expression(expression: &E) -> bool {
+    match expression {
+        E::ConstI32(_) | E::ConstI64(_) | E::ConstF64(_) | E::GetLocal(_) => true,
+        E::Binary { lhs, rhs, .. } => {
+            scalar_lane_update_expression(lhs) && scalar_lane_update_expression(rhs)
+        }
+        E::Unary { arg, .. } | E::Convert { arg, .. } => scalar_lane_update_expression(arg),
+        E::Seq(sequence) => scalar_lane_update_sequence(sequence),
+        E::Control(node) => scalar_lane_update_sequence(std::slice::from_ref(node.as_ref())),
+        _ => false,
+    }
+}
+
 fn call_family(name: &str, family: &str) -> bool {
     name == family
         || name.strip_prefix(family).is_some_and(|suffix| suffix.starts_with("__"))
@@ -480,4 +519,32 @@ fn set_i64(name: &str, value: i64) -> N {
 
 fn binary(op: BinOp, kind: Kind, lhs: E, rhs: E) -> E {
     E::Binary { op, kind, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalar_lane_transfer_accepts_local_integer_updates() {
+        let body = vec![N::SetLocal {
+            local: "checksum".into(),
+            value: binary(
+                BinOp::Add,
+                Kind::I64,
+                E::GetLocal("checksum".into()),
+                E::GetLocal("payload".into()),
+            ),
+        }];
+        assert!(scalar_lane_update_sequence(&body));
+    }
+
+    #[test]
+    fn scalar_lane_transfer_rejects_calls_and_effects() {
+        let body = vec![N::Do(E::Call {
+            func: "task.and_then".into(),
+            args: Vec::new(),
+        })];
+        assert!(!scalar_lane_update_sequence(&body));
+    }
 }
