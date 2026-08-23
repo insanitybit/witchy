@@ -19,13 +19,14 @@ use crate::{codegen, parser, typeck};
     }
 
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
-    /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
-    /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the
-    /// new list — a redundant `ToSlot(FromSlot(..))` the pass removes. The
-    /// optimized binary still runs identically to the interpreter oracle.
+    /// real lowered program. The user-callable boundary keeps `List(Bool)` on
+    /// the uniform-slot ABI, so `[list.at(xs, 0)]` reads an i64 slot, narrows it
+    /// to the bool's i32, then re-widens it to store in the new list — a
+    /// redundant `ToSlot(FromSlot(..))` the pass removes. The optimized binary
+    /// still runs identically to the interpreter oracle.
     #[test]
     fn wir_slot_elimination_shows_measurable_improvement() {
-        let src = "fn main(console: Console):\n    let xs = [true, false]\n    let ys = [list.at(xs, 0)]\n    if list.at(ys, 0):\n        console.print(\"t\")\n    else:\n        console.print(\"f\")\n";
+        let src = "fn identity(xs: List(Bool)) -> List(Bool):\n    xs\n\nfn main(console: Console):\n    let xs = identity([true, false])\n    let ys = [list.at(xs, 0)]\n    if list.at(ys, 0):\n        console.print(\"t\")\n    else:\n        console.print(\"f\")\n";
         let want = vec!["t".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
