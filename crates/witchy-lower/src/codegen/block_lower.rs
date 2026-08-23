@@ -112,6 +112,7 @@ impl<'types> Codegen<'types> {
     /// only on `Some` — the whole block lowered.
     pub(crate) fn lower_block(&mut self, block: &Block) -> Option<witchy_wir::wir::WirSeq> {
         let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
+        let range_built_checkpoint = self.range_built_lists.clone();
         let sequence_policy_checkpoint = self.sequence_backend_policy_checkpoint();
         let saved_loans = std::mem::take(&mut self.active_loan_events);
         // A control-flow boundary never imports or exports a speculative
@@ -122,6 +123,7 @@ impl<'types> Codegen<'types> {
         self.clear_forwarded_sequence_values();
         self.active_loan_events = saved_loans;
         if result.is_none() {
+            self.range_built_lists = range_built_checkpoint;
             // Sequence-policy evidence is valid only for WIR that survives
             // transactional block lowering. A failed candidate may have
             // consumed a plan before a later unsupported statement forced the
@@ -210,6 +212,7 @@ impl<'types> Codegen<'types> {
                 _ => None,
             };
             let analyzed_stmt = stmt;
+            self.invalidate_range_built_lengths(analyzed_stmt);
             let forward_sequence_store = if let Stmt::Assign { name, value } = analyzed_stmt {
                 match crate::analysis::self_inplace_op(name, value) {
                     Some(crate::analysis::InPlaceOp::SetAt(index, _))
@@ -2304,6 +2307,9 @@ impl<'types> Codegen<'types> {
                         }));
                     }
                 }
+            }
+            if i > 0 {
+                self.note_completed_range_builder(&block.stmts[i - 1], stmt);
             }
         }
         // A fallthrough block always leaves one value: the tail expression, or

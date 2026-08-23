@@ -40,6 +40,8 @@ pub(super) struct SequenceAccessPlan {
     pub(super) owner_root: String,
     pub(super) payload_base: String,
     pub(super) length: String,
+    length_initialized: bool,
+    data_offset: i32,
     pub(super) stride: i32,
     pub(super) element_kind: WirKind,
     pub(super) mutation_preserves_length: bool,
@@ -55,6 +57,105 @@ pub(super) struct ProvenIndexDomain {
 }
 
 impl<'types> Codegen<'types> {
+    pub(super) fn invalidate_range_built_lengths(&mut self, stmt: &Stmt) {
+        let mut scan = DevirtScan::default();
+        scan.walk_stmt(stmt);
+        let invalidated: HashSet<_> = scan
+            .length_changing_reassigned
+            .into_iter()
+            .chain(scan.opaque_call_roots)
+            .collect();
+        for bound in &invalidated {
+            self.range_built_lists.remove(bound);
+        }
+        for bound in scan
+            .let_bind
+            .keys()
+            .chain(&scan.other_bind)
+            .chain(&scan.reassigned)
+        {
+            self.range_built_lists.remove(bound);
+        }
+        if !invalidated.is_empty() {
+            for lists in self.range_built_lists.values_mut() {
+                lists.retain(|list| !invalidated.contains(list));
+            }
+            self.range_built_lists.retain(|_, lists| !lists.is_empty());
+        }
+    }
+
+    pub(super) fn note_completed_range_builder(&mut self, previous: &Stmt, current: &Stmt) {
+        let Stmt::Let { name: list, value: Expr::List(items), .. } = previous else {
+            return;
+        };
+        if !items.is_empty() || !self.inplace_push.contains(list) {
+            return;
+        }
+        let Stmt::Expr(Expr::For { iter, body, .. }) = current else { return };
+        let Expr::Range { lo, hi, inclusive: false } = iter.as_ref() else { return };
+        let (Expr::Int(0), Expr::Var(bound)) = (lo.as_ref(), hi.as_ref()) else { return };
+        let push = match body.stmts.as_slice() {
+            [Stmt::Expr(push)] => push,
+            [Stmt::Assign { name: target, value }] if target == list => value,
+            _ => return,
+        };
+        let Some(analysis::InPlaceOp::Push(element)) = analysis::self_inplace_op(list, push)
+        else {
+            return;
+        };
+        if expr_reads_var(element, list) {
+            return;
+        }
+        let mut scan = DevirtScan::default();
+        scan.walk_block(body);
+        if scan.reassigned.contains(bound) || scan.opaque_call_roots.contains(bound) {
+            return;
+        }
+        self.range_built_lists
+            .entry(bound.clone())
+            .or_default()
+            .insert(list.clone());
+    }
+
+    pub(super) fn counted_range_built_pairs(
+        &self,
+        index: &str,
+        lo: &Expr,
+        hi: &Expr,
+        inclusive: bool,
+        body: &Block,
+    ) -> Vec<(String, String)> {
+        if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
+            || inclusive
+            || !matches!(lo, Expr::Int(lower) if *lower >= 0)
+        {
+            return Vec::new();
+        }
+        let Expr::Var(bound) = hi else { return Vec::new() };
+        let Some(built) = self.range_built_lists.get(bound) else { return Vec::new() };
+        let mut scan = DevirtScan::default();
+        scan.walk_block(body);
+        if scan.let_bind.contains_key(index)
+            || scan.other_bind.contains(index)
+            || scan.reassigned.contains(index)
+        {
+            return Vec::new();
+        }
+        let mut pairs: Vec<_> = built
+            .iter()
+            .filter(|list| {
+                scan.indexed_accesses.contains_key(&(index.to_string(), (*list).clone()))
+                    && !scan.let_bind.contains_key(*list)
+                    && !scan.other_bind.contains(*list)
+                    && !scan.length_changing_reassigned.contains(*list)
+                    && !scan.opaque_call_roots.contains(*list)
+            })
+            .map(|list| (index.to_string(), list.clone()))
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
     pub(super) fn sequence_backend_policy_checkpoint(&self) -> u8 {
         self.sequence_backend_policy_triggers.checkpoint()
     }
@@ -198,12 +299,11 @@ impl<'types> Codegen<'types> {
         body: &Block,
         initialize_cursors: bool,
     ) -> (usize, witchy_wir::wir::WirSeq) {
-        if eligible_indices.is_empty() {
-            return (0, Vec::new());
-        }
-
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
+        if eligible_indices.is_empty() && scan.nested_indexed_roots.is_empty() {
+            return (0, Vec::new());
+        }
         let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for (index, list) in scan
@@ -217,6 +317,9 @@ impl<'types> Codegen<'types> {
                 indices.push(index.clone());
             }
         }
+        for root in &scan.nested_indexed_roots {
+            grouped.entry(root.clone()).or_default();
+        }
 
         let mut setup = Vec::new();
         let before = self.sequence_access_plans.len();
@@ -228,8 +331,11 @@ impl<'types> Codegen<'types> {
             // set-at path then stores directly and never replaces the pointer.
             let mutation_preserves_length = scan.reassigned.contains(&owner_root)
                 && !scan.length_changing_reassigned.contains(&owner_root);
-            let root_stable = !scan.reassigned.contains(&owner_root)
-                || (mutation_preserves_length && self.inplace_push.contains(&owner_root));
+            let root_available_at_entry = !scan.let_bind.contains_key(&owner_root)
+                && !scan.other_bind.contains(&owner_root);
+            let root_stable = root_available_at_entry
+                && (!scan.reassigned.contains(&owner_root)
+                    || (mutation_preserves_length && self.inplace_push.contains(&owner_root)));
             if !root_stable || scan.opaque_call_roots.contains(&owner_root) {
                 continue;
             }
@@ -250,20 +356,6 @@ impl<'types> Codegen<'types> {
                     _ => None,
                 })
                 .unwrap_or((4, 8));
-            let id = format!("{}_{}_{}", self.next_label, before, ordinal);
-            let payload_base = format!("__seq_base_{id}");
-            let length = format!("__seq_len_{id}");
-            self.locals.insert(payload_base.clone(), Kind::I32);
-            self.locals.insert(length.clone(), Kind::I32);
-            setup.push(N::SetLocal {
-                local: payload_base.clone(),
-                value: W::Binary {
-                    op: WirBinOp::Add,
-                    kind: WirKind::I32,
-                    lhs: Box::new(W::GetLocal(owner_root.clone())),
-                    rhs: Box::new(W::ConstI32(data_offset)),
-                },
-            });
             let all_accesses_proven_exact = indices.iter().all(|index| {
                 proven_pairs.contains(&(index.clone(), owner_root.clone()))
                     && scan
@@ -271,21 +363,56 @@ impl<'types> Codegen<'types> {
                         .get(&(index.clone(), owner_root.clone()))
                         .is_none_or(|range| *range == (0, 0))
             });
-            if initialize_cursors
+            let needs_length = initialize_cursors
                 || !all_accesses_proven_exact
-                || scan.length_reads.contains(&owner_root)
-            {
-                setup.extend(self.increment_sequence_counter("__witchy_list_header_loads"));
+                || scan.length_reads.contains(&owner_root);
+            let inherited = self.sequence_access_plans.iter().rev().find(|plan| {
+                plan.owner_root == owner_root
+                    && plan.data_offset == data_offset
+                    && plan.stride == stride
+                    && plan.element_kind == element_kind
+                    && (!needs_length || plan.length_initialized)
+            });
+            let id = format!("{}_{}_{}", self.next_label, before, ordinal);
+            let (payload_base, length, length_initialized) = if let Some(parent) = inherited {
+                (
+                    parent.payload_base.clone(),
+                    parent.length.clone(),
+                    parent.length_initialized,
+                )
+            } else {
+                let payload_base = format!("__seq_base_{id}");
+                let length = format!("__seq_len_{id}");
+                self.locals.insert(payload_base.clone(), Kind::I32);
+                self.locals.insert(length.clone(), Kind::I32);
                 setup.push(N::SetLocal {
-                    local: length.clone(),
-                    value: W::Load {
-                        ptr: Box::new(W::GetLocal(owner_root.clone())),
+                    local: payload_base.clone(),
+                    value: W::Binary {
+                        op: WirBinOp::Add,
                         kind: WirKind::I32,
-                        offset: 0,
+                        lhs: Box::new(W::GetLocal(owner_root.clone())),
+                        rhs: Box::new(W::ConstI32(data_offset)),
                     },
                 });
+                if needs_length {
+                    setup.extend(self.increment_sequence_counter("__witchy_list_header_loads"));
+                    setup.push(N::SetLocal {
+                        local: length.clone(),
+                        value: W::Load {
+                            ptr: Box::new(W::GetLocal(owner_root.clone())),
+                            kind: WirKind::I32,
+                            offset: 0,
+                        },
+                    });
+                }
+                (payload_base, length, needs_length)
+            };
+            if needs_length && !length_initialized {
+                // The inheritance predicate above rejects this state. Keep the
+                // invariant explicit so a future setup refactor cannot expose
+                // an uninitialized length local to a child guard.
+                continue;
             }
-
             let mut cursors = HashMap::new();
             for (cursor_ordinal, index) in indices.iter().enumerate() {
                 let cursor = format!("__seq_cursor_{id}_{cursor_ordinal}");
@@ -302,6 +429,8 @@ impl<'types> Codegen<'types> {
                 owner_root: owner_root.clone(),
                 payload_base,
                 length,
+                length_initialized,
+                data_offset,
                 stride,
                 element_kind,
                 mutation_preserves_length,
@@ -881,6 +1010,8 @@ mod tests {
             owner_root: "xs".into(),
             payload_base: "base".into(),
             length: "len".into(),
+            length_initialized: true,
+            data_offset: 4,
             stride: 8,
             element_kind: Kind::I64,
             mutation_preserves_length: true,
@@ -894,6 +1025,8 @@ mod tests {
         assert_eq!(plan.owner_root, "xs");
         assert_eq!(plan.payload_base, "base");
         assert_eq!(plan.length, "len");
+        assert!(plan.length_initialized);
+        assert_eq!(plan.data_offset, 4);
         assert_eq!(plan.stride, 8);
         assert_eq!(plan.element_kind, Kind::I64);
         assert!(plan.mutation_preserves_length);

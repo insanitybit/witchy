@@ -4582,8 +4582,13 @@ fn main() -> Int:
     fn compiled_trap(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(source).expect("parse indexed trap fixture");
-        let bytes = compile_module_binary(&module).expect_lowered("lower indexed trap fixture");
+        let result = compiled_module_trap(&module);
         witchy_syntax::opt::set_for_tests(None);
+        result
+    }
+
+    fn compiled_module_trap(module: &witchy_syntax::ast::Module) -> String {
+        let bytes = compile_module_binary(&module).expect_lowered("lower indexed trap fixture");
         let engine = gc_wasmtime_engine();
         let wt = WtModule::new(&engine, &bytes).expect("valid indexed trap wasm");
         let mut linker = Linker::new(&engine);
@@ -4652,6 +4657,223 @@ fn main() -> Int:
             inner.matches("call $list_at").count(),
             1,
             "the inner i+1 lane needs one guard, not one per outer same-root plan:\n{main}",
+        );
+    }
+
+    #[test]
+    fn sequence_nested_plan_reuses_only_stable_parent_metadata() {
+        let stable = r#"
+fn main() -> Int:
+    let values = [1, 2, 3]
+    var total = 0
+    var outer = 0
+    while outer < 2:
+        var i = 0
+        while i < 3:
+            total = total + values[i]
+            i = i + 1
+        outer = outer + 1
+    total
+"#;
+        assert_eq!(run_int(stable), 12);
+        let wat = optimized_wir_wat(stable, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let parent_setup = main.find("local.set $__seq_base_").expect("parent base setup");
+        let outer_loop = main.find("loop $wl").expect("outer loop");
+        assert!(
+            parent_setup < outer_loop,
+            "nested-only stable roots cache metadata before the parent loop:\n{main}",
+        );
+        assert_eq!(
+            main.matches("local.set $__seq_base_").count(),
+            1,
+            "the child cursor reuses its parent's base instead of reloading it:\n{main}",
+        );
+
+        let mutating = r#"
+import list
+fn main() -> Int:
+    var values = [1, 2, 3]
+    var total = 0
+    var outer = 0
+    while outer < 2:
+        var i = 0
+        while i < list.length(values):
+            total = total + values[i]
+            i = i + 1
+        values = [1, 2, 3, 4]
+        outer = outer + 1
+    total
+"#;
+        assert_eq!(run_int(mutating), 16);
+        let wat = optimized_wir_wat(mutating, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let child_setup = main.find("local.set $__seq_base_").expect("child base setup");
+        let outer_loop = main.find("loop $wl").expect("outer loop");
+        assert!(
+            child_setup > outer_loop,
+            "a length-changing outer mutation prevents parent metadata reuse:\n{main}",
+        );
+
+        let nested_local = r#"
+fn main() -> Int:
+    var total = 0
+    var outer = 0
+    while outer < 2:
+        let values = [1, 2, 3]
+        var i = 0
+        while i < 3:
+            total = total + values[i]
+            i = i + 1
+        outer = outer + 1
+    total
+"#;
+        assert_eq!(run_int(nested_local), 12);
+        let wat = optimized_wir_wat(nested_local, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let child_setup = main.find("local.set $__seq_base_").expect("child base setup");
+        let outer_loop = main.find("loop $wl").expect("outer loop");
+        assert!(
+            child_setup > outer_loop,
+            "a root bound inside the parent body is unavailable to parent setup:\n{main}",
+        );
+    }
+
+    #[test]
+    fn sequence_range_builder_length_elides_only_unchanged_copy_bounds() {
+        let source = r#"
+import list
+fn copy(let n: Int) -> Int:
+    var source = []
+    for i in 0..n:
+        list.push(source, i + 1)
+    let identity = fn(value: Int): value
+    let ignored = identity(0)
+    var destination = []
+    for i in 0..n:
+        list.push(destination, 0)
+    for i in 0..n:
+        destination[i] = source[i]
+    destination[0] + destination[n - 1] + ignored
+
+fn main() -> Int:
+    copy(3)
+"#;
+        let module = link_list_app(source);
+        assert_eq!(run_int_module(&module), 4);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::default_set()));
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower range-builder copy"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let copy = wat
+            .split("(func $")
+            .find(|function| function.contains("(local $destination"))
+            .expect("copy WAT");
+        let final_loop = copy.rsplit("block $fe").next().expect("copy loop");
+        let final_loop = final_loop.split("br $fl").next().expect("one copy iteration");
+        assert_eq!(
+            final_loop.matches("call $list_at").count(),
+            0,
+            "exact range builders prove both copy roots in bounds:\n{copy}",
+        );
+
+        let invalidated = r#"
+import list
+fn broken(let n: Int) -> Int:
+    var values = []
+    for i in 0..n:
+        list.push(values, i)
+    values = []
+    var total = 0
+    for i in 0..n:
+        total = total + values[i]
+    total
+
+fn main() -> Int:
+    broken(2)
+"#;
+        let module = link_list_app(invalidated);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::default_set()));
+        let on = compiled_module_trap(&module);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        let off = compiled_module_trap(&module);
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(on.contains("list_at"), "optimized rebind traps at list_at: {on}");
+        assert!(off.contains("list_at"), "deoptimized rebind traps at list_at: {off}");
+
+        let rebound = r#"
+import list
+fn broken() -> Int:
+    var n = 1
+    var values = []
+    for i in 0..n:
+        list.push(values, i)
+    n = 2
+    var total = 0
+    for i in 0..n:
+        total = total + values[i]
+    total
+
+fn main() -> Int:
+    broken()
+"#;
+        let module = link_list_app(rebound);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::default_set()));
+        let on = compiled_module_trap(&module);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        let off = compiled_module_trap(&module);
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(on.contains("list_at"), "optimized rebound traps at list_at: {on}");
+        assert!(off.contains("list_at"), "deoptimized rebound traps at list_at: {off}");
+
+        let opaque_bound = r#"
+import list
+fn bump(var n: Int) -> Int:
+    n = n + 1
+    n
+
+fn broken() -> Int:
+    var n = 1
+    var values = []
+    for i in 0..n:
+        list.push(values, i)
+    let ignored = bump(n)
+    var total = ignored - ignored
+    for i in 0..n:
+        total = total + values[i]
+    total
+
+fn main() -> Int:
+    broken()
+"#;
+        let module = link_list_app(opaque_bound);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::default_set()));
+        let on = compiled_module_trap(&module);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        let off = compiled_module_trap(&module);
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(on.contains("list_at"), "optimized var-bound call traps at list_at: {on}");
+        assert!(off.contains("list_at"), "deoptimized var-bound call traps at list_at: {off}");
+
+        let module = link_list_app(source);
+        witchy_syntax::opt::set_for_tests(Some(
+            witchy_syntax::opt::OptSet::default_set()
+                .without(witchy_syntax::opt::Opt::BoundsElide),
+        ));
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower bounds-off range copy"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let copy = wat
+            .split("(func $")
+            .find(|function| function.contains("(local $destination"))
+            .expect("bounds-off copy WAT");
+        let final_loop = copy.rsplit("block $fe").next().expect("bounds-off copy loop");
+        let final_loop = final_loop.split("br $fl").next().expect("one copy iteration");
+        assert!(
+            final_loop.contains("call $list_at"),
+            "-bounds-elide retains the checked copy reference path:\n{copy}",
         );
     }
 
@@ -4877,6 +5099,33 @@ fn main() -> Int:
         );
         assert!(optimized.contains("list_at"), "optimized path traps at the indexed guard: {optimized}");
         assert!(deoptimized.contains("list_at"), "deoptimized path traps at an indexed guard: {deoptimized}");
+    }
+
+    #[test]
+    fn sequence_affine_offset_overflow_retains_checked_trap() {
+        let source = r#"
+fn main() -> Int:
+    let values = [7]
+    var total = 0
+    for i in 0..1:
+        total = total + values[i + 9223372036854775807]
+    total
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let optimized = compiled_trap(source, default);
+        let deoptimized = compiled_trap(
+            source,
+            default.without(witchy_syntax::opt::Opt::BoundsElide),
+        );
+        assert!(optimized.contains("list_at"), "overflowing affine lane keeps checked trap: {optimized}");
+        assert!(deoptimized.contains("list_at"), "deoptimized affine lane traps: {deoptimized}");
+
+        let wat = optimized_wir_wat(source, default);
+        assert!(wat.contains("__seq_base_"), "the stable-root plan is installed");
+        assert!(
+            wat.contains("call $list_at"),
+            "an offset whose byte displacement overflows cannot enter direct cursor arithmetic:\n{wat}",
+        );
     }
 
     #[test]

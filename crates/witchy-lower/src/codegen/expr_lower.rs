@@ -1615,7 +1615,20 @@ impl<'types> Codegen<'types> {
                 if let Some(p) = &elide_pair {
                     self.elide_index_list.push(p.clone());
                 }
-                let sequence_pairs: Vec<_> = elide_pair.iter().cloned().collect();
+                let mut sequence_pairs: Vec<_> = elide_pair.iter().cloned().collect();
+                sequence_pairs.extend(self.counted_range_built_pairs(
+                    var,
+                    lo,
+                    hi,
+                    *inclusive,
+                    body,
+                ));
+                sequence_pairs.sort();
+                sequence_pairs.dedup();
+                for pair in sequence_pairs.iter().filter(|pair| Some(*pair) != elide_pair.as_ref()) {
+                    self.elide_index_list.push(pair.clone());
+                }
+                let sequence_extra_elide = sequence_pairs.len() - usize::from(elide_pair.is_some());
                 let (sequence_plan_count, sequence_setup) =
                     self.install_sequence_access_plans(
                         &sequence_pairs,
@@ -1651,6 +1664,9 @@ impl<'types> Codegen<'types> {
                     0
                 };
                 if elide_pair.is_some() {
+                    self.elide_index_list.pop();
+                }
+                for _ in 0..sequence_extra_elide {
                     self.elide_index_list.pop();
                 }
                 if wm.is_some() {

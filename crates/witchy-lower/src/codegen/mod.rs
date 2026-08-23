@@ -852,6 +852,7 @@ struct SavedScope {
     direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
     direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
     active_direct_list_builder: Option<DirectListBuilderPlan>,
+    range_built_lists: HashMap<String, HashSet<String>>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
     packed_candidates: HashSet<String>,
@@ -1000,6 +1001,10 @@ struct Codegen<'types> {
     emitted_funcs: HashSet<String>,
     known_non_negative_vars: HashSet<String>,
     known_length_vars: HashMap<String, HashSet<String>>,
+    /// Lists built by an exact `for i in 0..<bound>: push` prefix. Their
+    /// length is `max(bound, 0)`, which is sufficient to prove a later
+    /// exclusive `0..<bound` indexed loop without claiming `bound >= 0`.
+    range_built_lists: HashMap<String, HashSet<String>>,
     /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -1637,6 +1642,7 @@ impl<'types> Codegen<'types> {
             emitted_funcs: HashSet::new(),
             known_non_negative_vars: HashSet::new(),
             known_length_vars: HashMap::new(),
+            range_built_lists: HashMap::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),
@@ -5025,6 +5031,7 @@ impl<'types> Codegen<'types> {
     /// Begin a compile unit (function/lambda body): run the
     /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
+        self.range_built_lists.clear();
         let mut expected_loan_keys = HashSet::new();
         collect_loan_event_keys(body, &self.loan_facts, &mut expected_loan_keys);
         self.loan_fact_stack.push((expected_loan_keys, HashSet::new()));
@@ -9824,6 +9831,7 @@ impl<'types> Codegen<'types> {
             direct_list_builder_lets: std::mem::take(&mut self.direct_list_builder_lets),
             direct_list_builder_loops: std::mem::take(&mut self.direct_list_builder_loops),
             active_direct_list_builder: self.active_direct_list_builder.take(),
+            range_built_lists: std::mem::take(&mut self.range_built_lists),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
             packed_candidates: std::mem::take(&mut self.packed_candidates),
@@ -9883,6 +9891,7 @@ impl<'types> Codegen<'types> {
         self.direct_list_builder_lets = s.direct_list_builder_lets;
         self.direct_list_builder_loops = s.direct_list_builder_loops;
         self.active_direct_list_builder = s.active_direct_list_builder;
+        self.range_built_lists = s.range_built_lists;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;
         self.packed_candidates = s.packed_candidates;

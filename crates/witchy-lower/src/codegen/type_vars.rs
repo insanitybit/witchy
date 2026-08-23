@@ -148,6 +148,10 @@ pub(crate) struct DevirtScan {
     /// bounds-elision remains a separate proof.
     pub(crate) indexed_accesses: HashMap<(String, String), (i64, i64)>,
     pub(crate) direct_indexed_accesses: HashMap<(String, String), (i64, i64)>,
+    /// Roots accessed only from a nested loop. An enclosing stable-root plan
+    /// may cache their layout metadata, but must not initialize a cursor from
+    /// the nested induction local before that local's scope begins.
+    pub(crate) nested_indexed_roots: HashSet<String>,
     /// List roots passed to a call whose mutation envelope is not one of the
     /// typed length/read/same-length-write operations understood here.
     pub(crate) opaque_call_roots: HashSet<String>,
@@ -156,6 +160,35 @@ pub(crate) struct DevirtScan {
 }
 
 impl DevirtScan {
+    pub(crate) fn walk_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                *self.let_bind.entry(name.clone()).or_insert(0) += 1;
+                self.walk_expr(value);
+            }
+            Stmt::Assign { name, value } => {
+                self.reassigned.insert(name.clone());
+                if !matches!(
+                    crate::analysis::self_inplace_op(name, value),
+                    Some(crate::analysis::InPlaceOp::SetAt(_, _))
+                ) {
+                    self.length_changing_reassigned.insert(name.clone());
+                }
+                self.walk_expr(value);
+            }
+            Stmt::LetPattern { pattern, value } => {
+                let mut names = Vec::new();
+                witchy_syntax::ast::pattern_binds(pattern, &mut names);
+                for n in names {
+                    self.other_bind.insert(n);
+                }
+                self.walk_expr(value);
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+
     fn record_indexed_access(&mut self, index: &str, list: &str, offset: i64) {
         let key = (index.to_string(), list.to_string());
         let range = self.indexed_accesses.entry(key.clone()).or_insert((offset, offset));
@@ -165,37 +198,14 @@ impl DevirtScan {
             let range = self.direct_indexed_accesses.entry(key).or_insert((offset, offset));
             range.0 = range.0.min(offset);
             range.1 = range.1.max(offset);
+        } else {
+            self.nested_indexed_roots.insert(list.to_string());
         }
     }
 
     pub(crate) fn walk_block(&mut self, b: &Block) {
         for stmt in &b.stmts {
-            match stmt {
-                Stmt::Let { name, value, .. } => {
-                    *self.let_bind.entry(name.clone()).or_insert(0) += 1;
-                    self.walk_expr(value);
-                }
-                Stmt::Assign { name, value } => {
-                    self.reassigned.insert(name.clone());
-                    if !matches!(
-                        crate::analysis::self_inplace_op(name, value),
-                        Some(crate::analysis::InPlaceOp::SetAt(_, _))
-                    ) {
-                        self.length_changing_reassigned.insert(name.clone());
-                    }
-                    self.walk_expr(value);
-                }
-                Stmt::LetPattern { pattern, value } => {
-                    let mut names = Vec::new();
-                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
-                    for n in names {
-                        self.other_bind.insert(n);
-                    }
-                    self.walk_expr(value);
-                }
-                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e),
-                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-            }
+            self.walk_stmt(stmt);
         }
     }
 
