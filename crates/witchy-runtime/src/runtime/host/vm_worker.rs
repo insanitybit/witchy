@@ -88,10 +88,30 @@ fn host_vm_par_map_run(
         let data = mem.data(&caller);
         let lb = slice(data, xs_ptr, 4)?;
         let n = i32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]);
-        let mut v = Vec::with_capacity(n.max(0) as usize);
-        for i in 0..n {
-            let s = slice(data, xs_ptr + 4 + 8 * i, 8)?;
-            v.push(i64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));
+        let count = usize::try_from(n)
+            .map_err(|_| Error::msg(format!("vm.par_map list count is negative ({n})")))?;
+        let payload_len = count
+            .checked_mul(std::mem::size_of::<i64>())
+            .ok_or_else(|| Error::msg("vm.par_map list byte length overflows"))?;
+        let encoded_len = 4usize
+            .checked_add(payload_len)
+            .ok_or_else(|| Error::msg("vm.par_map encoded list length overflows"))?;
+        let start = usize::try_from(xs_ptr)
+            .map_err(|_| Error::msg(format!("vm.par_map list pointer is negative ({xs_ptr})")))?;
+        let end = start
+            .checked_add(encoded_len)
+            .ok_or_else(|| Error::msg("vm.par_map list range overflows"))?;
+        let encoded = data.get(start..end).ok_or_else(|| {
+            Error::msg(format!(
+                "vm.par_map list count {count} exceeds guest memory (needs {encoded_len} bytes at {start})"
+            ))
+        })?;
+        let mut v = Vec::new();
+        v.try_reserve_exact(count)
+            .map_err(|error| Error::msg(format!("vm.par_map cannot allocate {count} inputs: {error}")))?;
+        for bytes in encoded[4..].chunks_exact(8) {
+            let raw: [u8; 8] = bytes.try_into().expect("chunks_exact preserves width");
+            v.push(i64::from_le_bytes(raw));
         }
         v
     };

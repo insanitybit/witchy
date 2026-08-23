@@ -173,6 +173,31 @@
           (func (export "run") (loop $l (br $l))))
     "#;
 
+    #[test]
+    fn forged_par_map_count_is_bounded_before_host_allocation() {
+        const FORGED_COUNT: &str = r#"
+            (module
+              (import "witchy" "vm_par_map_run"
+                (func $par_map (param i32 i32) (result i32)))
+              (memory (export "memory") 1)
+              (data (i32.const 0) "\ff\ff\ff\7f")
+              (func (export "run")
+                i32.const 0
+                i32.const 0
+                call $par_map
+                drop))
+        "#;
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(FORGED_COUNT, Capabilities::none(), 1)
+            .expect("malformed module instantiates");
+        let error = vm.run().expect_err("forged list count must fail closed");
+        assert!(
+            format!("{error:#}").contains("exceeds guest memory"),
+            "the count must be bounded against guest memory before reserving host storage: {error:#}"
+        );
+    }
+
     const TRAP_ON_FIRST_RUN: &str = r#"
         (module
           (memory (export "memory") 1)
@@ -1720,4 +1745,3 @@ fn profiling_strategies_can_be_configured() {
 }
 
 use std::path::PathBuf;
-
