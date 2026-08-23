@@ -827,10 +827,10 @@ struct SavedScope {
     closure_elide_called: HashSet<String>,
     closure_elide_reassigned: HashSet<String>,
     elide_index_list: Vec<(String, String)>,
-    /// RFC-0146 loop-scoped sequence plans. A plan exists only while lowering a
-    /// loop whose existing typed bounds proof also proves the owner root stable.
-    /// Indexed reads/writes consume the plan uniformly; no method identity is
-    /// recorded here.
+    /// RFC-0146 loop-scoped sequence plans. Root/layout stability admits a plan
+    /// independently of whether an indexed lane is proven in range; unproven
+    /// lanes consume the same address plan while retaining an exact trap guard.
+    /// No method identity is recorded here.
     sequence_access_plans: Vec<indexed_kernels::SequenceAccessPlan>,
     sequence_forwarded_values: HashMap<(String, String, i64), String>,
     /// Local first-class references whose referent is a statically recoverable
@@ -1105,8 +1105,8 @@ struct Codegen<'types> {
     /// push their own pair (a same-named inner loop disqualifies the outer, so a stale
     /// pair never shadows). Empty ⇒ every `list.at` keeps its trap guard.
     elide_index_list: Vec<(String, String)>,
-    /// RFC-0146 loop-scoped sequence plans. A plan exists only while lowering a
-    /// loop whose existing typed bounds proof also proves the owner root stable.
+    /// RFC-0146 loop-scoped sequence plans. Root/layout stability admits a plan
+    /// independently of whether an indexed lane is proven in range.
     sequence_access_plans: Vec<indexed_kernels::SequenceAccessPlan>,
     sequence_forwarded_values: HashMap<(String, String, i64), String>,
     /// Module-monotonic record of exact/generalized sequence-plan consumption.
