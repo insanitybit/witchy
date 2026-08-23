@@ -744,16 +744,16 @@ pub fn package_file(
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("cannot create trusted-exe output directory `{}`: {error}", parent.display()))?;
     let file_name = output_path.file_name().and_then(|name| name.to_str()).unwrap_or("application");
-    let temporary = parent.join(format!(".{file_name}.witchy-tmp-{}", std::process::id()));
+    let (temporary, mut file) = create_owned_temporary(parent, file_name)?;
     let result = (|| -> Result<(), String> {
-        let mut file = std::fs::File::create(&temporary)
-            .map_err(|error| format!("cannot create trusted-exe temporary `{}`: {error}", temporary.display()))?;
         file.write_all(&image)
             .map_err(|error| format!("cannot write trusted-exe temporary `{}`: {error}", temporary.display()))?;
         file.sync_all()
             .map_err(|error| format!("cannot sync trusted-exe temporary `{}`: {error}", temporary.display()))?;
-        std::fs::set_permissions(&temporary, permissions)
+        file.set_permissions(permissions)
             .map_err(|error| format!("cannot make trusted executable `{}` runnable: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("cannot sync trusted-exe permissions `{}`: {error}", temporary.display()))?;
         #[cfg(windows)]
         if output_path.exists() {
             std::fs::remove_file(output_path).map_err(|error| {
@@ -769,6 +769,33 @@ pub fn package_file(
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// Create the publication temporary ourselves, exclusively. A random
+/// same-directory name prevents pre-placement, while `create_new` makes a
+/// collision fail instead of following or truncating an existing path.
+fn create_owned_temporary(
+    parent: &std::path::Path,
+    file_name: &str,
+) -> Result<(std::path::PathBuf, std::fs::File), String> {
+    for _ in 0..32 {
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random)
+            .map_err(|error| format!("cannot obtain randomness for trusted-exe publication: {error}"))?;
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let temporary = parent.join(format!(".{file_name}.witchy-tmp-{suffix}"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "cannot create trusted-exe temporary `{}`: {error}",
+                    temporary.display()
+                ));
+            }
+        }
+    }
+    Err("cannot create a unique trusted-exe publication temporary after 32 attempts".into())
 }
 
 /// Detect and validate an embedded trusted application.
@@ -883,6 +910,43 @@ mod tests {
         let embedded = probe(&image).unwrap().expect("embedded app");
         assert_eq!(embedded.wasm, wasm);
         assert_eq!(embedded.bindings, b"bindings-v1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_file_does_not_follow_the_legacy_predictable_temporary_symlink() {
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "witchy-trusted-publication-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let template = root.join("launcher");
+        let output = root.join("application");
+        let outside = root.join("outside-sentinel");
+        std::fs::write(&template, b"native-launcher").unwrap();
+        std::fs::write(&outside, b"outside-original").unwrap();
+        let legacy = root.join(format!(
+            ".application.witchy-tmp-{}",
+            std::process::id()
+        ));
+        std::os::unix::fs::symlink(&outside, &legacy).unwrap();
+
+        package_file(&template, &output, &app_wasm(), b"").unwrap();
+
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside-original");
+        assert!(!std::fs::symlink_metadata(&output).unwrap().file_type().is_symlink());
+        assert!(probe(&std::fs::read(output).unwrap()).unwrap().is_some());
     }
 
     #[test]
