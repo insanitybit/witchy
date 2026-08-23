@@ -27,6 +27,8 @@ mod strength_reduce;
 pub use strength_reduce::{simplify_integer_ranges, RangeFact};
 mod tail_calls;
 pub use tail_calls::lower_direct_tail_calls;
+mod recursive_inline;
+pub use recursive_inline::inline_recursive_calls;
 
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq};
 
@@ -47,6 +49,8 @@ pub struct OptStats {
 /// `module` to a fixpoint, in place. Raw-body functions are left untouched.
 /// Returns the before/after node counts.
 pub fn optimize(module: &mut WirModule) -> OptStats {
+    inline_recursive_calls(module);
+
     let nodes_before = module_size(module);
 
     // (RFC-0146 Track 4) Range-driven integer simplification
