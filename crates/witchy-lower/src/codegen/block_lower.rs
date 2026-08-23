@@ -1407,9 +1407,45 @@ impl<'types> Codegen<'types> {
                             analysis::InPlaceOp::SetAt(iexpr, vexpr)
                                 if self.local_types.get(name).and_then(|ty| self.specialized_layout_id(ty)).and_then(|id| self.specialized_layouts.get(id)).is_some_and(|d| matches!(d.kind(), LayoutKind::PackedList { element, .. } if self.specialized_layouts.get(*element).is_some_and(|e| matches!(e.kind(), LayoutKind::Scalar(ScalarKind::Bool | ScalarKind::Int | ScalarKind::Float))))) => {
                                 let id = self.specialized_layout_id(self.local_types.get(name)?)?;
-                                let helper = self.ensure_packed_scalar_set_helper(id)?;
-                                let args = vec![W::GetLocal(name.clone()), Self::wir_convert(self.lower_expr(iexpr)?, self.kind_of(iexpr), Kind::I32), self.lower_expr(vexpr)?, if dirty { W::ConstI32(0) } else { W::GetLocal(format!("{name}__cap")) }];
-                                seq.push(N::CallStoreMulti { func: helper, args, dests: vec![name.clone(), format!("{name}__cap")] });
+                                // Exact sequence proofs make a clean packed Bool
+                                // store a byte write at the already-maintained
+                                // cursor.  Dirty ownership still uses the helper,
+                                // whose copy path is required for value semantics;
+                                // non-Bool scalars retain the existing helper ABI.
+                                let scalar = self
+                                    .specialized_layouts
+                                    .get(id)
+                                    .and_then(|d| match d.kind() {
+                                        LayoutKind::PackedList { element, .. } => self
+                                            .specialized_layouts
+                                            .get(*element)
+                                            .and_then(|e| match e.kind() {
+                                                LayoutKind::Scalar(s) => Some(*s),
+                                                _ => None,
+                                            }),
+                                        _ => None,
+                                    });
+                                let direct_slot = (!dirty)
+                                    .then(|| scalar == Some(ScalarKind::Bool))
+                                    .filter(|is_bool| *is_bool)
+                                    .and_then(|_| {
+                                        self.sequence_element_address(
+                                            name,
+                                            iexpr,
+                                            Self::wir_kind(self.list_elem_kind(&Expr::Var(name.clone()))),
+                                        )
+                                    });
+                                if let Some(slot) = direct_slot {
+                                    seq.push(N::Store8 {
+                                        ptr: slot,
+                                        value: self.lower_expr(vexpr)?,
+                                        offset: 0,
+                                    });
+                                } else {
+                                    let helper = self.ensure_packed_scalar_set_helper(id)?;
+                                    let args = vec![W::GetLocal(name.clone()), Self::wir_convert(self.lower_expr(iexpr)?, self.kind_of(iexpr), Kind::I32), self.lower_expr(vexpr)?, if dirty { W::ConstI32(0) } else { W::GetLocal(format!("{name}__cap")) }];
+                                    seq.push(N::CallStoreMulti { func: helper, args, dests: vec![name.clone(), format!("{name}__cap")] });
+                                }
                             }
                             analysis::InPlaceOp::Push(elem) => {
                                 // Only the list-push shape has an in-place fast path. A dict/

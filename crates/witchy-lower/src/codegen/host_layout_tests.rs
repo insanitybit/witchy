@@ -251,8 +251,12 @@ fn default_nsieve_shape_keeps_the_packed_bool_adapter_path() {
     assert!(wat.contains("__witchy_packed_list_"), "packed constructor route: {wat}");
     assert!(wat.contains("i32.load8_u"), "byte-wide nsieve read: {wat}");
     assert!(
-        wat.contains("__witchy_packed_scalar_set_"),
-        "descriptor-aware nsieve write: {wat}"
+        wat.contains("i32.store8"),
+        "descriptor-aware byte-wide nsieve write: {wat}"
+    );
+    assert!(
+        !wat.contains("call $__witchy_packed_scalar_set_"),
+        "the exact packed Bool loop consumes its sequence cursor instead of calling the scalar setter: {wat}"
     );
 }
 

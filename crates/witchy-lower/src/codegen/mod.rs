@@ -6962,7 +6962,17 @@ impl<'types> Codegen<'types> {
             return None;
         };
         let element_descriptor = self.specialized_layouts.get(*element)?.clone();
-        let address = self.lower_packed_list_element_address(list, index)?;
+        // A packed scalar read normally computes `base + index * stride`.  When
+        // Track 2 has an exact sequence proof active, consume its cursor instead
+        // so a packed Bool loop does not rebuild the same address on every lane.
+        // `sequence_element_address` requires the proof; the fallback retains
+        // the existing packed path (including its normal checked/deopt route).
+        let address = if let Expr::Var(root) = list {
+            self.sequence_element_address(root, index, Self::wir_kind(self.list_elem_kind(list)))
+                .or_else(|| self.lower_packed_list_element_address(list, index))?
+        } else {
+            self.lower_packed_list_element_address(list, index)?
+        };
         match element_descriptor.kind() {
             LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } => Some(address),
             LayoutKind::Scalar(ScalarKind::Bool) => Some(witchy_wir::wir::WirExpr::Load8U { ptr: Box::new(address), offset: 0 }),
