@@ -23,6 +23,8 @@
 //! pre-encoded wasm bytes with no WIR tree to walk.
 
 
+mod strength_reduce;
+pub use strength_reduce::{simplify_integer_ranges, RangeFact};
 mod tail_calls;
 pub use tail_calls::lower_direct_tail_calls;
 
@@ -46,6 +48,9 @@ pub struct OptStats {
 /// Returns the before/after node counts.
 pub fn optimize(module: &mut WirModule) -> OptStats {
     let nodes_before = module_size(module);
+
+    // (RFC-0146 Track 4) Range-driven integer simplification
+    simplify_integer_ranges(module);
 
     let mut passes = 0;
     loop {
