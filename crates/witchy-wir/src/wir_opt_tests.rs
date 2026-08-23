@@ -1116,6 +1116,57 @@
     }
 
     #[test]
+    fn default_optimizer_preserves_operands_with_observable_evaluation() {
+        let effectful = WirExpr::Binary {
+            op: BinOp::Mul,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::ConstI64(0)),
+            rhs: Box::new(WirExpr::Call {
+                func: "effectful_value".into(),
+                args: vec![],
+            }),
+        };
+        let trapping = WirExpr::Binary {
+            op: BinOp::And,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::Load {
+                ptr: Box::new(WirExpr::ConstI32(-1)),
+                kind: Kind::I64,
+                offset: 0,
+            }),
+            rhs: Box::new(WirExpr::ConstI64(0)),
+        };
+        let func = WirFunc {
+            name: "preserve_evaluation".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![WirNode::Drop(effectful), WirNode::Drop(trapping)],
+            raw_body: None,
+        };
+        let mut module = module_with(func);
+
+        optimize(&mut module);
+
+        assert!(matches!(
+            module.funcs[0].body.as_slice(),
+            [
+                WirNode::Drop(WirExpr::Binary {
+                    op: BinOp::Mul,
+                    rhs,
+                    ..
+                }),
+                WirNode::Drop(WirExpr::Binary {
+                    op: BinOp::And,
+                    lhs,
+                    ..
+                }),
+            ] if matches!(rhs.as_ref(), WirExpr::Call { func, .. } if func == "effectful_value")
+                && matches!(lhs.as_ref(), WirExpr::Load { .. })
+        ));
+    }
+
+    #[test]
     fn skips_raw_body_functions() {
         // A raw-body func has no WIR tree; it must be left entirely alone and
         // contribute 0 to the node count.

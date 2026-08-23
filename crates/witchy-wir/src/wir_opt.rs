@@ -55,8 +55,11 @@ pub fn optimize(module: &mut WirModule) -> OptStats {
 
     let nodes_before = module_size(module);
 
-    // (RFC-0146 Track 4) Range-driven integer simplification
-    simplify_integer_ranges(module);
+    // The RFC-0146 range reducer remains an explicit experimental pass. It is
+    // not part of the default pipeline until its dataflow models wrapping
+    // arithmetic, loop-carried assignments, and expression effects. In
+    // particular, algebraic annihilator folds must not erase calls, loads, or
+    // traps merely because the result is statically known.
 
     let mut passes = 0;
     loop {
