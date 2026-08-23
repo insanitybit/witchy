@@ -27,7 +27,7 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | 1 awaited select fusion | not started | pending | pending | pending | `select_fanin`, `chan_throughput` | pending | pending |
 | 2 sequence plans | merged | schema 1 artifact `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track2-f77e84f-21c6a9e1/acceptance-f77-schema1.json` (`sha256:ab3ca448d25476cbac1123d5d5a483aec77fb34d19fddfed601b8407ea9fad83`) | pre-change Samply capture plus integrated raw-WAT reconciliation; three exact counter payloads (`sha256:5152cd4a5c07e10ff204828e2b44b492b097c2bd6d1b22ba504acc8f73813744`) | sequence-plan correctness/trap/deopt/WAT tests, exact stats fixture, runtime policy tests, and differential golden output | shipping: `fannkuch` +21.677796%, `list_index` +37.426176%, `list_sum` +5.651316%, `binary_trees` +0.464728% | `impl/rfc0146-track2`; implementation `21c6a9e1`, measured source `9a7b607d` on baseline `f77e84f` | merged as `c372d53956035188622e52ff7f8d6343594c6f8b` at `2026-08-23T09:20:15Z`; journal line 8580 and gate log `state/merge-queue/logs/20260823-051537-impl~rfc0146-track2-74028-37.log` |
 | 3 WIR inlining | not started | pending | pending | pending | `closure_calls`, `expr_eval`, `binary_trees` | pending | pending |
-| 4 strength reduction | performance rejected; safety repair separately queued | `/tmp/rfc0146-track4-{master,candidate}-*.tsv` (12 paired samples; raw hashes in the safety note below) | prior pass removed from default pipeline; no promotable profile attribution | `witchy-wir` 42 tests; workspace fast gate 3051 passed; Wasm shard green | Collatz gain 0.4%; controls: `loop_sum` +5.9%, `mandelbrot` +1.0%, `expr_eval` +0.4% (candidate/master) | `perf/rfc0146-strength-reduce` at `992a77af` | pending |
+| 4 strength reduction | performance rejected; safety repair merged separately | `/tmp/rfc0146-track4-{master,candidate}-*.tsv` (12 paired samples; raw hashes in the safety note below) | prior pass removed from default pipeline; no promotable profile attribution | `witchy-wir` 42 tests; workspace fast gate 3051 passed; Wasm shard green | Collatz gain 0.4%; controls: `loop_sum` +5.9%, `mandelbrot` +1.0%, `expr_eval` +0.4% (candidate/master) | `perf/rfc0146-strength-reduce` at `992a77af` | merged as `c09dd6d5a704cdd40858cf0b0a6589e7cc7a51da` at `2026-08-23T14:16:47Z`; journal line recorded under `mq-557e507b21e2fdf26b02a0fe0ac3c664b1e6a980`; gate log `state/merge-queue/logs/20260823-101617-perf~rfc0146-strength-reduce-74028-39.log` |
 | 5 recursive inlining | not started | pending | pending | pending | `fib`, `binary_trees`, `expr_eval` | pending | pending |
 | 6 packed Bool kernels | blocked on Track 2 | pending | pending | pending | `nsieve`, `list_sum`, `list_index` | pending | pending |
 | 7 borrowed string/hash residual | entry criterion not evaluated | pending | pending | pending | `knucleotide`, `dict_count`, `word_count` | pending | pending |
@@ -42,6 +42,10 @@ wrapping arithmetic or loop-carried assignments. The current-master repair is
 from the default optimizer and adds a regression fixture proving that
 effectful and trapping operands remain present. This is a correctness repair,
 not an optimization claim, and the Track 4 performance row remains rejected.
+The repair landed as `c09dd6d5a704cdd40858cf0b0a6589e7cc7a51da` through merge
+queue change `mq-557e507b21e2fdf26b02a0fe0ac3c664b1e6a980`; its terminal merged
+event occurred at `2026-08-23T14:16:47Z` with gate log
+`state/merge-queue/logs/20260823-101617-perf~rfc0146-strength-reduce-74028-39.log`.
 
 The repair was checked with all 42 `witchy-wir` library tests, the workspace
 fast gate (3051 tests passed), and the Wasm shard. The matched 12-sample raw
