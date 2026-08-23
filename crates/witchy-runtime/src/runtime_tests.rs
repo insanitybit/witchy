@@ -16,6 +16,36 @@
         wasm
     }
 
+    fn append_optimizer_policy(wasm: &mut Vec<u8>, payload: &[u8]) {
+        CustomSection {
+            name: Cow::Borrowed(OPTIMIZER_POLICY_SECTION),
+            data: Cow::Borrowed(payload),
+        }
+        .append_to(wasm);
+    }
+
+    #[test]
+    fn optimizer_policy_is_versioned_and_fails_closed() {
+        let mut valid = WasmModule::new().finish();
+        append_optimizer_policy(
+            &mut valid,
+            &witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD,
+        );
+        assert_eq!(optimizer_policy(&valid).unwrap(), OptimizerPolicy::PreserveRaw);
+
+        let mut unknown = WasmModule::new().finish();
+        append_optimizer_policy(&mut unknown, &[99, 1]);
+        assert!(optimizer_policy(&unknown).unwrap_err().to_string().contains("unsupported schema"));
+
+        let mut duplicate = valid.clone();
+        append_optimizer_policy(
+            &mut duplicate,
+            &witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD,
+        );
+        assert!(optimizer_policy(&duplicate).unwrap_err().to_string().contains("duplicate section"));
+        assert_eq!(optimizer_policy(b"(module)").unwrap(), OptimizerPolicy::Default);
+    }
+
     fn wasm_with_host_import(name: &str) -> Vec<u8> {
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32, ValType::I32], []);
@@ -190,6 +220,17 @@
         let mut bad_magic = envelope;
         bad_magic[0] ^= 0xff;
         assert!(decode_optimized_wasm(&input_hash, &bad_magic).is_none(), "unknown cache formats must be ignored");
+
+        assert_ne!(
+            optimized_wasm_input_hash(b"same wasm", b"wasm-opt version 1"),
+            optimized_wasm_input_hash(b"same wasm", b"wasm-opt version 2"),
+            "the Binaryen executable version is part of cache identity",
+        );
+        assert_ne!(
+            optimized_wasm_input_hash(b"wasm A", b"wasm-opt version 1"),
+            optimized_wasm_input_hash(b"wasm B", b"wasm-opt version 1"),
+            "the input module remains part of cache identity",
+        );
     }
 
     #[test]
@@ -1679,5 +1720,4 @@ fn profiling_strategies_can_be_configured() {
 }
 
 use std::path::PathBuf;
-
 

@@ -10,6 +10,9 @@
 use super::*;
 use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind, WirExpr as W, WirNode as N};
 
+const SEQUENCE_POLICY_EXACT: u8 = 1;
+const SEQUENCE_POLICY_GENERALIZED: u8 = 2;
+
 /// Physical facts shared by all indexed operations in one stable loop.
 #[derive(Clone, Debug)]
 pub(super) struct SequenceAccessPlan {
@@ -31,6 +34,18 @@ pub(super) struct ProvenIndexDomain {
 }
 
 impl<'types> Codegen<'types> {
+    fn note_sequence_backend_policy(&self, trigger: u8) {
+        self.sequence_backend_policy_triggers
+            .set(self.sequence_backend_policy_triggers.get() | trigger);
+    }
+
+    /// Single evidence-controlled selector for the module-level runtime policy.
+    /// Exact and generalized consumption are recorded separately so repaired-
+    /// master measurements can change this decision without touching lowering.
+    pub(super) fn sequence_preserve_raw_requested(&self) -> bool {
+        self.sequence_backend_policy_triggers.get() & SEQUENCE_POLICY_GENERALIZED != 0
+    }
+
     pub(super) fn sequence_candidate_indices(&self, body: &Block) -> Vec<String> {
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
@@ -406,6 +421,9 @@ impl<'types> Codegen<'types> {
                 });
             }
         }
+        if !guards.is_empty() {
+            self.note_sequence_backend_policy(SEQUENCE_POLICY_GENERALIZED);
+        }
         guards
     }
 
@@ -477,7 +495,11 @@ impl<'types> Codegen<'types> {
         index: &Expr,
         element_kind: WirKind,
     ) -> Option<W> {
-        self.sequence_element_address_impl(list, index, element_kind, true)
+        let address = self.sequence_element_address_impl(list, index, element_kind, true);
+        if address.is_some() {
+            self.note_sequence_backend_policy(SEQUENCE_POLICY_EXACT);
+        }
+        address
     }
 
     /// Address available from a stable physical plan even when this particular
@@ -489,7 +511,11 @@ impl<'types> Codegen<'types> {
         index: &Expr,
         element_kind: WirKind,
     ) -> Option<W> {
-        self.sequence_element_address_impl(list, index, element_kind, false)
+        let address = self.sequence_element_address_impl(list, index, element_kind, false);
+        if address.is_some() {
+            self.note_sequence_backend_policy(SEQUENCE_POLICY_GENERALIZED);
+        }
+        address
     }
 
     fn sequence_element_address_impl(
@@ -526,11 +552,15 @@ impl<'types> Codegen<'types> {
 
     /// Hoisted list length for calls inside the plan lifetime.
     pub(super) fn sequence_length(&self, list: &str) -> Option<W> {
-        self.sequence_access_plans
+        let length = self.sequence_access_plans
             .iter()
             .rev()
             .find(|plan| plan.owner_root == list)
-            .map(|plan| W::GetLocal(plan.length.clone()))
+            .map(|plan| W::GetLocal(plan.length.clone()));
+        if length.is_some() {
+            self.note_sequence_backend_policy(SEQUENCE_POLICY_EXACT);
+        }
+        length
     }
 
     /// Make a direct scalar store available to the next matching load in this
@@ -593,6 +623,7 @@ impl<'types> Codegen<'types> {
             index_root.to_string(),
             offset,
         ))?;
+        self.note_sequence_backend_policy(SEQUENCE_POLICY_GENERALIZED);
         Some(W::FromSlot(
             Box::new(W::GetLocal(local)),
             element_kind,

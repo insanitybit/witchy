@@ -6016,6 +6016,25 @@ fn assemble_wir_module_with_structs_mode(
             } else {
                 Vec::new()
             };
+            // Binaryen can materially improve recursive/indirect-call modules,
+            // while some sequence-plan loop shapes are faster when preserved for
+            // Cranelift. Select PreserveRaw only when the compiler consumed such
+            // a plan and the artifact has neither generic structure. This is a
+            // module-wide contract, never a function or benchmark-name rule.
+            let sequence_preserve_raw = cg.sequence_preserve_raw_requested()
+                && !uses_table
+                && existential_table_entries.is_empty()
+                && cg.lambda_wir_funcs.is_empty()
+                && !user_call_graph_has_cycle(&user_order, &cg.wir_funcs);
+            if sequence_preserve_raw {
+                pruned_globals.push(WirGlobal {
+                    name: witchy_wir::optimizer_policy::MARKER_GLOBAL.into(),
+                    kind: WK::I32,
+                    mutable: false,
+                    init: GlobalInit::I32(1),
+                    export: None,
+                });
+            }
             // RFC-0110: state-bearing calls that retain real table dispatch.
             // This global is independent of linear-memory use: a scalar `var`
             // write-back can still exercise the access envelope in a heap-free
@@ -6445,6 +6464,49 @@ fn collect_called_funcs(
         node(n, out, &mut uses_table);
     }
     uses_table
+}
+
+/// Whether the source/user WIR call graph contains a direct cycle. Runtime
+/// helpers are deliberately outside this graph: the policy boundary protects
+/// user recursion as a code-shape class, rather than matching helper names.
+fn user_call_graph_has_cycle(
+    user_order: &[String],
+    funcs: &HashMap<String, witchy_wir::wir::WirFunc>,
+) -> bool {
+    fn visit(
+        name: &str,
+        user_names: &HashSet<String>,
+        funcs: &HashMap<String, witchy_wir::wir::WirFunc>,
+        visiting: &mut HashSet<String>,
+        visited: &mut HashSet<String>,
+    ) -> bool {
+        if visited.contains(name) {
+            return false;
+        }
+        if !visiting.insert(name.to_string()) {
+            return true;
+        }
+        let mut calls = HashSet::new();
+        if let Some(function) = funcs.get(name) {
+            collect_called_funcs(&function.body, &mut calls);
+        }
+        if calls.into_iter().any(|callee| {
+            user_names.contains(&callee)
+                && visit(&callee, user_names, funcs, visiting, visited)
+        }) {
+            return true;
+        }
+        visiting.remove(name);
+        visited.insert(name.to_string());
+        false
+    }
+
+    let user_names: HashSet<String> = user_order.iter().cloned().collect();
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    user_order.iter().any(|name| {
+        visit(name, &user_names, funcs, &mut visiting, &mut visited)
+    })
 }
 
 /// Collect every host import a `WirSeq` calls directly (`CallHost{import}`),
@@ -7336,7 +7398,7 @@ mod diagnostic_site_tests {
 mod table_discovery_tests {
     use super::*;
     use witchy_syntax::parser::parse_module;
-    use witchy_wir::wir::{ClosureSignature, Kind, WirExpr as E, WirNode as N};
+    use witchy_wir::wir::{ClosureSignature, Kind, WirExpr as E, WirFunc, WirNode as N};
 
     #[test]
     fn indirect_expression_without_materialized_function_declares_table() {
@@ -7406,6 +7468,33 @@ fn main() -> Int:
 
         assert!(collect_called_funcs(&expression, &mut HashSet::new()));
         assert!(collect_called_funcs(&store_multi, &mut HashSet::new()));
+    }
+
+    #[test]
+    fn optimizer_policy_cycle_gate_uses_user_call_graph_structure() {
+        let function = |name: &str, callee: Option<&str>| WirFunc {
+            name: name.into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: callee
+                .map(|callee| vec![N::Do(E::Call {
+                    func: callee.into(),
+                    args: vec![],
+                })])
+                .unwrap_or_default(),
+            raw_body: None,
+        };
+        let mut funcs = HashMap::new();
+        funcs.insert("a".into(), function("a", Some("b")));
+        funcs.insert("b".into(), function("b", Some("a")));
+        assert!(user_call_graph_has_cycle(&["a".into(), "b".into()], &funcs));
+
+        funcs.insert("b".into(), function("b", Some("runtime_helper")));
+        assert!(
+            !user_call_graph_has_cycle(&["a".into(), "b".into()], &funcs),
+            "calls outside the source/user graph do not manufacture a mixed-module cycle",
+        );
     }
 }
 

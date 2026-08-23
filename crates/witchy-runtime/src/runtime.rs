@@ -15,6 +15,7 @@ use wasmtime::{
     Module, Result, Store, StoreLimits, StoreLimitsBuilder,
 };
 use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
+use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_POLICY_SECTION};
 use witchy_wir::wir_prelude::abi_import_info;
 
 mod compiler;
@@ -76,6 +77,37 @@ fn validate_layout_metadata(wasm: &[u8]) -> Result<()> {
             })?;
     }
     Ok(())
+}
+
+/// Read the compiler's versioned external-optimizer contract. Binary artifacts
+/// fail closed on duplicate, unknown, or malformed policy metadata; textual WAT
+/// retains the default developer behavior because it cannot carry this section.
+fn optimizer_policy(wasm: &[u8]) -> Result<OptimizerPolicy> {
+    if !wasm.starts_with(b"\0asm") {
+        return Ok(OptimizerPolicy::Default);
+    }
+    let mut policy = None;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        let payload = payload
+            .map_err(|error| Error::msg(format!("invalid wasm metadata: {error}")))?;
+        if let wasmparser::Payload::CustomSection(section) = payload
+            && section.name() == OPTIMIZER_POLICY_SECTION
+        {
+            if policy.is_some() {
+                return Err(Error::msg(format!(
+                    "invalid `{OPTIMIZER_POLICY_SECTION}` metadata: duplicate section"
+                )));
+            }
+            policy = Some(
+                witchy_wir::optimizer_policy::decode(section.data()).map_err(|error| {
+                    Error::msg(format!(
+                        "invalid `{OPTIMIZER_POLICY_SECTION}` metadata: {error}"
+                    ))
+                })?,
+            );
+        }
+    }
+    Ok(policy.unwrap_or_default())
 }
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
@@ -156,12 +188,33 @@ fn optimized_wasm_cache_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
-const OPT_CACHE_MAGIC: &[u8; 8] = b"WYOPT001";
+const OPT_CACHE_MAGIC: &[u8; 8] = b"WYOPT002";
 const OPT_CACHE_HEADER_LEN: usize = OPT_CACHE_MAGIC.len() + 32 + 32 + 8;
+const BINARYEN_RECIPE_SCHEMA: &[u8] =
+    b"witchy-wasm-opt-v2:-O4,all-features,inlining-optimizing,inline-loops,100,200";
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes).into()
+}
+
+fn optimized_wasm_input_hash(wasm: &[u8], binaryen_version: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(BINARYEN_RECIPE_SCHEMA);
+    digest.update([0]);
+    digest.update(binaryen_version);
+    digest.update([0]);
+    digest.update(wasm);
+    digest.finalize().into()
+}
+
+fn binaryen_version() -> Option<Vec<u8>> {
+    let output = std::process::Command::new("wasm-opt")
+        .arg("--version")
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
 }
 
 /// Bind cached optimized wasm to both its original input and its own contents.
@@ -264,13 +317,20 @@ fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// whose differing config must not share artifacts.
 fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
     validate_layout_metadata(opt_wasm)?;
+    if optimizer_policy(opt_wasm)? == OptimizerPolicy::PreserveRaw {
+        return Module::new(engine, opt_wasm);
+    }
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }
-    let input_hash = sha256(opt_wasm);
-    let path = binaryen_enabled()
-        .then(|| optimized_wasm_cache_path(&input_hash))
-        .flatten();
+    let binaryen_version = binaryen_enabled().then(binaryen_version).flatten();
+    let input_hash = binaryen_version
+        .as_deref()
+        .map(|version| optimized_wasm_input_hash(opt_wasm, version))
+        .unwrap_or_else(|| sha256(opt_wasm));
+    let path = binaryen_version
+        .as_ref()
+        .and_then(|_| optimized_wasm_cache_path(&input_hash));
     if let Some(path) = &path {
         if let Ok(envelope) = std::fs::read(path) {
             if let Some(cached_wasm) = decode_optimized_wasm(&input_hash, &envelope) {

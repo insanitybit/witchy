@@ -18,6 +18,7 @@ pub mod wir;
 pub mod wir_encode;
 pub mod wir_helpers;
 pub mod layout;
+pub mod optimizer_policy;
 pub mod wir_opt;
 pub mod wir_prelude;
 

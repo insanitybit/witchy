@@ -8,11 +8,12 @@
 //! in `module.funcs`). Locals are params-then-body in declaration order.
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use std::borrow::Cow;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use wasm_encoder::{
-    AbstractHeapType, ArrayType, BlockType, CodeSection, CompositeInnerType, CompositeType,
+    AbstractHeapType, ArrayType, BlockType, CodeSection, CompositeInnerType, CompositeType, CustomSection,
     ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind, ExportSection,
     FieldType, Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection,
     Instruction, MemArg, MemorySection, MemoryType, Module, NameMap, NameSection, RefType,
@@ -908,6 +909,20 @@ fn encode_with_gc_source_map(
     let mut name_section = NameSection::new();
     name_section.functions(&func_names);
     wasm.section(&name_section);
+
+    // RFC-0146: a compiler-selected backend boundary. The internal marker
+    // global keeps the WIR contract source-neutral; only the binary artifact
+    // exposes the versioned policy consumed by the native runtime.
+    if module.globals.iter().any(|global| {
+        global.name == crate::optimizer_policy::MARKER_GLOBAL
+            && !global.mutable
+            && global.export.is_none()
+    }) {
+        wasm.section(&CustomSection {
+            name: Cow::Borrowed(crate::optimizer_policy::SECTION_NAME),
+            data: Cow::Borrowed(&crate::optimizer_policy::PRESERVE_RAW_PAYLOAD),
+        });
+    }
 
     EncodedModule { wasm: wasm.finish(), source_instructions, source_expressions }
 }
