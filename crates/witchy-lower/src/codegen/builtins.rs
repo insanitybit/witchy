@@ -5,7 +5,7 @@
 
 use super::*;
 
-fn interpolation_prefix_int(expr: &Expr) -> Option<(&Expr, &Expr)> {
+pub(crate) fn interpolation_prefix_int(expr: &Expr) -> Option<(&Expr, &Expr)> {
     match expr {
         Expr::Binary { op: witchy_syntax::ast::BinOp::Concat | witchy_syntax::ast::BinOp::Add, lhs, rhs, .. }
             if matches!(rhs.as_ref(), Expr::Str(text) if text.is_empty()) => interpolation_prefix_int(lhs),
@@ -24,7 +24,7 @@ impl Codegen<'_> {
     /// Returns setup nodes, pointer local, length local, and cleanup nodes. The
     /// cleanup rewinds the bump frontier for temporary interpolation buffers;
     /// ordinary slice bindings do not allocate and therefore have no cleanup.
-    fn lower_borrowed_string_pair(
+    pub(crate) fn lower_borrowed_string_pair(
         &mut self,
         key: &Expr,
     ) -> Option<(Vec<witchy_wir::wir::WirNode>, String, String, Vec<witchy_wir::wir::WirNode>)> {
@@ -62,6 +62,12 @@ impl Codegen<'_> {
             Expr::Var(name) if self.locals.contains_key(&format!("{name}__slice_len")) => {
                 setup.push(N::SetLocal { local: ptr.clone(), value: self.lower_expr(key)? });
                 setup.push(N::SetLocal { local: len.clone(), value: W::GetLocal(format!("{name}__slice_len")) });
+                if self.locals.contains_key(&format!("{name}__slice_wm")) {
+                    cleanup.push(N::SetGlobal {
+                        global: "heap".into(),
+                        value: W::GetLocal(format!("{name}__slice_wm")),
+                    });
+                }
             }
             Expr::Call { name, args } if name == intrinsics::STRING_SLICE && args.len() == 3 => {
                 let sk = self.kind_of(&args[1]);

@@ -548,6 +548,38 @@ impl<'types> Codegen<'types> {
                             tail_is_value = false;
                             continue;
                         }
+                        // Keep a local interpolation as a borrowed view too.
+                        // The watermark is retained beside the synthetic length
+                        // until the immediate dictionary consumer rewinds it.
+                        if let Some((prefix, int_value)) =
+                            super::builtins::interpolation_prefix_int(value)
+                            && self.val_type_of(int_value) == ValType::Int
+                        {
+                            let len_local = format!("{name}__slice_len");
+                            let wm_local = format!("{name}__slice_wm");
+                            self.locals.insert(name.clone(), Kind::I32);
+                            self.locals.insert(len_local.clone(), Kind::I32);
+                            self.locals.insert(wm_local.clone(), Kind::I32);
+                            let ak = self.kind_of(int_value);
+                            seq.push(N::SetLocal {
+                                local: wm_local,
+                                value: W::GetGlobal("heap".into()),
+                            });
+                            seq.push(N::CallStoreMulti {
+                                func: "str_fmt_prefix_int_view".into(),
+                                args: vec![
+                                    self.lower_expr(prefix)?,
+                                    Self::wir_convert(
+                                        self.lower_expr(int_value)?,
+                                        ak,
+                                        Kind::I64,
+                                    ),
+                                ],
+                                dests: vec![name.clone(), len_local],
+                            });
+                            tail_is_value = false;
+                            continue;
+                        }
                         // An empty typed reference list has no element expression
                         // from which `lower_expr` can recover its GC array layout.
                         // The binding declaration is authoritative here: preserve
@@ -1587,28 +1619,59 @@ impl<'types> Codegen<'types> {
                                 } else {
                                     W::GetLocal(format!("{name}__cap"))
                                 };
-                                let kw = self.lower_expr(kexpr)?;
                                 let dw = self.lower_expr(dexpr)?;
                                 let fw = self.lower_expr(fexpr)?;
                                 self.clos_arities.insert(1);
-                                self.uses_dict_update_cap = true;
-                                seq.push(N::CallStoreMulti {
-                                    func: intrinsics::declared_wir_helper(
-                                        intrinsics::DICT_UPDATE,
-                                        "dict_update_cap",
-                                    )
-                                    .expect("dict update catalog declares optimized helper")
-                                    .to_string(),
-                                    args: vec![
-                                        W::GetLocal(name.clone()),
-                                        W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
-                                        W::ToSlot(Box::new(dw), Self::wir_kind(dk)),
-                                        W::ConstI32(mode as i32),
-                                        fw,
-                                        cap,
-                                    ],
-                                    dests: vec![name.clone(), format!("{name}__cap")],
-                                });
+                                if mode == 1
+                                    && let Some((setup, ptr, len, cleanup)) =
+                                        self.lower_borrowed_string_pair(kexpr)
+                                {
+                                    // Interpolated string keys are consumed as a
+                                    // borrowed `(ptr,len)` view.  This avoids both
+                                    // the intermediate owned string and the slot
+                                    // conversion at the dictionary update boundary.
+                                    seq.extend(setup);
+                                    let safe = assign_scratch("dict_slice_safe", self.assign_level);
+                                    self.locals.insert(safe.clone(), Kind::I32);
+                                    seq.push(N::CallStoreMulti {
+                                        func: "dict_update_slice_cap".into(),
+                                        args: vec![
+                                            W::GetLocal(name.clone()),
+                                            W::GetLocal(ptr),
+                                            W::GetLocal(len),
+                                            dw,
+                                            fw,
+                                            cap,
+                                        ],
+                                        dests: vec![name.clone(), format!("{name}__cap"), safe.clone()],
+                                    });
+                                    seq.push(N::If {
+                                        cond: W::GetLocal(safe),
+                                        then_: cleanup,
+                                        els: vec![],
+                                        result: None,
+                                    });
+                                } else {
+                                    let kw = self.lower_expr(kexpr)?;
+                                    self.uses_dict_update_cap = true;
+                                    seq.push(N::CallStoreMulti {
+                                        func: intrinsics::declared_wir_helper(
+                                            intrinsics::DICT_UPDATE,
+                                            "dict_update_cap",
+                                        )
+                                        .expect("dict update catalog declares optimized helper")
+                                        .to_string(),
+                                        args: vec![
+                                            W::GetLocal(name.clone()),
+                                            W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                                            W::ToSlot(Box::new(dw), Self::wir_kind(dk)),
+                                            W::ConstI32(mode as i32),
+                                            fw,
+                                            cap,
+                                        ],
+                                        dests: vec![name.clone(), format!("{name}__cap")],
+                                    });
+                                }
                             }
                             analysis::InPlaceOp::Concat(pieces) => {
                                 // `s = s + a + b`: the in-place string builder via

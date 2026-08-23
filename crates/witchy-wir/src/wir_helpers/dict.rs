@@ -1071,8 +1071,10 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
     }
 }
 
-/// `$dict_update_slice_cap(d, p, len, default, clos, cap) -> (i32, i32)` — update dictionary
-/// using a raw borrowed string slice `(p, len)` with zero allocations on hit.
+/// `$dict_update_slice_cap(d, p, len, default, clos, cap) -> (i32, i32, i32)` — update dictionary
+/// using a raw borrowed string slice `(p, len)` with zero allocations on an owned hit.
+/// The third result is `1` exactly when the input heap watermark may be rewound;
+/// misses and unowned updates allocate an owning key/table and return `0`.
 pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -1101,7 +1103,7 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
             WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
             WirLocal { name: "cap".into(), ty: WirTy::Bool },
         ],
-        ret: vec![WirTy::Bool, WirTy::Bool],
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Bool],
         locals: vec![
             WirLocal { name: "found".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Int },
@@ -1109,8 +1111,10 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
             WirLocal { name: "idx".into(), ty: WirTy::Bool },
             WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
             WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
+            WirLocal { name: "rewind_safe".into(), ty: WirTy::Bool },
         ],
         body: vec![
+            setl("rewind_safe", i32c(0)),
             setl("found", E::Call {
                 func: "dict_find_slice".into(),
                 args: vec![getl("d"), getl("p"), getl("len")],
@@ -1134,6 +1138,7 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
                     },
                     setl("ret_ptr", getl("d")),
                     setl("ret_cap", getl("cap")),
+                    setl("rewind_safe", i32c(1)),
                 ],
                 els: vec![
                     setl("new", call_clos(getl("default"))),
@@ -1168,6 +1173,7 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
             },
             N::Push(getl("ret_ptr")),
             N::Push(getl("ret_cap")),
+            N::Push(getl("rewind_safe")),
         ],
         raw_body: None,
     }
@@ -1191,9 +1197,9 @@ pub(crate) fn dict_update_slice_helper() -> WirFunc {
             WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
         ],
         ret: vec![WirTy::Bool],
-        locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }, WirLocal { name: "cap".into(), ty: WirTy::Bool }],
+            locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }, WirLocal { name: "cap".into(), ty: WirTy::Bool }, WirLocal { name: "safe".into(), ty: WirTy::Bool }],
         body: vec![
-            N::CallStoreMulti { func: "dict_update_slice_cap".into(), args: vec![get("d"), get("p"), get("len"), get("default"), get("clos"), E::ConstI32(0)], dests: vec!["out".into(), "cap".into()] },
+            N::CallStoreMulti { func: "dict_update_slice_cap".into(), args: vec![get("d"), get("p"), get("len"), get("default"), get("clos"), E::ConstI32(0)], dests: vec!["out".into(), "cap".into(), "safe".into()] },
             N::Push(get("out")),
         ],
         raw_body: None,

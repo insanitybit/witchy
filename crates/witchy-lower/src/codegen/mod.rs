@@ -8383,11 +8383,13 @@ impl<'types> Codegen<'types> {
             let default = self.lower_expr(&args[2])?;
             let clos = self.lower_expr(&args[3])?;
             let cap = W::GetLocal(format!("{root}__cap"));
+            let safe = assign_scratch("dict_slice_safe", self.assign_level);
+            self.locals.insert(safe.clone(), Kind::I32);
             return Some(W::Seq(vec![
                 N::CallStoreMulti {
                     func: "dict_update_slice_cap".into(),
                     args: vec![d, ptr, len, default, clos, cap],
-                    dests: vec![root.clone(), format!("{root}__cap")],
+                    dests: vec![root.clone(), format!("{root}__cap"), safe],
                 },
                 N::Push(W::ConstI32(0)),
             ]));

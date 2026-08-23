@@ -1393,6 +1393,36 @@ fn main() -> Int:
     }
 
     #[test]
+    fn dict_update_interpolation_uses_borrowed_view_and_preserves_misses() {
+        let dict_module = parse_module(
+            witchy_syntax::linker::bundled_source("dict").expect("bundled dict module"),
+        ).expect("parse dict module");
+        let app = parse_module(r#"
+mode opt
+import dict
+fn main() -> Int:
+    var d: Dict(String, Int) = dict.new()
+    var i = 0
+    while i < 3:
+        let w = "word${i}"
+        dict.update(d, w, 0, fn(n: Int): n + 1)
+        i = i + 1
+    dict.length(d)
+"#).expect("parse interpolation update app");
+        let module = link_test_modules(
+            vec![("dict".into(), dict_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        );
+        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
+        assert_eq!(result, 3);
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower interpolation update"));
+        assert!(wat.contains("call $str_fmt_prefix_int_view"), "update key should use a borrowed format view: {wat}");
+        assert!(wat.contains("call $dict_update_slice_cap"), "update should consume the view directly: {wat}");
+        assert!(!wat.contains("call $str_fmt_prefix_int\n"), "update path should not materialize an owned key: {wat}");
+    }
+
+    #[test]
     fn bool_repeat_returns_the_packed_root_and_capacity_token() {
         let source = r#"
 mode opt
