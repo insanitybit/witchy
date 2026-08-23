@@ -14,7 +14,7 @@ use witchy_syntax::suspension::{
     frame_state, FRAME_BOXED_ATTRIBUTE, FRAME_ENTRY_ATTRIBUTE, FRAME_FUNCTION_ATTRIBUTE,
 };
 
-use crate::typeck::TypedModule;
+use crate::typeck::{Ty, TypeTable, TypedModule};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarrierLane {
@@ -111,6 +111,10 @@ pub struct AwaitSelect2Plan {
     pub first_channel: String,
     pub second_channel: String,
     pub payload_layout: usize,
+    /// The typed scalar lane recovered from both receiver endpoints.  `None`
+    /// deliberately keeps the ordinary erased-message path; it is never an
+    /// invitation to infer a representation from the runtime `__Msg` slot.
+    pub payload_lane: Option<CarrierLane>,
     pub resume_target: usize,
     pub result_use: SelectResultUse,
 }
@@ -231,7 +235,7 @@ impl SuspensionCarrierCatalog {
                         state.function
                     )
                 })?;
-                scalar_transitions_for_function(function, &state_ids)
+                scalar_transitions_for_function(function, &state_ids, typed.table())
             })
             .collect();
         Ok(Self {
@@ -378,11 +382,12 @@ impl SuspensionCarrierCatalog {
 fn scalar_transitions_for_function(
     function: &Function,
     state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
 ) -> Result<Vec<ScalarTransition>, String> {
     let terminal = terminal_block_expr(&function.body)
         .ok_or_else(|| "state body has no terminal expression".to_string())?;
     let mut transitions = Vec::new();
-    collect_scalar_transitions(terminal, state_ids, &mut transitions)?;
+    collect_scalar_transitions(terminal, state_ids, table, &mut transitions)?;
     if transitions.is_empty() {
         return Err("state body has no terminal transition".into());
     }
@@ -401,13 +406,14 @@ fn terminal_block_expr(block: &ast::Block) -> Option<&ast::Expr> {
 fn collect_scalar_transitions(
     expression: &ast::Expr,
     state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
     match expression {
         ast::Expr::Block(block) => {
             let terminal = terminal_block_expr(block)
                 .ok_or_else(|| "terminal block has no value expression".to_string())?;
-            collect_scalar_transitions(terminal, state_ids, transitions)
+            collect_scalar_transitions(terminal, state_ids, table, transitions)
         }
         ast::Expr::If {
             then_block,
@@ -420,15 +426,15 @@ fn collect_scalar_transitions(
             let else_terminal = terminal_block_expr(else_block).ok_or_else(|| {
                 "suspension-state `if` else-branch has no terminal value".to_string()
             })?;
-            collect_scalar_transitions(then_terminal, state_ids, transitions)?;
-            collect_scalar_transitions(else_terminal, state_ids, transitions)
+            collect_scalar_transitions(then_terminal, state_ids, table, transitions)?;
+            collect_scalar_transitions(else_terminal, state_ids, table, transitions)
         }
         ast::Expr::If {
             else_block: None, ..
         } => Err("suspension-state `if` is missing an else transition".into()),
         ast::Expr::Match { arms, .. } if !arms.is_empty() => {
             for arm in arms {
-                collect_scalar_transitions(&arm.body, state_ids, transitions)?;
+                collect_scalar_transitions(&arm.body, state_ids, table, transitions)?;
             }
             Ok(())
         }
@@ -448,7 +454,7 @@ fn collect_scalar_transitions(
             Ok(())
         }
         ast::Expr::Call { name, args } if call_family(name, "task.run") && args.len() == 1 => {
-            collect_task_expression(&args[0], None, state_ids, transitions)
+            collect_task_expression(&args[0], None, state_ids, table, transitions)
         }
         ast::Expr::Call { name, args } if call_family(name, "task.lazy") && args.len() == 1 => {
             let ast::Expr::Lambda { body, .. } = &args[0] else {
@@ -456,14 +462,14 @@ fn collect_scalar_transitions(
             };
             let terminal = terminal_block_expr(body)
                 .ok_or_else(|| "`task.lazy` lambda has no terminal task".to_string())?;
-            collect_scalar_transitions(terminal, state_ids, transitions)
+            collect_scalar_transitions(terminal, state_ids, table, transitions)
         }
         ast::Expr::Call { name, args } if call_family(name, "task.and_then") && args.len() == 2 => {
             let resume = continuation_state(&args[1], state_ids)?;
-            collect_task_expression(&args[0], Some(resume), state_ids, transitions)
+            collect_task_expression(&args[0], Some(resume), state_ids, table, transitions)
         }
         ast::Expr::Call { name, .. } if call_family(name, "chan.__select2_map") => {
-            collect_task_expression(expression, None, state_ids, transitions)
+            collect_task_expression(expression, None, state_ids, table, transitions)
         }
         ast::Expr::Call { name, .. }
             if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
@@ -480,6 +486,7 @@ fn collect_task_expression(
     task: &ast::Expr,
     resume: Option<usize>,
     state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
     let ast::Expr::Call { name, args } = task else {
@@ -499,11 +506,11 @@ fn collect_task_expression(
         };
         let terminal = terminal_block_expr(body)
             .ok_or_else(|| "awaited `task.lazy` lambda has no terminal task".to_string())?;
-        return collect_task_expression(terminal, resume, state_ids, transitions);
+        return collect_task_expression(terminal, resume, state_ids, table, transitions);
     }
     if call_family(name, "task.and_then") && args.len() == 2 {
         let continuation = continuation_state(&args[1], state_ids)?;
-        return collect_task_expression(&args[0], Some(continuation), state_ids, transitions);
+        return collect_task_expression(&args[0], Some(continuation), state_ids, table, transitions);
     }
     if call_family(name, "chan.__select2_map") {
         let resume_target = continuation_state(
@@ -514,6 +521,7 @@ fn collect_task_expression(
             first_channel: "unknown".into(),
             second_channel: "unknown".into(),
             payload_layout: 0,
+            payload_lane: select_payload_lane(table, args.first(), args.get(1)),
             resume_target,
             result_use: SelectResultUse::ImmediateMatch,
         }));
@@ -540,6 +548,7 @@ fn collect_task_expression(
             first_channel,
             second_channel,
             payload_layout: 0,
+            payload_lane: select_payload_lane(table, args.first(), args.get(1)),
             resume_target: resume,
             result_use: SelectResultUse::ImmediateMatch,
         })
@@ -581,6 +590,31 @@ fn task_entry_state(expression: &ast::Expr, state_ids: &HashMap<String, usize>) 
             terminal_block_expr(block).and_then(|terminal| task_entry_state(terminal, state_ids))
         }
         ast::Expr::Call { name, .. } => state_ids.get(name).copied(),
+        _ => None,
+    }
+}
+
+fn select_payload_lane(
+    table: &TypeTable,
+    first: Option<&ast::Expr>,
+    second: Option<&ast::Expr>,
+) -> Option<CarrierLane> {
+    select_payload_lane_types(
+        first.and_then(|expr| table.type_of(expr)),
+        second.and_then(|expr| table.type_of(expr)),
+    )
+}
+
+fn select_payload_lane_types(first: Option<&Ty>, second: Option<&Ty>) -> Option<CarrierLane> {
+    match (first, second) {
+        (Some(Ty::Named(first_name, first_args)), Some(Ty::Named(second_name, second_args)))
+            if first_name.rsplit('.').next() == Some("Receiver")
+                && second_name.rsplit('.').next() == Some("Receiver")
+                && first_args.as_slice() == [Ty::Int]
+                && second_args.as_slice() == [Ty::Int] =>
+        {
+            Some(CarrierLane::I64)
+        }
         _ => None,
     }
 }
@@ -955,14 +989,30 @@ mod tests {
             "fn state() -> Nil:\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.send__Int(tx, value), fn(ignored): resume()))\n",
         )
         .expect("transition fixture parses");
+        let table = TypeTable::default();
         let Item::Function(function) = &module.items[0] else {
             panic!("state function")
         };
         let state_ids = HashMap::from_iter([("resume".to_string(), 7)]);
 
         assert_eq!(
-            scalar_transitions_for_function(function, &state_ids),
+            scalar_transitions_for_function(function, &state_ids, &table),
             Ok(vec![ScalarTransition::ChannelSend { resume: 7 }]),
         );
+    }
+
+    #[test]
+    fn select_payload_lane_requires_two_typed_integer_receivers() {
+        let receiver_int = Ty::Named("Receiver".into(), vec![Ty::Int]);
+        let receiver_string = Ty::Named("Receiver".into(), vec![Ty::String]);
+        assert_eq!(
+            select_payload_lane_types(Some(&receiver_int), Some(&receiver_int)),
+            Some(CarrierLane::I64)
+        );
+        assert_eq!(
+            select_payload_lane_types(Some(&receiver_int), Some(&receiver_string)),
+            None
+        );
+        assert_eq!(select_payload_lane_types(None, Some(&receiver_int)), None);
     }
 }

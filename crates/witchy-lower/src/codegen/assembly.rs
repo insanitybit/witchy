@@ -7023,6 +7023,13 @@ mod checked_codegen_boundary_tests {
                 witchy_types::suspension_carrier::ScalarTransition::ChannelSelect2(_)
             ))
         }), "typed carrier must retain the select plan");
+        assert!(scalar.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
+            matches!(
+                transition,
+                witchy_types::suspension_carrier::ScalarTransition::ChannelSelect2(plan)
+                    if plan.payload_lane == Some(witchy_types::suspension_carrier::CarrierLane::I64)
+            )
+        }), "Int receivers must carry an explicit typed payload lane");
         let select_state = wir.funcs.iter().find(|function| {
             let mut calls = HashSet::new();
             collect_called_funcs(&function.body, &mut calls);
