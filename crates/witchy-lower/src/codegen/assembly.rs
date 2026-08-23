@@ -3228,7 +3228,9 @@ fn assemble_optimized_wir_with_structs_mode(
             glamour_development,
             collect_source_map,
         )?;
-    witchy_wir::wir_opt::inline_direct_calls(&mut wir_module);
+    if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::DirectCall) {
+        witchy_wir::wir_opt::inline_direct_calls(&mut wir_module);
+    }
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
     Ok((wir_module, gc_structs, gc_arrays, layouts, carrier))

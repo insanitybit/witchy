@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use crate::wir::{WirExpr, WirFunc, WirModule, WirNode, WirSeq, CLOSURE_CODE_FIELD};
-use crate::wir_opt::tail_calls::hygiene::{rename_seq_locals, unique_local_name, unique_label};
-use crate::wir_opt::{seq_size, node_size, expr_size};
+use crate::wir::{WirExpr, WirModule, WirNode, WirSeq, CLOSURE_CODE_FIELD};
+
+
 
 pub fn inline_direct_calls(module: &mut WirModule) {
     let mut changed = true;
@@ -13,7 +13,7 @@ pub fn inline_direct_calls(module: &mut WirModule) {
     }
 }
 
-fn devirtualize_closures(module: &mut WirModule, changed: &mut bool) {
+fn devirtualize_closures(module: &mut WirModule, _changed: &mut bool) {
     let table = match &module.table {
         Some(t) => t,
         None => return,
@@ -27,13 +27,13 @@ fn devirtualize_closures(module: &mut WirModule, changed: &mut bool) {
     }
 }
 
-fn devirt_seq(seq: &mut WirSeq, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
+fn devirt_seq(seq: &mut WirSeq, funcs: &[String], closures: &mut HashMap<String, String>, _changed: &mut bool) {
     for node in seq {
         devirt_node(node, funcs, closures, changed);
     }
 }
 
-fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
+fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<String, String>, _changed: &mut bool) {
     match node {
         WirNode::SetLocal { local, value } => {
             devirt_expr(value, funcs, closures, changed);
@@ -87,7 +87,7 @@ fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<Stri
     }
 }
 
-fn devirt_expr(expr: &mut WirExpr, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
+fn devirt_expr(expr: &mut WirExpr, funcs: &[String], closures: &mut HashMap<String, String>, _changed: &mut bool) {
     match expr {
         WirExpr::ToSlot(inner, _) | WirExpr::FromSlot(inner, _) | WirExpr::Unary { arg: inner, .. }
         | WirExpr::Convert { arg: inner, .. } | WirExpr::Load { ptr: inner, .. }
@@ -139,7 +139,7 @@ fn devirt_expr(expr: &mut WirExpr, funcs: &[String], closures: &mut HashMap<Stri
     }
 }
 
-fn do_inlining(module: &mut WirModule, changed: &mut bool) {
+fn do_inlining(module: &mut WirModule, _changed: &mut bool) {
     // Collect tiny leaf funcs
     let mut inlineable = HashMap::new();
     for func in &module.funcs {
@@ -182,7 +182,7 @@ fn has_call_expr(expr: &WirExpr) -> bool {
     }
 }
 
-fn prune_unused_functions(module: &mut WirModule, changed: &mut bool) {
+fn prune_unused_functions(module: &mut WirModule, _changed: &mut bool) {
     let mut called = std::collections::HashSet::new();
     // 1. collect from table
     if let Some(t) = &module.table {
