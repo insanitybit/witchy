@@ -1190,6 +1190,47 @@ impl Runtime {
         Self::with_preemption(false, wasmtime::OptLevel::None)
     }
 
+    /// Same sandbox as [`Self::batch`], but with a specific Cranelift profiling strategy.
+    pub fn batch_with_profiler(profiler: wasmtime::ProfilingStrategy) -> Result<Self> {
+        let mut rt = Self::with_preemption(false, wasmtime::OptLevel::Speed)?;
+        let mut config = Config::new();
+        config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        config.wasm_threads(false);
+        config.wasm_simd(true);
+        config.wasm_relaxed_simd(true);
+        config.wasm_multi_memory(false);
+        config.wasm_tail_call(false);
+        config.wasm_memory64(false);
+        config.profiler(profiler);
+        if profiler != wasmtime::ProfilingStrategy::None {
+            config.debug_info(true);
+        }
+        rt.engine = match Engine::new(&config) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("warning: profiling strategy failed on this platform ({err}); falling back to none");
+                config.profiler(wasmtime::ProfilingStrategy::None);
+                Engine::new(&config)?
+            }
+        };
+        Ok(rt)
+    }
+
+    /// Parse a profiling strategy name from user configuration or environment variables.
+    pub fn profiling_strategy_from_name(name: &str) -> Option<wasmtime::ProfilingStrategy> {
+        match name.trim().to_lowercase().as_str() {
+            "perfmap" | "perf_map" | "1" | "true" => Some(wasmtime::ProfilingStrategy::PerfMap),
+            "jitdump" | "jit_dump" => Some(wasmtime::ProfilingStrategy::JitDump),
+            "vtune" => Some(wasmtime::ProfilingStrategy::VTune),
+            "pulley" => Some(wasmtime::ProfilingStrategy::Pulley),
+            "none" | "0" | "false" => Some(wasmtime::ProfilingStrategy::None),
+            _ => None,
+        }
+    }
+
     fn with_preemption(preempt: bool, opt_level: wasmtime::OptLevel) -> Result<Self> {
         let mut config = Config::new();
         // Production batch/new keep Speed. `batch_quick` uses None so a
@@ -1215,6 +1256,25 @@ impl Runtime {
         config.wasm_multi_memory(false);
         config.wasm_tail_call(false);
         config.wasm_memory64(false);
+        // Support Cranelift profiling strategies for external profilers (Linux perf,
+        // VTune, JIT symbol mapping). Configurable via WITCHY_PROFILE or WITCHY_PERF_MAP.
+        if let Ok(strat) = std::env::var("WITCHY_PROFILE") {
+            if let Some(profile_strat) = Self::profiling_strategy_from_name(&strat) {
+                config.profiler(profile_strat);
+                if profile_strat != wasmtime::ProfilingStrategy::None {
+                    config.debug_info(true);
+                }
+            } else {
+                eprintln!("warning: unknown WITCHY_PROFILE strategy '{strat}'; expected perfmap, jitdump, vtune, or none");
+            }
+        } else if std::env::var_os("WITCHY_PERF_MAP").is_some() {
+            config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+            config.debug_info(true);
+        }
+        if std::env::var_os("WITCHY_DEBUG_INFO").is_some() {
+            config.debug_info(true);
+        }
+
         // Epoch-based interruption lets the scheduler preempt a runaway VM.
         // It is only worth its per-backedge cost when a
         // scheduler will actually advance the epoch.
@@ -1240,7 +1300,14 @@ impl Runtime {
             pool.max_memory_size(16384 * 64 * 1024);
             config.allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(pool));
         }
-        let engine = Engine::new(&config)?;
+        let engine = match Engine::new(&config) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("warning: failed to initialize wasmtime engine with requested configuration ({err}); falling back to default profiler");
+                config.profiler(wasmtime::ProfilingStrategy::None);
+                Engine::new(&config)?
+            }
+        };
         Ok(Self {
             engine,
             next_id: 1,

@@ -1637,4 +1637,47 @@ fn console_output_step(text: &str) -> witchy_testkit::FixtureStep {
         required: true,
     }
 }
+
+#[test]
+fn profiling_strategies_can_be_configured() {
+    let empty = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+        .expect("empty canonical layout bundle");
+    let valid = wasm_with_layout_payload(empty.canonical_bytes());
+
+    assert_eq!(
+        Runtime::profiling_strategy_from_name("perfmap"),
+        Some(wasmtime::ProfilingStrategy::PerfMap)
+    );
+    assert_eq!(
+        Runtime::profiling_strategy_from_name("jitdump"),
+        Some(wasmtime::ProfilingStrategy::JitDump)
+    );
+    assert_eq!(
+        Runtime::profiling_strategy_from_name("vtune"),
+        Some(wasmtime::ProfilingStrategy::VTune)
+    );
+    assert_eq!(
+        Runtime::profiling_strategy_from_name("none"),
+        Some(wasmtime::ProfilingStrategy::None)
+    );
+    assert_eq!(
+        Runtime::profiling_strategy_from_name("invalid_xyz"),
+        None
+    );
+
+    for strategy in [
+        wasmtime::ProfilingStrategy::None,
+        wasmtime::ProfilingStrategy::PerfMap,
+        wasmtime::ProfilingStrategy::JitDump,
+    ] {
+        let mut runtime = Runtime::batch_with_profiler(strategy)
+            .expect("runtime initialization with profiling strategy");
+        runtime
+            .spawn(&valid, Capabilities::none(), 4)
+            .expect("module instantiation with profiling strategy");
+    }
+}
+
 use std::path::PathBuf;
+
+
