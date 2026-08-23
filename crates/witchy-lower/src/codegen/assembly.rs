@@ -7040,6 +7040,11 @@ mod checked_codegen_boundary_tests {
         assert!(calls.iter().any(|name| name.starts_with("chan.__select2_map")));
         assert!(!calls.iter().any(|name| name.starts_with("task.and_then__chan_2eSelected")),
             "outer selected-value and_then must be absent from fused state: {calls:?}");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(
+            !wat.contains("chan.select2_result__Int"),
+            "the fused map decoder should pass First/Second/Closed directly to its continuation"
+        );
     }
 
     #[test]
