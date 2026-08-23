@@ -4319,6 +4319,40 @@ fn main() -> Int:
     }
 
     #[test]
+    fn loop_rebound_closure_keeps_dynamic_dispatch_while_stable_closure_devirtualizes() {
+        let src = r#"
+fn main() -> Int:
+    let k = 10
+    let g = fn(x: Int): x + k
+    var f = fn(x: Int): x * 2
+    var i = 0
+    var acc = 0
+    while i < 8:
+        acc = acc + g(i) + f(i)
+        if i == 4:
+            f = fn(x: Int): x * 3
+        i = i + 1
+    acc
+"#;
+        let direct = witchy_syntax::opt::OptSet::default_set()
+            .without(witchy_syntax::opt::Opt::ClosureElide);
+        witchy_syntax::opt::set_for_tests(Some(direct));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        assert_eq!(result, 182, "the loop must observe the rebound closure");
+
+        let (calls, indirect, _) = call_shape(src, direct);
+        assert!(
+            calls.iter().any(|name| name.starts_with("__lamw")),
+            "the stable closure remains eligible for direct dispatch: {calls:?}",
+        );
+        assert!(
+            indirect > 0,
+            "the loop-carried rebound closure must retain table dispatch",
+        );
+    }
+
+    #[test]
     fn elides_bounds_check_in_counted_loop() {
         // (RFC-0034 L2 / BUG-008) Inside `for i in 0..list.length(xs)` over an
         // unreassigned `xs`, the compiler-managed counter satisfies `0 <= i < length(xs)`

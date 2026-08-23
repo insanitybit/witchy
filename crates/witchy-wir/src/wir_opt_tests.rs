@@ -6,7 +6,8 @@
     };
     use crate::wir::{
         BinOp, ClosureSignature, Kind, WirExpr, WirFunc, WirImport, WirLocal,
-        WirModule, WirNode, WirTable, WirTy, closure_wrapper_struct, slot_closure_signature,
+        WirModule, WirNode, WirTable, WirTy, CLOSURE_CODE_FIELD, closure_wrapper_struct,
+        slot_closure_signature,
     };
 
     /// A bare module wrapping a single func, for exercising `optimize`.
@@ -35,6 +36,128 @@
             body: vec![WirNode::Return(Some(body_expr))],
             raw_body: None,
         }
+    }
+
+    fn closure_value(index: i32) -> WirExpr {
+        WirExpr::StructNew {
+            struct_id: 0,
+            args: vec![WirExpr::ConstI32(index)],
+        }
+    }
+
+    fn indirect_closure_call(local: &str) -> WirExpr {
+        WirExpr::CallIndirect {
+            signature: ClosureSignature {
+                params: vec![],
+                results: vec![],
+            },
+            args: vec![],
+            index: Box::new(WirExpr::StructGet {
+                struct_id: 0,
+                field: CLOSURE_CODE_FIELD,
+                base: Box::new(WirExpr::GetLocal(local.into())),
+            }),
+        }
+    }
+
+    #[test]
+    fn closure_devirtualization_kills_loop_carried_rebinds_but_keeps_stable_locals() {
+        let mut module = module_with(WirFunc {
+            name: "main".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "stable".into(),
+                    value: closure_value(0),
+                },
+                WirNode::SetLocal {
+                    local: "rebound".into(),
+                    value: closure_value(0),
+                },
+                WirNode::Loop {
+                    label: "again".into(),
+                    body: vec![
+                        WirNode::Do(indirect_closure_call("stable")),
+                        WirNode::Do(indirect_closure_call("rebound")),
+                        WirNode::If {
+                            cond: WirExpr::ConstI32(1),
+                            then_: vec![WirNode::SetLocal {
+                                local: "rebound".into(),
+                                value: closure_value(1),
+                            }],
+                            els: vec![],
+                            result: None,
+                        },
+                    ],
+                },
+                WirNode::Do(indirect_closure_call("rebound")),
+            ],
+            raw_body: None,
+        });
+        module.table = Some(WirTable {
+            funcs: vec!["first".into(), "second".into()],
+        });
+
+        inline_direct_calls(&mut module);
+
+        let [_, _, WirNode::Loop { body, .. }, WirNode::Do(after)] =
+            module.funcs[0].body.as_slice()
+        else {
+            panic!("unexpected optimized body: {:?}", module.funcs[0].body);
+        };
+        assert!(
+            matches!(&body[0], WirNode::Do(WirExpr::Call { func, .. }) if func == "first"),
+            "a closure never assigned by the loop remains directly callable: {body:?}",
+        );
+        assert!(
+            matches!(&body[1], WirNode::Do(WirExpr::CallIndirect { .. })),
+            "a loop-carried closure rebind must retain dynamic dispatch: {body:?}",
+        );
+        assert!(
+            matches!(after, WirExpr::CallIndirect { .. }),
+            "a closure assigned by a maybe-zero-iteration loop is unknown after the loop: {after:?}",
+        );
+    }
+
+    #[test]
+    fn closure_devirtualization_kills_conditional_multi_result_destinations() {
+        let mut module = module_with(WirFunc {
+            name: "main".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "closure".into(),
+                    value: closure_value(0),
+                },
+                WirNode::If {
+                    cond: WirExpr::ConstI32(1),
+                    then_: vec![WirNode::CallStoreMulti {
+                        func: "replace".into(),
+                        args: vec![],
+                        dests: vec!["closure".into()],
+                    }],
+                    els: vec![],
+                    result: None,
+                },
+                WirNode::Do(indirect_closure_call("closure")),
+            ],
+            raw_body: None,
+        });
+        module.table = Some(WirTable {
+            funcs: vec!["first".into()],
+        });
+
+        inline_direct_calls(&mut module);
+
+        assert!(
+            matches!(&module.funcs[0].body[2], WirNode::Do(WirExpr::CallIndirect { .. })),
+            "a conditional call destination cannot retain its incoming closure target: {:?}",
+            module.funcs[0].body,
+        );
     }
 
     #[test]

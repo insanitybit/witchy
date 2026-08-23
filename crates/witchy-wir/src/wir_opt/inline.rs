@@ -1,5 +1,5 @@
 use crate::wir_opt::seq_size;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq, CLOSURE_CODE_FIELD};
 
 
@@ -34,25 +34,164 @@ fn devirt_seq(seq: &mut WirSeq, funcs: &[String], closures: &mut HashMap<String,
     }
 }
 
+fn closure_target(value: &WirExpr, funcs: &[String]) -> Option<String> {
+    let WirExpr::StructNew { struct_id: 0, args } = value else {
+        return None;
+    };
+    let Some(WirExpr::ConstI32(index)) = args.first() else {
+        return None;
+    };
+    funcs.get(*index as usize).cloned()
+}
+
+fn collect_assigned_locals_seq(seq: &WirSeq, assigned: &mut HashSet<String>) {
+    for node in seq {
+        collect_assigned_locals_node(node, assigned);
+    }
+}
+
+fn collect_assigned_locals_node(node: &WirNode, assigned: &mut HashSet<String>) {
+    match node {
+        WirNode::SetLocal { local, value } => {
+            assigned.insert(local.clone());
+            collect_assigned_locals_expr(value, assigned);
+        }
+        WirNode::CallStoreMulti { args, dests, .. } => {
+            assigned.extend(dests.iter().cloned());
+            for argument in args {
+                collect_assigned_locals_expr(argument, assigned);
+            }
+        }
+        WirNode::CallIndirectStoreMulti { args, index, dests, .. } => {
+            assigned.extend(dests.iter().cloned());
+            for argument in args {
+                collect_assigned_locals_expr(argument, assigned);
+            }
+            collect_assigned_locals_expr(index, assigned);
+        }
+        WirNode::Source { body, .. } | WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+            collect_assigned_locals_seq(body, assigned);
+        }
+        WirNode::If { cond, then_, els, .. } => {
+            collect_assigned_locals_expr(cond, assigned);
+            collect_assigned_locals_seq(then_, assigned);
+            collect_assigned_locals_seq(els, assigned);
+        }
+        WirNode::Store { ptr, value, .. }
+        | WirNode::Store8 { ptr, value, .. }
+        | WirNode::StructSet { base: ptr, value, .. } => {
+            collect_assigned_locals_expr(ptr, assigned);
+            collect_assigned_locals_expr(value, assigned);
+        }
+        WirNode::ArraySet { array, index, value, .. } => {
+            collect_assigned_locals_expr(array, assigned);
+            collect_assigned_locals_expr(index, assigned);
+            collect_assigned_locals_expr(value, assigned);
+        }
+        WirNode::SetGlobal { value, .. }
+        | WirNode::Drop(value)
+        | WirNode::Do(value)
+        | WirNode::Push(value)
+        | WirNode::Return(Some(value))
+        | WirNode::Br { cond: Some(value), .. } => collect_assigned_locals_expr(value, assigned),
+        WirNode::MemoryCopy { dest, src, len } => {
+            collect_assigned_locals_expr(dest, assigned);
+            collect_assigned_locals_expr(src, assigned);
+            collect_assigned_locals_expr(len, assigned);
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            collect_assigned_locals_expr(dest, assigned);
+            collect_assigned_locals_expr(value, assigned);
+            collect_assigned_locals_expr(len, assigned);
+        }
+        _ => {}
+    }
+}
+
+fn collect_assigned_locals_expr(expr: &WirExpr, assigned: &mut HashSet<String>) {
+    match expr {
+        WirExpr::ToSlot(inner, _)
+        | WirExpr::FromSlot(inner, _)
+        | WirExpr::Unary { arg: inner, .. }
+        | WirExpr::Convert { arg: inner, .. }
+        | WirExpr::Load { ptr: inner, .. }
+        | WirExpr::Load8U { ptr: inner, .. }
+        | WirExpr::MemoryGrow(inner)
+        | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::RefCastNullable { value: inner, .. }
+        | WirExpr::ArrayLen(inner)
+        | WirExpr::RefIsNull(inner) => collect_assigned_locals_expr(inner, assigned),
+        WirExpr::Binary { lhs, rhs, .. } => {
+            collect_assigned_locals_expr(lhs, assigned);
+            collect_assigned_locals_expr(rhs, assigned);
+        }
+        WirExpr::Call { args, .. }
+        | WirExpr::CallHost { args, .. }
+        | WirExpr::StructNew { args, .. }
+        | WirExpr::ArrayNewFixed { items: args, .. }
+        | WirExpr::Vector { args, .. } => {
+            for argument in args {
+                collect_assigned_locals_expr(argument, assigned);
+            }
+        }
+        WirExpr::ArrayNew { value, len, .. } => {
+            collect_assigned_locals_expr(value, assigned);
+            collect_assigned_locals_expr(len, assigned);
+        }
+        WirExpr::ArrayGet { array, index, .. } => {
+            collect_assigned_locals_expr(array, assigned);
+            collect_assigned_locals_expr(index, assigned);
+        }
+        WirExpr::Control(node) => collect_assigned_locals_node(node, assigned),
+        WirExpr::Seq(seq) => collect_assigned_locals_seq(seq, assigned),
+        WirExpr::CallIndirect { args, index, .. } => {
+            for argument in args {
+                collect_assigned_locals_expr(argument, assigned);
+            }
+            collect_assigned_locals_expr(index, assigned);
+        }
+        _ => {}
+    }
+}
+
 fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<String, String>, changed: &mut bool) {
     match node {
         WirNode::SetLocal { local, value } => {
             devirt_expr(value, funcs, closures, changed);
-            if let WirExpr::StructNew { struct_id: 0, args } = value {
-                if let Some(WirExpr::ConstI32(idx)) = args.first() {
-                    if let Some(name) = funcs.get(*idx as usize) {
-                        closures.insert(local.clone(), name.clone());
-                    }
-                }
+            if let Some(target) = closure_target(value, funcs) {
+                closures.insert(local.clone(), target);
+            } else {
+                closures.remove(local);
             }
         }
-        WirNode::Source { body, .. } | WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+        WirNode::Source { body, .. } | WirNode::Block { body, .. } => {
             devirt_seq(body, funcs, closures, changed);
+        }
+        WirNode::Loop { body, .. } => {
+            let mut assigned = HashSet::new();
+            collect_assigned_locals_seq(body, &mut assigned);
+            for local in &assigned {
+                closures.remove(local);
+            }
+            let mut body_closures = closures.clone();
+            devirt_seq(body, funcs, &mut body_closures, changed);
         }
         WirNode::If { cond, then_, els, .. } => {
             devirt_expr(cond, funcs, closures, changed);
-            devirt_seq(then_, funcs, closures, changed);
-            devirt_seq(els, funcs, closures, changed);
+            let mut then_closures = closures.clone();
+            let mut else_closures = closures.clone();
+            devirt_seq(then_, funcs, &mut then_closures, changed);
+            devirt_seq(els, funcs, &mut else_closures, changed);
+            closures.retain(|local, target| {
+                then_closures.get(local) == Some(target)
+                    && else_closures.get(local) == Some(target)
+            });
+            for (local, target) in then_closures {
+                if else_closures.get(&local) == Some(&target) {
+                    closures.insert(local, target);
+                }
+            }
         }
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } | WirNode::StructSet { base: ptr, value, .. } => {
             devirt_expr(ptr, funcs, closures, changed);
@@ -66,12 +205,18 @@ fn devirt_node(node: &mut WirNode, funcs: &[String], closures: &mut HashMap<Stri
         WirNode::SetGlobal { value, .. } | WirNode::Drop(value) | WirNode::Do(value) | WirNode::Push(value) | WirNode::Return(Some(value)) | WirNode::Br { cond: Some(value), .. } => {
             devirt_expr(value, funcs, closures, changed);
         }
-        WirNode::CallStoreMulti { args, .. } => {
+        WirNode::CallStoreMulti { args, dests, .. } => {
             for a in args { devirt_expr(a, funcs, closures, changed); }
+            for destination in dests {
+                closures.remove(destination);
+            }
         }
-        WirNode::CallIndirectStoreMulti { args, index, .. } => {
+        WirNode::CallIndirectStoreMulti { args, index, dests, .. } => {
             for a in args { devirt_expr(a, funcs, closures, changed); }
             devirt_expr(index, funcs, closures, changed);
+            for destination in dests {
+                closures.remove(destination);
+            }
             // Could devirt this too, but for closure_calls bench CallStoreMulti isn't used for closures
         }
         WirNode::MemoryCopy { dest, src, len } => {
