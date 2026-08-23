@@ -13,6 +13,27 @@ use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind, WirExpr as W, WirNode 
 const SEQUENCE_POLICY_EXACT: u8 = 1;
 const SEQUENCE_POLICY_GENERALIZED: u8 = 2;
 
+#[derive(Default)]
+pub(super) struct SequenceBackendPolicyTriggers(std::cell::Cell<u8>);
+
+impl SequenceBackendPolicyTriggers {
+    fn checkpoint(&self) -> u8 {
+        self.0.get()
+    }
+
+    fn restore(&self, checkpoint: u8) {
+        self.0.set(checkpoint);
+    }
+
+    fn note(&self, trigger: u8) {
+        self.0.set(self.0.get() | trigger);
+    }
+
+    fn contains(&self, trigger: u8) -> bool {
+        self.0.get() & trigger != 0
+    }
+}
+
 /// Physical facts shared by all indexed operations in one stable loop.
 #[derive(Clone, Debug)]
 pub(super) struct SequenceAccessPlan {
@@ -34,16 +55,24 @@ pub(super) struct ProvenIndexDomain {
 }
 
 impl<'types> Codegen<'types> {
+    pub(super) fn sequence_backend_policy_checkpoint(&self) -> u8 {
+        self.sequence_backend_policy_triggers.checkpoint()
+    }
+
+    pub(super) fn restore_sequence_backend_policy(&self, checkpoint: u8) {
+        self.sequence_backend_policy_triggers.restore(checkpoint);
+    }
+
     fn note_sequence_backend_policy(&self, trigger: u8) {
-        self.sequence_backend_policy_triggers
-            .set(self.sequence_backend_policy_triggers.get() | trigger);
+        self.sequence_backend_policy_triggers.note(trigger);
     }
 
     /// Single evidence-controlled selector for the module-level runtime policy.
     /// Exact and generalized consumption are recorded separately so repaired-
     /// master measurements can change this decision without touching lowering.
     pub(super) fn sequence_preserve_raw_requested(&self) -> bool {
-        self.sequence_backend_policy_triggers.get() & SEQUENCE_POLICY_GENERALIZED != 0
+        self.sequence_backend_policy_triggers
+            .contains(SEQUENCE_POLICY_GENERALIZED)
     }
 
     pub(super) fn sequence_candidate_indices(&self, body: &Block) -> Vec<String> {
@@ -827,7 +856,10 @@ fn decreasing_induction(block: &Block, index: &str, assignments: &mut usize) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::SequenceAccessPlan;
+    use super::{
+        SEQUENCE_POLICY_EXACT, SEQUENCE_POLICY_GENERALIZED, SequenceAccessPlan,
+        SequenceBackendPolicyTriggers,
+    };
     use foldhash::{HashMap, HashMapExt as _};
     use witchy_wir::wir::Kind;
 
@@ -856,5 +888,22 @@ mod tests {
         assert_eq!(plan.element_kind, Kind::I64);
         assert!(plan.mutation_preserves_length);
         assert_eq!(plan.proven_index_domain[0].index, "i");
+    }
+
+    #[test]
+    fn abandoned_policy_trigger_restores_the_committed_checkpoint() {
+        let triggers = SequenceBackendPolicyTriggers::default();
+        triggers.note(SEQUENCE_POLICY_EXACT);
+        let checkpoint = triggers.checkpoint();
+
+        // Model an installed generalized plan consumed by a candidate lowering
+        // that later bails. Restoring must retain earlier committed evidence but
+        // remove every bit introduced by the abandoned candidate.
+        triggers.note(SEQUENCE_POLICY_GENERALIZED);
+        assert!(triggers.contains(SEQUENCE_POLICY_GENERALIZED));
+        triggers.restore(checkpoint);
+
+        assert!(triggers.contains(SEQUENCE_POLICY_EXACT));
+        assert!(!triggers.contains(SEQUENCE_POLICY_GENERALIZED));
     }
 }

@@ -4510,6 +4510,75 @@ fn main() -> Int:
         witchy_wir::wir::to_wat(&wir)
     }
 
+    fn optimizer_policy_payloads(source: &str) -> Vec<Vec<u8>> {
+        let module = parse_module(source).expect("parse optimizer-policy fixture");
+        let bytes = compile_module_binary(&module).expect_lowered("lower optimizer-policy fixture");
+        wasmparser::Parser::new(0)
+            .parse_all(&bytes)
+            .filter_map(|payload| match payload.expect("valid optimizer-policy wasm") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == witchy_wir::optimizer_policy::SECTION_NAME =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn generalized_sequence_plan_emits_one_versioned_optimizer_policy() {
+        let source = r#"
+fn main() -> Int:
+    let source = [10, 20, 30]
+    var destination = [0, 0, 0]
+    for i in 0..2:
+        destination[i] = source[i + 1]
+    destination[0] + destination[1]
+"#;
+        assert_eq!(
+            optimizer_policy_payloads(source),
+            vec![witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD.to_vec()],
+            "a consumed generalized plan selects PreserveRaw exactly once",
+        );
+    }
+
+    #[test]
+    fn mixed_recursive_and_closure_modules_reject_sequence_raw_policy() {
+        let recursive = r#"
+fn kernel() -> Int:
+    let source = [10, 20, 30]
+    var destination = [0, 0, 0]
+    for i in 0..2:
+        destination[i] = source[i + 1]
+    destination[0] + destination[1]
+
+fn recurse(n: Int) -> Int:
+    if n <= 0: 0 else: 1 + recurse(n - 1)
+
+fn main() -> Int:
+    kernel() + recurse(2)
+"#;
+        assert!(
+            optimizer_policy_payloads(recursive).is_empty(),
+            "a source/user call-graph cycle keeps Binaryen enabled",
+        );
+
+        let closure = r#"
+fn main() -> Int:
+    let source = [10, 20, 30]
+    var destination = [0, 0, 0]
+    for i in 0..2:
+        destination[i] = source[i + 1]
+    let add = fn(n: Int): n + 1
+    add(destination[0] + destination[1])
+"#;
+        assert!(
+            optimizer_policy_payloads(closure).is_empty(),
+            "a module with lifted closure structure keeps Binaryen enabled",
+        );
+    }
+
     fn compiled_trap(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(source).expect("parse indexed trap fixture");

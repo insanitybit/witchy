@@ -1340,6 +1340,7 @@ impl<'types> Codegen<'types> {
             // is allocated in codegen's order (this loop's id BEFORE the body's
             // nested loops), and restored on a bail so the counter never desyncs.
             Expr::While { cond, body } => {
+                let sequence_policy_checkpoint = self.sequence_backend_policy_checkpoint();
                 let saved = self.next_label;
                 let id = self.next_label;
                 self.next_label += 1;
@@ -1364,6 +1365,7 @@ impl<'types> Codegen<'types> {
                             self.elide_index_list.pop();
                         }
                         self.next_label = saved;
+                        self.restore_sequence_backend_policy(sequence_policy_checkpoint);
                         return None;
                     }
                 };
@@ -1402,6 +1404,7 @@ impl<'types> Codegen<'types> {
                     Some(b) => b,
                     None => {
                         self.next_label = saved;
+                        self.restore_sequence_backend_policy(sequence_policy_checkpoint);
                         return None;
                     }
                 };
@@ -1512,6 +1515,7 @@ impl<'types> Codegen<'types> {
             // i64 counter + bound in scratch locals; inclusive ranges add a
             // pre-increment `ctr == end` guard so `..=i64::MAX` halts.
             Expr::For { var, iter, body } if matches!(iter.as_ref(), Expr::Range { .. }) => {
+                let sequence_policy_checkpoint = self.sequence_backend_policy_checkpoint();
                 let Expr::Range { lo, hi, inclusive } = iter.as_ref() else { unreachable!() };
                 let saved = self.next_label;
                 let id = self.next_label;
@@ -1523,6 +1527,7 @@ impl<'types> Codegen<'types> {
                     Some(w) => Self::wir_convert(w, lo_k, Kind::I64),
                     None => {
                         self.next_label = saved;
+                        self.restore_sequence_backend_policy(sequence_policy_checkpoint);
                         return None;
                     }
                 };
@@ -1531,6 +1536,7 @@ impl<'types> Codegen<'types> {
                     Some(w) => Self::wir_convert(w, hi_k, Kind::I64),
                     None => {
                         self.next_label = saved;
+                        self.restore_sequence_backend_policy(sequence_policy_checkpoint);
                         return None;
                     }
                 };
@@ -1600,6 +1606,7 @@ impl<'types> Codegen<'types> {
                     Some(b) => b,
                     None => {
                         self.next_label = saved;
+                        self.restore_sequence_backend_policy(sequence_policy_checkpoint);
                         return None;
                     }
                 };

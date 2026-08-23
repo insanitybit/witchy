@@ -112,6 +112,7 @@ impl<'types> Codegen<'types> {
     /// only on `Some` — the whole block lowered.
     pub(crate) fn lower_block(&mut self, block: &Block) -> Option<witchy_wir::wir::WirSeq> {
         let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
+        let sequence_policy_checkpoint = self.sequence_backend_policy_checkpoint();
         let saved_loans = std::mem::take(&mut self.active_loan_events);
         // A control-flow boundary never imports or exports a speculative
         // store-to-load forwarding fact. Straight-line statements inside this
@@ -121,6 +122,12 @@ impl<'types> Codegen<'types> {
         self.clear_forwarded_sequence_values();
         self.active_loan_events = saved_loans;
         if result.is_none() {
+            // Sequence-policy evidence is valid only for WIR that survives
+            // transactional block lowering. A failed candidate may have
+            // consumed a plan before a later unsupported statement forced the
+            // caller onto another lowering path; do not let that abandoned
+            // shape select the module's external optimizer policy.
+            self.restore_sequence_backend_policy(sequence_policy_checkpoint);
             if let (Some((k, s)), Some(top)) = (snap, self.facts_stack.last_mut()) {
                 top.1 = k;
                 top.2 = s;

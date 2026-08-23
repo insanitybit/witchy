@@ -1112,7 +1112,7 @@ struct Codegen<'types> {
     /// Module-monotonic record of exact/generalized sequence-plan consumption.
     /// This is intentionally not part of `SavedScope`: lifted function lowering
     /// contributes to the same artifact-level backend policy.
-    sequence_backend_policy_triggers: std::cell::Cell<u8>,
+    sequence_backend_policy_triggers: indexed_kernels::SequenceBackendPolicyTriggers,
     /// Local first-class references whose referent is a statically recoverable
     /// caller place. The WIR reference descriptor is the cross-backend contract;
     /// this map is the initial forced-copy lowering that materializes its write
@@ -1688,7 +1688,8 @@ impl<'types> Codegen<'types> {
             elide_index_list: Vec::new(),
             sequence_access_plans: Vec::new(),
             sequence_forwarded_values: HashMap::new(),
-            sequence_backend_policy_triggers: std::cell::Cell::new(0),
+            sequence_backend_policy_triggers:
+                indexed_kernels::SequenceBackendPolicyTriggers::default(),
             reference_places: HashMap::new(),
             reference_cells: HashMap::new(),
             view_candidates: HashSet::new(),
