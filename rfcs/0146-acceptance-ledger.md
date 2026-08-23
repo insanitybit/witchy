@@ -24,12 +24,47 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | Track | State | Baseline artifact | Profile and counters | Focused checks | Protected workloads | Branch | Terminal queue evidence |
 |---|---|---|---|---|---|---|---|
 | 0 measurement integrity | merged | `/tmp/rfc0146-track0-quick-all.json` (`sha256:5a8e32f1bc12665170542503be0c23405b3b08137d23e67910172cb35bf4f85a`) | `stats::tests::deterministic_counters_repeat_exactly`; profile not applicable to harness correctness | 54-test `stats::tests` shard; five focused Python integrity tests; 17-result quick sweep | all 17 benchmark results | `fix/rfc0146-causal-integration` | merged as `dd7cb6f3c53db37d552dc6f05a4231b5cecf23b8` at `2026-08-23T06:20:49Z`; journal line 8567 and gate log `state/merge-queue/logs/20260823-021554-fix~rfc0146-causal-integration-74028-32.log` |
-| 1 awaited select fusion | not started | pending | pending | pending | `select_fanin`, `chan_throughput` | pending | pending |
+| 1 awaited select fusion | rejected: helper-only slice is sub-threshold; 1C/1D prerequisite open | `/tmp/rfc0146-track1-paired-20260823.tsv` (12 paired kernel samples; source `99c0045f`; candidate `d69e840c`; master `8a1f303f`) and `/tmp/rfc0146-track1-chan-20260823.tsv` (12 wall-only samples) | `/tmp/rfc0146-select.samply.json`; generated-WAT census below; deterministic counters not yet available | syntax fusion/deopt, WIR plan, carrier, parity/result checks passed; no acceptance gate | `select_fanin` 20.110 vs 22.801 ms (`0.882x`); `chan_throughput` 125.271 vs 124.203 ms (`1.009x`) | `impl/rfc0146-track1-fresh`, rejected implementation `5f9d6f09` | no terminal queue event; do not queue |
 | 2 sequence plans | merged | schema 1 artifact `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track2-f77e84f-21c6a9e1/acceptance-f77-schema1.json` (`sha256:ab3ca448d25476cbac1123d5d5a483aec77fb34d19fddfed601b8407ea9fad83`) | pre-change Samply capture plus integrated raw-WAT reconciliation; three exact counter payloads (`sha256:5152cd4a5c07e10ff204828e2b44b492b097c2bd6d1b22ba504acc8f73813744`) | sequence-plan correctness/trap/deopt/WAT tests, exact stats fixture, runtime policy tests, and differential golden output | shipping: `fannkuch` +21.677796%, `list_index` +37.426176%, `list_sum` +5.651316%, `binary_trees` +0.464728% | `impl/rfc0146-track2`; implementation `21c6a9e1`, measured source `9a7b607d` on baseline `f77e84f` | merged as `c372d53956035188622e52ff7f8d6343594c6f8b` at `2026-08-23T09:20:15Z`; journal line 8580 and gate log `state/merge-queue/logs/20260823-051537-impl~rfc0146-track2-74028-37.log` |
 | 3 WIR inlining | not started | pending | pending | pending | `closure_calls`, `expr_eval`, `binary_trees` | pending | pending |
 | 4 strength reduction | performance rejected; safety repair merged separately | `/tmp/rfc0146-track4-{master,candidate}-*.tsv` (12 paired samples; raw hashes in the safety note below) | prior pass removed from default pipeline; no promotable profile attribution | `witchy-wir` 42 tests; workspace fast gate 3051 passed; Wasm shard green | Collatz gain 0.4%; controls: `loop_sum` +5.9%, `mandelbrot` +1.0%, `expr_eval` +0.4% (candidate/master) | `perf/rfc0146-strength-reduce` at `992a77af` | merged as `c09dd6d5a704cdd40858cf0b0a6589e7cc7a51da` at `2026-08-23T14:16:47Z`; journal line recorded under `mq-557e507b21e2fdf26b02a0fe0ac3c664b1e6a980`; gate log `state/merge-queue/logs/20260823-101617-perf~rfc0146-strength-reduce-74028-39.log` |
 | 5 recursive inlining | not started | pending | pending | pending | `fib`, `binary_trees`, `expr_eval` | pending | pending |
 | 6 packed Bool kernels | merged | `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track6-2b065c24/track6-schema1.json` (`sha256:854d6528fc0a7e05622ab7cb6118b9eac1700f48d8341b5b0f69cfceafbf2361`) | candidate WAT `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track6-2b065c24/candidate.wat` (`sha256:05fb7d37b0735d53494a41f7a8c9dd48431407d6209b237907a9d4c7fffa77c2`); exact packed Bool cursor read/store shape and no scalar-set helper call in promoted loop | `witchy-lower` host-layout shard (11 passed), `cargo check -p witchy-lower`, parity/result checks, trap/deopt fallback retained | `nsieve` 4.814 to 3.845 ms (20.08% faster); `list_sum` 8.798 to 8.882 ms (0.95% regression); `list_index` 3.210 to 2.639 ms (17.86% faster) | `perf/rfc0146-packed-bool` @ `2b065c24` | merged as `0d3e0589ec6b16f0351de7fa0b773683bfa20573` at `2026-08-23T14:22:07Z`; journal line 8592 and gate log `state/merge-queue/logs/20260823-102106-perf~rfc0146-packed-bool-74028-41.log` |
+
+### Track 1 rejection detail
+
+The only implementation on this branch, `5f9d6f09`, is a helper-only routing
+slice and is deliberately not accepted as RFC-0146 Track 1. It rewrites an
+immediately awaited `chan.select(a, b)` through `chan.__select2_map`, but the
+generated WAT still constructs the outer continuation, a helper closure/task,
+and the `Pull2` task. The decode path still calls
+`task.and_then__chan_Selected...` (10 calls in `select_fanin`) and selection
+scaffolding still reaches `rc_alloc`. The generated carrier plan records an
+`AwaitSelect2Plan`, but `scalar_executor::synthesize` has no `ChannelSelect2`
+emitter.
+
+The required 1C/1D prerequisite is a coordinated internal ABI, not another
+stdlib wrapper:
+
+```text
+Select2Resume { state: Ready | Closed, ready_arm: i32,
+                payload: exact erased-message lane,
+                continuation: owned compiler state/frame }
+```
+
+Today `Step::Pull2` and `Slot::Wait2` own a closure returning `Task(a)`, and
+`task.run` resumes by allocating `Active(cont(tag, payload))`. A scalar result
+without a compiler-owned frame ID cannot resume across `Wait2`, close, or
+cancellation; retaining the closure leaves the target allocations in place.
+The next attempt must change the scheduler/frame representation and WIR
+`ChannelSelect2` emitter together, then add tie, close, cancellation, payload
+ownership, and escaping/replayed-task parity tests.
+
+The matched evidence is sub-threshold: `select_fanin` improved from 22.801 to
+20.110 ms (`0.882x`, 11.8% faster than the immutable master control), while
+`chan_throughput` was 125.271 vs 124.203 ms wall-only (`1.009x`). This is far
+from the RFC's 10x first-slice and <=2x-Go acceptance criteria, so the branch
+has no terminal queue event and must not be promoted or queued as accepted.
 
 ### Track 6 acceptance detail
 
