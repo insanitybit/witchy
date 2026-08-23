@@ -213,6 +213,11 @@ for b in "${TARGETS[@]}"; do
             go build -o "$BUILD_DIR/${b}_go" "$BENCH_DIR/${b}.go"
         fi
     fi
+    if [ -f "$BENCH_DIR/${b}.rs" ]; then
+        if [ ! -f "$BUILD_DIR/${b}_rs" ] || [ "$BENCH_DIR/${b}.rs" -nt "$BUILD_DIR/${b}_rs" ]; then
+            rustc -O -o "$BUILD_DIR/${b}_rs" "$BENCH_DIR/${b}.rs"
+        fi
+    fi
 done
 
 # Result extraction
@@ -220,11 +225,12 @@ result() { grep -v '^bench_ns=' || true; }
 kernel_ns() { grep '^bench_ns=' | head -1 | cut -d= -f2 || true; }
 
 collect_all_kernel_ns() {
-    local benchmark="$1" w_output="$2" g_output="$3" n_output="$4" r_output="$5" w_ns g_ns n_ns r_ns
+    local benchmark="$1" w_output="$2" g_output="$3" n_output="$4" r_output="$5" rs_output="$6" w_ns g_ns n_ns r_ns rs_ns
     : > "$w_output"
     : > "$g_output"
     : > "$n_output"
     : > "$r_output"
+    : > "$rs_output"
     for sample in $(seq 1 "$RUNS"); do
         if [ $((sample % 2)) -eq 1 ]; then
             w_ns=$("$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
@@ -249,11 +255,17 @@ collect_all_kernel_ns() {
         if command -v ruby >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
             r_ns=$(ruby "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
         fi
+        
+        rs_ns=""
+        if [ -f "$BUILD_DIR/${benchmark}_rs" ]; then
+            rs_ns=$("$BUILD_DIR/${benchmark}_rs" 2>/dev/null | kernel_ns)
+        fi
 
         if [ -n "$w_ns" ]; then printf "witchy\t%s\n" "$w_ns" >> "$w_output"; fi
         if [ -n "$g_ns" ]; then printf "go\t%s\n" "$g_ns" >> "$g_output"; fi
         if [ -n "$n_ns" ]; then printf "node\t%s\n" "$n_ns" >> "$n_output"; fi
         if [ -n "$r_ns" ]; then printf "ruby\t%s\n" "$r_ns" >> "$r_output"; fi
+        if [ -n "$rs_ns" ]; then printf "rust\t%s\n" "$rs_ns" >> "$rs_output"; fi
     done
 }
 
@@ -267,8 +279,8 @@ fi
 printf "\n%s%sWitchy Performance Benchmarks%s %s(%s mode, %s sample(s))%s\n" "$BOLD" "$BRIGHT_CYAN" "$RESET" "$DIM" "$MODE" "$RUNS" "$RESET"
 printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats Go%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
 
-printf "  %-18s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "vs Go" "Status"
-printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────"
+printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "vs Go" "Status"
+printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 
 total_count=0
 pass_count=0
@@ -297,7 +309,7 @@ for b in "${TARGETS[@]}"; do
         "$BUILD_DIR/${b}_go" >/dev/null 2>&1
     done
 
-    collect_all_kernel_ns "$b" "$BUILD_DIR/${b}.witchy.kernel.tsv" "$BUILD_DIR/${b}.go.kernel.tsv" "$BUILD_DIR/${b}.node.kernel.tsv" "$BUILD_DIR/${b}.ruby.kernel.tsv"
+    collect_all_kernel_ns "$b" "$BUILD_DIR/${b}.witchy.kernel.tsv" "$BUILD_DIR/${b}.go.kernel.tsv" "$BUILD_DIR/${b}.node.kernel.tsv" "$BUILD_DIR/${b}.ruby.kernel.tsv" "$BUILD_DIR/${b}.rust.kernel.tsv"
     wns=$(awk -F '\t' 'NR == 1 || $2 < best { best=$2 } END { print best }' "$BUILD_DIR/${b}.witchy.kernel.tsv")
     gns=""
     if [ -f "$BUILD_DIR/${b}_go" ]; then
@@ -311,6 +323,10 @@ for b in "${TARGETS[@]}"; do
     if [ -s "$BUILD_DIR/${b}.ruby.kernel.tsv" ]; then
         rns=$(awk -F '\t' 'NR == 1 || $2 < best { best=$2 } END { print best }' "$BUILD_DIR/${b}.ruby.kernel.tsv")
     fi
+    rsns=""
+    if [ -s "$BUILD_DIR/${b}.rust.kernel.tsv" ]; then
+        rsns=$(awk -F '\t' 'NR == 1 || $2 < best { best=$2 } END { print best }' "$BUILD_DIR/${b}.rust.kernel.tsv")
+    fi
 
     if [ "$is_ok" -eq 1 ]; then
         pass_count=$((pass_count + 1))
@@ -319,12 +335,13 @@ for b in "${TARGETS[@]}"; do
         status_disp="${BRIGHT_RED}MISMATCH${RESET}"
     fi
 
-    w_ms="—"; g_ms="—"; n_ms="—"; r_ms="—"; ratio_str="—"
+    w_ms="—"; g_ms="—"; n_ms="—"; r_ms="—"; rs_ms="—"; ratio_str="—"
     
     if [ -n "$wns" ]; then w_ms=$(awk -v ns="$wns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
     if [ -n "$gns" ]; then g_ms=$(awk -v ns="$gns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
     if [ -n "$nns" ]; then n_ms=$(awk -v ns="$nns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
     if [ -n "$rns" ]; then r_ms=$(awk -v ns="$rns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
+    if [ -n "$rsns" ]; then rs_ms=$(awk -v ns="$rsns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
 
     ratio_color=""
     if [ -n "$wns" ] && [ -n "$gns" ] && [ "$gns" -gt 0 ]; then
@@ -337,13 +354,13 @@ for b in "${TARGETS[@]}"; do
     fi
 
     if [ -z "$wns" ]; then
-        printf "  %-18s %14s %14s %14s %14s %14s    %s\n" "$b" "(wall-only)" "—" "—" "—" "—" "$status_disp"
+        printf "  %-18s %14s %14s %14s %14s %14s %14s    %s\n" "$b" "(wall-only)" "—" "—" "—" "—" "—" "$status_disp"
     else
-        printf "  %-18s %14s %14s %14s %14s %s%14s%s    %s\n" "$b" "$w_ms" "$g_ms" "$n_ms" "$r_ms" "$ratio_color" "$ratio_str" "$RESET" "$status_disp"
+        printf "  %-18s %14s %14s %14s %14s %14s %s%14s%s    %s\n" "$b" "$w_ms" "$g_ms" "$n_ms" "$r_ms" "$rs_ms" "$ratio_color" "$ratio_str" "$RESET" "$status_disp"
     fi
 done
 
-printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────"
+printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 if [ "$faster_count" -gt 0 ]; then
     printf "  %s%s%d/%d passed%s, %s%d faster than Go%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
 else
