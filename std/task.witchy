@@ -141,6 +141,12 @@ fn __channel_select2(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) 
             match b:
                 ChannelId(ib) -> Task(fn(): Pull2(ia, ib, decode))
 
+pub fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a):
+    match a:
+        ChannelId(ia) ->
+            match b:
+                ChannelId(ib) -> Task(fn(): Pull2(ia, ib, decode))
+
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
     Task(fn(): PullAny(channel_ids(channels), k))
 

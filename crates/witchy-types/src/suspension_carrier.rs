@@ -462,6 +462,9 @@ fn collect_scalar_transitions(
             let resume = continuation_state(&args[1], state_ids)?;
             collect_task_expression(&args[0], Some(resume), state_ids, transitions)
         }
+        ast::Expr::Call { name, .. } if call_family(name, "chan.__select2_map") => {
+            collect_task_expression(expression, None, state_ids, transitions)
+        }
         ast::Expr::Call { name, .. }
             if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
         {
@@ -501,6 +504,20 @@ fn collect_task_expression(
     if call_family(name, "task.and_then") && args.len() == 2 {
         let continuation = continuation_state(&args[1], state_ids)?;
         return collect_task_expression(&args[0], Some(continuation), state_ids, transitions);
+    }
+    if call_family(name, "chan.__select2_map") {
+        let resume_target = continuation_state(
+            args.last().ok_or_else(|| "fused select has no continuation".to_string())?,
+            state_ids,
+        )?;
+        transitions.push(ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
+            first_channel: "unknown".into(),
+            second_channel: "unknown".into(),
+            payload_layout: 0,
+            resume_target,
+            result_use: SelectResultUse::ImmediateMatch,
+        }));
+        return Ok(());
     }
     let resume =
         resume.ok_or_else(|| format!("effect task `{name}` has no compiler-owned resume state"))?;

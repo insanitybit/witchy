@@ -342,6 +342,12 @@ pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
             match b:
                 Receiver(ib) -> task.__channel_select2(ia, ib, fn(k, o): select2_result(k, o))
 
+pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) -> task.__channel_select2_map(ia, ib, fn(tag, o): task.and_then(select2_result(tag, o), k))
+
 fn select2_result(k: Int, o: Option(__Msg)) -> Task(Selected(m)):
     match o:
         Some(msg) ->

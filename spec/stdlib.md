@@ -339,6 +339,8 @@ Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. 
 
 Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.
 
+#### `fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n)`
+
 #### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
 
 Receive from `rx`, run `f` on each message, until the channel closes. The stateless server loop; `for await x in rx:` lowers to this.
@@ -4273,6 +4275,8 @@ Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
 Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
+
+#### `fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 

@@ -1151,7 +1151,14 @@ impl<'a> Ctx<'a> {
             ret: None,
             qualifiers: CallableQualifiers::ORDINARY,
         };
-        Ok(call("task.and_then", vec![inner.into_task(), cont_lambda]))
+        let inner = inner.into_task();
+        match inner {
+            Expr::Call { name, mut args } if name == "chan.select" && args.len() == 2 => {
+                args.push(cont_lambda);
+                Ok(call("chan.__select2_map", args))
+            }
+            other => Ok(call("task.and_then", vec![other, cont_lambda])),
+        }
     }
 
     /// `for x in xs:` whose body awaits — lowered to `task.for_each(xs', fn(x):
@@ -2116,6 +2123,26 @@ mod tests {
             })
             .expect("lowered main function");
         assert_eq!(main.ret, Some(Type::Named("Nil".to_string(), Vec::new())));
+    }
+
+    #[test]
+    fn immediately_awaited_two_way_select_uses_fused_bridge() {
+        let source = "async fn main(a: Receiver(Int), b: Receiver(Int)):\n    let selected = chan.select(a, b).await\n    let _keep = selected\n";
+        let module = crate::parser::parse_module(source).expect("parse select fixture");
+        let lowered = lower_module(module).expect("lower select fixture");
+        let debug = format!("{lowered:?}");
+        assert!(debug.contains("chan.__select2_map"), "select await should use fused bridge: {debug}");
+        assert!(!debug.contains("task.and_then"), "select await should not retain outer and_then: {debug}");
+    }
+
+    #[test]
+    fn aliased_select_task_keeps_general_await_path() {
+        let source = "async fn main(a: Receiver(Int), b: Receiver(Int)):\n    let pending = chan.select(a, b)\n    let selected = pending.await\n    let _keep = selected\n";
+        let module = crate::parser::parse_module(source).expect("parse aliased select fixture");
+        let lowered = lower_module(module).expect("lower aliased select fixture");
+        let debug = format!("{lowered:?}");
+        assert!(!debug.contains("chan.__select2_map"), "aliased task must not fuse: {debug}");
+        assert!(debug.contains("task.and_then"), "aliased task must retain general path: {debug}");
     }
 
     #[test]

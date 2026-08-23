@@ -7011,6 +7011,31 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn awaited_select_uses_the_fused_typed_bridge_in_wir() {
+        let checked = authenticated_checked(include_str!("../../../../benchmarks/select_fanin.witchy"));
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble select fixture");
+        let scalar = carrier.scalar_executor_plan().expect("select carrier plan");
+        assert!(scalar.states.iter().any(|state| {
+            state.transitions.iter().any(|transition| matches!(
+                transition,
+                witchy_types::suspension_carrier::ScalarTransition::ChannelSelect2(_)
+            ))
+        }), "typed carrier must retain the select plan");
+        let select_state = wir.funcs.iter().find(|function| {
+            let mut calls = HashSet::new();
+            collect_called_funcs(&function.body, &mut calls);
+            calls.iter().any(|name| name.starts_with("chan.__select2_map"))
+        }).expect("fused select state");
+        let mut calls = HashSet::new();
+        collect_called_funcs(&select_state.body, &mut calls);
+        assert!(calls.iter().any(|name| name.starts_with("chan.__select2_map")));
+        assert!(!calls.iter().any(|name| name.starts_with("task.and_then__chan_2eSelected")),
+            "outer selected-value and_then must be absent from fused state: {calls:?}");
+    }
+
+    #[test]
     fn direct_carrier_does_not_retype_a_transitive_helper_list() {
         let checked = authenticated_checked(
             "import task\n\nfn first(xs: List(Int)) -> Int:\n    xs[0]\n\nasync fn main():\n    let value = task.done(7).await\n    let _observed = first([value])\n",
