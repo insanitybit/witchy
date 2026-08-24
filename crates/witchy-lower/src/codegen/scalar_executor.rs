@@ -23,6 +23,12 @@ struct ScalarChannelFold<'a> {
     payload: ScalarPayload,
 }
 
+#[derive(Debug)]
+struct EagerRegionPrologue {
+    body: Vec<N>,
+    locals: Vec<WirLocal>,
+}
+
 /// A source-independent description of the values that can cross the first
 /// direct one-way channel path.  These are WIR data-flow shapes, not nominal
 /// source constructors: a matching record is accepted regardless of its name.
@@ -47,18 +53,30 @@ pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> b
     if terminal_function.ret.len() != 1 {
         return false;
     }
+    let Some(main_index) = module.funcs.iter().position(|function| function.name == "main") else {
+        return false;
+    };
+    let Some(prologue) = eager_region_prologue(plan, module, &module.funcs[main_index]) else {
+        return false;
+    };
+    let main = &mut module.funcs[main_index];
+    if main.ret.len() != 1 || main.ret[0].kind() != Kind::I32 {
+        return false;
+    }
     let Some(terminal_args) = terminal_arguments(
         &terminal_function,
         fold.console,
         fold.accumulator,
+        &main.params,
+        &prologue.body,
     ) else {
         return false;
     };
-    let Some(main) = module.funcs.iter_mut().find(|function| function.name == "main") else {
-        return false;
-    };
-    if main.ret.len() != 1 || main.ret[0].kind() != Kind::I32 {
-        return false;
+
+    for local in prologue.locals {
+        if !main.params.iter().chain(main.locals.iter()).any(|known| known.name == local.name) {
+            main.locals.push(local);
+        }
     }
 
     const PRODUCER: &str = "__witchy_scalar_producer";
@@ -73,7 +91,8 @@ pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> b
         i64_local(MESSAGE),
         i64_local(ACCUMULATOR),
     ]);
-    main.body = vec![
+    let mut body = prologue.body;
+    body.extend([
         set_i64(PRODUCER, fold.producer_start),
         set_i64(LIMIT, fold.producer_limit),
         set_i64(ACCUMULATOR, fold.accumulator_start),
@@ -132,7 +151,8 @@ pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> b
             args: terminal_args,
         }),
         N::Push(E::ConstI32(0)),
-    ];
+    ]);
+    main.body = body;
     true
 }
 
@@ -473,7 +493,17 @@ fn terminal_arguments(
     function: &WirFunc,
     console: &str,
     accumulator: &str,
+    main_params: &[WirLocal],
+    prologue: &[N],
 ) -> Option<Vec<E>> {
+    let initialized = main_params
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .chain(prologue.iter().filter_map(|node| match node {
+            N::SetLocal { local, .. } => Some(local.as_str()),
+            _ => None,
+        }))
+        .collect::<std::collections::HashSet<_>>();
     function.params.iter().map(|parameter| {
         if parameter.name == console {
             Some(E::GetLocal(console.into()))
@@ -481,10 +511,87 @@ fn terminal_arguments(
             Some(E::GetLocal("__witchy_scalar_accumulator".into()))
         } else if parameter.name.starts_with("__await") || parameter.name.ends_with("__cap") {
             zero(parameter.ty.kind())
+        } else if initialized.contains(parameter.name.as_str()) {
+            Some(E::GetLocal(parameter.name.clone()))
         } else {
             None
         }
     }).collect()
+}
+
+/// Recover a straight-line, eager prefix from the compiler-owned entry
+/// closure.  The suffix is the first task construction and is replaced by the
+/// scalar graph, so unsupported control flow or task work stays on the normal
+/// scheduler path.
+fn eager_region_prologue(
+    plan: &ScalarExecutorPlan,
+    module: &WirModule,
+    main: &WirFunc,
+) -> Option<EagerRegionPrologue> {
+    // Async lowering wraps the entry state in `task.lazy`, so the eager source
+    // prologue is held in that closure rather than directly in Wasm `main`.
+    // Extract only its straight-line prefix before the first `task.and_then`.
+    // The remaining task construction is replaced by the proved scalar graph.
+    let entry = plan.states.iter().find(|state| {
+        state.function == "main" && state.source_callable == "main"
+    })?;
+    let entry = closure_function(module, &entry.function)?;
+    let N::Push(E::Seq(sequence)) = entry.body.last()? else {
+        // A closed graph with no eager source statements has an entry whose
+        // terminal task is emitted directly, and needs no copied prologue.
+        return matches!(entry.body.last(), Some(N::Push(E::Call { func, .. })) if call_family(func, "task.and_then"))
+            .then_some(EagerRegionPrologue { body: Vec::new(), locals: Vec::new() });
+    };
+    let (terminal, prefix) = sequence.split_last()?;
+    let N::Push(E::Call { func, .. }) = terminal else { return None };
+    if !call_family(func, "task.and_then") || !eager_prologue_nodes(prefix) {
+        return None;
+    }
+
+    let written = prefix
+        .iter()
+        .filter_map(|node| match node {
+            N::SetLocal { local, .. } => Some(local.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let available = main.params.iter().map(|local| local.name.as_str())
+        .chain(written.iter().copied())
+        .collect::<std::collections::HashSet<_>>();
+    let mut reads = std::collections::HashSet::new();
+    visit_seq(prefix, &mut |expression| {
+        if let E::GetLocal(local) = expression {
+            reads.insert(local.as_str());
+        }
+    });
+    if !reads.is_subset(&available) {
+        return None;
+    }
+    let locals = entry.locals.iter()
+        .filter(|local| written.contains(local.name.as_str()))
+        .cloned()
+        .collect();
+    Some(EagerRegionPrologue { body: prefix.to_vec(), locals })
+}
+
+fn eager_prologue_nodes(nodes: &[N]) -> bool {
+    nodes.iter().all(|node| match node {
+        N::SetLocal { value, .. } | N::Drop(value) | N::Do(value) => !contains_task_call(value),
+        // `Push` would leave an unconsumed Wasm stack value when spliced before
+        // the scalar loop. Structured control is intentionally deferred until
+        // it has an explicit result/exit proof.
+        _ => false,
+    })
+}
+
+fn contains_task_call(expression: &E) -> bool {
+    let mut contains = false;
+    visit_expr(expression, &mut |expression| {
+        if let E::Call { func, .. } = expression {
+            contains |= func.starts_with("task.") || func.starts_with("chan.");
+        }
+    });
+    contains
 }
 
 fn visit_seq<'a>(sequence: &'a [N], visitor: &mut impl FnMut(&'a E)) {

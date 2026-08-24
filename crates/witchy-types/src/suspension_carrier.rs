@@ -599,6 +599,16 @@ fn collect_task_expression(
     definitions: &HashMap<String, &TypeDef>,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
+    // An async entry block may execute a direct effectful prologue before it
+    // constructs its first task. The carrier graph starts at that terminal
+    // task; lowering preserves the WIR prologue before replacing only the
+    // proved closed region. Do not require the prologue itself to be pure:
+    // its once-only source-order execution is observable.
+    if let ast::Expr::Block(block) = task {
+        let terminal = terminal_block_expr(block)
+            .ok_or_else(|| "awaited task block has no terminal task".to_string())?;
+        return collect_task_expression(terminal, resume, state_ids, table, definitions, transitions);
+    }
     let ast::Expr::Call { name, args } = task else {
         return Err(format!("unsupported awaited task expression `{task:?}`"));
     };

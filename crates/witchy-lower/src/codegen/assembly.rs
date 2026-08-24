@@ -7090,6 +7090,85 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn scalar_channel_region_preserves_an_effectful_eager_prologue() {
+        let checked = authenticated_checked(
+            "mode opt\n\nfrom chan import Receiver, Sender\n\nasync fn producer(tx: Sender(Int), n: Int):\n    var i = 0\n    while i < n:\n        chan.send(tx, i).await\n        i = i + 1\n\nasync fn main(console: Console, clock: Clock):\n    let _started = clock.now_monotonic()\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, 16)).await\n    var sum = 0\n    for await value in rx:\n        sum = sum + value\n    chan.join(producer_handle).await\n    console.print(\"sum=${sum}\")\n",
+        );
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble effectful scalar-region fixture");
+        carrier.scalar_executor_plan().expect("the terminal task after an eager block prologue is scalar");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let main = wat
+            .split("(func $main ")
+            .nth(1)
+            .and_then(|body| body.split("\n  (func $").next())
+            .expect("compiled main WAT");
+        assert!(
+            main.contains("now_monotonic"),
+            "the eager capability effect must remain before the promoted region: {main}"
+        );
+        assert_eq!(
+            main.matches("call $now_monotonic").count(),
+            1,
+            "the entry effect must run exactly once: {main}"
+        );
+        assert!(
+            !main.contains("call $task.run"),
+            "the proved channel region must not retain the scheduler: {main}"
+        );
+        assert!(main.contains("__witchy_scalar_dispatch"), "missing scalar dispatch loop: {main}");
+
+        let bytes = compile_checked_module_binary(&checked)
+            .expect_lowered("encode effectful scalar-region fixture");
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        let engine = wasmtime::Engine::new(&config).expect("Wasm GC engine");
+        let compiled = wasmtime::Module::new(&engine, &bytes).expect("valid scalar-region Wasm");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&output);
+        let clock_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let clock_sink = std::sync::Arc::clone(&clock_calls);
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker.func_wrap(
+            "witchy",
+            "print",
+            move |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+                let data = memory.data(&caller);
+                sink.lock().unwrap().push(
+                    String::from_utf8_lossy(&data[ptr as usize..(ptr + len) as usize]).into_owned(),
+                );
+            },
+        ).expect("print host");
+        linker.func_wrap("witchy", "now_monotonic", move || {
+            clock_sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            41_i64
+        }).expect("clock host");
+        linker.func_wrap(
+            "witchy",
+            "__witchy_abort",
+            |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                wasmtime::bail!("unexpected effectful scalar-region abort")
+            },
+        ).expect("abort host");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &compiled).expect("instantiate scalar-region fixture");
+        instance.get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run effectful scalar-region fixture");
+        assert_eq!(*output.lock().unwrap(), ["sum=120"]);
+        assert_eq!(
+            clock_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the promoted region must preserve exactly one entry clock call"
+        );
+    }
+
+    #[test]
     fn select2_non_integer_payload_rejects_scalar_executor_fallback() {
         let checked = authenticated_checked(
             "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(1).await\n    let (b_tx, b_rx) = chan.channel(1).await\n    chan.send(a_tx, \"a\").await\n    chan.send(b_tx, \"b\").await\n    let selected = chan.select(a_rx, b_rx).await\n    match selected:\n        First(value) -> console.print(value)\n        Second(value) -> console.print(value)\n        Closed -> console.print(\"closed\")\n",
