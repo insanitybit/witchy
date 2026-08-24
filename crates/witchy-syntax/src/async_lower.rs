@@ -1558,7 +1558,7 @@ impl<'a> Ctx<'a> {
             },
         });
         let done_name = match setup.last() { Some(Stmt::Let { name, .. }) => name.clone(), _ => unreachable!() };
-        setup.push(Stmt::Expr(call("chan.select2_frame_loop_state", vec![args[0].clone(), args[1].clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)])));
+        setup.push(Stmt::Expr(call("chan.select2_frame_loop", vec![args[0].clone(), args[1].clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)])));
         Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
     }
 
@@ -2746,7 +2746,7 @@ mod tests {
         let module = crate::parser::parse_module(source).expect("parse select loop");
         let lowered = lower_module(module).expect("lower select loop");
         let rendered = crate::format::module(&lowered, &[]);
-        assert!(rendered.contains("chan.select2_frame_loop_state"), "{rendered}");
+        assert!(rendered.contains("chan.select2_frame_loop"), "{rendered}");
     }
 
 

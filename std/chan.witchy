@@ -342,17 +342,11 @@ pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
             match b:
                 Receiver(ib) -> task.__channel_select2(ia, ib, fn(k, o): select2_result(k, o))
 
-pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_task: Task(Nil)) -> Task(Nil):
+pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     match a:
         Receiver(ia) ->
             match b:
-                Receiver(ib) -> task.channel_select2_frame_loop(ia, ib, frame, step, done_task)
-
-pub fn select2_frame_loop_state(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
-    match a:
-        Receiver(ia) ->
-            match b:
-                Receiver(ib) -> task.channel_select2_frame_loop_state(ia, ib, frame, step, done_fn)
+                Receiver(ib) -> task.channel_select2_frame_loop(ia, ib, frame, step, done_fn)
 
 pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n):
     match a:
