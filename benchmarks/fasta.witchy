@@ -24,6 +24,30 @@ fn fasta_repeat(let console: Console, n_total: Int, let seq_bytes: Bytes):
             console.print(bytes.to_string(bytes.concat(s1, s2)))
         n = n - len_out
 
+fn make_iub_line(len_out: Int, seed_in: Int, ca: Int, cc: Int, cg: Int, ct: Int, cB: Int, cD: Int, cH: Int, cK: Int, cM: Int, cN: Int, cR: Int, cS: Int, cV: Int, cW: Int, cY: Int) -> (String, Int):
+    var line_buf = bytes.repeat(0, len_out)
+    var seed = seed_in
+    var i = 0
+    while i < len_out:
+        seed = (seed * 3877 + 29573) % 139968
+        let r = math.to_float(seed) / 139968.0
+        let ch = if r < 0.27: ca else: if r < 0.39: cc else: if r < 0.51: cg else: if r < 0.78: ct else: if r < 0.80: cB else: if r < 0.82: cD else: if r < 0.84: cH else: if r < 0.86: cK else: if r < 0.88: cM else: if r < 0.90: cN else: if r < 0.92: cR else: if r < 0.94: cS else: if r < 0.96: cV else: if r < 0.98: cW else: cY
+        bytes.set_at(line_buf, i, ch)
+        i = i + 1
+    return (bytes.to_string(line_buf), seed)
+
+fn make_homo_line(len_out: Int, seed_in: Int, ca: Int, cc: Int, cg: Int, ct: Int) -> (String, Int):
+    var line_buf = bytes.repeat(0, len_out)
+    var seed = seed_in
+    var i = 0
+    while i < len_out:
+        seed = (seed * 3877 + 29573) % 139968
+        let r = math.to_float(seed) / 139968.0
+        let ch = if r < 0.3029549426680: ca else: if r < 0.5009432431601: cc else: if r < 0.6984905497992: cg else: ct
+        bytes.set_at(line_buf, i, ch)
+        i = i + 1
+    return (bytes.to_string(line_buf), seed)
+
 fn main(let console: Console, let clock: Clock):
     let bench_t0 = clock.now_monotonic()
     
@@ -55,42 +79,20 @@ fn main(let console: Console, let clock: Clock):
     let cW = 87
     let cY = 89
     
-    var line_buf = bytes.repeat(0, 60)
     while n2 > 0:
         let len_out = min(n2, 60)
-        var i = 0
-        while i < len_out:
-            seed = (seed * 3877 + 29573) % 139968
-            let r = math.to_float(seed) / 139968.0
-            
-            let ch = if r < 0.27: ca else: if r < 0.39: cc else: if r < 0.51: cg else: if r < 0.78: ct else: if r < 0.80: cB else: if r < 0.82: cD else: if r < 0.84: cH else: if r < 0.86: cK else: if r < 0.88: cM else: if r < 0.90: cN else: if r < 0.92: cR else: if r < 0.94: cS else: if r < 0.96: cV else: if r < 0.98: cW else: cY
-            bytes.set_at(line_buf, i, ch)
-            i = i + 1
-            
-        if len_out == 60:
-            console.print(bytes.to_string(line_buf))
-        else:
-            console.print(bytes.to_string(bytes.slice(line_buf, 0, len_out)))
+        let (line_str, new_seed) = make_iub_line(len_out, seed, ca, cc, cg, ct, cB, cD, cH, cK, cM, cN, cR, cS, cV, cW, cY)
+        seed = new_seed
+        console.print(line_str)
         n2 = n2 - len_out
         
     console.print(">THREE Homo sapiens frequency")
     var n3 = 5 * n
-    var line_buf3 = bytes.repeat(0, 60)
     while n3 > 0:
         let len_out = min(n3, 60)
-        var i = 0
-        while i < len_out:
-            seed = (seed * 3877 + 29573) % 139968
-            let r = math.to_float(seed) / 139968.0
-            
-            let ch = if r < 0.3029549426680: ca else: if r < 0.5009432431601: cc else: if r < 0.6984905497992: cg else: ct
-            bytes.set_at(line_buf3, i, ch)
-            i = i + 1
-            
-        if len_out == 60:
-            console.print(bytes.to_string(line_buf3))
-        else:
-            console.print(bytes.to_string(bytes.slice(line_buf3, 0, len_out)))
+        let (line_str3, new_seed3) = make_homo_line(len_out, seed, ca, cc, cg, ct)
+        seed = new_seed3
+        console.print(line_str3)
         n3 = n3 - len_out
 
     let bench_t1 = clock.now_monotonic()
