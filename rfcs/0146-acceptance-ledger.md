@@ -284,12 +284,12 @@ The eight-pair current-master comparison is retained at `/Users/cobrien/.local/s
 
 ## Post-merge current-master sanity sweep
 
-After the Track-1 ABI deferment landed, the original 17-workload fast suite was
-rerun from master `adb381bc6968ace6d7be59f0541a57f034d38825` using release
+After the final ledger update landed, the original 17-workload fast suite was
+rerun from master `2d6f404a0fbb626f38477feb2e59ba655d7956f1` using release
 binary `sha256:6a6077e1e8fa62c5c636a955dd296a74cc2c94c3d97924cc32bae8574b86ca45`.
 All 17 original workloads passed correctness; the retained artifact is
-`/Users/cobrien/.local/share/witchy/evidence/rfc0146/final-master-adb381bc/results-fast-original17.json`
-(`sha256:76d3685fb385272574cf90da6350362f782b0296e3047a8a1f7c5e23ec35ba57`).
+`/Users/cobrien/.local/share/witchy/evidence/rfc0146/final-master-2d6f404a/results-fast-original17.json`
+(`sha256:90649f8e190e6422c2dbbb527d0c54e5623eb9d8bb7f010042388dfb6af486e8`).
 This is a current-master sanity result, not a new promotion matrix for any
 track. The expanded suite currently includes `regex-redux` and
 `reverse-complement`; the all-workload invocation is not accepted as evidence
