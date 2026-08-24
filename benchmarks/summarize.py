@@ -328,15 +328,32 @@ def render_markdown(artifact):
         "",
     ]
     compare_lang = artifact.get("compare_lang")
-    if compare_lang:
-        compare_title = f"kernel vs {compare_lang}"
-    else:
-        compare_title = "kernel vs fastest"
-        
-    lines.extend([
-        f"| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel rust | {compare_title} | wall witchy | wall go |",
-        "|-----------|--------------:|----------:|------------:|------------:|------------:|-------------:|------------:|--------:|",
-    ])
+    header = ["benchmark", "kernel witchy"]
+    alignments = ["-----------", "--------------:"]
+    
+    if not compare_lang or compare_lang == "go":
+        header.append("kernel go")
+        alignments.append("----------:")
+    if not compare_lang or compare_lang == "node":
+        header.append("kernel node")
+        alignments.append("------------:")
+    if not compare_lang or compare_lang == "ruby":
+        header.append("kernel ruby")
+        alignments.append("------------:")
+    if not compare_lang or compare_lang == "rust":
+        header.append("kernel rust")
+        alignments.append("------------:")
+
+    compare_title = f"kernel vs {compare_lang}" if compare_lang else "kernel vs fastest"
+    header.append(compare_title)
+    alignments.append("-------------:")
+    
+    header.extend(["wall witchy", "wall go"])
+    alignments.extend(["------------:", "--------:"])
+
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "|".join(alignments) + "|")
+
     for benchmark in artifact["benchmarks"]:
         kernel = benchmark["kernel_ns"]
         ws = kernel["witchy_summary"]
@@ -348,17 +365,28 @@ def render_markdown(artifact):
         wm = statistics.median(wall["witchy"]) if wall["witchy"] else None
         gm = statistics.median(wall["go"]) if wall["go"] else None
         value = lambda number: "—" if number is None else f"{number:.1f}"
+        
         ratio = kernel["witchy_fastest_median_ratio"]
         if compare_lang:
             ratio_text = "—" if ratio is None else f"{ratio:.2f}x"
         else:
             ratio_text = "—" if ratio is None else f"{ratio:.2f}x ({kernel.get('fastest_baseline', 'unknown')})"
-        lines.append(
-            f"| {benchmark['name']} | {value(ws['median'] / 1e6 if ws else None)} | "
-            f"{value(gs['median'] / 1e6 if gs else None)} | {value(ns['median'] / 1e6 if ns else None)} | "
-            f"{value(rbs['median'] / 1e6 if rbs else None)} | {value(rss['median'] / 1e6 if rss else None)} | {ratio_text} | "
-            f"{value(wm)} | {value(gm)} |"
-        )
+            
+        row = [benchmark['name'], value(ws['median'] / 1e6 if ws else None)]
+        if not compare_lang or compare_lang == "go":
+            row.append(value(gs['median'] / 1e6 if gs else None))
+        if not compare_lang or compare_lang == "node":
+            row.append(value(ns['median'] / 1e6 if ns else None))
+        if not compare_lang or compare_lang == "ruby":
+            row.append(value(rbs['median'] / 1e6 if rbs else None))
+        if not compare_lang or compare_lang == "rust":
+            row.append(value(rss['median'] / 1e6 if rss else None))
+            
+        row.append(ratio_text)
+        row.append(value(wm))
+        row.append(value(gm))
+        
+        lines.append("| " + " | ".join(row) + " |")
     return "\n".join(lines) + "\n"
 
 
