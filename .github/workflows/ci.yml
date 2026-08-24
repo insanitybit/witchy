@@ -25,6 +25,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows
+      - name: Enforce code-exec / write-authority isolation
+        run: ./scripts/workflow-isolation-check.py .github/workflows
 
   # Sharded across a 4-way GitHub Actions matrix (nextest `--partition
   # count:M/4`) rather than one serial job. A single dev machine can't get

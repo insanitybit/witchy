@@ -1,5 +1,10 @@
 name: Docs GitHub Pages
 
+# Isolation invariant (scripts/workflow-isolation-check.py): the job that
+# executes code (cargo, build-docs.sh) holds no write authority; the job that
+# holds the Pages/OIDC write authority executes no repository code — it only
+# deploys the artifact the unprivileged build job produced.
+
 on:
   push:
     branches:
@@ -10,17 +15,11 @@ permissions:
   contents: read
 
 jobs:
-  build-and-publish:
-    outputs:
-      page_url: ${{ steps.deploy.outputs.page_url }}
-    name: Build docs and publish to GitHub Pages
+  build:
+    name: Build docs bundle
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     permissions:
-      pages: write
-      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -36,19 +35,33 @@ jobs:
         env:
           WITCHY_BROWSER_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/witchy.wasm
         run: ./scripts/build-docs.sh dist
-      - name: Configure Pages
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - name: Upload docs artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages (no code execution)
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    outputs:
+      page_url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
   docs-vitals:
     name: Production docs Core Web Vitals smoke
-    needs: [build-and-publish]
+    needs: [deploy]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,7 +71,7 @@ jobs:
           persist-credentials: false
       - name: Generate deployed-docs production vitals
         env:
-          WITCHY_DOCS_URL: ${{ needs.build-and-publish.outputs.page_url }}
+          WITCHY_DOCS_URL: ${{ needs.deploy.outputs.page_url }}
           WITCHY_VITALS_OUT: projects/glamour/acceptance
           WITCHY_LHCI_RUNS: 1
         run: |

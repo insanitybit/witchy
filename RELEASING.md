@@ -49,6 +49,15 @@ the pushed public history; never rebase local work onto `origin/master`.
 
 ## Invariants
 
+- **Code execution and write authority never share a job.** In every workflow,
+  a job either executes code (builds, tests, repository scripts) or holds
+  write permissions (publishing, deployment, attestation, OIDC minting),
+  never both: privileged jobs consume artifacts produced by unprivileged
+  builders and never check out the tree. Enforced by
+  `scripts/workflow-isolation-check.py`, which runs in CI and in the release
+  gate next to zizmor. The one declared residual is the coven demo's publish
+  step, which must execute the sealed `witchy` artifact because witchy is
+  itself the publishing client.
 - **Published assets are immutable.** Tag reruns byte-compare against the
   existing release and refuse to replace anything. A bad release means a new
   patch version, never a swapped asset.

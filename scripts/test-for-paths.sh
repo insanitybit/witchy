@@ -337,10 +337,12 @@ for p in "${paths[@]}"; do
         Cargo.toml | Cargo.lock | build.rs | .cargo/* | rust-toolchain | rust-toolchain.toml)
             gate_workspace=1 ;;
         .github/workflows/* | .github/actions/* | .github/zizmor.yml)
-            add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
-        scripts/zizmor.sh)
+            add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows"
+            add "./scripts/workflow-isolation-check.py .github/workflows" ;;
+        scripts/zizmor.sh | scripts/workflow-isolation-check.py)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
+            add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows"
+            add "./scripts/workflow-isolation-check.py .github/workflows" ;;
         scripts/nextest-list-wrapper.sh | scripts/test-nextest-list-wrapper.sh)
             gate_workspace=1
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
