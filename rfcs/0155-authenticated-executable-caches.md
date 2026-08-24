@@ -8,7 +8,7 @@ related:
   - "0092 (trusted application executables)"
   - "0095 (trusted application installation)"
   - "0126 (capability effects contract)"
-tracking: "Proposes cache-independent trusted executables, authenticated local executable caches, guest cache exclusion, and fail-closed fallback."
+tracking: "Proposes cache-independent trusted executables, authenticated local executable caches, fail-closed fallback, and optional guest cache exclusion."
 ---
 
 # RFC-0155: Authenticated Executable Caches and Cache-Independent Distribution
@@ -22,20 +22,21 @@ replace executable cache state used by a later, more-authoritative program.
 Content hashes detect accidental corruption, but do not authenticate a
 self-consistent malicious input-to-artifact mapping.
 
-This RFC establishes four independent rules:
+This RFC establishes three required rules and one optional hardening layer:
 
 1. A trusted executable runs its authenticated embedded WebAssembly without
    consulting or populating any mutable executable cache.
 2. Other persistent executable-cache records are accepted only after keyed
    authentication binds the exact input, output, compiler/runtime identity,
    target, configuration, and format.
-3. Witchy guest filesystem capabilities are denied access to Witchy's cache and
-   cache credentials as defense in depth. This denial is not the portable
-   integrity anchor and does not replace authentication.
-4. If authenticated caching is unavailable, execution continues without a
+3. If authenticated caching is unavailable, execution continues without a
    persistent executable cache. Witchy never silently downgrades to an
    unauthenticated cache and never requires an interactive credential prompt
    merely to execute a program.
+4. Where it can be implemented without weakening ordinary capability semantics,
+   Witchy guest filesystem capabilities exclude Witchy's cache and cache
+   credentials as defense in depth. This exclusion is not the portable
+   integrity anchor and does not replace authentication.
 
 The design accepts cache deletion as denial of service. It prevents a
 dependency with filesystem-write authority from substituting code that later
@@ -59,6 +60,30 @@ contract from implementation choices that still require prototypes.
 - Missing secure storage causes an uncached run, not a prompt or insecure
   fallback.
 
+### Result of the adversarial composition review
+
+The review treats a control as required only when removing it enables an attack
+that the remaining controls do not stop. The resulting cache-integrity core is:
+
+1. an authenticator unavailable to the in-scope attacker and no
+   attacker-controlled signing oracle;
+2. authentication over the complete compilation relationship;
+3. producer-side input freezing and consumer-side exact-byte use;
+4. authentication and bounds checks before any trust-requiring native parse;
+5. capability authority derived independently from current trusted input and
+   current launch policy; and
+6. cache-off fallback with no production downgrade switch.
+
+Trusted executables use a disjoint mitigation: they do not consult persistent
+executable caches. They therefore do not depend on any member of the
+authenticated-cache core.
+
+Program identity is deliberately absent from the core. Two programs may safely
+share an artifact when their exact compilation input and recipe are identical,
+because the artifact carries no grant, binding, footprint, or other authority.
+Per-program key derivation and mandatory cross-program cache misses would add
+complexity without closing an additional attack.
+
 ### Open implementation choices
 
 - The exact authenticator backend abstraction and supported headless providers.
@@ -66,6 +91,9 @@ contract from implementation choices that still require prototypes.
   a compiler/cache daemon.
 - Which macOS distribution shape, if any, justifies an App Sandbox or XPC
   worker.
+- Whether guest cache exclusion is sufficiently cheap and portable to ship as
+  general hardening rather than only as part of a native-child containment
+  architecture.
 
 ## Motivation
 
@@ -218,8 +246,10 @@ inspection. Per-program embedded keys may partition failures, but do not
 establish authenticity against the stated attacker.
 
 Per-program key derivation is not part of the security contract. Complete
-record binding already prevents cross-program reuse, while deriving every key
-from one installation secret does not contain compromise of that secret.
+record binding prevents substitution across distinct compilation inputs. Safe
+reuse across programs with identical compilation inputs is desirable, while
+deriving every key from one installation secret does not contain compromise of
+that secret.
 
 ### Authenticated record
 
@@ -237,8 +267,15 @@ payload_length
 
 The canonical recipe covered by `recipe_digest` includes the compiler,
 runtime, optimizer executable, target, feature set, code-generation settings,
-cache epoch, and any launch-contract facts not already covered by the exact
-input. These are one binding obligation rather than independent mitigations.
+cache epoch, and only those trusted launch facts that change generated bytes.
+It never includes current grants as a substitute for checking them. These are
+one binding obligation rather than independent mitigations.
+
+Program name, installation path, and current capability grant are not cache-key
+inputs unless they actually change generated bytes. A cache artifact is a pure
+compilation result, not a principal. Authority-bearing launch facts are checked
+outside the cache, so identical code may be deduplicated without transferring
+authority between consumers.
 
 The tag is a keyed BLAKE3 digest over the canonical encoding and the artifact
 digest:
@@ -296,23 +333,27 @@ Lookup proceeds as follows:
 7. Consume the same opened bytes that were authenticated. Do not verify a path
    and reopen it.
 
-For engine-native serialized artifacts, authentication must complete before
-calling any unsafe or trust-requiring deserialization API. If Wasmtime's cache
-integration cannot provide this ordering, Witchy disables that cache until it
-can wrap or replace the integration safely.
+For engine-native serialized artifacts, authentication and length bounds must
+complete before calling any unsafe or trust-requiring deserialization API. The
+implementation must also document why artifacts emitted by the authenticated
+producer satisfy that API's safety preconditions. Authentication proves
+provenance; it does not prove memory safety or make arbitrary native bytes safe.
+If Wasmtime's cache integration cannot provide both the required ordering and a
+defensible producer-to-deserializer safety contract, Witchy disables that cache
+until it can wrap or replace the integration safely.
 
 Cache metadata never supplies imports, capability footprints, launch bindings,
 grants, or resource identities. Witchy derives those from current authenticated
 input and current consumer policy. Cached metadata may duplicate them only for
 an equality check that fails closed.
 
-### Guest cache exclusion
+### Optional guest cache exclusion
 
 The cache and cache credential namespaces are reserved host resources. As
-defense in depth, Witchy does not mint guest `Dir` or `File` capabilities that
-directly identify them. Guest filesystem operations should deny traversal,
-listing, reading, writing, creation, truncation, unlinking, linking, or renaming
-that resolves into those namespaces.
+optional defense in depth, Witchy may refuse to mint guest `Dir` or `File`
+capabilities that directly identify them. A complete implementation denies
+traversal, listing, reading, writing, creation, truncation, unlinking, linking,
+or renaming that resolves into those namespaces.
 
 This restriction applies even when a user grants a parent directory such as
 the home directory. Implementations must test object identity and open-handle
@@ -321,10 +362,11 @@ compiler and package tooling use a private host path unavailable through guest
 imports.
 
 This rule is not required for cache integrity when complete authentication and
-race-free loading hold. It earns its place by reducing denial of service,
-limiting exposure to verifier mistakes and legacy cache formats, and making the
-reserved host/guest boundary explicit. Implementations must not delay the core
-authentication work on a difficult path-exclusion mechanism.
+race-free loading hold. It reduces denial of service and exposure to verifier
+mistakes or legacy formats, but those benefits do not justify distorting an
+explicit broad filesystem grant or delaying the authentication core. It becomes
+mandatory only when Witchy makes a separate claim that a native child remains
+contained from cache storage and credentials.
 
 ### OS process confinement
 
@@ -375,22 +417,54 @@ fixture outside the production security contract.
 
 ## Minimality and composition
 
-The cache-integrity core is:
+The authenticated-cache core is:
 
 ```text
-complete keyed authentication
-+ trusted-only record production
-+ exact frozen inputs and exact-byte consumption
-+ authentication before native deserialization
+protected authenticator and trusted-only record production
++ complete canonical relationship binding
++ frozen producer inputs and same-open consumer bytes
++ bounded envelope parsing and authentication before artifact consumption
 + authority derived independently of cache contents
-+ cache-off fallback
++ cache-off fallback without a downgrade switch
 ```
 
-Removing any member opens a distinct attack: forgery, signing-oracle abuse,
-input or load races, unsafe parsing of attacker bytes, capability confusion, or
-silent downgrade. Content addressing, per-program key derivation, guest path
-denial, and OS sandboxing for a no-`Exec` WebAssembly guest do not replace any
-member of this core.
+The first line is one obligation, not two stackable mitigations. A strong key is
+useless if the attacker can ask trusted code to authenticate arbitrary output,
+and a closed producer is useless if an attacker can forge its records. Likewise,
+the canonical relationship is one binding obligation: splitting input,
+artifact, recipe, target, and epoch into independent controls does not provide
+independent security.
+
+Each remaining line blocks a different failure after the preceding lines hold:
+
+| Removed obligation | Attack still available with every other obligation |
+|---|---|
+| Protected authenticator and trusted producer | Forge a self-consistent malicious record, or use the host as a signing oracle |
+| Complete relationship binding | Replay an authentic artifact for a different input, toolchain, target, configuration, or epoch |
+| Frozen producer inputs and same-open consumer bytes | Swap source after hashing or artifact after verification |
+| Bounded envelope parse and pre-consumption authentication | Reach an artifact parser, especially a native unsafe deserializer, with attacker-controlled payload bytes before rejection |
+| Authority independent of cache | Reuse stale or mismatched cached grants and bindings even with authentic code |
+| Cache-off fallback without downgrade | Turn credential failure into acceptance of unauthenticated state |
+
+No proper subset of these obligations covers all listed attacks. Content
+addressing, per-program keys, program identity, guest path denial, and OS
+sandboxing for a WebAssembly guest without native-child authority do not replace
+any member of the core.
+
+The controls compose by execution mode rather than accumulating globally:
+
+| Execution mode | Required mitigation |
+|---|---|
+| Trusted executable | Cache independence only |
+| Source, raw Wasm, or embedded-module persistent cache | Complete authenticated-cache core |
+| Native serialized-artifact cache | Complete core plus a documented unsafe-deserialization safety contract |
+| No persistent cache | Exact current inputs and current authority checks; authentication controls are not applicable |
+| Native child claimed as contained | Core plus OS or broker isolation from both cache and authenticator |
+
+A broker or daemon can replace the local authenticator and producer mechanism
+only if it compiles frozen inputs itself under a distinct security boundary. A
+daemon that accepts caller-supplied artifacts or caller-asserted digests merely
+moves the signing oracle into another process.
 
 Trusted executables form a separate execution mode. Cache independence alone
 closes their mutable-cache substitution path and deliberately avoids depending
@@ -404,9 +478,10 @@ than permanent rule.
 |---|---|---|
 | Replace artifact but keep record | Artifact digest and MAC | Miss and recompile |
 | Replace record and artifact consistently | Secret-key MAC | Miss and recompile |
-| Poison another program's entry | Bound exact-input and recipe digests | Miss and recompile |
+| Substitute across distinct program inputs | Bound exact-input and recipe digests | Miss and recompile |
+| Reuse identical code for another program | Authority remains outside the cache | Safe hit; no authority transfers |
 | Replay old compiler output | Recipe identity and epoch | Miss and recompile |
-| Reach cache through broad `Dir` | Guest cache exclusion; OS worker where available | Denied; MAC remains backup |
+| Reach cache through broad `Dir` | Complete authenticated-cache core | Substitution rejected; optional exclusion may deny access earlier |
 | Reach cache through child process | Isolation from both cache and authenticator, or explicit native-authority boundary | Denied only when the complete isolation claim holds |
 | Extract embedded key | No embedded cache key | No key present |
 | Use host as signing oracle | No guest cache-authentication API; trusted compiler constructs records | No attacker-selected assertion authenticated |
@@ -466,11 +541,13 @@ demonstrated:
 2. A valid malicious optimized-WebAssembly envelope with the expected input
    hash but no valid MAC is rejected.
 3. A mutually consistent malicious record and artifact are rejected.
-4. Cross-program, cross-target, cross-configuration, and old-epoch replays are
-   rejected.
+4. Cross-input, cross-target, cross-configuration, and old-epoch replays are
+   rejected. Identical-input cross-program reuse remains safe and permitted.
 5. Invalid and unavailable credentials run successfully without persistent
    cache access or interactive prompts.
-6. Cache records are authenticated before any native-artifact deserialization.
+6. Cache records are length-bounded and authenticated before artifact
+   consumption, and native deserialization additionally has a documented
+   producer-to-deserializer safety contract.
 7. Capability footprints, imports, bindings, and grants are derived outside the
    cache and mismatches fail closed.
 8. Production binaries expose no unauthenticated executable-cache override.
@@ -482,12 +559,12 @@ demonstrated:
 12. Fuzz targets cover canonical record decoding, length bounds, algorithm and
     schema dispatch, and cache lookup races.
 
-Additional defense-in-depth claims have their own acceptance gates and do not
-delay the core:
+Optional defense-in-depth claims have their own acceptance gates and do not
+delay the core. A claim is made only if its corresponding gate passes:
 
-1. Guest cache exclusion covers parent-directory and direct grants, symlinks,
-   hard links, rename, truncation, deletion, open handles, and concurrent
-   replacement.
+1. If shipped, guest cache exclusion covers parent-directory and direct grants,
+   symlinks, hard links, rename, truncation, deletion, open handles, and
+   concurrent replacement.
 2. Native-child containment proves the child cannot access either cache
    storage or the authentication operation.
 3. A Linux Landlock claim proves guest workers and descendants cannot reach
@@ -517,9 +594,10 @@ delay the core:
   integration, or leave persistent native caching disabled.
 - Measure whether a broker/daemon is justified.
 
-### Phase 4: defense in depth and native-child decision
+### Phase 4: optional hardening and native-child decision
 
-- Reserve cache/key namespaces from guest capabilities without making this a
+- Reserve cache/key namespaces from guest capabilities only if the mechanism is
+  complete and does not distort intended broad grants; do not make this a
   prerequisite for authenticated caching.
 - Add Linux Landlock worker confinement and inheritance tests if native-child
   containment remains a product goal.
@@ -551,15 +629,16 @@ separately enforced OS sandbox.
 
 ### Derive per-program keys from one installation key
 
-Rejected as a required mitigation. Complete record binding already prevents
-cross-program replay, while compromise of the installation key compromises
-every deterministically derived child key.
+Rejected as a required mitigation. Complete record binding prevents
+substitution across distinct inputs, identical-input reuse is safe, and
+compromise of the installation key compromises every deterministically derived
+child key.
 
 ### Rely only on guest path denial
 
-Rejected as the sole boundary. It is cheap and worthwhile defense in depth, but
-aliases, broad parent grants, child processes, and implementation defects make
-cryptographic authentication valuable.
+Rejected as the sole boundary. It can be worthwhile defense in depth when it is
+complete and cheap, but aliases, broad parent grants, child processes, and
+implementation defects prevent it from replacing authentication.
 
 ### Rely only on platform sandboxing
 
@@ -595,8 +674,9 @@ remain useful whether or not a daemon is added.
   implemented.
 - A worker-process sandbox complicates capability transfer, output, debugging,
   profiling, and process supervision.
-- Guest cache exclusion reserves a namespace that a user cannot deliberately
-  grant to Witchy guest code through ordinary filesystem capabilities.
+- If enabled, guest cache exclusion reserves a namespace that a user cannot
+  deliberately grant to Witchy guest code through ordinary filesystem
+  capabilities.
 - Containing native children may require a broker, separate OS identity, or
   platform packaging that is substantially more complex than a credential
   lookup.
