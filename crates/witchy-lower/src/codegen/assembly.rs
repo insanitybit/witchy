@@ -7056,6 +7056,14 @@ mod checked_codegen_boundary_tests {
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("select2_frame_loop"), "missing compiler-owned frame-loop bridge");
         assert!(!wat.contains("select2_frame_loop_state"), "stateful ABI must reuse Pull2FrameLoop");
+        let fused_segment = wat
+            .split("(func ")
+            .find(|segment| segment.contains("call $chan.select2_frame_loop"))
+            .expect("frame-loop call must be in a lowered segment");
+        assert!(
+            !fused_segment.contains("call $rc_alloc"),
+            "select frame segment must not allocate a continuation per iteration"
+        );
     }
 
     #[test]
