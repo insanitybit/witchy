@@ -1,29 +1,30 @@
 # witchy performance baseline
 
-Two clocks per benchmark. **kernel** is the compute time measured *inside*
-the program with a monotonic clock (witchy `now_monotonic`, Go `time.Now`),
-excluding process start and wasmtime instantiation — it isolates codegen
-quality. **wall** is the end-to-end `witchy sandbox` / Go-binary time
-(hyperfine mean), startup included; the witchy wall−kernel gap is the fixed
-runtime-startup tax. `vs go` is witchy/go on the kernel clock (lower is
-better; **< 1.00 means witchy beats Go**). Regenerate with `./run.sh`.
+Kernel values are medians of raw in-program compute samples. Wall values
+are medians of end-to-end hyperfine samples and include process startup.
+The machine-readable sibling artifact retains build identity, inputs,
+checksums, every sample, variability, and the paired ratio interval.
 
-| benchmark | kernel witchy | kernel go | kernel vs go | wall witchy | wall go |
-|-----------|--------------:|----------:|------------:|------------:|--------:|
-| fib | 32.0 | 20.4 | 1.57x | 105.0 | 32.7 |
-| loop_sum | 52.4 | 26.1 | 2.01x | 177.8 | 43.2 |
-| collatz | 204.4 | 146.7 | 1.39x | 336.8 | 166.5 |
-| mandelbrot | 36.7 | 35.0 | 1.05x | 165.7 | 54.0 |
-| closure_calls | 3.8 | 2.2 | 1.71x | 114.7 | 8.2 |
-| list_sum | 10.4 | 10.3 | 1.01x | 121.0 | 30.7 |
-| dict_count | 25.6 | 32.6 | 0.78x | 143.1 | 76.1 |
-| binary_trees | 67.8 | 96.7 | 0.70x | 183.9 | 118.6 |
-| word_count | 144.7 | 56.4 | 2.57x | 279.9 | 101.4 |
-| expr_eval | 13.9 | 47.2 | 0.29x | 124.6 | 62.8 |
-| nsieve | 9.8 | 3.1 | 3.13x | 166.3 | 18.6 |
-| fannkuch | 455.1 | 134.6 | 3.38x | 647.3 | 166.4 |
-| knucleotide | 60.1 | 20.4 | 2.94x | 190.7 | 39.5 |
-| record_build | 1.6 | 2.9 | 0.56x | 126.4 | 10.5 |
-| chan_throughput | — | — | — | 146.4 | 4.9 |
-| select_fanin | 26.0 | 0.1 | 281.82x | 602.6 | 6.1 |
-| list_index | 5.1 | 2.6 | 1.96x | 109.2 | 6.7 |
+| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel rust | kernel vs fastest | wall witchy | wall go |
+|-----------|--------------:|----------:|------------:|------------:|------------:|-------------:|------------:|--------:|
+| fasta | 455.6 | 290.5 | — | — | — | 1.57x (go) | 845.6 | 273.8 |
+| fib | 32.7 | 21.2 | — | — | — | 1.55x (go) | 126.6 | 27.9 |
+| loop_sum | 26.0 | 26.2 | — | — | — | 0.99x (go) | 153.2 | 33.6 |
+| collatz | 215.5 | 148.1 | — | — | — | 1.45x (go) | 347.0 | 157.1 |
+| mandelbrot | 36.7 | 36.4 | — | — | — | 1.01x (go) | 164.0 | 51.0 |
+| closure_calls | 3.9 | 2.3 | — | — | — | 1.69x (go) | 122.7 | 7.5 |
+| list_sum | 9.1 | 10.1 | — | — | — | 0.90x (go) | 131.1 | 19.3 |
+| dict_count | 22.1 | 34.6 | — | — | — | 0.64x (go) | 143.9 | 43.1 |
+| binary_trees | 56.5 | 97.5 | — | — | — | 0.58x (go) | 189.8 | 112.6 |
+| word_count | 24.2 | 56.6 | — | — | — | 0.43x (go) | 143.9 | 63.8 |
+| regex-redux | 12.4 | 15.4 | — | — | — | 0.80x (go) | 136.2 | 19.2 |
+| expr_eval | 11.9 | 49.4 | — | — | — | 0.24x (go) | 140.7 | 60.2 |
+| nsieve | 3.9 | 3.3 | — | — | — | 1.19x (go) | 147.7 | 9.9 |
+| fannkuch | 172.0 | 142.2 | — | — | — | 1.21x (go) | 301.5 | 154.2 |
+| knucleotide | 21.4 | 17.4 | — | — | — | 1.23x (go) | 178.2 | 23.2 |
+| record_build | 1.6 | 2.4 | — | — | — | 0.68x (go) | 134.6 | 5.4 |
+| chan_throughput | — | — | — | — | — | — | 159.2 | 5.3 |
+| chan_scheduler | 140.2 | 0.2 | — | — | — | 590.52x (go) | 774.9 | 4.4 |
+| select_fanin | 1.9 | 0.1 | — | — | — | 19.71x (go) | 803.5 | 14.2 |
+| list_index | 3.1 | 2.8 | — | — | — | 1.12x (go) | 89.9 | 3.3 |
+| reverse-complement | 103.8 | 11.8 | — | — | — | 8.76x (go) | 271.4 | 43.2 |
