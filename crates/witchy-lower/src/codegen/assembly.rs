@@ -7045,6 +7045,19 @@ mod checked_codegen_boundary_tests {
                     if plan.payload_lane == Some(witchy_types::suspension_carrier::CarrierLane::I64)
             )
         }), "Int receivers must carry an explicit typed payload lane");
+        assert!(scalar.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
+            matches!(
+                transition,
+                witchy_types::suspension_carrier::ScalarTransition::ChannelSelect2(plan)
+                    if matches!(
+                        (&plan.first_channel, &plan.second_channel),
+                        (
+                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                        )
+                    )
+            )
+        }), "a fixed-arity select must preserve both static endpoint places for a later ready emitter");
         let select_state = wir.funcs.iter().find(|function| {
             let mut calls = HashSet::new();
             collect_called_funcs(&function.body, &mut calls);

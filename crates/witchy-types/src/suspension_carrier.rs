@@ -168,10 +168,21 @@ pub enum SelectResultUse {
     Escape,
 }
 
+/// Whether a select arm names one stable endpoint place.  A dynamic expression
+/// is a normal scheduler fallback, not a string sentinel that a later ready
+/// emitter could mistake for an ordinary local named `unknown`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelEndpointPlace {
+    Static(String),
+    Dynamic,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitSelect2Plan {
-    pub first_channel: String,
-    pub second_channel: String,
+    /// Receiver arms in source order.  Ready-path lowering may promote only
+    /// two static places; dynamic places retain the ordinary scheduler.
+    pub first_channel: ChannelEndpointPlace,
+    pub second_channel: ChannelEndpointPlace,
     /// Exact layout recovered from the two typed receiver endpoints.  The
     /// scheduler still uses its erased `__Msg` fallback until an emitter claims
     /// this plan; that fallback must never infer a replacement layout itself.
@@ -638,8 +649,8 @@ fn collect_task_expression(
             state_ids,
         )?;
         transitions.push(ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
-            first_channel: "unknown".into(),
-            second_channel: "unknown".into(),
+            first_channel: channel_endpoint_place(args.first()),
+            second_channel: channel_endpoint_place(args.get(1)),
             payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
             payload_lane: select_payload_lane(table, args.first(), args.get(1)),
             resume_target,
@@ -656,14 +667,8 @@ fn collect_task_expression(
     } else if call_family(name, "chan.recv") {
         ScalarTransition::ChannelReceive { resume }
     } else if call_family(name, "task.__channel_select2") {
-        let first_channel = match args.get(0) {
-            Some(ast::Expr::Var(v)) => v.clone(),
-            _ => "unknown".to_string(),
-        };
-        let second_channel = match args.get(1) {
-            Some(ast::Expr::Var(v)) => v.clone(),
-            _ => "unknown".to_string(),
-        };
+        let first_channel = channel_endpoint_place(args.first());
+        let second_channel = channel_endpoint_place(args.get(1));
         ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
             first_channel,
             second_channel,
@@ -689,6 +694,13 @@ fn collect_task_expression(
     };
     transitions.push(transition);
     Ok(())
+}
+
+fn channel_endpoint_place(endpoint: Option<&ast::Expr>) -> ChannelEndpointPlace {
+    match endpoint {
+        Some(ast::Expr::Var(name)) => ChannelEndpointPlace::Static(name.clone()),
+        _ => ChannelEndpointPlace::Dynamic,
+    }
 }
 
 fn continuation_state(
@@ -983,6 +995,20 @@ fn flatten_sum(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_endpoint_places_do_not_use_a_local_name_as_a_dynamic_sentinel() {
+        assert_eq!(
+            channel_endpoint_place(Some(&ast::Expr::Var("unknown".into()))),
+            ChannelEndpointPlace::Static("unknown".into()),
+            "a real local may use the former sentinel spelling"
+        );
+        assert_eq!(
+            channel_endpoint_place(Some(&ast::Expr::Int(0))),
+            ChannelEndpointPlace::Dynamic,
+            "non-place receiver expressions must retain the scheduler fallback"
+        );
+    }
 
     #[test]
     fn typed_catalog_flattens_owned_scalar_wrappers_and_pins_state_order() {
