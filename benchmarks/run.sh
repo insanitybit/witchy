@@ -44,12 +44,14 @@ ALL_BENCHES=(
     knucleotide
     record_build
     chan_throughput
+    chan_scheduler
     select_fanin
     list_index
     reverse-complement
 )
-# chan_throughput is the async-executor probe (no kernel bracket — an async main);
-# it is wall-clock only.
+# chan_throughput is the closed scalar-fusion probe and intentionally has no
+# source-level kernel bracket; chan_scheduler is the timed non-fusible scheduler
+# control.
 WARMUP="${WARMUP:-2}"
 RUNS="${RUNS:-12}"
 BUILD=.build

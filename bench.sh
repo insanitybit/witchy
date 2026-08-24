@@ -60,6 +60,7 @@ ALL_BENCHES=(
     knucleotide
     record_build
     chan_throughput
+    chan_scheduler
     select_fanin
     list_index
     reverse-complement

@@ -43,7 +43,18 @@ class SummarizeTests(unittest.TestCase):
             (build / "fib.witchy.kernel.tsv").write_text("witchy\t10\n")
             (build / "fib.go.kernel.tsv").write_text("go\t10\n")
             with self.assertRaisesRegex(ValueError, "missing result file"):
-                SUMMARIZE.benchmark_record(build, "fib", "quick", 1)
+                SUMMARIZE.benchmark_record(build, "fib", "quick", 1, None)
+
+    def test_closed_scalar_channel_row_is_explicitly_wall_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = pathlib.Path(directory)
+            (build / "chan_throughput.witchy.kernel.tsv").write_text("")
+            (build / "chan_throughput.go.kernel.tsv").write_text("")
+            (build / "chan_throughput.result").write_text("2047968000")
+            (build / "chan_throughput.go.result").write_text("2047968000")
+            record = SUMMARIZE.benchmark_record(build, "chan_throughput", "quick", 1, None)
+            self.assertEqual(record["kernel_ns"]["witchy_samples"], [])
+            self.assertIsNone(record["kernel_ns"]["witchy_summary"])
 
 
 class DriverTests(unittest.TestCase):

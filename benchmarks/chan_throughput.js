@@ -1,5 +1,3 @@
-const { performance } = require('perf_hooks');
-
 class Channel {
     constructor(capacity) {
         this.capacity = capacity;
@@ -61,7 +59,6 @@ class Channel {
 
 async function main() {
     const n = 64000;
-    const t0 = performance.now();
     const ch = new Channel(64);
 
     const producer = (async () => {
@@ -76,10 +73,7 @@ async function main() {
         sum += v;
     }
     await producer;
-    const t1 = performance.now();
-
     console.log(sum);
-    console.log(`bench_ns=${Math.round((t1 - t0) * 1e6)}`);
 }
 
 main();

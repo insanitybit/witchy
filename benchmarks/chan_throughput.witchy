@@ -1,7 +1,10 @@
-// Channel throughput: a spawned producer sends N ints over a bounded channel and
-// the consumer FOLDS them into a running sum — timing the async executor's
-// send/recv + cooperative scheduling vs Go goroutines+channels. Both ends know N,
-// and the consumer reports the sum (0+1+…+N-1), so the fold is checked.
+// Closed scalar channel fusion: a spawned producer sends N ints over a bounded
+// channel and the consumer FOLDS them into a running sum. The compiler may fuse
+// this whole proved graph into a direct scalar loop; the result checks that the
+// observable channel program is preserved. This fixture deliberately has no
+// in-program clock: an observable capability call before the first await is not
+// yet a supported scalar-executor prologue. Its execution cost is covered by the
+// dedicated compiled-Wasm scalar-executor acceptance test instead.
 //
 // (RFC-0059 Stage-1) The async lowering is now a defunctionalized state machine:
 // each `await` is one segment function, so there is no `and_then` continuation

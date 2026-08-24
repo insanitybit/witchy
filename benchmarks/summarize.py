@@ -47,8 +47,8 @@ WALL_ONLY = {"chan_throughput"}
 ALL_BENCHES = [
     "fasta", "fib", "loop_sum", "collatz", "mandelbrot", "closure_calls", "list_sum",
     "dict_count", "binary_trees", "word_count", "regex-redux", "expr_eval", "nsieve",
-    "fannkuch", "knucleotide", "record_build", "chan_throughput", "select_fanin",
-    "list_index", "reverse-complement",
+    "fannkuch", "knucleotide", "record_build", "chan_throughput", "chan_scheduler",
+    "select_fanin", "list_index", "reverse-complement",
 ]
 
 

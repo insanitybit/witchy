@@ -31,7 +31,7 @@ fn aggregate_benchmark_source(messages: i64) -> String {
     )
 }
 
-fn assert_scalar_main_bypasses_task_run(wasm: &[u8]) {
+fn assert_main_task_run_path(wasm: &[u8], expects_task_run: bool) {
     let mut functions = HashMap::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
         if let wasmparser::Payload::CustomSection(reader) = payload.expect("valid scalar Wasm")
@@ -82,10 +82,11 @@ fn assert_scalar_main_bypasses_task_run(wasm: &[u8]) {
             _ => {}
         }
     }
-    assert!(imported_functions > 0, "compiled program imports its Console host");
-    assert!(
-        !main_calls.contains(&task_run),
-        "the measured scalar entry must bypass task.run: {main_calls:?}"
+    assert!(imported_functions > 0, "compiled program imports host capabilities");
+    assert_eq!(
+        main_calls.contains(&task_run),
+        expects_task_run,
+        "unexpected task.run selection for main: {main_calls:?}"
     );
 }
 
@@ -104,7 +105,7 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     let source = benchmark_source(MESSAGES);
     let baseline_source = benchmark_source(BASELINE_MESSAGES);
     let wasm = witchy::compile_source(&source).expect("compile real scalar channel benchmark");
-    assert_scalar_main_bypasses_task_run(&wasm);
+    assert_main_task_run_path(&wasm, false);
 
     let repetitions = std::env::var("WITCHY_RFC0129_REPETITIONS")
         .ok()
@@ -163,6 +164,18 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
         median <= ACCEPTED_NS_PER_MESSAGE,
         "RFC-0129 scalar latency gate is {ACCEPTED_NS_PER_MESSAGE} ns/message; measured median {median} ns/message"
     );
+}
+
+/// The nominal-packet benchmark is intentionally the non-fusible scheduler
+/// control. Keep it out of the closed scalar-fusion path so its kernel timing
+/// continues to expose Task/Step and continuation-frame costs.
+#[test]
+fn nominal_packet_channel_uses_the_scheduler_control_path() {
+    witchy::opt::set_for_tests(Some(OptSet::all()));
+    let _reset_optimization_override = ResetOptimizationOverride;
+    let wasm = witchy::compile_source(include_str!("../benchmarks/chan_scheduler.witchy"))
+        .expect("compile nominal packet scheduler benchmark");
+    assert_main_task_run_path(&wasm, true);
 }
 
 /// RFC-0129 row 4 GC-backed carrier evidence. A nominal aggregate message

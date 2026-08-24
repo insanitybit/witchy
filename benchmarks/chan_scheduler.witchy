@@ -1,0 +1,27 @@
+// Non-fusible channel scheduler control. Nominal packets deliberately keep this
+// workload on the ordinary Task/Step executor, so its kernel clock measures
+// scheduler/frame cost rather than closed scalar graph fusion.
+
+from chan import Sender
+
+type Packet:
+    Packet(Int, Int)
+
+async fn producer(tx: Sender(Packet), n: Int):
+    var i = 0
+    while i < n:
+        chan.send(tx, Packet(i, i + 1)).await
+        i = i + 1
+
+async fn main(let console: Console, let clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    let (tx, rx) = chan.channel(64).await
+    let producer_handle = chan.spawn(producer(tx, 10000)).await
+    var sum = 0
+    for await packet in rx:
+        match packet:
+            Packet(left, right) -> sum = sum + left + right
+    chan.join(producer_handle).await
+    let bench_t1 = clock.now_monotonic()
+    console.print("${sum}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
