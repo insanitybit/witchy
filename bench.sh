@@ -73,6 +73,7 @@ WARMUP=1
 TARGETS=()
 ARTIFACT_JSON=""
 PRINT_BUILD_INPUTS=0
+COMPARE_LANG=""
 
 usage() {
     cat <<EOFU
@@ -81,6 +82,7 @@ Usage: ./bench.sh [OPTIONS] [BENCHMARK...]
 Options:
   -f, --full     Run full benchmark suite with hyperfine wall-clock timing & update baseline.md
   -q, --quick    Single-sample fast check (<1s)
+  -c, --compare LANG Compare against a specific language (go, node, ruby, rust) instead of Fastest
       --json     Machine-readable artifact path (default: benchmarks/.build/results-MODE.json)
       --print-build-inputs
                  Print compiler build inputs used by stale detection, then exit
@@ -123,6 +125,11 @@ while [ $# -gt 0 ]; do
         --json)
             [ $# -ge 2 ] || { printf "Error: --json requires a path\n" >&2; exit 1; }
             ARTIFACT_JSON="$2"
+            shift 2
+            ;;
+        -c|--compare)
+            [ $# -ge 2 ] || { printf "Error: --compare requires a language (go, node, ruby, rust)\n" >&2; exit 1; }
+            COMPARE_LANG="$2"
             shift 2
             ;;
         --print-build-inputs)
@@ -277,9 +284,14 @@ fi
 
 # Fast / Quick mode
 printf "\n%s%sWitchy Performance Benchmarks%s %s(%s mode, %s sample(s))%s\n" "$BOLD" "$BRIGHT_CYAN" "$RESET" "$DIM" "$MODE" "$RUNS" "$RESET"
-printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats fastest baseline%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
-
-printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "vs Fastest" "Status"
+if [ -n "$COMPARE_LANG" ]; then
+    compare_title="vs $(tr '[:lower:]' '[:upper:]' <<< ${COMPARE_LANG:0:1})${COMPARE_LANG:1}"
+    printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats %s baseline%s\n\n" "$DIM" "$GREEN" "$DIM" "$COMPARE_LANG" "$RESET"
+    printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "$compare_title" "Status"
+else
+    printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats fastest baseline%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
+    printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "vs Fastest" "Status"
+fi
 printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 
 total_count=0
@@ -343,16 +355,25 @@ for b in "${TARGETS[@]}"; do
     if [ -n "$rns" ]; then r_ms=$(awk -v ns="$rns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
     if [ -n "$rsns" ]; then rs_ms=$(awk -v ns="$rsns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
 
-    fastest_ns=$(awk -v g="$gns" -v n="$nns" -v r="$rns" -v rs="$rsns" '
-        BEGIN {
-            min = ""
-            if (g != "" && (min == "" || g < min)) min = g
-            if (n != "" && (min == "" || n < min)) min = n
-            if (r != "" && (min == "" || r < min)) min = r
-            if (rs != "" && (min == "" || rs < min)) min = rs
-            print min
-        }
-    ')
+    if [ -n "$COMPARE_LANG" ]; then
+        if [ "$COMPARE_LANG" = "go" ]; then fastest_ns=$gns
+        elif [ "$COMPARE_LANG" = "node" ]; then fastest_ns=$nns
+        elif [ "$COMPARE_LANG" = "ruby" ]; then fastest_ns=$rns
+        elif [ "$COMPARE_LANG" = "rust" ]; then fastest_ns=$rsns
+        else fastest_ns=""
+        fi
+    else
+        fastest_ns=$(awk -v g="$gns" -v n="$nns" -v r="$rns" -v rs="$rsns" '
+            BEGIN {
+                min = ""
+                if (g != "" && (min == "" || g < min)) min = g
+                if (n != "" && (min == "" || n < min)) min = n
+                if (r != "" && (min == "" || r < min)) min = r
+                if (rs != "" && (min == "" || rs < min)) min = rs
+                print min
+            }
+        ')
+    fi
 
     ratio_color=""
     if [ -n "$wns" ] && [ -n "$fastest_ns" ] && [ "$fastest_ns" -gt 0 ]; then
@@ -378,13 +399,18 @@ else
     printf "  %s%s%d/%d passed%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET"
 fi
 
-python3 "$BENCH_DIR/summarize.py" \
-    --artifact "$ARTIFACT_JSON" \
-    --mode "$MODE" \
-    --witchy "$WITCHY" \
-    --warmup "$WARMUP" \
-    --runs "$RUNS" \
-    --build-dir "$BUILD_DIR" \
-    "${TARGETS[@]}" >/dev/null
+SUMMARIZE_ARGS=(
+    --artifact "$ARTIFACT_JSON"
+    --mode "$MODE"
+    --witchy "$WITCHY"
+    --warmup "$WARMUP"
+    --runs "$RUNS"
+    --build-dir "$BUILD_DIR"
+)
+if [ -n "$COMPARE_LANG" ]; then
+    SUMMARIZE_ARGS+=(--compare "$COMPARE_LANG")
+fi
+
+python3 "$BENCH_DIR/summarize.py" "${SUMMARIZE_ARGS[@]}" "${TARGETS[@]}" >/dev/null
 printf "  machine-readable artifact: %s\n" "$ARTIFACT_JSON"
 [ "$pass_count" -eq "$total_count" ] || exit 1
