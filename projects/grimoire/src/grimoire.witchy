@@ -137,7 +137,7 @@ fn cmd_info(console: Console, root: Dir, dir: String):
         console.print("declared: ${list.join(declared_caps(manifest), ", ")}")
         match rune_footprint(root, dir):
             Ok(actual) -> console.print("actual:   ${list.join(actual, ", ")}")
-            Err(e) -> console.print("actual:   ERROR — ${footprint_error_message(e)}")
+            Err(e) -> console.print("actual:   ERROR — ${e.show()}")
 
 // run <file|dir> — compile and run a program by driving the compiler. Given a
 // project directory (or, with no argument, the current directory) that carries a
@@ -225,7 +225,7 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
             // BUG-094: refuse to link a vendored dependency whose on-disk source
             // no longer matches its signed record — before any compile.
             Err(e) ->
-                console.print(lock_integrity_error_message(e))
+                console.print(e.show())
                 2
             Ok(_) ->
                 match project_entry(root, dir):
@@ -236,7 +236,7 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
                         else:
                             match dep_flags(root, dir):
                                 Err(e) ->
-                                    console.print(lock_integrity_error_message(e))
+                                    console.print(e.show())
                                     2
                                 Ok(deps) ->
                                     build_project_target(console, runner, root, bin, dir, entry, deps, built.1, options)
@@ -283,7 +283,7 @@ fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String,
         // BUG-094: verify vendored sources against their signed records before
         // linking + running, so a tampered vendored rune never executes.
         Err(e) ->
-            console.print(lock_integrity_error_message(e))
+            console.print(e.show())
             2
         Ok(_) ->
             match project_entry(root, dir):
@@ -311,7 +311,7 @@ fn ensure_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityErr
             Err(LockCannotCreate(list.join(problems, "; ")))
         else:
             match generate_lock(root, dir):
-                Err(e) -> Err(LockCannotCreate(footprint_error_message(e)))
+                Err(e) -> Err(LockCannotCreate(e.show()))
                 Ok(lock) ->
                     root.write(lockpath, lock)
                     verify_lock_integrity(root, dir)
@@ -357,7 +357,7 @@ fn lock_rune_entries(lock: String) -> Result(List(Toml), LockIntegrityError):
 
 fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(Nil, LockIntegrityError):
     let rootpub: String = match pinned_registry_trust(lock):
-        Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
+        Err(e) -> return Err(LockEntryMalformed(e.show()))
         Ok(None) -> ""
         Ok(Some(trust)) -> trust.1
 
@@ -385,11 +385,11 @@ fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(
                         return Err(LockVendorManifestMissing(alias))
                     let record_text = root.read(record_path)
                     match verify_record_signature(rootpub, record_text):
-                        Err(e) -> return Err(LockRecordInvalid(alias, record_verify_error_message(e)))
+                        Err(e) -> return Err(LockRecordInvalid(alias, e.show()))
                         Ok(_doc) -> Nil
 
                     let record = match parse_vendored_record(record_text):
-                        Err(e) -> return Err(LockRecordInvalid(alias, vendored_record_error_message(e)))
+                        Err(e) -> return Err(LockRecordInvalid(alias, e.show()))
                         Ok(record) -> record
 
                     if record.name != name:
@@ -444,29 +444,26 @@ type LockIntegrityError:
     LockRecordCoordinateMismatch(String, String, String, String)
     LockSourceHashMismatch(String)
 
-fn lock_integrity_error_message(e: LockIntegrityError) -> String:
-    match e:
-        LockMissing -> "BLOCK: no witchy.lock — run `witchy lock` or `witchy add` before verification"
-        LockCannotCreate(reason) -> "BLOCK: cannot create witchy.lock before build: ${reason}"
-        LockPathHashMismatch(names) -> "BLOCK: lock no longer matches source for: ${list.join(names, ", ")}"
-        LockRootKeyMissing -> "BLOCK: witchy.lock has registry dependencies but no pinned registry_rootpub"
-        LockEntryMalformed(reason) -> "BLOCK: malformed witchy.lock — ${reason}"
-        LockDuplicateAlias(alias) -> "BLOCK: witchy.lock maps more than one registry dependency to vendor/${alias}"
-        LockVendorMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} is missing"
-        LockVendorManifestMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} has no witchy.toml"
-        LockRecordInvalid(alias, reason) -> "BLOCK: vendor/${alias}/coven.json failed pinned-root verification — ${reason}"
-        LockRecordCoordinateMismatch(alias, field, expected, actual) -> "BLOCK: vendor/${alias}/coven.json `${field}` is `${actual}`, but witchy.lock pins `${expected}`"
-        LockSourceHashMismatch(alias) -> "BLOCK: vendor/${alias} source no longer matches its signed and locked hash"
-
 impl Show for LockIntegrityError:
     fn show(self) -> String:
-        lock_integrity_error_message(self)
+        match self:
+            LockMissing -> "BLOCK: no witchy.lock — run `witchy lock` or `witchy add` before verification"
+            LockCannotCreate(reason) -> "BLOCK: cannot create witchy.lock before build: ${reason}"
+            LockPathHashMismatch(names) -> "BLOCK: lock no longer matches source for: ${list.join(names, ", ")}"
+            LockRootKeyMissing -> "BLOCK: witchy.lock has registry dependencies but no pinned registry_rootpub"
+            LockEntryMalformed(reason) -> "BLOCK: malformed witchy.lock — ${reason}"
+            LockDuplicateAlias(alias) -> "BLOCK: witchy.lock maps more than one registry dependency to vendor/${alias}"
+            LockVendorMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} is missing"
+            LockVendorManifestMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} has no witchy.toml"
+            LockRecordInvalid(alias, reason) -> "BLOCK: vendor/${alias}/coven.json failed pinned-root verification — ${reason}"
+            LockRecordCoordinateMismatch(alias, field, expected, actual) -> "BLOCK: vendor/${alias}/coven.json `${field}` is `${actual}`, but witchy.lock pins `${expected}`"
+            LockSourceHashMismatch(alias) -> "BLOCK: vendor/${alias} source no longer matches its signed and locked hash"
 
 impl Error for LockIntegrityError
 
 impl From(LockIntegrityError) for String:
     fn from(value: LockIntegrityError) -> Self:
-        lock_integrity_error_message(value)
+        value.show()
 
 fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
     let outdir = join_path(dir, "target")
@@ -475,7 +472,7 @@ fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: St
     let wasm = join_path(outdir, "app.wasm")
     match dep_flags(root, dir):
         Err(e) ->
-            console.print(lock_integrity_error_message(e))
+            console.print(e.show())
             2
         Ok(dep_argv) ->
             compile_then_run_deps(console, runner, root, bin, dir, entry, wasm, flatten_argv(dep_argv, build_flags), app_args)
@@ -576,7 +573,7 @@ fn collect_deps(root: Dir, dir: String, flags: List(String)) -> Result(List(Stri
     if root.exists(lockpath):
         let lock = root.read(lockpath)
         let rootpub: String = match pinned_registry_trust(lock):
-            Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
+            Err(e) -> return Err(LockEntryMalformed(e.show()))
             Ok(None) -> ""
             Ok(Some(trust)) -> trust.1
 
@@ -670,7 +667,7 @@ fn dependency_owner(root: Dir, dir: String, alias: String, depdir: String) -> Re
         for entry in lock_rune_entries(lock)?:
             if entry_is_registry(entry) && entry_alias(entry) == alias:
                 let rootpub = match pinned_registry_trust(lock):
-                    Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
+                    Err(e) -> return Err(LockEntryMalformed(e.show()))
                     Ok(None) -> return Err(LockRootKeyMissing)
                     Ok(Some(trust)) -> trust.1
 
@@ -771,7 +768,7 @@ fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(
 fn build_step_flags(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> (Int, List(String)):
     match dep_dirs(root, dir):
         Err(e) ->
-            console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
+            console.print("BLOCK: cannot read witchy.lock — ${e.show()}")
             (1, [])
         Ok(deps) ->
             var code = 0
@@ -843,7 +840,7 @@ fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: 
         let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
         let demanded = match build_footprint(root.read(buildfile)):
             Err(e) ->
-                console.print("`${name}` build step has no trustworthy capability footprint: ${footprint_error_message(e)}")
+                console.print("`${name}` build step has no trustworthy capability footprint: ${e.show()}")
                 return (1, [])
             Ok(caps) -> caps
 
@@ -877,13 +874,13 @@ fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: Str
 fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depdir: String, gendir: String) -> (Int, List(String)):
     let shipped = match rune_footprint(root, depdir):
         Err(e) ->
-            console.print("`${name}` has no trustworthy shipped capability footprint: ${footprint_error_message(e)}")
+            console.print("`${name}` has no trustworthy shipped capability footprint: ${e.show()}")
             return (1, [])
         Ok(caps) -> caps
 
     let owner = match dependency_owner(root, dir, name, depdir):
         Err(e) ->
-            console.print(lock_integrity_error_message(e))
+            console.print(e.show())
             return (1, [])
         Ok(value) -> value
 
@@ -894,7 +891,7 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
             let path = join_path(gendir, f)
             let caps = match footprint_values(compiler.footprint(root.read(path)), "total"):
                 Err(e) ->
-                    console.print("`${name}` generated `${path}` without a trustworthy capability footprint: ${footprint_error_message(e)}")
+                    console.print("`${name}` generated `${path}` without a trustworthy capability footprint: ${e.show()}")
                     return (1, [])
                 Ok(values) -> values
 
@@ -1044,7 +1041,7 @@ fn cmd_audit(console: Console, root: Dir, file: String):
         let report = compiler.footprint(root.read(file))
         match footprint_values(report, "total"):
             Ok(caps) -> console.print("${file} demands: ${list.join(caps, ", ")}")
-            Err(e) -> console.print("${file} footprint error: ${footprint_error_message(e)}")
+            Err(e) -> console.print("${file} footprint error: ${e.show()}")
 
 // --- check: declared footprint must admit the actual footprint ---------------
 // The manifest's declared caps are *not trusted*: pm recomputes the footprint
@@ -1060,7 +1057,7 @@ fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
         let declared = declared_caps(manifest)
         let demanded = match rune_footprint(root, dir):
             Err(e) ->
-                console.print("BLOCK: cannot compute the code's capability footprint: ${footprint_error_message(e)}")
+                console.print("BLOCK: cannot compute the code's capability footprint: ${e.show()}")
                 return 2
             Ok(caps) -> caps
 
@@ -1102,7 +1099,7 @@ fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
     else:
         match footprint_diff_values(compiler.diff(root.read(old), root.read(new))):
             Err(e) ->
-                console.print("error: ${footprint_error_message(e)}")
+                console.print("error: ${e.show()}")
                 1
             Ok(diff) ->
                 if diff.0:
@@ -1407,7 +1404,7 @@ fn latest_label(body: String, status: Int) -> String:
         "registry error"
     else:
         match released_version_records(body):
-            Err(e) -> version_resolve_error_message(e)
+            Err(e) -> e.show()
             Ok(records) -> latest_label_of(latest_version(list.map(records, fn(record: (Version, Int)): record.0)))
 
 fn latest_label_of(v: Option(Version)) -> String:
@@ -1557,7 +1554,7 @@ fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
     else:
         match gate_contributors(root, dir, cap):
             Err(e) ->
-                console.print("cannot inspect dependency authority: ${footprint_error_message(e)}")
+                console.print("cannot inspect dependency authority: ${e.show()}")
                 1
             Ok(who) ->
                 if list.length(who) == 0:
@@ -1620,7 +1617,7 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
             // was actually locked, not just the direct manifest entries.
             match generate_lock(root, dir):
                 Err(e) ->
-                    console.print("BLOCK: cannot lock an uninspectable dependency: ${footprint_error_message(e)}")
+                    console.print("BLOCK: cannot lock an uninspectable dependency: ${e.show()}")
                     2
                 Ok(lock) ->
                     let n = list.length(path_closure(root, dir))
@@ -1703,7 +1700,7 @@ fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
     let online = first == "--online" || arg(args, 2) == "--online"
     match verify_lock_integrity(root, dir):
         Err(e) ->
-            console.print(lock_integrity_error_message(e))
+            console.print(e.show())
             2
         Ok(_) ->
             console.print("OK: every locked hash matches the dependency sources")
@@ -1732,7 +1729,7 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir
         // BUG-204/572: malformed or incomplete trust state is a lockfile
         // diagnostic, never an internal trap or a downgrade to unpinned trust.
         Err(e) ->
-            console.print("BLOCK: ${lock_pin_error_message(e)}")
+            console.print("BLOCK: ${e.show()}")
             2
         // No registry deps were added, so there is no registry trust state to verify.
         Ok(None) -> 0
@@ -1751,7 +1748,7 @@ fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, clock: Clock, dir
 fn verify_chain(console: Console, net: Net, root: Dir, dir: String, origin: String, pinned: Int, pinned_pub: String, clock: Clock) -> Int:
     match fetch_registry_rootpub(net, origin):
         Err(e) ->
-            console.print("FAIL: TUF chain — ${registry_root_key_error_message(e)}")
+            console.print("FAIL: TUF chain — ${e.show()}")
             2
         Ok(rootpub) ->
             // SEC-002: the root key is the trust anchor for the whole chain. Refuse
@@ -2001,42 +1998,36 @@ type LockPinError:
     LockPinRootWithoutSnapshot
     LockPinRootMalformed
 
-fn lock_pin_error_message(e: LockPinError) -> String:
-    match e:
-        LockPinNegative(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (must not be negative)"
-        LockPinNotInteger(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (not an integer)"
-        LockPinSnapshotWithoutRoot -> "invalid witchy.lock registry trust: registry_snapshot_version is present but registry_rootpub is missing"
-        LockPinRootWithoutSnapshot -> "invalid witchy.lock registry trust: registry_rootpub is present but registry_snapshot_version is missing"
-        LockPinRootMalformed -> "invalid witchy.lock registry_rootpub (expected a 32-byte Ed25519 public key encoded as hex)"
-
 impl Show for LockPinError:
     fn show(self) -> String:
-        lock_pin_error_message(self)
+        match self:
+            LockPinNegative(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (must not be negative)"
+            LockPinNotInteger(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (not an integer)"
+            LockPinSnapshotWithoutRoot -> "invalid witchy.lock registry trust: registry_snapshot_version is present but registry_rootpub is missing"
+            LockPinRootWithoutSnapshot -> "invalid witchy.lock registry trust: registry_rootpub is present but registry_snapshot_version is missing"
+            LockPinRootMalformed -> "invalid witchy.lock registry_rootpub (expected a 32-byte Ed25519 public key encoded as hex)"
 
 impl Error for LockPinError
 
 impl From(LockPinError) for String:
     fn from(value: LockPinError) -> Self:
-        lock_pin_error_message(value)
+        value.show()
 
 type RegistryRootKeyError:
     RegistryRootKeyUnavailable(Int)
     RegistryRootKeyMalformed
 
-fn registry_root_key_error_message(e: RegistryRootKeyError) -> String:
-    match e:
-        RegistryRootKeyUnavailable(status) -> "registry root key is unavailable (HTTP ${status})"
-        RegistryRootKeyMalformed -> "registry root key is malformed (expected a 32-byte Ed25519 public key encoded as hex)"
-
 impl Show for RegistryRootKeyError:
     fn show(self) -> String:
-        registry_root_key_error_message(self)
+        match self:
+            RegistryRootKeyUnavailable(status) -> "registry root key is unavailable (HTTP ${status})"
+            RegistryRootKeyMalformed -> "registry root key is malformed (expected a 32-byte Ed25519 public key encoded as hex)"
 
 impl Error for RegistryRootKeyError
 
 impl From(RegistryRootKeyError) for String:
     fn from(value: RegistryRootKeyError) -> Self:
-        registry_root_key_error_message(value)
+        value.show()
 
 // The path-dependency names whose recomputed hash differs from the lockfile's.
 // BUG-047/135: walks the full transitive path-dep closure, not just the direct
@@ -2130,13 +2121,13 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
         let lock = root.read(join_path(dir, "witchy.lock"))
         match lock_baseline(lock):
             Err(e) ->
-                console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
+                console.print("BLOCK: cannot read witchy.lock — ${e.show()}")
                 2
             Ok(recorded) ->
                 let baseline = union_all(recorded, args_from(args, 2))
                 match resolution_footprint(root, dir):
                     Err(e) ->
-                        console.print("BLOCK: cannot inspect dependency authority: ${footprint_error_message(e)}")
+                        console.print("BLOCK: cannot inspect dependency authority: ${e.show()}")
                         2
                     Ok(demanded) -> report_gate(console, root, dir, rights.uncovered(baseline, demanded))
 
@@ -2149,7 +2140,7 @@ fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) 
         for cap in widened:
             match gate_contributors(root, dir, cap):
                 Ok(who) -> console.print("  ${cap} <- ${list.join(who, ", ")}")
-                Err(e) -> console.print("  ${cap} <- inspection error: ${footprint_error_message(e)}")
+                Err(e) -> console.print("  ${cap} <- inspection error: ${e.show()}")
 
         2
 
@@ -2414,12 +2405,12 @@ fn update_vendored(console: Console, net: Net, root: Dir, origin: String, only: 
             None ->
                 match lock_trust_pins(net, root, origin):
                     Err(e) ->
-                        console.print("BLOCK: cannot pin registry metadata — ${tuf_error_message(e)}")
+                        console.print("BLOCK: cannot pin registry metadata — ${e.show()}")
                         2
                     Ok(pins) ->
                         match vendor_lock(root, pins):
                             Err(e) ->
-                                console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
+                                console.print("BLOCK: cannot regenerate witchy.lock — ${e.show()}")
                                 2
                             Ok(lock) ->
                                 root.write("witchy.lock", lock)
@@ -2435,12 +2426,12 @@ fn update_vendored(console: Console, net: Net, root: Dir, origin: String, only: 
 fn update_closure_gate(console: Console, root: Dir, allowed: List(String)) -> Option(Int):
     match project_baseline(root):
         Err(e) ->
-            console.print("BLOCK: cannot read witchy.lock to re-gate the updated dependency closure — ${lock_integrity_error_message(e)}")
+            console.print("BLOCK: cannot read witchy.lock to re-gate the updated dependency closure — ${e.show()}")
             Some(2)
         Ok(recorded) ->
             match closure_widening(root, union_all(recorded, allowed)):
                 Err(e) ->
-                    console.print("BLOCK: an updated dependency has no trustworthy capability footprint: ${footprint_error_message(e)}")
+                    console.print("BLOCK: an updated dependency has no trustworthy capability footprint: ${e.show()}")
                     Some(2)
                 Ok(widened) ->
                     if list.length(widened) > 0:
@@ -2463,7 +2454,7 @@ fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: Stri
     else:
         let vendored = match parse_vendored_record(root.read(join_path(rune_dir, "coven.json"))):
             Err(e) ->
-                console.print("BLOCK: cannot update `${entry}` — ${vendored_record_error_message(e)}")
+                console.print("BLOCK: cannot update `${entry}` — ${e.show()}")
                 return (0, false, true)
             Ok(record) -> record
 
@@ -2477,7 +2468,7 @@ fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: Stri
             Err(VersionCooling(_req, _secs)) -> (0, false, false)
             Err(VersionNoMatch(_req)) -> (0, false, false)
             Err(e) ->
-                console.print("BLOCK: cannot resolve an update for ${fullname}: ${version_resolve_error_message(e)}")
+                console.print("BLOCK: cannot resolve an update for ${fullname}: ${e.show()}")
                 (0, false, true)
             Ok(latest) ->
                 if latest.is_empty() || latest == current:
@@ -2510,7 +2501,7 @@ fn gated_refetch(console: Console, net: Net, root: Dir, origin: String, fullname
     // coordinate before trusting its footprint; a verification failure blocks.
     match verified_incoming_footprint(net, root, origin, fullname, latest):
         Err(e) ->
-            console.print("BLOCK: cannot verify the registry record for ${fullname}@${latest} — ${record_footprint_error_message(e)}")
+            console.print("BLOCK: cannot verify the registry record for ${fullname}@${latest} — ${e.show()}")
             (0, true, false)
         Ok(incoming) ->
             let widened = rights.uncovered(baseline, incoming)
@@ -2557,28 +2548,25 @@ type RecordFootprintError:
     RecordRuntimeFootprintNotArray
     RecordRuntimeFootprintNonString
 
-fn record_footprint_error_message(e: RecordFootprintError) -> String:
-    match e:
-        RecordLockPin(error) -> lock_pin_error_message(error)
-        RecordRootKeyFetch(error) -> registry_root_key_error_message(error)
-        RecordRootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
-        RecordMissing -> "registry has no record"
-        RecordBadSignature -> "the record is not validly signed by the registry root key"
-        RecordCoordinateMismatch -> "the record identity does not match the requested coordinate"
-        RecordInvalidJson -> "the signed record is not valid JSON"
-        RecordMissingRuntimeFootprint -> "the signed record has no `runtime_footprint` field"
-        RecordRuntimeFootprintNotArray -> "the record's `runtime_footprint` is not an array"
-        RecordRuntimeFootprintNonString -> "the record's `runtime_footprint` has a non-string element"
-
 impl Show for RecordFootprintError:
     fn show(self) -> String:
-        record_footprint_error_message(self)
+        match self:
+            RecordLockPin(error) -> error.show()
+            RecordRootKeyFetch(error) -> error.show()
+            RecordRootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+            RecordMissing -> "registry has no record"
+            RecordBadSignature -> "the record is not validly signed by the registry root key"
+            RecordCoordinateMismatch -> "the record identity does not match the requested coordinate"
+            RecordInvalidJson -> "the signed record is not valid JSON"
+            RecordMissingRuntimeFootprint -> "the signed record has no `runtime_footprint` field"
+            RecordRuntimeFootprintNotArray -> "the record's `runtime_footprint` is not an array"
+            RecordRuntimeFootprintNonString -> "the record's `runtime_footprint` has a non-string element"
 
 impl Error for RecordFootprintError
 
 impl From(RecordFootprintError) for String:
     fn from(value: RecordFootprintError) -> Self:
-        record_footprint_error_message(value)
+        value.show()
 
 impl From(LockPinError) for RecordFootprintError:
     fn from(value: LockPinError) -> Self:
@@ -2683,7 +2671,7 @@ fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
 fn install_resolve(console: Console, net: Net, root: Dir, env: Env, clock: Clock, origin: String, name: String, req: String, target: String, args: List(String)) -> Int:
     match resolve_version(net, origin, name, req, cooldown_now(env, clock, args)):
         Err(e) ->
-            console.print("${name}: ${version_resolve_error_message(e)}")
+            console.print("${name}: ${e.show()}")
             1
         Ok(chosen) ->
             match install_verified_record(net, root, origin, name, chosen):
@@ -2705,7 +2693,7 @@ fn install_verified_record(net: Net, root: Dir, origin: String, name: String, ve
             Err("registry has no record for ${name}@${version}")
         else:
             match verify_record_signature(rootpub, http.body(resp)):
-                Err(e) -> Err(record_verify_error_message(e))
+                Err(e) -> Err(e.show())
                 Ok(doc) ->
                     if jget(doc, "name") != name || jget(doc, "version") != version:
                         Err("record coordinate mismatch — the registry served the wrong record")
@@ -2910,7 +2898,7 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: St
     if allow_staged:
         match resolve_staged_exact(net, origin, name, req):
             Err(e) ->
-                console.print("${name}: ${version_resolve_error_message(e)}")
+                console.print("${name}: ${e.show()}")
                 1
             Ok(resolved) ->
                 let (chosen, is_staged) = resolved
@@ -2926,7 +2914,7 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: St
     else:
         match resolve_version(net, origin, name, req, cooldown):
             Err(e) ->
-                console.print("${name}: ${version_resolve_error_message(e)}")
+                console.print("${name}: ${e.show()}")
                 1
             Ok(chosen) ->
                 add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, false)
@@ -2936,13 +2924,13 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: St
 fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool) -> Int:
     match project_baseline(root):
         Err(e) ->
-            console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
+            console.print("BLOCK: cannot read witchy.lock — ${e.show()}")
             2
         Ok(recorded) ->
             let baseline = union_all(recorded, allowed)
             match verified_incoming_footprint(net, root, origin, name, chosen):
                 Err(e) ->
-                    console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
+                    console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${e.show()}")
                     2
                 Ok(incoming) ->
                     add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming), allow_staged)
@@ -2967,7 +2955,7 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, nam
             // re-running with `--allow-cap` consents and completes the add.
             match closure_widening(root, baseline):
                 Err(e) ->
-                    console.print("BLOCKED: a dependency of `${name}` has no trustworthy capability footprint: ${footprint_error_message(e)}")
+                    console.print("BLOCKED: a dependency of `${name}` has no trustworthy capability footprint: ${e.show()}")
                     2
                 Ok(closure_widened) ->
                     if list.length(closure_widened) > 0:
@@ -3109,12 +3097,12 @@ fn split_spec(spec: String) -> (String, String):
 fn pin_lock(console: Console, net: Net, root: Dir, origin: String, name: String) -> Int:
     match lock_trust_pins(net, root, origin):
         Err(e) ->
-            console.print("BLOCK: cannot pin registry metadata for ${basename(name)} — ${tuf_error_message(e)}")
+            console.print("BLOCK: cannot pin registry metadata for ${basename(name)} — ${e.show()}")
             2
         Ok(pins) ->
             match vendor_lock(root, pins):
                 Err(e) ->
-                    console.print("BLOCK: cannot regenerate witchy.lock — ${vendored_record_error_message(e)}")
+                    console.print("BLOCK: cannot regenerate witchy.lock — ${e.show()}")
                     2
                 Ok(lock) ->
                     root.write("witchy.lock", lock)
@@ -3137,29 +3125,26 @@ type TufError:
     SnapshotHashMismatch
     SnapshotVersionMismatch
 
-fn tuf_error_message(e: TufError) -> String:
-    match e:
-        TufLockPin(error) -> lock_pin_error_message(error)
-        TufRootKeyFetch(error) -> registry_root_key_error_message(error)
-        RootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
-        SnapshotUnavailable(status) -> "registry snapshot is unavailable (HTTP ${status})"
-        SnapshotWithoutTimestamp -> "registry served a snapshot but no timestamp role — cannot verify the TUF chain"
-        TimestampBadSignature -> "the timestamp role is not validly signed by the registry root key"
-        SnapshotBadSignature -> "the snapshot role is not validly signed by the registry root key"
-        SnapshotMalformed -> "the snapshot role is structurally malformed (needs an integer `version` and an object `targets`)"
-        TimestampMalformed -> "the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`)"
-        SnapshotHashMismatch -> "the snapshot does not match the timestamp's pinned hash"
-        SnapshotVersionMismatch -> "the snapshot and timestamp disagree on the snapshot version"
-
 impl Show for TufError:
     fn show(self) -> String:
-        tuf_error_message(self)
+        match self:
+            TufLockPin(error) -> error.show()
+            TufRootKeyFetch(error) -> error.show()
+            RootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+            SnapshotUnavailable(status) -> "registry snapshot is unavailable (HTTP ${status})"
+            SnapshotWithoutTimestamp -> "registry served a snapshot but no timestamp role — cannot verify the TUF chain"
+            TimestampBadSignature -> "the timestamp role is not validly signed by the registry root key"
+            SnapshotBadSignature -> "the snapshot role is not validly signed by the registry root key"
+            SnapshotMalformed -> "the snapshot role is structurally malformed (needs an integer `version` and an object `targets`)"
+            TimestampMalformed -> "the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`)"
+            SnapshotHashMismatch -> "the snapshot does not match the timestamp's pinned hash"
+            SnapshotVersionMismatch -> "the snapshot and timestamp disagree on the snapshot version"
 
 impl Error for TufError
 
 impl From(TufError) for String:
     fn from(value: TufError) -> Self:
-        tuf_error_message(value)
+        value.show()
 
 impl From(LockPinError) for TufError:
     fn from(value: LockPinError) -> Self:
@@ -3280,27 +3265,24 @@ type VendoredRecordError:
     VendoredRecordFootprintNotArray
     VendoredRecordFootprintNonString
 
-fn vendored_record_error_message(e: VendoredRecordError) -> String:
-    match e:
-        VendoredRecordInvalidJson(reason) -> "vendored coven.json is not valid JSON: ${reason}"
-        VendoredRecordMissingString(field) -> "vendored coven.json has no string `${field}` field"
-        VendoredRecordEmptyString(field) -> "vendored coven.json has an empty `${field}` field"
-        VendoredRecordInvalidVersion(version) -> "vendored coven.json has noncanonical version `${version}`"
-        VendoredRecordInvalidState(state) -> "vendored coven.json has non-installable state `${state}` (only `released`, or a `--allow-staged` `staged` pin, is accepted)"
-        VendoredRecordInvalidHash(hash) -> "vendored coven.json has malformed content hash `${hash}`"
-        VendoredRecordMissingFootprint -> "vendored coven.json has no `runtime_footprint` field"
-        VendoredRecordFootprintNotArray -> "vendored coven.json `runtime_footprint` is not an array"
-        VendoredRecordFootprintNonString -> "vendored coven.json `runtime_footprint` contains a non-string value"
-
 impl Show for VendoredRecordError:
     fn show(self) -> String:
-        vendored_record_error_message(self)
+        match self:
+            VendoredRecordInvalidJson(reason) -> "vendored coven.json is not valid JSON: ${reason}"
+            VendoredRecordMissingString(field) -> "vendored coven.json has no string `${field}` field"
+            VendoredRecordEmptyString(field) -> "vendored coven.json has an empty `${field}` field"
+            VendoredRecordInvalidVersion(version) -> "vendored coven.json has noncanonical version `${version}`"
+            VendoredRecordInvalidState(state) -> "vendored coven.json has non-installable state `${state}` (only `released`, or a `--allow-staged` `staged` pin, is accepted)"
+            VendoredRecordInvalidHash(hash) -> "vendored coven.json has malformed content hash `${hash}`"
+            VendoredRecordMissingFootprint -> "vendored coven.json has no `runtime_footprint` field"
+            VendoredRecordFootprintNotArray -> "vendored coven.json `runtime_footprint` is not an array"
+            VendoredRecordFootprintNonString -> "vendored coven.json `runtime_footprint` contains a non-string value"
 
 impl Error for VendoredRecordError
 
 impl From(VendoredRecordError) for String:
     fn from(value: VendoredRecordError) -> Self:
-        vendored_record_error_message(value)
+        value.show()
 
 fn parse_vendored_record(text: String) -> Result(VendoredRecord, VendoredRecordError):
     match json.decode(text):
@@ -3366,7 +3348,7 @@ fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String,
     if root.exists(join_path(vendored, "coven.json")):
         match parse_vendored_record(root.read(join_path(vendored, "coven.json"))):
             Err(e) ->
-                console.print("BLOCK: cannot reuse `${vendored}` — ${vendored_record_error_message(e)}")
+                console.print("BLOCK: cannot reuse `${vendored}` — ${e.show()}")
                 2
             Ok(existing) ->
                 if existing.name != name:
@@ -3385,7 +3367,7 @@ fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String,
         match resolve_version(net, origin, name, req, cooldown):
             Ok(chosen) -> fetch_then_deps(console, net, root, origin, name, chosen, dest, cooldown, allowed, false)
             Err(e) ->
-                console.print("${name}: ${version_resolve_error_message(e)}")
+                console.print("${name}: ${e.show()}")
                 1
 
 // Resolve `req` against the registry's released versions, honoring the staging
@@ -3418,25 +3400,22 @@ type VersionResolveError:
     VersionExactNotFound(String)
     VersionYanked(String)
 
-fn version_resolve_error_message(e: VersionResolveError) -> String:
-    match e:
-        VersionRegistryFetchFailed(_status) -> "registry error fetching versions"
-        VersionMalformedResponse(reason) -> "registry returned a malformed versions response: ${reason}"
-        VersionBadRequirement(req, cause) -> "bad requirement `${req}`: ${cause}"
-        VersionCooling(req, remaining_secs) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable for another ${humanize_wait(remaining_secs)} (compromised-release protection) — re-run with --allow-fresh to accept it now"
-        VersionNoMatch(req) -> "no released version satisfies `${req}`"
-        VersionExactNotFound(req) -> "no published version `${req}` exists on the registry (staged or released)"
-        VersionYanked(req) -> "version `${req}` has been yanked and is never installable"
-
 impl Show for VersionResolveError:
     fn show(self) -> String:
-        version_resolve_error_message(self)
+        match self:
+            VersionRegistryFetchFailed(_status) -> "registry error fetching versions"
+            VersionMalformedResponse(reason) -> "registry returned a malformed versions response: ${reason}"
+            VersionBadRequirement(req, cause) -> "bad requirement `${req}`: ${cause}"
+            VersionCooling(req, remaining_secs) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable for another ${humanize_wait(remaining_secs)} (compromised-release protection) — re-run with --allow-fresh to accept it now"
+            VersionNoMatch(req) -> "no released version satisfies `${req}`"
+            VersionExactNotFound(req) -> "no published version `${req}` exists on the registry (staged or released)"
+            VersionYanked(req) -> "version `${req}` has been yanked and is never installable"
 
 impl Error for VersionResolveError
 
 impl From(VersionResolveError) for String:
     fn from(value: VersionResolveError) -> Self:
-        version_resolve_error_message(value)
+        value.show()
 
 // RFC-0120: resolve an EXACT staged-or-released version for `--allow-staged`. The
 // requirement MUST be a single canonical `X.Y.Z` — staged never satisfies a range,
@@ -3687,11 +3666,11 @@ fn positionals(args: List(String)) -> List(String):
 fn fetch_source(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, allow_staged: Bool) -> Int:
     match pinned_registry_rootpub(root):
         Err(e) ->
-            console.print("BLOCK: ${lock_pin_error_message(e)}")
+            console.print("BLOCK: ${e.show()}")
             1
         Ok(pinned_pub) -> match fetch_registry_rootpub(net, origin):
             Err(e) ->
-                console.print("BLOCK: cannot fetch registry root key for ${name}@${version} — ${registry_root_key_error_message(e)}")
+                console.print("BLOCK: cannot fetch registry root key for ${name}@${version} — ${e.show()}")
                 1
             Ok(rootpub) -> fetch_source_with_root(console, net, root, origin, name, version, dest, rootpub, pinned_pub, allow_staged)
 
@@ -3733,7 +3712,7 @@ fn fetch_verified(console: Console, net: Net, root: Dir, origin: String, name: S
     else:
         match source_files(http.body(resp)):
             Err(e) ->
-                console.print("BLOCK: malformed source response for ${name}@${version} — ${source_response_error_message(e)}")
+                console.print("BLOCK: malformed source response for ${name}@${version} — ${e.show()}")
                 1
             Ok(files) ->
                 if content_hash(files) != recorded_hash(record):
@@ -3760,7 +3739,7 @@ fn write_vendored_source(console: Console, root: Dir, dest: String, name: String
         // Keep the signed record next to the source, so the vendored rune
         // carries its own provenance and can be re-verified offline.
         Err(e) ->
-            console.print(source_file_set_error_message(e))
+            console.print(e.show())
             1
         Ok(_) ->
             let base = join_path(dest, basename(name))
@@ -3788,20 +3767,17 @@ type SourceFileSetError:
     SourcePathInvalid(String)
     SourcePathDuplicated(String)
 
-fn source_file_set_error_message(e: SourceFileSetError) -> String:
-    match e:
-        SourcePathInvalid(path) -> "BLOCK: fetched source carries an unexpected path `${path}` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)"
-        SourcePathDuplicated(path) -> "BLOCK: fetched source lists `${path}` more than once — refusing an ambiguous/duplicated file set"
-
 impl Show for SourceFileSetError:
     fn show(self) -> String:
-        source_file_set_error_message(self)
+        match self:
+            SourcePathInvalid(path) -> "BLOCK: fetched source carries an unexpected path `${path}` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)"
+            SourcePathDuplicated(path) -> "BLOCK: fetched source lists `${path}` more than once — refusing an ambiguous/duplicated file set"
 
 impl Error for SourceFileSetError
 
 impl From(SourceFileSetError) for String:
     fn from(value: SourceFileSetError) -> Self:
-        source_file_set_error_message(value)
+        value.show()
 
 // Whether a fetched source path is confined and conventional: `witchy.toml`, or a
 // `src/...` file ending in `.witchy`, with no absolute prefix or `..` traversal.
@@ -3820,22 +3796,19 @@ type SourceResponseError:
     SourceFilesNotArray
     SourceFileEntryMalformed
 
-fn source_response_error_message(e: SourceResponseError) -> String:
-    match e:
-        SourceInvalidJson(reason) -> "response is not valid JSON: ${reason}"
-        SourceMissingFiles -> "response has no `files` field"
-        SourceFilesNotArray -> "`files` is not an array"
-        SourceFileEntryMalformed -> "`files` contains an entry that is not `[path, text]` strings"
-
 impl Show for SourceResponseError:
     fn show(self) -> String:
-        source_response_error_message(self)
+        match self:
+            SourceInvalidJson(reason) -> "response is not valid JSON: ${reason}"
+            SourceMissingFiles -> "response has no `files` field"
+            SourceFilesNotArray -> "`files` is not an array"
+            SourceFileEntryMalformed -> "`files` contains an entry that is not `[path, text]` strings"
 
 impl Error for SourceResponseError
 
 impl From(SourceResponseError) for String:
     fn from(value: SourceResponseError) -> Self:
-        source_response_error_message(value)
+        value.show()
 
 fn source_files(body: String) -> Result(List((String, String)), SourceResponseError):
     var out = []
@@ -3956,23 +3929,20 @@ type RecordVerifyError:
     RecordVerifySignatureInput(String)
     RecordVerifyBadSignature
 
-fn record_verify_error_message(e: RecordVerifyError) -> String:
-    match e:
-        RecordVerifyInvalidJson(reason) -> "coven.json is not valid JSON: ${reason}"
-        RecordVerifyPayloadInjectedNewline -> "coven.json signed payload contains an embedded newline"
-        RecordVerifyPayloadMalformed -> "coven.json cannot be projected into its signed payload"
-        RecordVerifySignatureInput(reason) -> "record signature input is malformed: ${reason}"
-        RecordVerifyBadSignature -> "record signature is invalid"
-
 impl Show for RecordVerifyError:
     fn show(self) -> String:
-        record_verify_error_message(self)
+        match self:
+            RecordVerifyInvalidJson(reason) -> "coven.json is not valid JSON: ${reason}"
+            RecordVerifyPayloadInjectedNewline -> "coven.json signed payload contains an embedded newline"
+            RecordVerifyPayloadMalformed -> "coven.json cannot be projected into its signed payload"
+            RecordVerifySignatureInput(reason) -> "record signature input is malformed: ${reason}"
+            RecordVerifyBadSignature -> "record signature is invalid"
 
 impl Error for RecordVerifyError
 
 impl From(RecordVerifyError) for String:
     fn from(value: RecordVerifyError) -> Self:
-        record_verify_error_message(value)
+        value.show()
 
 // Verify a registry record is signed by the root key over coven's canonical
 // payload. A malformed `runtime_footprint` cannot be projected into a payload.
@@ -4095,24 +4065,21 @@ type HostPortError:
     HostPortOutOfRange(String, String)
     HostPortUnknownScheme(String, String)
 
-fn host_port_error_message(e: HostPortError) -> String:
-    match e:
-        HostPortMissingPort(addr) -> "`${addr}` is not a host:port (missing `:<port>`)"
-        HostPortEmptyHost(addr) -> "`${addr}` has an empty host"
-        HostPortMultipleColons(addr) -> "`${addr}` has more than one `:` (expected host:port)"
-        HostPortNonNumeric(addr, port) -> "`${addr}` has a non-numeric port `${port}`"
-        HostPortOutOfRange(addr, port) -> "`${addr}` port ${port} is out of range (1-65535)"
-        HostPortUnknownScheme(addr, scheme) -> "`${addr}` has an unsupported scheme `${scheme}` (expected http or https)"
-
 impl Show for HostPortError:
     fn show(self) -> String:
-        host_port_error_message(self)
+        match self:
+            HostPortMissingPort(addr) -> "`${addr}` is not a host:port (missing `:<port>`)"
+            HostPortEmptyHost(addr) -> "`${addr}` has an empty host"
+            HostPortMultipleColons(addr) -> "`${addr}` has more than one `:` (expected host:port)"
+            HostPortNonNumeric(addr, port) -> "`${addr}` has a non-numeric port `${port}`"
+            HostPortOutOfRange(addr, port) -> "`${addr}` port ${port} is out of range (1-65535)"
+            HostPortUnknownScheme(addr, scheme) -> "`${addr}` has an unsupported scheme `${scheme}` (expected http or https)"
 
 impl Error for HostPortError
 
 impl From(HostPortError) for String:
     fn from(value: HostPortError) -> Self:
-        host_port_error_message(value)
+        value.show()
 
 // Rune names contain `/`; the wire encodes it as `~` for a query value.
 fn wire(name: String) -> String:
@@ -4221,7 +4188,7 @@ fn rune_footprint(root: Dir, dir: String) -> Result(List(String), FootprintError
     var out = []
     for relpath, text in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
         let values = match footprint_values(compiler.footprint(text), "total"):
-            Err(e) -> return Err(FootprintSourceError(relpath, footprint_error_message(e)))
+            Err(e) -> return Err(FootprintSourceError(relpath, e.show()))
             Ok(caps) -> caps
 
         for cap in values:
@@ -4267,21 +4234,18 @@ type FootprintError:
     FootprintMalformedReport(String)
     FootprintSourceError(String, String)
 
-fn footprint_error_message(e: FootprintError) -> String:
-    match e:
-        FootprintCompilerRejected(reason) -> "compiler rejected the source: ${reason}"
-        FootprintMalformedReport(reason) -> "compiler returned a malformed footprint report: ${reason}"
-        FootprintSourceError(path, reason) -> "`${path}`: ${reason}"
-
 impl Show for FootprintError:
     fn show(self) -> String:
-        footprint_error_message(self)
+        match self:
+            FootprintCompilerRejected(reason) -> "compiler rejected the source: ${reason}"
+            FootprintMalformedReport(reason) -> "compiler returned a malformed footprint report: ${reason}"
+            FootprintSourceError(path, reason) -> "`${path}`: ${reason}"
 
 impl Error for FootprintError
 
 impl From(FootprintError) for String:
     fn from(value: FootprintError) -> Self:
-        footprint_error_message(value)
+        value.show()
 
 // Pull a required string-array field from a compiler footprint report. Reports
 // shaped as {"error": "..."}, malformed JSON, missing/wrong-shaped arrays, and
