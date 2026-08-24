@@ -4217,6 +4217,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Pull(Int, fn(Option(__Msg)) -> Task(a))`
 - `Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
+- `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
@@ -4245,6 +4246,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))`
 - `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
 - `Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
+- `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
