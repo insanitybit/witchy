@@ -1576,3 +1576,52 @@
         assert_eq!(eq_true[0].1, RangeFact::Constant(42));
     }
 
+    #[test]
+    fn redundant_comparison_simplification() {
+        let func = WirFunc {
+            name: "test_compare".into(),
+            params: vec![WirLocal { name: "x".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![
+                // If x > 10:
+                WirNode::If {
+                    cond: WirExpr::Binary {
+                        op: BinOp::Gt,
+                        kind: Kind::I64,
+                        lhs: Box::new(WirExpr::GetLocal("x".into())),
+                        rhs: Box::new(WirExpr::ConstI64(10)),
+                    },
+                    then_: vec![
+                        // Inside then, x is known >= 11, so x > 5 is unconditionally true (1)
+                        WirNode::Push(WirExpr::Binary {
+                            op: BinOp::Gt,
+                            kind: Kind::I64,
+                            lhs: Box::new(WirExpr::GetLocal("x".into())),
+                            rhs: Box::new(WirExpr::ConstI64(5)),
+                        }),
+                    ],
+                    els: vec![
+                        // Inside else, x is <= 10, so x > 20 is unconditionally false (0)
+                        WirNode::Push(WirExpr::Binary {
+                            op: BinOp::Gt,
+                            kind: Kind::I64,
+                            lhs: Box::new(WirExpr::GetLocal("x".into())),
+                            rhs: Box::new(WirExpr::ConstI64(20)),
+                        }),
+                    ],
+                    result: Some(WirTy::Int),
+                },
+            ],
+            raw_body: None,
+        };
+
+        let mut module = module_with(func.clone());
+        crate::wir_opt::strength_reduce::simplify_integer_ranges(&mut module);
+
+        let simplified = &module.funcs[0];
+        let WirNode::If { then_, els, .. } = &simplified.body[0] else { panic!() };
+        assert!(matches!(&then_[0], WirNode::Push(WirExpr::ConstI64(1))));
+        assert!(matches!(&els[0], WirNode::Push(WirExpr::ConstI64(0))));
+    }
+

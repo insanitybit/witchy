@@ -377,64 +377,7 @@ fn simplify_expr(expr: &mut WirExpr, env: &HashMap<String, RangeFact>) {
 fn apply_strength_reductions(expr: &mut WirExpr, env: &HashMap<String, RangeFact>) {
     match expr {
         // (x % 2^k) == 0  or  0 == (x % 2^k) -> (x & (2^k - 1)) == 0
-        WirExpr::Binary {
-            op: op @ (BinOp::Eq | BinOp::Ne),
-            kind,
-            lhs,
-            rhs,
-        } => {
-            if let WirExpr::ConstI64(0) = rhs.as_ref() {
-                if let WirExpr::Binary {
-                    op: BinOp::Rem,
-                    kind: rem_kind,
-                    lhs: inner_lhs,
-                    rhs: inner_rhs,
-                } = lhs.as_ref()
-                {
-                    if let Some(n) = compute_fact(inner_rhs, env).as_constant() {
-                        if n > 0 && (n & (n - 1)) == 0 {
-                            let mask = n - 1;
-                            *expr = WirExpr::Binary {
-                                op: *op,
-                                kind: *kind,
-                                lhs: Box::new(WirExpr::Binary {
-                                    op: BinOp::And,
-                                    kind: *rem_kind,
-                                    lhs: inner_lhs.clone(),
-                                    rhs: Box::new(WirExpr::ConstI64(mask)),
-                                }),
-                                rhs: Box::new(WirExpr::ConstI64(0)),
-                            };
-                        }
-                    }
-                }
-            } else if let WirExpr::ConstI64(0) = lhs.as_ref() {
-                if let WirExpr::Binary {
-                    op: BinOp::Rem,
-                    kind: rem_kind,
-                    lhs: inner_lhs,
-                    rhs: inner_rhs,
-                } = rhs.as_ref()
-                {
-                    if let Some(n) = compute_fact(inner_rhs, env).as_constant() {
-                        if n > 0 && (n & (n - 1)) == 0 {
-                            let mask = n - 1;
-                            *expr = WirExpr::Binary {
-                                op: *op,
-                                kind: *kind,
-                                lhs: Box::new(WirExpr::ConstI64(0)),
-                                rhs: Box::new(WirExpr::Binary {
-                                    op: BinOp::And,
-                                    kind: *rem_kind,
-                                    lhs: inner_lhs.clone(),
-                                    rhs: Box::new(WirExpr::ConstI64(mask)),
-                                }),
-                            };
-                        }
-                    }
-                }
-            }
-        }
+
 
         // Remainder by power of 2 when non-negative: x % 2^k -> x & (2^k - 1)
         WirExpr::Binary {
@@ -525,6 +468,145 @@ fn apply_strength_reductions(expr: &mut WirExpr, env: &HashMap<String, RangeFact
                 *expr = WirExpr::ConstI64(0);
             } else if let WirExpr::ConstI64(0) = lhs.as_ref() {
                 *expr = WirExpr::ConstI64(0);
+            }
+        }
+
+        // Redundant comparison simplification implied by dominating range facts
+        WirExpr::Binary {
+            op:
+                op @ (BinOp::Lt
+                | BinOp::LtU
+                | BinOp::Le
+                | BinOp::LeU
+                | BinOp::Gt
+                | BinOp::GtU
+                | BinOp::Ge
+                | BinOp::GeU
+                | BinOp::Eq
+                | BinOp::Ne),
+            kind,
+            lhs,
+            rhs,
+        } => {
+            if *op == BinOp::Eq || *op == BinOp::Ne {
+                if let WirExpr::ConstI64(0) = rhs.as_ref() {
+                    if let WirExpr::Binary {
+                        op: BinOp::Rem,
+                        kind: rem_kind,
+                        lhs: inner_lhs,
+                        rhs: inner_rhs,
+                    } = lhs.as_ref()
+                    {
+                        if let Some(n) = compute_fact(inner_rhs, env).as_constant() {
+                            if n > 0 && (n & (n - 1)) == 0 {
+                                let mask = n - 1;
+                                *expr = WirExpr::Binary {
+                                    op: *op,
+                                    kind: *kind,
+                                    lhs: Box::new(WirExpr::Binary {
+                                        op: BinOp::And,
+                                        kind: *rem_kind,
+                                        lhs: inner_lhs.clone(),
+                                        rhs: Box::new(WirExpr::ConstI64(mask)),
+                                    }),
+                                    rhs: Box::new(WirExpr::ConstI64(0)),
+                                };
+                                return;
+                            }
+                        }
+                    }
+                } else if let WirExpr::ConstI64(0) = lhs.as_ref() {
+                    if let WirExpr::Binary {
+                        op: BinOp::Rem,
+                        kind: rem_kind,
+                        lhs: inner_lhs,
+                        rhs: inner_rhs,
+                    } = rhs.as_ref()
+                    {
+                        if let Some(n) = compute_fact(inner_rhs, env).as_constant() {
+                            if n > 0 && (n & (n - 1)) == 0 {
+                                let mask = n - 1;
+                                *expr = WirExpr::Binary {
+                                    op: *op,
+                                    kind: *kind,
+                                    lhs: Box::new(WirExpr::ConstI64(0)),
+                                    rhs: Box::new(WirExpr::Binary {
+                                        op: BinOp::And,
+                                        kind: *rem_kind,
+                                        lhs: inner_lhs.clone(),
+                                        rhs: Box::new(WirExpr::ConstI64(mask)),
+                                    }),
+                                };
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let lf = compute_fact(lhs, env);
+            let rf = compute_fact(rhs, env);
+            let const_res: Option<bool> = match op {
+                BinOp::Lt | BinOp::LtU => match (lf.hi_bound(), rf.lo_bound()) {
+                    (Some(hi_l), Some(lo_r)) if hi_l < lo_r => Some(true),
+                    _ => match (lf.lo_bound(), rf.hi_bound()) {
+                        (Some(lo_l), Some(hi_r)) if lo_l >= hi_r => Some(false),
+                        _ => None,
+                    },
+                },
+                BinOp::Le | BinOp::LeU => match (lf.hi_bound(), rf.lo_bound()) {
+                    (Some(hi_l), Some(lo_r)) if hi_l <= lo_r => Some(true),
+                    _ => match (lf.lo_bound(), rf.hi_bound()) {
+                        (Some(lo_l), Some(hi_r)) if lo_l > hi_r => Some(false),
+                        _ => None,
+                    },
+                },
+                BinOp::Gt | BinOp::GtU => match (lf.lo_bound(), rf.hi_bound()) {
+                    (Some(lo_l), Some(hi_r)) if lo_l > hi_r => Some(true),
+                    _ => match (lf.hi_bound(), rf.lo_bound()) {
+                        (Some(hi_l), Some(lo_r)) if hi_l <= lo_r => Some(false),
+                        _ => None,
+                    },
+                },
+                BinOp::Ge | BinOp::GeU => match (lf.lo_bound(), rf.hi_bound()) {
+                    (Some(lo_l), Some(hi_r)) if lo_l >= hi_r => Some(true),
+                    _ => match (lf.hi_bound(), rf.lo_bound()) {
+                        (Some(hi_l), Some(lo_r)) if hi_l < lo_r => Some(false),
+                        _ => None,
+                    },
+                },
+                BinOp::Eq => match (lf.as_constant(), rf.as_constant()) {
+                    (Some(a), Some(b)) => Some(a == b),
+                    _ => match (lf.hi_bound(), rf.lo_bound()) {
+                        (Some(hi_l), Some(lo_r)) if hi_l < lo_r => Some(false),
+                        _ => match (lf.lo_bound(), rf.hi_bound()) {
+                            (Some(lo_l), Some(hi_r)) if lo_l > hi_r => Some(false),
+                            _ => None,
+                        },
+                    },
+                },
+                BinOp::Ne => match (lf.as_constant(), rf.as_constant()) {
+                    (Some(a), Some(b)) => Some(a != b),
+                    _ => match (lf.hi_bound(), rf.lo_bound()) {
+                        (Some(hi_l), Some(lo_r)) if hi_l < lo_r => Some(true),
+                        _ => match (lf.lo_bound(), rf.hi_bound()) {
+                            (Some(lo_l), Some(hi_r)) if lo_l > hi_r => Some(true),
+                            _ => None,
+                        },
+                    },
+                },
+                _ => None,
+            };
+            if let Some(b) = const_res {
+                if crate::wir_opt::properties::evaluate_expr(lhs).is_safe_to_eliminate()
+                    && crate::wir_opt::properties::evaluate_expr(rhs).is_safe_to_eliminate()
+                {
+                    *expr = if *kind == Kind::I64 {
+                        WirExpr::ConstI64(if b { 1 } else { 0 })
+                    } else {
+                        WirExpr::ConstI32(if b { 1 } else { 0 })
+                    };
+                }
             }
         }
         _ => {}
