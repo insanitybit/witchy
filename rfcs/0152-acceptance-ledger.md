@@ -27,6 +27,15 @@ The existing closed `chan_throughput.witchy` control remains scalar-fusible;
 `benchmarks/chan_scheduler.witchy` is the intentional nominal-packet
 scheduler control.  They must remain separate in all timing reports.
 
+## Landed implementation increments
+
+| Increment | Merged commit | Evidence | Acceptance impact |
+|---|---|---|---|
+| Typed endpoint ABI | `92b89e1dc` | `typed_channel_plans_preserve_endpoint_direction_and_buffer_root_identity`; `awaited_select_uses_the_fused_typed_bridge_in_wir` | Retains endpoint direction, Int scalar lanes, String/Bytes buffer roots, packed record lanes, and ownership envelopes through the carrier-to-lowerer seam. No ready path is enabled by this increment. |
+
+The async-region identity increment is queued separately at the time of this
+entry and is not recorded as landed evidence until its merge event exists.
+
 ## Pre-existing program controls
 
 These repository programs predate RFC-0152 and are the non-benchmark
