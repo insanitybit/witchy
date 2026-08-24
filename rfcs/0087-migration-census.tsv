@@ -29,14 +29,17 @@ book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
 spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
-witchy-files	297
+witchy-files	302
 markdown-blocks	238
-checked	535
-rejected	0
-var-declarations	42
-resolved-var-calls	769
+checked	539
+rejected	1
+var-declarations	45
+resolved-var-calls	788
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0
 temporary-var-argument	0
 auxiliary-result-discard	18
+
+compiler-rejections
+benchmarks/n-body.witchy: type error: `n-body.advance`, line 33: cannot assign to `b`: it is immutable (declared with `let`)
