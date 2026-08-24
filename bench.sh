@@ -12,9 +12,17 @@
 set -euo pipefail
 
 RUBY_CMD="ruby"
-if command -v ruby >/dev/null 2>&1; then
-    if ruby --yjit -e "" >/dev/null 2>&1; then
-        RUBY_CMD="ruby --yjit"
+if [ -x "/opt/homebrew/opt/ruby/bin/ruby" ]; then
+    RUBY_CMD="/opt/homebrew/opt/ruby/bin/ruby"
+elif [ -x "/usr/local/opt/ruby/bin/ruby" ]; then
+    RUBY_CMD="/usr/local/opt/ruby/bin/ruby"
+elif command -v ruby >/dev/null 2>&1; then
+    RUBY_CMD="ruby"
+fi
+
+if $RUBY_CMD --version >/dev/null 2>&1; then
+    if $RUBY_CMD --yjit -e "" >/dev/null 2>&1; then
+        RUBY_CMD="$RUBY_CMD --yjit"
     fi
 fi
 
