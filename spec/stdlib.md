@@ -395,6 +395,10 @@ Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yie
 
 Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased message directly into the callback's scalar frame step, so the callback does not allocate a per-message Task/continuation.
 
+#### `fn select2_frame_payload(o: Option(__Msg)) -> Option(m)`
+
+Compiler-owned scalar frame support. A locally consumed select result can dispatch on the scheduler tag and this typed payload option directly, rather than first allocating a `Selected(m)` value. Escaping and complex matches still use `select2_frame_decode` above.
+
 #### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
 
 Receive from `rx`, run `f` on each message, until the channel closes. The stateless server loop; `for await x in rx:` lowers to this.
