@@ -6,7 +6,6 @@ const MESSAGES: i64 = 1_000_000;
 const BASELINE_MESSAGES: i64 = 1_000;
 const AGGREGATE_BASELINE_MESSAGES: i64 = 100;
 const AGGREGATE_SUSTAINED_MESSAGES: i64 = 10_000;
-const WASMTIME_GC_BACKING_BYTES: usize = 65_536;
 const ACCEPTED_NS_PER_MESSAGE: f64 = 300.0;
 const MAX_LINEAR_ALLOCATIONS: i64 = 100;
 
@@ -27,7 +26,7 @@ fn benchmark_source(messages: i64) -> String {
 
 fn aggregate_benchmark_source(messages: i64) -> String {
     format!(
-        "mode opt\n\nimport chan\nfrom chan import Sender\n\ntype Packet:\n    Packet(Int, Int)\n\nasync fn producer(tx: Sender(Packet), n: Int) -> Nil:\n    var i = 0\n    while i < n:\n        chan.send(tx, Packet(i, i + 1)).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    var seen = 0\n    var sum = 0\n    while seen < {messages}:\n        let packet = chan.recv(rx).await\n        match packet:\n            Some(Packet(left, right)) ->\n                sum = sum + left + right\n                seen = seen + 1\n            None -> fail(\"channel closed before producer completed\")\n    chan.join(producer_handle).await\n    console.print(\"${{sum}}\")\n"
+        "mode opt\n\nimport chan\nfrom chan import Sender\n\ntype Pair:\n    Pair(Int, Int)\n\nasync fn producer(let tx: Sender(Pair), n: Int) -> Nil:\n    var i = 0\n    while i < n:\n        chan.send(tx, Pair(i, i + 1)).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    var seen = 0\n    var sum = 0\n    while seen < {messages}:\n        let packet = chan.recv(rx).await\n        match packet:\n            Some(Pair(left, right)) ->\n                sum = sum + left + right\n                seen = seen + 1\n            None -> fail(\"channel closed before producer completed\")\n    chan.join(producer_handle).await\n    console.print(\"${{sum}}\")\n"
     )
 }
 
@@ -166,9 +165,9 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     );
 }
 
-/// The nominal-packet benchmark is intentionally the non-fusible scheduler
-/// control. Keep it out of the closed scalar-fusion path so its kernel timing
-/// continues to expose Task/Step and continuation-frame costs.
+/// An effectful prologue keeps this ordinary program on the scheduler until the
+/// RFC-0152 async-region emitter can retain that ordered capability call around
+/// the direct graph.
 #[test]
 fn nominal_packet_channel_uses_the_scheduler_control_path() {
     witchy::opt::set_for_tests(Some(OptSet::all()));
@@ -178,16 +177,20 @@ fn nominal_packet_channel_uses_the_scheduler_control_path() {
     assert_main_task_run_path(&wasm, true);
 }
 
-/// RFC-0129 row 4 GC-backed carrier evidence. A nominal aggregate message
-/// rejects scalar executor synthesis, so this matched compiled-Wasm run must
-/// exercise the fallback task scheduler without growing Wasmtime's GC backing
-/// heap as the message count increases.
+/// RFC-0152 Phase 3: an exact packed two-`Int` payload can travel through the
+/// same proved one-producer/one-consumer graph without materializing either the
+/// nominal record or the erased channel envelope.  This is intentionally a
+/// different source spelling from the benchmark and proves the decision is WIR
+/// data flow, not a benchmark or constructor-name special case.
 #[test]
-fn aggregate_channel_gc_heap_capacity_is_flat() {
+fn packed_aggregate_channel_uses_direct_scalar_lanes() {
     witchy::opt::set_for_tests(Some(OptSet::all()));
     let _reset_optimization_override = ResetOptimizationOverride;
     let baseline_source = aggregate_benchmark_source(AGGREGATE_BASELINE_MESSAGES);
     let sustained_source = aggregate_benchmark_source(AGGREGATE_SUSTAINED_MESSAGES);
+    let wasm = witchy::compile_source(&sustained_source)
+        .expect("compile packed aggregate direct channel graph");
+    assert_main_task_run_path(&wasm, false);
 
     let baseline = witchy::stats::compute_timed(&baseline_source)
         .expect("execute aggregate channel baseline");
@@ -204,13 +207,13 @@ fn aggregate_channel_gc_heap_capacity_is_flat() {
         "aggregate sustained checksum"
     );
     assert_eq!(
-        baseline.gc_heap_capacity_bytes, WASMTIME_GC_BACKING_BYTES,
-        "aggregate channels must exercise one Wasmtime GC backing page"
-    );
-    assert_eq!(
         sustained.gc_heap_capacity_bytes,
         baseline.gc_heap_capacity_bytes,
-        "Wasmtime GC backing capacity must remain flat across sustained aggregate traffic"
+        "the packed direct graph's GC backing capacity must be independent of message count"
+    );
+    assert_eq!(
+        sustained.gc_heap_capacity_bytes, 0,
+        "direct packed lanes must bypass the Task/Step GC scheduler heap"
     );
     println!(
         "aggregate channel baseline_messages={} sustained_messages={} baseline_gc_heap_capacity_bytes={} sustained_gc_heap_capacity_bytes={} sustained_execution_us={}",

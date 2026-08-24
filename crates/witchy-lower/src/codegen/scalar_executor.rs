@@ -6,7 +6,7 @@
 //! the ordinary Task/Step scheduler unchanged.
 
 use witchy_types::suspension_carrier::{
-    CarrierLane, ScalarExecutorPlan, ScalarExecutorState, ScalarTransition,
+    CarrierLane, ChannelPayloadLayout, ScalarExecutorPlan, ScalarExecutorState, ScalarTransition,
 };
 use witchy_wir::wir::{
     BinOp, Kind, WirExpr as E, WirFunc, WirLocal, WirModule, WirNode as N, WirTy,
@@ -20,6 +20,16 @@ struct ScalarChannelFold<'a> {
     producer_start: i64,
     producer_limit: i64,
     accumulator_start: i64,
+    payload: ScalarPayload,
+}
+
+/// A source-independent description of the values that can cross the first
+/// direct one-way channel path.  These are WIR data-flow shapes, not nominal
+/// source constructors: a matching record is accepted regardless of its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarPayload {
+    Counter,
+    CounterAndSuccessor,
 }
 
 pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> bool {
@@ -77,8 +87,10 @@ pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> b
             then_: vec![N::Loop {
                 label: LOOP.into(),
                 body: vec![
-                    // Producer slot: Send publishes one Int and advances the
-                    // compiler-owned scalar frame lane.
+                    // Producer slot: Send publishes exact scalar lanes and
+                    // advances the compiler-owned scalar frame lane.  The
+                    // direct graph has one proved consumer, so no erased
+                    // message envelope or nominal record is materialized.
                     N::SetLocal {
                         local: MESSAGE.into(),
                         value: E::GetLocal(PRODUCER.into()),
@@ -96,12 +108,7 @@ pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> b
                     // its scalar fold lane in place.
                     N::SetLocal {
                         local: ACCUMULATOR.into(),
-                        value: binary(
-                            BinOp::Add,
-                            Kind::I64,
-                            E::GetLocal(ACCUMULATOR.into()),
-                            E::GetLocal(MESSAGE.into()),
-                        ),
+                        value: payload_fold_expression(fold.payload),
                     },
                     N::Br {
                         target: LOOP.into(),
@@ -133,9 +140,15 @@ fn recognize<'a>(
     plan: &'a ScalarExecutorPlan,
     module: &WirModule,
 ) -> Option<ScalarChannelFold<'a>> {
-    let spawn = plan.states.iter().find(|state| {
+    let mut spawns = plan.states.iter().filter(|state| {
         state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::Spawn { .. }))
-    })?;
+    });
+    let spawn = spawns.next()?;
+    // Multiple child graphs require an explicit scheduler/interleaving proof.
+    // Do not pick one arbitrary state and accidentally erase the others.
+    if spawns.next().is_some() {
+        return None;
+    }
     let child = spawn.transitions.iter().find_map(|transition| match transition {
         ScalarTransition::Spawn { child, .. } => Some(*child),
         _ => None,
@@ -146,15 +159,19 @@ fn recognize<'a>(
             && state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelSend { .. }))
             && state.transitions.contains(&ScalarTransition::Done)
     })?;
-    let receive = plan.states.iter().find(|state| {
+    let mut receives = plan.states.iter().filter(|state| {
         state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelReceive { .. }))
-    })?;
+    });
+    let receive = receives.next()?;
+    if receives.next().is_some() {
+        return None;
+    }
     if !plan.states.iter().any(|state| {
         state.source_callable == receive.source_callable
             && state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::Join { .. }))
-    }) || !plan.states.iter().any(|state| {
+    }) || plan.states.iter().filter(|state| {
         state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelOpen { .. }))
-    }) {
+    }).count() != 1 {
         return None;
     }
 
@@ -189,14 +206,15 @@ fn recognize<'a>(
     let Some(limit) = producer_entry.slots.get(limit_index) else {
         return None;
     };
-    if !producer_shape_is_counter(
+    let payload = producer_payload_shape(
         plan,
         module,
         &producer_entry.source_callable,
         &producer_send.function,
         &counter.name,
         &limit.name,
-    ) {
+    )?;
+    if !receiver_fold_shape(plan, module, receive, &accumulator.name, payload) {
         return None;
     }
     let Some(producer_lambda) = closure_function(module, &producer_entry.function) else {
@@ -220,37 +238,132 @@ fn recognize<'a>(
         producer_start,
         producer_limit,
         accumulator_start,
+        payload,
     })
 }
 
-fn producer_shape_is_counter(
+fn producer_payload_shape(
     plan: &ScalarExecutorPlan,
     module: &WirModule,
     source: &str,
     send_function: &str,
     counter: &str,
     limit: &str,
-) -> bool {
+) -> Option<ScalarPayload> {
     let states = plan.states.iter().filter(|state| state.source_callable == source);
     let mut compares = false;
-    let mut sends_counter = false;
+    let mut payload = None;
     let mut increments = false;
     for state in states {
-        let Some(function) = function(module, &state.function) else { return false };
+        let Some(function) = function(module, &state.function) else { return None };
         visit_seq(&function.body, &mut |expression| match expression {
             E::Binary { op: BinOp::Lt, kind: Kind::I64, lhs, rhs }
                 if local(lhs, counter) && local(rhs, limit) => compares = true,
             E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
                 if local(lhs, counter) && matches!(rhs.as_ref(), E::ConstI64(1)) => increments = true,
-            E::Call { func, args }
-                if call_family(func, "chan.send") && args.iter().any(|arg| local(arg, counter)) =>
-            {
-                sends_counter = true;
+            E::Call { func, args } if call_family(func, "chan.send") => {
+                let Some(message) = args.get(1) else { return };
+                let candidate = if local(message, counter) {
+                    Some(ScalarPayload::Counter)
+                } else {
+                    counter_and_successor(message, counter)
+                        .then_some(ScalarPayload::CounterAndSuccessor)
+                };
+                match (payload, candidate) {
+                    (None, Some(candidate)) => payload = Some(candidate),
+                    (Some(existing), Some(candidate)) if existing == candidate => {}
+                    _ => payload = None,
+                }
             }
             _ => {}
         });
     }
-    compares && sends_counter && increments && function(module, send_function).is_some()
+    let payload = payload?;
+    let layout_matches = !plan.typed_channels.is_empty()
+        && plan.typed_channels.iter().all(|channel| {
+            matches_payload_layout(payload, &channel.payload_layout)
+        })
+        && plan.typed_channels.iter().any(|channel| {
+            channel.direction == witchy_types::suspension_carrier::ChannelEndpointDirection::Send
+        })
+        && plan.typed_channels.iter().any(|channel| {
+            channel.direction == witchy_types::suspension_carrier::ChannelEndpointDirection::Receive
+        });
+    (compares && increments && function(module, send_function).is_some() && layout_matches)
+        .then_some(payload)
+}
+
+fn matches_payload_layout(payload: ScalarPayload, layout: &ChannelPayloadLayout) -> bool {
+    match (payload, layout) {
+        (ScalarPayload::Counter, ChannelPayloadLayout::Scalar(CarrierLane::I64)) => true,
+        (ScalarPayload::CounterAndSuccessor, ChannelPayloadLayout::Packed(lanes)) => {
+            lanes.as_slice() == [CarrierLane::I64, CarrierLane::I64]
+        }
+        _ => false,
+    }
+}
+
+fn receiver_fold_shape(
+    plan: &ScalarExecutorPlan,
+    module: &WirModule,
+    receive: &ScalarExecutorState,
+    accumulator: &str,
+    payload: ScalarPayload,
+) -> bool {
+    let Some(resume) = receive.transitions.iter().find_map(|transition| match transition {
+        ScalarTransition::ChannelReceive { resume } => Some(*resume),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let Some(state) = plan.states.get(resume) else { return false };
+    let Some(function) = function(module, &state.function) else { return false };
+    let mut updates = false;
+    visit_seq(&function.body, &mut |expression| {
+        if let E::Binary { op: BinOp::Add, kind: Kind::I64, .. } = expression {
+            updates |= match payload {
+                ScalarPayload::Counter => accumulator_plus_local(expression, accumulator),
+                ScalarPayload::CounterAndSuccessor => accumulator_plus_two_locals(expression, accumulator),
+            };
+        }
+    });
+    updates
+}
+
+fn counter_and_successor(expression: &E, counter: &str) -> bool {
+    let E::StructNew { args, .. } = expression else { return false };
+    args.len() == 2
+        && local(&args[0], counter)
+        && matches!(args[1], E::Binary { op: BinOp::Add, kind: Kind::I64, ref lhs, ref rhs }
+            if local(lhs, counter) && matches!(rhs.as_ref(), E::ConstI64(1)))
+}
+
+fn accumulator_plus_local(expression: &E, accumulator: &str) -> bool {
+    matches!(expression,
+        E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
+            if local(lhs, accumulator) && matches!(rhs.as_ref(), E::GetLocal(_)))
+}
+
+fn accumulator_plus_two_locals(expression: &E, accumulator: &str) -> bool {
+    matches!(expression,
+        E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
+            if matches!(lhs.as_ref(), E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
+                if local(lhs, accumulator) && matches!(rhs.as_ref(), E::GetLocal(_)))
+                && matches!(rhs.as_ref(), E::GetLocal(_)))
+}
+
+fn payload_fold_expression(payload: ScalarPayload) -> E {
+    let accumulator = E::GetLocal("__witchy_scalar_accumulator".into());
+    let message = E::GetLocal("__witchy_scalar_message".into());
+    match payload {
+        ScalarPayload::Counter => binary(BinOp::Add, Kind::I64, accumulator, message),
+        ScalarPayload::CounterAndSuccessor => binary(
+            BinOp::Add,
+            Kind::I64,
+            binary(BinOp::Add, Kind::I64, accumulator, message.clone()),
+            binary(BinOp::Add, Kind::I64, message, E::ConstI64(1)),
+        ),
+    }
 }
 
 fn initial_local_before_call(

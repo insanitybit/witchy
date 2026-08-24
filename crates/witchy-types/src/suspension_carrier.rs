@@ -128,7 +128,10 @@ pub struct SuspensionCarrierCatalog {
 /// Closed eligibility proof for RFC-0059's allocation-free compiled scheduler.
 /// The lowering may consume this value without repeating a source-shape guess:
 /// every frame state is direct, no frame column needs a floating/boxed lane, and
-/// every typed channel endpoint carries an `Int` message.
+/// every typed channel endpoint has a payload layout claimed by a direct
+/// emitter.  The emitter remains free to decline a particular graph; this
+/// catalog is only the typed ABI proof and must not rediscover an erased message
+/// layout from a runtime slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarExecutorPlan {
     pub state_count: usize,
@@ -376,12 +379,14 @@ impl SuspensionCarrierCatalog {
                         lane,
                     });
                 }
-                if let Some((channel, message)) = non_integer_channel(&slot.ty) {
-                    return Err(ScalarExecutorRejection::NonIntegerChannel {
-                        channel,
-                        message: witchy_syntax::format::type_str(message),
-                    });
-                }
+            }
+        }
+        for channel in &self.typed_channel_plans {
+            if !scalar_executor_payload_supported(&channel.payload_layout) {
+                return Err(ScalarExecutorRejection::NonIntegerChannel {
+                    channel: channel.endpoint_place.clone(),
+                    message: channel.message_type.clone(),
+                });
             }
         }
         let states = self
@@ -464,6 +469,20 @@ impl SuspensionCarrierCatalog {
             }
         }
         bytes
+    }
+}
+
+/// The first closure-free executor can transport a scalar integer or an exact
+/// two-integer product.  String/Bytes roots and wider products stay on the
+/// scheduler until their retain/release envelope is emitted, rather than being
+/// silently treated as integer lanes.
+fn scalar_executor_payload_supported(payload: &ChannelPayloadLayout) -> bool {
+    match payload {
+        ChannelPayloadLayout::Scalar(CarrierLane::I64) => true,
+        ChannelPayloadLayout::Packed(lanes) => {
+            lanes.as_slice() == [CarrierLane::I64, CarrierLane::I64]
+        }
+        _ => false,
     }
 }
 
@@ -744,33 +763,6 @@ fn call_family(name: &str, family: &str) -> bool {
         || name
             .strip_prefix(family)
             .is_some_and(|suffix| suffix.starts_with("__"))
-}
-
-fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
-    match ty.unqualified() {
-        Type::Named(name, arguments)
-            if matches!(name.rsplit('.').next(), Some("Sender" | "Receiver"))
-                && arguments.len() == 1
-                && !matches!(arguments[0].unqualified(), Type::Named(message, args)
-                    if message == "Int" && args.is_empty()) =>
-        {
-            Some((name.clone(), &arguments[0]))
-        }
-        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
-            arguments.iter().find_map(non_integer_channel)
-        }
-        Type::Fn(parameters, result, _, _) => parameters
-            .iter()
-            .find_map(non_integer_channel)
-            .or_else(|| non_integer_channel(result)),
-        Type::RecordCompose { base, fields } => non_integer_channel(base).or_else(|| {
-            fields
-                .iter()
-                .find_map(|(_, field)| non_integer_channel(field))
-        }),
-        Type::Slice(elem) => non_integer_channel(elem),
-        Type::Qualified(_, _) => unreachable!("unqualified above"),
-    }
 }
 
 fn channel_endpoint_type(ty: &Type) -> Option<(ChannelEndpointDirection, &Type)> {
@@ -1096,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_executor_qualification_rejects_float_and_non_integer_channels() {
+    fn scalar_executor_qualification_rejects_float_and_unsupported_channel_payloads() {
         let mut float_module =
             witchy_syntax::parser::parse_module("fn resume(value: Float) -> Nil:\n    ()\n")
                 .expect("float fixture parses");
@@ -1141,10 +1133,34 @@ mod tests {
         assert_eq!(
             channel_catalog.scalar_executor_plan(),
             Err(ScalarExecutorRejection::NonIntegerChannel {
-                channel: "Sender".into(),
+                channel: "tx".into(),
                 message: "String".into(),
             }),
         );
+
+        let mut packed_module = witchy_syntax::parser::parse_module(
+            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Pair:\n    Pair(Int, Int)\n\nfn resume(tx: Sender(Pair), rx: Receiver(Pair)) -> Nil:\n    ()\n",
+        )
+        .expect("packed endpoint fixture parses");
+        let Item::Function(packed_state) = &mut packed_module.items[3] else {
+            panic!("packed state")
+        };
+        packed_state
+            .attributes
+            .push(FRAME_FUNCTION_ATTRIBUTE.into());
+        packed_state
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+        let packed_typed =
+            crate::typeck::annotate_checked(packed_module).expect("packed fixture type checks");
+        let packed_catalog =
+            SuspensionCarrierCatalog::from_typed(&packed_typed).expect("packed catalog");
+        let packed_plan = packed_catalog
+            .scalar_executor_plan()
+            .expect("two-integer packed endpoints retain direct lanes");
+        assert!(packed_plan.typed_channels.iter().all(|channel| {
+            channel.payload_layout == ChannelPayloadLayout::Packed(vec![CarrierLane::I64, CarrierLane::I64])
+        }));
     }
 
     #[test]
