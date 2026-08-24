@@ -85,6 +85,34 @@ The two byte buffers joined.
 
 The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
+#### `fn with_capacity(capacity: Int) -> Bytes`
+
+An empty byte buffer with pre-allocated capacity.
+
+#### `fn repeat(value: Int, count: Int) -> Bytes`
+
+A byte buffer of `count` identical bytes, each equal to `value` (0..=255).
+
+#### `fn push(var bytes: Bytes, value: Int)`
+
+Append a single byte `value` (0..=255) to `bytes`.
+
+#### `fn append(var bytes: Bytes, let suffix: Bytes)`
+
+Append all bytes from `suffix` to `bytes`.
+
+#### `fn reserve(var bytes: Bytes, additional: Int)`
+
+Guarantee room for at least `additional` more bytes without changing contents.
+
+#### `fn set_at(var bytes: Bytes, index: Int, value: Int)`
+
+Store byte `value` (0..=255) at `index`.
+
+#### `fn swap(var bytes: Bytes, first: Int, second: Int)`
+
+Exchange the bytes at indices `first` and `second`.
+
 #### `Bytes.to_string_lossy() -> String`
 
 Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
@@ -142,6 +170,26 @@ Whether the buffer starts with `prefix`.
 #### `Bytes.ends_with(suffix: Bytes) -> Bool`
 
 Whether the buffer ends with `suffix`.
+
+#### `Bytes.push(value: Int)`
+
+Append a single byte `value` (0..=255) to this buffer.
+
+#### `Bytes.append(let suffix: Bytes)`
+
+Append all bytes from `suffix` to this buffer.
+
+#### `Bytes.reserve(additional: Int)`
+
+Guarantee room for at least `additional` more bytes without changing contents.
+
+#### `Bytes.set_at(index: Int, value: Int)`
+
+Store byte `value` (0..=255) at `index`.
+
+#### `Bytes.swap(first: Int, second: Int)`
+
+Exchange the bytes at indices `first` and `second`.
 
 ### Trait implementations
 

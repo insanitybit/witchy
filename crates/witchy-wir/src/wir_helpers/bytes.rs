@@ -266,3 +266,509 @@ pub(super) fn bytes_to_string_helper() -> WirFunc {
         raw_body: None,
     }
 }
+
+/// `$bytes_with_capacity(cap: i64) -> i32` — allocate an empty `Bytes` buffer
+/// with pre-allocated capacity `cap`.
+pub(super) fn bytes_with_capacity_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "bytes_with_capacity".into(),
+        params: vec![WirLocal { name: "cap".into(), ty: WirTy::Int }],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "c".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b64(BinOp::Lt, getl("cap"), i64c(0)),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "c".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("cap")) },
+            },
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, i32c(4), getl("c"))],
+                },
+            },
+            N::Store {
+                ptr: getl("res"),
+                value: i32c(0),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_repeat(val: i64, count: i64) -> i32` — allocate a `Bytes` buffer of
+/// `count` identical bytes, each equal to `val`.
+pub(super) fn bytes_repeat_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "bytes_repeat".into(),
+        params: vec![
+            WirLocal { name: "val".into(), ty: WirTy::Int },
+            WirLocal { name: "count".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "c".into(), ty: WirTy::Bool },
+            WirLocal { name: "v".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b32(
+                    BinOp::Or,
+                    b32(
+                        BinOp::Or,
+                        b64(BinOp::Lt, getl("val"), i64c(0)),
+                        b64(BinOp::Gt, getl("val"), i64c(255)),
+                    ),
+                    b64(BinOp::Lt, getl("count"), i64c(0)),
+                ),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "c".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("count")) },
+            },
+            N::SetLocal {
+                local: "v".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) },
+            },
+            N::SetLocal {
+                local: "res".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, i32c(4), getl("c"))],
+                },
+            },
+            N::Store {
+                ptr: getl("res"),
+                value: getl("c"),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::SetLocal { local: "i".into(), value: i32c(0) },
+            N::Block {
+                label: "done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "l".into(),
+                    body: vec![
+                        N::Br { target: "done".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("c"))) },
+                        N::Store8 {
+                            ptr: b32(BinOp::Add, getl("res"), getl("i")),
+                            value: getl("v"),
+                            offset: 4,
+                        },
+                        N::SetLocal { local: "i".into(), value: b32(BinOp::Add, getl("i"), i32c(1)) },
+                        N::Br { target: "l".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_push(b: i32, val: i64) -> i32` — append a byte to `b`.
+pub(super) fn bytes_push_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "bytes_push".into(),
+        params: vec![
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+            WirLocal { name: "val".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "newlen".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b32(
+                    BinOp::Or,
+                    b64(BinOp::Lt, getl("val"), i64c(0)),
+                    b64(BinOp::Gt, getl("val"), i64c(255)),
+                ),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal {
+                local: "newlen".into(),
+                value: b32(BinOp::Add, getl("len"), i32c(1)),
+            },
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, i32c(4), getl("newlen"))],
+                },
+            },
+            N::Store {
+                ptr: getl("new"),
+                value: getl("newlen"),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::MemoryCopy {
+                dest: b32(BinOp::Add, getl("new"), i32c(4)),
+                src: b32(BinOp::Add, getl("b"), i32c(4)),
+                len: getl("len"),
+            },
+            N::Store8 {
+                ptr: b32(BinOp::Add, getl("new"), getl("len")),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) },
+                offset: 4,
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_append(b: i32, suffix: i32) -> i32` — append `suffix` to `b`.
+pub(super) fn bytes_append_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "bytes_append".into(),
+        params: vec![
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+            WirLocal { name: "suffix".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "blen".into(), ty: WirTy::Bool },
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
+            WirLocal { name: "tot".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "blen".into(),
+                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal {
+                local: "slen".into(),
+                value: E::Load { ptr: Box::new(getl("suffix")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal {
+                local: "tot".into(),
+                value: b32(BinOp::Add, getl("blen"), getl("slen")),
+            },
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, i32c(4), getl("tot"))],
+                },
+            },
+            N::Store {
+                ptr: getl("new"),
+                value: getl("tot"),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::MemoryCopy {
+                dest: b32(BinOp::Add, getl("new"), i32c(4)),
+                src: b32(BinOp::Add, getl("b"), i32c(4)),
+                len: getl("blen"),
+            },
+            N::MemoryCopy {
+                dest: b32(BinOp::Add, b32(BinOp::Add, getl("new"), i32c(4)), getl("blen")),
+                src: b32(BinOp::Add, getl("suffix"), i32c(4)),
+                len: getl("slen"),
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_reserve(b: i32, add: i64) -> i32` — reserve `add` bytes of capacity.
+pub(super) fn bytes_reserve_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "bytes_reserve".into(),
+        params: vec![
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+            WirLocal { name: "add".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "add32".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b64(BinOp::Lt, getl("add"), i64c(0)),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal {
+                local: "add32".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("add")) },
+            },
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, b32(BinOp::Add, i32c(4), getl("len")), getl("add32"))],
+                },
+            },
+            N::Store {
+                ptr: getl("new"),
+                value: getl("len"),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::MemoryCopy {
+                dest: b32(BinOp::Add, getl("new"), i32c(4)),
+                src: b32(BinOp::Add, getl("b"), i32c(4)),
+                len: getl("len"),
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_set_at(b: i32, idx: i64, val: i64) -> i32` — store byte `val` at `idx`.
+pub(super) fn bytes_set_at_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let len_i64 = || E::Convert {
+        from: Kind::I32,
+        to: Kind::I64,
+        arg: Box::new(E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 }),
+    };
+    let idx_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("idx")) };
+    let val_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) };
+    WirFunc {
+        name: "bytes_set_at".into(),
+        params: vec![
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+            WirLocal { name: "idx".into(), ty: WirTy::Int },
+            WirLocal { name: "val".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b32(
+                    BinOp::Or,
+                    b64(BinOp::Lt, getl("val"), i64c(0)),
+                    b64(BinOp::Gt, getl("val"), i64c(255)),
+                ),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: b32(
+                    BinOp::Or,
+                    b64(BinOp::Lt, getl("idx"), i64c(0)),
+                    b64(BinOp::Ge, getl("idx"), len_i64()),
+                ),
+                then_: abort_nodes(DiagTemplate::BytesIndexOob, getl("idx"), len_i64(), i32c(0)),
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, i32c(4), getl("len"))],
+                },
+            },
+            N::Store {
+                ptr: getl("new"),
+                value: getl("len"),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::MemoryCopy {
+                dest: b32(BinOp::Add, getl("new"), i32c(4)),
+                src: b32(BinOp::Add, getl("b"), i32c(4)),
+                len: getl("len"),
+            },
+            N::Store8 {
+                ptr: b32(BinOp::Add, getl("new"), idx_i32()),
+                value: val_i32(),
+                offset: 4,
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$bytes_swap(b: i32, i: i64, j: i64) -> i32` — exchange bytes at `i` and `j`.
+pub(super) fn bytes_swap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let len_i64 = || E::Convert {
+        from: Kind::I32,
+        to: Kind::I64,
+        arg: Box::new(E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 }),
+    };
+    let i_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
+    let j_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) };
+    WirFunc {
+        name: "bytes_swap".into(),
+        params: vec![
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+            WirLocal { name: "i".into(), ty: WirTy::Int },
+            WirLocal { name: "j".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "bi".into(), ty: WirTy::Bool },
+            WirLocal { name: "bj".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b32(
+                    BinOp::Or,
+                    b64(BinOp::Lt, getl("i"), WirExpr::ConstI64(0)),
+                    b64(BinOp::Ge, getl("i"), len_i64()),
+                ),
+                then_: abort_nodes(DiagTemplate::BytesIndexOob, getl("i"), len_i64(), i32c(0)),
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: b32(
+                    BinOp::Or,
+                    b64(BinOp::Lt, getl("j"), WirExpr::ConstI64(0)),
+                    b64(BinOp::Ge, getl("j"), len_i64()),
+                ),
+                then_: abort_nodes(DiagTemplate::BytesIndexOob, getl("j"), len_i64(), i32c(0)),
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b32(BinOp::Add, i32c(4), getl("len"))],
+                },
+            },
+            N::Store {
+                ptr: getl("new"),
+                value: getl("len"),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::MemoryCopy {
+                dest: b32(BinOp::Add, getl("new"), i32c(4)),
+                src: b32(BinOp::Add, getl("b"), i32c(4)),
+                len: getl("len"),
+            },
+            N::SetLocal {
+                local: "bi".into(),
+                value: E::Load8U {
+                    ptr: Box::new(b32(BinOp::Add, getl("b"), i_i32())),
+                    offset: 4,
+                },
+            },
+            N::SetLocal {
+                local: "bj".into(),
+                value: E::Load8U {
+                    ptr: Box::new(b32(BinOp::Add, getl("b"), j_i32())),
+                    offset: 4,
+                },
+            },
+            N::Store8 {
+                ptr: b32(BinOp::Add, getl("new"), i_i32()),
+                value: getl("bj"),
+                offset: 4,
+            },
+            N::Store8 {
+                ptr: b32(BinOp::Add, getl("new"), j_i32()),
+                value: getl("bi"),
+                offset: 4,
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}

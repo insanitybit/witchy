@@ -1799,6 +1799,87 @@ impl Interpreter {
                 }
                 _ => err("bytes.slice expects Bytes and two Int indices"),
             },
+            intrinsics::BYTES_WITH_CAPACITY => match one(args)? {
+                Value::Int(cap) => {
+                    if cap < 0 {
+                        return err(format!("bytes.with_capacity: negative capacity {cap}"));
+                    }
+                    let cap_val = cap.min(i32::MAX as i64) as usize;
+                    Ok(Some(Value::Bytes(Vec::with_capacity(cap_val))))
+                }
+                other => err(format!("bytes.with_capacity expects an Int, got `{other}`")),
+            },
+            intrinsics::BYTES_REPEAT => match args {
+                [Value::Int(val), Value::Int(count)] => {
+                    if !(0..=255).contains(val) {
+                        return err(format!("bytes.repeat: byte {val} is outside 0..=255"));
+                    }
+                    if *count < 0 {
+                        return err(format!("bytes.repeat: negative count {count}"));
+                    }
+                    let count_val = (*count).min(i32::MAX as i64) as usize;
+                    Ok(Some(Value::Bytes(vec![*val as u8; count_val])))
+                }
+                _ => err("bytes.repeat expects (Int, Int)"),
+            },
+            intrinsics::BYTES_PUSH => match args {
+                [Value::Bytes(b), Value::Int(val)] => {
+                    if !(0..=255).contains(val) {
+                        return err(format!("bytes.push: byte {val} is outside 0..=255"));
+                    }
+                    let mut out = b.clone();
+                    out.push(*val as u8);
+                    Ok(Some(Value::Bytes(out)))
+                }
+                _ => err("bytes.push expects (Bytes, Int)"),
+            },
+            intrinsics::BYTES_APPEND => match args {
+                [Value::Bytes(b), Value::Bytes(suffix)] => {
+                    let mut out = b.clone();
+                    out.extend_from_slice(suffix);
+                    Ok(Some(Value::Bytes(out)))
+                }
+                _ => err("bytes.append expects (Bytes, Bytes)"),
+            },
+            intrinsics::BYTES_RESERVE => match args {
+                [Value::Bytes(b), Value::Int(additional)] => {
+                    if *additional < 0 {
+                        return err(format!("bytes.reserve: negative additional {additional}"));
+                    }
+                    let mut out = b.clone();
+                    out.reserve((*additional).min(i32::MAX as i64) as usize);
+                    Ok(Some(Value::Bytes(out)))
+                }
+                _ => err("bytes.reserve expects (Bytes, Int)"),
+            },
+            intrinsics::BYTES_SET_AT => match args {
+                [Value::Bytes(b), Value::Int(idx), Value::Int(val)] => {
+                    if !(0..=255).contains(val) {
+                        return err(format!("bytes.set_at: byte {val} is outside 0..=255"));
+                    }
+                    if *idx < 0 || *idx >= b.len() as i64 {
+                        return err(DiagTemplate::BytesIndexOob.render(*idx, b.len() as i64, ""));
+                    }
+                    let mut out = b.clone();
+                    out[*idx as usize] = *val as u8;
+                    Ok(Some(Value::Bytes(out)))
+                }
+                _ => err("bytes.set_at expects (Bytes, Int, Int)"),
+            },
+            intrinsics::BYTES_SWAP => match args {
+                [Value::Bytes(b), Value::Int(first), Value::Int(second)] => {
+                    if *first < 0 || *first >= b.len() as i64 {
+                        return err(DiagTemplate::BytesIndexOob.render(*first, b.len() as i64, ""));
+                    }
+                    if *second < 0 || *second >= b.len() as i64 {
+                        return err(DiagTemplate::BytesIndexOob.render(*second, b.len() as i64, ""));
+                    }
+                    let mut out = b.clone();
+                    out.swap(*first as usize, *second as usize);
+                    Ok(Some(Value::Bytes(out)))
+                }
+                _ => err("bytes.swap expects (Bytes, Int, Int)"),
+            },
             // The number of Unicode scalars — the character count, as opposed to
             // `string_length`'s byte count (they agree for ASCII).
             intrinsics::STRING_CHAR_COUNT => match one(args)? {

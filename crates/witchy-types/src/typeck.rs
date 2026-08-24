@@ -6409,6 +6409,8 @@ impl Checker {
                 Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes))
             }
             S::BytesIntToBytes => Some((vec![Ty::Bytes, Ty::Int], Ty::Bytes)),
+            S::IntToBytes => Some((vec![Ty::Int], Ty::Bytes)),
+            S::IntIntToBytes => Some((vec![Ty::Int, Ty::Int], Ty::Bytes)),
             S::SecretStoreStringToOptionSecret => Some((
                 vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
                 Ty::Named("Option".into(), vec![Ty::Secret(SecretRights::full())]),

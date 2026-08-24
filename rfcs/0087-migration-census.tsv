@@ -33,7 +33,7 @@ witchy-files	301
 markdown-blocks	238
 checked	539
 rejected	0
-var-declarations	42
+var-declarations	47
 resolved-var-calls	782
 mechanical-self-reassignment	0
 expression-position-mutator	11

@@ -1389,6 +1389,58 @@ impl Codegen<'_> {
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])
             }
+            (intrinsics::BYTES_WITH_CAPACITY, 1) => {
+                let ck = self.kind_of(&args[0]);
+                call("bytes_with_capacity", vec![
+                    Self::wir_convert(self.lower_expr(&args[0])?, ck, Kind::I64),
+                ])
+            }
+            (intrinsics::BYTES_REPEAT, 2) => {
+                let vk = self.kind_of(&args[0]);
+                let ck = self.kind_of(&args[1]);
+                call("bytes_repeat", vec![
+                    Self::wir_convert(self.lower_expr(&args[0])?, vk, Kind::I64),
+                    Self::wir_convert(self.lower_expr(&args[1])?, ck, Kind::I64),
+                ])
+            }
+            (intrinsics::BYTES_PUSH, 2) => {
+                let vk = self.kind_of(&args[1]);
+                call("bytes_push", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, vk, Kind::I64),
+                ])
+            }
+            (intrinsics::BYTES_APPEND, 2) => {
+                call("bytes_append", vec![
+                    self.lower_expr(&args[0])?,
+                    self.lower_expr(&args[1])?,
+                ])
+            }
+            (intrinsics::BYTES_RESERVE, 2) => {
+                let ak = self.kind_of(&args[1]);
+                call("bytes_reserve", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, ak, Kind::I64),
+                ])
+            }
+            (intrinsics::BYTES_SET_AT, 3) => {
+                let ik = self.kind_of(&args[1]);
+                let vk = self.kind_of(&args[2]);
+                call("bytes_set_at", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
+                    Self::wir_convert(self.lower_expr(&args[2])?, vk, Kind::I64),
+                ])
+            }
+            (intrinsics::BYTES_SWAP, 3) => {
+                let ik = self.kind_of(&args[1]);
+                let jk = self.kind_of(&args[2]);
+                call("bytes_swap", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
+                    Self::wir_convert(self.lower_expr(&args[2])?, jk, Kind::I64),
+                ])
+            }
             (intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH, 2) => {
                 if self
                     .ast_type_of_expr(&args[0])

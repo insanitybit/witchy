@@ -78,6 +78,39 @@ pub fn concat(first: Bytes, second: Bytes) -> Bytes:
 pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
     __bytes_slice(b, start, end)
 
+// An empty byte buffer with pre-allocated capacity.
+pub fn with_capacity(capacity: Int) -> Bytes:
+    __bytes_with_capacity(capacity)
+
+// A byte buffer of `count` identical bytes, each equal to `value` (0..=255).
+pub fn repeat(value: Int, count: Int) -> Bytes:
+    __bytes_repeat(value, count)
+
+// Append a single byte `value` (0..=255) to `bytes`.
+pub fn push(var bytes: Bytes, value: Int):
+    bytes = __bytes_push(bytes, value)
+    return
+
+// Append all bytes from `suffix` to `bytes`.
+pub fn append(var bytes: Bytes, let suffix: Bytes):
+    bytes = __bytes_append(bytes, suffix)
+    return
+
+// Guarantee room for at least `additional` more bytes without changing contents.
+pub fn reserve(var bytes: Bytes, additional: Int):
+    bytes = __bytes_reserve(bytes, additional)
+    return
+
+// Store byte `value` (0..=255) at `index`.
+pub fn set_at(var bytes: Bytes, index: Int, value: Int):
+    bytes = __bytes_set_at(bytes, index, value)
+    return
+
+// Exchange the bytes at indices `first` and `second`.
+pub fn swap(var bytes: Bytes, first: Int, second: Int):
+    bytes = __bytes_swap(bytes, first, second)
+    return
+
 // --- Private cores (non-colliding names, shared by the methods below). ---
 
 // The bytes as a list of Ints - the core behind the `to_list` method, also used
@@ -203,3 +236,23 @@ impl Bytes:
             false
         else:
             bytes_match_at(self, suffix, len - n)
+
+    // Append a single byte `value` (0..=255) to this buffer.
+    pub fn push(var self, value: Int):
+        push(self, value)
+
+    // Append all bytes from `suffix` to this buffer.
+    pub fn append(var self, let suffix: Bytes):
+        append(self, suffix)
+
+    // Guarantee room for at least `additional` more bytes without changing contents.
+    pub fn reserve(var self, additional: Int):
+        reserve(self, additional)
+
+    // Store byte `value` (0..=255) at `index`.
+    pub fn set_at(var self, index: Int, value: Int):
+        set_at(self, index, value)
+
+    // Exchange the bytes at indices `first` and `second`.
+    pub fn swap(var self, first: Int, second: Int):
+        swap(self, first, second)

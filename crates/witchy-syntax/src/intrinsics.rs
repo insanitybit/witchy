@@ -45,6 +45,13 @@ pub enum IntrinsicId {
     BytesAt,
     BytesConcat,
     BytesSlice,
+    BytesWithCapacity,
+    BytesRepeat,
+    BytesPush,
+    BytesAppend,
+    BytesReserve,
+    BytesSetAt,
+    BytesSwap,
     ChannelOpen,
     ChannelSend,
     ChannelRecv,
@@ -204,6 +211,8 @@ pub enum IntrinsicSignature {
     BytesBytesToBytes,
     BytesIntIntToBytes,
     BytesIntToBytes,
+    IntToBytes,
+    IntIntToBytes,
     SecretStoreStringToOptionSecret,
     SecretStoreStringToSecret,
     StringToString,
@@ -312,6 +321,8 @@ impl IntrinsicSignature {
                 | Self::BytesBytesToBytes
                 | Self::BytesIntIntToBytes
                 | Self::BytesIntToBytes
+                | Self::IntToBytes
+                | Self::IntIntToBytes
         )
     }
 
@@ -511,6 +522,13 @@ pub const BYTES_AT: &str = "__bytes_at";
 pub(crate) const BYTES_AT_PUBLIC: &str = "bytes.at";
 pub const BYTES_CONCAT: &str = "__bytes_concat";
 pub const BYTES_SLICE: &str = "__bytes_slice";
+pub const BYTES_WITH_CAPACITY: &str = "__bytes_with_capacity";
+pub const BYTES_REPEAT: &str = "__bytes_repeat";
+pub const BYTES_PUSH: &str = "__bytes_push";
+pub const BYTES_APPEND: &str = "__bytes_append";
+pub const BYTES_RESERVE: &str = "__bytes_reserve";
+pub const BYTES_SET_AT: &str = "__bytes_set_at";
+pub const BYTES_SWAP: &str = "__bytes_swap";
 
 pub(crate) const CHANNEL_OPEN: &str = "__channel_open";
 pub(crate) const CHANNEL_SEND: &str = "__channel_send";
@@ -1214,6 +1232,111 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "bytes.slice",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesWithCapacity,
+        name: BYTES_WITH_CAPACITY,
+        arity: 1,
+        signature: IntrinsicSignature::IntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_with_capacity"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.with_capacity",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesRepeat,
+        name: BYTES_REPEAT,
+        arity: 2,
+        signature: IntrinsicSignature::IntIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_repeat"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.repeat",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesPush,
+        name: BYTES_PUSH,
+        arity: 2,
+        signature: IntrinsicSignature::BytesIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_push"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.push",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesAppend,
+        name: BYTES_APPEND,
+        arity: 2,
+        signature: IntrinsicSignature::BytesBytesToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_append"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.append",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesReserve,
+        name: BYTES_RESERVE,
+        arity: 2,
+        signature: IntrinsicSignature::BytesIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_reserve"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.reserve",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesSetAt,
+        name: BYTES_SET_AT,
+        arity: 3,
+        signature: IntrinsicSignature::BytesIntIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_set_at"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.set_at",
+        private_callers: BYTES_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::BytesSwap,
+        name: BYTES_SWAP,
+        arity: 3,
+        signature: IntrinsicSignature::BytesIntIntToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["bytes_swap"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "bytes.swap",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2954,6 +3077,13 @@ pub const BYTES_BRIDGES: &[&str] = &[
     BYTES_AT,
     BYTES_CONCAT,
     BYTES_SLICE,
+    BYTES_WITH_CAPACITY,
+    BYTES_REPEAT,
+    BYTES_PUSH,
+    BYTES_APPEND,
+    BYTES_RESERVE,
+    BYTES_SET_AT,
+    BYTES_SWAP,
 ];
 
 /// Public or compatibility spellings that share one canonical operation row.
@@ -3156,6 +3286,13 @@ pub fn is_bytes_bridge(name: &str) -> bool {
                 | IntrinsicId::BytesAt
                 | IntrinsicId::BytesConcat
                 | IntrinsicId::BytesSlice
+                | IntrinsicId::BytesWithCapacity
+                | IntrinsicId::BytesRepeat
+                | IntrinsicId::BytesPush
+                | IntrinsicId::BytesAppend
+                | IntrinsicId::BytesReserve
+                | IntrinsicId::BytesSetAt
+                | IntrinsicId::BytesSwap
         )
     })
 }
@@ -3707,6 +3844,13 @@ mod tests {
             (BYTES_AT, Some("bytes_at"), IntrinsicLowering::Builtin),
             (BYTES_CONCAT, Some("concat"), IntrinsicLowering::Builtin),
             (BYTES_SLICE, Some("bytes_slice"), IntrinsicLowering::Builtin),
+            (BYTES_WITH_CAPACITY, Some("bytes_with_capacity"), IntrinsicLowering::Builtin),
+            (BYTES_REPEAT, Some("bytes_repeat"), IntrinsicLowering::Builtin),
+            (BYTES_PUSH, Some("bytes_push"), IntrinsicLowering::Builtin),
+            (BYTES_APPEND, Some("bytes_append"), IntrinsicLowering::Builtin),
+            (BYTES_RESERVE, Some("bytes_reserve"), IntrinsicLowering::Builtin),
+            (BYTES_SET_AT, Some("bytes_set_at"), IntrinsicLowering::Builtin),
+            (BYTES_SWAP, Some("bytes_swap"), IntrinsicLowering::Builtin),
         ];
         let expected: BTreeSet<_> = BYTES_BRIDGES.iter().copied().collect();
         let actual: BTreeSet<_> = ALL

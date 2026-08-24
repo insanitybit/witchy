@@ -202,3 +202,118 @@ use crate::{ast, codegen, interpreter, typeck};
             "WASM: empty needle is absent",
         );
     }
+
+    /// (RFC-0151) Bytes mutators (`push`, `append`, `reserve`, `set_at`, `swap`),
+    /// constructors (`with_capacity`, `repeat`), aliasing, and self-append parity.
+    #[test]
+    fn bytes_mutators_and_constructors_parity_on_both_backends() {
+        let src = "import bytes\n\
+                   fn main(console: Console):\n\
+                   \x20   var b = bytes.with_capacity(32)\n\
+                   \x20   console.print(\"${b.length()}\")\n\
+                   \x20   b.push(65)\n\
+                   \x20   b.push(66)\n\
+                   \x20   b.push(67)\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   let alias = b\n\
+                   \x20   b.push(68)\n\
+                   \x20   console.print(alias.to_string())\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   b.set_at(0, 90)\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   b.swap(0, 3)\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   b.swap(1, 1)\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   b.reserve(100)\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   b.append(b)\n\
+                   \x20   console.print(b.to_string())\n\
+                   \x20   let rep = bytes.repeat(42, 5)\n\
+                   \x20   console.print(rep.to_string())\n\
+                   \x20   var b2 = bytes.with_capacity(0)\n\
+                   \x20   bytes.push(b2, 49)\n\
+                   \x20   bytes.append(b2, bytes.from_string(\"23\"))\n\
+                   \x20   bytes.reserve(b2, 10)\n\
+                   \x20   bytes.set_at(b2, 1, 57)\n\
+                   \x20   bytes.swap(b2, 0, 2)\n\
+                   \x20   console.print(b2.to_string())\n";
+        let expected = [
+            "0",
+            "ABC",
+            "ABC",
+            "ABCD",
+            "ZBCD",
+            "DBCZ",
+            "DBCZ",
+            "DBCZ",
+            "DBCZDBCZ",
+            "*****",
+            "391",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter: Bytes mutators");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "WASM: Bytes mutators",
+        );
+    }
+
+    /// (RFC-0151) Negative capacity, invalid byte values, negative count/additional,
+    /// and out-of-bounds indices abort on both backends.
+    #[test]
+    fn bytes_validation_and_bounds_abort_on_both_backends() {
+        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect_lowered("the binary path lowers this program");
+            (linked, bytes)
+        };
+
+        let bad_programs = [
+            // negative capacity in with_capacity
+            "import bytes\nfn main(console: Console):\n    let b = bytes.with_capacity(0 - 1)\n",
+            // invalid byte in repeat (< 0)
+            "import bytes\nfn main(console: Console):\n    let b = bytes.repeat(0 - 1, 5)\n",
+            // invalid byte in repeat (> 255)
+            "import bytes\nfn main(console: Console):\n    let b = bytes.repeat(256, 5)\n",
+            // negative count in repeat
+            "import bytes\nfn main(console: Console):\n    let b = bytes.repeat(65, 0 - 1)\n",
+            // invalid byte in push (< 0)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.push(0 - 1)\n",
+            // invalid byte in push (> 255)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.push(300)\n",
+            // negative additional in reserve
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.reserve(0 - 5)\n",
+            // invalid byte in set_at (< 0)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.set_at(0, 0 - 1)\n",
+            // invalid byte in set_at (> 255)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.set_at(0, 500)\n",
+            // out-of-bounds index in set_at (negative)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.set_at(0 - 1, 65)\n",
+            // out-of-bounds index in set_at (>= length)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"a\")\n    b.set_at(1, 65)\n",
+            // out-of-bounds first index in swap (negative)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"ab\")\n    b.swap(0 - 1, 1)\n",
+            // out-of-bounds first index in swap (>= length)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"ab\")\n    b.swap(2, 1)\n",
+            // out-of-bounds second index in swap (negative)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"ab\")\n    b.swap(0, 0 - 1)\n",
+            // out-of-bounds second index in swap (>= length)
+            "import bytes\nfn main(console: Console):\n    var b = bytes.from_string(\"ab\")\n    b.swap(0, 2)\n",
+        ];
+
+        for (idx, prog) in bad_programs.iter().enumerate() {
+            let (lmod, wasm) = compile(prog);
+            assert!(
+                interpreter::run_module(lmod, ".", Vec::new()).is_err(),
+                "program {idx} must error on interpreter",
+            );
+            assert!(
+                crate::run_wasm_bytes(&wasm).is_err(),
+                "program {idx} must trap on WASM",
+            );
+        }
+    }
+
