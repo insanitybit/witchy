@@ -1,7 +1,7 @@
 ---
 rfc: 0151
 title: "Owned Byte and Text Construction: Mutable Bytes, Linear Build Plans, and Bounded Copying"
-status: proposed
+status: implemented
 created: 2026-08-24
 superseded-by:
 related:
