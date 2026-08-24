@@ -30,6 +30,8 @@ pub use properties::{
 };
 pub mod range_facts;
 pub use range_facts::{compute_fact, refine_condition, RangeEnv, RangeFactStats};
+pub mod stats;
+pub use stats::{LoopRejectionReason, RangeOptStats};
 mod strength_reduce;
 pub use strength_reduce::{simplify_integer_ranges, RangeFact};
 mod tail_calls;

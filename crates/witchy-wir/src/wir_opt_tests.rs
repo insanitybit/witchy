@@ -1625,3 +1625,42 @@
         assert!(matches!(&els[0], WirNode::Push(WirExpr::ConstI64(0))));
     }
 
+    #[test]
+    fn range_opt_stats_deterministic_payload_and_diagnostics() {
+        use crate::wir_opt::stats::{LoopRejectionReason, RangeOptStats};
+
+        let mut stats = RangeOptStats::new();
+        stats.record_fact_created();
+        stats.record_fact_created();
+        stats.record_fact_joined();
+        stats.record_fact_widened();
+        stats.record_fact_dropped();
+        stats.record_loop_accepted();
+        stats.record_loop_rejected(LoopRejectionReason::PotentialEscape);
+        stats.record_loop_rejected(LoopRejectionReason::TrapDecline);
+        stats.record_bounds_check_removed();
+        stats.record_bounds_check_retained();
+        stats.record_header_hoisted();
+        stats.record_cursorized_access();
+        stats.record_arithmetic_rewrite();
+
+        assert_eq!(stats.facts_created, 2);
+        assert_eq!(stats.facts_joined, 1);
+        assert_eq!(stats.facts_widened, 1);
+        assert_eq!(stats.facts_dropped, 1);
+        assert_eq!(stats.loops_accepted, 1);
+        assert_eq!(stats.bounds_checks_removed, 1);
+        assert_eq!(stats.bounds_checks_retained, 1);
+        assert_eq!(stats.headers_hoisted, 1);
+        assert_eq!(stats.cursorized_accesses, 1);
+        assert_eq!(stats.arithmetic_rewrites, 1);
+        assert_eq!(stats.escape_declines, 1);
+        assert_eq!(stats.trap_declines, 1);
+
+        let summary = stats.format_summary();
+        assert!(summary.contains("RangeOptStats:"));
+        assert!(summary.contains("facts(created=2, joined=1, widened=1, dropped=1)"));
+        assert!(summary.contains("loops(accepted=1"));
+        assert!(summary.contains("bounds_checks(removed=1, retained=1)"));
+    }
+
