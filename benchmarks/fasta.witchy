@@ -5,23 +5,26 @@ import bytes
 import string
 import math
 
-fn min(let a: Int, let b: Int) -> Int:
-    return if a < b: a else: b
+fn min(a: Int, b: Int) -> Int:
+    if a < b:
+        return a
+    return b
 
-fn fasta_repeat(let console: Console, let n_total: Int, let seq_str: String):
+fn fasta_repeat(let console: Console, n_total: Int, let seq_str: String):
+    let s_ref = string.as_str(&seq_str)
     let seq_len = string.length(seq_str)
     var n = n_total
     var seqi = 0
     while n > 0:
         let len_out = min(n, 60)
         if seqi + len_out < seq_len:
-            console.print(string.slice(seq_str, seqi, seqi + len_out))
+            console.print(string.slice(s_ref, seqi, seqi + len_out).to_string())
             seqi = seqi + len_out
         else:
-            let s1 = string.slice(seq_str, seqi, seq_len)
-            seqi = len_out - string.length(s1)
-            let s2 = string.slice(seq_str, 0, seqi)
-            console.print("${s1}${s2}")
+            let s1 = string.slice(s_ref, seqi, seq_len).to_string()
+            let s2 = string.slice(s_ref, 0, len_out - (seq_len - seqi)).to_string()
+            seqi = len_out - (seq_len - seqi)
+            console.print(s1 + s2)
         n = n - len_out
 
 fn main(let console: Console, let clock: Clock):
@@ -29,10 +32,7 @@ fn main(let console: Console, let clock: Clock):
     
     let n = 2500000
     
-    let alu_chars = [71, 71, 67, 67, 71, 71, 71, 67, 71, 67, 71, 71, 84, 71, 71, 67, 84, 67, 65, 67, 71, 67, 67, 84, 71, 84, 65, 65, 84, 67, 67, 67, 65, 71, 67, 65, 67, 84, 84, 84, 71, 71, 71, 65, 71, 71, 67, 67, 71, 65, 71, 67, 67, 71, 71, 71, 67, 71, 71, 65, 84, 67, 65, 67, 67, 84, 71, 65, 71, 71, 84, 67, 65, 71, 71, 65, 71, 84, 84, 67, 71, 65, 71, 65, 67, 67, 65, 71, 67, 67, 84, 71, 71, 67, 67, 65, 65, 67, 65, 84, 71, 71, 84, 71, 65, 65, 65, 67, 67, 67, 67, 71, 84, 67, 84, 67, 84, 65, 67, 84, 65, 65, 65, 65, 65, 84, 65, 67, 65, 65, 65, 65, 65, 84, 84, 65, 71, 67, 67, 71, 71, 71, 67, 71, 84, 71, 71, 84, 71, 71, 67, 71, 67, 71, 67, 71, 67, 67, 84, 71, 84, 65, 65, 84, 67, 67, 67, 65, 71, 67, 84, 65, 67, 84, 67, 71, 71, 71, 65, 71, 71, 67, 84, 71, 65, 71, 67, 65, 71, 71, 65, 71, 65, 65, 84, 67, 71, 67, 84, 84, 71, 65, 65, 67, 67, 67, 71, 71, 71, 65, 71, 71, 67, 71, 71, 65, 71, 71, 84, 84, 71, 67, 65, 71, 84, 71, 65, 71, 67, 67, 71, 65, 71, 65, 84, 67, 71, 67, 67, 67, 65, 67, 84, 71, 67, 65, 67, 84, 67, 67, 65, 71, 67, 67, 84, 71, 71, 71, 67, 71, 65, 67, 65, 71, 65, 71, 67, 71, 65, 71, 65, 67, 84, 67, 67, 71, 84, 67, 84, 67, 65, 65, 65, 65, 65]
-    let alu_seq = match bytes.from_list(alu_chars):
-        Ok(b) -> bytes.to_string(b)
-        Err(_e) -> ""
+    let alu_seq = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
         
     console.print(">ONE Homo sapiens alu")
     fasta_repeat(console, 2 * n, alu_seq)
@@ -43,19 +43,16 @@ fn main(let console: Console, let clock: Clock):
     
     while n2 > 0:
         let len_out = min(n2, 60)
-        var line_bytes = []
+        var line_seq = ""
         var i = 0
         while i < len_out:
             seed = (seed * 3877 + 29573) % 139968
             let r = math.to_float(seed) / 139968.0
             
             let ch = if r < 0.27: 97 else: if r < 0.39: 99 else: if r < 0.51: 103 else: if r < 0.78: 116 else: if r < 0.80: 66 else: if r < 0.82: 68 else: if r < 0.84: 72 else: if r < 0.86: 75 else: if r < 0.88: 77 else: if r < 0.90: 78 else: if r < 0.92: 82 else: if r < 0.94: 83 else: if r < 0.96: 86 else: if r < 0.98: 87 else: 89
-            list.push(line_bytes, ch)
+            line_seq = line_seq + string.from_code(ch)
             i = i + 1
             
-        let line_seq = match bytes.from_list(line_bytes):
-            Ok(b) -> bytes.to_string(b)
-            Err(_e) -> ""
         console.print(line_seq)
         n2 = n2 - len_out
         
@@ -63,19 +60,16 @@ fn main(let console: Console, let clock: Clock):
     var n3 = 5 * n
     while n3 > 0:
         let len_out = min(n3, 60)
-        var line_bytes = []
+        var line_seq = ""
         var i = 0
         while i < len_out:
             seed = (seed * 3877 + 29573) % 139968
             let r = math.to_float(seed) / 139968.0
             
             let ch = if r < 0.3029549426680: 97 else: if r < 0.5009432431601: 99 else: if r < 0.6984905497992: 103 else: 116
-            list.push(line_bytes, ch)
+            line_seq = line_seq + string.from_code(ch)
             i = i + 1
             
-        let line_seq = match bytes.from_list(line_bytes):
-            Ok(b) -> bytes.to_string(b)
-            Err(_e) -> ""
         console.print(line_seq)
         n3 = n3 - len_out
 
