@@ -7048,6 +7048,28 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn select2_non_integer_payload_rejects_scalar_executor_fallback() {
+        let checked = authenticated_checked(
+            "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(1).await\n    let (b_tx, b_rx) = chan.channel(1).await\n    chan.send(a_tx, \"a\").await\n    chan.send(b_tx, \"b\").await\n    let selected = chan.select(a_rx, b_rx).await\n    match selected:\n        First(value) -> console.print(value)\n        Second(value) -> console.print(value)\n        Closed -> console.print(\"closed\")\n",
+        );
+        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        )
+        .expect("assemble non-integer select fallback");
+        let rejection = carrier
+            .scalar_executor_plan()
+            .expect_err("String select must not enter scalar payload emitter");
+        assert!(
+            matches!(
+                rejection,
+                witchy_types::suspension_carrier::ScalarExecutorRejection::NonIntegerChannel { .. }
+                    | witchy_types::suspension_carrier::ScalarExecutorRejection::BoxedState { .. }
+            ),
+            "unexpected fallback reason: {rejection:?}"
+        );
+    }
+
+    #[test]
     fn task_source_declares_reusable_select_frame_fallbacks() {
         let source = include_str!("../../../../std/task.witchy");
         for marker in [
