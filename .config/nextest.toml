@@ -199,11 +199,15 @@ priority = 85
 # instead of extending the tail. Each process also drives the multi-core Wasm
 # compiler; starting the whole set together can make every member exceed the
 # 135s timeout on a cold cache. Width 2 keeps useful overlap without the
-# compiler thundering herd. Keep this list to tests measured >8s that also sort
+# compiler thundering herd. Contended merge gates have repeatedly pushed
+# `documentation_examples_are_valid` past the default 135s hard kill despite
+# passing in isolation, so retain a bounded 480s cap like the other cold-heavy
+# compiler tests above. Keep this list to tests measured >8s that also sort
 # late; re-check with the per-test timings in a merge-queue gate log.
 [[profile.default.overrides]]
 filter = 'test(/^example_tests::wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::(documentation_examples_are_valid|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
 test-group = 'wasm-heavy'
+slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
 [[profile.ci.overrides]]
