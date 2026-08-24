@@ -16,7 +16,8 @@ checksum record.
 ## How the release was produced
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) is the
-release pipeline, generalized to any annotated `vX.Y.Z` tag:
+release pipeline, generalized to any annotated `vX.Y.Z` tag; the operator
+procedure is [RELEASING.md](RELEASING.md):
 
 - A tag push runs the full gate on the exact tagged commit: workflow security
   audit (zizmor), build + clippy bug-lints + `cargo nextest` (unit,
@@ -29,7 +30,7 @@ release pipeline, generalized to any annotated `vX.Y.Z` tag:
   `SOURCE_DATE_EPOCH`, canonical `release-package.sh` /
   `release-checksums.sh` logic), and smoked via `release-smoke.sh`
   (installed-archive plus trusted-exe checks) before upload.
-- A manifest job requires the exact three-target asset set and generates the
+- A manifest job requires the exact expected target set and generates the
   combined `SHA256SUMS`.
 - The publish job creates an immutable **draft**; going live requires a
   separate explicit `workflow_dispatch` with `action=publish`, which verifies
@@ -63,6 +64,7 @@ against the uploaded `SHA256SUMS`, extraction, and running the binary.
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` x64 | PASS | Native build + installed-archive smoke in the release workflow; archive published with checksum. |
 | `aarch64-apple-darwin` | `macos-15` arm64 | PASS | Native build + installed-archive smoke in the release workflow; archive published with checksum. |
 | `x86_64-apple-darwin` | `macos-15-intel` x64 | PASS | Native build + installed-archive smoke in the release workflow; archive published with checksum. |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` arm64 | PENDING | Added to the release matrix 2026-08-23; first natively verified artifact ships with the next tag. |
 | Windows | none | EXCLUDED | Not an implemented and natively verified 0.1 target. |
 
 ## Post-0.1.0 status

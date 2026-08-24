@@ -34,6 +34,13 @@ exclude = [
     "CLAUDE.md",
 ]
 
+# cargo-binstall resolves prebuilt release archives from these patterns instead
+# of building from source. Archive layout comes from scripts/release-package.sh.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"
+bin-dir = "{ name }-{ version }-{ target }/bin/{ bin }"
+pkg-fmt = "tgz"
+
 # RFC-0018: the compiler is being decomposed into stage-aligned crates under
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.

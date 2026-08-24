@@ -43,7 +43,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$ ]]; t
 fi
 
 case "$target" in
-    x86_64-unknown-linux-gnu | aarch64-apple-darwin | x86_64-apple-darwin) ;;
+    x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu | aarch64-apple-darwin | x86_64-apple-darwin) ;;
     *) echo "release-package: unsupported target '$target'" >&2; exit 1 ;;
 esac
 if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then

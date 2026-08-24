@@ -61,9 +61,18 @@ $ witchy sandbox api.witchy                   # or run it confined in a WASM VM 
 
 ## Quick start
 
-Prebuilt `witchy` binaries for x86-64 Linux, x86-64 macOS, and arm64 macOS are
-on the [releases page](https://github.com/insanitybit/witchy/releases); verify
-`SHA256SUMS`, then put `bin/witchy` on your `PATH`. Or build from source:
+Prebuilt `witchy` binaries for x86-64/arm64 Linux and x86-64/arm64 macOS are
+on the [releases page](https://github.com/insanitybit/witchy/releases). The
+installer verifies the release `SHA256SUMS` for you;
+`cargo binstall --git https://github.com/insanitybit/witchy witchy` also
+works, and every archive carries GitHub build provenance
+(`gh attestation verify --repo insanitybit/witchy <archive>`).
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/insanitybit/witchy/master/install.sh | bash
+```
+
+Or build from source:
 
 ```sh
 cargo build --release

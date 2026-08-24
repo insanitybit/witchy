@@ -285,6 +285,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
           - os: macos-15-intel
@@ -356,7 +358,7 @@ jobs:
           merge-multiple: true
       - name: Require the exact target set and generate SHA256SUMS
         run: |
-          expected="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu"
+          expected="aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu"
           actual="$(for f in dist/witchy-"$VERSION"-*.tar.gz; do basename "$f" | sed "s/^witchy-$VERSION-//; s/\.tar\.gz$//"; done | sort | tr '\n' ' ' | sed 's/ $//')"
           test "$actual" = "$expected" || {
             echo "::error::incomplete or unexpected target set: $actual"
@@ -380,6 +382,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      # Draft creation also attests SLSA build provenance for each archive, so
+      # `gh attestation verify` can prove an asset came from this workflow run.
+      id-token: write
+      attestations: write
     env:
       RELEASE_TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
@@ -392,8 +398,15 @@ jobs:
       - name: Verify asset bytes without executing them
         run: |
           cd dist
-          test "$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
+          test "$(find . -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
           sha256sum -c SHA256SUMS
+      # Attestations are keyed by artifact digest, so a tag-push rerun over a
+      # byte-identical draft merely re-attests the same digests.
+      - name: Attest build provenance
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/witchy-${{ needs.version.outputs.version }}-*.tar.gz
       - name: Create immutable draft or publish an identical approved draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -408,7 +421,7 @@ jobs:
             }
             gh release create "$RELEASE_TAG" --verify-tag --draft \
               --title "Witchy $VERSION" \
-              --notes "Prebuilt \`witchy\` binaries for x86-64 Linux, x86-64 macOS, and arm64 macOS. Verify SHA256SUMS before extraction." \
+              --notes "Prebuilt \`witchy\` binaries for x86-64/arm64 Linux and x86-64/arm64 macOS. Verify SHA256SUMS (or \`gh attestation verify --repo $GH_REPO <archive>\`) before extraction, or install via the repository's \`install.sh\`." \
               dist/witchy-"$VERSION"-*.tar.gz dist/SHA256SUMS
             echo "draft created; publication requires a separate workflow_dispatch action=publish"
             exit 0
@@ -417,12 +430,13 @@ jobs:
           rm -rf existing
           mkdir existing
           gh release download "$RELEASE_TAG" --dir existing
-          test "$(find existing -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4 || {
+          test "$(find existing -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5 || {
             echo "::error::existing release has an incomplete or unexpected asset set"
             exit 1
           }
           for asset in SHA256SUMS \
             "witchy-$VERSION-aarch64-apple-darwin.tar.gz" \
+            "witchy-$VERSION-aarch64-unknown-linux-gnu.tar.gz" \
             "witchy-$VERSION-x86_64-apple-darwin.tar.gz" \
             "witchy-$VERSION-x86_64-unknown-linux-gnu.tar.gz"; do
             cmp "dist/$asset" "existing/$asset" || {

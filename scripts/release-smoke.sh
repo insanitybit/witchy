@@ -46,7 +46,7 @@ if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
     exit 1
 fi
 case "$target" in
-    x86_64-unknown-linux-gnu | aarch64-apple-darwin | x86_64-apple-darwin) ;;
+    x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu | aarch64-apple-darwin | x86_64-apple-darwin) ;;
     *) echo "release-smoke: unsupported target '$target'" >&2; exit 1 ;;
 esac
 expected_archive="witchy-${version}-${target}.tar.gz"
