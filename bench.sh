@@ -209,7 +209,7 @@ else
 fi
 export BENCH_DRIVER_ARGV
 
-# 2. Build required Go binaries
+# 2. Build required binaries
 for b in "${TARGETS[@]}"; do
     if [ ! -f "$BENCH_DIR/${b}.witchy" ]; then
         printf "%sError: Benchmark '%s' not found in benchmarks/%s.witchy%s\n" "$RED" "$b" "$b" "$RESET" >&2
@@ -220,9 +220,11 @@ for b in "${TARGETS[@]}"; do
             go build -o "$BUILD_DIR/${b}_go" "$BENCH_DIR/${b}.go"
         fi
     fi
-    if [ -f "$BENCH_DIR/${b}.rs" ]; then
-        if [ ! -f "$BUILD_DIR/${b}_rs" ] || [ "$BENCH_DIR/${b}.rs" -nt "$BUILD_DIR/${b}_rs" ]; then
-            rustc -O -o "$BUILD_DIR/${b}_rs" "$BENCH_DIR/${b}.rs"
+    if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then
+        if [ -f "$BENCH_DIR/${b}.rs" ]; then
+            if [ ! -f "$BUILD_DIR/${b}_rs" ] || [ "$BENCH_DIR/${b}.rs" -nt "$BUILD_DIR/${b}_rs" ]; then
+                rustc -O -o "$BUILD_DIR/${b}_rs" "$BENCH_DIR/${b}.rs"
+            fi
         fi
     fi
 done
@@ -239,33 +241,43 @@ collect_all_kernel_ns() {
     : > "$r_output"
     : > "$rs_output"
     for sample in $(seq 1 "$RUNS"); do
+        w_ns=""
+        g_ns=""
         if [ $((sample % 2)) -eq 1 ]; then
             w_ns=$("$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
-            g_ns=""
-            if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
-                g_ns=$("$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+            if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
+                if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
+                    g_ns=$("$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+                fi
             fi
         else
-            g_ns=""
-            if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
-                g_ns=$("$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+            if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
+                if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
+                    g_ns=$("$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+                fi
             fi
             w_ns=$("$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
         fi
         
         n_ns=""
-        if command -v node >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.js" ]; then
-            n_ns=$(node "$BENCH_DIR/${benchmark}.js" 2>/dev/null | kernel_ns)
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "node" ]; then
+            if command -v node >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.js" ]; then
+                n_ns=$(node "$BENCH_DIR/${benchmark}.js" 2>/dev/null | kernel_ns)
+            fi
         fi
         
         r_ns=""
-        if command -v ruby >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
-            r_ns=$(ruby "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then
+            if command -v ruby >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
+                r_ns=$(ruby "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
+            fi
         fi
         
         rs_ns=""
-        if [ -f "$BUILD_DIR/${benchmark}_rs" ]; then
-            rs_ns=$("$BUILD_DIR/${benchmark}_rs" 2>/dev/null | kernel_ns)
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then
+            if [ -f "$BUILD_DIR/${benchmark}_rs" ]; then
+                rs_ns=$("$BUILD_DIR/${benchmark}_rs" 2>/dev/null | kernel_ns)
+            fi
         fi
 
         if [ -n "$w_ns" ]; then printf "witchy\t%s\n" "$w_ns" >> "$w_output"; fi
