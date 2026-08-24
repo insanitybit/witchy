@@ -1,8 +1,6 @@
 mode opt
 
-import list
 import bytes
-import string
 import math
 
 fn min(a: Int, b: Int) -> Int:
@@ -10,21 +8,20 @@ fn min(a: Int, b: Int) -> Int:
         return a
     return b
 
-fn fasta_repeat(let console: Console, n_total: Int, let seq_str: String):
-    let s_ref = string.as_str(&seq_str)
-    let seq_len = string.length(seq_str)
+fn fasta_repeat(let console: Console, n_total: Int, let seq_bytes: Bytes):
+    let seq_len = bytes.length(seq_bytes)
     var n = n_total
     var seqi = 0
     while n > 0:
         let len_out = min(n, 60)
         if seqi + len_out < seq_len:
-            console.print(string.slice(s_ref, seqi, seqi + len_out).to_string())
+            console.print(bytes.to_string(bytes.slice(seq_bytes, seqi, seqi + len_out)))
             seqi = seqi + len_out
         else:
-            let s1 = string.slice(s_ref, seqi, seq_len).to_string()
-            let s2 = string.slice(s_ref, 0, len_out - (seq_len - seqi)).to_string()
+            let s1 = bytes.slice(seq_bytes, seqi, seq_len)
+            let s2 = bytes.slice(seq_bytes, 0, len_out - (seq_len - seqi))
             seqi = len_out - (seq_len - seqi)
-            console.print(s1 + s2)
+            console.print(bytes.to_string(bytes.concat(s1, s2)))
         n = n - len_out
 
 fn main(let console: Console, let clock: Clock):
@@ -33,60 +30,67 @@ fn main(let console: Console, let clock: Clock):
     let n = 2500000
     
     let alu_seq = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
+    let alu_bytes = bytes.from_string(alu_seq)
         
     console.print(">ONE Homo sapiens alu")
-    fasta_repeat(console, 2 * n, alu_seq)
+    fasta_repeat(console, 2 * n, alu_bytes)
     
     console.print(">TWO IUB ambiguity codes")
     var n2 = 3 * n
     var seed = 42
     
-    let ca = "a"
-    let cc = "c"
-    let cg = "g"
-    let ct = "t"
-    let cB = "B"
-    let cD = "D"
-    let cH = "H"
-    let cK = "K"
-    let cM = "M"
-    let cN = "N"
-    let cR = "R"
-    let cS = "S"
-    let cV = "V"
-    let cW = "W"
-    let cY = "Y"
+    let ca = 97
+    let cc = 99
+    let cg = 103
+    let ct = 116
+    let cB = 66
+    let cD = 68
+    let cH = 72
+    let cK = 75
+    let cM = 77
+    let cN = 78
+    let cR = 82
+    let cS = 83
+    let cV = 86
+    let cW = 87
+    let cY = 89
     
+    var line_buf = bytes.repeat(0, 60)
     while n2 > 0:
         let len_out = min(n2, 60)
-        var line_seq = ""
         var i = 0
         while i < len_out:
             seed = (seed * 3877 + 29573) % 139968
             let r = math.to_float(seed) / 139968.0
             
             let ch = if r < 0.27: ca else: if r < 0.39: cc else: if r < 0.51: cg else: if r < 0.78: ct else: if r < 0.80: cB else: if r < 0.82: cD else: if r < 0.84: cH else: if r < 0.86: cK else: if r < 0.88: cM else: if r < 0.90: cN else: if r < 0.92: cR else: if r < 0.94: cS else: if r < 0.96: cV else: if r < 0.98: cW else: cY
-            line_seq = line_seq + ch
+            bytes.set_at(line_buf, i, ch)
             i = i + 1
             
-        console.print(line_seq)
+        if len_out == 60:
+            console.print(bytes.to_string(line_buf))
+        else:
+            console.print(bytes.to_string(bytes.slice(line_buf, 0, len_out)))
         n2 = n2 - len_out
         
     console.print(">THREE Homo sapiens frequency")
     var n3 = 5 * n
+    var line_buf3 = bytes.repeat(0, 60)
     while n3 > 0:
         let len_out = min(n3, 60)
-        var line_seq = ""
         var i = 0
         while i < len_out:
             seed = (seed * 3877 + 29573) % 139968
             let r = math.to_float(seed) / 139968.0
             
             let ch = if r < 0.3029549426680: ca else: if r < 0.5009432431601: cc else: if r < 0.6984905497992: cg else: ct
-            line_seq = line_seq + ch
+            bytes.set_at(line_buf3, i, ch)
             i = i + 1
             
-        console.print(line_seq)
+        if len_out == 60:
+            console.print(bytes.to_string(line_buf3))
+        else:
+            console.print(bytes.to_string(bytes.slice(line_buf3, 0, len_out)))
         n3 = n3 - len_out
 
     let bench_t1 = clock.now_monotonic()
