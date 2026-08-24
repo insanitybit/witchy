@@ -1347,6 +1347,9 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
+        if let Some(frame_loop) = self.try_lower_select_frame_loop(cond, body, cont)? {
+            return Ok(frame_loop);
+        }
         if block_contains_return(body) {
             // See `lower_for_await`: normal exit and early return must share the
             // enclosing async function's result type.
@@ -1369,6 +1372,289 @@ impl<'a> Ctx<'a> {
             None,
         )?;
         self.sequence_loop(entry, accs, cont)
+    }
+
+    /// Lower the narrow, compiler-owned select loop ABI.  This is deliberately
+    /// proof-gated: only a two-way `chan.select(...).await` in the first body
+    /// statement, with scalar mutable lanes and no other suspension/control
+    /// escape, is eligible.  Everything else keeps the ordinary named-segment
+    /// lowering.
+    fn try_lower_select_frame_loop(
+        &mut self,
+        cond: &Expr,
+        body: &Block,
+        cont: Continuation<'_>,
+    ) -> Result<Option<Expr>, String> {
+        let Some(Stmt::Let { name: selected, value, .. }) = body.stmts.first() else {
+            return Ok(None);
+        };
+        let Some(selected_call) = as_await(value) else {
+            return Ok(None);
+        };
+        let Expr::Call { name, args } = selected_call else {
+            return Ok(None);
+        };
+        if name != "chan.select" || args.len() != 2 || body.stmts.len() < 2 {
+            return Ok(None);
+        }
+        let tail_body = &body.stmts[1..];
+        let tail_lines = body.lines.get(1..).unwrap_or(&[]);
+        if tail_body.iter().any(stmt_contains_await)
+            || block_contains_return(&Block {
+                stmts: tail_body.to_vec(),
+                lines: tail_lines.to_vec(),
+                region: None,
+            })
+            || tail_body
+                .iter()
+                .any(|stmt| matches!(stmt, Stmt::Break | Stmt::Continue))
+        {
+            return Ok(None);
+        }
+
+        let mut used = crate::suspension::free_bindings(cond);
+        let mut selected_bound = HashSet::default();
+        selected_bound.insert(selected.clone());
+        used.extend(crate::suspension::free_bindings_in_block(
+            &Block {
+                stmts: tail_body.to_vec(),
+                lines: tail_lines.to_vec(),
+                region: None,
+            },
+            &selected_bound,
+        ));
+        for stmt in cont.rest {
+            match stmt {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => used.extend(crate::suspension::free_bindings(value)),
+                Stmt::Return(Some(value)) => used.extend(crate::suspension::free_bindings(value)),
+                _ => {}
+            }
+        }
+        let used: HashSet<String> = used.into_iter().collect();
+        let lanes: Vec<Local> = cont
+            .scope
+            .iter()
+            .filter(|local| local.mutable && used.contains(&local.name))
+            .filter(|local| {
+                matches!(
+                    local.ty.as_ref().map(Type::unqualified),
+                    Some(Type::Named(name, args))
+                        if args.is_empty() && (name == "Int" || name == "Bool")
+                )
+            })
+            .cloned()
+            .collect();
+        if lanes.is_empty()
+            || lanes.iter().any(|lane| !used.contains(&lane.name))
+        {
+            return Ok(None);
+        }
+
+        let frame = self.fresh_tmp();
+        let tag = self.fresh_tmp();
+        let option = self.fresh_tmp();
+        let closed = self.fresh_tmp();
+        let frame_ty = Type::Named(
+            "List".to_string(),
+            vec![Type::Named("Int".to_string(), vec![])],
+        );
+        let mut setup = vec![Stmt::Let {
+            name: frame.clone(),
+            ty: Some(frame_ty),
+            mutable: true,
+            value: call("list.repeat", vec![Expr::Int(0), Expr::Int(lanes.len() as i64)]),
+        }];
+        for (index, lane) in lanes.iter().enumerate() {
+            setup.push(Stmt::Expr(call(
+                "list.set_at",
+                vec![
+                    Expr::Var(frame.clone()),
+                    Expr::Int(index as i64),
+                    encode_lane(Expr::Var(lane.name.clone()), lane),
+                ],
+            )));
+        }
+
+        let mut step_stmts = Vec::new();
+        let frame_mut = self.fresh_tmp();
+        step_stmts.push(Stmt::Let {
+            name: frame_mut.clone(),
+            ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])),
+            mutable: true,
+            value: Expr::Var(frame.clone()),
+        });
+        for (index, lane) in lanes.iter().enumerate() {
+            step_stmts.push(Stmt::Let {
+                name: lane.name.clone(),
+                ty: lane.ty.clone(),
+                mutable: true,
+                value: decode_lane(call("list.at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64)]), lane),
+            });
+        }
+        let selected_expr = call(
+            "chan.select2_frame_decode",
+            vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
+        );
+        step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
+        step_stmts.extend(tail_body.iter().cloned());
+        for (index, lane) in lanes.iter().enumerate() {
+            step_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
+        }
+        let closed_expr = Expr::Match {
+            scrutinee: Box::new(Expr::Var(selected.clone())),
+            arms: vec![
+                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Closed".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
+                MatchArm { line: 0, pattern: Pattern::Ctor { name: "First".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
+                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Second".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
+            ],
+        };
+        step_stmts.push(Stmt::Let { name: closed.clone(), ty: Some(Type::Named("Bool".into(), vec![])), mutable: false, value: closed_expr });
+        step_stmts.push(Stmt::Expr(Expr::Tuple(vec![
+            Expr::If {
+                cond: Box::new(Expr::Var(closed.clone())),
+                then_block: tail_block(Expr::Bool(true)),
+                else_block: Some(tail_block(Expr::Unary { op: UnOp::Not, expr: Box::new(cond.clone()) })),
+            },
+            Expr::Var(frame_mut.clone()),
+        ])));
+        let step = self.fresh_tmp();
+        setup.push(Stmt::Let {
+            name: step.clone(),
+            ty: None,
+            mutable: false,
+            value: Expr::Lambda {
+                params: vec![
+                    Param { name: tag.clone(), ty: Some(Type::Named("Int".into(), vec![])), convention: Convention::Let, default: None },
+                    Param { name: option.clone(), ty: None, convention: Convention::Let, default: None },
+            Param { name: frame.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None },
+                ],
+                body: Block { stmts: step_stmts, lines: vec![first_line(&body.lines); 1 + lanes.len() * 2 + tail_body.len() + 2], region: None },
+                ret: Some(Type::Tuple(vec![Type::Named("Bool".into(), vec![]), Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])])),
+                qualifiers: CallableQualifiers::ORDINARY,
+            },
+        });
+
+        let mut done_stmts = Vec::new();
+        let done_frame = self.fresh_tmp();
+        for (index, lane) in lanes.iter().enumerate() {
+            done_stmts.push(Stmt::Let {
+                name: lane.name.clone(), ty: lane.ty.clone(), mutable: true,
+                value: decode_lane(call("list.at", vec![Expr::Var(done_frame.clone()), Expr::Int(index as i64)]), lane),
+            });
+        }
+        done_stmts.extend(cont.rest.iter().cloned());
+        let done_scope = cont.scope.to_vec();
+        let done_expr = self.go(&done_stmts, &vec![cont.line; done_stmts.len()], &done_scope, cont.tail)?;
+        setup.push(Stmt::Let {
+            name: self.fresh_tmp(), ty: None, mutable: false,
+            value: Expr::Lambda {
+                params: vec![Param { name: done_frame, ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None }],
+                body: tail_block_at(done_expr, cont.line),
+                ret: None,
+                qualifiers: CallableQualifiers::ORDINARY,
+            },
+        });
+        let done_name = match setup.last() { Some(Stmt::Let { name, .. }) => name.clone(), _ => unreachable!() };
+        setup.push(Stmt::Expr(call("chan.select2_frame_loop_state", vec![args[0].clone(), args[1].clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)])));
+        Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
+    }
+
+    // Reserved for the follow-up one-way receive ABI; disabled until its frame
+    // ownership model avoids per-message list copies.
+    #[allow(dead_code)]
+    fn try_lower_recv_frame_loop(
+        &mut self,
+        recv_var: &str,
+        src: &Expr,
+        body: &Block,
+        cont: Continuation<'_>,
+    ) -> Result<Option<Expr>, String> {
+        if body.stmts.is_empty()
+            || block_contains_await(body)
+            || block_contains_return(body)
+            || body.stmts.iter().any(|s| matches!(s, Stmt::Break | Stmt::Continue))
+        {
+            return Ok(None);
+        }
+        let mut used = crate::suspension::free_bindings_in_block(body, &HashSet::default());
+        for stmt in cont.rest {
+            match stmt {
+                Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr(value) => {
+                    used.extend(crate::suspension::free_bindings(value))
+                }
+                _ => {}
+            }
+        }
+        let used: HashSet<String> = used.into_iter().collect();
+        let lanes: Vec<Local> = cont
+            .scope
+            .iter()
+            .filter(|local| local.mutable && used.contains(&local.name))
+            .filter(|local| matches!(local.ty.as_ref().map(Type::unqualified), Some(Type::Named(name, args)) if args.is_empty() && (name == "Int" || name == "Bool")))
+            .cloned()
+            .collect();
+        if lanes.is_empty() {
+            return Ok(None);
+        }
+        let frame = self.fresh_tmp();
+        let frame_mut = self.fresh_tmp();
+        let option = self.fresh_tmp();
+        let value = self.fresh_tmp();
+        let frame_ty = Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])]);
+        let mut setup = vec![Stmt::Let {
+            name: frame.clone(), ty: Some(frame_ty), mutable: true,
+            value: call("list.repeat", vec![Expr::Int(0), Expr::Int(lanes.len() as i64)]),
+        }];
+        for (index, lane) in lanes.iter().enumerate() {
+            setup.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
+        }
+        let mut step_stmts = vec![Stmt::Let {
+            name: frame_mut.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), mutable: true,
+            value: Expr::Var(frame.clone()),
+        }];
+        for (index, lane) in lanes.iter().enumerate() {
+            step_stmts.push(Stmt::Let { name: lane.name.clone(), ty: lane.ty.clone(), mutable: true, value: decode_lane(call("list.at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64)]), lane) });
+        }
+        let current_frame = Expr::List(lanes.iter().map(|lane| encode_lane(Expr::Var(lane.name.clone()), lane)).collect());
+        let some_body = {
+            let mut stmts = vec![Stmt::Let { name: recv_var.to_string(), ty: None, mutable: false, value: Expr::Var(value.clone()) }];
+            stmts.extend(body.stmts.iter().cloned());
+            for (index, lane) in lanes.iter().enumerate() {
+                stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
+            }
+            stmts.push(Stmt::Expr(Expr::Tuple(vec![Expr::Bool(false), Expr::Var(frame_mut.clone())])));
+            Expr::Block(Block { lines: vec![first_line(&body.lines); stmts.len()], stmts, region: None })
+        };
+        let step_result = Expr::Match {
+            scrutinee: Box::new(call("chan.recv_frame_decode", vec![Expr::Var(option.clone())])),
+            arms: vec![
+                MatchArm { line: first_line(&body.lines), pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(value.clone())] }, guard: None, body: some_body },
+                MatchArm { line: first_line(&body.lines), pattern: Pattern::Ctor { name: "None".into(), args: vec![] }, guard: None, body: Expr::Tuple(vec![Expr::Bool(true), current_frame]) },
+            ],
+        };
+        step_stmts.push(Stmt::Expr(step_result));
+        let step = self.fresh_tmp();
+        setup.push(Stmt::Let { name: step.clone(), ty: None, mutable: false, value: Expr::Lambda {
+            params: vec![Param { name: option.clone(), ty: None, convention: Convention::Let, default: None }, Param { name: frame.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None }],
+            body: Block { stmts: step_stmts, lines: vec![first_line(&body.lines); 2 + lanes.len() + 1], region: None },
+            ret: Some(Type::Tuple(vec![Type::Named("Bool".into(), vec![]), Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])])), qualifiers: CallableQualifiers::ORDINARY,
+        }});
+        let done_frame = self.fresh_tmp();
+        let mut done_stmts = Vec::new();
+        for (index, lane) in lanes.iter().enumerate() {
+            done_stmts.push(Stmt::Let { name: lane.name.clone(), ty: lane.ty.clone(), mutable: true, value: decode_lane(call("list.at", vec![Expr::Var(done_frame.clone()), Expr::Int(index as i64)]), lane) });
+        }
+        done_stmts.extend(cont.rest.iter().cloned());
+        let done_expr = self.go(&done_stmts, &vec![cont.line; done_stmts.len()], cont.scope, cont.tail)?;
+        let done = self.fresh_tmp();
+        setup.push(Stmt::Let { name: done.clone(), ty: None, mutable: false, value: Expr::Lambda {
+            params: vec![Param { name: done_frame, ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None }], body: tail_block_at(done_expr, cont.line), ret: None, qualifiers: CallableQualifiers::ORDINARY,
+        }});
+        setup.push(Stmt::Expr(call("chan.recv_frame_loop_state", vec![src.clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done)])));
+        Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
     }
 
     /// The core recursive-segment loop builder shared by `while` and folding
@@ -2022,6 +2308,28 @@ fn call(name: &str, args: Vec<Expr>) -> Expr {
     }
 }
 
+fn encode_lane(value: Expr, lane: &Local) -> Expr {
+    match lane.ty.as_ref().map(Type::unqualified) {
+        Some(Type::Named(name, args)) if name == "Bool" && args.is_empty() => Expr::If {
+            cond: Box::new(value),
+            then_block: tail_block(Expr::Int(1)),
+            else_block: Some(tail_block(Expr::Int(0))),
+        },
+        _ => value,
+    }
+}
+
+fn decode_lane(value: Expr, lane: &Local) -> Expr {
+    match lane.ty.as_ref().map(Type::unqualified) {
+        Some(Type::Named(name, args)) if name == "Bool" && args.is_empty() => Expr::Binary {
+            op: BinOp::NotEq,
+            lhs: Box::new(value),
+            rhs: Box::new(Expr::Int(0)),
+        },
+        _ => value,
+    }
+}
+
 /// A single-expression block (the body shape for a function/branch whose value is
 /// exactly `e`).
 fn tail_block(e: Expr) -> Block {
@@ -2431,6 +2739,17 @@ mod tests {
         assert!(!rendered.contains("chan.consume"), "{rendered}");
         assert!(rendered.contains("chan.recv"), "{rendered}");
     }
+
+    #[test]
+    fn select_loop_uses_owned_frame_bridge_when_scalar_lanes_are_proven() {
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int)):\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(_) -> seen = seen + 1\n            Second(_) -> seen = seen + 1\n            Closed -> seen = 4\n";
+        let module = crate::parser::parse_module(source).expect("parse select loop");
+        let lowered = lower_module(module).expect("lower select loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(rendered.contains("chan.select2_frame_loop_state"), "{rendered}");
+    }
+
+
 
     #[test]
     fn lowering_preserves_target_availability_on_async_segments() {

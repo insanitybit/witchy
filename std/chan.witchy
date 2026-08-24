@@ -342,6 +342,18 @@ pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
             match b:
                 Receiver(ib) -> task.__channel_select2(ia, ib, fn(k, o): select2_result(k, o))
 
+pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_task: Task(Nil)) -> Task(Nil):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) -> task.channel_select2_frame_loop(ia, ib, frame, step, done_task)
+
+pub fn select2_frame_loop_state(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) -> task.channel_select2_frame_loop_state(ia, ib, frame, step, done_fn)
+
 pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n):
     match a:
         Receiver(ia) ->
@@ -365,6 +377,18 @@ fn select2_result(k: Int, o: Option(__Msg)) -> Task(Selected(m)):
             else:
                 done(Second(__unerase(msg)))
         None -> done(Closed)
+
+// Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased
+// message directly into the callback's scalar frame step, so the callback does
+// not allocate a per-message Task/continuation.
+pub fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m):
+    match o:
+        Some(msg) ->
+            if tag == 0:
+                First(__unerase(msg))
+            else:
+                Second(__unerase(msg))
+        None -> Closed
 
 // Receive from `rx`, run `f` on each message, until the channel closes. The
 // stateless server loop; `for await x in rx:` lowers to this.
