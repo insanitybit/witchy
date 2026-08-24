@@ -28,6 +28,8 @@ pub use properties::{
     evaluate_expr, evaluate_node, evaluate_seq, AllocationKind, EvaluationProperties, HostEffect,
     MemoryAccess, Suspension,
 };
+pub mod range_facts;
+pub use range_facts::{compute_fact, refine_condition, RangeEnv, RangeFactStats};
 mod strength_reduce;
 pub use strength_reduce::{simplify_integer_ranges, RangeFact};
 mod tail_calls;

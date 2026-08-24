@@ -1466,3 +1466,113 @@
         assert!(!prop_trap1.is_safe_to_reorder_with(&prop_trap2));
     }
 
+    #[test]
+    fn range_fact_lattice_meet_join_widen() {
+        use crate::wir_opt::range_facts::RangeFact;
+
+        let c5 = RangeFact::from_constant(5);
+        let c10 = RangeFact::from_constant(10);
+        let non_neg = RangeFact::NonNegative { upper: None, no_wrap: true };
+        let pos = RangeFact::Positive { upper: None, no_wrap: true };
+        let int_0_10 = RangeFact::from_bounds(0, 10, true);
+        let int_5_15 = RangeFact::from_bounds(5, 15, true);
+
+        // Meet (intersection)
+        assert_eq!(int_0_10.meet(&int_5_15), RangeFact::from_bounds(5, 10, true));
+        assert_eq!(non_neg.meet(&c5), c5);
+        assert_eq!(pos.meet(&RangeFact::from_bounds(-5, 5, true)), RangeFact::from_bounds(1, 5, true));
+
+        // Join (union across merges)
+        assert_eq!(int_0_10.join(&int_5_15), RangeFact::from_bounds(0, 15, true));
+        assert_eq!(c5.join(&c10), RangeFact::from_bounds(5, 10, true));
+
+        // Widening (loop convergence)
+        let initial_loop_fact = RangeFact::from_bounds(0, 10, true);
+        let iteration_growing_up = RangeFact::from_bounds(0, 11, true);
+        let widened = initial_loop_fact.widen(&iteration_growing_up);
+        assert_eq!(widened, RangeFact::NonNegative { upper: None, no_wrap: true });
+    }
+
+    #[test]
+    fn range_fact_transfer_functions() {
+        use crate::wir_opt::range_facts::{compute_fact, RangeEnv, RangeFact};
+
+        let mut env = RangeEnv::new();
+        env.set("x".into(), RangeFact::from_bounds(0, 100, true));
+        env.set("y".into(), RangeFact::from_bounds(1, 5, true));
+
+        // x + y
+        let add_expr = WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::GetLocal("y".into())),
+        };
+        let add_fact = compute_fact(&add_expr, &env);
+        assert_eq!(add_fact, RangeFact::from_bounds(1, 105, true));
+
+        // x * 2 (positive constant multiplication)
+        let mul_expr = WirExpr::Binary {
+            op: BinOp::Mul,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::ConstI64(2)),
+        };
+        let mul_fact = compute_fact(&mul_expr, &env);
+        assert_eq!(mul_fact, RangeFact::from_bounds(0, 200, true));
+
+        // x / 2 (positive constant division)
+        let div_expr = WirExpr::Binary {
+            op: BinOp::Div,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::ConstI64(2)),
+        };
+        let div_fact = compute_fact(&div_expr, &env);
+        assert_eq!(div_fact, RangeFact::from_bounds(0, 50, true));
+
+        // x & 7 (masking)
+        let and_expr = WirExpr::Binary {
+            op: BinOp::And,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::ConstI64(7)),
+        };
+        let and_fact = compute_fact(&and_expr, &env);
+        assert_eq!(and_fact, RangeFact::from_bounds(0, 7, true));
+    }
+
+    #[test]
+    fn range_fact_branch_refinement() {
+        use crate::wir_opt::range_facts::{refine_condition, RangeEnv, RangeFact};
+
+        let env = RangeEnv::new();
+
+        // cond: x < 10
+        let lt_expr = WirExpr::Binary {
+            op: BinOp::Lt,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::ConstI64(10)),
+        };
+        let true_facts = refine_condition(&lt_expr, true, &env);
+        assert_eq!(true_facts.len(), 1);
+        assert_eq!(true_facts[0].0, "x");
+        assert_eq!(true_facts[0].1.hi_bound(), Some(9));
+
+        let false_facts = refine_condition(&lt_expr, false, &env);
+        assert_eq!(false_facts.len(), 1);
+        assert_eq!(false_facts[0].0, "x");
+        assert_eq!(false_facts[0].1.lo_bound(), Some(10));
+
+        // cond: x == 42
+        let eq_expr = WirExpr::Binary {
+            op: BinOp::Eq,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::ConstI64(42)),
+        };
+        let eq_true = refine_condition(&eq_expr, true, &env);
+        assert_eq!(eq_true[0].1, RangeFact::Constant(42));
+    }
+
