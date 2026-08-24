@@ -7012,7 +7012,14 @@ mod checked_codegen_boundary_tests {
 
     #[test]
     fn awaited_select_uses_the_fused_typed_bridge_in_wir() {
-        let checked = authenticated_checked(include_str!("../../../../benchmarks/select_fanin.witchy"));
+        // Keep this carrier-plan assertion on the immediate two-way select
+        // substrate.  The benchmark fixture also contains the newer
+        // compiler-owned frame loop, which intentionally bypasses the
+        // generic scalar carrier planner and is covered by the WAT test
+        // below.
+        let checked = authenticated_checked(
+            "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(1).await\n    let (b_tx, b_rx) = chan.channel(1).await\n    chan.send(a_tx, 7).await\n    let selected = chan.select(a_rx, b_rx).await\n    match selected:\n        First(value) -> console.print(\"${value}\")\n        Second(value) -> console.print(\"${value}\")\n        Closed -> console.print(\"closed\")\n",
+        );
         let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble select fixture");
