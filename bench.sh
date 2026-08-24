@@ -11,6 +11,14 @@
 #   ./bench.sh --help          # show this help
 set -euo pipefail
 
+RUBY_CMD="ruby"
+if command -v ruby >/dev/null 2>&1; then
+    if ruby --yjit -e "" >/dev/null 2>&1; then
+        RUBY_CMD="ruby --yjit"
+    fi
+fi
+
+
 ORIGINAL_ARGS=("$@")
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -269,7 +277,7 @@ collect_all_kernel_ns() {
         r_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then
             if command -v ruby >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
-                r_ns=$(ruby "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
+                r_ns=$($RUBY_CMD "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
             fi
         fi
         
