@@ -24,7 +24,7 @@ func main() {
 	
 	// build string
 	var sb strings.Builder
-	for i := 0; i < 2500; i++ {
+	for i := 0; i < 250; i++ {
 		sb.WriteString(">Sequence_")
 		sb.WriteString(fmt.Sprintf("%d\n", i))
 		sb.WriteString(seq)

@@ -8,7 +8,7 @@ fn main() {
     let seq = "agggtaaa cgtgggtaaa aactggtaaa agactgtaaa aggacttaaa agggcgaaa agggtcaa agggtaca agggtaac aatggtaaa agagtaaa aggataaa agggcaaa tHaNt aND caN HaD WaS aNt BY <header> |word| ";
 
     let mut sb = String::new();
-    for i in 0..2500 {
+    for i in 0..250 {
         write!(&mut sb, ">Sequence_{}\n{}\n", i, seq).unwrap();
     }
     let mut text = sb;
