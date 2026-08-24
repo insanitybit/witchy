@@ -139,6 +139,18 @@ has no terminal queue event and must not be promoted or queued as accepted.
 | Matched promotion matrix | durable schema-1 artifact and paired raw TSVs at `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track6-2b065c24`; candidate source `2b065c24`, predecessor source `99c0045f`, binary hashes recorded | accepted; merged as `0d3e0589ec6b16f0351de7fa0b773683bfa20573` |
 | 7 borrowed string/hash residual | deferred: entry criterion not met; schema 1 audit `/Users/cobrien/.local/share/witchy/evidence/rfc0146/track7-audit-d86b5ff5/track7-schema1.json` (`sha256:58b60fdaa0d23f33c8dd4f0d4ce88c96aff6773d0ce32d560a47bdd624e7f35d`) | matched 12-sample baseline and deterministic hash/probe counters; no symbolized function-level profile attribution >=10% of `knucleotide` to an eligible residual | phase0 harness + temporary stats counter activation; Samply Wasmtime JIT profile retained but unsymbolicated; no implementation proposed | baseline: `dict_count` 25.288 ms, `word_count` 22.701 ms, `knucleotide` 17.543 ms median | audit/rfc0146-track7 | not applicable: deferred before implementation; RFC-0143 remains proposed |
 
+## Final post-merge sanity sweep
+
+The resulting master at `f7f7d3cd` was rebuilt from the landed select emitter
+and run through the 20-row benchmark driver with three paired kernel samples
+and one warmup. The machine artifact is retained at
+`/Users/cobrien/.local/share/witchy/evidence/rfc0146-final-post-f7f7d3cd/results-fast.json`
+(`sha256:cd19d23d60223e435aa55ac7f9b24edc503901e9d5294975b87ca7aebc240038`).
+All requested rows produced matching Witchy/Go correctness outputs. This is a
+post-merge sanity sweep, not a promotion matrix: it uses three samples and the
+driver reports `complete_suite=false`; promotion claims continue to rely on
+the track-specific twelve-pair artifacts above.
+
 ## Track 4 safety repair (not performance acceptance)
 
 The original `22e1a33c` range reducer is not accepted as a performance track.
