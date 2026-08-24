@@ -43,6 +43,7 @@ fi
 WITCHY="${WITCHY:-${CARGO_TARGET_DIR:-$ROOT_DIR/target}/release/witchy}"
 
 ALL_BENCHES=(
+  fasta
     fib
     loop_sum
     collatz
