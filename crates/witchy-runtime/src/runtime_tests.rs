@@ -46,6 +46,17 @@
         assert_eq!(optimizer_policy(b"(module)").unwrap(), OptimizerPolicy::Default);
     }
 
+    #[test]
+    fn trusted_executable_runtime_has_no_mutable_executable_cache() {
+        let trusted = Runtime::trusted_executable().expect("trusted executable runtime");
+        assert!(
+            !trusted.executable_cache,
+            "authenticated executables must not consume optimized-Wasm or Wasmtime cache state"
+        );
+        let ordinary = Runtime::batch().expect("ordinary batch runtime");
+        assert!(ordinary.executable_cache, "source and portable-Wasm runs retain cache behavior");
+    }
+
     fn wasm_with_host_import(name: &str) -> Vec<u8> {
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32, ValType::I32], []);

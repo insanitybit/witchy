@@ -304,11 +304,21 @@ pub(crate) fn run_trusted_application(
         secrets: resolved.secrets,
         ..Default::default()
     };
-    let (lines, exit) = run_prepared_wasm(
-        &application.wasm,
-        caps,
-        confinement,
-    )?;
+    crate::commands::confinement::arm(&caps, confinement)?;
+    // The executable's embedded descriptor authenticates these exact Wasm
+    // bytes and bindings. Do not let either of the user-writable runtime caches
+    // substitute optimized Wasm or native code after that verification.
+    let mut rt = Runtime::trusted_executable().map_err(|error| error.to_string())?;
+    let mut vm = rt
+        .spawn(&application.wasm, caps, RUN_MEMORY_PAGES)
+        .map_err(|error| error.to_string())?;
+    vm.run().map_err(|error| error.root_cause().to_string())?;
+    let mut lines = vm.output();
+    let exit = if wasm_main_returns_int(&application.wasm) {
+        lines.pop().and_then(|line| line.parse::<i32>().ok())
+    } else {
+        None
+    };
     for line in lines {
         println!("{line}");
     }

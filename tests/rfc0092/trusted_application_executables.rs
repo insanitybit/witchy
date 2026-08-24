@@ -61,10 +61,12 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     std::fs::create_dir_all(scratch.join("installed/bin")).unwrap();
     let installed = scratch.join("installed/bin/trusted_fixture");
     std::fs::copy(&executable, &installed).unwrap();
+    let runtime_cache = scratch.join("runtime-cache-must-stay-empty");
     let relative = run(
         Command::new(&installed)
             .current_dir(scratch.path())
             .env("PATH", "")
+            .env("XDG_CACHE_HOME", &runtime_cache)
             .env("RFC0092_TEST_LABEL", "inherited")
             .args(["inside.txt", "--dir", "belongs-to-app"]),
     );
@@ -77,6 +79,10 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     assert_eq!(
         stdout(&relative),
         "relative:cwd-data\nenv:inherited\nargv:inside.txt|--dir|belongs-to-app\n"
+    );
+    assert!(
+        !runtime_cache.exists(),
+        "an authenticated trusted executable must not create or publish mutable executable cache state"
     );
 
     // The app—not the launcher—routes an absolute OS argument through the

@@ -1260,6 +1260,10 @@ pub struct Runtime {
     engine: Engine,
     next_id: VmId,
     preempt: bool,
+    /// Whether mutable executable caches may supply transformed Wasm or native
+    /// code. Authenticated trusted executables disable this: their embedded
+    /// artifact, not user-writable cache state, is the execution authority.
+    executable_cache: bool,
     /// Injected into every VM's state; the Wasmtime compiler-service adapters
     /// call this interface rather than the compiler implementation directly.
     compiler_services: Arc<dyn compiler::CompilerServices>,
@@ -1271,7 +1275,7 @@ impl Runtime {
     /// every loop backedge and call, so for run-to-completion single-program
     /// execution prefer [`Runtime::batch`], which omits that per-iteration cost.
     pub fn new() -> Result<Self> {
-        Self::with_preemption(true, wasmtime::OptLevel::Speed)
+        Self::configured(true, wasmtime::OptLevel::Speed, false)
     }
 
     /// A runtime for run-to-completion execution — the `sandbox`/benchmark path
@@ -1281,7 +1285,15 @@ impl Runtime {
     /// capability sandbox (only granted host fns, capped linear memory) is still
     /// fully in force, so this is a speed choice, not a security relaxation.
     pub fn batch() -> Result<Self> {
-        Self::with_preemption(false, wasmtime::OptLevel::Speed)
+        Self::configured(false, wasmtime::OptLevel::Speed, true)
+    }
+
+    /// A run-to-completion runtime for an authenticated, self-contained
+    /// trusted executable. Mutable optimized-Wasm and Wasmtime native caches
+    /// are deliberately absent: only the artifact embedded in the executable
+    /// may determine what code runs.
+    pub fn trusted_executable() -> Result<Self> {
+        Self::configured(false, wasmtime::OptLevel::Speed, false)
     }
 
     /// Same sandbox and ABI as [`Self::batch`], but Cranelift skips Speed-tier
@@ -1289,12 +1301,12 @@ impl Runtime {
     /// time in Cranelift than in the program; generated-code quality does not
     /// change observable results.
     pub fn batch_quick() -> Result<Self> {
-        Self::with_preemption(false, wasmtime::OptLevel::None)
+        Self::configured(false, wasmtime::OptLevel::None, true)
     }
 
     /// Same sandbox as [`Self::batch`], but with a specific Cranelift profiling strategy.
     pub fn batch_with_profiler(profiler: wasmtime::ProfilingStrategy) -> Result<Self> {
-        let mut rt = Self::with_preemption(false, wasmtime::OptLevel::Speed)?;
+        let mut rt = Self::configured(false, wasmtime::OptLevel::Speed, true)?;
         let mut config = Config::new();
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
         config.wasm_reference_types(true);
@@ -1333,7 +1345,11 @@ impl Runtime {
         }
     }
 
-    fn with_preemption(preempt: bool, opt_level: wasmtime::OptLevel) -> Result<Self> {
+    fn configured(
+        preempt: bool,
+        opt_level: wasmtime::OptLevel,
+        executable_cache: bool,
+    ) -> Result<Self> {
         let mut config = Config::new();
         // Production batch/new keep Speed. `batch_quick` uses None so a
         // 10-line differential case is not paying an optimizing JIT.
@@ -1382,7 +1398,7 @@ impl Runtime {
         // scheduler will actually advance the epoch.
         if preempt {
             config.epoch_interruption(true);
-        } else if let Some(cache) = compilation_cache() {
+        } else if executable_cache && let Some(cache) = compilation_cache() {
             // The batch path re-runs the same program across invocations (a CLI
             // re-run, a benchmark loop); caching the compile makes the second
             // run onward skip Cranelift.
@@ -1414,6 +1430,7 @@ impl Runtime {
             engine,
             next_id: 1,
             preempt,
+            executable_cache,
             compiler_services: Arc::new(compiler::RegistryCompilerServices),
         })
     }
@@ -1434,7 +1451,7 @@ impl Runtime {
         let wasm = wasm.as_ref();
         // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
         // every hit and miss still enters Wasmtime through safe `Module::new`.
-        let module = build_module(&self.engine, wasm, !self.preempt)?;
+        let module = build_module(&self.engine, wasm, self.executable_cache)?;
 
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
@@ -1485,7 +1502,7 @@ impl Runtime {
             .map_err(|error| Error::msg(format!("invalid fixture plan: {error}")))?;
         let roots = fixture_host.roots().clone();
         let id = self.next_id;
-        let module = build_module(&self.engine, wasm.as_ref(), !self.preempt)?;
+        let module = build_module(&self.engine, wasm.as_ref(), self.executable_cache)?;
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
