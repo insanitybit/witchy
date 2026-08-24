@@ -1,0 +1,180 @@
+// gm_core — shared leaf helpers for the grimoire package-manager client: argument
+// parsing, path/name utilities, the registry HTTP shims, and small JSON pluckers.
+// These depend only on the standard library, so every other grimoire module can
+// import them without a cycle. Extracted from grimoire.witchy (RFC-0004 client).
+
+from http import Response
+from json import Json
+from semver import Version
+
+// --- small generic helpers ---------------------------------------------------
+pub fn arg(let args: List(String), i: Int) -> String:
+    if i < list.length(args):
+        list.at(args, i)
+    else:
+        ""
+
+pub fn join_path(let a: String, b: String) -> String:
+    // idiom-exempt: path joining is a byte-exact operation.
+    a + "/" + b
+
+// Rune names contain `/`; the wire encodes it as `~` for a query value.
+pub fn wire(name: String) -> String:
+    name.split("/").join("~")
+
+pub fn basename(name: String) -> String:
+    if name.contains("/"):
+        let (_ns, base) = name.rsplit_once("/")
+        base
+    else:
+        name
+
+// The positional arguments (no `--flag` and no `--flag value` pairs). `--allow-cap`
+// takes a value (the consented capability); `--allow-fresh` / `--dry-run` are bare.
+pub fn positionals(args: List(String)) -> List(String):
+    var out = []
+    var skip = false
+    for a in args:
+        if skip:
+            skip = false
+        else if a == "--allow-cap" || a == "--allow-build-cap":
+            skip = true
+        else if !a.starts_with("--"):
+            out.push(a)
+    out
+
+pub fn has_flag(args: List(String), flag: String) -> Bool:
+    var found = false
+    for a in args:
+        if a == flag:
+            found = true
+    found
+
+// The value following a `--flag` in args, or "" if the flag is absent or last.
+pub fn flag_value(args: List(String), flag: String) -> String:
+    var found = ""
+    var take = false
+    for a in args:
+        if take:
+            found = a
+            take = false
+        else if a == flag:
+            take = true
+    found
+
+// args with a `--flag <value>` pair removed, so a value-taking flag never leaks
+// into positional parsing.
+pub fn drop_flag_value(args: List(String), flag: String) -> List(String):
+    var out = []
+    var skip = false
+    for a in args:
+        if skip:
+            skip = false
+        else if a == flag:
+            skip = true
+        else:
+            out.push(a)
+    out
+
+// Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
+// `*` (the latest released version). A leading-`@` namespace is not split.
+pub fn split_spec(spec: String) -> (String, String):
+    if spec.contains("@"):
+        let (name, ver) = spec.rsplit_once("@")
+        if name.is_empty():
+            (spec, "*")
+        else:
+            (name, ver)
+    else:
+        (spec, "*")
+
+// Parse a registry version string, but ONLY if it is already the canonical SemVer
+// coordinate (BUG-391). `semver.parse` normalizes `01.2.3`/`1.2` and trims
+// whitespace away, so the resolver would otherwise select one released record
+// and then fetch a DIFFERENT `&version=` coordinate. Requiring
+// `format(parse(raw)) == raw` keeps the resolved coordinate byte-identical to the
+// record it came from; the boundary reports noncanonical strings as corruption.
+pub fn canonical_version(raw: String) -> Option(Version):
+    match semver.parse(raw):
+        Ok(v) -> if semver.format(v) == raw: Some(v) else: None
+        Err(_e) -> None
+
+// Render a wait in seconds as a compact, human-readable duration for the cooldown
+// refusal (CJ-01) — e.g. `71h 59m`, `45m`, `30s`. Never negative.
+pub fn humanize_wait(secs: Int) -> String:
+    if secs <= 0:
+        "moments"
+    else if secs < 60:
+        "${secs}s"
+    else if secs < 3600:
+        "${secs / 60}m"
+    else:
+        let hours = secs / 3600
+        let mins = secs % 3600 / 60
+        if mins == 0:
+            "${hours}h"
+        else:
+            "${hours}h ${mins}m"
+
+// Collapse `a/b/../c` to `a/c`, dropping `.` and empty segments — the confined
+// Dir capability rejects `..`, so a relative dep path must be resolved first.
+// Lexically normalize a relative path, preserving leading `..` segments. A `..`
+// that has a real prior segment to cancel pops it; a `..` with nothing left to
+// pop (the path escapes its starting directory) is KEPT, so a sibling reference
+// like `todo/../tasklib` normalizes to `tasklib` while `../tasklib` (from the
+// workspace root) stays `../tasklib`. Dropping the leading `..` would silently
+// rewrite a sibling path-dependency into a non-existent same-directory one.
+pub fn normalize_path(let p: String) -> String:
+    var stack = []
+    for seg in p.split("/"):
+        if seg == "..":
+            if can_pop(stack):
+                stack = drop_last(stack)
+            else:
+                stack.push("..")
+        else if seg != "" && seg != ".":
+            stack.push(seg)
+    list.join(stack, "/")
+
+// Whether the last segment of `stack` is a real directory `..` can cancel (i.e.
+// not itself a leading `..`).
+pub fn can_pop(stack: List(String)) -> Bool:
+    let n = list.length(stack)
+    n > 0 && list.at(stack, n - 1) != ".."
+
+pub fn drop_last(xs: List(String)) -> List(String):
+    var out = []
+    let last = list.length(xs) - 1
+    var i = 0
+    for x in xs:
+        if i < last:
+            out.push(x)
+        i = i + 1
+    out
+
+pub fn registry_get(net: Net[Connect, Tcp], origin: String, path: String) -> Response:
+    http.get(net.fetch(origin), origin + path)
+
+pub fn registry_post(net: Net[Connect, Tcp], origin: String, path: String, body: String) -> Response:
+    http.post(net.fetch(origin), origin + path, body)
+
+pub fn jget(doc: Json, key: String) -> String:
+    match json.get(doc, key):
+        Some(j) -> match json.as_string(j):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+pub fn jget_int(doc: Json, key: String) -> Int:
+    match json.get(doc, key):
+        Some(j) -> match json.as_int(j):
+            Some(n) -> n
+            None -> 0
+        None -> 0
+
+pub fn json_index_str(j: Json, i: Int) -> String:
+    match json.index(j, i):
+        Some(v) -> match json.as_string(v):
+            Some(s) -> s
+            None -> ""
+        None -> ""

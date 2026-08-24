@@ -32,15 +32,10 @@ from http import Response
 from json import Json
 from semver import Version, Req
 from toml import Toml
+from gm_core import arg, join_path, wire, basename, positionals, has_flag, flag_value, drop_flag_value, split_spec, canonical_version, humanize_wait, normalize_path, can_pop, drop_last, registry_get, registry_post, jget, jget_int, json_index_str
 
 pub fn registry_origin(scheme: String, host: String, port: Int) -> String:
     "${scheme}://${host}:${port}"
-
-fn registry_get(net: Net[Connect, Tcp], origin: String, path: String) -> Response:
-    http.get(net.fetch(origin), origin + path)
-
-fn registry_post(net: Net[Connect, Tcp], origin: String, path: String, body: String) -> Response:
-    http.post(net.fetch(origin), origin + path, body)
 
 // `main` takes two `Dir` grants positionally: `root` (handle 0) is the project
 // tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used
@@ -2256,42 +2251,6 @@ fn footprint_toml(caps: List(String)) -> String:
         parts.push("\"" + c + "\"")
     list.join(parts, ", ")
 
-// Collapse `a/b/../c` to `a/c`, dropping `.` and empty segments — the confined
-// Dir capability rejects `..`, so a relative dep path must be resolved first.
-// Lexically normalize a relative path, preserving leading `..` segments. A `..`
-// that has a real prior segment to cancel pops it; a `..` with nothing left to
-// pop (the path escapes its starting directory) is KEPT, so a sibling reference
-// like `todo/../tasklib` normalizes to `tasklib` while `../tasklib` (from the
-// workspace root) stays `../tasklib`. Dropping the leading `..` would silently
-// rewrite a sibling path-dependency into a non-existent same-directory one.
-fn normalize_path(let p: String) -> String:
-    var stack = []
-    for seg in p.split("/"):
-        if seg == "..":
-            if can_pop(stack):
-                stack = drop_last(stack)
-            else:
-                stack.push("..")
-        else if seg != "" && seg != ".":
-            stack.push(seg)
-    list.join(stack, "/")
-
-// Whether the last segment of `stack` is a real directory `..` can cancel (i.e.
-// not itself a leading `..`).
-fn can_pop(stack: List(String)) -> Bool:
-    let n = list.length(stack)
-    n > 0 && list.at(stack, n - 1) != ".."
-
-fn drop_last(xs: List(String)) -> List(String):
-    var out = []
-    let last = list.length(xs) - 1
-    var i = 0
-    for x in xs:
-        if i < last:
-            out.push(x)
-        i = i + 1
-    out
-
 // --- update: re-resolve vendored deps to the latest released version ---------
 // `update [name]` walks the project's `vendor/` tree (each vendored rune carries
 // its signed `coven.json`, naming the full `ns/name` and pinned version), queries
@@ -2795,32 +2754,6 @@ fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clock, 
         console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
         0
 
-// The value following a `--flag` in args, or "" if the flag is absent or last.
-fn flag_value(args: List(String), flag: String) -> String:
-    var found = ""
-    var take = false
-    for a in args:
-        if take:
-            found = a
-            take = false
-        else if a == flag:
-            take = true
-    found
-
-// args with a `--flag <value>` pair removed, so a value-taking flag never leaks
-// into positional parsing.
-fn drop_flag_value(args: List(String), flag: String) -> List(String):
-    var out = []
-    var skip = false
-    for a in args:
-        if skip:
-            skip = false
-        else if a == flag:
-            skip = true
-        else:
-            out.push(a)
-    out
-
 fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     if has_path_flag(args):
         console.print("`add --path` is not supported yet. Add the path dependency to witchy.toml by hand, under [dependencies]:")
@@ -3076,18 +3009,6 @@ fn project_baseline(root: Dir) -> Result(List(String), LockIntegrityError):
     if root.exists("witchy.lock"):
         out = union_all(out, lock_baseline(root.read("witchy.lock"))?)
     Ok(out)
-
-// Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
-// `*` (the latest released version). A leading-`@` namespace is not split.
-fn split_spec(spec: String) -> (String, String):
-    if spec.contains("@"):
-        let (name, ver) = spec.rsplit_once("@")
-        if name.is_empty():
-            (spec, "*")
-        else:
-            (name, ver)
-    else:
-        (spec, "*")
 
 // Record the resolved dependency in the project's `witchy.lock`: a `[[rune]]`
 // entry pinning the vendored rune's name, resolved version, source (coven), and
@@ -3507,17 +3428,6 @@ fn eligible_versions(records: List((Version, Int)), cooldown: (Int, Int, Bool)) 
             out.push(version)
     out
 
-// Parse a registry version string, but ONLY if it is already the canonical SemVer
-// coordinate (BUG-391). `semver.parse` normalizes `01.2.3`/`1.2` and trims
-// whitespace away, so the resolver would otherwise select one released record
-// and then fetch a DIFFERENT `&version=` coordinate. Requiring
-// `format(parse(raw)) == raw` keeps the resolved coordinate byte-identical to the
-// record it came from; the boundary reports noncanonical strings as corruption.
-fn canonical_version(raw: String) -> Option(Version):
-    match semver.parse(raw):
-        Ok(v) -> if semver.format(v) == raw: Some(v) else: None
-        Err(_e) -> None
-
 // The shortest remaining cooldown wait (seconds) among released versions that
 // satisfy `req` but are still cooling — `Some(secs)` when at least one match is
 // cooling (so the caller can say "blocked by cooldown, ~Nh left" instead of "no
@@ -3539,23 +3449,6 @@ fn cooling_remaining(records: List((Version, Int)), req: String, cooldown: (Int,
                     if better:
                         best = Some(remaining)
             best
-
-// Render a wait in seconds as a compact, human-readable duration for the cooldown
-// refusal (CJ-01) — e.g. `71h 59m`, `45m`, `30s`. Never negative.
-fn humanize_wait(secs: Int) -> String:
-    if secs <= 0:
-        "moments"
-    else if secs < 60:
-        "${secs}s"
-    else if secs < 3600:
-        "${secs / 60}m"
-    else:
-        let hours = secs / 3600
-        let mins = secs % 3600 / 60
-        if mins == 0:
-            "${hours}h"
-        else:
-            "${hours}h ${mins}m"
 
 // Whether an already-vendored `version` satisfies a second requester's `req`
 // (CJ-05). A bare/`*`/empty requirement or an unparseable req/version is treated
@@ -3637,27 +3530,6 @@ fn cooldown_window(env: Env) -> Int:
     match env.get_env("WITCHY_COOLDOWN_SECS"):
         Some(v) -> v.to_int()
         None -> 259200
-
-fn has_flag(args: List(String), flag: String) -> Bool:
-    var found = false
-    for a in args:
-        if a == flag:
-            found = true
-    found
-
-// The positional arguments (no `--flag` and no `--flag value` pairs). `--allow-cap`
-// takes a value (the consented capability); `--allow-fresh` / `--dry-run` are bare.
-fn positionals(args: List(String)) -> List(String):
-    var out = []
-    var skip = false
-    for a in args:
-        if skip:
-            skip = false
-        else if a == "--allow-cap" || a == "--allow-build-cap":
-            skip = true
-        else if !a.starts_with("--"):
-            out.push(a)
-    out
 
 // Fetch a version, verifying the full trust chain before writing anything: the
 // registry's record must be validly signed by its root key, and the fetched
@@ -4003,13 +3875,6 @@ fn string_list_payload(doc: Json, key: String) -> Option(String):
                     Some(json.encode(JsonArray(out)))
                 _ -> None
 
-fn jget_int(doc: Json, key: String) -> Int:
-    match json.get(doc, key):
-        Some(j) -> match json.as_int(j):
-            Some(n) -> n
-            None -> 0
-        None -> 0
-
 // --- registry/url helpers ----------------------------------------------------
 // Parse a registry address TOTALLY (BUG-199) into its (scheme, origin) origin
 // parts. Accepts `https://host[:port][/]`, `http://host[:port][/]`, and bare
@@ -4080,31 +3945,6 @@ impl Error for HostPortError
 impl From(HostPortError) for String:
     fn from(value: HostPortError) -> Self:
         value.show()
-
-// Rune names contain `/`; the wire encodes it as `~` for a query value.
-fn wire(name: String) -> String:
-    name.split("/").join("~")
-
-fn basename(name: String) -> String:
-    if name.contains("/"):
-        let (_ns, base) = name.rsplit_once("/")
-        base
-    else:
-        name
-
-fn jget(doc: Json, key: String) -> String:
-    match json.get(doc, key):
-        Some(j) -> match json.as_string(j):
-            Some(s) -> s
-            None -> ""
-        None -> ""
-
-fn json_index_str(j: Json, i: Int) -> String:
-    match json.index(j, i):
-        Some(v) -> match json.as_string(v):
-            Some(s) -> s
-            None -> ""
-        None -> ""
 
 // --- new: scaffold a rune ----------------------------------------------------
 fn cmd_new(console: Console, root: Dir, name: String) -> Int:
@@ -4302,17 +4142,6 @@ fn field(let manifest: String, path: String) -> String:
     match toml.get(manifest, path):
         Some(v) -> v
         None -> "(none)"
-
-// --- small generic helpers ---------------------------------------------------
-fn arg(let args: List(String), i: Int) -> String:
-    if i < list.length(args):
-        list.at(args, i)
-    else:
-        ""
-
-fn join_path(let a: String, b: String) -> String:
-    // idiom-exempt: path joining is a byte-exact operation.
-    a + "/" + b
 
 fn usage(console: Console):
     console.print("grimoire — the witchy package manager")
