@@ -81,6 +81,11 @@ root, and preserve the normal scheduler for opaque, escaping, cancelling, or
 multi-suspension continuations. No positive WAT rewrite or performance claim
 is made until that function synthesis and ownership handoff are implemented.
 
+This deferment itself landed as `889d7f19b76f524c943811c77f5704b8d2938ad9`
+through queue change `mq-f22273c9a833551c3dd952a9917d64c950511088`, terminal
+attempt `mqa-e370c1d820bd68a889921f7ecd0aa61e3b0bbf5e`, with gate log
+`state/merge-queue/logs/20260823-233853-docs~rfc0146-track1-emitter-defer-37500-12.log`.
+
 The current master also carries the negative safety control from
 `95e1ac8b`: a `Receiver(String)` two-way select is rejected from the scalar
 executor fallback (`select2_non_integer_payload_rejects_scalar_executor_fallback`).
