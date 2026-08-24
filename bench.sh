@@ -18,6 +18,10 @@ if command -v ruby >/dev/null 2>&1; then
     fi
 fi
 
+TIMEOUT_CMD=""
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="timeout 15 "
+fi
 
 ORIGINAL_ARGS=("$@")
 
@@ -252,39 +256,39 @@ collect_all_kernel_ns() {
         w_ns=""
         g_ns=""
         if [ $((sample % 2)) -eq 1 ]; then
-            w_ns=$("$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
+            w_ns=$($TIMEOUT_CMD "$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
             if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
                 if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
-                    g_ns=$("$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+                    g_ns=$($TIMEOUT_CMD "$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
                 fi
             fi
         else
             if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
                 if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
-                    g_ns=$("$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+                    g_ns=$($TIMEOUT_CMD "$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
                 fi
             fi
-            w_ns=$("$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
+            w_ns=$($TIMEOUT_CMD "$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
         fi
         
         n_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "node" ]; then
             if command -v node >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.js" ]; then
-                n_ns=$(node "$BENCH_DIR/${benchmark}.js" 2>/dev/null | kernel_ns)
+                n_ns=$($TIMEOUT_CMD node "$BENCH_DIR/${benchmark}.js" 2>/dev/null | kernel_ns)
             fi
         fi
         
         r_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then
             if command -v ruby >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
-                r_ns=$($RUBY_CMD "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
+                r_ns=$($TIMEOUT_CMD $RUBY_CMD "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
             fi
         fi
         
         rs_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then
             if [ -f "$BUILD_DIR/${benchmark}_rs" ]; then
-                rs_ns=$("$BUILD_DIR/${benchmark}_rs" 2>/dev/null | kernel_ns)
+                rs_ns=$($TIMEOUT_CMD "$BUILD_DIR/${benchmark}_rs" 2>/dev/null | kernel_ns)
             fi
         fi
 
