@@ -238,6 +238,26 @@ pub struct AwaitChannelOperationPlan {
     pub resume_target: usize,
 }
 
+/// One compiler-owned channel boundary in deterministic state order.
+///
+/// This is the codegen-facing form of a [`ReadyChannelRegionPlan`].  It is
+/// deliberately separate from the state graph: an emitter can build direct
+/// ready probes from these typed facts while retaining the original graph for
+/// ordinary scheduler fallback and for all non-channel transitions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyChannelOperation {
+    pub state: usize,
+    pub kind: ReadyChannelOperationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadyChannelOperationKind {
+    Open { resume_target: usize },
+    Send(AwaitChannelOperationPlan),
+    Receive(AwaitChannelOperationPlan),
+    Select2(AwaitSelect2Plan),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarTransition {
     Jump { target: usize },
@@ -628,6 +648,42 @@ impl SuspensionCarrierCatalog {
             }
         }
         bytes
+    }
+}
+
+impl ReadyChannelRegionPlan {
+    /// Flatten only the typed channel boundaries in stable state/transition
+    /// order.  `Jump`, `Spawn`, `Join`, and ordinary control remain in the
+    /// state graph; they are not silently reinterpreted as ready operations.
+    pub fn operations(&self) -> Vec<ReadyChannelOperation> {
+        self.states
+            .iter()
+            .flat_map(|state| {
+                state.transitions.iter().filter_map(move |transition| {
+                    let kind = match transition {
+                        ScalarTransition::ChannelOpen { resume } => {
+                            ReadyChannelOperationKind::Open {
+                                resume_target: *resume,
+                            }
+                        }
+                        ScalarTransition::ChannelSend(operation) => {
+                            ReadyChannelOperationKind::Send(operation.clone())
+                        }
+                        ScalarTransition::ChannelReceive(operation) => {
+                            ReadyChannelOperationKind::Receive(operation.clone())
+                        }
+                        ScalarTransition::ChannelSelect2(select) => {
+                            ReadyChannelOperationKind::Select2(select.clone())
+                        }
+                        _ => return None,
+                    };
+                    Some(ReadyChannelOperation {
+                        state: state.id,
+                        kind,
+                    })
+                })
+            })
+            .collect()
     }
 }
 
@@ -1689,5 +1745,63 @@ mod tests {
             None
         );
         assert_eq!(select_payload_lane_types(None, Some(&receiver_int)), None);
+    }
+
+    #[test]
+    fn ready_region_operations_keep_state_order_and_typed_channel_facts() {
+        let send = AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("tx".into()),
+            payload_layout: ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
+            ownership: ChannelOwnershipEnvelope::BufferRoot,
+            resume_target: 4,
+        };
+        let receive = AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("rx".into()),
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 5,
+        };
+        let plan = ReadyChannelRegionPlan {
+            state_count: 2,
+            max_lane_width: 1,
+            states: vec![
+                ScalarExecutorState {
+                    id: 3,
+                    function: "open-and-send".into(),
+                    source_callable: "producer".into(),
+                    slots: Vec::new(),
+                    transitions: vec![
+                        ScalarTransition::ChannelOpen { resume: 2 },
+                        ScalarTransition::ChannelSend(send.clone()),
+                    ],
+                },
+                ScalarExecutorState {
+                    id: 8,
+                    function: "receive".into(),
+                    source_callable: "consumer".into(),
+                    slots: Vec::new(),
+                    transitions: vec![ScalarTransition::ChannelReceive(receive.clone())],
+                },
+            ],
+            typed_channels: Vec::new(),
+        };
+
+        assert_eq!(
+            plan.operations(),
+            vec![
+                ReadyChannelOperation {
+                    state: 3,
+                    kind: ReadyChannelOperationKind::Open { resume_target: 2 },
+                },
+                ReadyChannelOperation {
+                    state: 3,
+                    kind: ReadyChannelOperationKind::Send(send),
+                },
+                ReadyChannelOperation {
+                    state: 8,
+                    kind: ReadyChannelOperationKind::Receive(receive),
+                },
+            ],
+        );
     }
 }
