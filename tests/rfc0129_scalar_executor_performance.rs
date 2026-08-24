@@ -165,16 +165,17 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     );
 }
 
-/// An effectful prologue keeps this ordinary program on the scheduler until the
-/// RFC-0152 async-region emitter can retain that ordered capability call around
-/// the direct graph.
+/// Effectful setup no longer prevents a proved direct scalar graph. The
+/// compiler preserves that source-ordered prologue before entering the fused
+/// region, rather than using it as a reason to keep the whole program on the
+/// ordinary scheduler.
 #[test]
-fn nominal_packet_channel_uses_the_scheduler_control_path() {
+fn nominal_packet_channel_preserves_its_effectful_prologue_on_the_direct_path() {
     witchy::opt::set_for_tests(Some(OptSet::all()));
     let _reset_optimization_override = ResetOptimizationOverride;
     let wasm = witchy::compile_source(include_str!("../benchmarks/chan_scheduler.witchy"))
         .expect("compile nominal packet scheduler benchmark");
-    assert_main_task_run_path(&wasm, true);
+    assert_main_task_run_path(&wasm, false);
 }
 
 /// RFC-0152 Phase 3: an exact packed two-`Int` payload can travel through the
