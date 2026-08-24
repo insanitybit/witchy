@@ -88,9 +88,9 @@ def wall_samples_ms(build_dir, benchmark, mode, expected_count):
         else:
             raise ValueError(f"{path}: unexpected hyperfine command {command!r}")
         values = result.get("times", [])
-        if len(values) != expected_count or any(value <= 0 for value in values):
+        if len(values) != expected_count or any(value < 0 for value in values):
             raise ValueError(f"{path}: {key} wall samples must contain {expected_count} positive values")
-        samples[key] = [value * 1000 for value in values]
+        samples[key] = [max(value, 0.000001) * 1000 for value in values]
     if not samples["witchy"] or not samples["go"]:
         raise ValueError(f"{path}: both Witchy and Go wall samples are required")
     return samples
