@@ -143,6 +143,23 @@ pub struct ScalarExecutorPlan {
     pub typed_channels: Vec<TypedChannelPlan>,
 }
 
+/// Typed eligibility proof for the RFC-0152 ready-path emitter.
+///
+/// This intentionally differs from [`ScalarExecutorPlan`].  The scalar
+/// executor is an already-landed, narrow implementation whose data path is
+/// limited to integer lanes.  A ready-path emitter needs the complete direct
+/// representation contract before it can choose a ring read/write or a
+/// bounded wait registration, including buffer roots and arbitrary packed
+/// lanes.  Constructing this plan does not enable an optimization by itself;
+/// it gives every later emitter the same typed rejection boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyChannelRegionPlan {
+    pub state_count: usize,
+    pub max_lane_width: usize,
+    pub states: Vec<ScalarExecutorState>,
+    pub typed_channels: Vec<TypedChannelPlan>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarExecutorState {
     pub id: usize,
@@ -235,6 +252,28 @@ pub enum ScalarExecutorRejection {
     NonIntegerChannel {
         channel: String,
         message: String,
+    },
+    UnsupportedTransition {
+        function: String,
+        detail: String,
+    },
+}
+
+/// Why an async region must retain the ordinary scheduler until a later
+/// RFC-0152 emitter supports its exact representation or endpoint lifetime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadyChannelRegionRejection {
+    NoSuspensionStates,
+    BoxedState {
+        function: String,
+    },
+    BoxedChannel {
+        channel: String,
+        message: String,
+    },
+    DynamicEndpoint {
+        function: String,
+        operation: &'static str,
     },
     UnsupportedTransition {
         function: String,
@@ -459,6 +498,87 @@ impl SuspensionCarrierCatalog {
         })
     }
 
+    /// Recover the full typed input contract for a future compiler-owned ready
+    /// region.  In contrast to [`Self::scalar_executor_plan`], every direct
+    /// carrier lane is preserved and String/Bytes roots remain eligible with
+    /// their explicit ownership envelope.  Dynamic endpoints and erased
+    /// payloads reject before code generation; they never become a later
+    /// runtime-layout guess.
+    pub fn ready_channel_region_plan(
+        &self,
+    ) -> Result<ReadyChannelRegionPlan, ReadyChannelRegionRejection> {
+        if self.states.is_empty() {
+            return Err(ReadyChannelRegionRejection::NoSuspensionStates);
+        }
+        for state in &self.states {
+            if !state.is_direct() {
+                return Err(ReadyChannelRegionRejection::BoxedState {
+                    function: state.function.clone(),
+                });
+            }
+        }
+        for channel in &self.typed_channel_plans {
+            if matches!(channel.payload_layout, ChannelPayloadLayout::Boxed) {
+                return Err(ReadyChannelRegionRejection::BoxedChannel {
+                    channel: channel.endpoint_place.clone(),
+                    message: channel.message_type.clone(),
+                });
+            }
+        }
+        let states = self
+            .states
+            .iter()
+            .enumerate()
+            .map(|(state_index, state)| {
+                let transitions = self.scalar_transitions[state_index]
+                    .clone()
+                    .map_err(|detail| ReadyChannelRegionRejection::UnsupportedTransition {
+                        function: state.function.clone(),
+                        detail,
+                    })?;
+                for transition in &transitions {
+                    ready_transition_is_static(transition).map_err(|operation| {
+                        ReadyChannelRegionRejection::DynamicEndpoint {
+                            function: state.function.clone(),
+                            operation,
+                        }
+                    })?;
+                }
+                let mut lane_start = 0;
+                let slots = state
+                    .slots
+                    .iter()
+                    .map(|slot| {
+                        let lanes = slot
+                            .lanes
+                            .clone()
+                            .expect("ready-region qualification rejected boxed frame slots");
+                        let planned = ScalarExecutorSlot {
+                            name: slot.name.clone(),
+                            lane_start,
+                            lanes,
+                        };
+                        lane_start += planned.lanes.len();
+                        planned
+                    })
+                    .collect();
+                Ok(ScalarExecutorState {
+                    id: state.id,
+                    function: state.function.clone(),
+                    source_callable: state.source_callable.clone(),
+                    slots,
+                    transitions,
+                })
+            })
+            .collect::<Result<Vec<_>, ReadyChannelRegionRejection>>()?;
+        Ok(ReadyChannelRegionPlan {
+            state_count: self.states.len(),
+            max_lane_width: self.max_lane_width,
+            states,
+            typed_channels: self.typed_channel_plans.clone(),
+        })
+    }
+
     /// Versioned, name-independent carrier ABI consumed by compiled backends.
     /// Function and slot names remain diagnostics only; runtime dispatch is by
     /// dense state id and fixed lane position.
@@ -492,6 +612,24 @@ impl SuspensionCarrierCatalog {
             }
         }
         bytes
+    }
+}
+
+fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'static str> {
+    let is_static = |endpoint: &ChannelEndpointPlace| {
+        matches!(endpoint, ChannelEndpointPlace::Static(_))
+    };
+    match transition {
+        ScalarTransition::ChannelSend(operation) if !is_static(&operation.endpoint) => Err("send"),
+        ScalarTransition::ChannelReceive(operation) if !is_static(&operation.endpoint) => {
+            Err("receive")
+        }
+        ScalarTransition::ChannelSelect2(select)
+            if !is_static(&select.first_channel) || !is_static(&select.second_channel) =>
+        {
+            Err("select")
+        }
+        _ => Ok(()),
     }
 }
 
@@ -1234,6 +1372,13 @@ mod tests {
                 message: "String".into(),
             }),
         );
+        let string_ready = channel_catalog
+            .ready_channel_region_plan()
+            .expect("a String root has an explicit ready-path envelope");
+        assert_eq!(
+            string_ready.typed_channels[0].payload_layout,
+            ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
+        );
 
         let mut packed_module = witchy_syntax::parser::parse_module(
             "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Pair:\n    Pair(Int, Int)\n\nfn resume(tx: Sender(Pair), rx: Receiver(Pair)) -> Nil:\n    ()\n",
@@ -1258,6 +1403,39 @@ mod tests {
         assert!(packed_plan.typed_channels.iter().all(|channel| {
             channel.payload_layout == ChannelPayloadLayout::Packed(vec![CarrierLane::I64, CarrierLane::I64])
         }));
+        assert!(packed_catalog.ready_channel_region_plan().is_ok());
+    }
+
+    #[test]
+    fn ready_channel_region_rejects_erased_payloads_and_dynamic_operations() {
+        let mut module = witchy_syntax::parser::parse_module(
+            "type Sender(a):\n    Sender(Int)\n\nfn state(tx: Sender(List(Int))) -> Nil:\n    ()\n",
+        )
+        .expect("boxed endpoint fixture parses");
+        let Item::Function(state) = &mut module.items[1] else {
+            panic!("state")
+        };
+        state.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        state
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+        let typed = crate::typeck::annotate_checked(module).expect("boxed endpoint checks");
+        let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("boxed catalog");
+        assert_eq!(
+            catalog.ready_channel_region_plan(),
+            Err(ReadyChannelRegionRejection::BoxedChannel {
+                channel: "tx".into(),
+                message: "List(Int)".into(),
+            }),
+        );
+
+        let dynamic = ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Dynamic,
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 1,
+        });
+        assert_eq!(ready_transition_is_static(&dynamic), Err("receive"));
     }
 
     #[test]
