@@ -7048,6 +7048,17 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn proven_select_loop_emits_reusable_frame_loop_bridge() {
+        let checked = authenticated_checked(include_str!("../../../../benchmarks/select_fanin.witchy"));
+        let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble select-loop fixture");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(wat.contains("select2_frame_loop"), "missing compiler-owned frame-loop bridge");
+        assert!(!wat.contains("select2_frame_loop_state"), "stateful ABI must reuse Pull2FrameLoop");
+    }
+
+    #[test]
     fn select2_non_integer_payload_rejects_scalar_executor_fallback() {
         let checked = authenticated_checked(
             "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(1).await\n    let (b_tx, b_rx) = chan.channel(1).await\n    chan.send(a_tx, \"a\").await\n    chan.send(b_tx, \"b\").await\n    let selected = chan.select(a_rx, b_rx).await\n    match selected:\n        First(value) -> console.print(value)\n        Second(value) -> console.print(value)\n        Closed -> console.print(\"closed\")\n",
