@@ -4,11 +4,11 @@ const t0 = performance.now();
 const n = 200000;
 const k = 10;
 const cs = new Uint8Array(n);
-let seed = 42;
+let seed = 42n;
 const chars = [65, 67, 71, 84]; // A, C, G, T
 for (let i = 0; i < n; i++) {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    cs[i] = chars[Math.floor(seed / 65536) % 4];
+    seed = (seed * 1103515245n + 12345n) % 2147483648n;
+    cs[i] = chars[Number(seed / 65536n) % 4];
 }
 const counts = new Map();
 // Simple JS string conversion for map keys is faster than array keys

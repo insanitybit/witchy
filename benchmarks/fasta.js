@@ -1,7 +1,6 @@
 const fs = require('fs');
 
 const t0 = process.hrtime.bigint();
-const out = process.stdout;
 
 let last = 42;
 const A = 3877;
@@ -47,30 +46,34 @@ function makeCumulative(table) {
 makeCumulative(IUB);
 makeCumulative(HomoSap);
 
+const NL = Buffer.from('\n');
+
 function fastaRepeat(n, seq) {
     let seqi = 0;
     let lenOut = 60;
     while (n > 0) {
         if (n < lenOut) lenOut = n;
         if (seqi + lenOut < seq.length) {
-            out.write(seq.substring(seqi, seqi + lenOut) + '\n');
+            fs.writeSync(1, seq.substring(seqi, seqi + lenOut) + '\n');
             seqi += lenOut;
         } else {
             let s = seq.substring(seqi);
             seqi = lenOut - s.length;
-            out.write(s + seq.substring(0, seqi) + '\n');
+            fs.writeSync(1, s + seq.substring(0, seqi) + '\n');
         }
         n -= lenOut;
     }
 }
 
 function fastaRandom(n, table) {
-    let line = Buffer.allocUnsafe(60);
+    let line = Buffer.allocUnsafe(61);
+    line[60] = 10; // '\n'
     while (n > 0) {
         let lenOut = 60;
         if (n < lenOut) {
             lenOut = n;
-            line = Buffer.allocUnsafe(lenOut);
+            line = Buffer.allocUnsafe(lenOut + 1);
+            line[lenOut] = 10;
         }
         for (let i = 0; i < lenOut; i++) {
             let r = rand(1);
@@ -81,22 +84,21 @@ function fastaRandom(n, table) {
                 }
             }
         }
-        out.write(line);
-        out.write('\n');
+        fs.writeSync(1, line.subarray(0, lenOut + 1));
         n -= lenOut;
     }
 }
 
 const n = 2500000;
 
-out.write(">ONE Homo sapiens alu\n");
+fs.writeSync(1, ">ONE Homo sapiens alu\n");
 fastaRepeat(2 * n, ALU);
 
-out.write(">TWO IUB ambiguity codes\n");
+fs.writeSync(1, ">TWO IUB ambiguity codes\n");
 fastaRandom(3 * n, IUB);
 
-out.write(">THREE Homo sapiens frequency\n");
+fs.writeSync(1, ">THREE Homo sapiens frequency\n");
 fastaRandom(5 * n, HomoSap);
 
 const t1 = process.hrtime.bigint();
-out.write(`bench_ns=${t1 - t0}\n`);
+fs.writeSync(1, `bench_ns=${t1 - t0}\n`);
