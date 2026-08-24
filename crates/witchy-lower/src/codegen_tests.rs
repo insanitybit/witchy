@@ -197,3 +197,57 @@
         assert!(!plan.range_is_byte_proven("wide"));
     }
 
+    #[test]
+    fn bytes_direct_set_at_range_check_elimination() {
+        use crate::codegen::linear_builder::{LinearBuildPlan, LinearValueKind};
+        use witchy_syntax::ast::Expr;
+        use witchy_wir::wir::{WirExpr, WirNode};
+
+        let src = "fn main(console: Console):\n    let buf = 0\n";
+        let module = parse_module(src).expect("parse");
+        let typed = witchy_types::typeck::annotate_checked(module).expect("typeck");
+        let (loans, access) = (
+            witchy_types::loans::LoanFacts::default(),
+            witchy_types::access::checked_facts(typed.module(), typed.table()).expect("access facts"),
+        );
+        let mut codegen = Codegen::new(typed.module(), typed.table(), loans, access);
+        codegen.locals.insert("buf".into(), Kind::I32);
+        codegen.locals.insert("val".into(), Kind::I64);
+
+        let b_expr = Expr::Var("buf".into());
+        let idx_expr = Expr::Int(0);
+        let const_val = Expr::Int(65);
+        let dyn_val = Expr::Var("val".into());
+
+        // 1. Constant value (65) is proven in 0..=255 -> value range check is elided (only 1 If for index bounds)
+        let wir_const = codegen.lower_bytes_set_at(&b_expr, &idx_expr, &const_val).expect("lower const");
+        if let WirExpr::Seq(seq) = wir_const {
+            let if_count = seq.iter().filter(|node| matches!(node, WirNode::If { .. })).count();
+            assert_eq!(if_count, 1, "constant in 0..=255 must elide value range check (only 1 index bounds check)");
+        } else {
+            panic!("expected WirExpr::Seq");
+        }
+
+        // 2. Unproven dynamic variable -> has 2 If nodes (value range check + index bounds check)
+        let wir_dyn = codegen.lower_bytes_set_at(&b_expr, &idx_expr, &dyn_val).expect("lower dyn");
+        if let WirExpr::Seq(seq) = wir_dyn {
+            let if_count = seq.iter().filter(|node| matches!(node, WirNode::If { .. })).count();
+            assert_eq!(if_count, 2, "unproven dynamic variable must retain value range check (2 If nodes)");
+        } else {
+            panic!("expected WirExpr::Seq");
+        }
+
+        // 3. Proven range fact on dynamic variable in active plan -> elides value range check (1 If node)
+        let mut plan = LinearBuildPlan::new("buf".into(), LinearValueKind::Bytes, 1, 0);
+        plan.record_range_fact("val".into(), 0, 255);
+        codegen.note_linear_builder(plan);
+
+        let wir_proven = codegen.lower_bytes_set_at(&b_expr, &idx_expr, &dyn_val).expect("lower proven");
+        if let WirExpr::Seq(seq) = wir_proven {
+            let if_count = seq.iter().filter(|node| matches!(node, WirNode::If { .. })).count();
+            assert_eq!(if_count, 1, "variable with proven range fact 0..=255 must elide value range check (1 If node)");
+        } else {
+            panic!("expected WirExpr::Seq");
+        }
+    }
+

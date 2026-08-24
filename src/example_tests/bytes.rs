@@ -317,3 +317,31 @@ use crate::{ast, codegen, interpreter, typeck};
         }
     }
 
+    /// (RFC-0151) Positive WAT test proving direct byte operations (`i32.load8_u`, `i32.store8`)
+    /// are emitted without helper calls to `$bytes_at`, `$bytes_set_at`, or `$bytes_swap`.
+    #[test]
+    fn bytes_direct_operations_emit_direct_wat_instructions() {
+        let src = "import bytes\n\
+                   fn main(console: Console):\n\
+                   \x20   var b = bytes.from_string(\"ABC\")\n\
+                   \x20   let x = b.at(1)\n\
+                   \x20   b.set_at(0, 90)\n\
+                   \x20   b.swap(1, 2)\n\
+                   \x20   console.print(\"${x}\")\n\
+                   \x20   console.print(b.to_string())\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let module = codegen::assemble_wir_module(&linked).expect_lowered("assemble wir");
+        let wat = witchy_wir::wir::to_wat(&module);
+
+        assert!(wat.contains("i32.load8_u"), "must contain direct i32.load8_u: {wat}");
+        assert!(wat.contains("i32.store8"), "must contain direct i32.store8: {wat}");
+        assert!(!wat.contains("call $bytes_at"), "must not call $bytes_at helper: {wat}");
+        assert!(!wat.contains("call $bytes_set_at"), "must not call $bytes_set_at helper: {wat}");
+        assert!(!wat.contains("call $bytes_swap"), "must not call $bytes_swap helper: {wat}");
+
+        let expected = ["66", "ZCB"];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+

@@ -1356,16 +1356,7 @@ impl Codegen<'_> {
                 )
             }
             (intrinsics::BYTES_AT, 2) => {
-                // Bounds-checked byte read via the `$bytes_at` helper: trap on
-                // `i < 0 || i >= len`, matching the interpreter's "bytes index out
-                // of bounds" error. (An unchecked `load8_u` here used to silently
-                // read adjacent heap — a parity/OOB bug, SEC-038.)
-                let b = self.lower_expr(&args[0])?;
-                let ik = self.kind_of(&args[1]);
-                // i64 index — checked in i64 by `$bytes_at` (matches the
-                // interpreter's `i as usize`; closes the same i32-wrap hole as list.at).
-                let i = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64);
-                call("bytes_at", vec![b, i])
+                self.lower_bytes_at(&args[0], &args[1])?
             }
             (intrinsics::BYTES_CONCAT, 2) => {
                 call("concat", vec![self.lower_expr(&args[0])?, self.lower_expr(&args[1])?])
@@ -1424,22 +1415,10 @@ impl Codegen<'_> {
                 ])
             }
             (intrinsics::BYTES_SET_AT, 3) => {
-                let ik = self.kind_of(&args[1]);
-                let vk = self.kind_of(&args[2]);
-                call("bytes_set_at", vec![
-                    self.lower_expr(&args[0])?,
-                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
-                    Self::wir_convert(self.lower_expr(&args[2])?, vk, Kind::I64),
-                ])
+                self.lower_bytes_set_at(&args[0], &args[1], &args[2])?
             }
             (intrinsics::BYTES_SWAP, 3) => {
-                let ik = self.kind_of(&args[1]);
-                let jk = self.kind_of(&args[2]);
-                call("bytes_swap", vec![
-                    self.lower_expr(&args[0])?,
-                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
-                    Self::wir_convert(self.lower_expr(&args[2])?, jk, Kind::I64),
-                ])
+                self.lower_bytes_swap(&args[0], &args[1], &args[2])?
             }
             (intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH, 2) => {
                 if self

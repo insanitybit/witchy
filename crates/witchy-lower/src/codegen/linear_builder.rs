@@ -165,4 +165,267 @@ impl<'types> Codegen<'types> {
         let epoch = self.linear_build_epoch;
         self.linear_build_plans.get_mut(root).filter(|p| p.is_valid_at_epoch(epoch))
     }
+
+    /// (RFC-0151) Direct byte read with bounds check and `i32.load8_u`.
+    pub(crate) fn lower_bytes_at(
+        &mut self,
+        bytes_expr: &Expr,
+        idx_expr: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use super::Kind;
+        use witchy_wir::wir::{BinOp, Kind as WirKind, WirExpr as W, WirNode as N};
+        let b = self.lower_expr(bytes_expr)?;
+        let ik = self.kind_of(idx_expr);
+        let i = Self::wir_convert(self.lower_expr(idx_expr)?, ik, Kind::I64);
+
+        let bin32 = |op, l, r| W::Binary { op, kind: WirKind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let bin64 = |op, l, r| W::Binary { op, kind: WirKind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+
+        let b_scratch = var_scratch("result", 0, Kind::I32);
+        let i_scratch = var_scratch("result", 0, Kind::I64);
+
+        let get_b = W::GetLocal(b_scratch.clone());
+        let get_i = W::GetLocal(i_scratch.clone());
+
+        let len_i64 = W::Convert {
+            from: WirKind::I32,
+            to: WirKind::I64,
+            arg: Box::new(W::Load { ptr: Box::new(get_b.clone()), kind: WirKind::I32, offset: 0 }),
+        };
+        let i_i32 = W::Convert {
+            from: WirKind::I64,
+            to: WirKind::I32,
+            arg: Box::new(get_i.clone()),
+        };
+
+        let seq = vec![
+            N::SetLocal { local: b_scratch, value: b },
+            N::SetLocal { local: i_scratch, value: i },
+            N::If {
+                cond: bin32(
+                    BinOp::Or,
+                    bin64(BinOp::Lt, get_i.clone(), W::ConstI64(0)),
+                    bin64(BinOp::Ge, get_i.clone(), len_i64.clone()),
+                ),
+                then_: witchy_wir::wir_helpers::abort_nodes(
+                    witchy_syntax::diag::DiagTemplate::BytesIndexOob,
+                    get_i,
+                    len_i64,
+                    W::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            },
+            N::Push(W::Convert {
+                from: WirKind::I32,
+                to: WirKind::I64,
+                arg: Box::new(W::Load8U {
+                    ptr: Box::new(bin32(
+                        BinOp::Add,
+                        bin32(BinOp::Add, get_b, W::ConstI32(4)),
+                        i_i32,
+                    )),
+                    offset: 0,
+                }),
+            }),
+        ];
+        Some(W::Seq(seq))
+    }
+
+    /// (RFC-0151) Direct byte write with range validation, bounds check, and `i32.store8`.
+    pub(crate) fn lower_bytes_set_at(
+        &mut self,
+        bytes_expr: &Expr,
+        idx_expr: &Expr,
+        val_expr: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use super::Kind;
+        use witchy_wir::wir::{BinOp, Kind as WirKind, WirExpr as W, WirNode as N};
+        let b = self.lower_expr(bytes_expr)?;
+        let ik = self.kind_of(idx_expr);
+        let vk = self.kind_of(val_expr);
+        let i = Self::wir_convert(self.lower_expr(idx_expr)?, ik, Kind::I64);
+        let v = Self::wir_convert(self.lower_expr(val_expr)?, vk, Kind::I64);
+
+        let bin32 = |op, l, r| W::Binary { op, kind: WirKind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let bin64 = |op, l, r| W::Binary { op, kind: WirKind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+
+        let val_proven = match val_expr {
+            Expr::Int(c) => *c >= 0 && *c <= 255,
+            Expr::Var(vname) => {
+                if let Expr::Var(rname) = bytes_expr {
+                    self.active_linear_build_plan(rname)
+                        .map(|p| p.range_is_byte_proven(vname))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        let b_scratch = var_scratch("result", 0, Kind::I32);
+        let i_scratch = var_scratch("result", 0, Kind::I64);
+        let v_scratch = var_scratch("result", 1, Kind::I64);
+
+        let get_b = W::GetLocal(b_scratch.clone());
+        let get_i = W::GetLocal(i_scratch.clone());
+        let get_v = W::GetLocal(v_scratch.clone());
+
+        let len_i64 = W::Convert {
+            from: WirKind::I32,
+            to: WirKind::I64,
+            arg: Box::new(W::Load { ptr: Box::new(get_b.clone()), kind: WirKind::I32, offset: 0 }),
+        };
+        let i_i32 = W::Convert {
+            from: WirKind::I64,
+            to: WirKind::I32,
+            arg: Box::new(get_i.clone()),
+        };
+        let v_i32 = W::Convert {
+            from: WirKind::I64,
+            to: WirKind::I32,
+            arg: Box::new(get_v.clone()),
+        };
+
+        let mut seq = vec![
+            N::SetLocal { local: b_scratch, value: b },
+            N::SetLocal { local: i_scratch, value: i },
+            N::SetLocal { local: v_scratch, value: v },
+        ];
+
+        if !val_proven {
+            seq.push(N::If {
+                cond: bin32(
+                    BinOp::Or,
+                    bin64(BinOp::Lt, get_v.clone(), W::ConstI64(0)),
+                    bin64(BinOp::Gt, get_v, W::ConstI64(255)),
+                ),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            });
+        }
+
+        seq.push(N::If {
+            cond: bin32(
+                BinOp::Or,
+                bin64(BinOp::Lt, get_i.clone(), W::ConstI64(0)),
+                bin64(BinOp::Ge, get_i.clone(), len_i64.clone()),
+            ),
+            then_: witchy_wir::wir_helpers::abort_nodes(
+                witchy_syntax::diag::DiagTemplate::BytesIndexOob,
+                get_i,
+                len_i64,
+                W::ConstI32(0),
+            ),
+            els: vec![],
+            result: None,
+        });
+
+        seq.push(N::Store8 {
+            ptr: bin32(
+                BinOp::Add,
+                bin32(BinOp::Add, get_b.clone(), W::ConstI32(4)),
+                i_i32,
+            ),
+            value: v_i32,
+            offset: 0,
+        });
+
+        seq.push(N::Push(get_b));
+        Some(W::Seq(seq))
+    }
+
+    /// (RFC-0151) Direct byte swap with bounds check and `i32.load8_u`/`i32.store8`.
+    pub(crate) fn lower_bytes_swap(
+        &mut self,
+        bytes_expr: &Expr,
+        i_expr: &Expr,
+        j_expr: &Expr,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use super::Kind;
+        use witchy_wir::wir::{BinOp, Kind as WirKind, WirExpr as W, WirNode as N};
+        let b = self.lower_expr(bytes_expr)?;
+        let ik = self.kind_of(i_expr);
+        let jk = self.kind_of(j_expr);
+        let i = Self::wir_convert(self.lower_expr(i_expr)?, ik, Kind::I64);
+        let j = Self::wir_convert(self.lower_expr(j_expr)?, jk, Kind::I64);
+
+        let bin32 = |op, l, r| W::Binary { op, kind: WirKind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let bin64 = |op, l, r| W::Binary { op, kind: WirKind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+
+        let b_scratch = var_scratch("result", 0, Kind::I32);
+        let i_scratch = var_scratch("result", 0, Kind::I64);
+        let j_scratch = var_scratch("result", 1, Kind::I64);
+        let t_scratch = var_scratch("result", 1, Kind::I32);
+
+        let get_b = W::GetLocal(b_scratch.clone());
+        let get_i = W::GetLocal(i_scratch.clone());
+        let get_j = W::GetLocal(j_scratch.clone());
+        let get_t = W::GetLocal(t_scratch.clone());
+
+        let len_i64 = W::Convert {
+            from: WirKind::I32,
+            to: WirKind::I64,
+            arg: Box::new(W::Load { ptr: Box::new(get_b.clone()), kind: WirKind::I32, offset: 0 }),
+        };
+        let i_i32 = W::Convert { from: WirKind::I64, to: WirKind::I32, arg: Box::new(get_i.clone()) };
+        let j_i32 = W::Convert { from: WirKind::I64, to: WirKind::I32, arg: Box::new(get_j.clone()) };
+
+        let ptr_i = bin32(BinOp::Add, bin32(BinOp::Add, get_b.clone(), W::ConstI32(4)), i_i32);
+        let ptr_j = bin32(BinOp::Add, bin32(BinOp::Add, get_b.clone(), W::ConstI32(4)), j_i32);
+
+        let seq = vec![
+            N::SetLocal { local: b_scratch, value: b },
+            N::SetLocal { local: i_scratch, value: i },
+            N::SetLocal { local: j_scratch, value: j },
+            N::If {
+                cond: bin32(
+                    BinOp::Or,
+                    bin64(BinOp::Lt, get_i.clone(), W::ConstI64(0)),
+                    bin64(BinOp::Ge, get_i.clone(), len_i64.clone()),
+                ),
+                then_: witchy_wir::wir_helpers::abort_nodes(
+                    witchy_syntax::diag::DiagTemplate::BytesIndexOob,
+                    get_i,
+                    len_i64.clone(),
+                    W::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: bin32(
+                    BinOp::Or,
+                    bin64(BinOp::Lt, get_j.clone(), W::ConstI64(0)),
+                    bin64(BinOp::Ge, get_j.clone(), len_i64.clone()),
+                ),
+                then_: witchy_wir::wir_helpers::abort_nodes(
+                    witchy_syntax::diag::DiagTemplate::BytesIndexOob,
+                    get_j,
+                    len_i64,
+                    W::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal {
+                local: t_scratch,
+                value: W::Load8U { ptr: Box::new(ptr_i.clone()), offset: 0 },
+            },
+            N::Store8 {
+                ptr: ptr_i,
+                value: W::Load8U { ptr: Box::new(ptr_j.clone()), offset: 0 },
+                offset: 0,
+            },
+            N::Store8 {
+                ptr: ptr_j,
+                value: get_t,
+                offset: 0,
+            },
+            N::Push(get_b),
+        ];
+        Some(W::Seq(seq))
+    }
 }
