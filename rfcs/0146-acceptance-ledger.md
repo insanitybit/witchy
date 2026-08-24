@@ -69,6 +69,18 @@ receiver endpoints are proven `Receiver(Int)`; unknown or non-integer facts
 retain the erased-message fallback. The compiler-owned frame emitter and
 scheduler path that consume the lane have not landed.
 
+#### Track 1 emitter deferment (2026-08-24)
+
+The remaining emitter is explicitly deferred. The finalized select decoder has
+the ABI `(Int, Option(__Msg)) -> Task(a)`, while `Pull2FrameLoop` requires a
+compiler-owned step `(Int, Option(__Msg), List(Int)) -> Bool`. The decoder
+closure therefore cannot be reused as the frame step. A sound implementation
+must synthesize a new Bool-returning WIR function from the proven continuation
+lane updates, construct the owned `List(Int)` frame root and `Task(Nil)` done
+root, and preserve the normal scheduler for opaque, escaping, cancelling, or
+multi-suspension continuations. No positive WAT rewrite or performance claim
+is made until that function synthesis and ownership handoff are implemented.
+
 The current master also carries the negative safety control from
 `95e1ac8b`: a `Receiver(String)` two-way select is rejected from the scalar
 executor fallback (`select2_non_integer_payload_rejects_scalar_executor_fallback`).
