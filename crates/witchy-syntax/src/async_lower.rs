@@ -1536,14 +1536,11 @@ impl<'a> Ctx<'a> {
             }
         };
         step_stmts.push(Stmt::Let { name: closed.clone(), ty: Some(Type::Named("Bool".into(), vec![])), mutable: false, value: closed_expr });
-        step_stmts.push(Stmt::Expr(Expr::Tuple(vec![
-            Expr::If {
-                cond: Box::new(Expr::Var(closed.clone())),
-                then_block: tail_block(Expr::Bool(true)),
-                else_block: Some(tail_block(Expr::Unary { op: UnOp::Not, expr: Box::new(cond.clone()) })),
-            },
-            Expr::Var(frame_mut.clone()),
-        ])));
+        step_stmts.push(Stmt::Expr(Expr::If {
+            cond: Box::new(Expr::Var(closed.clone())),
+            then_block: tail_block(Expr::Bool(true)),
+            else_block: Some(tail_block(Expr::Unary { op: UnOp::Not, expr: Box::new(cond.clone()) })),
+        }));
         let step = self.fresh_tmp();
         setup.push(Stmt::Let {
             name: step.clone(),
@@ -1556,7 +1553,7 @@ impl<'a> Ctx<'a> {
             Param { name: frame.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None },
                 ],
                 body: Block { stmts: step_stmts, lines: vec![first_line(&body.lines); 1 + lanes.len() * 2 + tail_body.len() + 2], region: None },
-                ret: Some(Type::Tuple(vec![Type::Named("Bool".into(), vec![]), Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])])),
+                ret: Some(Type::Named("Bool".into(), vec![])),
                 qualifiers: CallableQualifiers::ORDINARY,
             },
         });

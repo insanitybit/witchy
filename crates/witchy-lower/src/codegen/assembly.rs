@@ -7124,11 +7124,15 @@ mod checked_codegen_boundary_tests {
             "Wait2Frame(ch0, ch1, frame, step, done_task)",
             "Wait2FrameLoop(ch0, ch1, frame, step, done_fn)",
             "if step(0, Some(frame_msg0), frame):",
-            "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, next_frame0, step, done_fn))",
+            "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))",
             "if step(0, None, frame):",
         ] {
             assert!(source.contains(marker), "missing reusable frame ABI marker: {marker}");
         }
+        assert!(
+            !source.contains("let (step_done0, next_frame0) = step"),
+            "the reusable registration must retain its frame instead of transferring a tuple on wake"
+        );
     }
 
     #[test]
