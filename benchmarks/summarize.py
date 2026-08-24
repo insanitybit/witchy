@@ -261,10 +261,24 @@ def benchmark_record(build_dir, benchmark, mode, expected_count):
     node_summary = sample_summary(node_samples) if node_samples else None
     ruby_summary = sample_summary(ruby_samples) if ruby_samples else None
     rust_summary = sample_summary(rust_samples) if rust_samples else None
+    baselines = {}
+    if go_summary: baselines["go"] = (go_summary, go)
+    if node_summary: baselines["node"] = (node_summary, node_samples)
+    if ruby_summary: baselines["ruby"] = (ruby_summary, ruby_samples)
+    if rust_summary: baselines["rust"] = (rust_summary, rust_samples)
+
+    fastest_name = None
+    fastest_samples = None
+    fastest_summary = None
+    
+    if baselines:
+        fastest_name = min(baselines.keys(), key=lambda k: baselines[k][0]["median"])
+        fastest_summary, fastest_samples = baselines[fastest_name]
+
     ratio = None
     interval = None
-    if witchy and go:
-        ratio, interval = paired_ratio_summary(witchy, go)
+    if witchy and fastest_samples:
+        ratio, interval = paired_ratio_summary(witchy, fastest_samples)
     return {
         "name": benchmark,
         "source": source_identity(benchmark),
@@ -286,7 +300,8 @@ def benchmark_record(build_dir, benchmark, mode, expected_count):
             "node_summary": node_summary,
             "ruby_summary": ruby_summary,
             "rust_summary": rust_summary,
-            "witchy_go_median_ratio": ratio,
+            "fastest_baseline": fastest_name,
+            "witchy_fastest_median_ratio": ratio,
             "paired_bootstrap_95_percent_ci": interval,
         },
         "wall_ms": wall_samples_ms(build_dir, benchmark, mode, expected_count),
@@ -302,7 +317,7 @@ def render_markdown(artifact):
         "The machine-readable sibling artifact retains build identity, inputs,",
         "checksums, every sample, variability, and the paired ratio interval.",
         "",
-        "| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel rust | kernel vs go | wall witchy | wall go |",
+        "| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel rust | kernel vs fastest | wall witchy | wall go |",
         "|-----------|--------------:|----------:|------------:|------------:|------------:|-------------:|------------:|--------:|",
     ]
     for benchmark in artifact["benchmarks"]:
@@ -316,8 +331,8 @@ def render_markdown(artifact):
         wm = statistics.median(wall["witchy"]) if wall["witchy"] else None
         gm = statistics.median(wall["go"]) if wall["go"] else None
         value = lambda number: "—" if number is None else f"{number:.1f}"
-        ratio = kernel["witchy_go_median_ratio"]
-        ratio_text = "—" if ratio is None else f"{ratio:.2f}x"
+        ratio = kernel["witchy_fastest_median_ratio"]
+        ratio_text = "—" if ratio is None else f"{ratio:.2f}x ({kernel.get('fastest_baseline', 'unknown')})"
         lines.append(
             f"| {benchmark['name']} | {value(ws['median'] / 1e6 if ws else None)} | "
             f"{value(gs['median'] / 1e6 if gs else None)} | {value(ns['median'] / 1e6 if ns else None)} | "
