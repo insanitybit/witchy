@@ -46,6 +46,11 @@ sealed type Step(a):
     Push(Int, __Msg, fn(Nil) -> Task(a))
     Pull(Int, fn(Option(__Msg)) -> Task(a))
     Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))
+    // Fixed-arity select keeps its endpoint set and source order explicit.
+    // The ordinary scheduler still owns the fallback; later RFC-0152 lowering
+    // can promote these shapes without first allocating a receiver-id list.
+    Pull3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))
+    Pull4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))
     // Compiler-owned ready-path probe. The executor checks both channels before
     // parking; an empty pair is converted to the ordinary Wait2 path.
     Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))
@@ -105,6 +110,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Push(ch, msg, cont) -> Push(ch, msg, fn(u): and_then(cont(u), k))
         Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
         Pull2(ch0, ch1, cont) -> Pull2(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
+        Pull3(ch0, ch1, ch2, cont) -> Pull3(ch0, ch1, ch2, fn(tag, o): and_then(cont(tag, o), k))
+        Pull4(ch0, ch1, ch2, ch3, cont) -> Pull4(ch0, ch1, ch2, ch3, fn(tag, o): and_then(cont(tag, o), k))
         Pull2Ready(ch0, ch1, cont) -> Pull2Ready(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
         Pull2Frame(_, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
@@ -167,6 +174,27 @@ pub fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(
             match b:
                 ChannelId(ib) -> Task(fn(): Pull2Ready(ia, ib, decode))
 
+// Fixed-arity scheduler forms intentionally retain their endpoints as separate
+// fields. This preserves source-order tie breaking and gives the ready-path
+// lowerer a no-list-allocation fallback ABI for arities three and four.
+pub fn __channel_select3_map(a: ChannelId, b: ChannelId, c: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a):
+    match a:
+        ChannelId(ia) ->
+            match b:
+                ChannelId(ib) ->
+                    match c:
+                        ChannelId(ic) -> Task(fn(): Pull3(ia, ib, ic, decode))
+
+pub fn __channel_select4_map(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a):
+    match a:
+        ChannelId(ia) ->
+            match b:
+                ChannelId(ib) ->
+                    match c:
+                        ChannelId(ic) ->
+                            match d:
+                                ChannelId(id) -> Task(fn(): Pull4(ia, ib, ic, id, decode))
+
 // Compiler-owned entry point for a reusable scalar select frame. The frame
 // lane record and completion task are allocated once by the lowering pass;
 // the scheduler keeps them in the slot across ready and parked iterations.
@@ -225,6 +253,8 @@ sealed type Slot:
     WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))
     WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))
     Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
+    Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
+    Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
     Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))
     Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))
@@ -238,6 +268,8 @@ fn is_live(s: Slot) -> Bool:
         WaitRecv(_, _) -> true
         WaitSend(_, _, _) -> true
         Wait2(_, _, _) -> true
+        Wait3(_, _, _, _) -> true
+        Wait4(_, _, _, _, _) -> true
         Wait2Frame(_, _, _, _, _) -> true
         Wait2FrameLoop(_, _, _, _, _) -> true
         WaitAny(_, _) -> true
@@ -248,6 +280,8 @@ fn is_parked(s: Slot) -> Bool:
         WaitRecv(_, _) -> true
         WaitSend(_, _, _) -> true
         Wait2(_, _, _) -> true
+        Wait3(_, _, _, _) -> true
+        Wait4(_, _, _, _, _) -> true
         Wait2Frame(_, _, _, _, _) -> true
         Wait2FrameLoop(_, _, _, _, _) -> true
         WaitAny(_, _) -> true
@@ -372,6 +406,66 @@ pub fn run(root: Task(Nil)):
                             prog = true
                         else:
                             unit()
+                Wait3(ch0, ch1, ch2, cont) ->
+                    let (buf0, head0, count0, cap0) = list.at(channels, ch0)
+                    if count0 > 0:
+                        let msg = list.at(buf0, head0)
+                        let physcap = list.length(buf0)
+                        list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                        list.set_at(slots, i, Active(cont(0, Some(msg))))
+                        prog = true
+                    else:
+                        let (buf1, head1, count1, cap1) = list.at(channels, ch1)
+                        if count1 > 0:
+                            let msg = list.at(buf1, head1)
+                            let physcap = list.length(buf1)
+                            list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                            list.set_at(slots, i, Active(cont(1, Some(msg))))
+                            prog = true
+                        else:
+                            let (buf2, head2, count2, cap2) = list.at(channels, ch2)
+                            if count2 > 0:
+                                let msg = list.at(buf2, head2)
+                                let physcap = list.length(buf2)
+                                list.set_at(channels, ch2, (buf2, (head2 + 1) % physcap, count2 - 1, cap2))
+                                list.set_at(slots, i, Active(cont(2, Some(msg))))
+                                prog = true
+                            else:
+                                unit()
+                Wait4(ch0, ch1, ch2, ch3, cont) ->
+                    let (buf0, head0, count0, cap0) = list.at(channels, ch0)
+                    if count0 > 0:
+                        let msg = list.at(buf0, head0)
+                        let physcap = list.length(buf0)
+                        list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                        list.set_at(slots, i, Active(cont(0, Some(msg))))
+                        prog = true
+                    else:
+                        let (buf1, head1, count1, cap1) = list.at(channels, ch1)
+                        if count1 > 0:
+                            let msg = list.at(buf1, head1)
+                            let physcap = list.length(buf1)
+                            list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                            list.set_at(slots, i, Active(cont(1, Some(msg))))
+                            prog = true
+                        else:
+                            let (buf2, head2, count2, cap2) = list.at(channels, ch2)
+                            if count2 > 0:
+                                let msg = list.at(buf2, head2)
+                                let physcap = list.length(buf2)
+                                list.set_at(channels, ch2, (buf2, (head2 + 1) % physcap, count2 - 1, cap2))
+                                list.set_at(slots, i, Active(cont(2, Some(msg))))
+                                prog = true
+                            else:
+                                let (buf3, head3, count3, cap3) = list.at(channels, ch3)
+                                if count3 > 0:
+                                    let msg = list.at(buf3, head3)
+                                    let physcap = list.length(buf3)
+                                    list.set_at(channels, ch3, (buf3, (head3 + 1) % physcap, count3 - 1, cap3))
+                                    list.set_at(slots, i, Active(cont(3, Some(msg))))
+                                    prog = true
+                                else:
+                                    unit()
                 Wait2Frame(ch0, ch1, frame, step, done_task) ->
                     let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
                     if frame_count0 > 0:
@@ -494,6 +588,66 @@ pub fn run(root: Task(Nil)):
                                     prog = true
                                 else:
                                     list.set_at(slots, i, Wait2(ch0, ch1, cont))
+                        Pull3(ch0, ch1, ch2, cont) ->
+                            let (buf0, head0, count0, cap0) = list.at(channels, ch0)
+                            if count0 > 0:
+                                let msg = list.at(buf0, head0)
+                                let physcap = list.length(buf0)
+                                list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                                list.set_at(slots, i, Active(cont(0, Some(msg))))
+                                prog = true
+                            else:
+                                let (buf1, head1, count1, cap1) = list.at(channels, ch1)
+                                if count1 > 0:
+                                    let msg = list.at(buf1, head1)
+                                    let physcap = list.length(buf1)
+                                    list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                                    list.set_at(slots, i, Active(cont(1, Some(msg))))
+                                    prog = true
+                                else:
+                                    let (buf2, head2, count2, cap2) = list.at(channels, ch2)
+                                    if count2 > 0:
+                                        let msg = list.at(buf2, head2)
+                                        let physcap = list.length(buf2)
+                                        list.set_at(channels, ch2, (buf2, (head2 + 1) % physcap, count2 - 1, cap2))
+                                        list.set_at(slots, i, Active(cont(2, Some(msg))))
+                                        prog = true
+                                    else:
+                                        list.set_at(slots, i, Wait3(ch0, ch1, ch2, cont))
+                        Pull4(ch0, ch1, ch2, ch3, cont) ->
+                            let (buf0, head0, count0, cap0) = list.at(channels, ch0)
+                            if count0 > 0:
+                                let msg = list.at(buf0, head0)
+                                let physcap = list.length(buf0)
+                                list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                                list.set_at(slots, i, Active(cont(0, Some(msg))))
+                                prog = true
+                            else:
+                                let (buf1, head1, count1, cap1) = list.at(channels, ch1)
+                                if count1 > 0:
+                                    let msg = list.at(buf1, head1)
+                                    let physcap = list.length(buf1)
+                                    list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                                    list.set_at(slots, i, Active(cont(1, Some(msg))))
+                                    prog = true
+                                else:
+                                    let (buf2, head2, count2, cap2) = list.at(channels, ch2)
+                                    if count2 > 0:
+                                        let msg = list.at(buf2, head2)
+                                        let physcap = list.length(buf2)
+                                        list.set_at(channels, ch2, (buf2, (head2 + 1) % physcap, count2 - 1, cap2))
+                                        list.set_at(slots, i, Active(cont(2, Some(msg))))
+                                        prog = true
+                                    else:
+                                        let (buf3, head3, count3, cap3) = list.at(channels, ch3)
+                                        if count3 > 0:
+                                            let msg = list.at(buf3, head3)
+                                            let physcap = list.length(buf3)
+                                            list.set_at(channels, ch3, (buf3, (head3 + 1) % physcap, count3 - 1, cap3))
+                                            list.set_at(slots, i, Active(cont(3, Some(msg))))
+                                            prog = true
+                                        else:
+                                            list.set_at(slots, i, Wait4(ch0, ch1, ch2, ch3, cont))
                         Pull2Ready(ch0, ch1, cont) ->
                             let (buf0, head0, count0, cap0) = list.at(channels, ch0)
                             if count0 > 0:
@@ -553,6 +707,8 @@ pub fn run(root: Task(Nil)):
                         list.set_at(slots, j, Active(cont(unit())))
                         list.set_at(channels, ch, ring_put(close_buf, head, count, msg, cap))
                     Wait2(_ch0, _ch1, cont) -> list.set_at(slots, j, Active(cont(0, None)))
+                    Wait3(_ch0, _ch1, _ch2, cont) -> list.set_at(slots, j, Active(cont(0, None)))
+                    Wait4(_ch0, _ch1, _ch2, _ch3, cont) -> list.set_at(slots, j, Active(cont(0, None)))
                     Wait2Frame(_ch0, _ch1, frame, step, done_task) ->
                         if step(0, None, frame):
                             list.set_at(slots, j, Active(done_task))

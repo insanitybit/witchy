@@ -212,6 +212,20 @@ pub struct AwaitSelect2Plan {
     pub result_use: SelectResultUse,
 }
 
+/// Exact facts for a fixed-arity select with three or four receivers.
+///
+/// The endpoint vector is deliberately bounded at construction time. It is not
+/// a dynamic receiver list: source order is part of the carrier ABI, and a
+/// ready-path emitter can test each endpoint without reconstructing that list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitFixedSelectPlan {
+    pub endpoints: Vec<ChannelEndpointPlace>,
+    pub payload_layout: ChannelPayloadLayout,
+    pub payload_lane: Option<CarrierLane>,
+    pub resume_target: usize,
+    pub result_use: SelectResultUse,
+}
+
 /// Exact typed facts for one awaited send or receive.  The generic executor
 /// still owns the fallback, but a ready-path emitter receives the endpoint
 /// place, message representation, and transfer discipline together instead of
@@ -232,6 +246,8 @@ pub enum ScalarTransition {
     ChannelSend(AwaitChannelOperationPlan),
     ChannelReceive(AwaitChannelOperationPlan),
     ChannelSelect2(AwaitSelect2Plan),
+    ChannelSelect3(AwaitFixedSelectPlan),
+    ChannelSelect4(AwaitFixedSelectPlan),
     Spawn { child: usize, resume: usize },
     Join { resume: usize },
     Yield { resume: usize },
@@ -629,6 +645,11 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
         {
             Err("select")
         }
+        ScalarTransition::ChannelSelect3(select) | ScalarTransition::ChannelSelect4(select)
+            if select.endpoints.iter().any(|endpoint| !is_static(endpoint)) =>
+        {
+            Err("select")
+        }
         _ => Ok(()),
     }
 }
@@ -808,6 +829,34 @@ fn collect_task_expression(
         }));
         return Ok(());
     }
+    if call_family(name, "chan.__select3_map") || call_family(name, "task.__channel_select3") {
+        let resume_target = continuation_state(
+            args.last().ok_or_else(|| "fused select has no continuation".to_string())?,
+            state_ids,
+        )?;
+        transitions.push(ScalarTransition::ChannelSelect3(fixed_select_plan(
+            table,
+            args,
+            3,
+            definitions,
+            resume_target,
+        )));
+        return Ok(());
+    }
+    if call_family(name, "chan.__select4_map") || call_family(name, "task.__channel_select4") {
+        let resume_target = continuation_state(
+            args.last().ok_or_else(|| "fused select has no continuation".to_string())?,
+            state_ids,
+        )?;
+        transitions.push(ScalarTransition::ChannelSelect4(fixed_select_plan(
+            table,
+            args,
+            4,
+            definitions,
+            resume_target,
+        )));
+        return Ok(());
+    }
     let resume =
         resume.ok_or_else(|| format!("effect task `{name}` has no compiler-owned resume state"))?;
     let transition = if call_family(name, "chan.channel") {
@@ -839,6 +888,22 @@ fn collect_task_expression(
             resume_target: resume,
             result_use: SelectResultUse::ImmediateMatch,
         })
+    } else if call_family(name, "task.__channel_select3") {
+        ScalarTransition::ChannelSelect3(fixed_select_plan(
+            table,
+            args,
+            3,
+            definitions,
+            resume,
+        ))
+    } else if call_family(name, "task.__channel_select4") {
+        ScalarTransition::ChannelSelect4(fixed_select_plan(
+            table,
+            args,
+            4,
+            definitions,
+            resume,
+        ))
     } else if call_family(name, "chan.spawn") {
         let child = args
             .first()
@@ -946,6 +1011,67 @@ fn select_payload_layout(
     crate::typeck::ty_to_ast(&first_args[0])
         .map(|message| channel_payload_layout(&message, definitions))
         .unwrap_or(ChannelPayloadLayout::Boxed)
+}
+
+fn fixed_select_plan(
+    table: &TypeTable,
+    args: &[ast::Expr],
+    arity: usize,
+    definitions: &HashMap<String, &TypeDef>,
+    resume_target: usize,
+) -> AwaitFixedSelectPlan {
+    let endpoints = args
+        .iter()
+        .take(arity)
+        .map(|endpoint| channel_endpoint_place(Some(endpoint)))
+        .collect::<Vec<_>>();
+    let endpoint_types = args
+        .iter()
+        .take(arity)
+        .map(|endpoint| table.type_of(endpoint))
+        .collect::<Vec<_>>();
+    let payload_layout = fixed_select_payload_layout(&endpoint_types, definitions);
+    let payload_lane = fixed_select_payload_lane(&endpoint_types);
+    AwaitFixedSelectPlan {
+        endpoints,
+        payload_layout,
+        payload_lane,
+        resume_target,
+        result_use: SelectResultUse::ImmediateMatch,
+    }
+}
+
+fn fixed_select_payload_layout(
+    endpoints: &[Option<&Ty>],
+    definitions: &HashMap<String, &TypeDef>,
+) -> ChannelPayloadLayout {
+    let Some(Some(Ty::Named(first_name, first_args))) = endpoints.first() else {
+        return ChannelPayloadLayout::Boxed;
+    };
+    if endpoints.len() < 3
+        || first_name.rsplit('.').next() != Some("Receiver")
+        || first_args.len() != 1
+        || endpoints.iter().skip(1).any(|endpoint| {
+            !matches!(endpoint, Some(Ty::Named(name, args))
+                if name.rsplit('.').next() == Some("Receiver")
+                    && args.len() == 1
+                    && args == first_args)
+        })
+    {
+        return ChannelPayloadLayout::Boxed;
+    }
+    crate::typeck::ty_to_ast(&first_args[0])
+        .map(|message| channel_payload_layout(&message, definitions))
+        .unwrap_or(ChannelPayloadLayout::Boxed)
+}
+
+fn fixed_select_payload_lane(endpoints: &[Option<&Ty>]) -> Option<CarrierLane> {
+    (endpoints.len() >= 3
+        && endpoints.iter().all(|endpoint| {
+            matches!(endpoint, Some(Ty::Named(name, args))
+                if name.rsplit('.').next() == Some("Receiver") && args.as_slice() == [Ty::Int])
+        }))
+    .then_some(CarrierLane::I64)
 }
 
 fn channel_endpoint_payload_layout(

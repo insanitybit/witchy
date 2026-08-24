@@ -334,6 +334,22 @@ type Selected(m):
     Second(m)
     Closed
 
+// Fixed-arity variants retain the selected arm in the public result without
+// routing through `List(Receiver(m))`. They have the same deterministic
+// source-order rule as `select`: lower-numbered arms win ties.
+type Selected3(m):
+    First3(m)
+    Second3(m)
+    Third3(m)
+    Closed3
+
+type Selected4(m):
+    First4(m)
+    Second4(m)
+    Third4(m)
+    Fourth4(m)
+    Closed4
+
 // Receive from whichever of `a` or `b` has a message first; a tie favours `a`.
 // Yields `Closed` once both channels are closed.
 pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
@@ -341,6 +357,29 @@ pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
         Receiver(ia) ->
             match b:
                 Receiver(ib) -> task.__channel_select2(ia, ib, fn(k, o): select2_result(k, o))
+
+// Receive from the first ready receiver among `a`, `b`, and `c`. A tie is
+// resolved in argument order; `Closed3` is returned only on scheduler
+// quiescence after no arm can deliver.
+pub fn select3(a: Receiver(m), b: Receiver(m), c: Receiver(m)) -> Task(Selected3(m)):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) ->
+                    match c:
+                        Receiver(ic) -> task.__channel_select3_map(ia, ib, ic, fn(k, o): select3_result(k, o))
+
+// Four-way counterpart of `select3`, retaining the same deterministic
+// first-ready rule and fixed endpoint ABI.
+pub fn select4(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m)) -> Task(Selected4(m)):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) ->
+                    match c:
+                        Receiver(ic) ->
+                            match d:
+                                Receiver(id) -> task.__channel_select4_map(ia, ib, ic, id, fn(k, o): select4_result(k, o))
 
 pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     match a:
@@ -371,6 +410,30 @@ fn select2_result(k: Int, o: Option(__Msg)) -> Task(Selected(m)):
             else:
                 done(Second(__unerase(msg)))
         None -> done(Closed)
+
+fn select3_result(k: Int, o: Option(__Msg)) -> Task(Selected3(m)):
+    match o:
+        Some(msg) ->
+            if k == 0:
+                done(First3(__unerase(msg)))
+            else if k == 1:
+                done(Second3(__unerase(msg)))
+            else:
+                done(Third3(__unerase(msg)))
+        None -> done(Closed3)
+
+fn select4_result(k: Int, o: Option(__Msg)) -> Task(Selected4(m)):
+    match o:
+        Some(msg) ->
+            if k == 0:
+                done(First4(__unerase(msg)))
+            else if k == 1:
+                done(Second4(__unerase(msg)))
+            else if k == 2:
+                done(Third4(__unerase(msg)))
+            else:
+                done(Fourth4(__unerase(msg)))
+        None -> done(Closed4)
 
 // Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased
 // message directly into the callback's scalar frame step, so the callback does

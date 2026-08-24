@@ -5,7 +5,7 @@ use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
 
 const CHANNEL_CONTRACT: &str = r#"
-from chan import Receiver, Selected, Sender
+from chan import Receiver, Selected, Selected3, Selected4, Sender
 
 async fn bounded_producer(console: Console, tx: Sender(Int)):
     console.print("producer before 1")
@@ -65,6 +65,33 @@ async fn main(console: Console):
         Second(value) -> console.print("select wrong ${value}")
         Closed -> console.print("select closed")
 
+    let (first3_tx, first3_rx) = chan.channel(1).await
+    let (second3_tx, second3_rx) = chan.channel(1).await
+    let (third3_tx, third3_rx) = chan.channel(1).await
+    chan.send(first3_tx, 30).await
+    chan.send(second3_tx, 31).await
+    chan.send(third3_tx, 32).await
+    let selected3 = chan.select3(first3_rx, second3_rx, third3_rx).await
+    match selected3:
+        First3(value) -> console.print("select3 first ${value}")
+        Second3(value) -> console.print("select3 wrong ${value}")
+        Third3(value) -> console.print("select3 wrong ${value}")
+        Closed3 -> console.print("select3 closed too early")
+
+    let (first4_tx, first4_rx) = chan.channel(1).await
+    let (second4_tx, second4_rx) = chan.channel(1).await
+    let (third4_tx, third4_rx) = chan.channel(1).await
+    let (fourth4_tx, fourth4_rx) = chan.channel(1).await
+    chan.send(third4_tx, 43).await
+    chan.send(fourth4_tx, 44).await
+    let selected4 = chan.select4(first4_rx, second4_rx, third4_rx, fourth4_rx).await
+    match selected4:
+        First4(value) -> console.print("select4 wrong ${value}")
+        Second4(value) -> console.print("select4 wrong ${value}")
+        Third4(value) -> console.print("select4 third ${value}")
+        Fourth4(value) -> console.print("select4 wrong ${value}")
+        Closed4 -> console.print("select4 closed too early")
+
     let (_cancel_tx, cancel_rx) = chan.channel(1).await
     let doomed = chan.spawn(cancelled_child(console, cancel_rx)).await
     chan.yield_now().await
@@ -120,6 +147,8 @@ fn rfc0129_acceptance_row_2_typed_bounded_selected_cancelled_and_joined_channels
             "select first 10",
             "select second 20",
             "select closed",
+            "select3 first 30",
+            "select4 third 43",
             "cancel started",
             "cancelled",
             "scope A start",
