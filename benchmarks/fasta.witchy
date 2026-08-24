@@ -41,6 +41,22 @@ fn main(let console: Console, let clock: Clock):
     var n2 = 3 * n
     var seed = 42
     
+    let ca = "a"
+    let cc = "c"
+    let cg = "g"
+    let ct = "t"
+    let cB = "B"
+    let cD = "D"
+    let cH = "H"
+    let cK = "K"
+    let cM = "M"
+    let cN = "N"
+    let cR = "R"
+    let cS = "S"
+    let cV = "V"
+    let cW = "W"
+    let cY = "Y"
+    
     while n2 > 0:
         let len_out = min(n2, 60)
         var line_seq = ""
@@ -49,8 +65,8 @@ fn main(let console: Console, let clock: Clock):
             seed = (seed * 3877 + 29573) % 139968
             let r = math.to_float(seed) / 139968.0
             
-            let ch = if r < 0.27: 97 else: if r < 0.39: 99 else: if r < 0.51: 103 else: if r < 0.78: 116 else: if r < 0.80: 66 else: if r < 0.82: 68 else: if r < 0.84: 72 else: if r < 0.86: 75 else: if r < 0.88: 77 else: if r < 0.90: 78 else: if r < 0.92: 82 else: if r < 0.94: 83 else: if r < 0.96: 86 else: if r < 0.98: 87 else: 89
-            line_seq = line_seq + string.from_code(ch)
+            let ch = if r < 0.27: ca else: if r < 0.39: cc else: if r < 0.51: cg else: if r < 0.78: ct else: if r < 0.80: cB else: if r < 0.82: cD else: if r < 0.84: cH else: if r < 0.86: cK else: if r < 0.88: cM else: if r < 0.90: cN else: if r < 0.92: cR else: if r < 0.94: cS else: if r < 0.96: cV else: if r < 0.98: cW else: cY
+            line_seq = line_seq + ch
             i = i + 1
             
         console.print(line_seq)
@@ -66,8 +82,8 @@ fn main(let console: Console, let clock: Clock):
             seed = (seed * 3877 + 29573) % 139968
             let r = math.to_float(seed) / 139968.0
             
-            let ch = if r < 0.3029549426680: 97 else: if r < 0.5009432431601: 99 else: if r < 0.6984905497992: 103 else: 116
-            line_seq = line_seq + string.from_code(ch)
+            let ch = if r < 0.3029549426680: ca else: if r < 0.5009432431601: cc else: if r < 0.6984905497992: cg else: ct
+            line_seq = line_seq + ch
             i = i + 1
             
         console.print(line_seq)

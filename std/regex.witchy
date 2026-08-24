@@ -5,7 +5,7 @@
 // public API here is built on those spans in plain witchy, so it runs the same
 // on the interpreter and the compiled backend. Positions are character indices.
 
-import string
+import bytes
 
 // The native engine: every non-overlapping match of `pattern` in `text`, as
 // character spans encoded "s,e;s,e;..." ("" when there is no match). Overridden
@@ -33,9 +33,29 @@ pub fn find_all(pattern: String, text: String) -> List((Int, Int)):
         []
     else:
         var out = []
-        for part in encoded.split(";"):
-            let pair = part.split(",")
-            list.push(out, (list.at(pair, 0).to_int(), list.at(pair, 1).to_int()))
+        let b = bytes.from_string(encoded)
+        let len = b.length()
+        var i = 0
+        var s = 0
+        var e = 0
+        var in_end = false
+        while i < len:
+            let c = b.at(i)
+            if c == 44:
+                in_end = true
+            else if c == 59:
+                list.push(out, (s, e))
+                s = 0
+                e = 0
+                in_end = false
+            else:
+                let d = c - 48
+                if in_end:
+                    e = e * 10 + d
+                else:
+                    s = s * 10 + d
+            i = i + 1
+        list.push(out, (s, e))
         out
 
 // The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
@@ -49,11 +69,15 @@ pub fn extract(pattern: String, text: String) -> List(String):
 // `text` with every match replaced (the replacement is literal - no `$1` group
 // expansion): replace_all("\\s+", "a  b", "-") is "a-b".
 pub fn replace_all(pattern: String, text: String, replacement: String) -> String:
+    let spans = find_all(pattern, text)
+    if list.length(spans) == 0:
+        return text
     var out = ""
     var prev = 0
-    for span in find_all(pattern, text):
+    for span in spans:
         let (s, e) = span
-        out = out + text.substring(prev, s) + replacement
+        out = out + text.substring(prev, s)
+        out = out + replacement
         prev = e
     out + text.drop(prev)
 

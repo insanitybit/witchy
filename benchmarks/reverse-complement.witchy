@@ -15,13 +15,21 @@ fn slice_to_string(let seq: List(Int), let start: Int, let end_idx: Int) -> Stri
         Err(_e) -> ""
 
 fn get_comp(c: Int) -> Int:
-    if c == 65 || c == 97:
+    if c == 65:
         84
-    else if c == 67 || c == 99:
+    else if c == 67:
         71
-    else if c == 71 || c == 103:
+    else if c == 71:
         67
-    else if c == 84 || c == 116:
+    else if c == 84:
+        65
+    else if c == 97:
+        84
+    else if c == 99:
+        71
+    else if c == 103:
+        67
+    else if c == 116:
         65
     else:
         c
@@ -47,10 +55,10 @@ fn main(let console: Console, let clock: Clock):
         var i = 0
         var j = total - 1
         while i <= j:
-            let ci = list.at(seq, i)
-            let cj = list.at(seq, j)
-            list.set_at(seq, i, get_comp(cj))
-            list.set_at(seq, j, get_comp(ci))
+            let ci = seq[i]
+            let cj = seq[j]
+            seq[i] = get_comp(cj)
+            seq[j] = get_comp(ci)
             i = i + 1
             j = j - 1
         iter = iter + 1

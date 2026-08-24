@@ -835,11 +835,6 @@ mod regexp {
     use super::{intrinsics, type_error, Value};
     use crate::value::NativeError as RuntimeError;
 
-    /// Character offset of `byte` within `text` (a byte index from the crate).
-    fn char_off(text: &str, byte: usize) -> i64 {
-        text[..byte].chars().count() as i64
-    }
-
     /// Every non-overlapping match as char-index spans, encoded `"s,e;s,e;..."`
     /// (empty string when there is no match). The host-bridged form used by the
     /// WASM backend (`host_regex_spans`) calls straight through to this.
@@ -854,12 +849,29 @@ mod regexp {
             message: format!("invalid regex pattern `{pattern}`: {e}"),
         })?;
         let mut out = String::new();
+        let is_ascii = text.is_ascii();
+        let mut last_byte = 0;
+        let mut last_char = 0i64;
         for m in re.find_iter(text) {
             use std::fmt::Write;
             if !out.is_empty() {
                 out.push(';');
             }
-            let _ = write!(out, "{},{}", char_off(text, m.start()), char_off(text, m.end()));
+            let s_char = if is_ascii {
+                m.start() as i64
+            } else {
+                last_char += text[last_byte..m.start()].chars().count() as i64;
+                last_byte = m.start();
+                last_char
+            };
+            let e_char = if is_ascii {
+                m.end() as i64
+            } else {
+                last_char += text[last_byte..m.end()].chars().count() as i64;
+                last_byte = m.end();
+                last_char
+            };
+            let _ = write!(out, "{s_char},{e_char}");
         }
         Ok(Value::Str(out))
     }

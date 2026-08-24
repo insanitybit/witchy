@@ -43,7 +43,7 @@ def sha256_file(path):
         return None
 
 
-WALL_ONLY = {"chan_throughput"}
+WALL_ONLY = set()
 ALL_BENCHES = [
     "fib", "loop_sum", "collatz", "mandelbrot", "closure_calls", "list_sum",
     "dict_count", "binary_trees", "word_count", "expr_eval", "nsieve", "fannkuch",

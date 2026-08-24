@@ -431,7 +431,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "string_from_code" => Some(WirHelperSpec {
             func: string_from_code_helper(),
             helper_deps: &["rc_alloc"],
-            import_deps: &["string_from_code"],
+            import_deps: &[],
             uses_heap: true,
             uses_table: false,
         }),

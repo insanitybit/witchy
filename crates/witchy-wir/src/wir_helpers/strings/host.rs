@@ -2,31 +2,94 @@
 
 use crate::wir::*;
 
-/// `$string_from_code(cp: i64) -> String` through the Unicode host adapter.
+/// `$string_from_code(cp: i64) -> String` — in-WASM pure UTF-8 codepoint encoder.
 pub(in crate::wir_helpers) fn string_from_code_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let store8 = |offset: u32, val: E| N::Store8 {
+        ptr: getl("res"),
+        value: val,
+        offset: 4 + offset,
+    };
+
     WirFunc {
         name: "string_from_code".into(),
         params: vec![WirLocal { name: "cp".into(), ty: WirTy::Int }],
         ret: vec![WirTy::Str],
         locals: vec![
             WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "c".into(), ty: WirTy::Bool },
             WirLocal { name: "n".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            // (RFC-0016) reserve the worst-case 8-byte cell through `$rc_alloc`; the host
-            // writes n<=4 bytes and the length header caps to n (block size stays 8).
-            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(8)] } },
-            N::SetLocal {
-                local: "n".into(),
-                value: E::CallHost {
-                    import: "string_from_code".into(),
-                    args: vec![getl("cp"), b(BinOp::Add, getl("res"), i32c(4))],
+            setl("res", E::Call { func: "rc_alloc".into(), args: vec![i32c(8)] }),
+            N::If {
+                cond: E::Binary {
+                    op: BinOp::Or,
+                    kind: Kind::I32,
+                    lhs: Box::new(E::Binary {
+                        op: BinOp::Or,
+                        kind: Kind::I32,
+                        lhs: Box::new(b64(BinOp::Lt, getl("cp"), i64c(0))),
+                        rhs: Box::new(b64(BinOp::Gt, getl("cp"), i64c(0x10FFFF))),
+                    }),
+                    rhs: Box::new(E::Binary {
+                        op: BinOp::And,
+                        kind: Kind::I32,
+                        lhs: Box::new(b64(BinOp::Ge, getl("cp"), i64c(0xD800))),
+                        rhs: Box::new(b64(BinOp::Le, getl("cp"), i64c(0xDFFF))),
+                    }),
                 },
+                then_: vec![
+                    store8(0, i32c(0xEF)),
+                    store8(1, i32c(0xBF)),
+                    store8(2, i32c(0xBD)),
+                    setl("n", i32c(3)),
+                ],
+                els: vec![
+                    setl("c", E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("cp")) }),
+                    N::If {
+                        cond: b(BinOp::LtU, getl("c"), i32c(0x80)),
+                        then_: vec![
+                            store8(0, getl("c")),
+                            setl("n", i32c(1)),
+                        ],
+                        els: vec![N::If {
+                            cond: b(BinOp::LtU, getl("c"), i32c(0x800)),
+                            then_: vec![
+                                store8(0, b(BinOp::Or, i32c(0xC0), b(BinOp::ShrU, getl("c"), i32c(6)))),
+                                store8(1, b(BinOp::Or, i32c(0x80), b(BinOp::And, getl("c"), i32c(0x3F)))),
+                                setl("n", i32c(2)),
+                            ],
+                            els: vec![N::If {
+                                cond: b(BinOp::LtU, getl("c"), i32c(0x10000)),
+                                then_: vec![
+                                    store8(0, b(BinOp::Or, i32c(0xE0), b(BinOp::ShrU, getl("c"), i32c(12)))),
+                                    store8(1, b(BinOp::Or, i32c(0x80), b(BinOp::And, b(BinOp::ShrU, getl("c"), i32c(6)), i32c(0x3F)))),
+                                    store8(2, b(BinOp::Or, i32c(0x80), b(BinOp::And, getl("c"), i32c(0x3F)))),
+                                    setl("n", i32c(3)),
+                                ],
+                                els: vec![
+                                    store8(0, b(BinOp::Or, i32c(0xF0), b(BinOp::ShrU, getl("c"), i32c(18)))),
+                                    store8(1, b(BinOp::Or, i32c(0x80), b(BinOp::And, b(BinOp::ShrU, getl("c"), i32c(12)), i32c(0x3F)))),
+                                    store8(2, b(BinOp::Or, i32c(0x80), b(BinOp::And, b(BinOp::ShrU, getl("c"), i32c(6)), i32c(0x3F)))),
+                                    store8(3, b(BinOp::Or, i32c(0x80), b(BinOp::And, getl("c"), i32c(0x3F)))),
+                                    setl("n", i32c(4)),
+                                ],
+                                result: None,
+                            }],
+                            result: None,
+                        }],
+                        result: None,
+                    },
+                ],
+                result: None,
             },
             N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
             N::Push(getl("res")),
