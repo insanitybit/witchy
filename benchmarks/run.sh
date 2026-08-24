@@ -27,6 +27,7 @@ fi
 
 WITCHY="${WITCHY:-../target/release/witchy}"
 ALL_BENCHES=(
+  fasta
     fib
     loop_sum
     collatz
