@@ -7074,9 +7074,16 @@ mod checked_codegen_boundary_tests {
         let source = include_str!("../../../../std/task.witchy");
         for marker in [
             "Pull2Frame(Int, Int, List(Int)",
+            "Pull2FrameLoop(Int, Int, List(Int)",
             "Wait2Frame(Int, Int, List(Int)",
+            "Wait2FrameLoop(Int, Int, List(Int)",
             "Pull2Frame(ch0, ch1, frame, step, done_task)",
+            "Pull2FrameLoop(ch0, ch1, frame, step, done_task)",
             "Wait2Frame(ch0, ch1, frame, step, done_task)",
+            "Wait2FrameLoop(ch0, ch1, frame, step, done_task)",
+            "if step(0, Some(frame_msg0), frame):",
+            "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_task))",
+            "if step(0, None, frame):",
         ] {
             assert!(source.contains(marker), "missing reusable frame ABI marker: {marker}");
         }
