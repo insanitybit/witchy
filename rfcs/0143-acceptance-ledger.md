@@ -1,6 +1,6 @@
 # RFC-0143 current-truth and acceptance ledger
 
-Audit date: 2026-08-23; audit base: `fa4f9844864c5ec28db3494b52499ec20c2c3749`
+Audit date: 2026-08-23; current-master refresh: `bf00f90c30557e02286f8503f667d267df65a817`
 
 This ledger deliberately separates the useful Swiss-control/index work already
 on master from acceptance of RFC-0143 as written. The RFC remains **proposed**.
@@ -30,7 +30,9 @@ scalar/SIMD-equivalent representation and promotion gate.
 
 ## Decision
 
-**RFC-0143 remains proposed and deferred.** The current Swiss control metadata,
+**Closeout decision: RFC-0143 remains proposed and deferred.** The current
+master refresh introduced no RFC-0143 acceptance evidence or dictionary
+representation change. The current Swiss control metadata,
 64-bit hashing, borrowed-string lookup support, and ordered projection counters
 are implementation evidence and useful prerequisites, not acceptance evidence.
 No performance promotion or semantic closeout is claimed. The next acceptance
@@ -42,3 +44,9 @@ RFC's three-workload promotion gate against the immediately preceding master.
 This decision is independent of RFC-0146. RFC-0146's dictionary/string audit
 may use the partial Swiss machinery for attribution, but it does not accept or
 close RFC-0143.
+
+The current checked-in dictionary performance does not justify reopening a
+speculative Swiss optimization track: the retained 12-sample `dict_count`
+artifacts measure 26.909 ms for Witchy versus 41.646 ms for Go. Reopen only
+for a demonstrated regression or for the missing requirement-level acceptance
+matrix, not for an unprofiled representation rewrite.
