@@ -296,15 +296,28 @@ fi
 
 # Fast / Quick mode
 printf "\n%s%sWitchy Performance Benchmarks%s %s(%s mode, %s sample(s))%s\n" "$BOLD" "$BRIGHT_CYAN" "$RESET" "$DIM" "$MODE" "$RUNS" "$RESET"
+HEAD_FORMAT="  %-18s %14s"
+HEAD_ARGS=("Benchmark" "Witchy")
+if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then HEAD_FORMAT+=" %14s"; HEAD_ARGS+=("Go"); fi
+if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "node" ]; then HEAD_FORMAT+=" %14s"; HEAD_ARGS+=("Node.js"); fi
+if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then HEAD_FORMAT+=" %14s"; HEAD_ARGS+=("Ruby"); fi
+if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then HEAD_FORMAT+=" %14s"; HEAD_ARGS+=("Rust"); fi
+HEAD_FORMAT+=" %14s    %-8s\n"
+
 if [ -n "$COMPARE_LANG" ]; then
     compare_title="vs $(tr '[:lower:]' '[:upper:]' <<< ${COMPARE_LANG:0:1})${COMPARE_LANG:1}"
     printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats %s baseline%s\n\n" "$DIM" "$GREEN" "$DIM" "$COMPARE_LANG" "$RESET"
-    printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "$compare_title" "Status"
+    HEAD_ARGS+=("$compare_title" "Status")
+    printf "$HEAD_FORMAT" "${HEAD_ARGS[@]}"
 else
     printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats fastest baseline%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
-    printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "vs Fastest" "Status"
+    HEAD_ARGS+=("vs Fastest" "Status")
+    printf "$HEAD_FORMAT" "${HEAD_ARGS[@]}"
 fi
-printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+# The dashed line width
+LINE_DASHES=""
+for ((i=0; i<${#HEAD_ARGS[@]}*14 + 11; i++)); do LINE_DASHES+="─"; done
+printf "  %s\n" "$LINE_DASHES"
 
 total_count=0
 pass_count=0
@@ -397,14 +410,32 @@ for b in "${TARGETS[@]}"; do
         fi
     fi
 
+    ROW_FORMAT="  %-18s %14s"
+    ROW_ARGS=("$b")
+    
     if [ -z "$wns" ]; then
-        printf "  %-18s %14s %14s %14s %14s %14s %14s    %s\n" "$b" "(wall-only)" "—" "—" "—" "—" "—" "$status_disp"
+        ROW_ARGS+=("(wall-only)")
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("—"); fi
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "node" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("—"); fi
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("—"); fi
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("—"); fi
+        
+        ROW_FORMAT+=" %14s    %s\n"
+        ROW_ARGS+=("—" "$status_disp")
     else
-        printf "  %-18s %14s %14s %14s %14s %14s %s%14s%s    %s\n" "$b" "$w_ms" "$g_ms" "$n_ms" "$r_ms" "$rs_ms" "$ratio_color" "$ratio_str" "$RESET" "$status_disp"
+        ROW_ARGS+=("$w_ms")
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("$g_ms"); fi
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "node" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("$n_ms"); fi
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("$r_ms"); fi
+        if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then ROW_FORMAT+=" %14s"; ROW_ARGS+=("$rs_ms"); fi
+        
+        ROW_FORMAT+=" %s%14s%s    %s\n"
+        ROW_ARGS+=("$ratio_color" "$ratio_str" "$RESET" "$status_disp")
     fi
+    printf "$ROW_FORMAT" "${ROW_ARGS[@]}"
 done
 
-printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+printf "  %s\n" "$LINE_DASHES"
 if [ "$faster_count" -gt 0 ]; then
     printf "  %s%s%d/%d passed%s, %s%d faster than fastest baseline%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
 else
