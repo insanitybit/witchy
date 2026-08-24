@@ -29,10 +29,9 @@ This RFC establishes four independent rules:
 2. Other persistent executable-cache records are accepted only after keyed
    authentication binds the exact input, output, compiler/runtime identity,
    target, configuration, and format.
-3. Witchy guest filesystem capabilities cannot access Witchy's cache or cache
-   credentials. Supported OS process sandboxes reinforce this rule and confine
-   child processes, but are defense in depth rather than the portable trust
-   anchor.
+3. Witchy guest filesystem capabilities are denied access to Witchy's cache and
+   cache credentials as defense in depth. This denial is not the portable
+   integrity anchor and does not replace authentication.
 4. If authenticated caching is unavailable, execution continues without a
    persistent executable cache. Witchy never silently downgrades to an
    unauthenticated cache and never requires an interactive credential prompt
@@ -54,15 +53,15 @@ contract from implementation choices that still require prototypes.
 - Cache authentication failure causes recomputation, never execution.
 - Cache metadata never grants capabilities. The current input and launch
   contract remain authoritative.
-- Witchy guests cannot obtain a cache-authentication operation or key.
+- Witchy guests cannot obtain a cache-authentication operation or key. A native
+  child is covered by this claim only when the selected authenticator and OS
+  confinement can exclude that child explicitly.
 - Missing secure storage causes an uncached run, not a prompt or insecure
   fallback.
 
 ### Open implementation choices
 
-- The exact credential backend abstraction and supported headless providers.
-- Whether the authentication key is installation-scoped or partitioned by
-  compiled-program identity. The record format supports either choice.
+- The exact authenticator backend abstraction and supported headless providers.
 - Whether authenticated native-code caching remains in-process or moves behind
   a compiler/cache daemon.
 - Which macOS distribution shape, if any, justifies an App Sandbox or XPC
@@ -115,8 +114,8 @@ write-files-to-execute-code path under its own cache directory.
 - Self-consistent cache replacement, truncation, swapping, and replay across
   incompatible compiler/runtime configurations.
 - Symlink, hard-link, rename, and verify-then-reopen races in cache handling.
-- Child processes launched through `Exec` or `BuildExec` attempting to reach
-  the cache.
+- Child processes launched through `Exec` or `BuildExec` when the selected
+  platform confinement explicitly claims to contain them.
 - Absence, locking, or failure of an OS credential service.
 - A malformed cache artifact targeting Wasmtime or Witchy's host ABI.
 
@@ -124,6 +123,9 @@ write-files-to-execute-code path under its own cache directory.
 
 - An attacker already able to execute arbitrary native code as the user
   independently of Witchy.
+- A child launched through `Exec` or `BuildExec` on a platform or launch mode
+  that cannot isolate it from both the cache and authenticator. Such a grant is
+  explicitly native-user authority, not contained Witchy authority.
 - An attacker able to replace the Witchy runtime, trusted executable, OS
   credential service, kernel, or compiler before the trusted build.
 - Preventing a deliberately broad filesystem grant from modifying unrelated
@@ -135,7 +137,21 @@ write-files-to-execute-code path under its own cache directory.
 
 Native execution as the user normally subsumes access to user-scoped credential
 services. It is therefore not meaningful for this RFC to claim protection after
-that boundary is crossed.
+that boundary is crossed. In particular, an ordinary same-user credential store
+is not by itself a valid authenticator against an in-scope native child: the
+child may be able to retrieve the same key. Covering native children requires
+one of:
+
+- enforced process isolation from both cache storage and the credential
+  service;
+- a non-exportable authentication operation restricted to trusted Witchy code;
+- a compile-only broker running under a distinct OS security identity; or
+- treating the `Exec`/`BuildExec` grant as an explicit crossing of this threat
+  boundary.
+
+Disabling cache use only for the process that launched the child is
+insufficient. A surviving child could obtain a persistent same-user key or
+poison state consumed by a later process.
 
 ## Execution models
 
@@ -174,10 +190,18 @@ This rule may be relaxed only by a later RFC that provides either:
 
 ### Authentication domain
 
-The runtime obtains a random 256-bit cache key from a platform credential
-provider. The raw key is available only to trusted native host code and is
-never placed in guest linear memory, exposed through a host import, inherited
-through environment variables, or written beside the cache.
+The runtime obtains an authentication operation from a platform authenticator.
+The simplest qualifying implementation is a random 256-bit key in a credential
+provider that is inaccessible to every attacker in the active threat model.
+The raw key is available only to trusted native host code and is never placed
+in guest linear memory, exposed through a host import, inherited through
+environment variables, or written beside the cache.
+
+An implementation that claims containment of same-user native children must
+not assume that a user-scoped credential store distinguishes the trusted
+Witchy host from those children. It must demonstrate that distinction or use a
+non-exportable operation or broker. If it cannot, native-child containment is
+unavailable on that platform.
 
 The preferred provider behavior is non-interactive:
 
@@ -193,19 +217,9 @@ loads, but an ordinarily readable executable still reveals it to offline
 inspection. Per-program embedded keys may partition failures, but do not
 establish authenticity against the stated attacker.
 
-An implementation may partition one installation key into per-program keys:
-
-```text
-program_key = BLAKE3-DERIVE-KEY(
-    installation_key,
-    "witchy executable cache program key v1" || stable_program_identity
-)
-```
-
-`stable_program_identity` must itself come from authenticated input. A cache
-pathname, package display name, or attacker-controlled manifest field is not
-sufficient. Partitioning limits accidental cross-use but is not required for
-correctness because every record also binds its full input identity.
+Per-program key derivation is not part of the security contract. Complete
+record binding already prevents cross-program reuse, while deriving every key
+from one installation secret does not contain compromise of that secret.
 
 ### Authenticated record
 
@@ -217,15 +231,14 @@ schema
 cache_kind                 # optimized-wasm, native-code, build-result, ...
 input_digest               # digest of exact source graph or input wasm
 artifact_digest            # digest of exact payload bytes
-compiler_identity
-runtime_identity
-optimizer_identity
-target_triple
-codegen_configuration
-feature_set
-launch_contract_digest
+recipe_digest               # canonical compiler/runtime/tool/target/config identity
 payload_length
 ```
+
+The canonical recipe covered by `recipe_digest` includes the compiler,
+runtime, optimizer executable, target, feature set, code-generation settings,
+cache epoch, and any launch-contract facts not already covered by the exact
+input. These are one binding obligation rather than independent mitigations.
 
 The tag is a keyed BLAKE3 digest over the canonical encoding and the artifact
 digest:
@@ -239,16 +252,18 @@ the filename is not authenticated evidence. Content addressing answers whether
 bytes match a name; the tag answers whether Witchy's trusted compiler approved
 the complete input-to-artifact relationship.
 
-Unknown schemas, fields, algorithms, cache kinds, compiler/runtime identities,
-or feature sets fail closed. Cache keys and record formats carry explicit
-epochs so a security release can invalidate all older records.
+Unknown schemas, fields, algorithms, cache kinds, or recipe identities fail
+closed. Cache keys and record formats carry explicit epochs so a security
+release can invalidate all older records.
 
 ### Cache insertion
 
 Only trusted host compiler code constructs an authenticated record:
 
-1. Read and hash the exact input bytes or canonical source graph.
-2. Compile or optimize those bytes in the trusted host.
+1. Open and freeze the exact input bytes or canonical source graph, then hash
+   that frozen representation.
+2. Compile or optimize that same representation without reopening mutable
+   source paths.
 3. Hash the resulting artifact.
 4. Construct and authenticate the canonical record.
 5. Write artifact and record to temporary files in the cache directory.
@@ -259,11 +274,18 @@ operation. Otherwise the host becomes a signing oracle for attacker-selected
 input-to-output assertions. A future daemon accepts inputs and compilation
 requests, not claimed compilation results.
 
+Every external compiler or optimizer is part of the trusted producer. Witchy
+must resolve it through trusted configuration, open the exact executable whose
+identity is included in `recipe_digest`, and prevent an ambient `PATH` change or
+verify/execute race from substituting another tool. A version string printed by
+an arbitrary `wasm-opt` found on `PATH` is not an authenticated optimizer
+identity.
+
 ### Cache lookup
 
 Lookup proceeds as follows:
 
-1. Hash the exact current input and derive all compiler/runtime configuration
+1. Freeze and hash the exact current input and derive the canonical recipe
    independently of cache contents.
 2. Open the candidate record and artifact without following unexpected links.
 3. Bound their lengths before allocation or parsing.
@@ -286,11 +308,11 @@ an equality check that fails closed.
 
 ### Guest cache exclusion
 
-The cache and cache credential namespaces are reserved host resources. Witchy
-does not mint guest `Dir` or `File` capabilities that directly identify them.
-Every guest filesystem operation denies traversal, listing, reading, writing,
-creation, truncation, unlinking, linking, or renaming that resolves into those
-namespaces.
+The cache and cache credential namespaces are reserved host resources. As
+defense in depth, Witchy does not mint guest `Dir` or `File` capabilities that
+directly identify them. Guest filesystem operations should deny traversal,
+listing, reading, writing, creation, truncation, unlinking, linking, or renaming
+that resolves into those namespaces.
 
 This restriction applies even when a user grants a parent directory such as
 the home directory. Implementations must test object identity and open-handle
@@ -298,16 +320,24 @@ behavior rather than relying only on lexical path prefixes. Witchy's own
 compiler and package tooling use a private host path unavailable through guest
 imports.
 
-This portable rule is defense in depth. The MAC remains authoritative because
-filesystem mediation can contain implementation mistakes and cannot constrain
-an unrelated same-user native process.
+This rule is not required for cache integrity when complete authentication and
+race-free loading hold. It earns its place by reducing denial of service,
+limiting exposure to verifier mistakes and legacy cache formats, and making the
+reserved host/guest boundary explicit. Implementations must not delay the core
+authentication work on a difficult path-exclusion mechanism.
 
 ### OS process confinement
 
-Where supported, Witchy runs guest execution in a worker process whose OS
+Where supported, Witchy may run guest execution in a worker process whose OS
 sandbox excludes cache and credential storage. The worker receives only the
 already-validated module and explicit capability resources. Cache file
 descriptors are closed before guest execution.
+
+For ordinary WebAssembly without native child authority, this is defense in
+depth and is not required for cache integrity once authenticated exact-byte
+loading holds. If Witchy claims that an `Exec` or `BuildExec` child remains
+inside the threat boundary, however, OS confinement or an equivalent broker is
+mandatory and must exclude both cache files and the authentication operation.
 
 On Linux, Landlock restrictions must be applied before guest capability handles
 are opened and are inherited by child processes. Landlock is an allow-list: a
@@ -329,26 +359,44 @@ defense-in-depth layer.
 
 ### Failure and override behavior
 
-Cache behavior has three user-visible states:
+Cache behavior has two user-visible states:
 
 | State | Behavior |
 |---|---|
 | `authenticated` | Read and write authenticated persistent records |
 | `unavailable` | Compile normally; use only process-memory caching |
-| `unsafe-explicit` | Permit legacy unauthenticated caching after an explicit warning |
 
 `unavailable` is the automatic fallback. Credential prompts are not part of
 ordinary program startup. Cache corruption is handled as a miss, optionally
-with a bounded diagnostic; it never changes program authority.
+with a bounded diagnostic; it never changes program authority. There is no
+runtime flag or environment variable that enables unauthenticated executable
+caching. Benchmarks that need a legacy cache must use a separately built test
+fixture outside the production security contract.
 
-An escape hatch, if retained, must be unmistakably unsafe. The proposed forms
-are `--unsafe-trust-cache` and `WITCHY_UNSAFE_TRUST_CACHE=1`. The shorter
-`TRUST_CACHE=true` is rejected because it obscures both scope and consequence.
-Security-sensitive release and trusted-executable paths ignore the override.
+## Minimality and composition
 
-The environment override is intended for developer and hermetic CI use only.
-It must not be inherited into `Exec`/`BuildExec` children, and package metadata
-or guest-controlled environment values cannot enable it.
+The cache-integrity core is:
+
+```text
+complete keyed authentication
++ trusted-only record production
++ exact frozen inputs and exact-byte consumption
++ authentication before native deserialization
++ authority derived independently of cache contents
++ cache-off fallback
+```
+
+Removing any member opens a distinct attack: forgery, signing-oracle abuse,
+input or load races, unsafe parsing of attacker bytes, capability confusion, or
+silent downgrade. Content addressing, per-program key derivation, guest path
+denial, and OS sandboxing for a no-`Exec` WebAssembly guest do not replace any
+member of this core.
+
+Trusted executables form a separate execution mode. Cache independence alone
+closes their mutable-cache substitution path and deliberately avoids depending
+on the authentication core. Once an authenticated trusted-executable cache is
+implemented and proven, cache independence may become a transitional rather
+than permanent rule.
 
 ## Attack analysis
 
@@ -356,17 +404,20 @@ or guest-controlled environment values cannot enable it.
 |---|---|---|
 | Replace artifact but keep record | Artifact digest and MAC | Miss and recompile |
 | Replace record and artifact consistently | Secret-key MAC | Miss and recompile |
-| Poison another program's entry | Bound input and launch-contract digests; optional program-key partition | Miss and recompile |
-| Replay old compiler output | Compiler/runtime/configuration identities and epoch | Miss and recompile |
+| Poison another program's entry | Bound exact-input and recipe digests | Miss and recompile |
+| Replay old compiler output | Recipe identity and epoch | Miss and recompile |
 | Reach cache through broad `Dir` | Guest cache exclusion; OS worker where available | Denied; MAC remains backup |
-| Reach cache through child process | Worker sandbox inherited across child execution | Denied where supported; MAC remains authoritative |
+| Reach cache through child process | Isolation from both cache and authenticator, or explicit native-authority boundary | Denied only when the complete isolation claim holds |
 | Extract embedded key | No embedded cache key | No key present |
 | Use host as signing oracle | No guest cache-authentication API; trusted compiler constructs records | No attacker-selected assertion authenticated |
+| Substitute `wasm-opt` or another compiler tool | Trusted resolution and exact tool identity in recipe | Untrusted producer never signs output |
+| Change source between hashing and compilation | Freeze once and compile the hashed representation | Record binds the bytes actually compiled |
 | Symlink or rename between verification and use | Descriptor-relative no-follow opens and same-open-byte consumption | Replacement not consumed |
 | Feed malformed native artifact to unsafe deserializer | Authenticate and bound before deserialization | Rejected before unsafe boundary |
 | Delete cache | Out of scope availability attack | Recompile safely |
 | Exploit Wasmtime with authenticated compiler output | Runtime hardening, updates, and fuzzing outside this cache protocol | Not solved by cache authentication |
 | Compromised library uses containing module's valid capabilities | Dependency isolation or separate instances | Not solved by cache authentication |
+| Same-user native child retrieves credential key | Required OS/broker isolation or explicit native-authority boundary | Never claimed safe through credential storage alone |
 
 ## Performance
 
@@ -385,8 +436,8 @@ The acceptance evidence must report:
 - cache-hit hashing and verification time separately;
 - source-to-WebAssembly, optimized-WebAssembly, and native compilation costs;
 - trusted-executable startup before and after cache independence;
-- authenticated, unavailable, corrupted, and unsafe-explicit modes;
-- desktop credential provider and headless/no-provider behavior.
+- authenticated, unavailable, and corrupted modes;
+- desktop authenticator and headless/no-provider behavior.
 
 A daemon may improve performance by retaining validated modules in memory and
 serializing compilation across clients. It is not required by this RFC and may
@@ -408,7 +459,8 @@ embedded bindings, capability checks, and output remain unchanged.
 
 ## Acceptance criteria
 
-Implementation is complete only when all of the following are demonstrated:
+The cache-integrity core is complete only when all of the following are
+demonstrated:
 
 1. Trusted executable tests run with an absent cache root and leave it absent.
 2. A valid malicious optimized-WebAssembly envelope with the expected input
@@ -421,18 +473,27 @@ Implementation is complete only when all of the following are demonstrated:
 6. Cache records are authenticated before any native-artifact deserialization.
 7. Capability footprints, imports, bindings, and grants are derived outside the
    cache and mismatches fail closed.
-8. Parent-directory grants, direct grants, symlinks, hard links, rename,
-   truncation, deletion, and concurrent replacement are covered by adversarial
-   tests.
-9. On Linux systems with a supported Landlock ABI, guest workers and their
-   children cannot access protected state through the granted roots.
-10. Unsupported or unexpressible OS confinement is reported as unavailable,
-    not silently represented as enforced.
-11. Unsafe cache mode requires an explicit unsafe control and emits a clear
-    diagnostic; trusted executables ignore it.
-12. Focused performance evidence quantifies startup and cache-hit overhead.
-13. Fuzz targets cover canonical record decoding, length bounds, algorithm and
+8. Production binaries expose no unauthenticated executable-cache override.
+9. External compiler and optimizer identity is authenticated, and ambient
+    `PATH` substitution cannot produce an authenticated record.
+10. The representation hashed for insertion is the exact representation
+    compiled, with no mutable-path reopen between those operations.
+11. Focused performance evidence quantifies startup and cache-hit overhead.
+12. Fuzz targets cover canonical record decoding, length bounds, algorithm and
     schema dispatch, and cache lookup races.
+
+Additional defense-in-depth claims have their own acceptance gates and do not
+delay the core:
+
+1. Guest cache exclusion covers parent-directory and direct grants, symlinks,
+   hard links, rename, truncation, deletion, open handles, and concurrent
+   replacement.
+2. Native-child containment proves the child cannot access either cache
+   storage or the authentication operation.
+3. A Linux Landlock claim proves guest workers and descendants cannot reach
+   protected state through every granted root.
+4. Unsupported or unexpressible OS confinement is reported as unavailable,
+   never silently represented as enforced.
 
 ## Rollout
 
@@ -444,9 +505,9 @@ Implementation is complete only when all of the following are demonstrated:
 
 ### Phase 2: portable authenticated optimized-WebAssembly cache
 
-- Introduce the credential-provider abstraction and keyed canonical record.
+- Introduce the authenticator abstraction and keyed canonical record.
 - Implement non-interactive unavailable fallback.
-- Reserve cache/key namespaces from guest capabilities.
+- Pin and authenticate every external optimizer/compiler tool.
 - Reject all legacy optimized-WebAssembly entries.
 
 ### Phase 3: native-cache decision
@@ -456,12 +517,16 @@ Implementation is complete only when all of the following are demonstrated:
   integration, or leave persistent native caching disabled.
 - Measure whether a broker/daemon is justified.
 
-### Phase 4: OS worker confinement
+### Phase 4: defense in depth and native-child decision
 
-- Add Linux Landlock worker confinement and inheritance tests.
+- Reserve cache/key namespaces from guest capabilities without making this a
+  prerequisite for authenticated caching.
+- Add Linux Landlock worker confinement and inheritance tests if native-child
+  containment remains a product goal.
 - Prototype supported macOS App Sandbox/XPC packaging before committing to that
   distribution shape.
-- Add equivalent platform workers where support and maintenance justify them.
+- On platforms without qualifying containment, document `Exec`/`BuildExec` as
+  explicit native-user authority rather than claiming cache isolation.
 
 ## Alternatives
 
@@ -484,6 +549,12 @@ memory and limits compromise to one program, but normal native executable
 inspection can recover it. It may be useful only as defense in depth under a
 separately enforced OS sandbox.
 
+### Derive per-program keys from one installation key
+
+Rejected as a required mitigation. Complete record binding already prevents
+cross-program replay, while compromise of the installation key compromises
+every deterministically derived child key.
+
 ### Rely only on guest path denial
 
 Rejected as the sole boundary. It is cheap and worthwhile defense in depth, but
@@ -500,6 +571,12 @@ different signed application/helper distribution model.
 
 Rejected. A cache optimization must not prevent ordinary execution, break
 headless use, or introduce surprise authentication prompts.
+
+### Permit an explicit unauthenticated-cache override
+
+Rejected. Such a control directly negates the security invariant and creates a
+new environment/configuration injection target. Dedicated benchmark fixtures
+can measure legacy behavior without shipping the bypass in production.
 
 ### Cache daemon
 
@@ -520,8 +597,9 @@ remain useful whether or not a daemon is added.
   profiling, and process supervision.
 - Guest cache exclusion reserves a namespace that a user cannot deliberately
   grant to Witchy guest code through ordinary filesystem capabilities.
-- The unsafe escape hatch creates a mode that documentation and diagnostics
-  must keep visibly separate from the default security contract.
+- Containing native children may require a broker, separate OS identity, or
+  platform packaging that is substantially more complex than a credential
+  lookup.
 
 ## Prior art
 
