@@ -277,9 +277,9 @@ fi
 
 # Fast / Quick mode
 printf "\n%s%sWitchy Performance Benchmarks%s %s(%s mode, %s sample(s))%s\n" "$BOLD" "$BRIGHT_CYAN" "$RESET" "$DIM" "$MODE" "$RUNS" "$RESET"
-printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats Go%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
+printf "%sKernel: in-program compute clock  |  %s< 1.00x%s beats fastest baseline%s\n\n" "$DIM" "$GREEN" "$DIM" "$RESET"
 
-printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "vs Go" "Status"
+printf "  %-18s %14s %14s %14s %14s %14s %14s    %-8s\n" "Benchmark" "Witchy" "Go" "Node.js" "Ruby" "Rust" "vs Fastest" "Status"
 printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 
 total_count=0
@@ -343,9 +343,20 @@ for b in "${TARGETS[@]}"; do
     if [ -n "$rns" ]; then r_ms=$(awk -v ns="$rns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
     if [ -n "$rsns" ]; then rs_ms=$(awk -v ns="$rsns" 'BEGIN { printf "%.1f ms", ns / 1000000 }'); fi
 
+    fastest_ns=$(awk -v g="$gns" -v n="$nns" -v r="$rns" -v rs="$rsns" '
+        BEGIN {
+            min = ""
+            if (g != "" && (min == "" || g < min)) min = g
+            if (n != "" && (min == "" || n < min)) min = n
+            if (r != "" && (min == "" || r < min)) min = r
+            if (rs != "" && (min == "" || rs < min)) min = rs
+            print min
+        }
+    ')
+
     ratio_color=""
-    if [ -n "$wns" ] && [ -n "$gns" ] && [ "$gns" -gt 0 ]; then
-        ratio=$(awk -v w="$wns" -v g="$gns" 'BEGIN { printf "%.2f", w / g }')
+    if [ -n "$wns" ] && [ -n "$fastest_ns" ] && [ "$fastest_ns" -gt 0 ]; then
+        ratio=$(awk -v w="$wns" -v f="$fastest_ns" 'BEGIN { printf "%.2f", w / f }')
         ratio_str="${ratio}x"
         if awk -v r="$ratio" 'BEGIN { exit (r < 1.00 ? 0 : 1) }'; then
             faster_count=$((faster_count + 1))
@@ -362,7 +373,7 @@ done
 
 printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 if [ "$faster_count" -gt 0 ]; then
-    printf "  %s%s%d/%d passed%s, %s%d faster than Go%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
+    printf "  %s%s%d/%d passed%s, %s%d faster than fastest baseline%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
 else
     printf "  %s%s%d/%d passed%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET"
 fi
