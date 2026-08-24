@@ -221,7 +221,7 @@ def build_identity(witchy):
     }
 
 
-def benchmark_record(build_dir, benchmark, mode, expected_count):
+def benchmark_record(build_dir, benchmark, mode, expected_count, compare_lang):
     kernel_count = 0 if benchmark in WALL_ONLY else expected_count
     witchy = raw_kernel_samples(build_dir, benchmark, "witchy", kernel_count)
     go = raw_kernel_samples(build_dir, benchmark, "go", kernel_count)
@@ -271,7 +271,11 @@ def benchmark_record(build_dir, benchmark, mode, expected_count):
     fastest_samples = None
     fastest_summary = None
     
-    if baselines:
+    if compare_lang:
+        if compare_lang in baselines:
+            fastest_name = compare_lang
+            fastest_summary, fastest_samples = baselines[compare_lang]
+    elif baselines:
         fastest_name = min(baselines.keys(), key=lambda k: baselines[k][0]["median"])
         fastest_summary, fastest_samples = baselines[fastest_name]
 
@@ -317,9 +321,17 @@ def render_markdown(artifact):
         "The machine-readable sibling artifact retains build identity, inputs,",
         "checksums, every sample, variability, and the paired ratio interval.",
         "",
-        "| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel rust | kernel vs fastest | wall witchy | wall go |",
-        "|-----------|--------------:|----------:|------------:|------------:|------------:|-------------:|------------:|--------:|",
     ]
+    compare_lang = artifact.get("compare_lang")
+    if compare_lang:
+        compare_title = f"kernel vs {compare_lang}"
+    else:
+        compare_title = "kernel vs fastest"
+        
+    lines.extend([
+        f"| benchmark | kernel witchy | kernel go | kernel node | kernel ruby | kernel rust | {compare_title} | wall witchy | wall go |",
+        "|-----------|--------------:|----------:|------------:|------------:|------------:|-------------:|------------:|--------:|",
+    ])
     for benchmark in artifact["benchmarks"]:
         kernel = benchmark["kernel_ns"]
         ws = kernel["witchy_summary"]
@@ -332,7 +344,10 @@ def render_markdown(artifact):
         gm = statistics.median(wall["go"]) if wall["go"] else None
         value = lambda number: "—" if number is None else f"{number:.1f}"
         ratio = kernel["witchy_fastest_median_ratio"]
-        ratio_text = "—" if ratio is None else f"{ratio:.2f}x ({kernel.get('fastest_baseline', 'unknown')})"
+        if compare_lang:
+            ratio_text = "—" if ratio is None else f"{ratio:.2f}x"
+        else:
+            ratio_text = "—" if ratio is None else f"{ratio:.2f}x ({kernel.get('fastest_baseline', 'unknown')})"
         lines.append(
             f"| {benchmark['name']} | {value(ws['median'] / 1e6 if ws else None)} | "
             f"{value(gs['median'] / 1e6 if gs else None)} | {value(ns['median'] / 1e6 if ns else None)} | "
@@ -350,6 +365,7 @@ def main():
     parser.add_argument("--warmup", type=int, required=True)
     parser.add_argument("--runs", type=int, required=True)
     parser.add_argument("--build-dir", required=True)
+    parser.add_argument("--compare")
     parser.add_argument("--human")
     parser.add_argument("benchmarks", nargs="+")
     args = parser.parse_args()
@@ -365,8 +381,9 @@ def main():
         "summarizer_argv": [str(pathlib.Path(sys.argv[0]).resolve()), *sys.argv[1:]],
         "build_identity": build_identity(args.witchy),
         "complete_suite": args.benchmarks == ALL_BENCHES,
+        "compare_lang": args.compare,
         "sampling_order": "paired and counterbalanced; Witchy first on odd samples, Go first on even samples",
-        "benchmarks": [benchmark_record(build_dir, name, args.mode, args.runs) for name in args.benchmarks],
+        "benchmarks": [benchmark_record(build_dir, name, args.mode, args.runs, args.compare) for name in args.benchmarks],
     }
     artifact_path = pathlib.Path(args.artifact).resolve()
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
