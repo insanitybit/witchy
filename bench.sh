@@ -246,7 +246,13 @@ for b in "${TARGETS[@]}"; do
     if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then
         if [ -f "$BENCH_DIR/${b}.rs" ]; then
             if [ ! -f "$BUILD_DIR/${b}_rs" ] || [ "$BENCH_DIR/${b}.rs" -nt "$BUILD_DIR/${b}_rs" ]; then
-                rustc -O -o "$BUILD_DIR/${b}_rs" "$BENCH_DIR/${b}.rs"
+                regex_flag=()
+                deps_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/release/deps"
+                if ls "$deps_dir"/libregex-*.rlib >/dev/null 2>&1; then
+                    regex_lib=$(ls "$deps_dir"/libregex-*.rlib | head -n 1)
+                    regex_flag=(-L "dependency=$deps_dir" --extern "regex=$regex_lib")
+                fi
+                rustc --edition 2021 -O "${regex_flag[@]}" -o "$BUILD_DIR/${b}_rs" "$BENCH_DIR/${b}.rs"
             fi
         fi
     fi

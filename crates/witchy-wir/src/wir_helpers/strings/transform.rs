@@ -224,18 +224,22 @@ pub(crate) fn substr_helper() -> WirFunc {
 
 
 /// `$str_substring(s, start, end) -> i32` — the substring of `s` between the
-/// *character* indices `start` and `end` (both full-width i64). Maps both ends to
-/// byte offsets via `$char_to_byte`, which clamps each index to `[0, char_count]`
-/// in i64 (mirroring the interpreter's `max(0).min(len)`), then `$substr`s the byte
-/// slice; an empty slice when the bounds cross.
+/// *character* indices `start` and `end` (both full-width i64). Maps start to `lo`
+/// via `$char_to_byte_from(s, 0, start)`, then finds `hi` by advancing `end - max(0, start)`
+/// characters from `lo` in a single pass without rescanning byte 0.
 pub(crate) fn str_substring_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let c2b = |idx: &str| E::Call { func: "char_to_byte".into(), args: vec![getl("s"), getl(idx)] };
+    let c2b_from = |byte_off: E, char_count: E| E::Call {
+        func: "char_to_byte_from".into(),
+        args: vec![getl("s"), byte_off, char_count],
+    };
     WirFunc {
         name: "str_substring".into(),
         params: vec![
@@ -247,10 +251,38 @@ pub(crate) fn str_substring_helper() -> WirFunc {
         locals: vec![
             WirLocal { name: "lo".into(), ty: WirTy::Bool },
             WirLocal { name: "hi".into(), ty: WirTy::Bool },
+            WirLocal { name: "delta_start".into(), ty: WirTy::Int },
+            WirLocal { name: "delta".into(), ty: WirTy::Int },
         ],
         body: vec![
-            setl("lo", c2b("start")),
-            setl("hi", c2b("end")),
+            N::If {
+                cond: b64(BinOp::Ge, getl("start"), getl("end")),
+                then_: vec![N::Return(Some(E::Call {
+                    func: "substr".into(),
+                    args: vec![getl("s"), i32c(0), i32c(0)],
+                }))],
+                els: vec![],
+                result: None,
+            },
+            setl("lo", c2b_from(i32c(0), getl("start"))),
+            setl("delta_start", getl("start")),
+            N::If {
+                cond: b64(BinOp::Lt, getl("delta_start"), i64c(0)),
+                then_: vec![setl("delta_start", i64c(0))],
+                els: vec![],
+                result: None,
+            },
+            setl("delta", b64(BinOp::Sub, getl("end"), getl("delta_start"))),
+            N::If {
+                cond: b64(BinOp::Le, getl("delta"), i64c(0)),
+                then_: vec![N::Return(Some(E::Call {
+                    func: "substr".into(),
+                    args: vec![getl("s"), i32c(0), i32c(0)],
+                }))],
+                els: vec![],
+                result: None,
+            },
+            setl("hi", c2b_from(getl("lo"), getl("delta"))),
             N::If {
                 cond: b(BinOp::Ge, getl("lo"), getl("hi")),
                 then_: vec![N::Push(E::Call {

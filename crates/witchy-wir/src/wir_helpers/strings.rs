@@ -732,20 +732,21 @@ pub(crate) fn str_index_of_helper() -> WirFunc {
 /// guard is therefore compared in i64, so a huge index near the i64 extremes can't
 /// wrap when narrowed — that was BUG-011, where the compiled backend narrowed the
 /// index to i32 *before* clamping, so a large `end` wrapped to `< start` and yielded
-/// `""` while the interpreter clamped in i64 and returned the whole string.
-pub(crate) fn char_to_byte_helper() -> WirFunc {
+/// `$char_to_byte_from(s, start_byte, n) -> i32` — the byte offset within `s`
+/// after advancing `n` characters from `start_byte`. Clamps `n <= 0` to `start_byte`
+/// and advances up to byte-length. Includes 8-byte word acceleration for ASCII runs.
+pub(crate) fn char_to_byte_from_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    // i64 sign-extend + i64 compare, for the full-width `count >= n` clamp guard.
     let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    // seqlen = b<0x80 ? 1 : b<0xe0 ? 2 : b<0xf0 ? 3 : 4 — nested if-statements
-    // setting the `seqlen` local (avoids an expression-level conditional).
+
     let seqlen = N::If {
         cond: b(BinOp::LtU, getl("b"), i32c(0x80)),
         then_: vec![setl("seqlen", i32c(1))],
@@ -762,6 +763,7 @@ pub(crate) fn char_to_byte_helper() -> WirFunc {
         }],
         result: None,
     };
+
     let scan_loop = N::Block {
         label: "done".into(),
         result: None,
@@ -770,6 +772,30 @@ pub(crate) fn char_to_byte_helper() -> WirFunc {
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("slen"))) },
                 N::Br { target: "done".into(), cond: Some(b64(BinOp::Ge, ext(getl("count")), getl("n"))) },
+                // 8-byte ASCII word fast path: if remaining bytes >= 8 and remaining chars >= 8
+                N::If {
+                    cond: E::Binary {
+                        op: BinOp::And,
+                        kind: Kind::I32,
+                        lhs: Box::new(b(BinOp::Le, b(BinOp::Add, getl("i"), i32c(8)), getl("slen"))),
+                        rhs: Box::new(b64(BinOp::Le, b64(BinOp::Add, ext(getl("count")), i64c(8)), getl("n"))),
+                    },
+                    then_: vec![
+                        setl("w", E::Load { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), kind: Kind::I64, offset: 4 }),
+                        N::If {
+                            cond: b64(BinOp::Eq, b64(BinOp::And, getl("w"), i64c(0x8080808080808080u64 as i64)), i64c(0)),
+                            then_: vec![
+                                setl("i", b(BinOp::Add, getl("i"), i32c(8))),
+                                setl("count", b(BinOp::Add, getl("count"), i32c(8))),
+                                N::Br { target: "l".into(), cond: None },
+                            ],
+                            els: vec![],
+                            result: None,
+                        },
+                    ],
+                    els: vec![],
+                    result: None,
+                },
                 setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
                 seqlen,
                 setl("i", b(BinOp::Add, getl("i"), getl("seqlen"))),
@@ -778,6 +804,57 @@ pub(crate) fn char_to_byte_helper() -> WirFunc {
             ],
         }],
     };
+
+    WirFunc {
+        name: "char_to_byte_from".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "start_byte".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "count".into(), ty: WirTy::Bool },
+            WirLocal { name: "b".into(), ty: WirTy::Bool },
+            WirLocal { name: "seqlen".into(), ty: WirTy::Bool },
+            WirLocal { name: "w".into(), ty: WirTy::Int },
+        ],
+        body: vec![
+            setl("slen", load(getl("s"))),
+            setl("i", getl("start_byte")),
+            N::If {
+                cond: b(BinOp::Lt, getl("i"), i32c(0)),
+                then_: vec![setl("i", i32c(0))],
+                els: vec![N::If {
+                    cond: b(BinOp::Gt, getl("i"), getl("slen")),
+                    then_: vec![setl("i", getl("slen"))],
+                    els: vec![],
+                    result: None,
+                }],
+                result: None,
+            },
+            setl("count", i32c(0)),
+            N::If {
+                cond: b64(BinOp::Le, getl("n"), i64c(0)),
+                then_: vec![N::Return(Some(getl("i")))],
+                els: vec![],
+                result: None,
+            },
+            scan_loop,
+            N::Push(getl("i")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$char_to_byte(s: i32, n: i64) -> i32` — the byte offset of the `n`th character.
+pub(crate) fn char_to_byte_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
     WirFunc {
         name: "char_to_byte".into(),
         params: vec![
@@ -785,16 +862,12 @@ pub(crate) fn char_to_byte_helper() -> WirFunc {
             WirLocal { name: "n".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["slen", "i", "count", "b", "seqlen"]
-            .iter()
-            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
-            .collect(),
+        locals: vec![],
         body: vec![
-            setl("slen", load(getl("s"))),
-            setl("i", i32c(0)),
-            setl("count", i32c(0)),
-            scan_loop,
-            N::Push(getl("i")),
+            N::Push(E::Call {
+                func: "char_to_byte_from".into(),
+                args: vec![getl("s"), i32c(0), getl("n")],
+            }),
         ],
         raw_body: None,
     }

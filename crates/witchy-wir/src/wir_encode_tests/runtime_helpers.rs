@@ -820,7 +820,10 @@
 
     #[test]
     fn str_substring_slices_by_char_index() {
-        use crate::wir_helpers::{char_to_byte_helper, ensure_helper, str_substring_helper, substr_helper};
+        use crate::wir_helpers::{
+            char_to_byte_from_helper, char_to_byte_helper, ensure_helper, str_substring_helper,
+            substr_helper,
+        };
         let data = vec![
             DataSegment { offset: 200, bytes: encoded_string("hello world") },
             DataSegment { offset: 220, bytes: encoded_string("héllo") },
@@ -860,6 +863,7 @@
             vec![
                 ensure_helper(false),
                 substr_helper(),
+                char_to_byte_from_helper(),
                 char_to_byte_helper(),
                 str_substring_helper(),
                 run,
@@ -1024,8 +1028,8 @@
     #[test]
     fn str_chars_splits_into_characters() {
         use crate::wir_helpers::{
-            byte_to_char_helper, char_to_byte_helper, ensure_helper, list_push_helper,
-            str_chars_helper, str_substring_helper, substr_helper,
+            byte_to_char_helper, char_to_byte_from_helper, char_to_byte_helper, ensure_helper,
+            list_push_helper, str_chars_helper, str_substring_helper, substr_helper,
         };
         // "héllo": 5 characters but 6 bytes (é is two bytes).
         let data = vec![DataSegment { offset: 200, bytes: encoded_string("héllo") }];
@@ -1060,6 +1064,7 @@
             vec![
                 ensure_helper(false),
                 substr_helper(),
+                char_to_byte_from_helper(),
                 char_to_byte_helper(),
                 str_substring_helper(),
                 byte_to_char_helper(),

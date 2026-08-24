@@ -30,14 +30,11 @@ async fn producer(tx: Sender(Int), n: Int):
         chan.send(tx, i).await
         i = i + 1
 
-async fn main(let console: Console, let clock: Clock):
-    let bench_t0 = clock.now_monotonic()
+async fn main(console: Console):
     let (tx, rx) = chan.channel(64).await
     let producer_handle = chan.spawn(producer(tx, 64000)).await
     var sum = 0
     for await v in rx:
         sum = sum + v
     chan.join(producer_handle).await
-    let bench_t1 = clock.now_monotonic()
     console.print("${sum}")
-    console.print("bench_ns=${bench_t1 - bench_t0}")
