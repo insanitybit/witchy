@@ -1381,6 +1381,9 @@ impl<'types> Codegen<'types> {
                         body,
                         true,
                     );
+                if let Some(induction) = self.analyze_canonical_induction(cond, body) {
+                    self.refine_sequence_index_domain(induction);
+                }
                 let cond_w = match self.lower_expr(cond) {
                     Some(c) => c,
                     None => {
@@ -1639,6 +1642,22 @@ impl<'types> Codegen<'types> {
                 if let Some((index, list)) = &elide_pair {
                     self.refine_counted_sequence_domain(index, list, lo, hi);
                 }
+                let min_val = match lo.as_ref() {
+                    Expr::Int(k) => *k,
+                    _ => 0,
+                };
+                let max_excl = match hi.as_ref() {
+                    Expr::Int(k) => Some(if *inclusive { k.checked_add(1).unwrap_or(*k) } else { *k }),
+                    _ => None,
+                };
+                self.refine_sequence_index_domain(super::indexed_kernels::CanonicalInductionPlan {
+                    local: var.clone(),
+                    initial_domain: super::indexed_kernels::IndexDomain::new_unit(min_val, max_excl, true),
+                    step: 1,
+                    comparison: if *inclusive { BinOp::LtEq } else { BinOp::Lt },
+                    max_trip_count: max_excl.and_then(|m| (m - min_val).try_into().ok()),
+                    affine_derived: Vec::new(),
+                });
                 let sequence_bounds_guards =
                     self.coalesce_counted_sequence_guards(var, lo, body);
                 let sequence_cursor_init =

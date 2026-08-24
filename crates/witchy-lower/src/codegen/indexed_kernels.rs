@@ -34,19 +34,82 @@ impl SequenceBackendPolicyTriggers {
     }
 }
 
+/// (RFC-0153) Closed or half-open domain of an index in a canonical induction loop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct IndexDomain {
+    pub(super) min: i64,
+    pub(super) max_exclusive: Option<i64>,
+    pub(super) affine_base: Option<String>,
+    pub(super) affine_step: i64,
+    pub(super) no_wrap: bool,
+}
+
+impl IndexDomain {
+    pub(super) fn new_unit(min: i64, max_exclusive: Option<i64>, no_wrap: bool) -> Self {
+        Self {
+            min,
+            max_exclusive,
+            affine_base: None,
+            affine_step: 1,
+            no_wrap,
+        }
+    }
+
+    pub(super) fn new_strided(min: i64, max_exclusive: Option<i64>, step: i64, no_wrap: bool) -> Self {
+        Self {
+            min,
+            max_exclusive,
+            affine_base: None,
+            affine_step: step,
+            no_wrap,
+        }
+    }
+
+    pub(super) fn is_within_bounds(&self, len: i64) -> bool {
+        self.min >= 0 && self.max_exclusive.is_some_and(|max| max <= len) && self.no_wrap
+    }
+}
+
+/// (RFC-0153) Stability proof for a sequence root across a loop scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RootStability {
+    pub(super) epoch: usize,
+    pub(super) writes: bool,
+    pub(super) escapes: bool,
+}
+
+impl RootStability {
+    pub(super) fn is_stable(&self) -> bool {
+        !self.escapes && !self.writes
+    }
+}
+
+/// (RFC-0153) Canonical loop induction variable descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CanonicalInductionPlan {
+    pub(super) local: String,
+    pub(super) initial_domain: IndexDomain,
+    pub(super) step: i64,
+    pub(super) comparison: BinOp,
+    pub(super) max_trip_count: Option<u64>,
+    pub(super) affine_derived: Vec<(String, i64, i64)>,
+}
+
 /// Physical facts shared by all indexed operations in one stable loop.
 #[derive(Clone, Debug)]
 pub(super) struct SequenceAccessPlan {
     pub(super) owner_root: String,
     pub(super) payload_base: String,
     pub(super) length: String,
-    length_initialized: bool,
-    data_offset: i32,
+    pub(super) length_initialized: bool,
+    pub(super) data_offset: i32,
     pub(super) stride: i32,
     pub(super) element_kind: WirKind,
     pub(super) mutation_preserves_length: bool,
     pub(super) proven_index_domain: Vec<ProvenIndexDomain>,
-    cursors: HashMap<String, String>,
+    pub(super) index_domains: HashMap<String, IndexDomain>,
+    pub(super) root_stability: RootStability,
+    pub(super) cursors: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,10 +507,125 @@ impl<'types> Codegen<'types> {
                         maximum_offset: 0,
                     })
                     .collect(),
+                index_domains: HashMap::new(),
+                root_stability: RootStability {
+                    epoch: before,
+                    writes: scan.reassigned.contains(&owner_root),
+                    escapes: scan.opaque_call_roots.contains(&owner_root),
+                },
                 cursors,
             });
         }
         (self.sequence_access_plans.len() - before, setup)
+    }
+
+    /// (RFC-0153) Analyzes a loop condition and body to infer a canonical induction plan.
+    pub(super) fn analyze_canonical_induction(
+        &self,
+        cond: &Expr,
+        body: &Block,
+    ) -> Option<CanonicalInductionPlan> {
+        let (local, comp, bound_expr) = match cond {
+            Expr::Binary { op, lhs, rhs } => match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Var(v), expr) => (v.clone(), *op, expr),
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        let mut scan = DevirtScan::default();
+        scan.walk_block(body);
+        if scan.let_bind.contains_key(&local)
+            || scan.other_bind.contains(&local)
+            || scan.opaque_call_roots.contains(&local)
+        {
+            return None;
+        }
+
+        // Determine step and direction from body assignments
+        let mut step = 0i64;
+        for stmt in &body.stmts {
+            if let Stmt::Assign { name, value } = stmt {
+                if name == &local {
+                    match value {
+                        Expr::Binary { op: BinOp::Add, lhs, rhs }
+                            if matches!(lhs.as_ref(), Expr::Var(v) if v == &local) =>
+                        {
+                            if let Expr::Int(s) = rhs.as_ref() {
+                                if *s > 0 {
+                                    step = *s;
+                                }
+                            }
+                        }
+                        Expr::Binary { op: BinOp::Sub, lhs, rhs }
+                            if matches!(lhs.as_ref(), Expr::Var(v) if v == &local) =>
+                        {
+                            if let Expr::Int(s) = rhs.as_ref() {
+                                if *s > 0 {
+                                    step = -*s;
+                                }
+                            }
+                        }
+                        _ => return None,
+                    }
+                }
+            }
+        }
+
+        if step == 0 {
+            return None;
+        }
+
+        let max_trip_count = if let Expr::Int(bound) = bound_expr {
+            if step > 0 && (comp == BinOp::Lt || comp == BinOp::LtEq) {
+                let limit = if comp == BinOp::LtEq { bound.checked_add(1)? } else { *bound };
+                if limit >= 0 {
+                    Some((limit as u64) / (step as u64))
+                } else {
+                    None
+                }
+            } else if step < 0 && (comp == BinOp::Gt || comp == BinOp::GtEq) {
+                if *bound >= 0 {
+                    Some((*bound as u64) / ((-step) as u64))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let domain = if step > 0 {
+            let max_excl = match bound_expr {
+                Expr::Int(bound) => Some(if comp == BinOp::LtEq { bound.checked_add(1)? } else { *bound }),
+                _ => None,
+            };
+            IndexDomain::new_strided(0, max_excl, step, true)
+        } else {
+            IndexDomain::new_strided(0, None, step, true)
+        };
+
+        Some(CanonicalInductionPlan {
+            local,
+            initial_domain: domain,
+            step,
+            comparison: comp,
+            max_trip_count,
+            affine_derived: Vec::new(),
+        })
+    }
+
+    /// (RFC-0153) Contributes an analyzed canonical induction domain to matching active sequence plans.
+    pub(super) fn refine_sequence_index_domain(&mut self, plan: CanonicalInductionPlan) {
+        for access_plan in self.sequence_access_plans.iter_mut() {
+            if access_plan.cursors.contains_key(&plan.local) {
+                access_plan
+                    .index_domains
+                    .insert(plan.local.clone(), plan.initial_domain.clone());
+            }
+        }
     }
 
     pub(super) fn pop_sequence_access_plans(&mut self, count: usize) {
@@ -1020,6 +1198,12 @@ mod tests {
                 minimum_offset: 0,
                 maximum_offset: 0,
             }],
+            index_domains: HashMap::new(),
+            root_stability: super::RootStability {
+                epoch: 0,
+                writes: false,
+                escapes: false,
+            },
             cursors,
         };
         assert_eq!(plan.owner_root, "xs");
@@ -1031,6 +1215,24 @@ mod tests {
         assert_eq!(plan.element_kind, Kind::I64);
         assert!(plan.mutation_preserves_length);
         assert_eq!(plan.proven_index_domain[0].index, "i");
+        assert!(plan.root_stability.is_stable());
+    }
+
+    #[test]
+    fn index_domain_and_root_stability_properties() {
+        let unit_dom = super::IndexDomain::new_unit(0, Some(10), true);
+        assert!(unit_dom.is_within_bounds(10));
+        assert!(!unit_dom.is_within_bounds(9));
+
+        let strided_dom = super::IndexDomain::new_strided(0, Some(100), 4, true);
+        assert_eq!(strided_dom.affine_step, 4);
+        assert!(strided_dom.is_within_bounds(100));
+
+        let stable = super::RootStability { epoch: 1, writes: false, escapes: false };
+        assert!(stable.is_stable());
+
+        let escaping = super::RootStability { epoch: 1, writes: false, escapes: true };
+        assert!(!escaping.is_stable());
     }
 
     #[test]
