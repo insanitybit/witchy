@@ -23,6 +23,11 @@
 //! pre-encoded wasm bytes with no WIR tree to walk.
 
 
+mod properties;
+pub use properties::{
+    evaluate_expr, evaluate_node, evaluate_seq, AllocationKind, EvaluationProperties, HostEffect,
+    MemoryAccess, Suspension,
+};
 mod strength_reduce;
 pub use strength_reduce::{simplify_integer_ranges, RangeFact};
 mod tail_calls;

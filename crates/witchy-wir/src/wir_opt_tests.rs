@@ -1375,3 +1375,94 @@
         let binary = crate::wir_encode::encode(&module, &[]);
         wasmparser::validate(&binary).expect("singleton dispatcher must validate");
     }
+
+    #[test]
+    fn evaluation_properties_pure_constants_and_locals() {
+        let c = WirExpr::ConstI64(42);
+        let prop_c = evaluate_expr(&c);
+        assert!(prop_c.total);
+        assert!(!prop_c.may_trap);
+        assert_eq!(prop_c.host_effect, HostEffect::None);
+        assert!(prop_c.is_safe_to_eliminate());
+
+        let l = WirExpr::GetLocal("x".into());
+        let prop_l = evaluate_expr(&l);
+        assert!(prop_l.total);
+        assert!(!prop_l.may_trap);
+        assert!(prop_l.is_safe_to_eliminate());
+    }
+
+    #[test]
+    fn evaluation_properties_division_and_remainder() {
+        // x / 2 is trap-free when x is total
+        let safe_div = WirExpr::Binary {
+            op: BinOp::Div,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::ConstI64(2)),
+        };
+        let prop_safe = evaluate_expr(&safe_div);
+        assert!(prop_safe.total);
+        assert!(!prop_safe.may_trap);
+
+        // x / y may trap on y == 0
+        let unsafe_div = WirExpr::Binary {
+            op: BinOp::Div,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("x".into())),
+            rhs: Box::new(WirExpr::GetLocal("y".into())),
+        };
+        let prop_unsafe = evaluate_expr(&unsafe_div);
+        assert!(!prop_unsafe.total);
+        assert!(prop_unsafe.may_trap);
+        assert!(!prop_unsafe.is_safe_to_eliminate());
+    }
+
+    #[test]
+    fn evaluation_properties_memory_and_host_effects() {
+        let load = WirExpr::Load {
+            ptr: Box::new(WirExpr::GetLocal("ptr".into())),
+            kind: Kind::I64,
+            offset: 0,
+        };
+        let prop_load = evaluate_expr(&load);
+        assert!(!prop_load.total);
+        assert!(prop_load.may_trap);
+        assert!(prop_load.memory.reads().is_some());
+
+        let host = WirExpr::CallHost {
+            import: "print".into(),
+            args: vec![WirExpr::ConstI64(10)],
+        };
+        let prop_host = evaluate_expr(&host);
+        assert!(!prop_host.total);
+        assert_eq!(prop_host.host_effect, HostEffect::Present);
+        assert!(!prop_host.is_safe_to_eliminate());
+    }
+
+    #[test]
+    fn evaluation_properties_reordering_legality() {
+        let expr1 = WirExpr::ConstI64(1);
+        let expr2 = WirExpr::GetLocal("x".into());
+        let prop1 = evaluate_expr(&expr1);
+        let prop2 = evaluate_expr(&expr2);
+        assert!(prop1.is_safe_to_reorder_with(&prop2));
+
+        // Two trapping expressions cannot be reordered (trap order must be preserved)
+        let trap1 = WirExpr::Binary {
+            op: BinOp::Div,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("a".into())),
+            rhs: Box::new(WirExpr::GetLocal("b".into())),
+        };
+        let trap2 = WirExpr::Binary {
+            op: BinOp::Div,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetLocal("c".into())),
+            rhs: Box::new(WirExpr::GetLocal("d".into())),
+        };
+        let prop_trap1 = evaluate_expr(&trap1);
+        let prop_trap2 = evaluate_expr(&trap2);
+        assert!(!prop_trap1.is_safe_to_reorder_with(&prop_trap2));
+    }
+
