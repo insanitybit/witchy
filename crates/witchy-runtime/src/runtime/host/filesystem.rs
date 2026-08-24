@@ -508,7 +508,10 @@ fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRe
     let names: Vec<String> = match &dir.backing {
         DirBacking::Fs(base) => base.entries().map_err(|e| {
             Error::msg(format!("list failed for `{}`: {e}", base.display_path().display()))
-        })?,
+        })?.into_iter().filter(|name| {
+            let is_dir = base.is_dir(name).unwrap_or(false);
+            witchy_caps::capabilities::dir_admits(&dir.policy, name, is_dir)
+        }).collect(),
     };
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(names);

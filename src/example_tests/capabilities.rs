@@ -588,6 +588,45 @@ fn main(console: Console, root: Dir[Read]):
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn narrowed_dir_list_hides_denied_entries_but_named_probes_work() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_dir_probe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::create_dir_all(root.join("private-dir")).expect("mkdir private");
+        std::fs::write(root.join("public.txt"), "public").expect("seed public");
+        let hidden = "550e8400-e29b-41d4-a716-446655440000.key";
+        std::fs::write(root.join(hidden), "secret").expect("seed secret");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+        let src = "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.exists(\"550e8400-e29b-41d4-a716-446655440000.key\")}\")\n    console.print(\"${d.is_dir(\"private-dir\")}\")\n    for name in d.list():\n        console.print(name)\n";
+        let expected = vec![
+            "true".to_string(),
+            "true".to_string(),
+            "private-dir".to_string(),
+            "public.txt".to_string(),
+        ];
+
+        assert_eq!(
+            interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
+            expected,
+            "interpreter filters denied entry names",
+        );
+        let bytes = codegen::compile_module_binary(&resolve_std_src(src))
+            .expect_lowered("probe lowers");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt.spawn(&bytes, Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        }, 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), expected, "Wasm filters denied entry names");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// RFC-0011: `dir.subtree(path)` is the method form of `subdir` — it narrows a
     /// `Dir` to a subtree identically on both backends, and the same `..`/absolute
     /// confinement applies. Mirrors `net.only(...)` as the host-primitive method form.
