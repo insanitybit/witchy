@@ -7469,6 +7469,17 @@ impl<'types> Codegen<'types> {
             base: W::GetLocal(item.clone()),
             value: W::GetLocal(gc_list_field_scratch(level, type_id, field)),
         }));
+        // The confined scheduler advances by retagging one `slots` entry.
+        // Count that executed state transition here, after all replacement
+        // fields have been evaluated and the bounds check has succeeded.  This
+        // is instrumentation for `witchy stats` only; normal artifacts retain
+        // the allocation-free slot-reuse path unchanged.
+        if deterministic_sequence_counters_enabled() {
+            nodes.push(Self::increment_counter("__witchy_scheduler_slot_transitions"));
+            if task_wait_slot_ctor(name) {
+                nodes.push(Self::increment_counter("__witchy_scheduler_wait_installs"));
+            }
+        }
         Some(nodes)
     }
 
@@ -11064,6 +11075,20 @@ impl<'types> Codegen<'types> {
     }
 
 
+}
+
+fn task_wait_slot_ctor(name: &str) -> bool {
+    matches!(
+        name.rsplit('.').next(),
+        Some("Wait")
+            | Some("WaitRecv")
+            | Some("WaitSend")
+            | Some("Wait2")
+            | Some("Wait2Frame")
+            | Some("Wait2FrameLoop")
+            | Some("WaitAny")
+            | Some("WaitJoin")
+    )
 }
 
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;

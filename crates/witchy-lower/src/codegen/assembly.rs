@@ -6034,6 +6034,8 @@ fn assemble_wir_module_with_structs_mode(
                     "__witchy_sequence_bounds_checks_coalesced",
                     "__witchy_sequence_forwarded_loads",
                     "__witchy_sequence_small_loops_unrolled",
+                    "__witchy_scheduler_slot_transitions",
+                    "__witchy_scheduler_wait_installs",
                 ] {
                     pruned_globals.push(WirGlobal {
                         name: counter.into(),

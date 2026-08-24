@@ -71,6 +71,10 @@ pub struct Stats {
     pub sequence_bounds_checks_coalesced: i64,
     pub sequence_forwarded_loads: i64,
     pub sequence_small_loops_unrolled: i64,
+    /// Executed state transitions in the ordinary `task.run` scheduler.
+    pub scheduler_slot_transitions: i64,
+    /// Executed transitions into one of the ordinary scheduler's wait states.
+    pub scheduler_wait_installs: i64,
     /// RFC-0088 semantic dictionary searches performed by fused extraction.
     pub extract_searches: i64,
     /// Key comparisons made within those searches.
@@ -188,6 +192,8 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         sequence_bounds_checks_coalesced: vm.sequence_bounds_checks_coalesced().unwrap_or(0),
         sequence_forwarded_loads: vm.sequence_forwarded_loads().unwrap_or(0),
         sequence_small_loops_unrolled: vm.sequence_small_loops_unrolled().unwrap_or(0),
+        scheduler_slot_transitions: vm.scheduler_slot_transitions().unwrap_or(0),
+        scheduler_wait_installs: vm.scheduler_wait_installs().unwrap_or(0),
         extract_searches: vm.extract_searches().unwrap_or(0),
         extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
         extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
@@ -270,6 +276,8 @@ mod tests {
         assert_eq!(stats.destination_candidates_forwarded, 0);
         assert_eq!(stats.packed_alloc_calls, 0);
         assert_eq!(stats.packed_alloc_bytes, 0);
+        assert_eq!(stats.scheduler_slot_transitions, 0);
+        assert_eq!(stats.scheduler_wait_installs, 0);
         assert_eq!(stats.loan_active_points, 0);
         assert_eq!(stats.loan_active_events, 0);
         assert_eq!(stats.loan_opens, 0);
@@ -290,6 +298,28 @@ mod tests {
         assert_eq!(first.output, ["64"]);
         assert_eq!(first, second, "counter run one and two must agree exactly");
         assert_eq!(second, third, "counter run two and three must agree exactly");
+    }
+
+    #[test]
+    fn scheduler_transition_counters_are_exact_for_a_blocking_string_channel() {
+        // String deliberately keeps this small graph on the ordinary scheduler
+        // until RFC-0152 emits its buffer-root ready and wait paths.  The
+        // producer fills a bounded channel while main waits to join it, so the
+        // second send must install a WaitSend slot before the close pass wakes
+        // it.  This is a scheduler-representation test, not a timing claim.
+        const SOURCE: &str = "from chan import Sender\n\nasync fn producer(tx: Sender(String)):\n    chan.send(tx, \"one\").await\n    chan.send(tx, \"two\").await\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(1).await\n    let worker = chan.spawn(producer(tx)).await\n    chan.join(worker).await\n    console.print(\"done\")\n";
+        let first = compute(SOURCE).expect("run blocking String scheduler fixture");
+        let second = compute(SOURCE).expect("repeat blocking String scheduler fixture");
+        assert_eq!(first.output, ["done"]);
+        assert!(
+            first.scheduler_slot_transitions > 0,
+            "the fallback scheduler must retag slots: {first:?}"
+        );
+        assert!(
+            first.scheduler_wait_installs > 0,
+            "the full bounded send must install a wait slot: {first:?}"
+        );
+        assert_eq!(first, second, "scheduler instrumentation must be deterministic");
     }
 
     #[test]

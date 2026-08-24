@@ -66,8 +66,8 @@ Required counters:
 |---|---|---|---|
 | allocation calls and bytes | zero steady-state scheduler allocation | bounded; retained heap does not grow with messages | Phase 0: missing scheduler-specific attribution |
 | peak heap delta | flat after warmup | flat with stable endpoint set | Phase 0: missing scheduler-specific attribution |
-| scheduler steps | direct ready path only | cooperative suspension retained | Phase 0: missing |
-| wait registrations / wake claims | zero / zero after warmup | at most one live registration / one claim per wake | Phase 0: missing |
+| scheduler steps | direct ready path only | cooperative suspension retained | Phase 0: partial — deterministic `scheduler_slot_transitions` counts every executed ordinary-scheduler slot retag; complete path attribution remains pending |
+| wait registrations / wake claims | zero / zero after warmup | at most one live registration / one claim per wake | Phase 0: partial — deterministic `scheduler_wait_installs` counts ordinary `Wait*` installations; live-registration and wake-claim counters remain pending |
 | selected-result materializations | zero for local non-escaping match | zero until an escaping boundary | Phase 0: missing |
 | CPU and p50/p95/p99 | report separately | report separately | Phase 0: harness pending |
 

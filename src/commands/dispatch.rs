@@ -194,6 +194,8 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                     "sequence_small_loops_unrolled {}",
                     s.sequence_small_loops_unrolled
                 );
+                println!("scheduler_slot_transitions {}", s.scheduler_slot_transitions);
+                println!("scheduler_wait_installs {}", s.scheduler_wait_installs);
                 println!("extract_searches {}", s.extract_searches);
                 println!("extract_key_comparisons {}", s.extract_key_comparisons);
                 println!("extract_copied_bytes {}", s.extract_copied_bytes);

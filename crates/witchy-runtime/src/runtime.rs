@@ -1183,6 +1183,18 @@ impl Vm {
         self.i64_counter("__witchy_sequence_small_loops_unrolled")
     }
 
+    /// Executed `task.run` slot retags.  This is a deterministic scheduler
+    /// transition count, available only from instrumented `witchy stats` builds.
+    pub fn scheduler_slot_transitions(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_slot_transitions")
+    }
+
+    /// Executed transitions into one of the scheduler's `Wait*` slot states.
+    /// It counts installation events, not an approximation of peak live waits.
+    pub fn scheduler_wait_installs(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_wait_installs")
+    }
+
     pub fn extract_searches(&mut self) -> Option<i64> {
         self.i64_counter("__witchy_extract_searches")
     }
