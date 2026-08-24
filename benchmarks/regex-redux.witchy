@@ -1,0 +1,53 @@
+mode opt
+
+import regex
+
+fn main(let console: Console, let clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    
+    let seq = "agggtaaa cgtgggtaaa aactggtaaa agactgtaaa aggacttaaa agggcgaaa agggtcaa agggtaca agggtaac aatggtaaa agagtaaa aggataaa agggcaaa tHaNt aND caN HaD WaS aNt BY <header> |word| "
+
+    var sb = ""
+    var i = 0
+    while i < 2500:
+        sb = sb + ">Sequence_${i}\n" + seq + "\n"
+        i = i + 1
+        
+    var text = sb
+    let originalLen = text.len()
+    
+    text = regex.replace_all("(>[^\n]+)?\n", text, "")
+    let cleanedLen = text.len()
+
+    let variants = [
+        "agggtaaa|tttaccct",
+        "[cgt]gggtaaa|tttaccc[acg]",
+        "a[act]ggtaaa|tttacc[agt]t",
+        "ag[act]gtaaa|tttac[agt]ct",
+        "agg[act]taaa|ttta[agt]cct",
+        "aggg[acg]aaa|ttt[cgt]ccct",
+        "agggt[cgt]aa|tt[acg]accct",
+        "agggta[cgt]a|t[acg]taccct",
+        "agggtaa[cgt]|[acg]ttaccct"
+    ]
+
+    var vi = 0
+    while vi < 9:
+        let v = variants[vi]
+        let c = regex.find_all(v, text).len()
+        console.print("${v} ${c}")
+        vi = vi + 1
+
+    text = regex.replace_all("tHa[Nt]", text, "<4>")
+    text = regex.replace_all("aND|caN|Ha[DS]|WaS", text, "<3>")
+    text = regex.replace_all("a[NSt]|BY", text, "<2>")
+    text = regex.replace_all("<[^>]*>", text, "|")
+    text = regex.replace_all("\\|[^|][^|]*\\|", text, "-")
+
+    console.print("")
+    console.print("${originalLen}")
+    console.print("${cleanedLen}")
+    console.print("${text.len()}")
+
+    let bench_t1 = clock.now_monotonic()
+    console.print("bench_ns=${bench_t1 - bench_t0}")

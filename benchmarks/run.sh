@@ -37,6 +37,7 @@ ALL_BENCHES=(
     dict_count
     binary_trees
     word_count
+    regex-redux
     expr_eval
     nsieve
     fannkuch
