@@ -26,25 +26,7 @@ if [ -z "${BENCH_DRIVER_ARGV:-}" ]; then
 fi
 
 WITCHY="${WITCHY:-../target/release/witchy}"
-ALL_BENCHES=(
-    fib
-    loop_sum
-    collatz
-    mandelbrot
-    closure_calls
-    list_sum
-    dict_count
-    binary_trees
-    word_count
-    expr_eval
-    nsieve
-    fannkuch
-    knucleotide
-    record_build
-    chan_throughput
-    select_fanin
-    list_index
-)
+
 # chan_throughput is the async-executor probe (no kernel bracket — an async main);
 # it is wall-clock only.
 WARMUP="${WARMUP:-2}"

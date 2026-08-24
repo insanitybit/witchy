@@ -1,0 +1,129 @@
+mode opt
+
+import list
+import math
+
+type Body:
+    x: Float
+    y: Float
+    z: Float
+    vx: Float
+    vy: Float
+    vz: Float
+    mass: Float
+
+let Pi = 3.141592653589793
+let Days = 365.24
+let SolarMass = 4.0 * Pi * Pi
+
+fn advance(let bodies: List(Body), let dt: Float):
+    let len = list.length(bodies)
+    var i = 0
+    while i < len:
+        let b = list.at(bodies, i)
+        var j = i + 1
+        while j < len:
+            let b2 = list.at(bodies, j)
+            let dx = b.x - b2.x
+            let dy = b.y - b2.y
+            let dz = b.z - b2.z
+            let distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            let mag = dt / (distance * distance * distance)
+            
+            b.vx = b.vx - dx * b2.mass * mag
+            b.vy = b.vy - dy * b2.mass * mag
+            b.vz = b.vz - dz * b2.mass * mag
+            
+            b2.vx = b2.vx + dx * b.mass * mag
+            b2.vy = b2.vy + dy * b.mass * mag
+            b2.vz = b2.vz + dz * b.mass * mag
+            j = j + 1
+        i = i + 1
+        
+    i = 0
+    while i < len:
+        let b = list.at(bodies, i)
+        b.x = b.x + dt * b.vx
+        b.y = b.y + dt * b.vy
+        b.z = b.z + dt * b.vz
+        i = i + 1
+
+fn energy(let bodies: List(Body)) -> Float:
+    var e = 0.0
+    let len = list.length(bodies)
+    var i = 0
+    while i < len:
+        let b = list.at(bodies, i)
+        e = e + 0.5 * b.mass * (b.vx * b.vx + b.vy * b.vy + b.vz * b.vz)
+        var j = i + 1
+        while j < len:
+            let b2 = list.at(bodies, j)
+            let dx = b.x - b2.x
+            let dy = b.y - b2.y
+            let dz = b.z - b2.z
+            let distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            e = e - (b.mass * b2.mass) / distance
+            j = j + 1
+        i = i + 1
+    e
+
+fn offset_momentum(let bodies: List(Body)):
+    var px = 0.0
+    var py = 0.0
+    var pz = 0.0
+    let len = list.length(bodies)
+    var i = 0
+    while i < len:
+        let b = list.at(bodies, i)
+        px = px + b.vx * b.mass
+        py = py + b.vy * b.mass
+        pz = pz + b.vz * b.mass
+        i = i + 1
+    let sun = list.at(bodies, 0)
+    sun.vx = -px / SolarMass
+    sun.vy = -py / SolarMass
+    sun.vz = -pz / SolarMass
+
+fn main(let console: Console, let clock: Clock):
+    let n = 5000000
+    let bodies = [
+        Body( // Sun
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            SolarMass
+        ),
+        Body( // Jupiter
+            4.84143144246472090231, -1.16032004402742838778, -0.10362204447112310923,
+            0.00166007664274403694 * Days, 0.00769901118419740425 * Days, -0.0000690460016972063 * Days,
+            0.00095479193842432661 * SolarMass
+        ),
+        Body( // Saturn
+            8.34336671824457987157, 4.1247985641243047894, -0.40352341711432138105,
+            -0.00276742510726862411 * Days, 0.00499852801234917238 * Days, 0.00002304172975737639 * Days,
+            0.00028588598066613081 * SolarMass
+        ),
+        Body( // Uranus
+            12.89436956213913099134, -15.11115140169863124697, -0.22330757889265573368,
+            0.00296460137564761618 * Days, 0.0023784717395948095 * Days, -0.00002965895685402376 * Days,
+            0.00004366244043351563 * SolarMass
+        ),
+        Body( // Neptune
+            15.37969711485091650616, -25.91931460998796410422, 0.17925877295037118131,
+            0.00268067772490389322 * Days, 0.00162824170038242295 * Days, -0.00009515922545197159 * Days,
+            0.00005151389020466115 * SolarMass
+        )
+    ]
+    
+    offset_momentum(bodies)
+    
+    console.print(math.format_float(energy(bodies), 9))
+
+    let bench_t0 = clock.now_monotonic()
+    var i = 0
+    while i < n:
+        advance(bodies, 0.01)
+        i = i + 1
+    let bench_t1 = clock.now_monotonic()
+
+    console.print(math.format_float(energy(bodies), 9))
+    console.print("bench_ns=${bench_t1 - bench_t0}")
