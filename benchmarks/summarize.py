@@ -224,7 +224,12 @@ def build_identity(witchy):
 def benchmark_record(build_dir, benchmark, mode, expected_count, compare_lang):
     kernel_count = 0 if benchmark in WALL_ONLY else expected_count
     witchy = raw_kernel_samples(build_dir, benchmark, "witchy", kernel_count)
-    go = raw_kernel_samples(build_dir, benchmark, "go", kernel_count)
+    
+    go = []
+    try:
+        go = raw_kernel_samples(build_dir, benchmark, "go", kernel_count)
+    except ValueError:
+        pass
     
     node_samples = []
     try:
