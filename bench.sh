@@ -60,6 +60,7 @@ ALL_BENCHES=(
     chan_throughput
     select_fanin
     list_index
+    n-body
 )
 
 # Colors (ANSI-C escape literals work reliably across bash, zsh, and macOS terminals)
