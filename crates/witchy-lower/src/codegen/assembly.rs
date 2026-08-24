@@ -7097,11 +7097,11 @@ mod checked_codegen_boundary_tests {
             "Wait2Frame(Int, Int, List(Int)",
             "Wait2FrameLoop(Int, Int, List(Int)",
             "Pull2Frame(ch0, ch1, frame, step, done_task)",
-            "Pull2FrameLoop(ch0, ch1, frame, step, done_task)",
+            "Pull2FrameLoop(ch0, ch1, frame, step, done_fn)",
             "Wait2Frame(ch0, ch1, frame, step, done_task)",
-            "Wait2FrameLoop(ch0, ch1, frame, step, done_task)",
+            "Wait2FrameLoop(ch0, ch1, frame, step, done_fn)",
             "if step(0, Some(frame_msg0), frame):",
-            "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_task))",
+            "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, next_frame0, step, done_fn))",
             "if step(0, None, frame):",
         ] {
             assert!(source.contains(marker), "missing reusable frame ABI marker: {marker}");
