@@ -210,6 +210,17 @@ test-group = 'wasm-heavy'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
+# Keep the full binary identity on the recurring docs-sweep timeout.  The
+# broader example-sweep override above is intentionally retained for its
+# group/priority policy, but the serialized queue has observed this test fall
+# through to the default 45s+3s timeout twice despite that composite filter.
+# This literal rule is the bounded failure-policy authority for the test.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::bin/witchy) & test(/^example_tests::example_sweeps::documentation_examples_are_valid$/)'
+test-group = 'wasm-heavy'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 90
+
 [[profile.ci.overrides]]
 filter = 'test(/^example_tests::wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::(documentation_examples_are_valid|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
 test-group = 'wasm-heavy'
