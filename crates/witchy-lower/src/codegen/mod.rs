@@ -49,6 +49,8 @@ mod indexed_kernels;
 mod specialization;
 mod glamour_metadata;
 mod scalar_executor;
+pub mod linear_builder;
+pub use linear_builder::{LinearBuildPlan, LinearValueKind, RangeFact};
 pub use glamour_metadata::{
     checked_glamour_island_execution_module, checked_glamour_islands,
     checked_glamour_worker_execution_module,
@@ -852,6 +854,8 @@ struct SavedScope {
     direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
     direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
     active_direct_list_builder: Option<DirectListBuilderPlan>,
+    linear_build_plans: HashMap<String, LinearBuildPlan>,
+    linear_build_epoch: u32,
     range_built_lists: HashMap<String, HashSet<String>>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
@@ -1121,6 +1125,9 @@ struct Codegen<'types> {
     direct_list_builder_lets: HashMap<usize, DirectListBuilderPlan>,
     direct_list_builder_loops: HashMap<usize, DirectListBuilderPlan>,
     active_direct_list_builder: Option<DirectListBuilderPlan>,
+    /// RFC-0151 Linear build plans for owned contiguous buffers.
+    linear_build_plans: HashMap<String, LinearBuildPlan>,
+    linear_build_epoch: u32,
     /// (RFC-0034 L3) Closure locals eligible for devirtualization in the current
     /// unit: a name bound exactly once and never reassigned (so every `f(x)` reaches
     /// the same lambda). Computed in `begin_unit` only under the `direct-call` lever.
@@ -1724,6 +1731,8 @@ impl<'types> Codegen<'types> {
             direct_list_builder_lets: HashMap::new(),
             direct_list_builder_loops: HashMap::new(),
             active_direct_list_builder: None,
+            linear_build_plans: HashMap::new(),
+            linear_build_epoch: 0,
             devirt_ok: HashSet::new(),
             devirt_index: HashMap::new(),
             thread_index: HashMap::new(),
@@ -9841,6 +9850,8 @@ impl<'types> Codegen<'types> {
             direct_list_builder_lets: std::mem::take(&mut self.direct_list_builder_lets),
             direct_list_builder_loops: std::mem::take(&mut self.direct_list_builder_loops),
             active_direct_list_builder: self.active_direct_list_builder.take(),
+            linear_build_plans: std::mem::take(&mut self.linear_build_plans),
+            linear_build_epoch: self.linear_build_epoch,
             range_built_lists: std::mem::take(&mut self.range_built_lists),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
@@ -9901,6 +9912,8 @@ impl<'types> Codegen<'types> {
         self.direct_list_builder_lets = s.direct_list_builder_lets;
         self.direct_list_builder_loops = s.direct_list_builder_loops;
         self.active_direct_list_builder = s.active_direct_list_builder;
+        self.linear_build_plans = s.linear_build_plans;
+        self.linear_build_epoch = s.linear_build_epoch;
         self.range_built_lists = s.range_built_lists;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;

@@ -119,3 +119,81 @@
         );
     }
 
+    #[test]
+    fn intrinsic_contiguous_op_classification_matches_rfc0151() {
+        use witchy_syntax::intrinsics::{ContiguousOpClass, IntrinsicId, ScalarValidation};
+
+        assert_eq!(
+            IntrinsicId::BytesAt.contiguous_op(),
+            Some(ContiguousOpClass::ContiguousRead { width: 1 })
+        );
+        assert_eq!(
+            IntrinsicId::BytesSetAt.contiguous_op(),
+            Some(ContiguousOpClass::ContiguousWrite { width: 1 })
+        );
+        assert_eq!(
+            IntrinsicId::BytesPush.contiguous_op(),
+            Some(ContiguousOpClass::AppendScalar {
+                width: 1,
+                validation: ScalarValidation::ByteRange,
+            })
+        );
+        assert_eq!(
+            IntrinsicId::BytesAppend.contiguous_op(),
+            Some(ContiguousOpClass::AppendSlice { width: 1 })
+        );
+        assert_eq!(
+            IntrinsicId::BytesReserve.contiguous_op(),
+            Some(ContiguousOpClass::Reserve)
+        );
+        assert_eq!(
+            IntrinsicId::BytesToString.contiguous_op(),
+            Some(ContiguousOpClass::Finish)
+        );
+        assert_eq!(IntrinsicId::ChannelOpen.contiguous_op(), None);
+        assert_eq!(IntrinsicId::GeneratedListPush.contiguous_op(), None);
+    }
+
+    #[test]
+    fn linear_build_plan_lifecycle_and_invalidation() {
+        use crate::codegen::linear_builder::{LinearBuildPlan, LinearValueKind};
+        use witchy_syntax::intrinsics::{ContiguousOpClass, ScalarValidation};
+
+        let mut plan = LinearBuildPlan::new(
+            "buf".into(),
+            LinearValueKind::Bytes,
+            1,
+            0,
+        )
+        .with_locals(
+            Some("buf_len".into()),
+            Some("buf_cap".into()),
+            Some("buf_cur".into()),
+            Some("__cap_buf".into()),
+        );
+
+        assert!(plan.is_valid_at_epoch(0));
+        assert!(!plan.is_valid_at_epoch(1));
+        assert!(plan.is_direct_byte_eligible());
+        assert!(!plan.is_string_builder_eligible());
+
+        assert!(plan.contiguous_op_applicable(ContiguousOpClass::ContiguousRead { width: 1 }));
+        assert!(plan.contiguous_op_applicable(ContiguousOpClass::ContiguousWrite { width: 1 }));
+        assert!(plan.contiguous_op_applicable(ContiguousOpClass::AppendScalar {
+            width: 1,
+            validation: ScalarValidation::ByteRange,
+        }));
+        assert!(!plan.contiguous_op_applicable(ContiguousOpClass::AppendScalar {
+            width: 1,
+            validation: ScalarValidation::Utf8Scalar,
+        }));
+        assert!(!plan.contiguous_op_applicable(ContiguousOpClass::ContiguousRead { width: 2 }));
+
+        assert!(!plan.range_is_byte_proven("ch"));
+        plan.record_range_fact("ch".into(), 0, 255);
+        assert!(plan.range_is_byte_proven("ch"));
+
+        plan.record_range_fact("wide".into(), -10, 300);
+        assert!(!plan.range_is_byte_proven("wide"));
+    }
+

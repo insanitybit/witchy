@@ -440,6 +440,42 @@ pub enum WirHostInput {
     LossyUtf8Bytes,
 }
 
+/// (RFC-0151) Validation requirements for contiguous scalar append operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarValidation {
+    None,
+    ByteRange,
+    Utf8Scalar,
+}
+
+/// (RFC-0151) Compiler intrinsic operation classification for contiguous buffers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContiguousOpClass {
+    ContiguousRead { width: u32 },
+    ContiguousWrite { width: u32 },
+    AppendScalar { width: u32, validation: ScalarValidation },
+    AppendSlice { width: u32 },
+    Reserve,
+    Finish,
+}
+
+impl IntrinsicId {
+    pub fn contiguous_op(self) -> Option<ContiguousOpClass> {
+        match self {
+            Self::BytesAt => Some(ContiguousOpClass::ContiguousRead { width: 1 }),
+            Self::BytesSetAt => Some(ContiguousOpClass::ContiguousWrite { width: 1 }),
+            Self::BytesPush => Some(ContiguousOpClass::AppendScalar {
+                width: 1,
+                validation: ScalarValidation::ByteRange,
+            }),
+            Self::BytesAppend => Some(ContiguousOpClass::AppendSlice { width: 1 }),
+            Self::BytesReserve => Some(ContiguousOpClass::Reserve),
+            Self::BytesToString => Some(ContiguousOpClass::Finish),
+            _ => None,
+        }
+    }
+}
+
 /// A selector-based call through one shared WIR helper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WirHostCall {
@@ -466,6 +502,12 @@ pub struct IntrinsicSpec {
     pub wir_host_call: Option<WirHostCall>,
     pub diagnostic_name: &'static str,
     pub private_callers: &'static [&'static str],
+}
+
+impl IntrinsicSpec {
+    pub fn contiguous_op(&self) -> Option<ContiguousOpClass> {
+        self.id.contiguous_op()
+    }
 }
 
 const NO_HELPERS: &[&str] = &[];
