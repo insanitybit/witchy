@@ -130,7 +130,7 @@ jobs:
       - uses: ./.github/actions/install-rust
         with:
           components: clippy
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: nextest
       - name: Build
@@ -155,7 +155,7 @@ jobs:
           ref: ${{ needs.version.outputs.commit }}
           persist-credentials: false
       - uses: ./.github/actions/install-rust
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: nextest
       - name: Differential fuzzer under WITCHY_HEAP_CHECK
