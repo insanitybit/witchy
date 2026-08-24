@@ -69,6 +69,13 @@ receiver endpoints are proven `Receiver(Int)`; unknown or non-integer facts
 retain the erased-message fallback. The compiler-owned frame emitter and
 scheduler path that consume the lane have not landed.
 
+The current master also carries the negative safety control from
+`95e1ac8b`: a `Receiver(String)` two-way select is rejected from the scalar
+executor fallback (`select2_non_integer_payload_rejects_scalar_executor_fallback`).
+That test is a boundary guard only; it does not claim allocation-free select
+execution or promotion evidence. The full implementation and landing protocol
+are recorded in `GOAL-rfc0146-full-implementation.md`, landed as `c543e403`.
+
 ### Track 1 rejection detail
 
 The only implementation on this branch, `5f9d6f09`, is a helper-only routing
