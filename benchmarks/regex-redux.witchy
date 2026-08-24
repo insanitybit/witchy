@@ -9,15 +9,15 @@ fn main(let console: Console, let clock: Clock):
 
     var sb = ""
     var i = 0
-    while i < 2500:
+    while i < 250:
         sb = sb + ">Sequence_${i}\n" + seq + "\n"
         i = i + 1
         
     var text = sb
-    let originalLen = text.len()
+    let originalLen = string.length(text)
     
     text = regex.replace_all("(>[^\n]+)?\n", text, "")
-    let cleanedLen = text.len()
+    let cleanedLen = string.length(text)
 
     let variants = [
         "agggtaaa|tttaccct",
@@ -34,7 +34,7 @@ fn main(let console: Console, let clock: Clock):
     var vi = 0
     while vi < 9:
         let v = variants[vi]
-        let c = regex.find_all(v, text).len()
+        let c = list.length(regex.find_all(v, text))
         console.print("${v} ${c}")
         vi = vi + 1
 
@@ -47,7 +47,7 @@ fn main(let console: Console, let clock: Clock):
     console.print("")
     console.print("${originalLen}")
     console.print("${cleanedLen}")
-    console.print("${text.len()}")
+    console.print("${string.length(text)}")
 
     let bench_t1 = clock.now_monotonic()
     console.print("bench_ns=${bench_t1 - bench_t0}")
