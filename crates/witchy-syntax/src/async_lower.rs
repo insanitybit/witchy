@@ -1448,9 +1448,7 @@ impl<'a> Ctx<'a> {
             })
             .cloned()
             .collect();
-        if lanes.is_empty()
-            || lanes.iter().any(|lane| !used.contains(&lane.name))
-        {
+        if lanes.iter().any(|lane| !used.contains(&lane.name)) {
             return Ok(None);
         }
 
@@ -2867,6 +2865,25 @@ mod tests {
         let lowered = lower_module(module).expect("lower select loop");
         let rendered = crate::format::module(&lowered, &[]);
         assert!(rendered.contains("chan.select2_frame_loop"), "{rendered}");
+        assert!(rendered.contains("chan.select2_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select2_frame_decode"), "{rendered}");
+    }
+
+    #[test]
+    fn select_loop_uses_the_reusable_bridge_without_carried_scalar_lanes() {
+        // A deadline-driven receive loop has no mutable scalar state to carry:
+        // its loop condition is re-evaluated from the capability and the
+        // selected payload is consumed locally.  The empty frame is still a
+        // valid compiler-owned frame and must not force the generic scheduler.
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int), clock: Clock):\n    while clock.now_monotonic() < 1s:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(_) -> unit()\n            Second(_) -> unit()\n            Closed -> unit()\n";
+        let module = crate::parser::parse_module(source).expect("parse empty-frame select loop");
+        let lowered = lower_module(module).expect("lower empty-frame select loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(rendered.contains("chan.select2_frame_loop"), "{rendered}");
+        assert!(
+            rendered.contains("list.repeat(0, 0)"),
+            "the reusable bridge owns an explicitly empty frame: {rendered}"
+        );
         assert!(rendered.contains("chan.select2_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select2_frame_decode"), "{rendered}");
     }
