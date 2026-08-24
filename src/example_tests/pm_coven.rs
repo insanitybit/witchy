@@ -144,6 +144,8 @@ fn main(console: Console):
     fn linked_pm() -> crate::ast::Module {
         let sources = [
             ("pm", "projects/grimoire/src/grimoire.witchy"),
+            ("gm_core", "projects/grimoire/src/gm_core.witchy"),
+            ("gm_engine", "projects/grimoire/src/gm_engine.witchy"),
             ("coven_proto", "projects/coven/src/coven_proto.witchy"),
             ("coven_json", "projects/coven/src/coven_json.witchy"),
             ("coven_validate", "projects/coven/src/coven_validate.witchy"),
@@ -279,7 +281,14 @@ fn main(console: Console):
                 "name:     grimoire",
                 "version:  0.1.0",
                 "declared: Console, Dir, Net, Exec, Env, Clock",
-                "actual:   Clock, Console, Dir, Env, Exec, Net",
+                // grimoire is now a three-module rune; `rune_footprint` unions each
+                // src file's `compiler.footprint`. `gm_core`'s registry helpers demand
+                // the refined `Net[Connect, Tcp]`; `grimoire.witchy`'s `--net`/exec
+                // plumbing demands full `Net`. The union carries both (BUG-085 multi-
+                // module union does not absorb a refined cap into its bare parent) —
+                // pre-existing analyzer behavior any multi-file rune exhibits, not a
+                // refactor regression. `Net` (declared) admits both, so `check` passes.
+                "actual:   Net[Connect, Tcp], Clock, Console, Dir, Env, Exec, Net",
             ]
         );
         assert_eq!(code, 0);
@@ -296,15 +305,15 @@ fn main(console: Console):
         assert_eq!(code, 0);
     }
 
-    /// RFC-0116 track 1: the registry address is an ORIGIN — `pm.parse_origin`
+    /// RFC-0116 track 1: the registry address is an ORIGIN — `gm_core.parse_origin`
     /// preserves the scheme from `https://…`/`http://…` (defaulting the port from
     /// the scheme when the authority has none), keeps bare `host:port` meaning
     /// http (loopback compat), and rejects every malformed spelling loudly. The
-    /// probe links the REAL pm module and drives its parser + `registry_origin`
-    /// rendering directly.
+    /// origin parser + `registry_origin` renderer live in grimoire's pure `gm_core`
+    /// module; the probe links it and drives them directly.
     #[test]
     fn pm_parse_origin_is_scheme_aware_and_total() {
-        let probe = r#"import pm
+        let probe = r#"import gm_core
 
 fn main(console: Console):
     let addrs = [
@@ -324,10 +333,10 @@ fn main(console: Console):
         "h:x",
     ]
     for addr in addrs:
-        match pm.parse_origin(addr):
+        match gm_core.parse_origin(addr):
             Ok(shp) ->
                 let (scheme, host, port) = shp
-                console.print(addr + " -> " + pm.registry_origin(scheme, host, port))
+                console.print(addr + " -> " + gm_core.registry_origin(scheme, host, port))
             Err(e) -> console.print(addr + " -> err: ${e}")
 "#;
         let mut modules = vec![(
@@ -336,6 +345,8 @@ fn main(console: Console):
         )];
         for (name, path) in [
             ("pm", "projects/grimoire/src/grimoire.witchy"),
+            ("gm_core", "projects/grimoire/src/gm_core.witchy"),
+            ("gm_engine", "projects/grimoire/src/gm_engine.witchy"),
             ("coven_proto", "projects/coven/src/coven_proto.witchy"),
             ("coven_json", "projects/coven/src/coven_json.witchy"),
             ("coven_validate", "projects/coven/src/coven_validate.witchy"),

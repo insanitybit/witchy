@@ -200,6 +200,8 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
     match name {
         // grimoire's own shared leaf-helper module (arg/path/JSON/registry shims).
         "gm_core" => Some(include_str!("../../projects/grimoire/src/gm_core.witchy")),
+        // grimoire's effectful package-manager engine (fetch/resolve/vendor/lock/verify).
+        "gm_engine" => Some(include_str!("../../projects/grimoire/src/gm_engine.witchy")),
         "coven_proto" => Some(include_str!("../../projects/coven/src/coven_proto.witchy")),
         "coven_json" => Some(include_str!("../../projects/coven/src/coven_json.witchy")),
         "coven_validate" => Some(include_str!("../../projects/coven/src/coven_validate.witchy")),

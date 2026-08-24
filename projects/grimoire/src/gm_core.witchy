@@ -1,11 +1,23 @@
-// gm_core — shared leaf helpers for the grimoire package-manager client: argument
-// parsing, path/name utilities, the registry HTTP shims, and small JSON pluckers.
-// These depend only on the standard library, so every other grimoire module can
-// import them without a cycle. Extracted from grimoire.witchy (RFC-0004 client).
+// gm_core — the pure computational core of the grimoire package-manager client
+// (RFC-0004): argument/flag parsing, path & name utilities, the registry HTTP
+// shims, JSON/TOML pluckers, semver/footprint/lock/trust-record logic, and every
+// typed error the client raises. None of these functions hold a capability, so the
+// whole module is pure and side-effect-free — the effectful command orchestrators
+// live in grimoire.witchy and import what they need from here. Being capability-free
+// makes gm_core a dependency-DAG leaf every other grimoire module can import.
 
+import bytes
+import compiler
+import crypto
+import encoding
+import rights
+import error
+import convert
 from http import Response
 from json import Json
 from semver import Version
+from semver import Req
+from toml import Toml
 
 // --- small generic helpers ---------------------------------------------------
 pub fn arg(let args: List(String), i: Int) -> String:
@@ -178,3 +190,1615 @@ pub fn json_index_str(j: Json, i: Int) -> String:
             Some(s) -> s
             None -> ""
         None -> ""
+
+// ---- pure computational core (extracted from grimoire.witchy) ----
+pub fn registry_origin(scheme: String, host: String, port: Int) -> String:
+    "${scheme}://${host}:${port}"
+
+type BuildOptions:
+    dir: String
+    target: String
+    out: String
+    mode: String
+    error: String
+
+// Parse build argv once into a typed value. Flags may precede or follow the
+// optional project directory; the compiler never has to guess from nth tokens.
+pub fn build_options(args: List(String)) -> BuildOptions:
+    var dir = "."
+    var target = "wasm"
+    var out = ""
+    var mode = "debug"
+    var error = ""
+    var positional = false
+    var pending = ""
+    var index = 0
+    for value in args:
+        if index == 0:
+            Nil
+        else if !pending.is_empty():
+            if pending == "target":
+                target = value
+            else:
+                out = value
+            pending = ""
+        else if value == "--target":
+            pending = "target"
+        else if value == "--out":
+            pending = "out"
+        else if value == "--release":
+            mode = "release"
+        else if value == "--debug":
+            mode = "debug"
+        else if value.starts_with("--"):
+            error = "unknown build option `${value}`"
+        else if positional:
+            error = "build accepts at most one <file|dir>"
+        else:
+            dir = value
+            positional = true
+        index = index + 1
+    if !pending.is_empty():
+        error = "--${pending} needs a value"
+    BuildOptions(dir, target, out, mode, error)
+
+// The `[[rune]]` entries of a lockfile, decoded through the ONE structured TOML
+// parser (`toml.decode` + `toml.array_of_tables`). A malformed lockfile — or a
+// `rune` value that is not an array-of-tables — is an explicit
+// `LockEntryMalformed`, never a silently-empty dependency set (BUG-373): this is
+// the single lockfile boundary every reader below shares, so dependency
+// resolution, capability baselines, hash verification, `update`, and `why` all
+// consume the same decoded model.
+pub fn lock_rune_entries(lock: String) -> Result(List(Toml), LockIntegrityError):
+    match toml.decode(lock):
+        Err(e) -> Err(LockEntryMalformed(toml.decode_error_message(e)))
+        Ok(doc) ->
+            match toml.array_of_tables(doc, "rune"):
+                Err(e) -> Err(LockEntryMalformed(toml.decode_error_message(e)))
+                Ok(entries) -> Ok(entries)
+
+// A required string field of a decoded `[[rune]]` entry. Delegates to the
+// structured `toml.required_string`, which distinguishes a MISSING field, an
+// EMPTY field, and a WRONG-KIND value (e.g. `name = 42`) — all mapped to
+// `LockEntryMalformed` so lock verification fails closed with a precise message.
+pub fn required_lock_field(entry: Toml, field: String) -> Result(String, LockIntegrityError):
+    match toml.required_string(entry, field, "a registry [[rune]] entry"):
+        Err(e) -> Err(LockEntryMalformed(toml.decode_error_message(e)))
+        Ok(value) -> Ok(value)
+
+// The `source` field of a decoded `[[rune]]` entry, or None when absent. A
+// wrong-kind `source` reads as None (treated as a missing source by the caller).
+pub fn entry_source(entry: Toml) -> Option(String):
+    match toml.optional_string(entry, "source"):
+        Ok(s) -> s
+        Err(_) -> None
+
+type LockIntegrityError:
+    LockMissing
+    LockCannotCreate(String)
+    LockPathHashMismatch(List(String))
+    LockRootKeyMissing
+    LockEntryMalformed(String)
+    LockDuplicateAlias(String)
+    LockVendorMissing(String)
+    LockVendorManifestMissing(String)
+    LockRecordInvalid(String, String)
+    LockRecordCoordinateMismatch(String, String, String, String)
+    LockSourceHashMismatch(String)
+
+impl Show for LockIntegrityError:
+    fn show(self) -> String:
+        match self:
+            LockMissing -> "BLOCK: no witchy.lock — run `witchy lock` or `witchy add` before verification"
+            LockCannotCreate(reason) -> "BLOCK: cannot create witchy.lock before build: ${reason}"
+            LockPathHashMismatch(names) -> "BLOCK: lock no longer matches source for: ${list.join(names, ", ")}"
+            LockRootKeyMissing -> "BLOCK: witchy.lock has registry dependencies but no pinned registry_rootpub"
+            LockEntryMalformed(reason) -> "BLOCK: malformed witchy.lock — ${reason}"
+            LockDuplicateAlias(alias) -> "BLOCK: witchy.lock maps more than one registry dependency to vendor/${alias}"
+            LockVendorMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} is missing"
+            LockVendorManifestMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} has no witchy.toml"
+            LockRecordInvalid(alias, reason) -> "BLOCK: vendor/${alias}/coven.json failed pinned-root verification — ${reason}"
+            LockRecordCoordinateMismatch(alias, field, expected, actual) -> "BLOCK: vendor/${alias}/coven.json `${field}` is `${actual}`, but witchy.lock pins `${expected}`"
+            LockSourceHashMismatch(alias) -> "BLOCK: vendor/${alias} source no longer matches its signed and locked hash"
+
+impl Error for LockIntegrityError
+
+impl From(LockIntegrityError) for String:
+    fn from(value: LockIntegrityError) -> Self:
+        value.show()
+
+// BUG-406: extract the runtime `--net <addr>` grants from the front-end argv as a flat
+// `["--net", addr, ...]` list, so the inner sandbox run keeps the Net authority the user
+// granted (the front-end forwards them as trailing args precisely so they can be spliced back).
+pub fn runtime_net_flags(args: List(String)) -> List(String):
+    var out = []
+    var take = false
+    for a in args:
+        if take:
+            out.push("--net")
+            out.push(a)
+            take = false
+        else if a == "--net":
+            take = true
+    out
+
+// The app's own argv with the `--net <addr>` grant pairs removed (they become sandbox flags).
+pub fn strip_net_flags(args: List(String)) -> List(String):
+    var out = []
+    var skip = false
+    for a in args:
+        if skip:
+            skip = false
+        else if a == "--net":
+            skip = true
+        else:
+            out.push(a)
+    out
+
+// The directory backing the program's runtime `Dir` grant — the project itself
+// (`.` when pm is run from inside the project, `<dir>` when run from a workspace
+// root). Data files (`tasks.md`, `config.kv`, `output.json`, …) live here.
+pub fn project_data_dir(dir: String) -> String:
+    if dir.is_empty() || dir == ".":
+        "."
+    else:
+        dir
+
+pub fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
+    var out = flags
+    out.push("--dep")
+    out.push("${name}=${src}")
+    out
+
+pub fn package_owner_flag(flags: List(String), source: String, package: String, version: String, module: String) -> List(String):
+    var out = flags
+    out.push("--package-owner")
+    out.push(source)
+    out.push(package)
+    out.push(version)
+    out.push(module)
+    out
+
+pub fn dep_flag_owned(flags: List(String), alias: String, src: String, source: String, package: String, version: String, module: String) -> List(String):
+    var out = dep_flag(flags, alias, src)
+    out.push("--dep-owner")
+    out.push(alias)
+    out.push(source)
+    out.push(package)
+    out.push(version)
+    out.push(module)
+    out
+
+pub fn required_manifest_coordinate(manifest: String, path: String) -> Result(String, LockIntegrityError):
+    match toml.get(manifest, path):
+        Some(value) ->
+            if value.is_empty():
+                Err(LockEntryMalformed("manifest `${path}` is empty"))
+            else:
+                Ok(value)
+        None -> Err(LockEntryMalformed("manifest is missing `${path}`"))
+
+// Whether a `--dep <name>=...` flag is already present.
+pub fn has_dep(flags: List(String), name: String) -> Bool:
+    var found = false
+    for f in flags:
+        if f.contains("=") && f.split_once("=").0 == name:
+            found = true
+    found
+
+// The conventional entry-source path for a rune at `base` whose module stem is
+// `name`: `<base>/src/<module_name(name)>.witchy` (the launcher's
+// `project_entry_file` convention). Used to name a MISSING source (BUG-415).
+pub fn conventional_entry(base: String, name: String) -> String:
+    join_path(join_path(base, "src"), "${module_name(name)}.witchy")
+
+// Concatenate the leading argv with the trailing `--dep` flags into one argv.
+pub fn flatten_argv(head: List(String), tail: List(String)) -> List(String):
+    var out = []
+    for a in head:
+        out.push(a)
+    for b in tail:
+        out.push(b)
+    out
+
+// Whether the lock records a `[[rune]]` whose local import alias is `alias` — the
+// gate for a vendored dependency to count as resolved (BUG-095). A malformed
+// lockfile is an explicit error (BUG-373), never a silent `false` that would
+// treat a vendored, pinned dependency as unresolved.
+pub fn locked_registry_alias(lock: String, alias: String) -> Result(Bool, LockIntegrityError):
+    var found = false
+    for entry in lock_rune_entries(lock)?:
+        if entry_is_registry(entry) && entry_alias(entry) == alias:
+            found = true
+    Ok(found)
+
+pub fn entry_is_registry(entry: Toml) -> Bool:
+    match entry_source(entry):
+        Some(source) -> source == "coven"
+        None -> false
+
+// Whether the consumer manifest carries a `[build.grants."name"]` section at all —
+// the explicit consent to ANY build-time execution (an empty section is consent to
+// a BuildOut-only step). A structured check over PARSED section headers, not a raw
+// substring: a commented (`# [build.grants."x"]`) or quoted (`k = "[build.grants."x"]"`)
+// line that merely LOOKS like the header is not consent (BUG-097). This mirrors
+// std/toml's own header grammar — a header is a line that trims to `[...]`.
+pub fn has_grants_section(manifest: String, name: String) -> Bool:
+    let target = "build.grants.\"${name}\""
+    var found = false
+    for line in manifest.lines():
+        let t = line.trim()
+        if t.starts_with("[") && t.ends_with("]"):
+            let inner = t.strip_prefix("[").strip_suffix("]").trim()
+            if inner == target:
+                found = true
+    found
+
+// The build capabilities a `[build.grants."name"]` section grants. The mere section
+// (even empty) grants `BuildOut`; named read/exec/env/net arrays grant the others.
+pub fn granted_build_kinds(manifest: String, name: String) -> List(String):
+    var out = ["BuildOut"]
+    let section = "build.grants.\"${name}\""
+    if list.length(toml.get_array(manifest, section + ".read")) > 0:
+        out.push("BuildRead")
+    if list.length(build_exec_programs(manifest, section)) > 0:
+        out.push("BuildExec")
+    if list.length(toml.get_array(manifest, section + ".env")) > 0:
+        out.push("BuildEnv")
+    if list.length(toml.get_array(manifest, section + ".net")) > 0:
+        out.push("BuildNet")
+    out
+
+// Translate a `[build.grants."name"]` section into `witchy build-step` flags:
+// each granted read path (resolved relative to the project) → `--read`, env key →
+// `--env`, exec tool → `--exec`, inherited child need → `--child-path`.
+// (BuildOut needs no flag — it is the default.)
+pub fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
+    var out = []
+    let section = "build.grants.\"${name}\""
+    for p in toml.get_array(manifest, section + ".read"):
+        out.push("--read")
+        out.push(normalize_path(join_path(dir, p)))
+    for k in toml.get_array(manifest, section + ".env"):
+        out.push("--env")
+        out.push(k)
+    for t in build_exec_programs(manifest, section):
+        out.push("--exec")
+        out.push(t)
+    for p in build_exec_child_paths(manifest, section):
+        out.push("--child-path")
+        out.push(if p == "~" || p.starts_with("~/"): p else: normalize_path(join_path(dir, p)))
+    // BUG-081: a granted BuildNet host must be plumbed to the confined build step
+    // just like read/env/exec — one `--net <host:port>` per allowed address. (The
+    // matching consumer of this flag in the compiler's `build-step` command is the
+    // Rust TCB half; without it the grant is inert, but the policy plumbing is here.)
+    for h in toml.get_array(manifest, section + ".net"):
+        out.push("--net")
+        out.push(h)
+    out
+
+// Preserve the original `exec = ["protoc"]` grant while accepting RFC-0103's
+// richer `exec = { programs = [...], child-paths = [...] }` declaration.
+pub fn build_exec_programs(manifest: String, section: String) -> List(String):
+    match toml.get(manifest, section + ".exec"):
+        Some(raw) ->
+            if raw.trim().starts_with("{"):
+                toml.inline_get_array(raw, "programs")
+            else:
+                toml.get_array(manifest, section + ".exec")
+        None -> []
+
+pub fn build_exec_child_paths(manifest: String, section: String) -> List(String):
+    match toml.get(manifest, section + ".exec"):
+        Some(raw) ->
+            if raw.trim().starts_with("{"):
+                toml.inline_get_array(raw, "child-paths")
+            else:
+                []
+        None -> []
+
+// The build-axis footprint of a source: the build capabilities its `build`
+// entrypoint demands (`compiler.footprint`'s `build` array).
+pub fn build_footprint(source: String) -> Result(List(String), FootprintError):
+    footprint_values(compiler.footprint(source), "build")
+
+// `greet.witchy` → module name `greet`.
+pub fn module_stem(file: String) -> String:
+    file.strip_suffix(".witchy")
+
+// Declared capabilities that admit nothing the code demands.
+pub fn unused_caps(declared: List(String), demanded: List(String)) -> List(String):
+    var extra = []
+    for d in declared:
+        if !admits_any(d, demanded):
+            extra.push(d)
+    extra
+
+pub fn admits_any(declared: String, demanded: List(String)) -> Bool:
+    var any = false
+    for c in demanded:
+        if rights.covers(declared, c):
+            any = true
+    any
+
+// Whether the manifest declares any path dependency (`{ path = ... }`). A published
+// rune must be self-contained / registry-only, so publish refuses these.
+pub fn has_path_dependency(manifest: String) -> Bool:
+    list.length(path_deps(manifest)) > 0
+
+// The names of the manifest's path dependencies, for the refusal message.
+pub fn path_deps(manifest: String) -> List(String):
+    var out = []
+    for name, inline in toml.table(manifest, "dependencies"):
+        if let Some(_rel) = toml.inline_get(inline, "path"):
+            out.push(name)
+    out
+
+pub fn latest_label(body: String, status: Int) -> String:
+    if status != 200:
+        "registry error"
+    else:
+        match released_version_records(body):
+            Err(e) -> e.show()
+            Ok(records) -> latest_label_of(latest_version(list.map(records, fn(record: (Version, Int)): record.0)))
+
+pub fn latest_label_of(v: Option(Version)) -> String:
+    match v:
+        Some(ver) -> "latest ${semver.format(ver)}"
+        None -> "no released versions"
+
+pub fn latest_version(versions: List(Version)) -> Option(Version):
+    var best = None
+    for v in versions:
+        let take = match best:
+            None -> true
+            Some(b) -> semver.less(b, v)
+
+        if take:
+            best = Some(v)
+    best
+
+// Presentation-only projection for `pm list`: an unavailable or malformed
+// response renders as no rows. Install/update decisions use the strict typed
+// `released_version_records` boundary below.
+pub fn version_records(body: String) -> List(Json):
+    var out = []
+    if let Ok(doc) = json.decode(body):
+        if let Some(records) = json.get(doc, "records"):
+            if let Some(items) = json.as_array(records):
+                out = items
+    out
+
+pub fn resp_field(text: String, key: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get_string(doc, key):
+            Some(v) -> v
+            None -> "?"
+        Err(_e) -> "?"
+
+pub fn dep_source(let inline: String) -> String:
+    match toml.inline_get(inline, "path"):
+        Some(p) -> "path:${p}"
+        None -> version_source(inline)
+
+pub fn version_source(let inline: String) -> String:
+    match toml.dep_requirement(inline):
+        Some(v) -> "version:${v}"
+        None -> "(unspecified)"
+
+pub fn closure_has(xs: List((String, String)), name: String) -> Bool:
+    var found = false
+    for x in xs:
+        if x.0 == name:
+            found = true
+    found
+
+pub fn check_path_identity(problems: List(String), name: String, rel: String, dep_manifest: String) -> List(String):
+    var out = problems
+    match toml.get(dep_manifest, "rune.version"):
+        None ->
+            out.push("BLOCK: path dependency `${name}` (${rel}) has no rune.version in its witchy.toml — cannot pin a version")
+        Some(_v) -> out = out
+    match toml.get(dep_manifest, "rune.name"):
+        None ->
+            out.push("BLOCK: path dependency `${name}` (${rel}) has no rune.name in its witchy.toml")
+        Some(realname) ->
+            if realname != name && basename(realname) != name:
+                out.push("BLOCK: path dependency key `${name}` does not match its manifest identity `${realname}` (${rel})")
+    out
+
+// The digest a snapshot pins for `key` (`name@version`), or "" if absent.
+pub fn target_digest(targets: Json, key: String) -> String:
+    match json.get(targets, key):
+        Some(j) -> match json.as_string(j):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+// A `Signed{signed, sig}` envelope's canonical bytes — `json.encode` of the
+// `signed` member, byte-identical to what coven signed (coven signs `encode(role)`
+// and json round-trips key order, so re-encoding the decoded role reproduces it).
+pub fn signed_canonical(envelope: String) -> String:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> json.encode(signed)
+            None -> ""
+        Err(_e) -> ""
+
+// Verify a `Signed{signed, sig}` envelope against the root pubkey over its canonical bytes.
+pub fn signed_valid(rootpub: String, envelope: String) -> Bool:
+    match json.decode(envelope):
+        Ok(doc) ->
+            match crypto.ed25519_verify(rootpub, signed_canonical(envelope), jget(doc, "sig")):
+                Ok(true) -> true
+                Ok(false) -> false
+                Err(_e) -> false
+        Err(_e) -> false
+
+// A string field of the `signed` member of a `Signed{...}` envelope.
+pub fn signed_field_str(envelope: String, key: String) -> String:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> match json.get_string(signed, key):
+                Some(s) -> s
+                None -> ""
+            None -> ""
+        Err(_e) -> ""
+
+// An int field of the `signed` member of a `Signed{...}` envelope.
+pub fn signed_field_int(envelope: String, key: String) -> Int:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> match json.get_int(signed, key):
+                Some(n) -> n
+                None -> 0
+            None -> 0
+        Err(_e) -> 0
+
+// A Json field of the `signed` member of a `Signed{...}` envelope (e.g. `targets`).
+pub fn signed_field(envelope: String, key: String) -> Json:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> json.get(signed, key).unwrap_or(JsonNull)
+            None -> JsonNull
+        Err(_e) -> JsonNull
+
+// The decoded `signed` payload of a `Signed{...}` envelope, or None. The strict
+// counterpart the schema checks below build on (BUG-386): unlike `signed_field*`,
+// which default a missing field to 0/""/JsonNull, these distinguish "absent or
+// wrong-typed" from "present and correctly typed".
+pub fn signed_payload(envelope: String) -> Option(Json):
+    match json.decode(envelope):
+        Ok(doc) -> json.get(doc, "signed")
+        Err(_e) -> None
+
+pub fn signed_has_int(envelope: String, key: String) -> Bool:
+    match signed_payload(envelope):
+        None -> false
+        Some(signed) -> match json.get(signed, key):
+            Some(j) -> match json.as_int(j):
+                Some(_n) -> true
+                None -> false
+            None -> false
+
+pub fn signed_has_str(envelope: String, key: String) -> Bool:
+    match signed_payload(envelope):
+        None -> false
+        Some(signed) -> match json.get(signed, key):
+            Some(j) -> match json.as_string(j):
+                Some(_s) -> true
+                None -> false
+            None -> false
+
+pub fn signed_has_object(envelope: String, key: String) -> Bool:
+    match signed_payload(envelope):
+        None -> false
+        Some(signed) -> match json.get(signed, key):
+            Some(j) -> match json.as_object(j):
+                Some(_o) -> true
+                None -> false
+            None -> false
+
+// The signed snapshot role must carry an integer `version` and an object `targets`;
+// the signed timestamp role an integer `snapshot_version`, a string `snapshot_hash`,
+// and an integer `expires`. Enforced after the signatures verify, so a signed but
+// structurally incomplete role fails closed instead of flowing through with
+// defaulted fields (BUG-386).
+pub fn snapshot_schema_ok(envelope: String) -> Bool:
+    signed_has_int(envelope, "version") && signed_has_object(envelope, "targets")
+
+pub fn timestamp_schema_ok(envelope: String) -> Bool:
+    signed_has_int(envelope, "snapshot_version") && signed_has_str(envelope, "snapshot_hash") && signed_has_int(envelope, "expires")
+
+// Registry trust is one atomic lock invariant: either neither pin exists (a
+// path-only project), or a non-negative snapshot version and a 32-byte Ed25519
+// root key exist together. Treating either half as optional silently degrades an
+// existing registry lock back to trust-on-first-use (BUG-572).
+pub fn pinned_registry_trust(lock: String) -> Result(Option((Int, String)), LockPinError):
+    let snapshot = toml.get(lock, "registry_snapshot_version")
+    let rootpub = toml.get(lock, "registry_rootpub")
+    match snapshot:
+        None -> match rootpub:
+            None -> Ok(None)
+            Some(_key) -> Err(LockPinRootWithoutSnapshot)
+        Some(raw_version) -> match rootpub:
+            None -> Err(LockPinSnapshotWithoutRoot)
+            Some(key) ->
+                let version = parse_snapshot_pin(raw_version)?
+                if valid_registry_rootpub(key):
+                    Ok(Some((version, key)))
+                else:
+                    Err(LockPinRootMalformed)
+
+pub fn parse_snapshot_pin(value: String) -> Result(Int, LockPinError):
+    match value.parse_int():
+        Some(n) ->
+            if n < 0:
+                Err(LockPinNegative(value))
+            else:
+                Ok(n)
+        None -> Err(LockPinNotInteger(value))
+
+pub fn valid_registry_rootpub(value: String) -> Bool:
+    match encoding.hex_decode_bytes(value):
+        Ok(decoded) -> bytes.length(decoded) == 32
+        Err(_e) -> false
+
+type LockPinError:
+    LockPinNegative(String)
+    LockPinNotInteger(String)
+    LockPinSnapshotWithoutRoot
+    LockPinRootWithoutSnapshot
+    LockPinRootMalformed
+
+impl Show for LockPinError:
+    fn show(self) -> String:
+        match self:
+            LockPinNegative(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (must not be negative)"
+            LockPinNotInteger(v) -> "invalid witchy.lock registry_snapshot_version `${v}` (not an integer)"
+            LockPinSnapshotWithoutRoot -> "invalid witchy.lock registry trust: registry_snapshot_version is present but registry_rootpub is missing"
+            LockPinRootWithoutSnapshot -> "invalid witchy.lock registry trust: registry_rootpub is present but registry_snapshot_version is missing"
+            LockPinRootMalformed -> "invalid witchy.lock registry_rootpub (expected a 32-byte Ed25519 public key encoded as hex)"
+
+impl Error for LockPinError
+
+impl From(LockPinError) for String:
+    fn from(value: LockPinError) -> Self:
+        value.show()
+
+type RegistryRootKeyError:
+    RegistryRootKeyUnavailable(Int)
+    RegistryRootKeyMalformed
+
+impl Show for RegistryRootKeyError:
+    fn show(self) -> String:
+        match self:
+            RegistryRootKeyUnavailable(status) -> "registry root key is unavailable (HTTP ${status})"
+            RegistryRootKeyMalformed -> "registry root key is malformed (expected a 32-byte Ed25519 public key encoded as hex)"
+
+impl Error for RegistryRootKeyError
+
+impl From(RegistryRootKeyError) for String:
+    fn from(value: RegistryRootKeyError) -> Self:
+        value.show()
+
+// The `hash` field of the `[[rune]]` entry named `name`, or "(absent)". A
+// malformed lockfile is an explicit error (BUG-373), never a silent "(absent)"
+// that would let hash verification pass on a corrupted lock.
+pub fn locked_hash(lock: String, name: String) -> Result(String, LockIntegrityError):
+    var found = "(absent)"
+    for entry in lock_rune_entries(lock)?:
+        if entry_name(entry) == name:
+            found = entry_hash(entry)
+    Ok(found)
+
+pub fn entry_name(entry: Toml) -> String:
+    optional_lock_string(entry, "name", "")
+
+// The local import alias (basename) of a `[[rune]]` lock entry: the explicit
+// `alias` field written by `pm add` (BUG-099), or — for older locks / path
+// entries that carry no `alias` — the basename of the registry `name`.
+pub fn entry_alias(entry: Toml) -> String:
+    let alias = optional_lock_string(entry, "alias", "")
+    if alias.is_empty():
+        basename(entry_name(entry))
+    else:
+        alias
+
+// A best-effort string field of a decoded `[[rune]]` entry for the advisory
+// (non-verifying) readers: the value when present and a string, else `fallback`.
+// A wrong-kind value reads as the fallback — these readers cannot fail, and the
+// verifying path (`required_lock_field`) is where a wrong kind becomes an error.
+pub fn optional_lock_string(entry: Toml, field: String, fallback: String) -> String:
+    match toml.optional_string(entry, field):
+        Ok(Some(s)) -> s
+        Ok(None) -> fallback
+        Err(_) -> fallback
+
+pub fn entry_hash(entry: Toml) -> String:
+    optional_lock_string(entry, "hash", "(no-hash)")
+
+// The capabilities the lockfile already records (union of every [[rune]] entry's
+// runtime_footprint) — the baseline the gate diffs a new resolution against. A
+// malformed lockfile is an explicit error (BUG-373), never a silently-empty
+// baseline: an empty baseline would make the gate treat EVERY demanded capability
+// as new authority (or, worse, mask a corrupted lock), so the gate must fail
+// closed with the parse error instead.
+pub fn lock_baseline(lock: String) -> Result(List(String), LockIntegrityError):
+    var out = []
+    for entry in lock_rune_entries(lock)?:
+        match toml.string_array_field(entry, "runtime_footprint"):
+            Err(e) -> return Err(LockEntryMalformed(toml.decode_error_message(e)))
+            Ok(caps) ->
+                for cap in caps:
+                    out = add_unique(out, cap)
+    Ok(out)
+
+// The arguments at index `start` and beyond (a positional slice). Used both to
+// collect a gate's trailing accepted-cap list and to forward a program's own argv
+// after `pm run <file|dir>` (BUG-102).
+pub fn args_from(let args: List(String), start: Int) -> List(String):
+    var out = []
+    var i = 0
+    for a in args:
+        if i >= start:
+            out.push(a)
+        i = i + 1
+    out
+
+pub fn union_all(a: List(String), b: List(String)) -> List(String):
+    var out = a
+    for x in b:
+        out = add_unique(out, x)
+    out
+
+pub fn add_unique(xs: List(String), x: String) -> List(String):
+    if xs.contains(x):
+        xs
+    else:
+        var out = xs
+        out.push(x)
+        out
+
+pub fn registry_placeholder(name: String) -> String:
+    "\n[[rune]]\nname = \"" + name + "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (grimoire publish/fetch)\n"
+
+pub fn footprint_toml(caps: List(String)) -> String:
+    var parts = []
+    for c in caps:
+        parts.push("\"" + c + "\"")
+    list.join(parts, ", ")
+
+// `update`'s positional args (`[only, addr]`), skipping the command word and any
+// `--allow-cap <Cap>` flag pairs. Always length 2 (absent positionals are ""), so
+// the caller can index freely.
+pub fn update_positionals(args: List(String)) -> List(String):
+    var out = ["", ""]
+    var idx = 0
+    var first = true
+    var take = false
+    for a in args:
+        if first:
+            first = false
+        else if take:
+            take = false
+        else if a == "--allow-cap":
+            take = true
+        else if idx < 2:
+            out = set_at(out, idx, a)
+            idx = idx + 1
+    out
+
+// The capabilities a `--allow-cap <Cap>` flag consents to (so an intended widening
+// passes the gate) — every value following an `--allow-cap` token.
+pub fn allowed_caps(args: List(String)) -> List(String):
+    var out = []
+    var take = false
+    for a in args:
+        if take:
+            out.push(a)
+            take = false
+        else if a == "--allow-cap":
+            take = true
+    out
+
+pub fn set_at(xs: List(String), i: Int, v: String) -> List(String):
+    var out = []
+    var j = 0
+    for x in xs:
+        if j == i:
+            out.push(v)
+        else:
+            out.push(x)
+        j = j + 1
+    out
+
+// The version requirement the consumer's manifest declares for a vendored dep,
+// matched by full registry identity or basename alias; `*` (latest) when the
+// manifest names no requirement (BUG-092). `update` resolves WITHIN this bound
+// rather than jumping to the absolute latest.
+pub fn dep_req(manifest: String, fullname: String, alias: String) -> String:
+    var req = "*"
+    for name, inline in toml.table(manifest, "dependencies"):
+        if name == fullname || basename(name) == alias:
+            if let Some(v) = toml.dep_requirement(inline):
+                req = v
+    req
+
+// Matchable errors for the verified registry-record footprint boundary. The
+// widening gate trusts this result, so every verification and decode failure is
+// typed before the CLI renders it into the existing BLOCK diagnostic.
+type RecordFootprintError:
+    RecordLockPin(LockPinError)
+    RecordRootKeyFetch(RegistryRootKeyError)
+    RecordRootKeyMismatch
+    RecordMissing
+    RecordBadSignature
+    RecordCoordinateMismatch
+    RecordInvalidJson
+    RecordMissingRuntimeFootprint
+    RecordRuntimeFootprintNotArray
+    RecordRuntimeFootprintNonString
+
+impl Show for RecordFootprintError:
+    fn show(self) -> String:
+        match self:
+            RecordLockPin(error) -> error.show()
+            RecordRootKeyFetch(error) -> error.show()
+            RecordRootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+            RecordMissing -> "registry has no record"
+            RecordBadSignature -> "the record is not validly signed by the registry root key"
+            RecordCoordinateMismatch -> "the record identity does not match the requested coordinate"
+            RecordInvalidJson -> "the signed record is not valid JSON"
+            RecordMissingRuntimeFootprint -> "the signed record has no `runtime_footprint` field"
+            RecordRuntimeFootprintNotArray -> "the record's `runtime_footprint` is not an array"
+            RecordRuntimeFootprintNonString -> "the record's `runtime_footprint` has a non-string element"
+
+impl Error for RecordFootprintError
+
+impl From(RecordFootprintError) for String:
+    fn from(value: RecordFootprintError) -> Self:
+        value.show()
+
+impl From(LockPinError) for RecordFootprintError:
+    fn from(value: LockPinError) -> Self:
+        RecordLockPin(value)
+
+impl From(RegistryRootKeyError) for RecordFootprintError:
+    fn from(value: RegistryRootKeyError) -> Self:
+        RecordRootKeyFetch(value)
+
+// The `runtime_footprint` array of a VERIFIED signed record, decoded strictly: a
+// malformed record, a missing/non-array `runtime_footprint`, or a non-string
+// element is an `Err`, never a silent empty list (BUG-499). This is the footprint
+// the widening gate trusts, so an under-decoded field must block the upgrade
+// rather than read as "demands no authority" and slip past the gate.
+pub fn strict_footprint(record: String) -> Result(List(String), RecordFootprintError):
+    match json.decode(record):
+        Err(_e) -> Err(RecordInvalidJson)
+        Ok(doc) ->
+            match json.get(doc, "runtime_footprint"):
+                None -> Err(RecordMissingRuntimeFootprint)
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err(RecordRuntimeFootprintNotArray)
+                        Some(items) -> strict_strings(items)
+
+pub fn strict_strings(items: List(Json)) -> Result(List(String), RecordFootprintError):
+    var out = []
+    for it in items:
+        match json.as_string(it):
+            None -> return Err(RecordRuntimeFootprintNonString)
+            Some(s) ->
+                out.push(s)
+    Ok(out)
+
+// --- add: resolve + fetch a rune (and its deps) from a coven registry --------
+// Resolves a version requirement against the registry's released versions
+// (std/semver), fetches the chosen version's source (verifying its signed
+// record + content hash), materializes it, and then resolves the fetched rune's
+// own version dependencies transitively. The vendored tree under <dest> doubles
+// as the visited-set: a rune already carrying its coven.json is never re-fetched,
+// which makes a diamond or a dependency cycle terminate. This command needs the
+// network.
+// A `--path` argument means "add a local path dependency". That is not wired up
+// here yet (registry `add` is), and without this guard the path string is mistaken
+// for a registry address and `parse_origin` rejects it with an opaque error — so report
+// it clearly and point at the working manual route.
+pub fn has_path_flag(args: List(String)) -> Bool:
+    var found = false
+    for a in args:
+        if a == "--path" || a.starts_with("--path="):
+            found = true
+    found
+
+// Upsert `"<key>" = { version = "<version>" }` into the manifest's `[dependencies]`
+// table. An existing entry for `key` is REPLACED in place (never duplicated); a
+// manifest with no `[dependencies]` section gets one appended. Every other line and
+// section is preserved.
+pub fn manifest_upsert_dep(manifest: String, key: String, version: String) -> String:
+    let entry = "\"${key}\" = { version = \"${version}\" }"
+    if manifest_has_dependencies(manifest):
+        rewrite_dependencies(manifest, key, entry)
+    else:
+        let base = if manifest.ends_with("\n"): manifest else: "${manifest}\n"
+        "${base}\n[dependencies]\n${entry}\n"
+
+// Whether the manifest already declares a `[dependencies]` section header.
+pub fn manifest_has_dependencies(manifest: String) -> Bool:
+    var found = false
+    for line in manifest.lines():
+        if line.trim() == "[dependencies]":
+            found = true
+    found
+
+// Rebuild the manifest, replacing the existing `[dependencies]` entry keyed by
+// `key` with `entry`, or — if absent — inserting `entry` right after the
+// `[dependencies]` header. The trailing newline is preserved via `lines()`'s final
+// empty element, and every other line is copied verbatim.
+pub fn rewrite_dependencies(manifest: String, key: String, entry: String) -> String:
+    let already = dependencies_has_key(manifest, key)
+    var out = []
+    var in_deps = false
+    var did = false
+    for line in manifest.lines():
+        let t = line.trim()
+        if is_section_header(t):
+            in_deps = t == "[dependencies]"
+            out.push(line)
+            if in_deps && !already && !did:
+                out.push(entry)
+                did = true
+        else if in_deps && already && !did && dep_line_is(t, key):
+            out.push(entry)
+            did = true
+        else:
+            out.push(line)
+    list.join(out, "\n")
+
+// Whether the manifest's `[dependencies]` table already declares `key`.
+pub fn dependencies_has_key(manifest: String, key: String) -> Bool:
+    var found = false
+    for dep, _inline in toml.table(manifest, "dependencies"):
+        if dep == key:
+            found = true
+    found
+
+// Whether a trimmed line is a TOML section header (`[...]`).
+pub fn is_section_header(t: String) -> Bool:
+    t.starts_with("[") && t.ends_with("]")
+
+// Whether a `key = value` line declares `key`. Splits on the FIRST `=` so an inline
+// table value's inner `=` is never mistaken for the key separator.
+pub fn dep_line_is(line: String, key: String) -> Bool:
+    if line.contains("="):
+        let (raw, _v) = line.split_once("=")
+        let k = raw.trim()
+        let unquoted = if k.starts_with("\""): k.strip_prefix("\"").strip_suffix("\"") else: k
+        unquoted == key
+    else:
+        false
+
+// Matchable failures from the TUF pinning gate. `add`/`update` only write a
+// registry_snapshot_version lock pin after this boundary verifies signatures,
+// schemas, content hash binding, and role version agreement.
+type TufError:
+    TufLockPin(LockPinError)
+    TufRootKeyFetch(RegistryRootKeyError)
+    RootKeyMismatch
+    SnapshotUnavailable(Int)
+    SnapshotWithoutTimestamp
+    TimestampBadSignature
+    SnapshotBadSignature
+    SnapshotMalformed
+    TimestampMalformed
+    SnapshotHashMismatch
+    SnapshotVersionMismatch
+
+impl Show for TufError:
+    fn show(self) -> String:
+        match self:
+            TufLockPin(error) -> error.show()
+            TufRootKeyFetch(error) -> error.show()
+            RootKeyMismatch -> "registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)"
+            SnapshotUnavailable(status) -> "registry snapshot is unavailable (HTTP ${status})"
+            SnapshotWithoutTimestamp -> "registry served a snapshot but no timestamp role — cannot verify the TUF chain"
+            TimestampBadSignature -> "the timestamp role is not validly signed by the registry root key"
+            SnapshotBadSignature -> "the snapshot role is not validly signed by the registry root key"
+            SnapshotMalformed -> "the snapshot role is structurally malformed (needs an integer `version` and an object `targets`)"
+            TimestampMalformed -> "the timestamp role is structurally malformed (needs an integer `snapshot_version`, a string `snapshot_hash`, and an integer `expires`)"
+            SnapshotHashMismatch -> "the snapshot does not match the timestamp's pinned hash"
+            SnapshotVersionMismatch -> "the snapshot and timestamp disagree on the snapshot version"
+
+impl Error for TufError
+
+impl From(TufError) for String:
+    fn from(value: TufError) -> Self:
+        value.show()
+
+impl From(LockPinError) for TufError:
+    fn from(value: LockPinError) -> Self:
+        TufLockPin(value)
+
+impl From(RegistryRootKeyError) for TufError:
+    fn from(value: RegistryRootKeyError) -> Self:
+        TufRootKeyFetch(value)
+
+// Run the signature + schema + hash-binding + version-agreement checks over a
+// snapshot/timestamp pair (the same gate `verify`/`check_chain` applies) and, only
+// if they all pass, produce the `registry_snapshot_version` line for the verified
+// snapshot version. Freshness (`expires`) is enforced at `verify` time, not pinned.
+pub fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> Result(String, TufError):
+    if !signed_valid(rootpub, ts_env):
+        Err(TimestampBadSignature)
+    else if !signed_valid(rootpub, snap_env):
+        Err(SnapshotBadSignature)
+    else if !snapshot_schema_ok(snap_env):
+        Err(SnapshotMalformed)
+    else if !timestamp_schema_ok(ts_env):
+        Err(TimestampMalformed)
+    else if "sha256:${crypto.sha256(signed_canonical(snap_env))}" != signed_field_str(ts_env, "snapshot_hash"):
+        Err(SnapshotHashMismatch)
+    else if signed_field_int(snap_env, "version") != signed_field_int(ts_env, "snapshot_version"):
+        Err(SnapshotVersionMismatch)
+    else:
+        Ok("registry_snapshot_version = ${signed_field_int(snap_env, "version")}\n")
+
+// The strict subset of a signed coven record needed by update and lock
+// regeneration. Local vendor metadata is trust state: malformed fields are an
+// error, never empty identity/hash/authority defaults (BUG-570).
+type VendoredRecord:
+    name: String
+    version: String
+    state: String
+    hash: String
+    runtime_footprint: List(String)
+
+type VendoredRecordError:
+    VendoredRecordInvalidJson(String)
+    VendoredRecordMissingString(String)
+    VendoredRecordEmptyString(String)
+    VendoredRecordInvalidVersion(String)
+    VendoredRecordInvalidState(String)
+    VendoredRecordInvalidHash(String)
+    VendoredRecordMissingFootprint
+    VendoredRecordFootprintNotArray
+    VendoredRecordFootprintNonString
+
+impl Show for VendoredRecordError:
+    fn show(self) -> String:
+        match self:
+            VendoredRecordInvalidJson(reason) -> "vendored coven.json is not valid JSON: ${reason}"
+            VendoredRecordMissingString(field) -> "vendored coven.json has no string `${field}` field"
+            VendoredRecordEmptyString(field) -> "vendored coven.json has an empty `${field}` field"
+            VendoredRecordInvalidVersion(version) -> "vendored coven.json has noncanonical version `${version}`"
+            VendoredRecordInvalidState(state) -> "vendored coven.json has non-installable state `${state}` (only `released`, or a `--allow-staged` `staged` pin, is accepted)"
+            VendoredRecordInvalidHash(hash) -> "vendored coven.json has malformed content hash `${hash}`"
+            VendoredRecordMissingFootprint -> "vendored coven.json has no `runtime_footprint` field"
+            VendoredRecordFootprintNotArray -> "vendored coven.json `runtime_footprint` is not an array"
+            VendoredRecordFootprintNonString -> "vendored coven.json `runtime_footprint` contains a non-string value"
+
+impl Error for VendoredRecordError
+
+impl From(VendoredRecordError) for String:
+    fn from(value: VendoredRecordError) -> Self:
+        value.show()
+
+pub fn parse_vendored_record(text: String) -> Result(VendoredRecord, VendoredRecordError):
+    match json.decode(text):
+        Err(e) -> Err(VendoredRecordInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            let name = required_vendored_string(doc, "name")?
+            let version = required_vendored_string(doc, "version")?
+            let state = required_vendored_string(doc, "state")?
+            let hash = required_vendored_string(doc, "hash")?
+            let runtime_footprint = required_vendored_footprint(doc)?
+            match canonical_version(version):
+                None -> Err(VendoredRecordInvalidVersion(version))
+                Some(_parsed) ->
+                    // RFC-0120: a `staged` vendored record is accepted (it can only
+                    // reach the lock via an explicit `--allow-staged` add, and the lock
+                    // marks it + re-warns); `yanked` and any other state stay refused.
+                    if state != "released" && state != "staged":
+                        Err(VendoredRecordInvalidState(state))
+                    else if !hash.starts_with("sha256:"):
+                        Err(VendoredRecordInvalidHash(hash))
+                    else:
+                        Ok(VendoredRecord(name, version, state, hash, runtime_footprint))
+
+pub fn required_vendored_string(doc: Json, field: String) -> Result(String, VendoredRecordError):
+    match json.get_string(doc, field):
+        None -> Err(VendoredRecordMissingString(field))
+        Some(value) ->
+            if value.is_empty():
+                Err(VendoredRecordEmptyString(field))
+            else:
+                Ok(value)
+
+pub fn required_vendored_footprint(doc: Json) -> Result(List(String), VendoredRecordError):
+    match json.get(doc, "runtime_footprint"):
+        None -> Err(VendoredRecordMissingFootprint)
+        Some(field) ->
+            match json.as_array(field):
+                None -> Err(VendoredRecordFootprintNotArray)
+                Some(items) -> vendored_footprint_strings(items)
+
+pub fn vendored_footprint_strings(items: List(Json)) -> Result(List(String), VendoredRecordError):
+    var out = []
+    for item in items:
+        let value = match json.as_string(item):
+            None -> return Err(VendoredRecordFootprintNonString)
+            Some(value) -> value
+
+        out.push(value)
+    Ok(out)
+
+pub fn recorded_field(record: String, key: String) -> String:
+    match json.decode(record):
+        Ok(doc) -> jget(doc, key)
+        Err(_e) -> ""
+
+// Matchable failures from the registry version-resolution boundary. This is the
+// first PM decision point after untrusted registry data, semver parsing, and
+// staging-cooldown policy are combined; keep it typed until the CLI renders it.
+type VersionResolveError:
+    VersionRegistryFetchFailed(Int)
+    VersionMalformedResponse(String)
+    VersionBadRequirement(String, String)
+    VersionCooling(String, Int)
+    VersionNoMatch(String)
+    VersionExactNotFound(String)
+    VersionYanked(String)
+
+impl Show for VersionResolveError:
+    fn show(self) -> String:
+        match self:
+            VersionRegistryFetchFailed(_status) -> "registry error fetching versions"
+            VersionMalformedResponse(reason) -> "registry returned a malformed versions response: ${reason}"
+            VersionBadRequirement(req, cause) -> "bad requirement `${req}`: ${cause}"
+            VersionCooling(req, remaining_secs) -> "a release satisfying `${req}` is inside its staging cooldown and not resolvable for another ${humanize_wait(remaining_secs)} (compromised-release protection) — re-run with --allow-fresh to accept it now"
+            VersionNoMatch(req) -> "no released version satisfies `${req}`"
+            VersionExactNotFound(req) -> "no published version `${req}` exists on the registry (staged or released)"
+            VersionYanked(req) -> "version `${req}` has been yanked and is never installable"
+
+impl Error for VersionResolveError
+
+impl From(VersionResolveError) for String:
+    fn from(value: VersionResolveError) -> Self:
+        value.show()
+
+// The lifecycle state (`staged`/`released`/`yanked`) of the exact `req` coordinate
+// in the registry's versions response, or a typed boundary error. Malformed JSON or
+// a missing coordinate is never a silent empty.
+pub fn exact_record_state(body: String, req: String) -> Result(String, VersionResolveError):
+    match json.decode(body):
+        Err(e) -> Err(VersionMalformedResponse(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "records"):
+                None -> Err(VersionMalformedResponse("missing `records` array"))
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err(VersionMalformedResponse("`records` is not an array"))
+                        Some(items) -> find_exact_state(items, req)
+
+pub fn find_exact_state(items: List(Json), req: String) -> Result(String, VersionResolveError):
+    var found = None
+    for rec in items:
+        let raw = json.get_string(rec, "version") ?? ""
+        if let Some(v) = canonical_version(raw):
+            if semver.format(v) == req:
+                found = json.get_string(rec, "state")
+    match found:
+        Some(s) -> Ok(s)
+        None -> Err(VersionExactNotFound(req))
+
+// The highest released-and-eligible version satisfying `req`, or an explanatory
+// error. A release still inside its staging cooldown is excluded (unless
+// `--allow-fresh`) — `resolve_version` distinguishes "none satisfy" from "the
+// only match is cooling" for a clearer message.
+pub fn pick_version_cooled(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
+    match semver.parse_req(req):
+        Ok(r) -> choose(eligible_versions(records, cooldown), r, req)
+        Err(e) -> Err(VersionBadRequirement(req, semver.semver_error_message(e)))
+
+pub fn choose(versions: List(Version), r: Req, req: String) -> Result(String, VersionResolveError):
+    match semver.best(versions, r):
+        Some(v) -> Ok(semver.format(v))
+        None -> Err(VersionNoMatch(req))
+
+// Released versions that are resolvable now: state `released` AND past the staging
+// cooldown window (or `--allow-fresh`). A record's `released_at` (unix seconds, in
+// the signed payload so it can't be tampered away) plus the window must be ≤ now.
+pub fn eligible_versions(records: List((Version, Int)), cooldown: (Int, Int, Bool)) -> List(Version):
+    var out = []
+    for version, released_at in records:
+        if !cooling(released_at, cooldown):
+            out.push(version)
+    out
+
+// The shortest remaining cooldown wait (seconds) among released versions that
+// satisfy `req` but are still cooling — `Some(secs)` when at least one match is
+// cooling (so the caller can say "blocked by cooldown, ~Nh left" instead of "no
+// version"), `None` when nothing satisfying `req` is cooling. The minimum is the
+// soonest a satisfying release becomes resolvable (CJ-01).
+pub fn cooling_remaining(records: List((Version, Int)), req: String, cooldown: (Int, Int, Bool)) -> Option(Int):
+    match semver.parse_req(req):
+        Err(_e) -> None
+        Ok(r) ->
+            let (now_secs, window, _fresh) = cooldown
+            var best = None
+            for version, released_at in records:
+                if cooling(released_at, cooldown) && semver.matches(r, version):
+                    let remaining = released_at + window - now_secs
+                    let better = match best:
+                        None -> true
+                        Some(cur) -> remaining < cur
+
+                    if better:
+                        best = Some(remaining)
+            best
+
+// Whether an already-vendored `version` satisfies a second requester's `req`
+// (CJ-05). A bare/`*`/empty requirement or an unparseable req/version is treated
+// as satisfied here: the version resolver already rejects a malformed requirement,
+// and this guard exists only to catch a genuine already-resolved mismatch.
+pub fn version_satisfies(version: String, req: String) -> Bool:
+    if req == "*" || req.is_empty():
+        true
+    else:
+        match semver.parse_req(req):
+            Err(_e) -> true
+            Ok(r) ->
+                match semver.parse(version):
+                    Err(_e) -> true
+                    Ok(v) -> semver.matches(r, v)
+
+// Parse the registry response once into the only fields version decisions use.
+// Malformed JSON, response shape, states, coordinates, or release timestamps are
+// a typed boundary error — never an empty registry or an ordinary no-match.
+pub fn released_version_records(body: String) -> Result(List((Version, Int)), VersionResolveError):
+    match json.decode(body):
+        Err(e) -> Err(VersionMalformedResponse(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "records"):
+                None -> Err(VersionMalformedResponse("missing `records` array"))
+                Some(field) ->
+                    match json.as_array(field):
+                        None -> Err(VersionMalformedResponse("`records` is not an array"))
+                        Some(items) -> parse_version_records(items)
+
+pub fn parse_version_records(items: List(Json)) -> Result(List((Version, Int)), VersionResolveError):
+    var out = []
+    var index = 0
+    for rec in items:
+        let state = match json.get_string(rec, "state"):
+            None -> return Err(VersionMalformedResponse("record ${index} has no string `state`"))
+            Some(s) -> s
+
+        if state != "staged" && state != "released" && state != "yanked":
+            return Err(VersionMalformedResponse("record ${index} has unknown state `${state}`"))
+        let raw = match json.get_string(rec, "version"):
+            None -> return Err(VersionMalformedResponse("record ${index} has no string `version`"))
+            Some(s) -> s
+
+        let version = match canonical_version(raw):
+            None -> return Err(VersionMalformedResponse("record ${index} has noncanonical version `${raw}`"))
+            Some(v) -> v
+
+        if state == "released":
+            let released_at = match json.get_int(rec, "released_at"):
+                None -> return Err(VersionMalformedResponse("released record ${index} has no integer `released_at`"))
+                Some(n) -> n
+
+            if released_at < 0:
+                return Err(VersionMalformedResponse("released record ${index} has negative `released_at`"))
+            out.push((version, released_at))
+        index = index + 1
+    Ok(out)
+
+// Whether a released record is still inside its staging cooldown window. A
+// `released_at` of 0 (legacy/unstamped) is treated as past any window; with
+// `--allow-fresh` nothing cools. `cooldown` is (now_unix_secs, window_secs,
+// allow_fresh).
+pub fn cooling(released_at: Int, cooldown: (Int, Int, Bool)) -> Bool:
+    let (now_secs, window, allow_fresh) = cooldown
+    if allow_fresh || released_at == 0:
+        false
+    else:
+        now_secs < released_at + window
+
+// Whether a signed record's own identity fields match the coordinate it was fetched
+// for — the anti-substitution binding for BUG-266.
+pub fn record_matches_coordinate(record: String, name: String, version: String) -> Bool:
+    recorded_field(record, "name") == name && recorded_field(record, "version") == version
+
+// Fail on the first unexpected/traversing or duplicated path. Successful
+// validation proves the whole fetched file set is well-formed and unique.
+pub fn validate_source_files(files: List((String, String))) -> Result(Nil, SourceFileSetError):
+    var seen = []
+    for path, _text in files:
+        if !path_shape_ok(path):
+            return Err(SourcePathInvalid(path))
+        else if seen.contains(path):
+            return Err(SourcePathDuplicated(path))
+        seen.push(path)
+    Ok(Nil)
+
+type SourceFileSetError:
+    SourcePathInvalid(String)
+    SourcePathDuplicated(String)
+
+impl Show for SourceFileSetError:
+    fn show(self) -> String:
+        match self:
+            SourcePathInvalid(path) -> "BLOCK: fetched source carries an unexpected path `${path}` — a vendored rune may only ship `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)"
+            SourcePathDuplicated(path) -> "BLOCK: fetched source lists `${path}` more than once — refusing an ambiguous/duplicated file set"
+
+impl Error for SourceFileSetError
+
+impl From(SourceFileSetError) for String:
+    fn from(value: SourceFileSetError) -> Self:
+        value.show()
+
+// Whether a fetched source path is confined and conventional: `witchy.toml`, or a
+// `src/...` file ending in `.witchy`, with no absolute prefix or `..` traversal.
+pub fn path_shape_ok(path: String) -> Bool:
+    if path.is_empty() || path.starts_with("/") || path.contains(".."):
+        false
+    else:
+        path == "witchy.toml" || path.starts_with("src/") && path.ends_with(".witchy")
+
+// Matchable failures from the `/coven/source` response boundary. This response is
+// untrusted registry/mirror structure; malformed JSON or a wrong-shaped `files`
+// field must fail closed before hashing or writing, not become an empty file set.
+type SourceResponseError:
+    SourceInvalidJson(String)
+    SourceMissingFiles
+    SourceFilesNotArray
+    SourceFileEntryMalformed
+
+impl Show for SourceResponseError:
+    fn show(self) -> String:
+        match self:
+            SourceInvalidJson(reason) -> "response is not valid JSON: ${reason}"
+            SourceMissingFiles -> "response has no `files` field"
+            SourceFilesNotArray -> "`files` is not an array"
+            SourceFileEntryMalformed -> "`files` contains an entry that is not `[path, text]` strings"
+
+impl Error for SourceResponseError
+
+impl From(SourceResponseError) for String:
+    fn from(value: SourceResponseError) -> Self:
+        value.show()
+
+pub fn source_files(body: String) -> Result(List((String, String)), SourceResponseError):
+    var out = []
+    match json.decode(body):
+        Err(e) -> Err(SourceInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get(doc, "files"):
+                None -> Err(SourceMissingFiles)
+                Some(files) ->
+                    match json.as_array(files):
+                        None -> Err(SourceFilesNotArray)
+                        Some(items) ->
+                            for entry in items:
+                                match source_file_entry(entry):
+                                    Err(e) -> return Err(e)
+                                    Ok(pair) ->
+                                        out.push(pair)
+                            Ok(out)
+
+pub fn source_file_entry(entry: Json) -> Result((String, String), SourceResponseError):
+    match json.as_array(entry):
+        None -> Err(SourceFileEntryMalformed)
+        Some(parts) ->
+            if list.length(parts) != 2:
+                Err(SourceFileEntryMalformed)
+            else:
+                match json.as_string(list.at(parts, 0)):
+                    None -> Err(SourceFileEntryMalformed)
+                    Some(path) ->
+                        match json.as_string(list.at(parts, 1)):
+                            None -> Err(SourceFileEntryMalformed)
+                            Some(text) -> Ok((path, text))
+
+// The content address of an in-memory rune source (matches coven / crypto.rune_hash).
+pub fn content_hash(files: List((String, String))) -> String:
+    var paths = []
+    var texts = []
+    for p, t in files:
+        paths.push(p)
+        texts.push(t)
+    crypto.rune_hash(paths, texts)
+
+pub fn recorded_hash(text: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> jget(doc, "hash")
+        Err(e) -> ""
+
+// Matchable errors for offline signed-record verification. The CLI still renders
+// the stable BLOCK line, but the trust boundary no longer collapses malformed
+// JSON, malformed payload shape, malformed verifier input, and bad signatures
+// into an uninspectable Bool.
+type RecordVerifyError:
+    RecordVerifyInvalidJson(String)
+    RecordVerifyPayloadInjectedNewline
+    RecordVerifyPayloadMalformed
+    RecordVerifySignatureInput(String)
+    RecordVerifyBadSignature
+
+impl Show for RecordVerifyError:
+    fn show(self) -> String:
+        match self:
+            RecordVerifyInvalidJson(reason) -> "coven.json is not valid JSON: ${reason}"
+            RecordVerifyPayloadInjectedNewline -> "coven.json signed payload contains an embedded newline"
+            RecordVerifyPayloadMalformed -> "coven.json cannot be projected into its signed payload"
+            RecordVerifySignatureInput(reason) -> "record signature input is malformed: ${reason}"
+            RecordVerifyBadSignature -> "record signature is invalid"
+
+impl Error for RecordVerifyError
+
+impl From(RecordVerifyError) for String:
+    fn from(value: RecordVerifyError) -> Self:
+        value.show()
+
+// Verify a registry record is signed by the root key over coven's canonical
+// payload. A malformed `runtime_footprint` cannot be projected into a payload.
+pub fn verify_record_signature(rootpub: String, text: String) -> Result(Json, RecordVerifyError):
+    match json.decode(text):
+        Err(e) -> Err(RecordVerifyInvalidJson(json.decode_error_message(e)))
+        Ok(doc) ->
+            if record_field_has_newline(doc):
+                Err(RecordVerifyPayloadInjectedNewline)
+            else:
+                match record_payload(doc):
+                    None -> Err(RecordVerifyPayloadMalformed)
+                    Some(payload) ->
+                        match crypto.ed25519_verify(rootpub, payload, jget(doc, "sig")):
+                            Err(e) -> Err(RecordVerifySignatureInput(crypto.verify_error_message(e)))
+                            Ok(false) -> Err(RecordVerifyBadSignature)
+                            Ok(true) -> Ok(doc)
+
+pub fn record_signature_valid(rootpub: String, text: String) -> Bool:
+    match verify_record_signature(rootpub, text):
+        Ok(_doc) -> true
+        Err(_e) -> false
+
+// SEC-013: refuse a record whose free-form fields embed the payload line separator
+// (`\n`) — a crafted value could inject a sibling `key=` line, making the canonical
+// signing payload ambiguous. coven refuses to sign such a record; reject it on the
+// consumer side too (defense in depth against a hostile/buggy registry).
+pub fn record_field_has_newline(doc: Json) -> Bool:
+    jget(doc, "uploaded_by").contains("\n") || jget(doc, "promoted_by").contains("\n") || jget(doc, "second_factor").contains("\n") || jget(doc, "provenance").contains("\n") || jget(doc, "artifact_digest").contains("\n")
+
+// idiom-exempt: concatenation defines the signed payload byte format. Mirror of
+// coven_record.signing_payload: an empty `artifact_digest` reconstructs coven-v1
+// (byte-identical for source-only records that predate RFC-0095); a non-empty
+// one reconstructs coven-v2 with the trailing `artifact=<digest>` line.
+pub fn record_payload(doc: Json) -> Option(String):
+    match string_list_payload(doc, "runtime_footprint"):
+        None -> None
+        Some(rt) ->
+            let body = "name=" + jget(doc, "name") + "\nversion=" + jget(doc, "version") + "\nstate=" + jget(doc, "state") + "\nhash=" + jget(doc, "hash") + "\nrt=" + rt + "\nbuild=\nuploaded_by=" + jget(doc, "uploaded_by") + "\npromoted_by=" + jget(doc, "promoted_by") + "\nfactor=" + jget(doc, "second_factor") + "\nprovenance=" + jget(doc, "provenance") + "\nreleased_at=" + "${jget_int(doc, "released_at")}"
+            let artifact = jget(doc, "artifact_digest")
+            if artifact.is_empty():
+                Some("coven-v1\n" + body)
+            else:
+                Some("coven-v2\n" + body + "\nartifact=" + artifact)
+
+pub fn string_list_payload(doc: Json, key: String) -> Option(String):
+    match json.get(doc, key):
+        None -> None
+        Some(field) ->
+            match field:
+                JsonArray(items) ->
+                    var out: List(Json) = []
+                    for item in items:
+                        if let JsonString(s) = item:
+                            out.push(JsonString(s))
+                        else:
+                            return None
+                    Some(json.encode(JsonArray(out)))
+                _ -> None
+
+// --- registry/url helpers ----------------------------------------------------
+// Parse a registry address TOTALLY (BUG-199) into its (scheme, origin) origin
+// parts. Accepts `https://host[:port][/]`, `http://host[:port][/]`, and bare
+// `host:port` (scheme http — loopback compat). A scheme-carrying address without a
+// port defaults it from the scheme (https -> 443, http -> 80); a bare address still
+// requires an explicit port. Every ill-formed address — unknown scheme, empty host,
+// missing/duplicate/non-numeric/overflowing/out-of-range port — is a caller-level
+// `Err`, never a `string.to_int` runtime abort. A single trailing `/` (a common
+// `COVEN_URL` spelling like `https://coven.example/`) is tolerated, matching the
+// Rust launcher's auto-grant normalization.
+pub fn parse_origin(addr: String) -> Result((String, String, Int), HostPortError):
+    let trimmed = addr.trim()
+    if trimmed.starts_with("https://"):
+        parse_authority(addr, "https", trimmed.strip_prefix("https://"), 443)
+    else if trimmed.starts_with("http://"):
+        parse_authority(addr, "http", trimmed.strip_prefix("http://"), 80)
+    else if trimmed.contains("://"):
+        let (scheme, _rest) = trimmed.split_once("://")
+        Err(HostPortUnknownScheme(addr, scheme))
+    else if !trimmed.strip_suffix("/").contains(":"):
+        Err(HostPortMissingPort(addr))
+    else:
+        parse_authority(addr, "http", trimmed, 80)
+
+// The `host[:port][/]` authority of an already-recognized scheme; `default_port`
+// fills in when the authority carries none.
+pub fn parse_authority(addr: String, scheme: String, raw_authority: String, default_port: Int) -> Result((String, String, Int), HostPortError):
+    let authority = raw_authority.strip_suffix("/")
+    if authority.is_empty():
+        Err(HostPortEmptyHost(addr))
+    else if !authority.contains(":"):
+        Ok((scheme, authority, default_port))
+    else:
+        let (host, portstr) = authority.split_once(":")
+        if host.is_empty():
+            Err(HostPortEmptyHost(addr))
+        else if portstr.contains(":"):
+            Err(HostPortMultipleColons(addr))
+        else:
+            match portstr.parse_int():
+                None -> Err(HostPortNonNumeric(addr, portstr))
+                Some(p) ->
+                    if p < 1 || p > 65535:
+                        Err(HostPortOutOfRange(addr, portstr))
+                    else:
+                        Ok((scheme, host, p))
+
+type HostPortError:
+    HostPortMissingPort(String)
+    HostPortEmptyHost(String)
+    HostPortMultipleColons(String)
+    HostPortNonNumeric(String, String)
+    HostPortOutOfRange(String, String)
+    HostPortUnknownScheme(String, String)
+
+impl Show for HostPortError:
+    fn show(self) -> String:
+        match self:
+            HostPortMissingPort(addr) -> "`${addr}` is not a host:port (missing `:<port>`)"
+            HostPortEmptyHost(addr) -> "`${addr}` has an empty host"
+            HostPortMultipleColons(addr) -> "`${addr}` has more than one `:` (expected host:port)"
+            HostPortNonNumeric(addr, port) -> "`${addr}` has a non-numeric port `${port}`"
+            HostPortOutOfRange(addr, port) -> "`${addr}` port ${port} is out of range (1-65535)"
+            HostPortUnknownScheme(addr, scheme) -> "`${addr}` has an unsupported scheme `${scheme}` (expected http or https)"
+
+impl Error for HostPortError
+
+impl From(HostPortError) for String:
+    fn from(value: HostPortError) -> Self:
+        value.show()
+
+// The module identifier for a rune's entry source: the name's basename with `-`
+// mapped to `_` (a module name is an identifier), matching the launcher's
+// `project_entry_file` mapping. `acme/http` -> `http`, `my-rune` -> `my_rune`.
+pub fn module_name(name: String) -> String:
+    basename(name).replace("-", "_")
+
+// A local scaffold-name grammar (BUG-200): a bare `name` or a `namespace/name`,
+// each segment non-empty and made of lowercase ASCII letters, digits, `-`, or `_`,
+// with at most one `/` and no `..` traversal. This is the same shape coven accepts
+// for registry names, minus the mandatory namespace (a local rune may be bare). It
+// admits the documented valid names and rejects any character that would break the
+// generated `witchy.toml` or `src/<name>.witchy`.
+pub fn valid_scaffold_name(name: String) -> Bool:
+    if name.is_empty() || name.contains("..") || name.starts_with("/") || name.ends_with("/"):
+        false
+    else:
+        let parts = name.split("/")
+        if list.length(parts) > 2:
+            false
+        else:
+            var ok = true
+            for p in parts:
+                if !valid_name_segment(p):
+                    ok = false
+            ok
+
+pub fn valid_name_segment(s: String) -> Bool:
+    if s.is_empty():
+        false
+    else:
+        var ok = true
+        for ch in s.chars():
+            if !name_char_ok(ch):
+                ok = false
+        ok
+
+pub fn name_char_ok(ch: String) -> Bool:
+    ch >= "a" && ch <= "z" || ch >= "0" && ch <= "9" || ch == "-" || ch == "_"
+
+pub fn scaffold_name_error(name: String) -> String:
+    "invalid rune name `${name}`: use lowercase letters, digits, `-`, `_`, and at most one `/` for a namespace (e.g. `myrune` or `acme/myrune`)"
+
+// idiom-exempt: these are generated TOML/source bytes, not presentation strings.
+pub fn manifest_stub(let name: String) -> String:
+    "[rune]\nname = \"" + name + "\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n"
+
+pub fn first_witchy(let files: List(String)) -> Option(String):
+    var found = None
+    for f in files:
+        if found.is_none() && f.ends_with(".witchy"):
+            found = Some(f)
+    found
+
+// Matchable failures at the compiler-footprint consumer boundary. The compiler
+// reports source rejection as JSON too; callers must not confuse either form of
+// failure with a valid program that demands no authority.
+type FootprintError:
+    FootprintCompilerRejected(String)
+    FootprintMalformedReport(String)
+    FootprintSourceError(String, String)
+
+impl Show for FootprintError:
+    fn show(self) -> String:
+        match self:
+            FootprintCompilerRejected(reason) -> "compiler rejected the source: ${reason}"
+            FootprintMalformedReport(reason) -> "compiler returned a malformed footprint report: ${reason}"
+            FootprintSourceError(path, reason) -> "`${path}`: ${reason}"
+
+impl Error for FootprintError
+
+impl From(FootprintError) for String:
+    fn from(value: FootprintError) -> Self:
+        value.show()
+
+// Pull a required string-array field from a compiler footprint report. Reports
+// shaped as {"error": "..."}, malformed JSON, missing/wrong-shaped arrays, and
+// non-string elements all remain errors at every authority decision.
+pub fn footprint_values(let report: String, field: String) -> Result(List(String), FootprintError):
+    let doc = compiler_report_document(report)?
+    footprint_string_field(doc, field)
+
+pub fn footprint_diff_values(let report: String) -> Result((Bool, List(String)), FootprintError):
+    let doc = compiler_report_document(report)?
+    let widened = match json.get(doc, "widened"):
+        None -> return Err(FootprintMalformedReport("missing `widened` boolean"))
+        Some(raw) ->
+            match json.as_bool(raw):
+                None -> return Err(FootprintMalformedReport("`widened` is not a boolean"))
+                Some(value) -> value
+
+    let added = footprint_string_field(doc, "added")?
+    Ok((widened, added))
+
+pub fn compiler_report_document(let report: String) -> Result(Json, FootprintError):
+    match json.decode(report):
+        Err(e) -> Err(FootprintMalformedReport(json.decode_error_message(e)))
+        Ok(doc) ->
+            match json.get_string(doc, "error"):
+                Some(reason) -> Err(FootprintCompilerRejected(reason))
+                None -> Ok(doc)
+
+pub fn footprint_string_field(doc: Json, field: String) -> Result(List(String), FootprintError):
+    match json.get(doc, field):
+        None -> Err(FootprintMalformedReport("missing `${field}` array"))
+        Some(raw) ->
+            match json.as_array(raw):
+                None -> Err(FootprintMalformedReport("`${field}` is not an array"))
+                Some(items) -> footprint_string_values(items, field)
+
+pub fn footprint_string_values(items: List(Json), field: String) -> Result(List(String), FootprintError):
+    var out = []
+    var index = 0
+    for item in items:
+        // idiom-exempt (BUG-575): match-arm method write-back is discarded.
+        match json.as_string(item):
+            None -> return Err(FootprintMalformedReport("`${field}` item ${index} is not a string"))
+            // idiom-exempt (BUG-575): match-arm method write-back is discarded.
+            Some(value) -> list.push(out, value)
+
+        index = index + 1
+    Ok(out)
+
+pub fn declared_caps(let manifest: String) -> List(String):
+    toml.get_array(manifest, "capabilities.runtime")
+
+pub fn field(let manifest: String, path: String) -> String:
+    match toml.get(manifest, path):
+        Some(v) -> v
+        None -> "(none)"
