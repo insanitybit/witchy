@@ -621,6 +621,7 @@ impl<'a> Ctx<'a> {
         *self.state_counter += 1;
         let mut attributes = self.attributes.clone();
         attributes.push(crate::suspension::frame_state_attribute(state));
+        attributes.push(crate::suspension::async_region_attribute(state));
         attributes
     }
 
@@ -1876,6 +1877,7 @@ fn lower_async_fn_with(
     let mut entry_attributes = f.attributes;
     entry_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.to_string());
     entry_attributes.push(crate::suspension::frame_state_attribute(entry_state));
+    entry_attributes.push(crate::suspension::async_region_attribute(entry_state));
     let entry = Function {
         line: f.line,
         public: f.public,
@@ -2421,6 +2423,61 @@ mod tests {
             .attributes
             .iter()
             .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE));
+    }
+
+    #[test]
+    fn lowering_marks_effectful_entry_and_continuation_as_distinct_async_regions() {
+        let source = "async fn main(clock: Clock):\n    let started = clock.now_monotonic()\n    let value = task.done(7).await\n    let _keep = (started, value)\n";
+        let module = crate::parser::parse_module(source).expect("parse async region fixture");
+        let module = lower_module(module).expect("lower async region fixture");
+        let entry = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("async entry");
+        let continuation = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function)
+                    if function
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute == crate::suspension::FRAME_FUNCTION_ATTRIBUTE) =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("lifted continuation");
+
+        let entry_region = crate::suspension::async_region(entry)
+            .expect("entry carries an async region identity");
+        let continuation_region = crate::suspension::async_region(continuation)
+            .expect("continuation carries an async region identity");
+        assert_eq!(
+            Some(entry_region),
+            crate::suspension::frame_state(entry),
+            "entry region and state are a stable one-to-one lowering boundary",
+        );
+        assert_eq!(
+            Some(continuation_region),
+            crate::suspension::frame_state(continuation),
+            "continuation region and state are a stable one-to-one lowering boundary",
+        );
+        assert_ne!(entry_region, continuation_region, "a suspension splits regions");
+
+        let entry_debug = format!("{:?}", entry.body);
+        let effect = entry_debug
+            .find("now_monotonic")
+            .unwrap_or_else(|| panic!("entry retains effect: {entry_debug}"));
+        let suspend = entry_debug
+            .find("task.and_then")
+            .unwrap_or_else(|| panic!("entry retains suspension: {entry_debug}"));
+        assert!(effect < suspend, "effectful prologue must stay before its async region: {entry_debug}");
     }
 
     #[test]

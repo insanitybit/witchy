@@ -37,6 +37,13 @@ pub const FRAME_BOXED_ATTRIBUTE: &str = "__compiler_suspension_boxed";
 /// catalog; generated function names are deliberately not the runtime ABI.
 pub const FRAME_STATE_ATTRIBUTE_PREFIX: &str = "__compiler_suspension_state=";
 
+/// Stable identity for one compiler-formed async region.  A region is the
+/// entry or continuation state between two suspension boundaries.  It is
+/// deliberately distinct metadata from the generated function name: later
+/// typed lowering may promote a region while preserving ordinary statements
+/// before or after its task expression in source order.
+pub const ASYNC_REGION_ATTRIBUTE_PREFIX: &str = "__compiler_async_region=";
+
 pub fn frame_state_attribute(state: usize) -> String {
     format!("{FRAME_STATE_ATTRIBUTE_PREFIX}{state}")
 }
@@ -47,6 +54,20 @@ pub fn frame_state(function: &Function) -> Option<usize> {
         attribute
             .strip_prefix(FRAME_STATE_ATTRIBUTE_PREFIX)
             .and_then(|state| state.parse().ok())
+    })
+}
+
+pub fn async_region_attribute(region: usize) -> String {
+    format!("{ASYNC_REGION_ATTRIBUTE_PREFIX}{region}")
+}
+
+/// Recover the region identity assigned by async lowering.  Generator helpers
+/// carry suspension state metadata but intentionally have no async region.
+pub fn async_region(function: &Function) -> Option<usize> {
+    function.attributes.iter().find_map(|attribute| {
+        attribute
+            .strip_prefix(ASYNC_REGION_ATTRIBUTE_PREFIX)
+            .and_then(|region| region.parse().ok())
     })
 }
 
