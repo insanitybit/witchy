@@ -1,0 +1,59 @@
+fn eval_a(let i: Int, let j: Int) -> Float:
+    let sum = i + j
+    1.0 / math.to_float((sum * (sum + 1)) / 2 + i + 1)
+
+fn multiplyAv(let v: List(Float), var atv: List(Float)):
+    let n = list.length(v)
+    var i = 0
+    while i < n:
+        var sum = 0.0
+        var j = 0
+        while j < n:
+            sum = sum + eval_a(i, j) * list.at(v, j)
+            j = j + 1
+        list.set_at(atv, i, sum)
+        i = i + 1
+
+fn multiplyatv(let v: List(Float), var atv: List(Float)):
+    let n = list.length(v)
+    var i = 0
+    while i < n:
+        var sum = 0.0
+        var j = 0
+        while j < n:
+            sum = sum + eval_a(j, i) * list.at(v, j)
+            j = j + 1
+        list.set_at(atv, i, sum)
+        i = i + 1
+
+fn multiplyat_av(let v: List(Float), var tmp: List(Float), var at_av: List(Float)):
+    multiplyAv(v, tmp)
+    multiplyatv(tmp, at_av)
+
+fn main(let console: Console, let clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    
+    let n = 1000
+    var u = list.repeat(1.0, n)
+    var v = list.repeat(0.0, n)
+    var tmp = list.repeat(0.0, n)
+    
+    var iter = 0
+    while iter < 10:
+        multiplyat_av(u, tmp, v)
+        multiplyat_av(v, tmp, u)
+        iter = iter + 1
+        
+    var v_bv = 0.0
+    var vv = 0.0
+    var i = 0
+    while i < n:
+        v_bv = v_bv + list.at(u, i) * list.at(v, i)
+        vv = vv + list.at(v, i) * list.at(v, i)
+        i = i + 1
+        
+    let res = math.sqrt(v_bv / vv)
+    let bench_t1 = clock.now_monotonic()
+    
+    console.print(math.format_float(res, 9))
+    console.print("bench_ns=${bench_t1 - bench_t0}")

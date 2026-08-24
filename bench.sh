@@ -62,6 +62,9 @@ ALL_BENCHES=(
     select_fanin
     list_index
     reverse-complement
+    n-body
+    fasta
+    spectral-norm
 )
 
 # Colors (ANSI-C escape literals work reliably across bash, zsh, and macOS terminals)
