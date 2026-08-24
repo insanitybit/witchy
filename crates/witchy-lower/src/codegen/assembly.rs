@@ -7024,6 +7024,14 @@ mod checked_codegen_boundary_tests {
             checked.module(), false, None, None, false,
         ).expect("assemble select fixture");
         let scalar = carrier.scalar_executor_plan().expect("select carrier plan");
+        assert!(scalar.typed_channels.iter().any(|channel| {
+            matches!(
+                channel.payload_layout,
+                witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
+                    witchy_types::suspension_carrier::CarrierLane::I64
+                )
+            )
+        }), "backend plan must retain the typed Int endpoint layout");
         assert!(scalar.states.iter().any(|state| {
             state.transitions.iter().any(|transition| matches!(
                 transition,

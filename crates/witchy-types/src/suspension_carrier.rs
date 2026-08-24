@@ -49,6 +49,60 @@ pub struct CarrierState {
     pub slots: Vec<CarrierSlot>,
 }
 
+/// Direction is part of the channel ABI: a sender and receiver share the
+/// compact runtime channel id, but have different ready and suspension rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelEndpointDirection {
+    Send,
+    Receive,
+}
+
+/// A buffer-root message occupies one direct root lane, while preserving its
+/// language-level identity.  `String` and `Bytes` deliberately share their
+/// ownership representation but not their typed equality or public API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelBufferRoot {
+    String,
+    Bytes,
+}
+
+/// Exact representation available at a typed-channel boundary.  `Packed`
+/// includes the direct lanes of a closed product/single-variant record.  A
+/// multi-variant or open representation is deliberately `Boxed`; later
+/// ready-path emitters must not guess a layout from the erased `__Msg` slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelPayloadLayout {
+    Scalar(CarrierLane),
+    BufferRoot(ChannelBufferRoot),
+    Packed(Vec<CarrierLane>),
+    Boxed,
+}
+
+/// The ownership operation a future ready/wait emitter must perform when a
+/// message crosses the endpoint.  This keeps the representation decision
+/// explicit: a buffer root is retained/released as a root, whereas scalar and
+/// packed values are transferred in lanes.  An erased fallback remains boxed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelOwnershipEnvelope {
+    InlineValue,
+    BufferRoot,
+    BoxedValue,
+}
+
+/// Typed, source-independent description of one endpoint held by a generated
+/// suspension state.  This is the common input for one-way ready operations,
+/// fixed-arity select, and the eventual bounded wait registration; it is not a
+/// promise that every layout has a promoted emitter yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedChannelPlan {
+    pub state: usize,
+    pub endpoint_place: String,
+    pub direction: ChannelEndpointDirection,
+    pub message_type: String,
+    pub payload_layout: ChannelPayloadLayout,
+    pub ownership: ChannelOwnershipEnvelope,
+}
+
 impl CarrierState {
     pub fn is_direct(&self) -> bool {
         self.direct && self.slots.iter().all(|slot| slot.lanes.is_some())
@@ -67,6 +121,7 @@ impl CarrierState {
 pub struct SuspensionCarrierCatalog {
     states: Vec<CarrierState>,
     max_lane_width: usize,
+    typed_channel_plans: Vec<TypedChannelPlan>,
     scalar_transitions: Vec<Result<Vec<ScalarTransition>, String>>,
 }
 
@@ -79,6 +134,10 @@ pub struct ScalarExecutorPlan {
     pub state_count: usize,
     pub max_lane_width: usize,
     pub states: Vec<ScalarExecutorState>,
+    /// The exact channel endpoint layouts retained for backend code generation.
+    /// A current scalar executor may decline to synthesize a graph, but it may
+    /// not rediscover this information from erased runtime slots.
+    pub typed_channels: Vec<TypedChannelPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +169,10 @@ pub enum SelectResultUse {
 pub struct AwaitSelect2Plan {
     pub first_channel: String,
     pub second_channel: String,
-    pub payload_layout: usize,
+    /// Exact layout recovered from the two typed receiver endpoints.  The
+    /// scheduler still uses its erased `__Msg` fallback until an emitter claims
+    /// this plan; that fallback must never infer a replacement layout itself.
+    pub payload_layout: ChannelPayloadLayout,
     /// The typed scalar lane recovered from both receiver endpoints.  `None`
     /// deliberately keeps the ordinary erased-message path; it is never an
     /// invitation to infer a representation from the runtime `__Msg` slot.
@@ -218,6 +280,23 @@ impl SuspensionCarrierCatalog {
             .map(CarrierState::lane_width)
             .max()
             .unwrap_or(0);
+        let typed_channel_plans = states
+            .iter()
+            .flat_map(|state| {
+                state.slots.iter().filter_map(|slot| {
+                    let (direction, message) = channel_endpoint_type(&slot.ty)?;
+                    let payload_layout = channel_payload_layout(message, &definitions);
+                    Some(TypedChannelPlan {
+                        state: state.id,
+                        endpoint_place: slot.name.clone(),
+                        direction,
+                        message_type: witchy_syntax::format::type_str(message),
+                        ownership: channel_ownership_envelope(&payload_layout),
+                        payload_layout,
+                    })
+                })
+            })
+            .collect();
         let state_ids: HashMap<String, usize> = states
             .iter()
             .map(|state| (state.function.clone(), state.id))
@@ -235,12 +314,13 @@ impl SuspensionCarrierCatalog {
                         state.function
                     )
                 })?;
-                scalar_transitions_for_function(function, &state_ids, typed.table())
+                scalar_transitions_for_function(function, &state_ids, typed.table(), &definitions)
             })
             .collect();
         Ok(Self {
             states,
             max_lane_width,
+            typed_channel_plans,
             scalar_transitions,
         })
     }
@@ -251,6 +331,13 @@ impl SuspensionCarrierCatalog {
 
     pub fn max_lane_width(&self) -> usize {
         self.max_lane_width
+    }
+
+    /// Recover every typed channel endpoint before source lowering erases the
+    /// message to `__Msg`.  Results are in deterministic state/parameter order
+    /// and can therefore be used as a compiler ABI without source-name sorting.
+    pub fn typed_channel_plans(&self) -> &[TypedChannelPlan] {
+        &self.typed_channel_plans
     }
 
     pub fn is_wholly_direct(&self) -> bool {
@@ -340,6 +427,7 @@ impl SuspensionCarrierCatalog {
             state_count: self.states.len(),
             max_lane_width: self.max_lane_width,
             states,
+            typed_channels: self.typed_channel_plans.clone(),
         })
     }
 
@@ -383,11 +471,12 @@ fn scalar_transitions_for_function(
     function: &Function,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
+    definitions: &HashMap<String, &TypeDef>,
 ) -> Result<Vec<ScalarTransition>, String> {
     let terminal = terminal_block_expr(&function.body)
         .ok_or_else(|| "state body has no terminal expression".to_string())?;
     let mut transitions = Vec::new();
-    collect_scalar_transitions(terminal, state_ids, table, &mut transitions)?;
+    collect_scalar_transitions(terminal, state_ids, table, definitions, &mut transitions)?;
     if transitions.is_empty() {
         return Err("state body has no terminal transition".into());
     }
@@ -407,13 +496,14 @@ fn collect_scalar_transitions(
     expression: &ast::Expr,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
+    definitions: &HashMap<String, &TypeDef>,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
     match expression {
         ast::Expr::Block(block) => {
             let terminal = terminal_block_expr(block)
                 .ok_or_else(|| "terminal block has no value expression".to_string())?;
-            collect_scalar_transitions(terminal, state_ids, table, transitions)
+            collect_scalar_transitions(terminal, state_ids, table, definitions, transitions)
         }
         ast::Expr::If {
             then_block,
@@ -426,15 +516,15 @@ fn collect_scalar_transitions(
             let else_terminal = terminal_block_expr(else_block).ok_or_else(|| {
                 "suspension-state `if` else-branch has no terminal value".to_string()
             })?;
-            collect_scalar_transitions(then_terminal, state_ids, table, transitions)?;
-            collect_scalar_transitions(else_terminal, state_ids, table, transitions)
+            collect_scalar_transitions(then_terminal, state_ids, table, definitions, transitions)?;
+            collect_scalar_transitions(else_terminal, state_ids, table, definitions, transitions)
         }
         ast::Expr::If {
             else_block: None, ..
         } => Err("suspension-state `if` is missing an else transition".into()),
         ast::Expr::Match { arms, .. } if !arms.is_empty() => {
             for arm in arms {
-                collect_scalar_transitions(&arm.body, state_ids, table, transitions)?;
+                collect_scalar_transitions(&arm.body, state_ids, table, definitions, transitions)?;
             }
             Ok(())
         }
@@ -454,7 +544,7 @@ fn collect_scalar_transitions(
             Ok(())
         }
         ast::Expr::Call { name, args } if call_family(name, "task.run") && args.len() == 1 => {
-            collect_task_expression(&args[0], None, state_ids, table, transitions)
+            collect_task_expression(&args[0], None, state_ids, table, definitions, transitions)
         }
         ast::Expr::Call { name, args } if call_family(name, "task.lazy") && args.len() == 1 => {
             let ast::Expr::Lambda { body, .. } = &args[0] else {
@@ -462,14 +552,14 @@ fn collect_scalar_transitions(
             };
             let terminal = terminal_block_expr(body)
                 .ok_or_else(|| "`task.lazy` lambda has no terminal task".to_string())?;
-            collect_scalar_transitions(terminal, state_ids, table, transitions)
+            collect_scalar_transitions(terminal, state_ids, table, definitions, transitions)
         }
         ast::Expr::Call { name, args } if call_family(name, "task.and_then") && args.len() == 2 => {
             let resume = continuation_state(&args[1], state_ids)?;
-            collect_task_expression(&args[0], Some(resume), state_ids, table, transitions)
+            collect_task_expression(&args[0], Some(resume), state_ids, table, definitions, transitions)
         }
         ast::Expr::Call { name, .. } if call_family(name, "chan.__select2_map") => {
-            collect_task_expression(expression, None, state_ids, table, transitions)
+            collect_task_expression(expression, None, state_ids, table, definitions, transitions)
         }
         ast::Expr::Call { name, .. }
             if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
@@ -487,6 +577,7 @@ fn collect_task_expression(
     resume: Option<usize>,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
+    definitions: &HashMap<String, &TypeDef>,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
     let ast::Expr::Call { name, args } = task else {
@@ -506,11 +597,11 @@ fn collect_task_expression(
         };
         let terminal = terminal_block_expr(body)
             .ok_or_else(|| "awaited `task.lazy` lambda has no terminal task".to_string())?;
-        return collect_task_expression(terminal, resume, state_ids, table, transitions);
+        return collect_task_expression(terminal, resume, state_ids, table, definitions, transitions);
     }
     if call_family(name, "task.and_then") && args.len() == 2 {
         let continuation = continuation_state(&args[1], state_ids)?;
-        return collect_task_expression(&args[0], Some(continuation), state_ids, table, transitions);
+        return collect_task_expression(&args[0], Some(continuation), state_ids, table, definitions, transitions);
     }
     if call_family(name, "chan.__select2_map") {
         let resume_target = continuation_state(
@@ -520,7 +611,7 @@ fn collect_task_expression(
         transitions.push(ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
             first_channel: "unknown".into(),
             second_channel: "unknown".into(),
-            payload_layout: 0,
+            payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
             payload_lane: select_payload_lane(table, args.first(), args.get(1)),
             resume_target,
             result_use: SelectResultUse::ImmediateMatch,
@@ -547,7 +638,7 @@ fn collect_task_expression(
         ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
             first_channel,
             second_channel,
-            payload_layout: 0,
+            payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
             payload_lane: select_payload_lane(table, args.first(), args.get(1)),
             resume_target: resume,
             result_use: SelectResultUse::ImmediateMatch,
@@ -605,6 +696,35 @@ fn select_payload_lane(
     )
 }
 
+fn select_payload_layout(
+    table: &TypeTable,
+    first: Option<&ast::Expr>,
+    second: Option<&ast::Expr>,
+    definitions: &HashMap<String, &TypeDef>,
+) -> ChannelPayloadLayout {
+    let Some((first, second)) = first
+        .and_then(|expr| table.type_of(expr))
+        .zip(second.and_then(|expr| table.type_of(expr)))
+    else {
+        return ChannelPayloadLayout::Boxed;
+    };
+    let (Ty::Named(first_name, first_args), Ty::Named(second_name, second_args)) = (first, second)
+    else {
+        return ChannelPayloadLayout::Boxed;
+    };
+    if first_name.rsplit('.').next() != Some("Receiver")
+        || second_name.rsplit('.').next() != Some("Receiver")
+        || first_args.len() != 1
+        || second_args.len() != 1
+        || first_args != second_args
+    {
+        return ChannelPayloadLayout::Boxed;
+    }
+    crate::typeck::ty_to_ast(&first_args[0])
+        .map(|message| channel_payload_layout(&message, definitions))
+        .unwrap_or(ChannelPayloadLayout::Boxed)
+}
+
 fn select_payload_lane_types(first: Option<&Ty>, second: Option<&Ty>) -> Option<CarrierLane> {
     match (first, second) {
         (Some(Ty::Named(first_name, first_args)), Some(Ty::Named(second_name, second_args)))
@@ -650,6 +770,50 @@ fn non_integer_channel(ty: &Type) -> Option<(String, &Type)> {
         }),
         Type::Slice(elem) => non_integer_channel(elem),
         Type::Qualified(_, _) => unreachable!("unqualified above"),
+    }
+}
+
+fn channel_endpoint_type(ty: &Type) -> Option<(ChannelEndpointDirection, &Type)> {
+    let Type::Named(name, arguments) = ty.unqualified() else {
+        return None;
+    };
+    let direction = match name.rsplit('.').next()? {
+        "Sender" => ChannelEndpointDirection::Send,
+        "Receiver" => ChannelEndpointDirection::Receive,
+        _ => return None,
+    };
+    (arguments.len() == 1).then_some((direction, &arguments[0]))
+}
+
+fn channel_payload_layout(
+    message: &Type,
+    definitions: &HashMap<String, &TypeDef>,
+) -> ChannelPayloadLayout {
+    if let Type::Named(name, arguments) = message.unqualified()
+        && arguments.is_empty()
+    {
+        match name.as_str() {
+            "Int" | "Bool" | "Duration" => return ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            "Float" => return ChannelPayloadLayout::Scalar(CarrierLane::F64),
+            "String" => return ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
+            "Bytes" => return ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::Bytes),
+            "Nil" => return ChannelPayloadLayout::Packed(Vec::new()),
+            _ => {}
+        }
+    }
+    direct_lanes(message, definitions, &HashMap::new(), &mut HashSet::new())
+        .filter(|lanes| !lanes.is_empty())
+        .map(ChannelPayloadLayout::Packed)
+        .unwrap_or(ChannelPayloadLayout::Boxed)
+}
+
+fn channel_ownership_envelope(layout: &ChannelPayloadLayout) -> ChannelOwnershipEnvelope {
+    match layout {
+        ChannelPayloadLayout::Scalar(_) | ChannelPayloadLayout::Packed(_) => {
+            ChannelOwnershipEnvelope::InlineValue
+        }
+        ChannelPayloadLayout::BufferRoot(_) => ChannelOwnershipEnvelope::BufferRoot,
+        ChannelPayloadLayout::Boxed => ChannelOwnershipEnvelope::BoxedValue,
     }
 }
 
@@ -984,6 +1148,64 @@ mod tests {
     }
 
     #[test]
+    fn typed_channel_plans_preserve_endpoint_direction_and_buffer_root_identity() {
+        let mut module = witchy_syntax::parser::parse_module(
+            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Packet:\n    Packet(Int, Bool)\n\nfn state(tx: Sender(String), rx: Receiver(Bytes), ints: Receiver(Int), packets: Receiver(Packet)) -> Nil:\n    ()\n",
+        )
+        .expect("channel plan fixture parses");
+        let Item::Function(state) = &mut module.items[3] else {
+            panic!("state")
+        };
+        state.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        state
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+
+        let typed = crate::typeck::annotate_checked(module).expect("channel plan fixture checks");
+        let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("carrier catalog");
+        assert_eq!(
+            catalog.typed_channel_plans(),
+            &[
+                TypedChannelPlan {
+                    state: 0,
+                    endpoint_place: "tx".into(),
+                    direction: ChannelEndpointDirection::Send,
+                    message_type: "String".into(),
+                    payload_layout: ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
+                    ownership: ChannelOwnershipEnvelope::BufferRoot,
+                },
+                TypedChannelPlan {
+                    state: 0,
+                    endpoint_place: "rx".into(),
+                    direction: ChannelEndpointDirection::Receive,
+                    message_type: "Bytes".into(),
+                    payload_layout: ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::Bytes),
+                    ownership: ChannelOwnershipEnvelope::BufferRoot,
+                },
+                TypedChannelPlan {
+                    state: 0,
+                    endpoint_place: "ints".into(),
+                    direction: ChannelEndpointDirection::Receive,
+                    message_type: "Int".into(),
+                    payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                },
+                TypedChannelPlan {
+                    state: 0,
+                    endpoint_place: "packets".into(),
+                    direction: ChannelEndpointDirection::Receive,
+                    message_type: "Packet".into(),
+                    payload_layout: ChannelPayloadLayout::Packed(vec![
+                        CarrierLane::I64,
+                        CarrierLane::I64,
+                    ]),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                },
+            ],
+        );
+    }
+
+    #[test]
     fn scalar_transition_plan_unwraps_lazy_and_then_effect_edges() {
         let module = witchy_syntax::parser::parse_module(
             "fn state() -> Nil:\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.send__Int(tx, value), fn(ignored): resume()))\n",
@@ -996,7 +1218,7 @@ mod tests {
         let state_ids = HashMap::from_iter([("resume".to_string(), 7)]);
 
         assert_eq!(
-            scalar_transitions_for_function(function, &state_ids, &table),
+            scalar_transitions_for_function(function, &state_ids, &table, &HashMap::new()),
             Ok(vec![ScalarTransition::ChannelSend { resume: 7 }]),
         );
     }
