@@ -339,7 +339,13 @@ Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. 
 
 Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.
 
+#### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+
 #### `fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n)`
+
+#### `fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m)`
+
+Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased message directly into the callback's scalar frame step, so the callback does not allocate a per-message Task/continuation.
 
 #### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
 
@@ -4218,7 +4224,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
-- `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
+- `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), fn(List(Int)) -> Task(Nil))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
@@ -4248,7 +4254,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
 - `Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
 - `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
-- `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
+- `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), fn(List(Int)) -> Task(Nil))`
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
@@ -4282,6 +4288,8 @@ Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task
 Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
 
 #### `fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
+
+#### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> (Bool, List(Int)), done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
