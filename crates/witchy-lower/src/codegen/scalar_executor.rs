@@ -176,11 +176,11 @@ fn recognize<'a>(
     let producer_entry = plan.states.get(child)?;
     let producer_send = plan.states.iter().find(|state| {
         state.source_callable == producer_entry.source_callable
-            && state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelSend { .. }))
+            && state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelSend(_)))
             && state.transitions.contains(&ScalarTransition::Done)
     })?;
     let mut receives = plan.states.iter().filter(|state| {
-        state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelReceive { .. }))
+        state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelReceive(_)))
     });
     let receive = receives.next()?;
     if receives.next().is_some() {
@@ -331,7 +331,7 @@ fn receiver_fold_shape(
     payload: ScalarPayload,
 ) -> bool {
     let Some(resume) = receive.transitions.iter().find_map(|transition| match transition {
-        ScalarTransition::ChannelReceive { resume } => Some(*resume),
+        ScalarTransition::ChannelReceive(plan) => Some(plan.resume_target),
         _ => None,
     }) else {
         return false;

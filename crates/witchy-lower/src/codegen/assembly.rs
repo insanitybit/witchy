@@ -7110,7 +7110,41 @@ mod checked_codegen_boundary_tests {
         let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble effectful scalar-region fixture");
-        carrier.scalar_executor_plan().expect("the terminal task after an eager block prologue is scalar");
+        let scalar = carrier
+            .scalar_executor_plan()
+            .expect("the terminal task after an eager block prologue is scalar");
+        assert!(scalar.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
+            matches!(
+                transition,
+                witchy_types::suspension_carrier::ScalarTransition::ChannelSend(plan)
+                    if matches!(
+                        (&plan.endpoint, &plan.payload_layout, plan.ownership),
+                        (
+                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                            witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
+                                witchy_types::suspension_carrier::CarrierLane::I64,
+                            ),
+                            witchy_types::suspension_carrier::ChannelOwnershipEnvelope::InlineValue,
+                        )
+                    )
+            )
+        }), "a one-way send must retain its exact typed endpoint plan");
+        assert!(scalar.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
+            matches!(
+                transition,
+                witchy_types::suspension_carrier::ScalarTransition::ChannelReceive(plan)
+                    if matches!(
+                        (&plan.endpoint, &plan.payload_layout, plan.ownership),
+                        (
+                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                            witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
+                                witchy_types::suspension_carrier::CarrierLane::I64,
+                            ),
+                            witchy_types::suspension_carrier::ChannelOwnershipEnvelope::InlineValue,
+                        )
+                    )
+            )
+        }), "a one-way receive must retain its exact typed endpoint plan");
         let wat = witchy_wir::wir::to_wat(&wir);
         let main = wat
             .split("(func $main ")

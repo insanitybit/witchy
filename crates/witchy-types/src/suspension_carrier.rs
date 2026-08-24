@@ -195,13 +195,25 @@ pub struct AwaitSelect2Plan {
     pub result_use: SelectResultUse,
 }
 
+/// Exact typed facts for one awaited send or receive.  The generic executor
+/// still owns the fallback, but a ready-path emitter receives the endpoint
+/// place, message representation, and transfer discipline together instead of
+/// rediscovering any of them from an erased `__Msg` slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitChannelOperationPlan {
+    pub endpoint: ChannelEndpointPlace,
+    pub payload_layout: ChannelPayloadLayout,
+    pub ownership: ChannelOwnershipEnvelope,
+    pub resume_target: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarTransition {
     Jump { target: usize },
     Done,
     ChannelOpen { resume: usize },
-    ChannelSend { resume: usize },
-    ChannelReceive { resume: usize },
+    ChannelSend(AwaitChannelOperationPlan),
+    ChannelReceive(AwaitChannelOperationPlan),
     ChannelSelect2(AwaitSelect2Plan),
     Spawn { child: usize, resume: usize },
     Join { resume: usize },
@@ -663,9 +675,21 @@ fn collect_task_expression(
     let transition = if call_family(name, "chan.channel") {
         ScalarTransition::ChannelOpen { resume }
     } else if call_family(name, "chan.send") {
-        ScalarTransition::ChannelSend { resume }
+        ScalarTransition::ChannelSend(channel_operation_plan(
+            table,
+            args.first(),
+            ChannelEndpointDirection::Send,
+            definitions,
+            resume,
+        ))
     } else if call_family(name, "chan.recv") {
-        ScalarTransition::ChannelReceive { resume }
+        ScalarTransition::ChannelReceive(channel_operation_plan(
+            table,
+            args.first(),
+            ChannelEndpointDirection::Receive,
+            definitions,
+            resume,
+        ))
     } else if call_family(name, "task.__channel_select2") {
         let first_channel = channel_endpoint_place(args.first());
         let second_channel = channel_endpoint_place(args.get(1));
@@ -700,6 +724,26 @@ fn channel_endpoint_place(endpoint: Option<&ast::Expr>) -> ChannelEndpointPlace 
     match endpoint {
         Some(ast::Expr::Var(name)) => ChannelEndpointPlace::Static(name.clone()),
         _ => ChannelEndpointPlace::Dynamic,
+    }
+}
+
+fn channel_operation_plan(
+    table: &TypeTable,
+    endpoint: Option<&ast::Expr>,
+    direction: ChannelEndpointDirection,
+    definitions: &HashMap<String, &TypeDef>,
+    resume_target: usize,
+) -> AwaitChannelOperationPlan {
+    let payload_layout = endpoint
+        .and_then(|endpoint| table.type_of(endpoint))
+        .and_then(|ty| channel_endpoint_payload_layout(ty, direction, definitions))
+        .unwrap_or(ChannelPayloadLayout::Boxed);
+    let ownership = channel_ownership_envelope(&payload_layout);
+    AwaitChannelOperationPlan {
+        endpoint: channel_endpoint_place(endpoint),
+        payload_layout,
+        ownership,
+        resume_target,
     }
 }
 
@@ -764,6 +808,23 @@ fn select_payload_layout(
     crate::typeck::ty_to_ast(&first_args[0])
         .map(|message| channel_payload_layout(&message, definitions))
         .unwrap_or(ChannelPayloadLayout::Boxed)
+}
+
+fn channel_endpoint_payload_layout(
+    ty: &Ty,
+    direction: ChannelEndpointDirection,
+    definitions: &HashMap<String, &TypeDef>,
+) -> Option<ChannelPayloadLayout> {
+    let Ty::Named(name, arguments) = ty else { return None };
+    let expected_name = match direction {
+        ChannelEndpointDirection::Send => "Sender",
+        ChannelEndpointDirection::Receive => "Receiver",
+    };
+    if name.rsplit('.').next() != Some(expected_name) || arguments.len() != 1 {
+        return None;
+    }
+    crate::typeck::ty_to_ast(&arguments[0])
+        .map(|message| channel_payload_layout(&message, definitions))
 }
 
 fn select_payload_lane_types(first: Option<&Ty>, second: Option<&Ty>) -> Option<CarrierLane> {
@@ -1271,7 +1332,43 @@ mod tests {
 
         assert_eq!(
             scalar_transitions_for_function(function, &state_ids, &table, &HashMap::new()),
-            Ok(vec![ScalarTransition::ChannelSend { resume: 7 }]),
+            Ok(vec![ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
+                endpoint: ChannelEndpointPlace::Static("tx".into()),
+                payload_layout: ChannelPayloadLayout::Boxed,
+                ownership: ChannelOwnershipEnvelope::BoxedValue,
+                resume_target: 7,
+            })]),
+        );
+    }
+
+    #[test]
+    fn one_way_channel_plan_keeps_direction_and_exact_message_layout() {
+        let sender = Ty::Named("Sender".into(), vec![Ty::String]);
+        let receiver = Ty::Named("Receiver".into(), vec![Ty::Int]);
+        assert_eq!(
+            channel_endpoint_payload_layout(
+                &sender,
+                ChannelEndpointDirection::Send,
+                &HashMap::new(),
+            ),
+            Some(ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String)),
+        );
+        assert_eq!(
+            channel_endpoint_payload_layout(
+                &receiver,
+                ChannelEndpointDirection::Receive,
+                &HashMap::new(),
+            ),
+            Some(ChannelPayloadLayout::Scalar(CarrierLane::I64)),
+        );
+        assert_eq!(
+            channel_endpoint_payload_layout(
+                &sender,
+                ChannelEndpointDirection::Receive,
+                &HashMap::new(),
+            ),
+            None,
+            "a sender must not be misclassified as a receive-ready endpoint",
         );
     }
 
