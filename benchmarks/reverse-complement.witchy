@@ -4,6 +4,16 @@ import list
 import bytes
 import string
 
+fn slice_to_string(let seq: List(Int), let start: Int, let end_idx: Int) -> String:
+    var chunk = []
+    var i = start
+    while i < end_idx:
+        list.push(chunk, list.at(seq, i))
+        i = i + 1
+    match bytes.from_list(chunk):
+        Ok(b) -> bytes.to_string(b)
+        Err(_e) -> ""
+
 fn main(let console: Console, let clock: Clock):
     let alu_str = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
     
@@ -11,17 +21,17 @@ fn main(let console: Console, let clock: Clock):
     let alu_list = alu_bytes.to_list()
 
     let total = 3000000
-    var seq = list.repeat(0, total)
+    var seq = []
     let alu_len = list.length(alu_list)
     var idx = 0
     while idx < total:
-        list.set_at(seq, idx, list.at(alu_list, idx % alu_len))
+        list.push(seq, list.at(alu_list, idx % alu_len))
         idx = idx + 1
 
-    var comp = list.repeat(0, 256)
+    var comp = []
     var c_idx = 0
     while c_idx < 256:
-        list.set_at(comp, c_idx, c_idx)
+        list.push(comp, c_idx)
         c_idx = c_idx + 1
         
     list.set_at(comp, 65, 84)
@@ -57,16 +67,7 @@ fn main(let console: Console, let clock: Clock):
         if end_idx > total:
             end_idx = total
         
-        var chunk = []
-        var chunk_idx = k
-        while chunk_idx < end_idx:
-            list.push(chunk, list.at(seq, chunk_idx))
-            chunk_idx = chunk_idx + 1
-            
-        let s = match bytes.from_list(chunk):
-            Ok(b) -> bytes.to_string(b)
-            Err(_e) -> ""
-        console.print("${s}")
+        console.print("${slice_to_string(seq, k, end_idx)}")
         k = k + 60
 
     console.print("bench_ns=${bench_t1 - bench_t0}")

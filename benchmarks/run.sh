@@ -46,7 +46,6 @@ ALL_BENCHES=(
     select_fanin
     list_index
     reverse-complement
-    spectral-norm
 )
 # chan_throughput is the async-executor probe (no kernel bracket — an async main);
 # it is wall-clock only.
