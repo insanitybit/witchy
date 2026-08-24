@@ -722,3 +722,20 @@ fn coven_serve_refuses_to_start_when_oidc_discovery_fails() {
     let _ = std::fs::remove_dir_all(&regroot);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// RFC-0120: `pm add --allow-staged --yes` installs an exact STAGED version, while
+/// an ordinary `add` of the same version is refused. Regression coverage for the
+/// staged fetch path (previously inert: it re-resolved released-only and blocked
+/// any non-released state).
+#[test]
+fn add_allow_staged_installs_a_staged_version() {
+    registry::add_allow_staged_installs_a_staged_version();
+}
+
+/// F1: a publish whose source set carries a `..`/absolute path is rejected at the
+/// request boundary (400) instead of trapping the confined store write and aborting
+/// the worker VM; the registry stays up and serves the next publish.
+#[test]
+fn publish_rejects_a_traversing_source_path() {
+    registry::publish_rejects_a_traversing_source_path();
+}

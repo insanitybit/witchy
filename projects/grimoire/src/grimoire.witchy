@@ -2619,7 +2619,7 @@ fn strict_strings(items: List(Json)) -> Result(List(String), RecordFootprintErro
 // single rune. BUG-371: a failed fetch/verify (or a failed transitive fetch) reports
 // `failed` so the caller does not repin registry metadata.
 fn refetch(console: Console, net: Net, root: Dir, origin: String, fullname: String, latest: String, current: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> (Int, Bool, Bool):
-    let code = fetch_source(console, net, root, origin, fullname, latest, "vendor")
+    let code = fetch_source(console, net, root, origin, fullname, latest, "vendor", false)
     if code != 0:
         (0, false, true)
     else if add_deps(console, net, root, origin, fullname, "vendor", cooldown, allowed) != 0:
@@ -2725,12 +2725,12 @@ fn install_artifact(console: Console, net: Net, root: Dir, clock: Clock, origin:
                 console.print("BLOCK: ${m}")
                 1
             Ok(entry) ->
-                let (command, sha) = entry
-                install_fetch_and_write(console, net, root, clock, origin, name, version, target, command, sha)
+                let (command, sha, size) = entry
+                install_fetch_and_write(console, net, root, clock, origin, name, version, target, command, sha, size)
 
 // Fetch the artifact manifest, verify its digest matches the SIGNED record, and
 // select the host target's (command, sha256). A tampered manifest fails the digest.
-fn install_selected_entry(net: Net, origin: String, name: String, version: String, digest: String, target: String) -> Result((String, String), String):
+fn install_selected_entry(net: Net, origin: String, name: String, version: String, digest: String, target: String) -> Result((String, String, Int), String):
     let resp = registry_get(net, origin, "/coven/artifact?name=${wire(name)}&version=${version}")
     if http.status(resp) != 200:
         Err("registry has no artifact manifest for ${name}@${version}")
@@ -2743,9 +2743,9 @@ fn install_selected_entry(net: Net, origin: String, name: String, version: Strin
                 else:
                     match coven_artifact.select(mani, target):
                         None -> Err("no artifact for target `${target}` (available: ${list.join(coven_artifact.targets(mani), ", ")})")
-                        Some(entry) -> Ok((entry.command, entry.sha256))
+                        Some(entry) -> Ok((entry.command, entry.sha256, entry.size))
 
-fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clock, origin: String, name: String, version: String, target: String, command: String, sha: String) -> Int:
+fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clock, origin: String, name: String, version: String, target: String, command: String, sha: String, size: Int) -> Int:
     // `home` is the granted $WITCHY_HOME provider; installs land in its `bin/` so an
     // added-to-PATH launcher finds them. Stream the artifact chunk by chunk straight
     // to disk (append_bytes) — a real trusted-exe is 100+ MB and can neither traverse
@@ -2760,9 +2760,11 @@ fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clock, 
     if !home.create_new(staged, ""):
         console.print("BLOCK: could not create a fresh staging file for ${command}")
         return 1
-    // state: 0 = downloading, 1 = complete, 2 = transport/decode error, 3 = no artifact
+    // state: 0 = downloading, 1 = complete, 2 = transport/decode error,
+    //        3 = no artifact, 4 = exceeds the signed size
     var idx = 0
     var state = 0
+    var written = 0
     while state == 0:
         let resp = registry_get(net, origin, "/coven/artifact/bytes?name=${wire(name)}&version=${version}&target=${target}&chunk=${idx}")
         if http.status(resp) != 200:
@@ -2775,13 +2777,24 @@ fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clock, 
                 match encoding.base64_decode_bytes_string(body):
                     Err(_e) -> state = 2
                     Ok(piece) ->
-                        home.append_bytes(staged, piece)
-                        idx = idx + 1
+                        // Bound the stream by the manifest's SIGNED `size` (digest-bound to
+                        // the signed record) BEFORE writing, so a hostile/broken mirror that
+                        // streams past the attested length cannot exhaust the disk — the
+                        // sha256 check that follows only runs once the stream ends.
+                        if written + bytes.length(piece) > size:
+                            state = 4
+                        else:
+                            home.append_bytes(staged, piece)
+                            written = written + bytes.length(piece)
+                            idx = idx + 1
     if state == 3:
         console.print("BLOCK: registry has no artifact bytes for ${name}@${version} target `${target}`")
         1
     else if state == 2:
         console.print("BLOCK: failed to download the artifact for ${name}@${version} target `${target}`")
+        1
+    else if state == 4:
+        console.print("BLOCK: artifact for ${name}@${version} target `${target}` streamed more than its signed ${size} bytes — refusing (tampered/hostile mirror?)")
         1
     else if crypto.sha256_bytes(home.read_bytes(staged)) != sha:
         console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
@@ -2909,18 +2922,18 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: St
                 else:
                     if is_staged:
                         console.print("! installing STAGED ${name}@${chosen} (unreleased, accepted via --allow-staged --yes)")
-                    add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed)
+                    add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, is_staged)
     else:
         match resolve_version(net, origin, name, req, cooldown):
             Err(e) ->
                 console.print("${name}: ${version_resolve_error_message(e)}")
                 1
             Ok(chosen) ->
-                add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed)
+                add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, false)
 
 // The capability-widening gate + finalize, shared by the released and staged
 // resolution paths. BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
-fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool) -> Int:
     match project_baseline(root):
         Err(e) ->
             console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
@@ -2932,15 +2945,19 @@ fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, 
                     console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
                     2
                 Ok(incoming) ->
-                    add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming))
+                    add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming), allow_staged)
 
-fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
+fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String), allow_staged: Bool) -> Int:
     if list.length(widened) > 0:
         console.print("BLOCKED: adding `${name}` would widen your project's capability footprint: ${list.join(widened, ", ")}")
         console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent")
         2
     else:
-        let code = add_rune(console, net, root, origin, name, req, "vendor", cooldown, [])
+        // A staged install (RFC-0120) fetches the EXACT resolved version and permits
+        // the `staged` state; a normal add re-resolves `req` against released
+        // versions. Either way the dependency closure that follows is released-only —
+        // `--allow-staged` opts in only the one version the user named.
+        let code = if allow_staged: fetch_then_deps(console, net, root, origin, name, chosen, "vendor", cooldown, [], true) else: add_rune(console, net, root, origin, name, req, "vendor", cooldown, [])
         if code != 0:
             code
         else:
@@ -3366,7 +3383,7 @@ fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String,
                     0
     else:
         match resolve_version(net, origin, name, req, cooldown):
-            Ok(chosen) -> fetch_then_deps(console, net, root, origin, name, chosen, dest, cooldown, allowed)
+            Ok(chosen) -> fetch_then_deps(console, net, root, origin, name, chosen, dest, cooldown, allowed, false)
             Err(e) ->
                 console.print("${name}: ${version_resolve_error_message(e)}")
                 1
@@ -3468,8 +3485,10 @@ fn find_exact_state(items: List(Json), req: String) -> Result(String, VersionRes
 
 // Fetch a resolved version, then recurse into the version deps its manifest
 // declares. The exit code is the first failure (0 if the whole tree resolves).
-fn fetch_then_deps(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
-    let code = fetch_source(console, net, root, origin, name, version, dest)
+fn fetch_then_deps(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool) -> Int:
+    // `allow_staged` applies to THIS (top-level) package only; the dependency
+    // closure `add_deps` walks is always resolved against released versions.
+    let code = fetch_source(console, net, root, origin, name, version, dest, allow_staged)
     if code != 0:
         code
     else:
@@ -3665,7 +3684,7 @@ fn positionals(args: List(String)) -> List(String):
 // registry's record must be validly signed by its root key, and the fetched
 // source must hash to that signed hash. An untrusted mirror cannot swap the
 // bytes — content addressing + the signature, not the transport, are trusted.
-fn fetch_source(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String) -> Int:
+fn fetch_source(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, allow_staged: Bool) -> Int:
     match pinned_registry_rootpub(root):
         Err(e) ->
             console.print("BLOCK: ${lock_pin_error_message(e)}")
@@ -3674,9 +3693,9 @@ fn fetch_source(console: Console, net: Net, root: Dir, origin: String, name: Str
             Err(e) ->
                 console.print("BLOCK: cannot fetch registry root key for ${name}@${version} — ${registry_root_key_error_message(e)}")
                 1
-            Ok(rootpub) -> fetch_source_with_root(console, net, root, origin, name, version, dest, rootpub, pinned_pub)
+            Ok(rootpub) -> fetch_source_with_root(console, net, root, origin, name, version, dest, rootpub, pinned_pub, allow_staged)
 
-fn fetch_source_with_root(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, rootpub: String, pinned_pub: String) -> Int:
+fn fetch_source_with_root(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, rootpub: String, pinned_pub: String, allow_staged: Bool) -> Int:
     // SEC-002: enforce the complete lock trust record on fetch/add too, before
     // source is vendored or a signed record's footprint is trusted.
     if pinned_pub != "" && pinned_pub != rootpub:
@@ -3699,14 +3718,14 @@ fn fetch_source_with_root(console: Console, net: Net, root: Dir, origin: String,
             console.print("BLOCK: registry returned a record for `${recorded_field(http.body(record), "name")}@${recorded_field(http.body(record), "version")}` when `${name}@${version}` was requested — refusing (coordinate mismatch)")
             1
         else:
-            fetch_verified(console, net, root, origin, name, version, dest, http.body(record))
+            fetch_verified(console, net, root, origin, name, version, dest, http.body(record), allow_staged)
 
 // Whether a signed record's own identity fields match the coordinate it was fetched
 // for — the anti-substitution binding for BUG-266.
 fn record_matches_coordinate(record: String, name: String, version: String) -> Bool:
     recorded_field(record, "name") == name && recorded_field(record, "version") == version
 
-fn fetch_verified(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, record: String) -> Int:
+fn fetch_verified(console: Console, net: Net, root: Dir, origin: String, name: String, version: String, dest: String, record: String, allow_staged: Bool) -> Int:
     let resp = registry_get(net, origin, "/coven/source?name=${wire(name)}&version=${version}")
     if http.status(resp) != 200:
         console.print("registry has no source for ${name}@${version}")
@@ -3720,8 +3739,12 @@ fn fetch_verified(console: Console, net: Net, root: Dir, origin: String, name: S
                 if content_hash(files) != recorded_hash(record):
                     console.print("BLOCK: integrity failure — fetched source for ${name}@${version} does not match the signed hash (tampered mirror?)")
                     1
-                else if recorded_field(record, "state") != "released":
-                    console.print("BLOCK: registry record for ${name}@${version} is `${recorded_field(record, "state")}`, not `released` — refusing to vendor an unreleased version")
+                else if recorded_field(record, "state") == "yanked":
+                    // A yanked version is never installable, with or without --allow-staged.
+                    console.print("BLOCK: registry record for ${name}@${version} is `yanked` — a yanked version is never installable")
+                    1
+                else if !allow_staged && recorded_field(record, "state") != "released":
+                    console.print("BLOCK: registry record for ${name}@${version} is `${recorded_field(record, "state")}`, not `released` — refusing to vendor an unreleased version (re-run with `--allow-staged name@${version}` to opt in to this exact staged version)")
                     1
                 else:
                     write_vendored_source(console, root, dest, name, version, files, record)
@@ -4342,6 +4365,7 @@ fn usage(console: Console):
     console.print("  why-cap <dir> <Cap> which deps introduce a capability")
     console.print("  add <pkg>[@<ver>] [host:port]    fetch + vendor a rune, pin it in witchy.lock")
     console.print("  add <name> <req> <coven> <dest>  resolve + fetch a rune into <dest> (explicit)")
+    console.print("  install <pkg>[@<ver>] [host:port] [--target <triple>]  fetch + verify a trusted-exe into \$WITCHY_HOME/bin")
     console.print("  publish <dir> [host:port] [id]    stage a rune to a coven registry")
     console.print("  promote <name> <ver> [host:port] [id]  release staged (trusted: COVEN_ID_TOKEN with MFA amr)")
     console.print("  yank  <name> <ver> [host:port]   flag a released version as yanked")

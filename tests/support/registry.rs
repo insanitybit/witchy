@@ -1,4 +1,5 @@
 use super::support::coven::*;
+use super::json_str;
 
 use std::process::Command;
 
@@ -411,4 +412,98 @@ pub(crate) fn networked_registry_signature_detects_tampering() {
         stderr(&out)
     );
     assert!(!app.join("vendor/xray").exists(), "nothing should be vendored on a rejected add");
+}
+
+/// RFC-0120: `pm add <pkg>@<ver> --allow-staged --yes` installs a STAGED
+/// (published-but-unreleased) version — the exact opt-in flow. Without the flag the
+/// same staged version is refused (staged is never resolvable by an ordinary add);
+/// with it, the exact version is fetched, signature/hash-verified, and vendored.
+/// Regression (had no test): the staged path re-resolved through the released-only
+/// resolver and `fetch_verified` blocked any non-released state, so the flag was
+/// inert — a genuinely-staged version could never be installed.
+pub(crate) fn add_allow_staged_installs_a_staged_version() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "allowstaged");
+    let app = fe.new_app();
+
+    // Author + PUBLISH acme/wip@1.0.0 but do NOT promote it — it stays STAGED.
+    let lib = fe.lib("acme/wip", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let ci = server.ci_token("acme-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "publish (staged) failed: {}\n{}",
+        stderr(&out),
+        stdout(&out)
+    );
+
+    // Without --allow-staged the staged version is not resolvable → refused.
+    let out = fe.pm(&app, &["add", "acme/wip@1.0.0"], None);
+    assert!(
+        !out.status.success(),
+        "an ordinary add must refuse a staged version: {}",
+        stdout(&out)
+    );
+
+    // With --allow-staged --yes the exact staged version installs.
+    let out = fe.pm(&app, &["add", "acme/wip@1.0.0", "--allow-staged", "--yes"], None);
+    assert!(
+        out.status.success(),
+        "add --allow-staged --yes must install the staged version: {}\n{}",
+        stderr(&out),
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).contains("installing STAGED acme/wip@1.0.0"),
+        "expected the STAGED install notice: {}",
+        stdout(&out)
+    );
+
+    // The staged source is vendored, and its signed record shows state=staged.
+    let vendored =
+        std::fs::read_to_string(app.join("vendor/wip/src/wip.witchy")).unwrap_or_default();
+    assert!(
+        vendored.contains("pub fn f"),
+        "the staged source must be vendored: {vendored:?}"
+    );
+    let record = std::fs::read_to_string(app.join("vendor/wip/coven.json")).unwrap_or_default();
+    assert!(
+        record.contains("\"state\":\"staged\""),
+        "the vendored record must be the staged one: {record:?}"
+    );
+}
+
+/// F1 (publish path-traversal DoS): coven writes each published source file into
+/// its confined store `Dir`; an absolute or `..`-traversing path would trap the
+/// confined write and abort the worker VM. The registry must reject such a publish
+/// at the request boundary (400), and — crucially — stay up and keep serving.
+pub(crate) fn publish_rejects_a_traversing_source_path() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "traversal");
+    let ci = server.ci_token("acme-repo", "release.yml");
+
+    // Hand-build a publish body whose source carries a `..` path (the front-end
+    // would never emit this; a hostile client speaks the wire protocol directly).
+    let manifest = "[rune]\nname = \"acme/evil\"\nversion = \"1.0.0\"\n";
+    let evil = format!(
+        "{{\"manifest_toml\":{m},\"source\":{{\"files\":[[\"witchy.toml\",{m}],[\"../escape.witchy\",{c}]]}},\"uploaded_by\":\"ci\",\"id_token\":{t}}}",
+        m = json_str(manifest),
+        c = json_str("pub fn f() -> Int:\n    1\n"),
+        t = json_str(&ci),
+    );
+    let host = format!("127.0.0.1:{}", server.port);
+    let (status, body) = http_post(&host, "/coven/publish", &evil);
+    assert_eq!(status, 400, "a traversing source path must be a 400, got {status}: {body}");
+    assert!(body.contains("unsafe path"), "the rejection must name the unsafe path: {body}");
+
+    // The server is still alive: a well-formed publish immediately after succeeds.
+    let lib = fe.lib("acme/ok", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let ci_ok = server.ci_token("acme-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci_ok));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "the registry must stay up after rejecting the traversal: {}\n{}",
+        stderr(&out),
+        stdout(&out)
+    );
 }

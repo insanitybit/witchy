@@ -79,6 +79,10 @@ fn file_pair(it: Json) -> Result((String, String), String):
     let path = coven_json.index_str(it, 0)
     if path.is_empty():
         Err("source file entry has empty path")
+    else if !coven_validate.valid_source_path(path):
+        // Reject a traversing/absolute/off-contract path at the envelope boundary,
+        // before it reaches the confined store write (which would trap the worker VM).
+        Err("source file entry has an unsafe path `" + path + "` — a published rune may ship only `witchy.toml` and `src/**.witchy` (no absolute or `..` paths)")
     else:
         Ok((path, coven_json.index_str(it, 1)))
 

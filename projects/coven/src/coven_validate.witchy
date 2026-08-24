@@ -46,6 +46,20 @@ fn is_lower(ch: String) -> Bool:
 pub fn single_line(s: String) -> Bool:
     !s.contains("\n")
 
+// A published source file path must be confined and conventional: exactly
+// `witchy.toml`, or a `src/...` file ending in `.witchy` — never empty, never
+// absolute, never containing `..`. coven writes each path into its confined store
+// `Dir`, so an absolute or traversing path would try to escape the version's
+// directory: the confined write traps and aborts the worker VM (a publish-time DoS
+// on the shared registry). Rejecting the path here, at the request boundary, is the
+// server-side twin of the client's fetch-time `path_shape_ok` (BUG-089); both
+// consult this one contract so the two sides cannot drift.
+pub fn valid_source_path(path: String) -> Bool:
+    if path.is_empty() || path.starts_with("/") || path.contains(".."):
+        false
+    else:
+        path == "witchy.toml" || path.starts_with("src/") && path.ends_with(".witchy")
+
 // A version is strict `major.minor.patch` — exactly three digit-only components, each
 // non-empty and without a redundant leading zero (`0` is fine, `01` is not), so a
 // version has one canonical form and `01.2.3` cannot masquerade as `1.2.3`.
