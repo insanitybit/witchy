@@ -64,20 +64,26 @@ def fasta_repeat(n, seq)
 end
 
 def fasta_random(n, table)
+  probs = table.map { |t| t[0] }
+  chars = table.map { |t| t[1] }
+  table_len = table.length
+  buf = String.new(capacity: 64)
   while n > 0
     len_out = n < 60 ? n : 60
-    line = ""
+    buf.clear
     len_out.times do
       r = randf(1.0)
-      table.each do |t|
-        if r < t[0]
-          line << t[1]
+      i = 0
+      while i < table_len
+        if r < probs[i]
+          buf << chars[i]
           break
         end
+        i += 1
       end
     end
-    $stdout.write(line)
-    $stdout.write("\n")
+    buf << "\n"
+    $stdout.write(buf)
     n -= len_out
   end
 end

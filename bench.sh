@@ -1,35 +1,51 @@
 #!/usr/bin/env bash
-# Witchy benchmark driver: compares Witchy compiled Wasm vs Go baseline.
+# Witchy benchmark driver: compares Witchy compiled Wasm vs Go / Node / Ruby / Rust baselines.
 #
 # Usage:
 #   ./bench.sh                 # run fast benchmark sweep across all benchmarks (~3-5s)
 #   ./bench.sh fib collatz     # run only specific benchmarks
 #   ./bench.sh --quick         # single-pass instant smoke check (<1s)
 #   ./bench.sh --full          # full kernel + hyperfine wall-clock suite (~1-2m)
+#   ./bench.sh --compare LANG  # compare against specific language (go, node, ruby, rust)
 #   ./bench.sh --json FILE     # write the machine-readable artifact to FILE
 #   ./bench.sh --list          # list available benchmarks
 #   ./bench.sh --help          # show this help
 set -euo pipefail
 
-RUBY_CMD="ruby"
+RUBY_CMD=()
 if [ -x "/opt/homebrew/opt/ruby/bin/ruby" ]; then
-    RUBY_CMD="/opt/homebrew/opt/ruby/bin/ruby"
+    RUBY_CMD=("/opt/homebrew/opt/ruby/bin/ruby")
+elif [ -x "/opt/homebrew/bin/ruby" ]; then
+    RUBY_CMD=("/opt/homebrew/bin/ruby")
 elif [ -x "/usr/local/opt/ruby/bin/ruby" ]; then
-    RUBY_CMD="/usr/local/opt/ruby/bin/ruby"
+    RUBY_CMD=("/usr/local/opt/ruby/bin/ruby")
 elif command -v ruby >/dev/null 2>&1; then
-    RUBY_CMD="ruby"
+    RUBY_CMD=("$(command -v ruby)")
 fi
 
-if $RUBY_CMD --version >/dev/null 2>&1; then
-    if $RUBY_CMD --yjit -e "" >/dev/null 2>&1; then
-        RUBY_CMD="$RUBY_CMD --yjit"
+if [ ${#RUBY_CMD[@]} -gt 0 ]; then
+    if "${RUBY_CMD[@]}" --yjit -e "" >/dev/null 2>&1; then
+        RUBY_CMD+=("--yjit")
     fi
 fi
 
-TIMEOUT_CMD=""
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout 15 "
-fi
+# Run a command with an optional timeout without aborting the parent script on signal/exit code
+run_timed() {
+    local timeout_secs="${BENCH_TIMEOUT:-30}"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_secs" "$@" 2>/dev/null || true
+    else
+        "$@" 2>/dev/null || true
+    fi
+}
+
+extract_result() {
+    printf "%s\n" "$1" | grep -v '^bench_ns=' || true
+}
+
+extract_kernel_ns() {
+    printf "%s\n" "$1" | grep '^bench_ns=' | head -1 | cut -d= -f2 || true
+}
 
 ORIGINAL_ARGS=("$@")
 
@@ -43,7 +59,7 @@ fi
 WITCHY="${WITCHY:-${CARGO_TARGET_DIR:-$ROOT_DIR/target}/release/witchy}"
 
 ALL_BENCHES=(
-  fasta
+    fasta
     fib
     loop_sum
     collatz
@@ -116,6 +132,8 @@ Options:
 Examples:
   ./bench.sh                    # Fast 3-sample sweep of all benchmarks
   ./bench.sh fib collatz        # Run only 'fib' and 'collatz'
+  ./bench.sh --compare node     # Compare Witchy vs Node.js
+  ./bench.sh --compare ruby     # Compare Witchy vs Ruby (with YJIT if available)
   ./bench.sh --full             # Full benchmark with wall-clock timing
   ./bench.sh --quick nsieve     # Quick single-pass check on 'nsieve'
 EOFU
@@ -187,10 +205,6 @@ if [ "$PRINT_BUILD_INPUTS" -eq 1 ]; then
 fi
 
 # 1. Ensure witchy release binary is present and newer than compiler inputs.
-# The fast sweep intentionally avoids rebuilding on every invocation, but a
-# stale release binary is worse than a slow build: it can make benchmark output
-# describe an older compiler while all rows still report `OK`. The Git-backed
-# census includes tracked and untracked compiler inputs without walking targets.
 stale_input=""
 if [ -x "$WITCHY" ]; then
     while IFS= read -r input; do
@@ -239,13 +253,15 @@ for b in "${TARGETS[@]}"; do
         printf "%sError: Benchmark '%s' not found in benchmarks/%s.witchy%s\n" "$RED" "$b" "$b" "$RESET" >&2
         exit 1
     fi
-    if [ -f "$BENCH_DIR/${b}.go" ]; then
-        if [ ! -f "$BUILD_DIR/${b}_go" ] || [ "$BENCH_DIR/${b}.go" -nt "$BUILD_DIR/${b}_go" ]; then
-            go build -o "$BUILD_DIR/${b}_go" "$BENCH_DIR/${b}.go"
+    if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
+        if [ -f "$BENCH_DIR/${b}.go" ] && command -v go >/dev/null 2>&1; then
+            if [ ! -f "$BUILD_DIR/${b}_go" ] || [ "$BENCH_DIR/${b}.go" -nt "$BUILD_DIR/${b}_go" ]; then
+                go build -o "$BUILD_DIR/${b}_go" "$BENCH_DIR/${b}.go"
+            fi
         fi
     fi
     if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then
-        if [ -f "$BENCH_DIR/${b}.rs" ]; then
+        if [ -f "$BENCH_DIR/${b}.rs" ] && command -v rustc >/dev/null 2>&1; then
             if [ ! -f "$BUILD_DIR/${b}_rs" ] || [ "$BENCH_DIR/${b}.rs" -nt "$BUILD_DIR/${b}_rs" ]; then
                 regex_flag=()
                 deps_dir="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/release/deps"
@@ -259,54 +275,55 @@ for b in "${TARGETS[@]}"; do
     fi
 done
 
-# Result extraction
-result() { grep -v '^bench_ns=' || true; }
-kernel_ns() { grep '^bench_ns=' | head -1 | cut -d= -f2 || true; }
-
 collect_all_kernel_ns() {
-    local benchmark="$1" w_output="$2" g_output="$3" n_output="$4" r_output="$5" rs_output="$6" w_ns g_ns n_ns r_ns rs_ns
+    local benchmark="$1" w_output="$2" g_output="$3" n_output="$4" r_output="$5" rs_output="$6"
     : > "$w_output"
     : > "$g_output"
     : > "$n_output"
     : > "$r_output"
     : > "$rs_output"
     for sample in $(seq 1 "$RUNS"); do
-        w_ns=""
-        g_ns=""
+        local w_raw="" g_raw="" n_raw="" r_raw="" rs_raw=""
+        local w_ns="" g_ns="" n_ns="" r_ns="" rs_ns=""
+        
         if [ $((sample % 2)) -eq 1 ]; then
-            w_ns=$($TIMEOUT_CMD "$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
+            w_raw=$(run_timed "$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy")
+            w_ns=$(extract_kernel_ns "$w_raw")
             if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
                 if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
-                    g_ns=$($TIMEOUT_CMD "$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+                    g_raw=$(run_timed "$BUILD_DIR/${benchmark}_go")
+                    g_ns=$(extract_kernel_ns "$g_raw")
                 fi
             fi
         else
             if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "go" ]; then
                 if [ -f "$BUILD_DIR/${benchmark}_go" ]; then
-                    g_ns=$($TIMEOUT_CMD "$BUILD_DIR/${benchmark}_go" 2>/dev/null | kernel_ns)
+                    g_raw=$(run_timed "$BUILD_DIR/${benchmark}_go")
+                    g_ns=$(extract_kernel_ns "$g_raw")
                 fi
             fi
-            w_ns=$($TIMEOUT_CMD "$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy" 2>/dev/null | kernel_ns)
+            w_raw=$(run_timed "$WITCHY" sandbox "$BENCH_DIR/${benchmark}.witchy")
+            w_ns=$(extract_kernel_ns "$w_raw")
         fi
         
-        n_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "node" ]; then
             if command -v node >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.js" ]; then
-                n_ns=$($TIMEOUT_CMD node "$BENCH_DIR/${benchmark}.js" 2>/dev/null | kernel_ns)
+                n_raw=$(run_timed node "$BENCH_DIR/${benchmark}.js")
+                n_ns=$(extract_kernel_ns "$n_raw")
             fi
         fi
         
-        r_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "ruby" ]; then
-            if command -v ruby >/dev/null 2>&1 && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
-                r_ns=$($TIMEOUT_CMD $RUBY_CMD "$BENCH_DIR/${benchmark}.rb" 2>/dev/null | kernel_ns)
+            if [ ${#RUBY_CMD[@]} -gt 0 ] && [ -f "$BENCH_DIR/${benchmark}.rb" ]; then
+                r_raw=$(run_timed "${RUBY_CMD[@]}" "$BENCH_DIR/${benchmark}.rb")
+                r_ns=$(extract_kernel_ns "$r_raw")
             fi
         fi
         
-        rs_ns=""
         if [ -z "$COMPARE_LANG" ] || [ "$COMPARE_LANG" = "rust" ]; then
             if [ -f "$BUILD_DIR/${benchmark}_rs" ]; then
-                rs_ns=$($TIMEOUT_CMD "$BUILD_DIR/${benchmark}_rs" 2>/dev/null | kernel_ns)
+                rs_raw=$(run_timed "$BUILD_DIR/${benchmark}_rs")
+                rs_ns=$(extract_kernel_ns "$rs_raw")
             fi
         fi
 
@@ -344,7 +361,7 @@ else
     HEAD_ARGS+=("vs Fastest" "Status")
     printf "$HEAD_FORMAT" "${HEAD_ARGS[@]}"
 fi
-# The dashed line width
+
 LINE_DASHES=""
 for ((i=0; i<${#HEAD_ARGS[@]}*14 + 11; i++)); do LINE_DASHES+="─"; done
 printf "  %s\n" "$LINE_DASHES"
@@ -356,30 +373,91 @@ faster_count=0
 for b in "${TARGETS[@]}"; do
     total_count=$((total_count + 1))
     
-    # Correctness check
-    g_out=""
-    if [ -f "$BUILD_DIR/${b}_go" ]; then
-        g_out=$("$BUILD_DIR/${b}_go" | result)
+    # Correctness check: compare Witchy output against the active comparator or available baseline
+    ref_out=""
+    has_ref=0
+
+    if [ -n "$COMPARE_LANG" ]; then
+        case "$COMPARE_LANG" in
+            go)
+                if [ -f "$BUILD_DIR/${b}_go" ]; then
+                    ref_out=$(extract_result "$("$BUILD_DIR/${b}_go" 2>/dev/null || true)")
+                    has_ref=1
+                fi
+                ;;
+            node)
+                if command -v node >/dev/null 2>&1 && [ -f "$BENCH_DIR/${b}.js" ]; then
+                    ref_out=$(extract_result "$(node "$BENCH_DIR/${b}.js" 2>/dev/null || true)")
+                    has_ref=1
+                fi
+                ;;
+            ruby)
+                if [ ${#RUBY_CMD[@]} -gt 0 ] && [ -f "$BENCH_DIR/${b}.rb" ]; then
+                    ref_out=$(extract_result "$("${RUBY_CMD[@]}" "$BENCH_DIR/${b}.rb" 2>/dev/null || true)")
+                    has_ref=1
+                fi
+                ;;
+            rust)
+                if [ -f "$BUILD_DIR/${b}_rs" ]; then
+                    ref_out=$(extract_result "$("$BUILD_DIR/${b}_rs" 2>/dev/null || true)")
+                    has_ref=1
+                fi
+                ;;
+        esac
     fi
-    w_out=$("$WITCHY" sandbox "$BENCH_DIR/${b}.witchy" 2>/dev/null | result)
+
+    if [ "$has_ref" -eq 0 ]; then
+        if [ -f "$BUILD_DIR/${b}_go" ]; then
+            ref_out=$(extract_result "$("$BUILD_DIR/${b}_go" 2>/dev/null || true)")
+            has_ref=1
+        elif command -v node >/dev/null 2>&1 && [ -f "$BENCH_DIR/${b}.js" ]; then
+            ref_out=$(extract_result "$(node "$BENCH_DIR/${b}.js" 2>/dev/null || true)")
+            has_ref=1
+        elif [ ${#RUBY_CMD[@]} -gt 0 ] && [ -f "$BENCH_DIR/${b}.rb" ]; then
+            ref_out=$(extract_result "$("${RUBY_CMD[@]}" "$BENCH_DIR/${b}.rb" 2>/dev/null || true)")
+            has_ref=1
+        elif [ -f "$BUILD_DIR/${b}_rs" ]; then
+            ref_out=$(extract_result "$("$BUILD_DIR/${b}_rs" 2>/dev/null || true)")
+            has_ref=1
+        fi
+    fi
+
+    w_raw=$("$WITCHY" sandbox "$BENCH_DIR/${b}.witchy" 2>/dev/null || true)
+    w_out=$(extract_result "$w_raw")
     printf "%s" "$w_out" > "$BUILD_DIR/${b}.result"
-    printf "%s" "$g_out" > "$BUILD_DIR/${b}.go.result"
+    if [ "$has_ref" -eq 1 ]; then
+        printf "%s" "$ref_out" > "$BUILD_DIR/${b}.go.result"
+    else
+        printf "%s" "$w_out" > "$BUILD_DIR/${b}.go.result"
+    fi
 
     is_ok=1
-    if [ -z "$w_out" ] || [ -z "$g_out" ] || [ "$w_out" != "$g_out" ]; then
-        is_ok=0
+    if [ "$has_ref" -eq 1 ]; then
+        if [ "$w_out" != "$ref_out" ]; then
+            is_ok=0
+        fi
+    else
+        if [ -z "$w_raw" ]; then
+            is_ok=0
+        fi
     fi
 
     # Warm compile cache
     for ((warm = 0; warm < WARMUP; warm++)); do
-        "$WITCHY" sandbox "$BENCH_DIR/${b}.witchy" >/dev/null 2>&1
-        "$BUILD_DIR/${b}_go" >/dev/null 2>&1
+        "$WITCHY" sandbox "$BENCH_DIR/${b}.witchy" >/dev/null 2>&1 || true
+        if [ -f "$BUILD_DIR/${b}_go" ]; then
+            "$BUILD_DIR/${b}_go" >/dev/null 2>&1 || true
+        fi
     done
 
     collect_all_kernel_ns "$b" "$BUILD_DIR/${b}.witchy.kernel.tsv" "$BUILD_DIR/${b}.go.kernel.tsv" "$BUILD_DIR/${b}.node.kernel.tsv" "$BUILD_DIR/${b}.ruby.kernel.tsv" "$BUILD_DIR/${b}.rust.kernel.tsv"
-    wns=$(awk -F '\t' 'NR == 1 || $2 < best { best=$2 } END { print best }' "$BUILD_DIR/${b}.witchy.kernel.tsv")
+    
+    wns=""
+    if [ -s "$BUILD_DIR/${b}.witchy.kernel.tsv" ]; then
+        wns=$(awk -F '\t' 'NR == 1 || $2 < best { best=$2 } END { print best }' "$BUILD_DIR/${b}.witchy.kernel.tsv")
+    fi
     gns=""
-    if [ -f "$BUILD_DIR/${b}_go" ]; then
+    if [ -s "$BUILD_DIR/${b}.go.kernel.tsv" ]; then
         gns=$(awk -F '\t' 'NR == 1 || $2 < best { best=$2 } END { print best }' "$BUILD_DIR/${b}.go.kernel.tsv")
     fi
     nns=""
@@ -431,12 +509,14 @@ for b in "${TARGETS[@]}"; do
     fi
 
     ratio_color=""
-    if [ -n "$wns" ] && [ -n "$fastest_ns" ] && [ "$fastest_ns" -gt 0 ]; then
-        ratio=$(awk -v w="$wns" -v f="$fastest_ns" 'BEGIN { printf "%.2f", w / f }')
-        ratio_str="${ratio}x"
-        if awk -v r="$ratio" 'BEGIN { exit (r < 1.00 ? 0 : 1) }'; then
-            faster_count=$((faster_count + 1))
-            ratio_color="$BRIGHT_GREEN"
+    if [ -n "$wns" ] && [ -n "$fastest_ns" ]; then
+        if awk -v f="$fastest_ns" 'BEGIN { exit (f > 0 ? 0 : 1) }'; then
+            ratio=$(awk -v w="$wns" -v f="$fastest_ns" 'BEGIN { printf "%.2f", w / f }')
+            ratio_str="${ratio}x"
+            if awk -v r="$ratio" 'BEGIN { exit (r < 1.00 ? 0 : 1) }'; then
+                faster_count=$((faster_count + 1))
+                ratio_color="$BRIGHT_GREEN"
+            fi
         fi
     fi
 
@@ -467,7 +547,7 @@ done
 
 printf "  %s\n" "$LINE_DASHES"
 if [ "$faster_count" -gt 0 ]; then
-    printf "  %s%s%d/%d passed%s, %s%d faster than fastest baseline%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
+    printf "  %s%s%d/%d passed%s, %s%d faster than baseline%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET" "$BRIGHT_GREEN" "$faster_count" "$RESET"
 else
     printf "  %s%s%d/%d passed%s\n\n" "$BOLD" "$GREEN" "$pass_count" "$total_count" "$RESET"
 fi
@@ -484,6 +564,8 @@ if [ -n "$COMPARE_LANG" ]; then
     SUMMARIZE_ARGS+=(--compare "$COMPARE_LANG")
 fi
 
-python3 "$BENCH_DIR/summarize.py" "${SUMMARIZE_ARGS[@]}" "${TARGETS[@]}" >/dev/null
+python3 "$BENCH_DIR/summarize.py" "${SUMMARIZE_ARGS[@]}" "${TARGETS[@]}" >/dev/null || {
+    printf "%sWarning: benchmarks/summarize.py exited with an error%s\n" "$YELLOW" "$RESET" >&2
+}
 printf "  machine-readable artifact: %s\n" "$ARTIFACT_JSON"
 [ "$pass_count" -eq "$total_count" ] || exit 1

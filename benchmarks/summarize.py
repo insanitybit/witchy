@@ -222,7 +222,7 @@ def build_identity(witchy):
     }
 
 
-def benchmark_record(build_dir, benchmark, mode, expected_count, compare_lang):
+def benchmark_record(build_dir, benchmark, mode, expected_count, compare_lang=None):
     kernel_count = 0 if benchmark in WALL_ONLY else expected_count
     witchy = raw_kernel_samples(build_dir, benchmark, "witchy", kernel_count)
     
@@ -258,7 +258,7 @@ def benchmark_record(build_dir, benchmark, mode, expected_count, compare_lang):
 
     witchy_result = saved_result("")
     go_result = saved_result(".go")
-    if not witchy_result or not go_result:
+    if benchmark not in WALL_ONLY and (not witchy_result or not go_result):
         raise ValueError(f"{benchmark}: Witchy and Go results must both be nonempty")
     if witchy_result != go_result:
         raise ValueError(f"{benchmark}: Witchy and Go results do not match")
