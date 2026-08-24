@@ -1457,6 +1457,7 @@ impl<'a> Ctx<'a> {
         let frame = self.fresh_tmp();
         let tag = self.fresh_tmp();
         let option = self.fresh_tmp();
+        let payload = self.fresh_tmp();
         let closed = self.fresh_tmp();
         let frame_ty = Type::Named(
             "List".to_string(),
@@ -1495,22 +1496,44 @@ impl<'a> Ctx<'a> {
                 value: decode_lane(call("list.at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64)]), lane),
             });
         }
-        let selected_expr = call(
-            "chan.select2_frame_decode",
-            vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
+        let direct_result_arms = rewrite_local_select_matches(
+            tail_body,
+            &selected,
+            &tag,
+            &option,
+            &payload,
         );
-        step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
-        step_stmts.extend(tail_body.iter().cloned());
+        let direct_result_used = direct_result_arms.is_some();
+        if let Some(rewritten) = direct_result_arms {
+            step_stmts.extend(rewritten);
+        } else {
+            let selected_expr = call(
+                "chan.select2_frame_decode",
+                vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
+            );
+            step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
+            step_stmts.extend(tail_body.iter().cloned());
+        }
         for (index, lane) in lanes.iter().enumerate() {
             step_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
         }
-        let closed_expr = Expr::Match {
-            scrutinee: Box::new(Expr::Var(selected.clone())),
-            arms: vec![
-                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Closed".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
-                MatchArm { line: 0, pattern: Pattern::Ctor { name: "First".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
-                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Second".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
-            ],
+        let closed_expr = if direct_result_used {
+            Expr::Match {
+                scrutinee: Box::new(Expr::Var(option.clone())),
+                arms: vec![
+                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "None".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
+                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
+                ],
+            }
+        } else {
+            Expr::Match {
+                scrutinee: Box::new(Expr::Var(selected.clone())),
+                arms: vec![
+                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "Closed".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
+                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "First".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
+                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "Second".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
+                ],
+            }
         };
         step_stmts.push(Stmt::Let { name: closed.clone(), ty: Some(Type::Named("Bool".into(), vec![])), mutable: false, value: closed_expr });
         step_stmts.push(Stmt::Expr(Expr::Tuple(vec![
@@ -2182,6 +2205,144 @@ fn expr_contains_return(expression: &Expr) -> bool {
     }
 }
 
+/// Rewrite a local, exhaustive `match selected` into a tag-plus-payload match.
+/// This deliberately accepts only immediate `First`/`Second`/`Closed` arms.
+/// Any escape, guard, nested use, or structural payload pattern retains the
+/// ordinary nominal `Selected` result.
+fn rewrite_local_select_matches(
+    tail: &[Stmt],
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+) -> Option<Vec<Stmt>> {
+    let mut rewritten_any = false;
+    let rewritten = tail
+        .iter()
+        .map(|stmt| rewrite_local_select_match_stmt(
+            stmt,
+            selected,
+            tag,
+            option,
+            payload,
+            &mut rewritten_any,
+        ))
+        .collect::<Vec<_>>();
+    if !rewritten_any {
+        return None;
+    }
+    let free = crate::suspension::free_bindings_in_block(
+        &Block {
+            stmts: rewritten.clone(),
+            lines: vec![0; rewritten.len()],
+            region: None,
+        },
+        &HashSet::default(),
+    );
+    (!free.iter().any(|name| name == selected)).then_some(rewritten)
+}
+
+fn rewrite_local_select_match_stmt(
+    stmt: &Stmt,
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+    rewritten_any: &mut bool,
+) -> Stmt {
+    let rewrite = |value: &Expr, rewritten_any: &mut bool| {
+        let Some(rewritten) = rewrite_local_select_match(value, selected, tag, option, payload) else {
+            return value.clone();
+        };
+        *rewritten_any = true;
+        rewritten
+    };
+    match stmt {
+        Stmt::Let { name, ty, mutable, value } => Stmt::Let {
+            name: name.clone(), ty: ty.clone(), mutable: *mutable,
+            value: rewrite(value, rewritten_any),
+        },
+        Stmt::Assign { name, value } => Stmt::Assign {
+            name: name.clone(), value: rewrite(value, rewritten_any),
+        },
+        Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
+            pattern: pattern.clone(), value: rewrite(value, rewritten_any),
+        },
+        Stmt::Return(Some(value)) => Stmt::Return(Some(rewrite(value, rewritten_any))),
+        Stmt::Yield(value) => Stmt::Yield(rewrite(value, rewritten_any)),
+        Stmt::Expr(value) => Stmt::Expr(rewrite(value, rewritten_any)),
+        _ => stmt.clone(),
+    }
+}
+
+fn rewrite_local_select_match(
+    expression: &Expr,
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+) -> Option<Expr> {
+    let Expr::Match { scrutinee, arms } = expression else { return None };
+    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 3 {
+        return None;
+    }
+    let first = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "First" && args.len() == 1
+    ))?;
+    let second = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "Second" && args.len() == 1
+    ))?;
+    let closed = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "Closed" && args.is_empty()
+    ))?;
+    if arms.iter().any(|arm| arm.guard.is_some()) {
+        return None;
+    }
+    let first_body = bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?;
+    let second_body = bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?;
+    Some(Expr::Match {
+        scrutinee: Box::new(call("chan.select2_frame_payload", vec![Expr::Var(option.into())])),
+        arms: vec![
+            MatchArm {
+                line: first.line,
+                pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(payload.into())] },
+                guard: None,
+                body: Expr::If {
+                    cond: Box::new(Expr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(Expr::Var(tag.into())),
+                        rhs: Box::new(Expr::Int(0)),
+                    }),
+                    then_block: tail_block_at(first_body, first.line),
+                    else_block: Some(tail_block_at(second_body, second.line)),
+                },
+            },
+            MatchArm {
+                line: closed.line,
+                pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
+                guard: None,
+                body: closed.body.clone(),
+            },
+        ],
+    })
+}
+
+fn bind_select_payload(pattern: &Pattern, payload: &str, body: Expr, line: u32) -> Option<Expr> {
+    let Pattern::Ctor { args, .. } = pattern else { return None };
+    match args.as_slice() {
+        [Pattern::Var(name)] => Some(Expr::Block(Block {
+            stmts: vec![
+                Stmt::Let { name: name.clone(), ty: None, mutable: false, value: Expr::Var(payload.into()) },
+                Stmt::Expr(body),
+            ],
+            lines: vec![line, line],
+            region: None,
+        })),
+        [Pattern::Wildcard] => Some(body),
+        _ => None,
+    }
+}
+
 /// `task.and_then(inner, fn(own bind): k)`.
 fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
     let lambda = Expr::Lambda {
@@ -2709,6 +2870,18 @@ mod tests {
         let lowered = lower_module(module).expect("lower select loop");
         let rendered = crate::format::module(&lowered, &[]);
         assert!(rendered.contains("chan.select2_frame_loop"), "{rendered}");
+        assert!(rendered.contains("chan.select2_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select2_frame_decode"), "{rendered}");
+    }
+
+    #[test]
+    fn select_loop_materializes_a_result_when_it_escapes_the_local_match() {
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int)):\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select(a, b).await\n        let kept = selected\n        match kept:\n            First(_) -> seen = seen + 1\n            Second(_) -> seen = seen + 1\n            Closed -> seen = 4\n";
+        let module = crate::parser::parse_module(source).expect("parse escaping select loop");
+        let lowered = lower_module(module).expect("lower escaping select loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(rendered.contains("chan.select2_frame_decode"), "{rendered}");
+        assert!(!rendered.contains("chan.select2_frame_payload"), "{rendered}");
     }
 
 

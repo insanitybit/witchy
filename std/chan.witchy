@@ -384,6 +384,15 @@ pub fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m):
                 Second(__unerase(msg))
         None -> Closed
 
+// Compiler-owned scalar frame support. A locally consumed select result can
+// dispatch on the scheduler tag and this typed payload option directly, rather
+// than first allocating a `Selected(m)` value. Escaping and complex matches
+// still use `select2_frame_decode` above.
+pub fn select2_frame_payload(o: Option(__Msg)) -> Option(m):
+    match o:
+        Some(msg) -> Some(__unerase(msg))
+        None -> None
+
 // Receive from `rx`, run `f` on each message, until the channel closes. The
 // stateless server loop; `for await x in rx:` lowers to this.
 pub fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil):

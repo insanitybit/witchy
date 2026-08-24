@@ -7079,6 +7079,14 @@ mod checked_codegen_boundary_tests {
             !fused_segment.contains("call $rc_alloc"),
             "select frame segment must not allocate a continuation per iteration"
         );
+        assert!(
+            wat.contains("call $chan.select2_frame_payload"),
+            "a non-escaping local match must consume the typed payload lane directly"
+        );
+        assert!(
+            !wat.contains("call $chan.select2_frame_decode"),
+            "a non-escaping local match must not materialize Selected"
+        );
     }
 
     #[test]
