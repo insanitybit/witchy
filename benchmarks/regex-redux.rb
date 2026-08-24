@@ -3,7 +3,7 @@ t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 seq = "agggtaaa cgtgggtaaa aactggtaaa agactgtaaa aggacttaaa agggcgaaa agggtcaa agggtaca agggtaac aatggtaaa agagtaaa aggataaa agggcaaa tHaNt aND caN HaD WaS aNt BY <header> |word| "
 
 text = ""
-2500.times do |i|
+250.times do |i|
   text += ">Sequence_#{i}\n#{seq}\n"
 end
 originalLen = text.bytesize

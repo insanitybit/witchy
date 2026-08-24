@@ -3,7 +3,7 @@ let t0 = Date.now();
 const seq = "agggtaaa cgtgggtaaa aactggtaaa agactgtaaa aggacttaaa agggcgaaa agggtcaa agggtaca agggtaac aatggtaaa agagtaaa aggataaa agggcaaa tHaNt aND caN HaD WaS aNt BY <header> |word| ";
 
 let sb = "";
-for (let i = 0; i < 2500; i++) {
+for (let i = 0; i < 250; i++) {
     sb += ">Sequence_" + i + "\n" + seq + "\n";
 }
 let text = sb;
