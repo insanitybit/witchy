@@ -4667,6 +4667,92 @@ fn main() -> Int:
         );
     }
 
+    #[test]
+    fn matrix_and_fixed_output_cursors_elide_only_proven_bounds() {
+        // RFC-0153 generalization matrix, Matrix Kernel family. The outer
+        // iteration is deliberately independent of the row cursor: only the
+        // inner `0..length(row)` proof permits the direct row access.
+        let matrix = r#"
+fn main() -> Int:
+    let row = [2, 3, 5]
+    var total = 0
+    for row_index in 0..2:
+        for column in 0..list.length(row):
+            total = total + row[column] + row_index
+    total
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        assert_eq!(run_int(matrix), 23, "nested row traversal preserves its result");
+        let (matrix_on, _, _) = call_shape(matrix, default);
+        assert!(
+            !matrix_on.contains("list_at"),
+            "the stable inner row cursor has no redundant guard: {matrix_on:?}",
+        );
+        let off = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        let (matrix_off, _, _) = call_shape(matrix, off);
+        assert!(
+            matrix_off.contains("list_at"),
+            "-bounds-elide retains the matrix row guard: {matrix_off:?}",
+        );
+
+        let dynamic_width = r#"
+fn read_rows(width: Int) -> Int:
+    let row = [7]
+    var total = 0
+    for row_index in 0..2:
+        for column in 0..width:
+            total = total + row[column] + row_index
+    total
+
+fn main() -> Int:
+    read_rows(2)
+"#;
+        let optimized_trap = compiled_trap(dynamic_width, default);
+        let deoptimized_trap = compiled_trap(dynamic_width, off);
+        assert!(optimized_trap.contains("list_at"), "optimized dynamic width traps: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "deoptimized dynamic width traps: {deoptimized_trap}");
+
+        // Serializer family. Witchy Lists expose a fixed literal length rather
+        // than a separate capacity API, so this fixture models a preallocated
+        // output buffer. The checked store/read ABI remains unchanged; only the
+        // dominating cursor proof removes its repeated validation.
+        let serializer = r#"
+fn main() -> Int:
+    var output = [0, 0, 0, 0]
+    var checksum = 0
+    for cursor in 0..list.length(output):
+        output[cursor] = 65 + cursor
+        checksum = checksum + output[cursor]
+    checksum
+"#;
+        assert_eq!(run_int(serializer), 266, "fixed output cursor preserves written bytes");
+        let (serializer_on, _, _) = call_shape(serializer, default);
+        assert!(
+            !serializer_on.contains("list_at"),
+            "the bounded output cursor has no redundant guard: {serializer_on:?}",
+        );
+        let (serializer_off, _, _) = call_shape(serializer, off);
+        assert!(
+            serializer_off.contains("list_at"),
+            "-bounds-elide retains the output cursor guard: {serializer_off:?}",
+        );
+
+        let short_output = r#"
+fn write(output_len: Int) -> Int:
+    var output = [0]
+    for cursor in 0..output_len:
+        output[cursor] = cursor
+    0
+
+fn main() -> Int:
+    write(2)
+"#;
+        let optimized_trap = compiled_trap(short_output, default);
+        let deoptimized_trap = compiled_trap(short_output, off);
+        assert!(optimized_trap.contains("list_at"), "optimized short output traps: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "deoptimized short output traps: {deoptimized_trap}");
+    }
+
     fn optimized_wir_wat(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(source).expect("parse indexed-kernel fixture");

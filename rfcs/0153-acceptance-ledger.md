@@ -37,7 +37,7 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | 6A current-master attribution refresh | merged | full artifact `/tmp/rfc0153-promotion-87ccb7e/results-full.json` at `87ccb7e9c` | three identical counter payloads; macOS `samply` emitted zero samples and is unusable for function attribution | all 21 Witchy/Go output hashes match | `collatz`, `fannkuch`, `nsieve`, `list_index` | `perf/rfc0153-attribution-refresh` | `merged` @ `b248c60528a20a4331e137b61d162e39e57a539f` |
 | 6B scalar range/arithmetic closure | transferred | full 12-pair artifact shows `collatz` 1.666x Go | `all` and `none` emit identical collatz WAT; all sequence counters are zero | focused WIR effect-safety and arithmetic tests | `collatz` transfers to RFC-0146 Track 5 (small-leaf inlining/register SROA) | `perf/rfc0153-scalar-close` | no code change required; transfer evidence recorded below |
 | 6C sequence-plan closure | merged, residual open | full artifact plus `/tmp/rfc0153-bounds-lever-87ccb7e` lever bisection | exact counters: bounds-elide reduces fannkuch 254.2 ms to 165.9 ms and list_index 5.24 ms to 2.69 ms | byte range/while, list cursor, and Brainfuck fallback codegen tests | `fannkuch`, `list_index` remain owned; nsieve residual transfers to RFC-0146 Track 6 | `perf/rfc0153-sequence-close` | `merged` @ `4f3e516f349bc600fc6dd07befd0eee8d8d71130`, `baa611383`, `d94431080` |
-| 6D generalization and adversarial matrix | in progress | merged byte positive/near-miss fixtures are the starting point | three identical byte/list stats payloads; WAT assertions only cover current byte and Brainfuck slices | byte differential outputs/traps and effect-preservation test pass | six required families and Glamour/CBOR consumer evidence remain incomplete | `test/rfc0153-generalization-matrix` | partial checks merged @ `a4562063e`, `87ccb7e9c`; not a completion claim |
+| 6D generalization and adversarial matrix | in progress | byte, paired binary, histogram, matrix, and fixed-output positive/near-miss fixtures | three identical byte/list stats payloads; WAT assertions cover byte, list, and Brainfuck fallback slices | fixture outputs/traps plus Glamour markdown and `std/cbor` WebAuthn backend parity | numeric boundary matrix, real-consumer mechanism attribution, and complete deoptimization census remain open | `test/rfc0153-generalization-matrix` | partial checks merged @ `a4562063e`, `87ccb7e9c`; matrix/serializer extension pending queue; not a completion claim |
 | 6E integration and promotion closeout | blocked on 6A-6D | two warmups and twelve paired interleaved samples | Full stats, code-size, compiler-time, profile, and deoptimization matrix | Focused shards and serialized merge-queue gate | Every retained target <= 1.00x Go; protected rows within 5 percent | `integration/rfc0153-complete` | pending |
 
 ## Preparation checkpoint (2026-08-25)
@@ -170,3 +170,26 @@ indexed here, and `collatz` plus `nsieve` missed the required 1.00x threshold.
 | Histogram | Data-derived index sanitized by mask (`idx & 255`) | Unsanitized raw dynamic integer index | Checked vs direct indexing |
 | Serializer | Bounded output cursor with proven initial capacity | Output cursor with possible unbounded growth | No reallocation, Direct store |
 | Numeric Loop | Canonical induction with constant step & no-wrap proof | Loop with non-monotonic update or potential boundary wrap | Modulo/div strength reduction, Overflow safety |
+
+### Executable 6D fixture index (2026-08-25)
+
+- Byte parser: `byte_counted_range_elides_only_the_shared_bounds_proof` and
+  `byte_while_length_snapshot_elides_only_stable_cursor_bounds` prove direct
+  loads, bounds-off guards, output equality, and optimized/deoptimized traps.
+- Binary transform: `paired_cursors_elide_only_a_stable_length_minus_constant_bound`
+  proves inward reads and writes, with a too-large upper cursor retaining its
+  exact `list_at` trap.
+- Matrix and serializer: `matrix_and_fixed_output_cursors_elide_only_proven_bounds`
+  proves nested row traversal and a literal preallocated output buffer, each
+  with bounds-on/off WAT shape plus a dynamic-width or undersized-buffer trap.
+- Histogram: `masked_static_histogram_index_elides_only_the_range_proven_guard`
+  proves a masked signed index and rejects raw and cross-function lookalikes.
+- Numeric loop: `power_of_two_modulo_strength_reduction` proves the signed
+  modulo negative case alongside the optimized positive remainder shape. It is
+  not the full wrapping/no-wrap/early-break boundary census required by 6D.
+- Pre-existing consumers: `brainfuck_dynamic_tape_pointer_retains_byte_bounds_guard`,
+  Glamour's `markdown_code_fence_carries_its_language_class_on_both_backends`,
+  and `webauthn_verify_registration_parses_the_create_ceremony` keep the
+  Brainfuck, Glamour, and `std/cbor` paths under executable interpreter/Wasm
+  semantic coverage. These are protected-source evidence, not performance rows
+  or a claim that their individual loops are promoted.
