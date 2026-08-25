@@ -82,6 +82,8 @@ pub struct Stats {
     /// A parked scheduler operation resumed after a concrete ready or close
     /// outcome was claimed. Re-parking a reusable frame is not a claim.
     pub scheduler_wake_claims: i64,
+    /// One-time installations of compiler-owned reusable select wait frames.
+    pub scheduler_reusable_wait_installs: i64,
     /// Nominal `Selected*` values constructed at a select escape boundary.
     /// Non-escaping direct result lanes must leave this at zero.
     pub selected_result_materializations: i64,
@@ -214,6 +216,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         scheduler_slot_transitions: vm.scheduler_slot_transitions().unwrap_or(0),
         scheduler_wait_installs: vm.scheduler_wait_installs().unwrap_or(0),
         scheduler_wake_claims: vm.scheduler_wake_claims().unwrap_or(0),
+        scheduler_reusable_wait_installs: vm.scheduler_reusable_wait_installs().unwrap_or(0),
         selected_result_materializations: vm.selected_result_materializations().unwrap_or(0),
         extract_searches: vm.extract_searches().unwrap_or(0),
         extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
@@ -309,6 +312,7 @@ mod tests {
         assert_eq!(stats.scheduler_slot_transitions, 0);
         assert_eq!(stats.scheduler_wait_installs, 0);
         assert_eq!(stats.scheduler_wake_claims, 0);
+        assert_eq!(stats.scheduler_reusable_wait_installs, 0);
         assert_eq!(stats.selected_result_materializations, 0);
         assert_eq!(stats.loan_active_points, 0);
         assert_eq!(stats.loan_active_events, 0);
@@ -356,6 +360,17 @@ mod tests {
             "the close pass must claim the blocked sender exactly once: {first:?}"
         );
         assert_eq!(first, second, "scheduler instrumentation must be deterministic");
+    }
+
+    #[test]
+    fn reusable_select_frame_reports_one_initial_wait_installation() {
+        let stats = compute(include_str!("../benchmarks/select_fanin.witchy"))
+            .expect("run reusable select-frame counter fixture");
+        assert_eq!(stats.scheduler_reusable_wait_installs, 1);
+        assert!(
+            stats.scheduler_wait_installs > stats.scheduler_reusable_wait_installs,
+            "cumulative ordinary wait retags must remain distinct from the one reusable frame"
+        );
     }
 
     #[test]

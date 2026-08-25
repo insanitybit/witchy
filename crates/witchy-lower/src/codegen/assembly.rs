@@ -6049,6 +6049,7 @@ fn assemble_wir_module_with_structs_mode(
                     "__witchy_scheduler_slot_transitions",
                     "__witchy_scheduler_wait_installs",
                     "__witchy_scheduler_wake_claims",
+                    "__witchy_scheduler_reusable_wait_installs",
                     "__witchy_selected_result_materializations",
                 ] {
                     pruned_globals.push(WirGlobal {

@@ -200,6 +200,10 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 println!("scheduler_wait_installs {}", s.scheduler_wait_installs);
                 println!("scheduler_wake_claims {}", s.scheduler_wake_claims);
                 println!(
+                    "scheduler_reusable_wait_installs {}",
+                    s.scheduler_reusable_wait_installs
+                );
+                println!(
                     "selected_result_materializations {}",
                     s.selected_result_materializations
                 );

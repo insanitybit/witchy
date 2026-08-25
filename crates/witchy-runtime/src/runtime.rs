@@ -1207,6 +1207,11 @@ impl Vm {
         self.i64_counter("__witchy_scheduler_wake_claims")
     }
 
+    /// One-time installations of compiler-owned reusable select wait frames.
+    pub fn scheduler_reusable_wait_installs(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_reusable_wait_installs")
+    }
+
     /// Nominal `Selected*` values constructed by the ordinary select adapter.
     /// A direct local-result lane must leave this at zero.
     pub fn selected_result_materializations(&mut self) -> Option<i64> {

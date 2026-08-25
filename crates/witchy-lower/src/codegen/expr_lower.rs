@@ -3279,6 +3279,9 @@ impl<'types> Codegen<'types> {
                 if args.is_empty() {
                     let counter = match name.as_str() {
                         "task.__rfc0152_wake_claim" => Some("__witchy_scheduler_wake_claims"),
+                        "task.__rfc0152_reusable_wait_install" => {
+                            Some("__witchy_scheduler_reusable_wait_installs")
+                        }
                         "chan.__rfc0152_selected_materialized" => {
                             Some("__witchy_selected_result_materializations")
                         }

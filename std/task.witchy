@@ -88,6 +88,12 @@ fn unit():
 fn __rfc0152_wake_claim():
     unit()
 
+// Records the one-time transition from a compiler-owned frame loop into its
+// reusable parked registration. Re-arming that same Wait* slot does not call
+// this marker.
+fn __rfc0152_reusable_wait_install():
+    unit()
+
 fn direct_frame_unreachable() -> Task(a):
     Task(fn(): Yield(direct_frame_unreachable()))
 
@@ -756,9 +762,11 @@ pub fn run(root: Task(Nil)):
                             list.set_at(slots, i, Wait2Frame(ch0, ch1, frame, step, done_task))
                             prog = true
                         Pull2FrameLoop(ch0, ch1, frame, step, done_fn) ->
+                            __rfc0152_reusable_wait_install()
                             list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
                             prog = true
                         Pull3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
+                            __rfc0152_reusable_wait_install()
                             list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
                             prog = true
                         PullAny(chs, cont) ->
