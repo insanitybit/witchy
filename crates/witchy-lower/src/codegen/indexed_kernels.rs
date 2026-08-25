@@ -978,12 +978,6 @@ impl<'types> Codegen<'types> {
         index: &Expr,
     ) -> Option<N> {
         let (index_root, offset) = affine_index(index)?;
-        if self
-            .planned_sequence_element_address(list, index, WirKind::I64)
-            .is_none()
-        {
-            return None;
-        }
         let local = format!("__seq_forward_{}_{}", self.next_label, self.sequence_forwarded_values.len());
         self.locals.insert(local.clone(), Kind::I64);
         self.sequence_forwarded_values.insert(

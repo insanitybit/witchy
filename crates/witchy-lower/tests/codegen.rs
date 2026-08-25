@@ -5348,6 +5348,56 @@ fn main() -> Int:
     }
 
     #[test]
+    fn immediate_checked_store_read_forwards_without_a_cursor_plan() {
+        // RFC-0153: a successful indexed store has already performed the
+        // exact bounds check needed by its immediate same-address read. This
+        // straight-line case deliberately has no loop/cursor plan.
+        let source = r#"
+fn update(index: Int) -> Int:
+    var values = [3]
+    values[index] = values[index] - 1
+    if values[index] > 0:
+        values[index]
+    else:
+        0
+
+fn main() -> Int:
+    update(0)
+"#;
+        assert_eq!(run_int(source), 2, "forwarded checked store preserves its result");
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let update = wat.split("(func $update").nth(1).expect("update WAT");
+        let update = update.split("(func $").next().expect("update body");
+        assert!(
+            update.contains("__seq_forward_"),
+            "the immediately stored scalar is retained for its successor read:\n{update}",
+        );
+        assert_eq!(
+            update.matches("call $list_at").count(),
+            3,
+            "the RHS read, store guard, and later branch-result read remain; only the immediate condition read is forwarded:\n{update}",
+        );
+
+        let out_of_bounds = r#"
+fn update(index: Int) -> Int:
+    var values = [3]
+    values[index] = values[index] - 1
+    if values[index] > 0:
+        values[index]
+    else:
+        0
+
+fn main() -> Int:
+    update(1)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let optimized_trap = compiled_trap(out_of_bounds, default);
+        let deoptimized_trap = compiled_trap(out_of_bounds, default.without(witchy_syntax::opt::Opt::BoundsElide));
+        assert!(optimized_trap.contains("list_at"), "optimized invalid store traps: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "deoptimized invalid store traps: {deoptimized_trap}");
+    }
+
+    #[test]
     fn sequence_plan_stores_proven_scalars_without_shared_scratch() {
         let source = r#"
 fn main() -> Int:
