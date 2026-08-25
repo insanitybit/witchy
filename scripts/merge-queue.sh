@@ -2108,8 +2108,19 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     esac
 
     local ungated=""
-    echo "$changed" | grep -qE '^(web/|projects/glamour|projects/coven-web|book/|dist/)' \
-        || ungated="$ungated glamour"
+    # `book/` used to pull in the WHOLE glamour family, because one test renders
+    # the real book. Measured: that is 56 tests and 752s of CPU (16% of the
+    # suite) for the 162s test that can actually observe a markdown edit -- on
+    # every branch that touches a page. Split the trigger: a real glamour
+    # surface runs everything, `book/` alone runs only the book-consuming test.
+    # Order matters -- a batch touching BOTH must run the whole family.
+    if echo "$changed" | grep -qE '^(web/|projects/glamour|projects/coven-web|dist/)'; then
+        : # a glamour surface itself changed: gate the family in full
+    elif echo "$changed" | grep -qE '^book/'; then
+        ungated="$ungated glamour-nonbook"
+    else
+        ungated="$ungated glamour"
+    fi
     echo "$changed" | grep -qE '^projects/(grimoire|coven)' \
         || ungated="$ungated grimoire"
     ungated="${ungated# }"

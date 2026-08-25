@@ -218,6 +218,16 @@ if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 # NOT catch `example_tests::*::webauthn_*`, which is stdlib crypto, not this UI.
 ungated_filter_glamour='binary(glamour) or test(/^commands::web::/) or test(/^example_tests::glamour::/) or (binary(cli_subcommands) and test(/^(web_|static_web_)/))'
 # grimoire/coven: the package-manager and registry example matrix.
+# EXACTLY ONE test in the glamour family consumes real `book/` content, so a
+# book-only change does not need the other 55. Verified by reading the suite,
+# not by matching names: `glamour-docs.test.mjs` (glamour_docs_app_renders_
+# book_pages) serves a FAKE inline SUMMARY.md, `example_tests::glamour` uses
+# "/book/*slug" only as a route literal, and no `commands::web::` or
+# cli_subcommands web_/static_web_ test reads book/ at all. Measured cost of
+# getting this wrong in the permissive direction: 752s of gate CPU for 162s of
+# warranted work, on every branch that edits a markdown page.
+ungated_filter_glamour_book='test(/glamour_docs_bundle_renders_the_real_book/)'
+ungated_filter_glamour_nonbook="($ungated_filter_glamour) and not ($ungated_filter_glamour_book)"
 ungated_filter_grimoire='test(/^example_tests::pm_coven::/)'
 
 # CORPUS SWEEPS -------------------------------------------------------------
@@ -315,8 +325,11 @@ ungated_excl=""
 for family in $gate_ungated; do
     case "$family" in
         glamour)  family_filter="$ungated_filter_glamour" ;;
+        # Skip the glamour family EXCEPT its one book-consuming test: what a
+        # `book/`-only batch needs.
+        glamour-nonbook) family_filter="$ungated_filter_glamour_nonbook" ;;
         grimoire) family_filter="$ungated_filter_grimoire" ;;
-        *) echo "check.sh: unknown WITCHY_GATE_UNGATED family '$family' (want glamour|grimoire)" >&2; exit 2 ;;
+        *) echo "check.sh: unknown WITCHY_GATE_UNGATED family '$family' (want glamour|glamour-nonbook|grimoire)" >&2; exit 2 ;;
     esac
     ungated_excl="${ungated_excl:+$ungated_excl and }not ($family_filter)"
 done

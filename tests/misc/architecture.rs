@@ -147,3 +147,45 @@ fn root_integration_test_binaries_stay_within_budget() {
         drivers.len(),
     );
 }
+
+/// The merge coordinator runs the whole glamour family (150 tests, ~1699s of
+/// gate CPU) only when a glamour surface changes. A `book/`-only batch runs
+/// the `glamour-nonbook` family instead: everything EXCEPT the single test
+/// that renders the real book, saving ~1537s of CPU -- a third of the suite --
+/// on every branch that edits a page.
+///
+/// That split is only sound while exactly ONE driver reads real book content.
+/// `glamour-docs.test.mjs` looks like a second one and is not: it serves a
+/// FAKE inline SUMMARY.md and mentions `book` only as a capability name. If a
+/// new driver starts reading `book/src/`, the split would silently stop
+/// gating it on book changes, so pin the set here rather than trusting the
+/// next reader to notice the distinction.
+#[test]
+fn only_one_glamour_driver_reads_the_real_book() {
+    const READS_REAL_BOOK: &[&str] = &["glamour-docs-bundle.test.mjs"];
+
+    let drivers = Path::new(env!("CARGO_MANIFEST_DIR")).join("web/witchy-runtime");
+    let mut found: Vec<String> = std::fs::read_dir(&drivers)
+        .expect("read web/witchy-runtime")
+        .filter_map(|entry| {
+            let path = entry.expect("read driver entry").path();
+            if path.extension().is_some_and(|ext| ext == "mjs")
+                && std::fs::read_to_string(&path).is_ok_and(|t| t.contains("book/src/"))
+            {
+                path.file_name().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    found.sort();
+
+    assert_eq!(
+        found, READS_REAL_BOOK,
+        "the set of node drivers reading real `book/src/` content changed. The \
+         `glamour-nonbook` ungated family (scripts/check.sh) skips every glamour \
+         test except `glamour_docs_bundle_renders_the_real_book` on a book-only \
+         batch; a new book-reading driver must be added to \
+         `ungated_filter_glamour_book` or it will stop being gated on book edits.",
+    );
+}
