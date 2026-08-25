@@ -1622,6 +1622,9 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Option<Expr>, String> {
+        let body_uses_value = crate::suspension::free_bindings_in_block(body, &HashSet::default())
+            .into_iter()
+            .any(|binding| binding == var);
         if body.stmts.iter().any(stmt_contains_await)
             || block_contains_return(body)
             || body.stmts.iter().any(|stmt| matches!(stmt, Stmt::Break | Stmt::Continue))
@@ -1630,6 +1633,12 @@ impl<'a> Ctx<'a> {
             // erased scheduler payload, so keep this on the proven general
             // receive path until the typed payload lane is emitted end-to-end.
             || body_directly_matches_binding(body, var)
+            // An erased scheduler message may carry a GC reference.  Its
+            // recovery is private to std/chan, so a compiler-generated
+            // callback cannot currently name that intrinsic without crossing
+            // the universal scalar ABI.  Keep value-consuming loops on the
+            // ordinary typed path until the direct payload-lane emitter lands.
+            || body_uses_value
         {
             return Ok(None);
         }
@@ -1674,7 +1683,6 @@ impl<'a> Ctx<'a> {
 
         let frame = self.fresh_tmp();
         let option = self.fresh_tmp();
-        let payload = self.fresh_tmp();
         let frame_ty = Type::Named("List".to_string(), vec![Type::Named("Int".to_string(), vec![])]);
         let frame_val = if lanes.is_empty() {
             call("list.repeat", vec![Expr::Int(0), Expr::Int(0)])
@@ -1692,18 +1700,15 @@ impl<'a> Ctx<'a> {
                 value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64)]), lane),
             });
         }
-        some_stmts.push(Stmt::Let {
-            name: var.to_string(), ty: None, mutable: false, value: Expr::Var(payload.clone()),
-        });
         some_stmts.extend(body.stmts.iter().cloned());
         for (index, lane) in lanes.iter().enumerate() {
             some_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
         }
         some_stmts.push(Stmt::Expr(Expr::Bool(false)));
         let step_body = Expr::Match {
-            scrutinee: Box::new(call("chan.recv_frame_payload", vec![Expr::Var(option.clone())])),
+            scrutinee: Box::new(Expr::Var(option.clone())),
             arms: vec![
-                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(payload)] }, guard: None, body: Expr::Block(Block { lines: vec![first_line(&body.lines); some_stmts.len()], stmts: some_stmts, region: None }) },
+                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Block(Block { lines: vec![first_line(&body.lines); some_stmts.len()], stmts: some_stmts, region: None }) },
                 MatchArm { line: 0, pattern: Pattern::Ctor { name: "None".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
             ],
         };
@@ -3220,12 +3225,12 @@ mod tests {
 
     #[test]
     fn recv_loop_uses_reusable_frame_bridge_for_scalar_fold() {
-        let source = "from chan import Receiver\n\nasync fn drain(rx: Receiver(Int)):\n    var sum = 0\n    for await value in rx:\n        sum = sum + value\n    task.done(sum).await\n";
+        let source = "from chan import Receiver\n\nasync fn drain(rx: Receiver(Int)):\n    var sum = 0\n    for await value in rx:\n        sum = sum + 1\n    task.done(sum).await\n";
         let module = crate::parser::parse_module(source).expect("parse receive frame loop");
         let lowered = lower_module(module).expect("lower receive frame loop");
         let rendered = crate::format::module(&lowered, &[]);
         assert!(rendered.contains("chan.recv_frame_loop"), "{rendered}");
-        assert!(rendered.contains("chan.recv_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.recv_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.recv(rx).await"), "{rendered}");
     }
 

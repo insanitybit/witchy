@@ -7139,7 +7139,9 @@ mod checked_codegen_boundary_tests {
 
     #[test]
     fn scalar_receive_frame_retains_typed_ready_region_facts() {
-        let checked = authenticated_checked(include_str!("../../../../benchmarks/chan_throughput.witchy"));
+        let checked = authenticated_checked(
+            "mode opt\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    chan.send(tx, 1).await\n    var seen = 0\n    for await value in rx:\n        seen = seen + 1\n    console.print(\"seen=${seen}\")\n",
+        );
         let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble scalar receive-frame fixture");
