@@ -311,6 +311,37 @@ impl<'types> Codegen<'types> {
         cond: &Expr,
         body: &Block,
     ) -> Vec<(String, String)> {
+        self.while_bounds_elide_pairs_for_length(
+            cond,
+            body,
+            intrinsics::LIST_LENGTH,
+            &self.known_length_vars,
+        )
+    }
+
+    /// Byte buffers use the identical induction/root-stability proof as lists,
+    /// but do not enter `SequenceAccessPlan`: their direct load/store lowering
+    /// has its own byte layout and consumes only the shared bounds fact.
+    pub(super) fn while_bytes_bounds_elide_pairs(
+        &self,
+        cond: &Expr,
+        body: &Block,
+    ) -> Vec<(String, String)> {
+        self.while_bounds_elide_pairs_for_length(
+            cond,
+            body,
+            intrinsics::BYTES_LENGTH,
+            &self.known_byte_length_vars,
+        )
+    }
+
+    fn while_bounds_elide_pairs_for_length(
+        &self,
+        cond: &Expr,
+        body: &Block,
+        length_intrinsic: &str,
+        known_length_vars: &HashMap<String, HashSet<String>>,
+    ) -> Vec<(String, String)> {
         if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
             return Vec::new();
         }
@@ -323,16 +354,20 @@ impl<'types> Codegen<'types> {
         if !self.known_non_negative_vars.contains(index) {
             return Vec::new();
         }
-        let candidate_lists: Vec<String> = match rhs.as_ref() {
+        let is_length_call = |name: &str| {
+            name == length_intrinsic
+                || witchy_syntax::intrinsics::lookup(length_intrinsic)
+                    .is_some_and(|spec| name == spec.diagnostic_name)
+        };
+        let candidate_roots: Vec<String> = match rhs.as_ref() {
             Expr::Call { name, args }
-                if name == intrinsics::LIST_LENGTH
+                if is_length_call(name)
                     && matches!(args.as_slice(), [Expr::Var(_)]) =>
             {
                 let Expr::Var(list) = &args[0] else { unreachable!() };
                 vec![list.clone()]
             }
-            Expr::Var(bound) => self
-                .known_length_vars
+            Expr::Var(bound) => known_length_vars
                 .get(bound)
                 .cloned()
                 .unwrap_or_default()
@@ -344,11 +379,11 @@ impl<'types> Codegen<'types> {
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
         let mut pairs = Vec::new();
-        for list in candidate_lists {
-            let list_length_stable = !scan.let_bind.contains_key(&list)
-                && !scan.other_bind.contains(&list)
-                && !scan.length_changing_reassigned.contains(&list);
-            if !list_length_stable {
+        for root in candidate_roots {
+            let root_length_stable = !scan.let_bind.contains_key(&root)
+                && !scan.other_bind.contains(&root)
+                && !scan.length_changing_reassigned.contains(&root);
+            if !root_length_stable {
                 continue;
             }
             let mut assignments = 0;
@@ -359,13 +394,13 @@ impl<'types> Codegen<'types> {
                 &self.known_non_negative_vars,
             ) && assignments > 0
             {
-                pairs.push((index.clone(), list.clone()));
+                pairs.push((index.clone(), root.clone()));
                 if let Expr::Var(upper) = rhs.as_ref() {
                     let mut upper_assignments = 0;
                     if decreasing_induction(body, upper, &mut upper_assignments)
                         && upper_assignments > 0
                     {
-                        pairs.push((upper.clone(), list));
+                        pairs.push((upper.clone(), root));
                     }
                 }
             }

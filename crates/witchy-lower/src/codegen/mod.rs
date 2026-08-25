@@ -1004,6 +1004,9 @@ struct Codegen<'types> {
     /// or native (`math.sqrt`, `crypto.ed25519_verify`) is NOT one, so it defers.
     emitted_funcs: HashSet<String>,
     known_non_negative_vars: HashSet<String>,
+    /// Immutable byte-length snapshots, tracked separately from lists so a
+    /// byte proof can never install a list layout/cursor plan.
+    known_byte_length_vars: HashMap<String, HashSet<String>>,
     known_length_vars: HashMap<String, HashSet<String>>,
     /// Lists built by an exact `for i in 0..<bound>: push` prefix. Their
     /// length is `max(bound, 0)`, which is sufficient to prove a later
@@ -1648,6 +1651,7 @@ impl<'types> Codegen<'types> {
             collect_source_map: false,
             emitted_funcs: HashSet::new(),
             known_non_negative_vars: HashSet::new(),
+            known_byte_length_vars: HashMap::new(),
             known_length_vars: HashMap::new(),
             range_built_lists: HashMap::new(),
             fn_conventions: HashMap::new(),

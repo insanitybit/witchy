@@ -39,6 +39,12 @@ fn is_borrowed_dict_consumer(statement: &Stmt, local: &str) -> bool {
     matches!(name.as_str(), intrinsics::DICT_GET_OR | intrinsics::DICT_CONTAINS_KEY)
 }
 
+fn is_intrinsic_or_public_name(name: &str, intrinsic: &str) -> bool {
+    name == intrinsic
+        || witchy_syntax::intrinsics::lookup(intrinsic)
+            .is_some_and(|spec| name == spec.diagnostic_name)
+}
+
 /// A stack-backed interpolation view is valid only through its immediate
 /// consumer. Prove that the next statement is the sole read and that it is a
 /// dictionary operation with a `(ptr,len)` lowering before selecting the view
@@ -79,7 +85,12 @@ impl<'types> Codegen<'types> {
         match value {
             Expr::Int(value) => *value >= 0,
             Expr::Var(name) => self.known_non_negative_vars.contains(name),
-            Expr::Call { name, .. } if name == intrinsics::LIST_LENGTH => true,
+            Expr::Call { name, .. }
+                if is_intrinsic_or_public_name(name, intrinsics::LIST_LENGTH)
+                    || is_intrinsic_or_public_name(name, intrinsics::BYTES_LENGTH) =>
+            {
+                true
+            }
             Expr::Binary { op: BinOp::Add | BinOp::Mul, lhs, rhs, .. } => {
                 self.expr_is_known_non_negative(lhs) && self.expr_is_known_non_negative(rhs)
             }
@@ -172,9 +183,21 @@ impl<'types> Codegen<'types> {
                         // Any unrecognized assignment might make it negative.
                         self.known_non_negative_vars.remove(name);
                     }
+                    self.known_byte_length_vars.remove(name);
                     self.known_length_vars.remove(name);
                     if let Expr::Call { name: fname, args } = value {
-                        if fname == intrinsics::LIST_LENGTH && args.len() == 1 {
+                        if is_intrinsic_or_public_name(fname, intrinsics::BYTES_LENGTH)
+                            && args.len() == 1
+                        {
+                            if let Expr::Var(bytes_name) = &args[0] {
+                                self.known_byte_length_vars
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .insert(bytes_name.clone());
+                            }
+                        } else if is_intrinsic_or_public_name(fname, intrinsics::LIST_LENGTH)
+                            && args.len() == 1
+                        {
                             if let Expr::Var(xs_name) = &args[0] {
                                 self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
                             }
@@ -188,6 +211,9 @@ impl<'types> Codegen<'types> {
                             }
                         }
                     } else if let Expr::Var(src_name) = value {
+                        if let Some(bytes) = self.known_byte_length_vars.get(src_name).cloned() {
+                            self.known_byte_length_vars.entry(name.clone()).or_default().extend(bytes);
+                        }
                         if let Some(lists) = self.known_length_vars.get(src_name).cloned() {
                             self.known_length_vars.entry(name.clone()).or_default().extend(lists);
                         }

@@ -1361,6 +1361,7 @@ impl<'types> Codegen<'types> {
                 let id = self.next_label;
                 self.next_label += 1;
                 let elide_pairs = self.while_bounds_elide_pairs(cond, body);
+                let byte_elide_pairs = self.while_bytes_bounds_elide_pairs(cond, body);
                 // Sequence cursors are initialized once before the loop. Only
                 // a canonical induction variable has a value that is valid at
                 // that point; arbitrary locals used as indexed reads (for
@@ -1389,8 +1390,11 @@ impl<'types> Codegen<'types> {
                     self.counter_batch_stack.push(level);
                     self.counter_batch_used.push(0);
                 }
-                let num_elide = elide_pairs.len();
+                let num_elide = elide_pairs.len() + byte_elide_pairs.len();
                 for pair in &elide_pairs {
+                    self.elide_index_list.push(pair.clone());
+                }
+                for pair in &byte_elide_pairs {
                     self.elide_index_list.push(pair.clone());
                 }
                 let (sequence_plan_count, sequence_setup) =

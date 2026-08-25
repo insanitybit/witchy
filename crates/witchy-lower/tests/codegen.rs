@@ -4602,6 +4602,77 @@ fn main() -> Int:
         assert!(deoptimized_trap.contains("app.read_past"), "deoptimized near miss traps: {deoptimized_trap}");
     }
 
+    #[test]
+    fn byte_while_length_snapshot_elides_only_stable_cursor_bounds() {
+        let positive = r#"
+import bytes
+
+fn scan(input: Bytes) -> Int:
+    let n = bytes.length(input)
+    var i = 0
+    var total = 0
+    while i < n:
+        total = total + bytes.at(input, i)
+        i = i + 1
+    total
+
+fn main() -> Int:
+    scan(bytes.from_string("ABC"))
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let module = link_bytes_app(positive);
+        assert_eq!(run_int_module(&module), 198, "the byte cursor result is unchanged");
+
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower byte while fixture"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let scan = wat.split("(func $app.scan").nth(1).expect("scan WAT");
+        let scan = scan.split("(func $").next().expect("scan body");
+        assert!(scan.contains("i32.load8_u"), "the direct byte read remains present:\n{scan}");
+        assert!(
+            !scan.contains("call $__witchy_abort"),
+            "the stable byte-length snapshot removes only its redundant bounds abort:\n{scan}",
+        );
+
+        let off = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        witchy_syntax::opt::set_for_tests(Some(off));
+        let deopt_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower byte while deopt fixture"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let deopt_scan = deopt_wat.split("(func $app.scan").nth(1).expect("deopt scan WAT");
+        let deopt_scan = deopt_scan.split("(func $").next().expect("deopt scan body");
+        assert!(
+            deopt_scan.contains("call $__witchy_abort"),
+            "the deoptimized byte cursor retains its exact bounds abort:\n{deopt_scan}",
+        );
+
+        let near_miss = r#"
+import bytes
+
+fn scan(input: Bytes, n: Int) -> Int:
+    var i = 0
+    var total = 0
+    while i < n:
+        total = total + bytes.at(input, i)
+        i = i + 1
+    total
+
+fn main() -> Int:
+    scan(bytes.from_string("A"), 2)
+"#;
+        let near_miss = link_bytes_app(near_miss);
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let optimized_trap = compiled_module_trap(&near_miss);
+        witchy_syntax::opt::set_for_tests(Some(off));
+        let deoptimized_trap = compiled_module_trap(&near_miss);
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(optimized_trap.contains("app.scan"), "optimized near miss traps: {optimized_trap}");
+        assert!(deoptimized_trap.contains("app.scan"), "deoptimized near miss traps: {deoptimized_trap}");
+    }
+
     fn optimizer_policy_payloads(source: &str) -> Vec<Vec<u8>> {
         let module = parse_module(source).expect("parse optimizer-policy fixture");
         let bytes = compile_module_binary(&module).expect_lowered("lower optimizer-policy fixture");
