@@ -1453,7 +1453,17 @@ impl<'a> Ctx<'a> {
             })
             .cloned()
             .collect();
-        if lanes.iter().any(|lane| !used.contains(&lane.name)) {
+        // The compiler-owned select frame is the whole mutable carry set.
+        // A buffer root (for example a String accumulated by an arm) cannot
+        // be reconstructed from the Int frame after a ready drain or the
+        // final close wake.  Keep those loops on the ordinary segment path
+        // until the frame ABI has an exact root lane, rather than silently
+        // retaining a stale outer binding.
+        if cont.scope.iter().any(|local| {
+            local.mutable
+                && used.contains(&local.name)
+                && !lanes.iter().any(|lane| lane.name == local.name)
+        }) {
             return Ok(None);
         }
 
@@ -3074,6 +3084,23 @@ mod tests {
         );
         assert!(!rendered.contains("chan.select2_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select2_frame_decode"), "{rendered}");
+    }
+
+    #[test]
+    fn select_loop_with_a_mutable_root_falls_back_until_the_frame_has_a_root_lane() {
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int)):\n    var closed = false\n    var text = \"\"\n    while !closed:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(value) -> text = text + \"${value}\"\n            Second(value) -> text = text + \"${value}\"\n            Closed -> closed = true\n    let _keep = text\n";
+        let module = crate::parser::parse_module(source).expect("parse select root loop");
+        let lowered = lower_module(module).expect("lower select root loop");
+        let rendered = crate::format::module(&lowered, &[]);
+
+        assert!(
+            !rendered.contains("chan.select2_frame_loop"),
+            "a mutable root must not be dropped from the reusable frame: {rendered}"
+        );
+        assert!(
+            rendered.contains("chan.__select2_map"),
+            "fallback must retain the ordinary select path: {rendered}"
+        );
     }
 
     #[test]
