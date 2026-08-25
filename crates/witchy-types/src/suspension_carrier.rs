@@ -299,6 +299,21 @@ pub enum ChannelMessageOperand {
     Dynamic,
 }
 
+/// Where an awaited receive value is delivered after the direct ring probe.
+/// The successor state and its parameter ordinal are stable carrier identity;
+/// the parameter spelling is retained only as a codegen diagnostic. Any
+/// transformation or escape of the continuation value remains a fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelReceiveResult {
+    SuccessorArgument {
+        state: usize,
+        argument: usize,
+        parameter: String,
+    },
+    Discarded,
+    Dynamic,
+}
+
 /// A reusable select loop either resumes a compiler-owned state or completes
 /// the surrounding task after its frame is drained.  Keeping completion in the
 /// typed graph lets a ready emitter avoid inventing a synthetic continuation
@@ -411,6 +426,9 @@ pub struct AwaitChannelOperationPlan {
     /// the endpoint so a direct emitter never has to recover it from erased
     /// `__Msg` storage or re-walk the source expression.
     pub message: Option<ChannelMessageOperand>,
+    /// `None` for send. A receive result is promotable only when its
+    /// continuation passes the parameter straight into one successor slot.
+    pub result: Option<ChannelReceiveResult>,
     pub payload_layout: ChannelPayloadLayout,
     pub ownership: ChannelOwnershipEnvelope,
     pub resume_target: usize,
@@ -1120,6 +1138,11 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
         ScalarTransition::ChannelReceive(operation) if !is_static(&operation.endpoint) => {
             Err("receive")
         }
+        ScalarTransition::ChannelReceive(operation)
+            if matches!(operation.result.as_ref(), None | Some(ChannelReceiveResult::Dynamic)) =>
+        {
+            Err("receive result")
+        }
         ScalarTransition::ChannelReceiveFrameLoop(receive) if !is_static(&receive.channel) => {
             Err("receive")
         }
@@ -1477,7 +1500,8 @@ fn collect_scalar_transitions<'a, 'd>(
         }
         ast::Expr::Call { name, args } if call_family(name, "task.and_then") && args.len() == 2 => {
             let resume = continuation_state(&args[1], state_ids, bindings)?;
-            collect_task_expression(&args[0], Some(resume), state_ids, table, definitions, bindings, transitions)
+            collect_task_expression(&args[0], Some(resume), state_ids, table, definitions, bindings, transitions)?;
+            attach_receive_result(transitions, &args[1], state_ids, bindings)
         }
         ast::Expr::Call { name, .. } if call_family(name, "chan.__select2_map") => {
             collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
@@ -1543,7 +1567,8 @@ fn collect_task_expression<'a, 'd>(
     }
     if call_family(name, "task.and_then") && args.len() == 2 {
         let continuation = continuation_state(&args[1], state_ids, bindings)?;
-        return collect_task_expression(&args[0], Some(continuation), state_ids, table, definitions, bindings, transitions);
+        collect_task_expression(&args[0], Some(continuation), state_ids, table, definitions, bindings, transitions)?;
+        return attach_receive_result(transitions, &args[1], state_ids, bindings);
     }
     if call_family(name, "chan.__select2_map") {
         let resume_target = SelectResume::State(continuation_state(
@@ -1754,9 +1779,62 @@ fn channel_operation_plan(
     AwaitChannelOperationPlan {
         endpoint: channel_endpoint_place(endpoint),
         message: message.map(channel_message_operand),
+        result: matches!(direction, ChannelEndpointDirection::Receive)
+            .then_some(ChannelReceiveResult::Dynamic),
         payload_layout,
         ownership,
         resume_target,
+    }
+}
+
+fn attach_receive_result(
+    transitions: &mut [ScalarTransition],
+    continuation: &ast::Expr,
+    state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
+) -> Result<(), String> {
+    let Some(ScalarTransition::ChannelReceive(operation)) = transitions.last_mut() else {
+        return Ok(());
+    };
+    operation.result = Some(continuation_receive_result(continuation, state_ids, bindings)?);
+    Ok(())
+}
+
+fn continuation_receive_result(
+    continuation: &ast::Expr,
+    state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
+) -> Result<ChannelReceiveResult, String> {
+    let continuation = resolve_binding(continuation, bindings);
+    let ast::Expr::Lambda { params, body, .. } = continuation else {
+        return Ok(ChannelReceiveResult::Dynamic);
+    };
+    let Some(parameter) = params.first().map(|parameter| parameter.name.clone()) else {
+        return Ok(ChannelReceiveResult::Discarded);
+    };
+    let Some((terminal, body_bindings)) = terminal_with_bindings(body, bindings) else {
+        return Ok(ChannelReceiveResult::Dynamic);
+    };
+    let terminal = resolve_binding(terminal, &body_bindings);
+    let ast::Expr::Call { name, args } = terminal else {
+        return Ok(ChannelReceiveResult::Dynamic);
+    };
+    let Some(&state) = state_ids.get(name) else {
+        return Ok(ChannelReceiveResult::Dynamic);
+    };
+    let arguments = args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| matches!(argument, ast::Expr::Var(name) if name == &parameter).then_some(index))
+        .collect::<Vec<_>>();
+    match arguments.as_slice() {
+        [] => Ok(ChannelReceiveResult::Discarded),
+        [argument] => Ok(ChannelReceiveResult::SuccessorArgument {
+            state,
+            argument: *argument,
+            parameter,
+        }),
+        _ => Ok(ChannelReceiveResult::Dynamic),
     }
 }
 
@@ -2406,6 +2484,7 @@ mod tests {
                 vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
                     message: None,
+                    result: Some(ChannelReceiveResult::Discarded),
                     payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                     resume_target: 13,
@@ -2417,6 +2496,7 @@ mod tests {
                 Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
                     message: None,
+                    result: Some(ChannelReceiveResult::Discarded),
                     payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                     resume_target: 13,
@@ -2480,6 +2560,7 @@ mod tests {
         let send = ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("tx".into()),
             message: Some(ChannelMessageOperand::Static("value".into())),
+            result: None,
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 8,
@@ -2782,6 +2863,7 @@ mod tests {
         let dynamic = ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Dynamic,
             message: None,
+            result: Some(ChannelReceiveResult::Discarded),
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 1,
@@ -2791,6 +2873,7 @@ mod tests {
         let computed_send = ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("tx".into()),
             message: Some(ChannelMessageOperand::Dynamic),
+            result: None,
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 1,
@@ -2873,6 +2956,34 @@ mod tests {
             Ok(vec![ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
                 endpoint: ChannelEndpointPlace::Static("tx".into()),
                 message: Some(ChannelMessageOperand::Static("value".into())),
+                result: None,
+                payload_layout: ChannelPayloadLayout::Boxed,
+                ownership: ChannelOwnershipEnvelope::BoxedValue,
+                resume_target: 7,
+            })]),
+        );
+    }
+
+    #[test]
+    fn scalar_receive_transition_maps_a_direct_continuation_argument() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn state() -> Nil:\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.recv__Int(rx), fn(value): resume(value)))\n",
+        )
+        .expect("receive transition fixture parses");
+        let Item::Function(function) = &module.items[0] else {
+            panic!("state function")
+        };
+        let state_ids = HashMap::from_iter([("resume".to_string(), 7)]);
+        assert_eq!(
+            scalar_transitions_for_function(function, &state_ids, &TypeTable::default(), &HashMap::new()),
+            Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
+                endpoint: ChannelEndpointPlace::Static("rx".into()),
+                message: None,
+                result: Some(ChannelReceiveResult::SuccessorArgument {
+                    state: 7,
+                    argument: 0,
+                    parameter: "value".into(),
+                }),
                 payload_layout: ChannelPayloadLayout::Boxed,
                 ownership: ChannelOwnershipEnvelope::BoxedValue,
                 resume_target: 7,
@@ -2931,6 +3042,7 @@ mod tests {
         let send = AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("tx".into()),
             message: Some(ChannelMessageOperand::String("ready".into())),
+            result: None,
             payload_layout: ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
             ownership: ChannelOwnershipEnvelope::BufferRoot,
             resume_target: 4,
@@ -2938,6 +3050,7 @@ mod tests {
         let receive = AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("rx".into()),
             message: None,
+            result: Some(ChannelReceiveResult::Discarded),
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 5,
