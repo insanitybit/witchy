@@ -396,7 +396,7 @@ pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step
 // Compiler-owned three-way frame bridge. The public spelling keeps the
 // receiver ownership surface typed while task owns the fixed endpoint ids and
 // deterministic source-order wake protocol.
-pub fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     match a:
         Receiver(ia) ->
             match b:
