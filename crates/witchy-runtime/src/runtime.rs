@@ -1195,6 +1195,18 @@ impl Vm {
         self.i64_counter("__witchy_scheduler_slot_transitions")
     }
 
+    /// Exact Wasm-GC allocations of compiler-owned scheduler frame entries.
+    /// This intentionally excludes generic allocator traffic and in-place
+    /// scheduler slot retags.
+    pub fn scheduler_frame_allocation_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_frame_allocation_calls")
+    }
+
+    /// The eager-ready-probe subset of compiler-owned frame allocations.
+    pub fn scheduler_ready_frame_allocation_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_ready_frame_allocation_calls")
+    }
+
     /// Executed transitions into one of the scheduler's `Wait*` slot states.
     /// It counts installation events, not an approximation of peak live waits.
     pub fn scheduler_wait_installs(&mut self) -> Option<i64> {

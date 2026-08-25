@@ -43,6 +43,7 @@ COUNTERS=(
     heap_bytes gc_heap_capacity_bytes
     rc_alloc_calls rc_alloc_requested_bytes bump_alloc_calls rc_reuse_calls rc_free_calls
     scheduler_slot_transitions scheduler_wait_installs scheduler_wake_claims
+    scheduler_frame_allocation_calls scheduler_ready_frame_allocation_calls
     scheduler_reusable_wait_installs
     scheduler_frame_live_wait_registrations scheduler_frame_peak_live_wait_registrations
     scheduler_frame_wait_registration_rearms

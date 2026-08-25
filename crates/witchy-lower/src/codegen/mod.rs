@@ -8897,6 +8897,35 @@ impl<'types> Codegen<'types> {
         Some(W::StructNew { struct_id, args: fields })
     }
 
+    /// Attribute only real Wasm-GC `StructNew` operations for the sealed
+    /// compiler-owned scheduler frame entry constructors. Parking later
+    /// retags the same slot with `StructSet`, so it must not be counted as a
+    /// new allocation. Generic `$rc_alloc` traffic cannot prove either fact.
+    fn scheduler_frame_ctor_allocation(
+        &self,
+        name: &str,
+        owner_key: &str,
+        value: witchy_wir::wir::WirExpr,
+    ) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let Some(ready) = task_compiler_owned_frame_entry_ctor(name, owner_key) else {
+            return value;
+        };
+        if !deterministic_sequence_counters_enabled() {
+            return value;
+        }
+        let mut nodes = vec![Self::increment_counter(
+            "__witchy_scheduler_frame_allocation_calls",
+        )];
+        if ready {
+            nodes.push(Self::increment_counter(
+                "__witchy_scheduler_ready_frame_allocation_calls",
+            ));
+        }
+        nodes.push(N::Push(value));
+        W::Seq(nodes)
+    }
+
     fn linear_ctor_value(
         &mut self,
         name: &str,
@@ -11226,6 +11255,26 @@ fn task_frame_wait_slot_ctor(name: &str) -> bool {
             | Some("Wait3FrameLoop")
             | Some("Wait4FrameLoop")
     )
+}
+
+/// Exact sealed `task.Step` constructors that establish a compiler-owned
+/// reusable scheduler frame. The boolean identifies an eager ready-probe
+/// entry; it is not an assertion that the probe will find a ready message.
+fn task_compiler_owned_frame_entry_ctor(name: &str, owner_key: &str) -> Option<bool> {
+    // The fully-qualified, sealed `task.Step` layout (not a source-name
+    // marker) keeps similarly-spelled constructors outside this boundary.
+    if !owner_key.starts_with("N9:task.Step[") {
+        return None;
+    }
+    match name.rsplit('.').next() {
+        Some("PullReadyFrameLoop") | Some("Pull2ReadyFrameLoop") => Some(true),
+        Some("Pull2Frame")
+        | Some("PullFrameLoop")
+        | Some("Pull2FrameLoop")
+        | Some("Pull3FrameLoop")
+        | Some("Pull4FrameLoop") => Some(false),
+        _ => None,
+    }
 }
 
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;

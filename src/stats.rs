@@ -77,6 +77,20 @@ pub struct Stats {
     pub sequence_small_loops_unrolled: i64,
     /// Executed state transitions in the ordinary `task.run` scheduler.
     pub scheduler_slot_transitions: i64,
+    /// Wasm-GC allocations of compiler-owned `task.Step` frame entries.
+    ///
+    /// This counts only the exact `Pull*Frame*` structs created at their
+    /// compiler-owned scheduler boundary. It deliberately excludes generic
+    /// RC traffic, user values, closures, frame-lane lists, and in-place slot
+    /// retags. Wasm-GC does not provide a stable object-byte size, so this is
+    /// a call count rather than a fabricated byte estimate. It also cannot
+    /// prove allocations for a future typed direct-ring emitter, which has no
+    /// current compiler-owned allocation boundary.
+    pub scheduler_frame_allocation_calls: i64,
+    /// Subset of [`Self::scheduler_frame_allocation_calls`] whose entry is an
+    /// eager `Pull*ReadyFrame*` probe. The entry can still park; ready versus
+    /// blocking execution is established by the wait counters separately.
+    pub scheduler_ready_frame_allocation_calls: i64,
     /// Executed transitions into one of the ordinary scheduler's wait states.
     pub scheduler_wait_installs: i64,
     /// A parked scheduler operation resumed after a concrete ready or close
@@ -224,6 +238,10 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         sequence_forwarded_loads: vm.sequence_forwarded_loads().unwrap_or(0),
         sequence_small_loops_unrolled: vm.sequence_small_loops_unrolled().unwrap_or(0),
         scheduler_slot_transitions: vm.scheduler_slot_transitions().unwrap_or(0),
+        scheduler_frame_allocation_calls: vm.scheduler_frame_allocation_calls().unwrap_or(0),
+        scheduler_ready_frame_allocation_calls: vm
+            .scheduler_ready_frame_allocation_calls()
+            .unwrap_or(0),
         scheduler_wait_installs: vm.scheduler_wait_installs().unwrap_or(0),
         scheduler_wake_claims: vm.scheduler_wake_claims().unwrap_or(0),
         scheduler_reusable_wait_installs: vm.scheduler_reusable_wait_installs().unwrap_or(0),
@@ -329,6 +347,8 @@ mod tests {
         assert_eq!(stats.packed_alloc_calls, 0);
         assert_eq!(stats.packed_alloc_bytes, 0);
         assert_eq!(stats.scheduler_slot_transitions, 0);
+        assert_eq!(stats.scheduler_frame_allocation_calls, 0);
+        assert_eq!(stats.scheduler_ready_frame_allocation_calls, 0);
         assert_eq!(stats.scheduler_wait_installs, 0);
         assert_eq!(stats.scheduler_wake_claims, 0);
         assert_eq!(stats.scheduler_reusable_wait_installs, 0);
@@ -441,6 +461,14 @@ mod tests {
             "the reusable frame installs once, then drains its already-ready messages: {first:?}");
         assert_eq!(first.scheduler_wake_claims, 1,
             "only the final completion claims a parked reusable frame: {first:?}");
+        assert_eq!(
+            first.scheduler_frame_allocation_calls, 1,
+            "the ready loop creates one compiler-owned frame entry: {first:?}"
+        );
+        assert_eq!(
+            first.scheduler_ready_frame_allocation_calls, 1,
+            "the one entry is the eager ready-probe constructor: {first:?}"
+        );
         assert_eq!(first, second, "sole-live ready draining must be deterministic");
     }
 
@@ -463,6 +491,14 @@ mod tests {
         assert!(
             first.scheduler_frame_wait_registration_rearms > 0,
             "the close continuation must re-arm the same frame registration: {first:?}"
+        );
+        assert_eq!(
+            first.scheduler_frame_allocation_calls, 1,
+            "blocking, cancellation, and close must retag the original frame instead of allocating another: {first:?}"
+        );
+        assert_eq!(
+            first.scheduler_ready_frame_allocation_calls, 1,
+            "the frame began at the eager probe boundary even though this run parked: {first:?}"
         );
         assert_eq!(first, second, "frame registration counters must be deterministic");
     }

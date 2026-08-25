@@ -197,6 +197,14 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                     s.sequence_small_loops_unrolled
                 );
                 println!("scheduler_slot_transitions {}", s.scheduler_slot_transitions);
+                println!(
+                    "scheduler_frame_allocation_calls {}",
+                    s.scheduler_frame_allocation_calls
+                );
+                println!(
+                    "scheduler_ready_frame_allocation_calls {}",
+                    s.scheduler_ready_frame_allocation_calls
+                );
                 println!("scheduler_wait_installs {}", s.scheduler_wait_installs);
                 println!("scheduler_wake_claims {}", s.scheduler_wake_claims);
                 println!(

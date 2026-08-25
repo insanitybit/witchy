@@ -6047,6 +6047,8 @@ fn assemble_wir_module_with_structs_mode(
                     "__witchy_sequence_forwarded_loads",
                     "__witchy_sequence_small_loops_unrolled",
                     "__witchy_scheduler_slot_transitions",
+                    "__witchy_scheduler_frame_allocation_calls",
+                    "__witchy_scheduler_ready_frame_allocation_calls",
                     "__witchy_scheduler_wait_installs",
                     "__witchy_scheduler_wake_claims",
                     "__witchy_scheduler_reusable_wait_installs",

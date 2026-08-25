@@ -251,3 +251,24 @@
         }
     }
 
+    #[test]
+    fn scheduler_frame_allocation_whitelist_requires_the_sealed_step_layout() {
+        assert_eq!(
+            task_compiler_owned_frame_entry_ctor("PullReadyFrameLoop", "N9:task.Step[N3:Nil[]]"),
+            Some(true)
+        );
+        assert_eq!(
+            task_compiler_owned_frame_entry_ctor("Pull2FrameLoop", "N9:task.Step[N3:Nil[]]"),
+            Some(false)
+        );
+        assert_eq!(
+            task_compiler_owned_frame_entry_ctor("PullReadyFrameLoop", "N5:Other[]"),
+            None,
+            "a source spelling alone must never enter scheduler allocation attribution"
+        );
+        assert_eq!(
+            task_compiler_owned_frame_entry_ctor("WaitFrameLoop", "N9:task.Step[N3:Nil[]]"),
+            None,
+            "in-place parked-frame retags are not allocations"
+        );
+    }

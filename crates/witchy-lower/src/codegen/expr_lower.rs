@@ -2222,7 +2222,11 @@ impl<'types> Codegen<'types> {
                         for (arg, field_ty) in args.iter().zip(&layout.field_types) {
                             lowered.push(self.lower_gc_ctor_arg(arg, field_ty)?);
                         }
-                        return Some(W::StructNew { struct_id, args: lowered });
+                        return Some(self.scheduler_frame_ctor_allocation(
+                            name,
+                            &layout.owner_key,
+                            W::StructNew { struct_id, args: lowered },
+                        ));
                     }
                     let zero = |kind: witchy_wir::wir::Kind| match kind {
                         witchy_wir::wir::Kind::I32 => W::ConstI32(0),
@@ -2247,7 +2251,11 @@ impl<'types> Codegen<'types> {
                         lowered[layout.field_base as usize + i] =
                             self.lower_gc_ctor_arg(arg, &layout.field_types[i])?;
                     }
-                    return Some(W::StructNew { struct_id, args: lowered });
+                    return Some(self.scheduler_frame_ctor_allocation(
+                        name,
+                        &layout.owner_key,
+                        W::StructNew { struct_id, args: lowered },
+                    ));
                 }
                 if name == "Nil" && args.is_empty() {
                     return Some(W::ConstI32(0));
