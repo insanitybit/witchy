@@ -35,10 +35,13 @@ scheduler control.  They must remain separate in all timing reports.
 | Deterministic scheduler transition counters | `be26b292a`, corrected control test `b26aaec6e` | Wasm exports `scheduler_slot_transitions` and `scheduler_wait_installs`; `nominal_packet_channel_uses_the_scheduler_control_path` | Phase-0 attribution can distinguish ordinary scheduler slot transitions and wait installations. It does not yet count ready-path allocation, live registration identity, or wake claims. |
 | Fixed-arity public scheduler selections | `87dff4448` (gate artifact rebaseline `7004a587e`) | `rfc0129_acceptance_row_2_typed_bounded_selected_cancelled_and_joined_channels_agree` exercises deterministic `select3` and `select4` source-order results | Adds typed three- and four-way ordinary scheduler forms. This is a fixed-arity fallback contract, not evidence of a compiler direct-ready select path. |
 | Typed ready-region operation descriptor | `4789cac6f` | `ready_region_operations_keep_state_order_and_typed_channel_facts`; existing ready-region qualification tests | Exposes stable state-ordered open/send/receive/select2 operations to codegen with exact payload and endpoint facts. No codegen consumer or ready-path execution is enabled by this descriptor alone. |
+| Ready-plan consumer seam | `5eaa9ef8c` | `scalar_channel_region_preserves_an_effectful_eager_prologue` | The existing direct scalar graph now receives the complete `ReadyChannelRegionPlan`, including an effect-preserving prologue. Its graph recognition remains narrow and is not general ready send/receive. |
+| Fixed three-way select frame loop | `a94c90e3`, `2bc7ba259`, `f28117ed9`, `c3a20360d` (gate rebaseline `a86f738e7`) | syntax/lowerer frame-bridge checks and `rfc0152_select3_frame_preserves_source_order_and_closed_wake_on_both_backends` | Adds a typed three-way compiler-owned frame bridge, preserves mutable frame semantics, and avoids erased-payload recovery when every arm is a wildcard. This lowers continuation allocation; it does not bypass `task.run` or prove a direct-ready path. |
+| Matrix-capable deterministic stats | `52572918e` | `stats_grants_clock_for_in_program_benchmark_kernels`; CLI `stats benchmarks/chan_scheduler.witchy` | Grants the safe local Clock capability to stats runs so timed channel fixtures can report deterministic counters. This is measurement infrastructure, not a scheduler optimization. |
 
-The empty-frame and fixed-three-way frame-loop compiler increments are queued
-separately and are not recorded as landed evidence until their merge events
-exist.
+The fixed three-way frame-loop increment is recorded above because its merge
+event exists. Empty-frame work remains only an implementation increment until
+it has matching matrix and semantic evidence.
 
 ## Pre-existing program controls
 
@@ -74,6 +77,22 @@ Required counters:
 | wait registrations / wake claims | zero / zero after warmup | at most one live registration / one claim per wake | Phase 0: partial — deterministic `scheduler_wait_installs` counts ordinary `Wait*` installations; live-registration and wake-claim counters remain pending |
 | selected-result materializations | zero for local non-escaping match | zero until an escaping boundary | Phase 0: missing |
 | CPU and p50/p95/p99 | report separately | report separately | Phase 0: harness pending |
+
+## Current measured attribution
+
+The first complete local matrix run after the stats Clock fix is
+`benchmarks/.build/rfc0152-landed-select3-clock-20260825-075850` at merged
+revision `52572918e`. It is an ignored local artifact, therefore it is useful
+attribution but not durable acceptance evidence. It recorded the required
+twelve counterbalanced pairs and three matching counter payloads per mode for
+`chan_throughput`, `chan_scheduler`, and `select_fanin`.
+
+The decisive result is negative: `select_fanin` measured a 1,515,750 ns median
+with `WITCHY_OPT=none` and a 1,655,750 ns median with `WITCHY_OPT=all`.
+The candidate also recorded 12,295 `rc_alloc` calls and 4,097 wait installs,
+versus 8,199 allocations and the same 4,097 wait installs for the control.
+The current frame-loop lowering avoids local `Selected` materialization but
+still re-enters the ordinary scheduler; it is not a ready-path promotion.
 
 ## Matrix and acceptance status
 
