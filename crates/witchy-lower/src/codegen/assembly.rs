@@ -7142,9 +7142,35 @@ mod checked_codegen_boundary_tests {
         let checked = authenticated_checked(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) -> seen = seen + value - value + 1\n            Second3(value) -> seen = seen + value - value + 1\n            Third3(value) -> seen = seen + value - value + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
         );
-        let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble three-way select-loop fixture");
+        let ready = carrier
+            .ready_channel_region_plan()
+            .expect("three-way reusable frame must retain a typed ready-region transition");
+        assert!(ready.operations().iter().any(|operation| match &operation.kind {
+            witchy_types::suspension_carrier::ReadyChannelOperationKind::Select3FrameLoop(plan) => {
+                plan.endpoints.len() == 3
+                    && plan.endpoints.iter().all(|endpoint| matches!(
+                        endpoint,
+                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_)
+                    ))
+                    && matches!(
+                        (&plan.payload_layout, plan.payload_lane, plan.resume_target),
+                        (
+                            witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
+                                witchy_types::suspension_carrier::CarrierLane::I64,
+                            ),
+                            Some(witchy_types::suspension_carrier::CarrierLane::I64),
+                            witchy_types::suspension_carrier::SelectResume::Done,
+                        )
+                    )
+                    && plan.frame.starts_with("__await")
+                    && plan.step.starts_with("__await")
+                    && plan.done.starts_with("__await")
+            }
+            _ => false,
+        }), "the three-way frame loop must retain endpoints, payload lane, and both closures");
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("select3_frame_loop"), "missing three-way frame-loop bridge");
         let fused_segment = wat

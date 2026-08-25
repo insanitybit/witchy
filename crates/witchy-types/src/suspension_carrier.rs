@@ -244,6 +244,23 @@ pub struct AwaitSelect2FrameLoopPlan {
     pub resume_target: SelectResume,
 }
 
+/// Compiler-owned ABI for a reusable three-way select frame loop.
+///
+/// This is deliberately distinct from [`AwaitFixedSelectPlan`]: the latter
+/// describes one awaited selection, while a frame loop must retain the frame
+/// and both closures whose work is observable on every ready value and on the
+/// single terminal close/cancellation wake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitSelect3FrameLoopPlan {
+    pub endpoints: Vec<ChannelEndpointPlace>,
+    pub frame: String,
+    pub step: String,
+    pub done: String,
+    pub payload_layout: ChannelPayloadLayout,
+    pub payload_lane: Option<CarrierLane>,
+    pub resume_target: SelectResume,
+}
+
 /// Exact facts for a fixed-arity select with three or four receivers.
 ///
 /// The endpoint vector is deliberately bounded at construction time. It is not
@@ -289,6 +306,7 @@ pub enum ReadyChannelOperationKind {
     Receive(AwaitChannelOperationPlan),
     Select2(AwaitSelect2Plan),
     Select2FrameLoop(AwaitSelect2FrameLoopPlan),
+    Select3FrameLoop(AwaitSelect3FrameLoopPlan),
     Select3(AwaitFixedSelectPlan),
     Select4(AwaitFixedSelectPlan),
 }
@@ -302,6 +320,7 @@ pub enum ScalarTransition {
     ChannelReceive(AwaitChannelOperationPlan),
     ChannelSelect2(AwaitSelect2Plan),
     ChannelSelect2FrameLoop(AwaitSelect2FrameLoopPlan),
+    ChannelSelect3FrameLoop(AwaitSelect3FrameLoopPlan),
     ChannelSelect3(AwaitFixedSelectPlan),
     ChannelSelect4(AwaitFixedSelectPlan),
     Spawn { child: usize, resume: usize },
@@ -714,6 +733,9 @@ impl ReadyChannelRegionPlan {
                         ScalarTransition::ChannelSelect2FrameLoop(select) => {
                             ReadyChannelOperationKind::Select2FrameLoop(select.clone())
                         }
+                        ScalarTransition::ChannelSelect3FrameLoop(select) => {
+                            ReadyChannelOperationKind::Select3FrameLoop(select.clone())
+                        }
                         ScalarTransition::ChannelSelect3(select) => {
                             ReadyChannelOperationKind::Select3(select.clone())
                         }
@@ -748,6 +770,11 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
         }
         ScalarTransition::ChannelSelect2FrameLoop(select)
             if !is_static(&select.first_channel) || !is_static(&select.second_channel) =>
+        {
+            Err("select")
+        }
+        ScalarTransition::ChannelSelect3FrameLoop(select)
+            if select.endpoints.iter().any(|endpoint| !is_static(endpoint)) =>
         {
             Err("select")
         }
@@ -907,7 +934,10 @@ fn collect_scalar_transitions<'a, 'd>(
         ast::Expr::Call { name, .. } if call_family(name, "chan.__select2_map") => {
             collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
         }
-        ast::Expr::Call { name, .. } if call_family(name, "chan.select2_frame_loop") => {
+        ast::Expr::Call { name, .. }
+            if call_family(name, "chan.select2_frame_loop")
+                || call_family(name, "chan.select3_frame_loop") =>
+        {
             collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
         }
         ast::Expr::Call { name, .. }
@@ -1011,6 +1041,16 @@ fn collect_task_expression<'a, 'd>(
     }
     if call_family(name, "chan.select2_frame_loop") && args.len() == 5 {
         transitions.push(ScalarTransition::ChannelSelect2FrameLoop(select2_frame_loop_plan(
+            table,
+            args,
+            definitions,
+            state_ids,
+            bindings,
+        )?));
+        return Ok(());
+    }
+    if call_family(name, "chan.select3_frame_loop") && args.len() == 6 {
+        transitions.push(ScalarTransition::ChannelSelect3FrameLoop(select3_frame_loop_plan(
             table,
             args,
             definitions,
@@ -1179,6 +1219,32 @@ fn select2_frame_loop_plan(
         payload_lane: select_payload_lane(table, args.first(), args.get(1)),
         resume_target: select_loop_resume(
             args.get(4).expect("five-argument frame loop has completion closure"),
+            state_ids,
+            bindings,
+        )?,
+    })
+}
+
+fn select3_frame_loop_plan(
+    table: &TypeTable,
+    args: &[ast::Expr],
+    definitions: &HashMap<String, &TypeDef>,
+    state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
+) -> Result<AwaitSelect3FrameLoopPlan, String> {
+    let frame = compiler_generated_place(args.get(3), "select frame", bindings, false)?;
+    let step = compiler_generated_place(args.get(4), "select step closure", bindings, true)?;
+    let done = compiler_generated_place(args.get(5), "select completion closure", bindings, true)?;
+    let endpoint_types = args.iter().take(3).map(|endpoint| table.type_of(endpoint)).collect::<Vec<_>>();
+    Ok(AwaitSelect3FrameLoopPlan {
+        endpoints: args.iter().take(3).map(|endpoint| channel_endpoint_place(Some(endpoint))).collect(),
+        frame,
+        step,
+        done: done.clone(),
+        payload_layout: fixed_select_payload_layout(&endpoint_types, definitions),
+        payload_lane: fixed_select_payload_lane(&endpoint_types),
+        resume_target: select_loop_resume(
+            args.get(5).expect("six-argument frame loop has completion closure"),
             state_ids,
             bindings,
         )?,
