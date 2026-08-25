@@ -1401,6 +1401,7 @@ impl<'a> Ctx<'a> {
         let arity = match name.as_str() {
             "chan.select" => 2,
             "chan.select3" => 3,
+            "chan.select4" => 4,
             _ => return Ok(None),
         };
         if args.len() != arity || body.stmts.len() < 2 {
@@ -1508,6 +1509,10 @@ impl<'a> Ctx<'a> {
         let direct_result_arms = match arity {
             2 => rewrite_local_select_matches(tail_body, &selected, &tag, &option, &payload),
             3 => rewrite_local_select3_matches(tail_body, &selected, &tag, &option, &payload),
+            // The frame itself is still allocation-bounded for select4.  Its
+            // nominal Selected4 materialization remains the explicit escape
+            // boundary until the four-way typed payload-lane ABI lands.
+            4 => None,
             _ => unreachable!("fixed arity was validated above"),
         };
         let direct_result_used = direct_result_arms.is_some();
@@ -1515,7 +1520,12 @@ impl<'a> Ctx<'a> {
             step_stmts.extend(rewritten);
         } else {
             let selected_expr = call(
-                if arity == 2 { "chan.select2_frame_decode" } else { "chan.select3_frame_decode" },
+                match arity {
+                    2 => "chan.select2_frame_decode",
+                    3 => "chan.select3_frame_decode",
+                    4 => "chan.select4_frame_decode",
+                    _ => unreachable!("fixed arity was validated above"),
+                },
                 vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
             );
             step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
@@ -1533,10 +1543,11 @@ impl<'a> Ctx<'a> {
                 ],
             }
         } else {
-            let (closed_ctor, ready_ctors) = if arity == 2 {
-                ("Closed", ["First", "Second", ""])
-            } else {
-                ("Closed3", ["First3", "Second3", "Third3"])
+            let (closed_ctor, ready_ctors): (&str, Vec<&str>) = match arity {
+                2 => ("Closed", vec!["First", "Second"]),
+                3 => ("Closed3", vec!["First3", "Second3", "Third3"]),
+                4 => ("Closed4", vec!["First4", "Second4", "Third4", "Fourth4"]),
+                _ => unreachable!("fixed arity was validated above"),
             };
             let mut arms = vec![MatchArm {
                 line: 0,
@@ -1544,7 +1555,7 @@ impl<'a> Ctx<'a> {
                 guard: None,
                 body: Expr::Bool(true),
             }];
-            for ctor in ready_ctors.into_iter().filter(|ctor| !ctor.is_empty()) {
+            for ctor in ready_ctors {
                 arms.push(MatchArm {
                     line: 0,
                     pattern: Pattern::Ctor { name: ctor.into(), args: vec![Pattern::Wildcard] },
@@ -1604,7 +1615,12 @@ impl<'a> Ctx<'a> {
         let mut frame_args = args.clone();
         frame_args.extend([Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)]);
         setup.push(Stmt::Expr(call(
-            if arity == 2 { "chan.select2_frame_loop" } else { "chan.select3_frame_loop" },
+            match arity {
+                2 => "chan.select2_frame_loop",
+                3 => "chan.select3_frame_loop",
+                4 => "chan.select4_frame_loop",
+                _ => unreachable!("fixed arity was validated above"),
+            },
             frame_args,
         )));
         Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
@@ -3300,6 +3316,16 @@ mod tests {
         assert!(!rendered.contains("chan.select2_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select3_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select3_frame_decode"), "{rendered}");
+    }
+
+    #[test]
+    fn select4_loop_uses_the_fixed_arity_frame_bridge() {
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int), c: Receiver(Int), d: Receiver(Int)):\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select4(a, b, c, d).await\n        match selected:\n            First4(_) -> seen = seen + 1\n            Second4(_) -> seen = seen + 1\n            Third4(_) -> seen = seen + 1\n            Fourth4(_) -> seen = seen + 1\n            Closed4 -> seen = 4\n";
+        let module = crate::parser::parse_module(source).expect("parse select4 loop");
+        let lowered = lower_module(module).expect("lower select4 loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(rendered.contains("chan.select4_frame_loop"), "{rendered}");
+        assert!(rendered.contains("chan.select4_frame_decode"), "{rendered}");
     }
 
     #[test]

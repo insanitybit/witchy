@@ -410,6 +410,16 @@ pub fn recv_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(Option(__Msg)
     match rx:
         Receiver(id) -> task.channel_recv_frame_loop(id, frame, step, done_fn)
 
+pub fn select4_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) ->
+                    match c:
+                        Receiver(ic) ->
+                            match d:
+                                Receiver(id) -> task.channel_select4_frame_loop(ia, ib, ic, id, frame, step, done_fn)
+
 pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n):
     match a:
         Receiver(ia) ->
@@ -506,6 +516,21 @@ pub fn select3_frame_decode(tag: Int, o: Option(__Msg)) -> Selected3(m):
             else:
                 Third3(__unerase(msg))
         None -> Closed3
+
+// Four-way frame counterpart.  This remains the ordinary nominal-result path;
+// a later typed-lane extension may bypass it only for a proven local match.
+pub fn select4_frame_decode(tag: Int, o: Option(__Msg)) -> Selected4(m):
+    match o:
+        Some(msg) ->
+            if tag == 0:
+                First4(__unerase(msg))
+            else if tag == 1:
+                Second4(__unerase(msg))
+            else if tag == 2:
+                Third4(__unerase(msg))
+            else:
+                Fourth4(__unerase(msg))
+        None -> Closed4
 
 // Compiler-owned scalar frame support. A locally consumed select result can
 // dispatch on the scheduler tag and this typed payload option directly, rather
