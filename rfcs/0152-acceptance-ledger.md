@@ -32,9 +32,13 @@ scheduler control.  They must remain separate in all timing reports.
 | Increment | Merged commit | Evidence | Acceptance impact |
 |---|---|---|---|
 | Typed endpoint ABI | `92b89e1dc` | `typed_channel_plans_preserve_endpoint_direction_and_buffer_root_identity`; `awaited_select_uses_the_fused_typed_bridge_in_wir` | Retains endpoint direction, Int scalar lanes, String/Bytes buffer roots, packed record lanes, and ownership envelopes through the carrier-to-lowerer seam. No ready path is enabled by this increment. |
+| Deterministic scheduler transition counters | `be26b292a`, corrected control test `b26aaec6e` | Wasm exports `scheduler_slot_transitions` and `scheduler_wait_installs`; `nominal_packet_channel_uses_the_scheduler_control_path` | Phase-0 attribution can distinguish ordinary scheduler slot transitions and wait installations. It does not yet count ready-path allocation, live registration identity, or wake claims. |
+| Fixed-arity public scheduler selections | `87dff4448` (gate artifact rebaseline `7004a587e`) | `rfc0129_acceptance_row_2_typed_bounded_selected_cancelled_and_joined_channels_agree` exercises deterministic `select3` and `select4` source-order results | Adds typed three- and four-way ordinary scheduler forms. This is a fixed-arity fallback contract, not evidence of a compiler direct-ready select path. |
+| Typed ready-region operation descriptor | `4789cac6f` | `ready_region_operations_keep_state_order_and_typed_channel_facts`; existing ready-region qualification tests | Exposes stable state-ordered open/send/receive/select2 operations to codegen with exact payload and endpoint facts. No codegen consumer or ready-path execution is enabled by this descriptor alone. |
 
-The async-region identity increment is queued separately at the time of this
-entry and is not recorded as landed evidence until its merge event exists.
+The empty-frame and fixed-three-way frame-loop compiler increments are queued
+separately and are not recorded as landed evidence until their merge events
+exist.
 
 ## Pre-existing program controls
 
