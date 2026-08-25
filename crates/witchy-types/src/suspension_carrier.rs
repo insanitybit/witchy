@@ -194,6 +194,18 @@ pub enum ChannelEndpointPlace {
     Dynamic,
 }
 
+/// A reusable select loop either resumes a compiler-owned state or completes
+/// the surrounding task after its frame is drained.  Keeping completion in the
+/// typed graph lets a ready emitter avoid inventing a synthetic continuation
+/// state solely for a terminal loop. The original WIR frame, step closure, and
+/// completion-prefix effects remain authoritative; `Done` is not permission to
+/// skip them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectResume {
+    State(usize),
+    Done,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitSelect2Plan {
     /// Receiver arms in source order.  Ready-path lowering may promote only
@@ -208,7 +220,7 @@ pub struct AwaitSelect2Plan {
     /// deliberately keeps the ordinary erased-message path; it is never an
     /// invitation to infer a representation from the runtime `__Msg` slot.
     pub payload_lane: Option<CarrierLane>,
-    pub resume_target: usize,
+    pub resume_target: SelectResume,
     pub result_use: SelectResultUse,
 }
 
@@ -738,14 +750,58 @@ fn scalar_transitions_for_function(
     table: &TypeTable,
     definitions: &HashMap<String, &TypeDef>,
 ) -> Result<Vec<ScalarTransition>, String> {
-    let terminal = terminal_block_expr(&function.body)
-        .ok_or_else(|| "state body has no terminal expression".to_string())?;
     let mut transitions = Vec::new();
-    collect_scalar_transitions(terminal, state_ids, table, definitions, &mut transitions)?;
+    let bindings = HashMap::new();
+    collect_scalar_transitions_in_block(
+        &function.body,
+        state_ids,
+        table,
+        definitions,
+        &bindings,
+        &mut transitions,
+    )?;
     if transitions.is_empty() {
         return Err("state body has no terminal transition".into());
     }
     Ok(transitions)
+}
+
+/// Follow the reserved compiler closure bindings in a generated state. The
+/// async lowerer intentionally builds a reusable select frame as a block of
+/// `let __await... = fn` bindings followed by one task expression, so looking
+/// only at that expression loses the frame's `done` continuation. This is not
+/// a source-level name resolver: source identifiers cannot use the reserved
+/// `__await` prefix, and aliases deliberately retain scheduler fallback.
+fn collect_scalar_transitions_in_block<'a, 'd>(
+    block: &'a ast::Block,
+    state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
+    definitions: &HashMap<String, &'d TypeDef>,
+    inherited: &HashMap<String, &'a ast::Expr>,
+    transitions: &mut Vec<ScalarTransition>,
+) -> Result<(), String> {
+    let mut bindings = inherited.clone();
+    for statement in &block.stmts {
+        if let ast::Stmt::Let {
+            name,
+            value: value @ ast::Expr::Lambda { .. },
+            ..
+        } = statement
+            && is_generated_closure_binding(name)
+        {
+            bindings.insert(name.clone(), value);
+        }
+    }
+    let terminal = terminal_block_expr(block)
+        .ok_or_else(|| "state body has no terminal expression".to_string())?;
+    collect_scalar_transitions(
+        terminal,
+        state_ids,
+        table,
+        definitions,
+        &bindings,
+        transitions,
+    )
 }
 
 fn terminal_block_expr(block: &ast::Block) -> Option<&ast::Expr> {
@@ -757,39 +813,36 @@ fn terminal_block_expr(block: &ast::Block) -> Option<&ast::Expr> {
     }
 }
 
-fn collect_scalar_transitions(
-    expression: &ast::Expr,
+fn collect_scalar_transitions<'a, 'd>(
+    expression: &'a ast::Expr,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
-    definitions: &HashMap<String, &TypeDef>,
+    definitions: &HashMap<String, &'d TypeDef>,
+    bindings: &HashMap<String, &'a ast::Expr>,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
     match expression {
-        ast::Expr::Block(block) => {
-            let terminal = terminal_block_expr(block)
-                .ok_or_else(|| "terminal block has no value expression".to_string())?;
-            collect_scalar_transitions(terminal, state_ids, table, definitions, transitions)
-        }
+        ast::Expr::Block(block) => collect_scalar_transitions_in_block(
+            block, state_ids, table, definitions, bindings, transitions,
+        ),
         ast::Expr::If {
             then_block,
             else_block: Some(else_block),
             ..
         } => {
-            let then_terminal = terminal_block_expr(then_block).ok_or_else(|| {
-                "suspension-state `if` then-branch has no terminal value".to_string()
-            })?;
-            let else_terminal = terminal_block_expr(else_block).ok_or_else(|| {
-                "suspension-state `if` else-branch has no terminal value".to_string()
-            })?;
-            collect_scalar_transitions(then_terminal, state_ids, table, definitions, transitions)?;
-            collect_scalar_transitions(else_terminal, state_ids, table, definitions, transitions)
+            collect_scalar_transitions_in_block(
+                then_block, state_ids, table, definitions, bindings, transitions,
+            )?;
+            collect_scalar_transitions_in_block(
+                else_block, state_ids, table, definitions, bindings, transitions,
+            )
         }
         ast::Expr::If {
             else_block: None, ..
         } => Err("suspension-state `if` is missing an else transition".into()),
         ast::Expr::Match { arms, .. } if !arms.is_empty() => {
             for arm in arms {
-                collect_scalar_transitions(&arm.body, state_ids, table, definitions, transitions)?;
+                collect_scalar_transitions(&arm.body, state_ids, table, definitions, bindings, transitions)?;
             }
             Ok(())
         }
@@ -809,22 +862,23 @@ fn collect_scalar_transitions(
             Ok(())
         }
         ast::Expr::Call { name, args } if call_family(name, "task.run") && args.len() == 1 => {
-            collect_task_expression(&args[0], None, state_ids, table, definitions, transitions)
+            collect_task_expression(&args[0], None, state_ids, table, definitions, bindings, transitions)
         }
         ast::Expr::Call { name, args } if call_family(name, "task.lazy") && args.len() == 1 => {
             let ast::Expr::Lambda { body, .. } = &args[0] else {
                 return Err("`task.lazy` state entry does not contain a lambda body".into());
             };
-            let terminal = terminal_block_expr(body)
-                .ok_or_else(|| "`task.lazy` lambda has no terminal task".to_string())?;
-            collect_scalar_transitions(terminal, state_ids, table, definitions, transitions)
+            collect_scalar_transitions_in_block(body, state_ids, table, definitions, bindings, transitions)
         }
         ast::Expr::Call { name, args } if call_family(name, "task.and_then") && args.len() == 2 => {
-            let resume = continuation_state(&args[1], state_ids)?;
-            collect_task_expression(&args[0], Some(resume), state_ids, table, definitions, transitions)
+            let resume = continuation_state(&args[1], state_ids, bindings)?;
+            collect_task_expression(&args[0], Some(resume), state_ids, table, definitions, bindings, transitions)
         }
         ast::Expr::Call { name, .. } if call_family(name, "chan.__select2_map") => {
-            collect_task_expression(expression, None, state_ids, table, definitions, transitions)
+            collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
+        }
+        ast::Expr::Call { name, .. } if call_family(name, "chan.select2_frame_loop") => {
+            collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
         }
         ast::Expr::Call { name, .. }
             if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
@@ -837,12 +891,13 @@ fn collect_scalar_transitions(
     }
 }
 
-fn collect_task_expression(
-    task: &ast::Expr,
+fn collect_task_expression<'a, 'd>(
+    task: &'a ast::Expr,
     resume: Option<usize>,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
-    definitions: &HashMap<String, &TypeDef>,
+    definitions: &HashMap<String, &'d TypeDef>,
+    bindings: &HashMap<String, &'a ast::Expr>,
     transitions: &mut Vec<ScalarTransition>,
 ) -> Result<(), String> {
     // An async entry block may execute a direct effectful prologue before it
@@ -851,9 +906,9 @@ fn collect_task_expression(
     // proved closed region. Do not require the prologue itself to be pure:
     // its once-only source-order execution is observable.
     if let ast::Expr::Block(block) = task {
-        let terminal = terminal_block_expr(block)
-            .ok_or_else(|| "awaited task block has no terminal task".to_string())?;
-        return collect_task_expression(terminal, resume, state_ids, table, definitions, transitions);
+        return collect_task_block(
+            block, resume, state_ids, table, definitions, bindings, transitions,
+        );
     }
     let ast::Expr::Call { name, args } = task else {
         return Err(format!("unsupported awaited task expression `{task:?}`"));
@@ -870,19 +925,20 @@ fn collect_task_expression(
         let ast::Expr::Lambda { body, .. } = &args[0] else {
             return Err("awaited `task.lazy` does not contain a lambda".into());
         };
-        let terminal = terminal_block_expr(body)
-            .ok_or_else(|| "awaited `task.lazy` lambda has no terminal task".to_string())?;
-        return collect_task_expression(terminal, resume, state_ids, table, definitions, transitions);
+        return collect_task_block(
+            body, resume, state_ids, table, definitions, bindings, transitions,
+        );
     }
     if call_family(name, "task.and_then") && args.len() == 2 {
-        let continuation = continuation_state(&args[1], state_ids)?;
-        return collect_task_expression(&args[0], Some(continuation), state_ids, table, definitions, transitions);
+        let continuation = continuation_state(&args[1], state_ids, bindings)?;
+        return collect_task_expression(&args[0], Some(continuation), state_ids, table, definitions, bindings, transitions);
     }
     if call_family(name, "chan.__select2_map") {
-        let resume_target = continuation_state(
+        let resume_target = SelectResume::State(continuation_state(
             args.last().ok_or_else(|| "fused select has no continuation".to_string())?,
             state_ids,
-        )?;
+            bindings,
+        )?);
         transitions.push(ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
             first_channel: channel_endpoint_place(args.first()),
             second_channel: channel_endpoint_place(args.get(1)),
@@ -897,6 +953,7 @@ fn collect_task_expression(
         let resume_target = continuation_state(
             args.last().ok_or_else(|| "fused select has no continuation".to_string())?,
             state_ids,
+            bindings,
         )?;
         transitions.push(ScalarTransition::ChannelSelect3(fixed_select_plan(
             table,
@@ -911,6 +968,7 @@ fn collect_task_expression(
         let resume_target = continuation_state(
             args.last().ok_or_else(|| "fused select has no continuation".to_string())?,
             state_ids,
+            bindings,
         )?;
         transitions.push(ScalarTransition::ChannelSelect4(fixed_select_plan(
             table,
@@ -919,6 +977,18 @@ fn collect_task_expression(
             definitions,
             resume_target,
         )));
+        return Ok(());
+    }
+    if call_family(name, "chan.select2_frame_loop") && args.len() == 5 {
+        let resume_target = select_loop_resume(&args[4], state_ids, bindings)?;
+        transitions.push(ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
+            first_channel: channel_endpoint_place(args.first()),
+            second_channel: channel_endpoint_place(args.get(1)),
+            payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
+            payload_lane: select_payload_lane(table, args.first(), args.get(1)),
+            resume_target,
+            result_use: SelectResultUse::ImmediateMatch,
+        }));
         return Ok(());
     }
     let resume =
@@ -949,7 +1019,7 @@ fn collect_task_expression(
             second_channel,
             payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
             payload_lane: select_payload_lane(table, args.first(), args.get(1)),
-            resume_target: resume,
+            resume_target: SelectResume::State(resume),
             result_use: SelectResultUse::ImmediateMatch,
         })
     } else if call_family(name, "task.__channel_select3") {
@@ -987,6 +1057,40 @@ fn collect_task_expression(
     Ok(())
 }
 
+fn collect_task_block<'a, 'd>(
+    block: &'a ast::Block,
+    resume: Option<usize>,
+    state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
+    definitions: &HashMap<String, &'d TypeDef>,
+    inherited: &HashMap<String, &'a ast::Expr>,
+    transitions: &mut Vec<ScalarTransition>,
+) -> Result<(), String> {
+    let mut bindings = inherited.clone();
+    for statement in &block.stmts {
+        if let ast::Stmt::Let {
+            name,
+            value: value @ ast::Expr::Lambda { .. },
+            ..
+        } = statement
+            && is_generated_closure_binding(name)
+        {
+            bindings.insert(name.clone(), value);
+        }
+    }
+    let terminal = terminal_block_expr(block)
+        .ok_or_else(|| "awaited task block has no terminal task".to_string())?;
+    collect_task_expression(
+        terminal,
+        resume,
+        state_ids,
+        table,
+        definitions,
+        &bindings,
+        transitions,
+    )
+}
+
 fn channel_endpoint_place(endpoint: Option<&ast::Expr>) -> ChannelEndpointPlace {
     match endpoint {
         Some(ast::Expr::Var(name)) => ChannelEndpointPlace::Static(name.clone()),
@@ -1017,14 +1121,77 @@ fn channel_operation_plan(
 fn continuation_state(
     continuation: &ast::Expr,
     state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
 ) -> Result<usize, String> {
+    let continuation = resolve_binding(continuation, bindings);
     let ast::Expr::Lambda { body, .. } = continuation else {
         return Err("`task.and_then` continuation is not a lambda".into());
     };
-    let terminal = terminal_block_expr(body)
+    let (terminal, body_bindings) = terminal_with_bindings(body, bindings)
         .ok_or_else(|| "continuation lambda has no terminal state call".to_string())?;
-    task_entry_state(terminal, state_ids)
+    task_entry_state(resolve_binding(terminal, &body_bindings), state_ids)
         .ok_or_else(|| format!("continuation does not tail-call a compiler state: `{terminal:?}`"))
+}
+
+fn select_loop_resume(
+    done: &ast::Expr,
+    state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
+) -> Result<SelectResume, String> {
+    let done = resolve_binding(done, bindings);
+    let ast::Expr::Lambda { body, .. } = done else {
+        return Err("select frame completion is not a locally-bound lambda".into());
+    };
+    let (terminal, body_bindings) = terminal_with_bindings(body, bindings)
+        .ok_or_else(|| "select frame completion has no terminal task".to_string())?;
+    let terminal = resolve_binding(terminal, &body_bindings);
+    if let Some(target) = task_entry_state(terminal, state_ids) {
+        return Ok(SelectResume::State(target));
+    }
+    match terminal {
+        ast::Expr::Call { name, .. }
+            if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
+        {
+            Ok(SelectResume::Done)
+        }
+        ast::Expr::Tuple(items) if items.is_empty() => Ok(SelectResume::Done),
+        ast::Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => Ok(SelectResume::Done),
+        _ => Err(format!("select frame completion does not finish or tail-call a state: `{terminal:?}`")),
+    }
+}
+
+fn terminal_with_bindings<'a>(
+    block: &'a ast::Block,
+    inherited: &HashMap<String, &'a ast::Expr>,
+) -> Option<(&'a ast::Expr, HashMap<String, &'a ast::Expr>)> {
+    let mut bindings = inherited.clone();
+    for statement in &block.stmts {
+        if let ast::Stmt::Let {
+            name,
+            value: value @ ast::Expr::Lambda { .. },
+            ..
+        } = statement
+            && is_generated_closure_binding(name)
+        {
+            bindings.insert(name.clone(), value);
+        }
+    }
+    let terminal = terminal_block_expr(block)?;
+    if let ast::Expr::Block(nested) = terminal {
+        return terminal_with_bindings(nested, &bindings);
+    }
+    Some((terminal, bindings))
+}
+
+fn resolve_binding<'a>(expression: &'a ast::Expr, bindings: &HashMap<String, &'a ast::Expr>) -> &'a ast::Expr {
+    match expression {
+        ast::Expr::Var(name) => bindings.get(name).copied().unwrap_or(expression),
+        _ => expression,
+    }
+}
+
+fn is_generated_closure_binding(name: &str) -> bool {
+    name.starts_with("__await")
 }
 
 fn task_entry_state(expression: &ast::Expr, state_ids: &HashMap<String, usize>) -> Option<usize> {

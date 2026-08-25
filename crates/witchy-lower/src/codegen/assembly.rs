@@ -7080,9 +7080,26 @@ mod checked_codegen_boundary_tests {
     #[test]
     fn proven_select_loop_emits_reusable_frame_loop_bridge() {
         let checked = authenticated_checked(include_str!("../../../../benchmarks/select_fanin.witchy"));
-        let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble select-loop fixture");
+        let ready = carrier
+            .ready_channel_region_plan()
+            .expect("a reusable select frame has a typed ready-region transition");
+        assert!(ready.operations().iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                witchy_types::suspension_carrier::ReadyChannelOperationKind::Select2(plan)
+                    if matches!(
+                        (&plan.first_channel, &plan.second_channel, plan.resume_target),
+                        (
+                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                            witchy_types::suspension_carrier::SelectResume::Done,
+                        )
+                    )
+            )
+        }), "the locally-bound completion lambda must become a terminal select transition");
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("select2_frame_loop"), "missing compiler-owned frame-loop bridge");
         assert!(!wat.contains("select2_frame_loop_state"), "stateful ABI must reuse Pull2FrameLoop");
