@@ -11084,6 +11084,8 @@ fn task_wait_slot_ctor(name: &str) -> bool {
             | Some("WaitRecv")
             | Some("WaitSend")
             | Some("Wait2")
+            | Some("Wait3")
+            | Some("Wait4")
             | Some("Wait2Frame")
             | Some("Wait2FrameLoop")
             | Some("WaitAny")

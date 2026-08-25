@@ -323,6 +323,24 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_wait_counter_includes_blocking_fixed_three_way_selects() {
+        // This stays on the ordinary scheduler because String is a buffer-root
+        // payload. The producer yields before sending so main must first park
+        // its fixed three-way select as `Wait3`; this pins the counter to the
+        // installed scheduler representation rather than an inferred select
+        // operation count.
+        const SOURCE: &str = "from chan import Sender\n\nasync fn producer(tx: Sender(String)):\n    chan.yield_now().await\n    chan.send(tx, \"ready\").await\n\nasync fn main(console: Console):\n    let (tx, a) = chan.channel(1).await\n    let (_b_tx, b) = chan.channel(1).await\n    let (_c_tx, c) = chan.channel(1).await\n    let worker = chan.spawn(producer(tx)).await\n    let selected = chan.select3(a, b, c).await\n    match selected:\n        First3(value) -> console.print(value)\n        Second3(_value) -> console.print(\"wrong second\")\n        Third3(_value) -> console.print(\"wrong third\")\n        Closed3 -> console.print(\"closed\")\n    chan.join(worker).await\n";
+        let first = compute(SOURCE).expect("run blocking fixed select scheduler fixture");
+        let second = compute(SOURCE).expect("repeat blocking fixed select scheduler fixture");
+        assert_eq!(first.output, ["ready"]);
+        assert!(
+            first.scheduler_wait_installs > 0,
+            "a blocking select3 must install a counted Wait3 slot: {first:?}"
+        );
+        assert_eq!(first, second, "fixed select instrumentation must be deterministic");
+    }
+
+    #[test]
     fn format_arena_is_one_fixed_reservation() {
         const MINIMAL_FORMAT_WORKLOAD_BYTES: i64 = 44;
         const DIRECT: &str = "fn identity(s: String) -> String:\n    s\nfn main(console: Console):\n    console.print(identity(\"\"))\n";
