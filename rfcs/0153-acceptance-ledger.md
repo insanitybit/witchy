@@ -34,13 +34,37 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | 3 canonical induction & sequence integration | merged | induction plan descriptors | Header hoisting; stride and loop cursor calculation | `cargo test -p witchy-lower` | `SequenceAccessPlan` fact integration; unit/strided/paired traversal | `impl/rfc0153-canonical-induction-sequence` | `merged` @ `89dbf33625f00fe10705994f2fb61a4359dad280` (gate 28) |
 | 4 arithmetic transformations & comparison simplification | merged | strength reduction transforms | Arithmetic rewrite counters; mask/shift/quotient-rem sharing | `witchy-wir` strength reduce tests | Power-of-2 remainder/division; zero-test branches; redundant comparisons | `impl/rfc0153-arithmetic-transformations` | `merged` @ `bf202f4a94ffab199921b6917f81e68a411e33a3` (gate 29) |
 | 5 compiler controls & diagnostics | merged | deterministic diagnostic payload | `RangeOptStats`, `LoopRejectionReason`, compiler diagnostics | `witchy-wir` stats tests | Deterministic facts created/widened/joined, checks removed, rejection reasons | `impl/rfc0153-compiler-controls-diagnostics` | `merged` @ `424845a9544545a6901cc0ff0e8a4be7b6856e17` (gate 30) |
-| 6A current-master attribution refresh | merged | fast snapshot at `d03861fd5`; promotion baseline pending | `samply` profile plus optimization counters for each target | Output hashes and focused benchmark correctness | `collatz`, `fannkuch`, `nsieve`, `list_index` | `perf/rfc0153-attribution-refresh` | `merged` @ `b248c60528a20a4331e137b61d162e39e57a539f` |
-| 6B scalar range/arithmetic closure | blocked on 6A | matched pre-change artifact | Range-fact, arithmetic-rewrite, branch, and instruction attribution | `witchy-wir` facts/strength-reduce tests plus `collatz` output | Only targets with an attributed scalar cost, initially `collatz` | `perf/rfc0153-scalar-close` | pending |
-| 6C sequence-plan closure | merged | matched pre-change artifact | Cursor, retained-check, header-load, allocation, and instruction attribution | `witchy-lower` codegen tests plus target outputs | Only targets with an attributed sequence cost: `nsieve`, `fannkuch`, `list_index` | `perf/rfc0153-sequence-close` | `merged` @ `4f3e516f349bc600fc6dd07befd0eee8d8d71130` |
-| 6D generalization and adversarial matrix | ready | merged positive and near-miss unit fixtures are the starting point | Three identical stats payloads; emitted-Wasm checks | Differential outputs and exact trap/effect-order assertions | Six required families and three pre-existing non-benchmark consumers | `test/rfc0153-generalization-matrix` | pending |
+| 6A current-master attribution refresh | merged | full artifact `/tmp/rfc0153-promotion-87ccb7e/results-full.json` at `87ccb7e9c` | three identical counter payloads; macOS `samply` emitted zero samples and is unusable for function attribution | all 21 Witchy/Go output hashes match | `collatz`, `fannkuch`, `nsieve`, `list_index` | `perf/rfc0153-attribution-refresh` | `merged` @ `b248c60528a20a4331e137b61d162e39e57a539f` |
+| 6B scalar range/arithmetic closure | transferred | full 12-pair artifact shows `collatz` 1.666x Go | `all` and `none` emit identical collatz WAT; all sequence counters are zero | focused WIR effect-safety and arithmetic tests | `collatz` transfers to RFC-0146 Track 5 (small-leaf inlining/register SROA) | `perf/rfc0153-scalar-close` | no code change required; transfer evidence recorded below |
+| 6C sequence-plan closure | merged, residual open | full artifact plus `/tmp/rfc0153-bounds-lever-87ccb7e` lever bisection | exact counters: bounds-elide reduces fannkuch 254.2 ms to 165.9 ms and list_index 5.24 ms to 2.69 ms | byte range/while, list cursor, and Brainfuck fallback codegen tests | `fannkuch`, `list_index` remain owned; nsieve residual transfers to RFC-0146 Track 6 | `perf/rfc0153-sequence-close` | `merged` @ `4f3e516f349bc600fc6dd07befd0eee8d8d71130`, `baa611383`, `d94431080` |
+| 6D generalization and adversarial matrix | in progress | merged byte positive/near-miss fixtures are the starting point | three identical byte/list stats payloads; WAT assertions only cover current byte and Brainfuck slices | byte differential outputs/traps and effect-preservation test pass | six required families and Glamour/CBOR consumer evidence remain incomplete | `test/rfc0153-generalization-matrix` | partial checks merged @ `a4562063e`, `87ccb7e9c`; not a completion claim |
 | 6E integration and promotion closeout | blocked on 6A-6D | two warmups and twelve paired interleaved samples | Full stats, code-size, compiler-time, profile, and deoptimization matrix | Focused shards and serialized merge-queue gate | Every retained target <= 1.00x Go; protected rows within 5 percent | `integration/rfc0153-complete` | pending |
 
 ## Preparation checkpoint (2026-08-25)
+
+## Current promotion checkpoint (2026-08-25)
+
+The latest complete promotion artifact is
+`/tmp/rfc0153-promotion-87ccb7e/results-full.json`, produced by the release
+binary `13aab8c029191e4016216c2ab6014b8a0c2b3bd5fb9f126a6547d2bdc41d1878`
+from `87ccb7e9c6c387ce339b3cd7f6b76662ce52c9c7`. It contains all 21 workload
+output checksums, two warmups, and 12 counterbalanced paired kernel samples.
+Every output matches its Go counterpart, but criterion 5 is not yet met:
+
+| Target | Kernel ratio to Go | RFC-0153 ownership decision |
+|---|---:|---|
+| `collatz` | 1.666x | transfer to RFC-0146 Track 5: the all/none WAT is identical and sequence counters are zero |
+| `nsieve` | 1.384x | transfer to RFC-0146 Track 6: residual is packed-boolean layout, not a live bounds-elision path |
+| `fannkuch` | 1.233x | retained: `bounds-elide` causally removes a 35 percent kernel cost |
+| `list_index` | 1.203x | retained: `bounds-elide` causally removes a 49 percent kernel cost |
+
+The matching bisection artifact
+`/tmp/rfc0153-bounds-lever-87ccb7e` compares `release,-bounds-elide` to
+`release` with two warmups and 12 counterbalanced samples. Both workloads have
+identical output hashes. It measures fannkuch medians of 254.2 ms and 165.9 ms,
+and list_index medians of 5.24 ms and 2.69 ms, respectively. This proves the
+two retained rows are materially RFC-0153-owned; it does not establish their
+remaining Go-parity requirement.
 
 The current local fast artifact is
 `benchmarks/.build/results-fast.json`
