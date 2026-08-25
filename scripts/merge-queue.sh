@@ -2483,8 +2483,24 @@ prewarm_gate() {
     elif command -v nice >/dev/null 2>&1; then
         prewarm_runner=(nice -n 10)
     fi
+    # The coordinator is itself detached, so Bash job control is not
+    # sufficient to create a distinct process group for this background job.
+    # Without a real session boundary, `$!` is not its PGID: the queue-arrival
+    # monitor concludes the group is already gone, then blocks in `wait` while
+    # an idle prewarm keeps compiling.  Use the same portable session boundary
+    # as `daemon` so cancellation can target only the prewarm tree.
+    local prewarm_session=(env)
+    if command -v setsid >/dev/null 2>&1; then
+        prewarm_session=(setsid)
+    elif command -v perl >/dev/null 2>&1; then
+        prewarm_session=(perl -MPOSIX -e '
+            defined POSIX::setsid() or die "setsid: $!\\n";
+            exec @ARGV;
+            die "exec: $!\\n";
+        ')
+    fi
     set -m
-    ( exec "${prewarm_runner[@]}" bash -c '
+    ( exec "${prewarm_session[@]}" "${prewarm_runner[@]}" bash -c '
         set -euo pipefail
         gate_wt="$1"
         reset_inactive="$2"
