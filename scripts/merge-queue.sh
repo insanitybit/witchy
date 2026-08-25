@@ -2523,14 +2523,19 @@ prewarm_gate() {
     # an idle prewarm keeps compiling.  Use the same portable session boundary
     # as `daemon` so cancellation can target only the prewarm tree.
     local prewarm_session=(env)
-    if command -v setsid >/dev/null 2>&1; then
-        prewarm_session=(setsid)
-    elif command -v perl >/dev/null 2>&1; then
+    # Prefer the in-process Perl binding: command-line `setsid` variants may
+    # fork before exec, making `$!` name the short-lived launcher rather than
+    # the session/PGID recorded in gate.lock.  Perl replaces this background
+    # child after `POSIX::setsid`, so the recorded PID is the cancellable
+    # session leader on both macOS and Linux.
+    if command -v perl >/dev/null 2>&1; then
         prewarm_session=(perl -MPOSIX -e '
             defined POSIX::setsid() or die "setsid: $!\\n";
             exec @ARGV;
             die "exec: $!\\n";
         ')
+    elif command -v setsid >/dev/null 2>&1; then
+        prewarm_session=(setsid)
     fi
     ( exec "${prewarm_session[@]}" "${prewarm_runner[@]}" bash -c '
         set -euo pipefail
@@ -2562,6 +2567,24 @@ prewarm_gate() {
         [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
     ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" ) &
     local prewarm_pid=$!
+    # `setsid` runs in the new background child, so there is a small window
+    # where `$!` still belongs to the coordinator's process group.  Do not
+    # probe that not-yet-created group: a false negative would skip the queue
+    # monitor and block in `wait` until an idle prewarm finishes.  Wait until
+    # the recorded PID is its own process-group leader before publishing it.
+    local prewarm_group="" prewarm_group_attempt
+    for prewarm_group_attempt in {1..100}; do
+        prewarm_group="$(ps -o pgid= -p "$prewarm_pid" 2>/dev/null | tr -d '[:space:]')"
+        [ "$prewarm_group" = "$prewarm_pid" ] && break
+        pid_is_alive "$prewarm_pid" || break
+        sleep 0.01
+    done
+    if [ "$prewarm_group" != "$prewarm_pid" ]; then
+        note "idle: prewarm session leader $prewarm_pid did not become ready"
+        wait "$prewarm_pid" || true
+        release_lock
+        return 0
+    fi
     active_gate_pgid="$prewarm_pid"
     printf '%s\n' "$prewarm_pid" >"$lock/gate_pgid"
     local cancelled=0
