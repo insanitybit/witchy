@@ -1583,6 +1583,14 @@ impl Codegen<'_> {
                 // identical to the checked path.
                     let existing_elision = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
+                    // RFC-0153 histogram proof: a literal-backed list has an
+                    // exact stable length, and `index & mask` is in `0..=mask`
+                    // for every signed input. Consume that fact only when the
+                    // mask fits both the list and the i32 address calculation.
+                    // Rebindings and length-changing operations erase the
+                    // literal-length fact in block lowering.
+                    let static_mask_elision = matches!(&args[0], Expr::Var(list)
+                        if self.static_masked_list_index_is_in_bounds(list, &args[1]));
                     let proven_address = match &args[0] {
                         Expr::Var(list) => self.sequence_element_address(
                             list,
@@ -1600,7 +1608,7 @@ impl Codegen<'_> {
                         _ => None,
                     };
                     let cursorized = proven_address.is_some() || planned_address.is_some();
-                    let elide = existing_elision || proven_address.is_some();
+                    let elide = existing_elision || static_mask_elision || proven_address.is_some();
                     let checked_planned = !elide && planned_address.is_some();
                     let list_w = self.lower_expr(&args[0])?;
                 // Lower the index ONCE (it may be a side-effecting call), then widen

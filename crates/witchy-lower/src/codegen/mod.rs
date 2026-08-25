@@ -1008,6 +1008,10 @@ struct Codegen<'types> {
     /// byte proof can never install a list layout/cursor plan.
     known_byte_length_vars: HashMap<String, HashSet<String>>,
     known_length_vars: HashMap<String, HashSet<String>>,
+    /// Exact lengths of local list literals. This is deliberately invalidated
+    /// by every unknown rebinding or length-changing mutator; it is only used
+    /// for local range facts such as a masked histogram bucket index.
+    known_static_list_lengths: HashMap<String, i64>,
     /// Lists built by an exact `for i in 0..<bound>: push` prefix. Their
     /// length is `max(bound, 0)`, which is sufficient to prove a later
     /// exclusive `0..<bound` indexed loop without claiming `bound >= 0`.
@@ -1627,6 +1631,32 @@ struct Codegen<'types> {
 }
 
 impl<'types> Codegen<'types> {
+    /// A masked index is bounded independently of the signed source value.
+    /// Consume it only against a still-live fixed-size literal list; this fact
+    /// never authorizes pointer arithmetic for a dynamic root or mask.
+    fn static_masked_list_index_is_in_bounds(&self, list: &str, index: &Expr) -> bool {
+        if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
+            return false;
+        }
+        let Expr::Binary {
+            op: BinOp::BitAnd,
+            rhs,
+            ..
+        } = index
+        else {
+            return false;
+        };
+        let Expr::Int(mask) = rhs.as_ref() else {
+            return false;
+        };
+        *mask >= 0
+            && i32::try_from(*mask).is_ok()
+            && self
+                .known_static_list_lengths
+                .get(list)
+                .is_some_and(|length| *mask < *length)
+    }
+
     fn new(
         checked_module: &'types Module,
         type_table: &'types witchy_types::typeck::TypeTable,
@@ -1653,6 +1683,7 @@ impl<'types> Codegen<'types> {
             known_non_negative_vars: HashSet::new(),
             known_byte_length_vars: HashMap::new(),
             known_length_vars: HashMap::new(),
+            known_static_list_lengths: HashMap::new(),
             range_built_lists: HashMap::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),

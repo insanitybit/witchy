@@ -4526,6 +4526,50 @@ fn main() -> Int:
         );
     }
 
+    #[test]
+    fn masked_static_histogram_index_elides_only_the_range_proven_guard() {
+        // RFC-0153 generalization matrix, Histogram family. A bitwise mask is
+        // a total range proof even for negative source values. The receiver is
+        // a fixed-size local literal and is mutated only by same-length writes,
+        // so `bucket & 3` is always a valid index into its four slots.
+        let positive = r#"
+fn main() -> Int:
+    var bins = [0, 0, 0, 0]
+    let raw = -5
+    bins[raw & 3] = 7
+    bins[raw & 3]
+"#;
+        assert_eq!(run_int(positive), 7, "the masked histogram write preserves its value");
+
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let (on, _, _) = call_shape(positive, default);
+        assert!(
+            !on.contains("list_at"),
+            "a static masked bucket index has no redundant bounds helper: {on:?}",
+        );
+        let off = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        let (deopt, _, _) = call_shape(positive, off);
+        assert!(
+            deopt.contains("list_at"),
+            "-bounds-elide retains the exact histogram bounds helper: {deopt:?}",
+        );
+
+        // A raw dynamic index has no finite range fact. Both modes retain the
+        // trap rather than narrowing a signed value for address arithmetic.
+        let near_miss = r#"
+fn main() -> Int:
+    let bins = [0, 0, 0, 0]
+    let raw = -1
+    bins[raw]
+"#;
+        let (fallback, _, _) = call_shape(near_miss, default);
+        assert!(fallback.contains("list_at"), "raw index keeps its guard: {fallback:?}");
+        let optimized_trap = compiled_trap(near_miss, default);
+        let deoptimized_trap = compiled_trap(near_miss, off);
+        assert!(optimized_trap.contains("list_at"), "optimized fallback traps: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "deoptimized fallback traps: {deoptimized_trap}");
+    }
+
     fn optimized_wir_wat(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(source).expect("parse indexed-kernel fixture");

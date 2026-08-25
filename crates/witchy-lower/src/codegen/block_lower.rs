@@ -177,6 +177,10 @@ impl<'types> Codegen<'types> {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
                 Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
+                    let preserves_static_length = matches!(stmt,
+                        Stmt::Assign { .. }
+                            if matches!(analysis::self_inplace_op(name, value),
+                                Some(analysis::InPlaceOp::SetAt(_, _))));
                     if self.expr_is_known_non_negative(value) {
                         self.known_non_negative_vars.insert(name.clone());
                     } else {
@@ -185,6 +189,20 @@ impl<'types> Codegen<'types> {
                     }
                     self.known_byte_length_vars.remove(name);
                     self.known_length_vars.remove(name);
+                    if !preserves_static_length {
+                        self.known_static_list_lengths.remove(name);
+                    }
+                    match value {
+                        Expr::List(items) => {
+                            self.known_static_list_lengths.insert(name.clone(), items.len() as i64);
+                        }
+                        Expr::Var(source) => {
+                            if let Some(length) = self.known_static_list_lengths.get(source).copied() {
+                                self.known_static_list_lengths.insert(name.clone(), length);
+                            }
+                        }
+                        _ => {}
+                    }
                     if let Expr::Call { name: fname, args } = value {
                         if is_intrinsic_or_public_name(fname, intrinsics::BYTES_LENGTH)
                             && args.len() == 1
@@ -217,6 +235,14 @@ impl<'types> Codegen<'types> {
                         if let Some(lists) = self.known_length_vars.get(src_name).cloned() {
                             self.known_length_vars.entry(name.clone()).or_default().extend(lists);
                         }
+                    }
+                }
+                Stmt::Expr(value) => {
+                    if let Some(root) = analysis::direct_inplace_root(value)
+                        && !matches!(analysis::self_inplace_op(root, value),
+                            Some(analysis::InPlaceOp::SetAt(_, _)))
+                    {
+                        self.known_static_list_lengths.remove(root);
                     }
                 }
                 _ => {}
@@ -1548,6 +1574,7 @@ impl<'types> Codegen<'types> {
                                 // nor a second range branch before the owned-capacity store.
                                 let existing_proof = matches!(iexpr, Expr::Var(index)
                                     if self.elide_index_list.iter().any(|(i, list)| i == index && list == name));
+                                let static_mask_proof = self.static_masked_list_index_is_in_bounds(name, iexpr);
                                 let proven_slot = self.sequence_element_address(
                                     name,
                                     iexpr,
@@ -1560,7 +1587,7 @@ impl<'types> Codegen<'types> {
                                 );
                                 let cursorized_store =
                                     proven_slot.is_some() || planned_slot.is_some();
-                                let proven_index = existing_proof || proven_slot.is_some();
+                                let proven_index = existing_proof || static_mask_proof || proven_slot.is_some();
                                 // A proven cursor store of a scalar local/literal has no
                                 // guard or fallback consumer for its index scratch. Feed
                                 // the scalar directly to the store; retain one scratch
