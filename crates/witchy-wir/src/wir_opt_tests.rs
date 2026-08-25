@@ -1664,3 +1664,76 @@
         assert!(summary.contains("bounds_checks(removed=1, retained=1)"));
     }
 
+    #[test]
+    fn call_site_summary_and_stats_extraction() {
+        use crate::wir_opt::call_summary::{
+            collect_call_site_summaries, CallOptStats, OwnershipEnvelope,
+            RecursionComponent, WirConstant,
+        };
+
+        let func = WirFunc {
+            name: "compute".into(),
+            params: vec![WirLocal { name: "x".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![
+                WirNode::Loop {
+                    label: "loop_0".into(),
+                    body: vec![
+                        WirNode::Push(WirExpr::Call {
+                            func: "compute".into(),
+                            args: vec![WirExpr::ConstI64(42)],
+                        }),
+                    ],
+                },
+                WirNode::CallStoreMulti {
+                    func: "helper".into(),
+                    args: vec![WirExpr::GetLocal("x".into())],
+                    dests: vec!["a".into(), "b".into()],
+                },
+            ],
+            raw_body: None,
+        };
+
+        let summaries = collect_call_site_summaries(&func);
+        assert_eq!(summaries.len(), 2);
+
+        // First call site is self-recursive within loop (loop depth 1 -> frequency hint 11)
+        let s1 = &summaries[0];
+        assert_eq!(s1.exact_target.as_deref(), Some("compute"));
+        assert_eq!(s1.recursion_component, RecursionComponent::SelfRecursive);
+        assert_eq!(s1.known_constants, vec![Some(WirConstant::I64(42))]);
+        assert_eq!(s1.weighted_frequency_hint, 11);
+        assert!(s1.is_exact_and_specializable());
+
+        // Second call site is multi-lane store
+        let s2 = &summaries[1];
+        assert_eq!(s2.exact_target.as_deref(), Some("helper"));
+        assert_eq!(s2.ownership_envelope, OwnershipEnvelope::MultiLane(2));
+        assert_eq!(s2.recursion_component, RecursionComponent::None);
+
+        let mut stats = CallOptStats::new();
+        stats.record_exact_edge();
+        stats.record_devirtualized_edge();
+        stats.record_scalarized_capture();
+        stats.record_adapter_removed();
+        stats.record_clone_created();
+        stats.record_clone_shared();
+        stats.record_inlined_direct_edge();
+        stats.record_expanded_recursive_edge();
+        stats.record_reject_budget();
+        stats.record_reject_effect();
+        stats.record_reject_suspension();
+        stats.record_reject_unknown_envelope();
+
+        let formatted = stats.format_summary();
+        assert!(formatted.contains("CallOptStats:"));
+        assert!(formatted.contains("exact_edges=1"));
+        assert!(formatted.contains("devirt=1"));
+        assert!(formatted.contains("scalar_caps=1"));
+        assert!(formatted.contains("adapters_removed=1"));
+        assert!(formatted.contains("clones(created=1, shared=1)"));
+        assert!(formatted.contains("inlined=1"));
+        assert!(formatted.contains("recursive_expanded=1"));
+    }
+

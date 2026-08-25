@@ -28,6 +28,12 @@ pub use properties::{
     evaluate_expr, evaluate_node, evaluate_seq, AllocationKind, EvaluationProperties, HostEffect,
     MemoryAccess, Suspension,
 };
+pub mod call_summary;
+pub use call_summary::{
+    analyze_call_site_expr, analyze_call_site_node, collect_call_site_summaries, CallOptStats,
+    CallSiteSummary, CallableContract, EscapeState, OwnershipEnvelope, RecursionComponent,
+    WirConstant,
+};
 pub mod range_facts;
 pub use range_facts::{compute_fact, refine_condition, RangeEnv, RangeFactStats};
 pub mod stats;
