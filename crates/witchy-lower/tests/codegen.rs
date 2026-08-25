@@ -4435,6 +4435,81 @@ fn main() -> Int:
     }
 
     #[test]
+    fn paired_cursors_elide_only_a_stable_length_minus_constant_bound() {
+        // RFC-0153 binary-transform shape: `lo` starts non-negative and grows,
+        // `hi` starts at `length(xs) - 1` and shrinks, and the guard `lo < hi`
+        // establishes both cursors are in the list on every entered iteration.
+        // The cursor proof is deliberately narrow: a non-negative literal offset
+        // is the only accepted derived upper bound.
+        let positive = r#"
+fn main() -> Int:
+    var xs = [2, 3, 5, 7, 11]
+    var lo = 0
+    var hi = list.length(xs) - 1
+    while lo < hi:
+        let left = list.at(xs, lo)
+        let right = list.at(xs, hi)
+        xs[lo] = right
+        xs[hi] = left
+        lo = lo + 1
+        hi = hi - 1
+    list.at(xs, 0) * 100 + list.at(xs, 4)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        assert_eq!(run_int_with_opt(positive, default), 1102, "paired transform preserves values");
+
+        let loop_only = r#"
+fn main() -> Int:
+    var xs = [2, 3, 5, 7, 11]
+    var lo = 0
+    var hi = list.length(xs) - 1
+    while lo < hi:
+        let left = list.at(xs, lo)
+        let right = list.at(xs, hi)
+        xs[lo] = right
+        xs[hi] = left
+        lo = lo + 1
+        hi = hi - 1
+    0
+"#;
+        let (on, _, _) = call_shape(loop_only, default);
+        assert!(
+            !on.contains("list_at"),
+            "the stable paired cursors lower to unchecked reads and writes (got {on:?})",
+        );
+        let deopt = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        let (off, _, _) = call_shape(loop_only, deopt);
+        assert!(
+            off.contains("list_at"),
+            "-bounds-elide retains the exact checked list helper (got {off:?})",
+        );
+
+        let near_miss = r#"
+fn main() -> Int:
+    let xs = [2, 3, 5, 7, 11]
+    var lo = 0
+    var hi = list.length(xs) + 1
+    while lo < hi:
+        let value = list.at(xs, hi)
+        lo = lo + 1
+        hi = hi - 1
+    0
+"#;
+        let (fallback, _, _) = call_shape(near_miss, default);
+        assert!(
+            fallback.contains("list_at"),
+            "an upper bound larger than the length retains the checked helper (got {fallback:?})",
+        );
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let optimized_trap = compiled_module_trap(&parse_module(near_miss).expect("parse paired near miss"));
+        witchy_syntax::opt::set_for_tests(Some(deopt));
+        let deoptimized_trap = compiled_module_trap(&parse_module(near_miss).expect("parse paired near miss deopt"));
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(optimized_trap.contains("list_at"), "optimized near miss traps through list_at: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "deoptimized near miss traps through list_at: {deoptimized_trap}");
+    }
+
+    #[test]
     fn elides_bounds_check_before_proven_indexed_list_write() {
         // The same proof that makes `list.at(xs, i)` safe in an eligible `while`
         // loop also makes `list.set_at(xs, i, value)` safe. The store retains its

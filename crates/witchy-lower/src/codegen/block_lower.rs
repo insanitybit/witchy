@@ -228,6 +228,20 @@ impl<'types> Codegen<'types> {
                                 self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
                             }
                         }
+                    } else if let Expr::Binary { op: BinOp::Sub, lhs, rhs } = value {
+                        // A stable `length(xs) - nonnegative_constant` upper cursor
+                        // remains no larger than `length(xs)`. The paired-cursor
+                        // proof additionally requires the cursor to decrease under
+                        // `lo < hi`, so an empty list and a negative initial upper
+                        // cursor simply execute zero iterations rather than gaining
+                        // an unchecked access.
+                        if matches!(rhs.as_ref(), Expr::Int(offset) if *offset >= 0)
+                            && let Expr::Call { name: fname, args } = lhs.as_ref()
+                            && is_intrinsic_or_public_name(fname, intrinsics::LIST_LENGTH)
+                            && let [Expr::Var(xs_name)] = args.as_slice()
+                        {
+                            self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
+                        }
                     } else if let Expr::Var(src_name) = value {
                         if let Some(bytes) = self.known_byte_length_vars.get(src_name).cloned() {
                             self.known_byte_length_vars.entry(name.clone()).or_default().extend(bytes);
