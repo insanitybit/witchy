@@ -2760,8 +2760,8 @@ fn rewrite_local_select4_match(
     if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 5 {
         return None;
     }
-    let arm = |name| arms.iter().find(|arm| matches!(&arm.pattern,
-        Pattern::Ctor { name: found, args } if found == name && args.len() == 1
+    let arm = |name: &str| arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name: found, args } if found.as_str() == name && args.len() == 1
     ));
     let first = arm("First4")?;
     let second = arm("Second4")?;
