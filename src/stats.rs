@@ -144,8 +144,10 @@ pub struct TimedStats {
 }
 
 /// Compile `src` (resolved against the bundled std) and run it under the active
-/// `WITCHY_OPT` setting, returning its deterministic counters. The program must
-/// need nothing beyond `Console` (the stats corpus is pure compute).
+/// `WITCHY_OPT` setting, returning its deterministic counters. The stats
+/// harness grants `Console` and the deterministic local `Clock` capability, so
+/// benchmark kernels may measure an in-program interval without requiring a
+/// different runner. All other capabilities remain denied.
 pub fn compute(src: &str) -> Result<Stats, String> {
     compute_timed(src).map(|timed| timed.stats)
 }
@@ -165,7 +167,13 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
     };
-    let caps = Capabilities { print: true, print_int: true, quiet: true, ..Default::default() };
+    let caps = Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        clock: true,
+        ..Default::default()
+    };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(&bytes, caps, STATS_MEMORY_PAGES)
@@ -273,6 +281,15 @@ mod tests {
         assert!(timed.checker_time_us > 0);
         assert!(timed.execution_time_us > 0);
         assert!(timed.execution_throughput_batches_per_s > 0.0);
+    }
+
+    #[test]
+    fn stats_grants_clock_for_in_program_benchmark_kernels() {
+        let stats = compute(
+            "fn main(console: Console, clock: Clock):\n    let started = clock.now_monotonic()\n    let finished = clock.now_monotonic()\n    console.print(\"${finished >= started}\")\n",
+        )
+        .expect("stats must run a clock-based benchmark kernel");
+        assert_eq!(stats.output, ["true"]);
     }
 
     #[test]
