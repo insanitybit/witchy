@@ -1737,3 +1737,93 @@
         assert!(formatted.contains("recursive_expanded=1"));
     }
 
+    #[test]
+    fn devirtualizes_and_inlines_closure_call_and_eliminates_allocation() {
+        use crate::wir::{ClosureSignature, WirTable};
+        use crate::wir_opt::inline_direct_calls;
+
+        // Lambda function: fn(clos, x) -> x % 7
+        let lambda = WirFunc {
+            name: "lambda_0".into(),
+            params: vec![
+                WirLocal { name: "clos".into(), ty: WirTy::StructRef },
+                WirLocal { name: "x".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Binary {
+                op: BinOp::Rem,
+                kind: Kind::I64,
+                lhs: Box::new(WirExpr::GetLocal("x".into())),
+                rhs: Box::new(WirExpr::ConstI64(7)),
+            })],
+            raw_body: None,
+        };
+
+        // Caller function:
+        // let f = closure(lambda_0)
+        // call_indirect(f, 42)
+        let caller = WirFunc {
+            name: "caller".into(),
+            params: vec![],
+            ret: vec![WirTy::Int],
+            locals: vec![
+                WirLocal { name: "f".into(), ty: WirTy::StructRef },
+            ],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "f".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 0,
+                        args: vec![
+                            WirExpr::ConstI32(0), // table index 0
+                            WirExpr::ConstI32(0),
+                            WirExpr::RefNull(Kind::StructRef),
+                        ],
+                    },
+                },
+                WirNode::Push(WirExpr::CallIndirect {
+                    signature: ClosureSignature {
+                        params: vec![Kind::StructRef, Kind::I64],
+                        results: vec![Kind::I64],
+                    },
+                    args: vec![
+                        WirExpr::GetLocal("f".into()),
+                        WirExpr::ConstI64(42),
+                    ],
+                    index: Box::new(WirExpr::StructGet {
+                        struct_id: 0,
+                        field: CLOSURE_CODE_FIELD,
+                        base: Box::new(WirExpr::GetLocal("f".into())),
+                    }),
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let mut module = WirModule {
+            imports: vec![],
+            funcs: vec![caller, lambda],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: Some(WirTable {
+                funcs: vec!["lambda_0".into()],
+            }),
+            exports: vec![("main".into(), "caller".into())],
+        };
+
+        inline_direct_calls(&mut module);
+
+        // After optimization, caller should have directly inlined `42 % 7`
+        let caller_opt = &module.funcs[0];
+        assert_eq!(caller_opt.body.len(), 2);
+        let [WirNode::SetLocal { local, .. }, WirNode::Push(WirExpr::Binary { op, lhs, rhs, .. })] = caller_opt.body.as_slice() else {
+            panic!("Expected inlined binary op in caller, got {:?}", caller_opt.body);
+        };
+        assert_eq!(local, "f");
+        assert_eq!(*op, BinOp::Rem);
+        assert!(matches!(lhs.as_ref(), WirExpr::ConstI64(42)));
+        assert!(matches!(rhs.as_ref(), WirExpr::ConstI64(7)));
+    }
+

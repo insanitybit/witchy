@@ -26,7 +26,7 @@ pub fn inline_recursive_calls(module: &mut WirModule) {
 }
 
 fn is_scalar_only(func: &WirFunc) -> bool {
-    func.params.iter().all(|p| is_scalar(&p.ty)) && func.ret.iter().all(|r| is_scalar(r))
+    func.params.iter().all(|p| is_scalar(&p.ty)) && func.ret.iter().all(is_scalar)
 }
 fn is_scalar(ty: &WirTy) -> bool { matches!(ty, WirTy::Int | WirTy::Float | WirTy::Bool | WirTy::V128 | WirTy::Slot) }
 fn has_forbidden_nodes(seq: &WirSeq) -> bool { seq.iter().any(node_has_forbidden) }
@@ -309,12 +309,11 @@ fn inline_expr(expr: &mut WirExpr, target: &WirFunc, parent_name: &str, parent_p
                         let mut args_map = HashMap::new();
                         let mut temp_args = Vec::new();
                         std::mem::swap(&mut temp_args, args);
-                        for (param, arg) in target.params.iter().zip(temp_args.into_iter()) {
+                        for (param, arg) in target.params.iter().zip(temp_args) {
                             args_map.insert(param.name.clone(), arg);
                         }
                         replace_get_locals_expr(&mut cloned_expr, &args_map);
                         *expr = cloned_expr;
-                        return;
                     }
                 }
             }
