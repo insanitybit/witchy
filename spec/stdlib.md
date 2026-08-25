@@ -291,6 +291,23 @@ The outcome of a `select`: a message from the first or the second receiver, or `
 - `Second(m)`
 - `Closed`
 
+#### `type Selected3(m)`
+
+Fixed-arity variants retain the selected arm in the public result without routing through `List(Receiver(m))`. They have the same deterministic source-order rule as `select`: lower-numbered arms win ties.
+
+- `First3(m)`
+- `Second3(m)`
+- `Third3(m)`
+- `Closed3`
+
+#### `type Selected4(m)`
+
+- `First4(m)`
+- `Second4(m)`
+- `Third4(m)`
+- `Fourth4(m)`
+- `Closed4`
+
 #### `fn done(own x: a) -> Task(a)`
 
 A finished task.
@@ -386,6 +403,14 @@ Run `a` and `b` concurrently and return the FIRST result, cancelling the loser. 
 #### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m))`
 
 Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.
+
+#### `fn select3(a: Receiver(m), b: Receiver(m), c: Receiver(m)) -> Task(Selected3(m))`
+
+Receive from the first ready receiver among `a`, `b`, and `c`. A tie is resolved in argument order; `Closed3` is returned only on scheduler quiescence after no arm can deliver.
+
+#### `fn select4(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m)) -> Task(Selected4(m))`
+
+Four-way counterpart of `select3`, retaining the same deterministic first-ready rule and fixed endpoint ABI.
 
 #### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
@@ -4274,6 +4299,8 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Push(Int, __Msg, fn(Nil) -> Task(a))`
 - `Pull(Int, fn(Option(__Msg)) -> Task(a))`
 - `Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
+- `Pull3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
+- `Pull4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
@@ -4305,6 +4332,8 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))`
 - `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
 - `Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
+- `Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
+- `Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
 - `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
@@ -4340,6 +4369,12 @@ Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task
 Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
 
 #### `fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
+
+#### `fn __channel_select3_map(a: ChannelId, b: ChannelId, c: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
+
+Fixed-arity scheduler forms intentionally retain their endpoints as separate fields. This preserves source-order tie breaking and gives the ready-path lowerer a no-list-allocation fallback ABI for arities three and four.
+
+#### `fn __channel_select4_map(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
 
 #### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
