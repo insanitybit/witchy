@@ -2532,7 +2532,6 @@ prewarm_gate() {
             die "exec: $!\\n";
         ')
     fi
-    set -m
     ( exec "${prewarm_session[@]}" "${prewarm_runner[@]}" bash -c '
         set -euo pipefail
         gate_wt="$1"
@@ -2565,7 +2564,6 @@ prewarm_gate() {
     local prewarm_pid=$!
     active_gate_pgid="$prewarm_pid"
     printf '%s\n' "$prewarm_pid" >"$lock/gate_pgid"
-    set +m
     local cancelled=0
     while process_group_is_alive "$prewarm_pid"; do
         if ls "$queue_dir"/*.json >/dev/null 2>&1; then
