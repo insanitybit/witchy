@@ -1324,6 +1324,9 @@ impl<'a> Ctx<'a> {
             )?;
             return Ok(entry);
         }
+        if let Some(frame_loop) = self.try_lower_recv_frame_loop(var, src, body, cont)? {
+            return Ok(frame_loop);
+        }
         // Folding receive loop.
         let want_accs = !(cont.rest.is_empty() && matches!(cont.tail, Tail::Return));
         let (entry, accs) = self.build_loop_seg(
@@ -1604,6 +1607,137 @@ impl<'a> Ctx<'a> {
             if arity == 2 { "chan.select2_frame_loop" } else { "chan.select3_frame_loop" },
             frame_args,
         )));
+        Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
+    }
+
+    /// Lower a receive-until-closed loop onto the reusable one-way frame ABI.
+    /// This is deliberately narrower than the ordinary segment loop: only a
+    /// non-suspending body with scalar carried lanes is eligible.  The fallback
+    /// remains the general recursive lowering, so roots, control escapes, and
+    /// richer carried state keep their existing semantics.
+    fn try_lower_recv_frame_loop(
+        &mut self,
+        var: &str,
+        src: &Expr,
+        body: &Block,
+        cont: Continuation<'_>,
+    ) -> Result<Option<Expr>, String> {
+        if body.stmts.iter().any(stmt_contains_await)
+            || block_contains_return(body)
+            || body.stmts.iter().any(|stmt| matches!(stmt, Stmt::Break | Stmt::Continue))
+            // A constructor match on the received value needs its typed root
+            // representation. The scalar frame ABI only transports the
+            // erased scheduler payload, so keep this on the proven general
+            // receive path until the typed payload lane is emitted end-to-end.
+            || body_directly_matches_binding(body, var)
+        {
+            return Ok(None);
+        }
+
+        let mut used = crate::suspension::free_bindings(src);
+        let mut body_bound = HashSet::default();
+        body_bound.insert(var.to_string());
+        used.extend(crate::suspension::free_bindings_in_block(body, &body_bound));
+        for stmt in cont.rest {
+            match stmt {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => used.extend(crate::suspension::free_bindings(value)),
+                Stmt::Return(Some(value)) => used.extend(crate::suspension::free_bindings(value)),
+                _ => {}
+            }
+        }
+        let used: HashSet<String> = used.into_iter().collect();
+        let lanes: Vec<Local> = cont
+            .scope
+            .iter()
+            .filter(|local| local.mutable && used.contains(&local.name))
+            .filter(|local| {
+                matches!(
+                    local.ty.as_ref().map(Type::unqualified),
+                    Some(Type::Named(name, args))
+                        if args.is_empty() && (name == "Int" || name == "Bool")
+                )
+            })
+            .cloned()
+            .collect();
+        // The reusable frame is the entire mutable carry set. Capturing a
+        // mutable root that is not represented in it would let a ready drain
+        // observe a stale value on the next iteration, so retain the ordinary
+        // segment lowering for roots and other non-scalar state.
+        if cont.scope.iter().any(|local| {
+            local.mutable && used.contains(&local.name) && !lanes.iter().any(|lane| lane.name == local.name)
+        }) {
+            return Ok(None);
+        }
+
+        let frame = self.fresh_tmp();
+        let option = self.fresh_tmp();
+        let payload = self.fresh_tmp();
+        let frame_ty = Type::Named("List".to_string(), vec![Type::Named("Int".to_string(), vec![])]);
+        let frame_val = if lanes.is_empty() {
+            call("list.repeat", vec![Expr::Int(0), Expr::Int(0)])
+        } else {
+            Expr::List(lanes.iter().map(|lane| encode_lane(Expr::Var(lane.name.clone()), lane)).collect())
+        };
+        let mut setup = vec![Stmt::Let {
+            name: frame.clone(), ty: Some(frame_ty.clone()), mutable: false, value: frame_val,
+        }];
+
+        let mut some_stmts = Vec::new();
+        for (index, lane) in lanes.iter().enumerate() {
+            some_stmts.push(Stmt::Let {
+                name: lane.name.clone(), ty: lane.ty.clone(), mutable: true,
+                value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64)]), lane),
+            });
+        }
+        some_stmts.push(Stmt::Let {
+            name: var.to_string(), ty: None, mutable: false, value: Expr::Var(payload.clone()),
+        });
+        some_stmts.extend(body.stmts.iter().cloned());
+        for (index, lane) in lanes.iter().enumerate() {
+            some_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
+        }
+        some_stmts.push(Stmt::Expr(Expr::Bool(false)));
+        let step_body = Expr::Match {
+            scrutinee: Box::new(call("chan.recv_frame_payload", vec![Expr::Var(option.clone())])),
+            arms: vec![
+                MatchArm { line: 0, pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(payload)] }, guard: None, body: Expr::Block(Block { lines: vec![first_line(&body.lines); some_stmts.len()], stmts: some_stmts, region: None }) },
+                MatchArm { line: 0, pattern: Pattern::Ctor { name: "None".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
+            ],
+        };
+        let step = self.fresh_tmp();
+        setup.push(Stmt::Let {
+            name: step.clone(), ty: None, mutable: false,
+            value: Expr::Lambda {
+                params: vec![
+                    Param { name: option, ty: None, convention: Convention::Let, default: None },
+                    Param { name: frame.clone(), ty: Some(frame_ty.clone()), convention: Convention::Var, default: None },
+                ],
+                body: tail_block_at(step_body, first_line(&body.lines)), ret: Some(Type::Named("Bool".into(), vec![])), qualifiers: CallableQualifiers::ORDINARY,
+            },
+        });
+
+        let done_frame = self.fresh_tmp();
+        let mut done_stmts = Vec::new();
+        for (index, lane) in lanes.iter().enumerate() {
+            done_stmts.push(Stmt::Let {
+                name: lane.name.clone(), ty: lane.ty.clone(), mutable: true,
+                value: decode_lane(call("list.at", vec![Expr::Var(done_frame.clone()), Expr::Int(index as i64)]), lane),
+            });
+        }
+        done_stmts.extend(cont.rest.iter().cloned());
+        let done_expr = self.go(&done_stmts, &vec![cont.line; done_stmts.len()], cont.scope, cont.tail)?;
+        let done = self.fresh_tmp();
+        setup.push(Stmt::Let {
+            name: done.clone(), ty: None, mutable: false,
+            value: Expr::Lambda {
+                params: vec![Param { name: done_frame, ty: Some(frame_ty), convention: Convention::Let, default: None }],
+                body: tail_block_at(done_expr, cont.line), ret: None, qualifiers: CallableQualifiers::ORDINARY,
+            },
+        });
+        setup.push(Stmt::Expr(call("chan.recv_frame_loop", vec![src.clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done)])));
         Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
     }
 
@@ -2186,6 +2320,23 @@ fn stmt_contains_await(s: &Stmt) -> bool {
         Stmt::Return(v) => v.as_ref().is_some_and(contains_await),
         Stmt::Break | Stmt::Continue => false,
     }
+}
+
+/// The scalar receive-frame ABI is intentionally not a nominal payload
+/// transport. A direct match is the common way a receive loop consumes a
+/// record/sum payload, and must retain the existing typed segment lowering.
+fn body_directly_matches_binding(body: &Block, binding: &str) -> bool {
+    body.stmts.iter().any(|statement| {
+        let value = match statement {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => value,
+            Stmt::Return(_) | Stmt::Break | Stmt::Continue => return false,
+        };
+        matches!(value, Expr::Match { scrutinee, .. } if matches!(scrutinee.as_ref(), Expr::Var(name) if name == binding))
+    })
 }
 
 fn block_contains_return(block: &Block) -> bool {
@@ -3065,6 +3216,37 @@ mod tests {
         assert!(rendered.contains("chan.select2_frame_loop"), "{rendered}");
         assert!(rendered.contains("chan.select2_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select2_frame_decode"), "{rendered}");
+    }
+
+    #[test]
+    fn recv_loop_uses_reusable_frame_bridge_for_scalar_fold() {
+        let source = "from chan import Receiver\n\nasync fn drain(rx: Receiver(Int)):\n    var sum = 0\n    for await value in rx:\n        sum = sum + value\n    task.done(sum).await\n";
+        let module = crate::parser::parse_module(source).expect("parse receive frame loop");
+        let lowered = lower_module(module).expect("lower receive frame loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(rendered.contains("chan.recv_frame_loop"), "{rendered}");
+        assert!(rendered.contains("chan.recv_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.recv(rx).await"), "{rendered}");
+    }
+
+    #[test]
+    fn recv_loop_with_mutable_root_keeps_general_lowering() {
+        let source = "from chan import Receiver\n\nasync fn drain(rx: Receiver(Int)):\n    var values = []\n    for await value in rx:\n        list.push(values, value)\n    task.done(values).await\n";
+        let module = crate::parser::parse_module(source).expect("parse rooted receive loop");
+        let lowered = lower_module(module).expect("lower rooted receive loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(!rendered.contains("chan.recv_frame_loop"), "{rendered}");
+        assert!(rendered.contains("chan.recv"), "{rendered}");
+    }
+
+    #[test]
+    fn recv_loop_matching_nominal_payload_keeps_general_lowering() {
+        let source = "from chan import Receiver\n\ntype Packet:\n    Packet(Int)\n\nasync fn drain(rx: Receiver(Packet)):\n    var sum = 0\n    for await packet in rx:\n        match packet:\n            Packet(value) -> sum = sum + value\n    task.done(sum).await\n";
+        let module = crate::parser::parse_module(source).expect("parse nominal receive loop");
+        let lowered = lower_module(module).expect("lower nominal receive loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(!rendered.contains("chan.recv_frame_loop"), "{rendered}");
+        assert!(rendered.contains("chan.recv"), "{rendered}");
     }
 
     #[test]

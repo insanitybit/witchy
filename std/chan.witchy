@@ -404,6 +404,13 @@ pub fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame:
                     match c:
                         Receiver(ic) -> task.channel_select3_frame_loop(ia, ib, ic, frame, step, done_fn)
 
+// Compiler-owned one-way frame bridge. `step` receives the erased scheduler
+// message and uses `recv_frame_payload` below to recover the receiver's `m`.
+// A final `None` is delivered exactly once by task's close pass.
+pub fn recv_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+    match rx:
+        Receiver(id) -> task.channel_recv_frame_loop(id, frame, step, done_fn)
+
 pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n):
     match a:
         Receiver(ia) ->
@@ -513,6 +520,13 @@ pub fn select2_frame_payload(o: Option(__Msg)) -> Option(m):
 // Three-way counterpart of `select2_frame_payload`; the tag remains in the
 // compiler-owned step callback, so this bridge only carries typed payload.
 pub fn select3_frame_payload(o: Option(__Msg)) -> Option(m):
+    match o:
+        Some(msg) -> Some(__unerase(msg))
+        None -> None
+
+// One-way counterpart of the select frame payload helpers. Kept separate from
+// `recv` so the compiler-owned frame never constructs a per-message Task.
+pub fn recv_frame_payload(o: Option(__Msg)) -> Option(m):
     match o:
         Some(msg) -> Some(__unerase(msg))
         None -> None

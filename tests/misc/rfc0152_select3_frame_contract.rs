@@ -68,6 +68,24 @@ async fn main(console: Console):
     console.print("seen=${seen} sum=${sum} closed=${closed}")
 "#;
 
+const RECV_FRAME_CONTRACT: &str = r#"
+mode opt
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    chan.send(tx, 3).await
+    chan.send(tx, 5).await
+    chan.send(tx, 7).await
+    chan.send(tx, 11).await
+
+    var seen = 0
+    var sum = 0
+    for await value in rx:
+        seen = seen + 1
+        sum = sum + value
+    console.print("seen=${seen} sum=${sum}")
+"#;
+
 fn run_compiled(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0152 select3 frame contract must check");
@@ -112,4 +130,16 @@ fn rfc0152_select_frame_preserves_buffered_value_then_cancelled_close_on_both_ba
     assert_eq!(compiled, interpreted,
         "a reusable select frame must retain the buffered value before its cancelled producer's final closed wake");
     assert_eq!(interpreted, ["seen=1 sum=7 closed=true"]);
+}
+
+#[test]
+fn rfc0152_recv_frame_drains_buffered_values_then_closes_on_both_backends() {
+    let checked = witchy::resolve_std_only_checked(RECV_FRAME_CONTRACT)
+        .expect("RFC-0152 receive frame contract must check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("run RFC-0152 receive frame contract on the interpreter");
+    let compiled = run_compiled(RECV_FRAME_CONTRACT);
+
+    assert_eq!(compiled, interpreted, "one-way frame scheduling must retain interpreter semantics");
+    assert_eq!(interpreted, ["seen=4 sum=26"]);
 }

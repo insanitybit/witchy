@@ -186,13 +186,18 @@ fn recognize<'a>(
             && state.transitions.contains(&ScalarTransition::Done)
     })?;
     let mut receives = plan.states.iter().filter(|state| {
-        state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::ChannelReceive(_)))
+        state.transitions.iter().any(|transition| {
+            matches!(transition, ScalarTransition::ChannelReceive(_) | ScalarTransition::ChannelReceiveFrameLoop(_))
+        })
     });
     let receive = receives.next()?;
     if receives.next().is_some() {
         return None;
     }
-    if !plan.states.iter().any(|state| {
+    let frame_receive = receive.transitions.iter().any(|transition| {
+        matches!(transition, ScalarTransition::ChannelReceiveFrameLoop(_))
+    });
+    if !frame_receive && !plan.states.iter().any(|state| {
         state.source_callable == receive.source_callable
             && state.transitions.iter().any(|transition| matches!(transition, ScalarTransition::Join { .. }))
     }) || plan.states.iter().filter(|state| {
@@ -206,10 +211,17 @@ fn recognize<'a>(
             && state.transitions == [ScalarTransition::Done]
     })?;
     let console = terminal.slots.iter().find(|slot| slot.lanes == [CarrierLane::ExternRef])?;
-    let accumulator = receive.slots.iter().find(|slot| {
-        slot.lanes == [CarrierLane::I64]
-            && terminal.slots.iter().any(|terminal_slot| terminal_slot.name == slot.name)
-    })?;
+    let accumulator_name = if receive.transitions.iter().any(|transition| {
+        matches!(transition, ScalarTransition::ChannelReceiveFrameLoop(_))
+    }) {
+        frame_accumulator_name(module, receive, terminal)?
+    } else {
+        receive.slots.iter().find(|slot| {
+            slot.lanes == [CarrierLane::I64]
+                && terminal.slots.iter().any(|terminal_slot| terminal_slot.name == slot.name)
+        })?.name.clone()
+    };
+    let accumulator = terminal.slots.iter().find(|slot| slot.name == accumulator_name)?;
     let counter = producer_send.slots.iter().find(|slot| {
         slot.lanes == [CarrierLane::I64]
             && !producer_entry.slots.iter().any(|entry| entry.name == slot.name)
@@ -249,11 +261,15 @@ fn recognize<'a>(
     let Some(producer_start) = find_local_constant(&producer_lambda.body, &counter.name) else {
         return None;
     };
-    let Some(accumulator_start) = initial_local_before_call(
-        module,
-        &receive.function,
-        &accumulator.name,
-    ) else {
+    let accumulator_start = if receive.transitions.iter().any(|transition| {
+        matches!(transition, ScalarTransition::ChannelReceiveFrameLoop(_))
+    }) {
+        function(module, &receive.function)
+            .and_then(|function| find_local_constant(&function.body, &accumulator.name))
+    } else {
+        initial_local_before_call(module, &receive.function, &accumulator.name)
+    };
+    let Some(accumulator_start) = accumulator_start else {
         return None;
     };
 
@@ -336,14 +352,30 @@ fn receiver_fold_shape(
     accumulator: &str,
     payload: ScalarPayload,
 ) -> bool {
-    let Some(resume) = receive.transitions.iter().find_map(|transition| match transition {
-        ScalarTransition::ChannelReceive(plan) => Some(plan.resume_target),
-        _ => None,
-    }) else {
-        return false;
+    let function = if receive.transitions.iter().any(|transition| {
+        matches!(transition, ScalarTransition::ChannelReceiveFrameLoop(_))
+    }) {
+        // The reusable frame's fold update lives in the first generated
+        // closure owned by the receive-frame state, not in an ordinary
+        // continuation state. The carrier has already proved that this is a
+        // compiler-owned frame closure, so recovering that function preserves
+        // the old scalar-fold recognizer without scanning arbitrary closures.
+        if !receive.transitions.iter().any(|transition| {
+            matches!(transition, ScalarTransition::ChannelReceiveFrameLoop(_))
+        }) {
+            return false;
+        }
+        let Some(function) = closure_function(module, &receive.function) else { return false };
+        function
+    } else {
+        let Some(resume) = receive.transitions.iter().find_map(|transition| match transition {
+            ScalarTransition::ChannelReceive(plan) => Some(plan.resume_target),
+            _ => None,
+        }) else { return false };
+        let Some(state) = plan.states.get(resume) else { return false };
+        let Some(function) = function(module, &state.function) else { return false };
+        function
     };
-    let Some(state) = plan.states.get(resume) else { return false };
-    let Some(function) = function(module, &state.function) else { return false };
     let mut updates = false;
     visit_seq(&function.body, &mut |expression| {
         if let E::Binary { op: BinOp::Add, kind: Kind::I64, .. } = expression {
@@ -367,15 +399,23 @@ fn counter_and_successor(expression: &E, counter: &str) -> bool {
 fn accumulator_plus_local(expression: &E, accumulator: &str) -> bool {
     matches!(expression,
         E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
-            if local(lhs, accumulator) && matches!(rhs.as_ref(), E::GetLocal(_)))
+            if accumulator_local(lhs, accumulator) && matches!(rhs.as_ref(), E::GetLocal(_)))
 }
 
 fn accumulator_plus_two_locals(expression: &E, accumulator: &str) -> bool {
     matches!(expression,
         E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
             if matches!(lhs.as_ref(), E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, rhs }
-                if local(lhs, accumulator) && matches!(rhs.as_ref(), E::GetLocal(_)))
+                if accumulator_local(lhs, accumulator) && matches!(rhs.as_ref(), E::GetLocal(_)))
                 && matches!(rhs.as_ref(), E::GetLocal(_)))
+}
+
+/// Frame closures receive captured slots under a hygienic `__shadow` spelling.
+/// It is still the same compiler-owned carrier local, not a user-selected
+/// alias, so accepting this suffix preserves the exact frame binding.
+fn accumulator_local(expression: &E, accumulator: &str) -> bool {
+    matches!(expression, E::GetLocal(name)
+        if name == accumulator || name.starts_with(&format!("{accumulator}__shadow")))
 }
 
 fn payload_fold_expression(payload: ScalarPayload) -> E {
@@ -417,6 +457,33 @@ fn closure_function<'a>(module: &'a WirModule, owner: &str) -> Option<&'a WirFun
     });
     let name = module.table.as_ref()?.funcs.get(index?)?;
     function(module, name)
+}
+
+/// Recover the original scalar frame lane named by the generated step closure.
+/// The receive state owns only the receiver and frame root; its captured scalar
+/// accumulator is hygienically renamed inside `step`, while the terminal state
+/// keeps the canonical slot name used by the synthesized executor.
+fn frame_accumulator_name(
+    module: &WirModule,
+    receive: &ScalarExecutorState,
+    terminal: &ScalarExecutorState,
+) -> Option<String> {
+    receive.transitions.iter().find_map(|transition| match transition {
+        ScalarTransition::ChannelReceiveFrameLoop(_) => Some(()),
+        _ => None,
+    })?;
+    let step = closure_function(module, &receive.function)?;
+    let mut candidate = None;
+    visit_seq(&step.body, &mut |expression| {
+        let E::Binary { op: BinOp::Add, kind: Kind::I64, lhs, .. } = expression else { return };
+        let E::GetLocal(shadow) = lhs.as_ref() else { return };
+        candidate = terminal.slots.iter().find_map(|slot| {
+            (slot.lanes == [CarrierLane::I64]
+                && shadow.starts_with(&format!("{}__shadow", slot.name)))
+                .then(|| slot.name.clone())
+        }).or(candidate.take());
+    });
+    candidate
 }
 
 fn find_local_constant(sequence: &[N], local_name: &str) -> Option<i64> {

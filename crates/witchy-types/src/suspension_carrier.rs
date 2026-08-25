@@ -261,6 +261,21 @@ pub struct AwaitSelect3FrameLoopPlan {
     pub resume_target: SelectResume,
 }
 
+/// Compiler-owned ABI for a reusable one-way receive frame loop.  The typed
+/// payload facts travel with the erased scheduler fallback so a direct emitter
+/// can preserve the existing scalar-channel fusion instead of rediscovering a
+/// representation from `__Msg`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitReceiveFrameLoopPlan {
+    pub channel: ChannelEndpointPlace,
+    pub frame: String,
+    pub step: String,
+    pub done: String,
+    pub payload_layout: ChannelPayloadLayout,
+    pub payload_lane: Option<CarrierLane>,
+    pub resume_target: SelectResume,
+}
+
 /// Exact facts for a fixed-arity select with three or four receivers.
 ///
 /// The endpoint vector is deliberately bounded at construction time. It is not
@@ -304,6 +319,7 @@ pub enum ReadyChannelOperationKind {
     Open { resume_target: usize },
     Send(AwaitChannelOperationPlan),
     Receive(AwaitChannelOperationPlan),
+    ReceiveFrameLoop(AwaitReceiveFrameLoopPlan),
     Select2(AwaitSelect2Plan),
     Select2FrameLoop(AwaitSelect2FrameLoopPlan),
     Select3FrameLoop(AwaitSelect3FrameLoopPlan),
@@ -318,6 +334,7 @@ pub enum ScalarTransition {
     ChannelOpen { resume: usize },
     ChannelSend(AwaitChannelOperationPlan),
     ChannelReceive(AwaitChannelOperationPlan),
+    ChannelReceiveFrameLoop(AwaitReceiveFrameLoopPlan),
     ChannelSelect2(AwaitSelect2Plan),
     ChannelSelect2FrameLoop(AwaitSelect2FrameLoopPlan),
     ChannelSelect3FrameLoop(AwaitSelect3FrameLoopPlan),
@@ -727,6 +744,9 @@ impl ReadyChannelRegionPlan {
                         ScalarTransition::ChannelReceive(operation) => {
                             ReadyChannelOperationKind::Receive(operation.clone())
                         }
+                        ScalarTransition::ChannelReceiveFrameLoop(receive) => {
+                            ReadyChannelOperationKind::ReceiveFrameLoop(receive.clone())
+                        }
                         ScalarTransition::ChannelSelect2(select) => {
                             ReadyChannelOperationKind::Select2(select.clone())
                         }
@@ -761,6 +781,9 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
     match transition {
         ScalarTransition::ChannelSend(operation) if !is_static(&operation.endpoint) => Err("send"),
         ScalarTransition::ChannelReceive(operation) if !is_static(&operation.endpoint) => {
+            Err("receive")
+        }
+        ScalarTransition::ChannelReceiveFrameLoop(receive) if !is_static(&receive.channel) => {
             Err("receive")
         }
         ScalarTransition::ChannelSelect2(select)
@@ -940,6 +963,9 @@ fn collect_scalar_transitions<'a, 'd>(
         {
             collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
         }
+        ast::Expr::Call { name, .. } if call_family(name, "chan.recv_frame_loop") => {
+            collect_task_expression(expression, None, state_ids, table, definitions, bindings, transitions)
+        }
         ast::Expr::Call { name, .. }
             if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
         {
@@ -1051,6 +1077,16 @@ fn collect_task_expression<'a, 'd>(
     }
     if call_family(name, "chan.select3_frame_loop") && args.len() == 6 {
         transitions.push(ScalarTransition::ChannelSelect3FrameLoop(select3_frame_loop_plan(
+            table,
+            args,
+            definitions,
+            state_ids,
+            bindings,
+        )?));
+        return Ok(());
+    }
+    if call_family(name, "chan.recv_frame_loop") && args.len() == 4 {
+        transitions.push(ScalarTransition::ChannelReceiveFrameLoop(recv_frame_loop_plan(
             table,
             args,
             definitions,
@@ -1251,6 +1287,36 @@ fn select3_frame_loop_plan(
     })
 }
 
+fn recv_frame_loop_plan(
+    table: &TypeTable,
+    args: &[ast::Expr],
+    definitions: &HashMap<String, &TypeDef>,
+    state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
+) -> Result<AwaitReceiveFrameLoopPlan, String> {
+    let frame = compiler_generated_place(args.get(1), "receive frame", bindings, false)?;
+    let step = compiler_generated_place(args.get(2), "receive step closure", bindings, true)?;
+    let done = compiler_generated_place(args.get(3), "receive completion closure", bindings, true)?;
+    let payload_layout = args
+        .first()
+        .and_then(|endpoint| table.type_of(endpoint))
+        .and_then(|ty| channel_endpoint_payload_layout(ty, ChannelEndpointDirection::Receive, definitions))
+        .unwrap_or(ChannelPayloadLayout::Boxed);
+    let payload_lane = match &payload_layout {
+        ChannelPayloadLayout::Scalar(lane) => Some(*lane),
+        _ => None,
+    };
+    Ok(AwaitReceiveFrameLoopPlan {
+        channel: channel_endpoint_place(args.first()),
+        frame,
+        step,
+        done: done.clone(),
+        payload_layout,
+        payload_lane,
+        resume_target: select_loop_resume(args.get(3).expect("four-argument receive frame loop has completion closure"), state_ids, bindings)?,
+    })
+}
+
 fn compiler_generated_place(
     expression: Option<&ast::Expr>,
     role: &str,
@@ -1300,6 +1366,11 @@ fn select_loop_resume(
         return Ok(SelectResume::State(target));
     }
     match terminal {
+        ast::Expr::Call { name, args }
+            if call_family(name, "task.and_then") && args.len() == 2 =>
+        {
+            Ok(SelectResume::State(continuation_state(&args[1], state_ids, &body_bindings)?))
+        }
         ast::Expr::Call { name, .. }
             if call_family(name, "task.done") || call_family(name, "task.ready_unit") =>
         {

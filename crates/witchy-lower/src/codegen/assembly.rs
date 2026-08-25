@@ -7138,6 +7138,34 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn scalar_receive_frame_retains_typed_ready_region_facts() {
+        let checked = authenticated_checked(include_str!("../../../../benchmarks/chan_throughput.witchy"));
+        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble scalar receive-frame fixture");
+        let ready = carrier
+            .ready_channel_region_plan()
+            .expect("receive frame must retain a typed ready-region transition");
+        assert!(ready.operations().iter().any(|operation| match &operation.kind {
+            witchy_types::suspension_carrier::ReadyChannelOperationKind::ReceiveFrameLoop(plan) => {
+                matches!(
+                    (&plan.channel, &plan.payload_layout, plan.payload_lane),
+                    (
+                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                        witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
+                            witchy_types::suspension_carrier::CarrierLane::I64
+                        ),
+                        Some(witchy_types::suspension_carrier::CarrierLane::I64),
+                    )
+                ) && plan.frame.starts_with("__await")
+                    && plan.step.starts_with("__await")
+                    && plan.done.starts_with("__await")
+            }
+            _ => false,
+        }), "the receive frame must carry its endpoint, closure identities, and exact payload lane");
+    }
+
+    #[test]
     fn proven_three_way_select_loop_emits_reusable_frame_loop_bridge() {
         let checked = authenticated_checked(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) -> seen = seen + value - value + 1\n            Second3(value) -> seen = seen + value - value + 1\n            Third3(value) -> seen = seen + value - value + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
