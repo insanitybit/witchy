@@ -4,7 +4,7 @@ witchy separates a program from the authority used to run it, which makes the
 first distribution decision unusually easy:
 
 - Ship **portable WebAssembly** when the recipient should choose every grant.
-- Ship a **trusted executable** when running the installed application is
+- Ship a **trusted-publisher application** when running the installed application is
   itself the trust decision.
 - Ship a **static browser bundle** when the browser is the host and its
   capability menu is sufficient.
@@ -83,13 +83,13 @@ Required mode is a deployment assertion, not a portability promise. A portable
 module can run on a host that lacks a particular kernel fence; a deployment
 that requires that fence must reject such a host.
 
-## Trusted executables
+## Trusted-publisher applications
 
-A trusted executable packages the host launcher, compiled WebAssembly, and a
+A trusted-publisher application packages the host launcher, compiled WebAssembly, and a
 checked binding plan into one native file:
 
 ```sh
-witchy --release build --target trusted-exe
+witchy --release build --target trusted-publisher
 ```
 
 The default output is `target/release/<rune-name>`. The destination doesn't
@@ -100,28 +100,28 @@ artifact, not a way to make an untrusted author safe.
 ### Bind `main` in the manifest
 
 Every resource parameter must have an unambiguous provider under
-`[targets.trusted-exe]`:
+`[targets.trusted-publisher]`:
 
 ```toml
-[targets.trusted-exe]
+[targets.trusted-publisher]
 confine = "required"
 
-[targets.trusted-exe.dirs]
+[targets.trusted-publisher.dirs]
 workspace = { from = "cwd" }
 
-[targets.trusted-exe.files]
+[targets.trusted-publisher.files]
 config = { from = "path", path = "./app.toml" }
 
-[targets.trusted-exe.fetch]
+[targets.trusted-publisher.fetch]
 api = { from = "allow", origins = ["https://api.example.com"] }
 
-[targets.trusted-exe.env]
+[targets.trusted-publisher.env]
 environment = { from = "system", names = ["HOME", "LANG"] }
 
-[targets.trusted-exe.exec]
+[targets.trusted-publisher.exec]
 runner = { from = "allow", programs = ["git"] }
 
-[targets.trusted-exe.secrets]
+[targets.trusted-publisher.secrets]
 token = { from = "env:APP_TOKEN", sealed = true }
 ```
 
@@ -147,17 +147,17 @@ The repository's `examples/minigrep` binds its read-only `root` to the launch
 directory and grants only the `IGNORE_CASE` environment name:
 
 ```toml
-[targets.trusted-exe.dirs]
+[targets.trusted-publisher.dirs]
 root = { from = "cwd" }
 
-[targets.trusted-exe.env]
+[targets.trusted-publisher.env]
 env = { from = "system", names = ["IGNORE_CASE"] }
 ```
 
 Build and move it like an ordinary native tool:
 
 ```sh
-witchy --release build --target trusted-exe examples/minigrep
+witchy --release build --target trusted-publisher examples/minigrep
 cp examples/minigrep/target/release/minigrep ~/bin/minigrep
 cd ~/notes
 minigrep nobody poem.txt

@@ -167,10 +167,10 @@ that aren't witchy grants, declare them as child-only read authority:
 runner = { programs = ["git"], child-paths = ["~/.gitconfig"] }
 ```
 
-The same declaration is authenticated into a trusted executable:
+The same declaration is authenticated into a trusted-publisher application:
 
 ```toml
-[targets.trusted-exe.exec]
+[targets.trusted-publisher.exec]
 runner = { from = "allow", programs = ["git"], child-paths = ["~/.gitconfig"] }
 ```
 

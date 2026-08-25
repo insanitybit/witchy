@@ -462,7 +462,7 @@ impl<'a> FrontEnd<'a> {
     }
 
     /// The hermetic `$WITCHY_HOME` this FrontEnd points `install` at (RFC-0095 Cut 4);
-    /// installed trusted-exes land in `home()/bin/`.
+    /// installed trusted-publishers land in `home()/bin/`.
     pub(crate) fn home(&self) -> std::path::PathBuf {
         self.base.join("witchy-home")
     }

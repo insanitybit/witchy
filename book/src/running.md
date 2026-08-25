@@ -112,5 +112,5 @@ There's no fallback to execution in the main page.
 | Direct source or `witchy run` | developer host defaults and flags | local development |
 | `witchy sandbox` | runner-supplied flags or grant document | explicit, reviewable untrusted-guest execution |
 | Portable `.wasm` in the sandbox | artifact consumer | distribution without trusting the author beyond the sandbox |
-| Trusted executable | authenticated author binding plan | installing an application whose author, runtime, and distributor are trusted |
+| Trusted-publisher application | checked publisher binding plan | installing an application whose publisher, runtime, and distributor are trusted |
 | Browser host | embedding page's published capability menu | interactive examples and web applications |

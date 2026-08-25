@@ -25,7 +25,7 @@ installed command is launched. Build one native executable containing the
 compiled WASM and Witchy runtime:
 
 ```sh
-witchy --release build --target trusted-exe examples/minigrep
+witchy --release build --target trusted-publisher examples/minigrep
 install -m 755 examples/minigrep/target/release/minigrep ~/.local/bin/minigrep
 ```
 

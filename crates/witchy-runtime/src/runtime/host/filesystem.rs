@@ -588,7 +588,7 @@ fn host_dir_append_bytes(
 
 /// (RFC-0095) `dir_set_executable(h, rel)`: add the execute bits to a confined file
 /// (`chmod +x`), leaving its contents untouched — a Write op (it mutates file
-/// metadata). The installer calls it after streaming a trusted-exe so the written
+/// metadata). The installer calls it after streaming a trusted-publisher so the written
 /// file is runnable.
 fn host_dir_set_executable(
     mut caller: Caller<'_, VmState>,

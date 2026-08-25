@@ -1,7 +1,7 @@
 // coven_artifact — the target-indexed artifact manifest a released application
 // version commits to (RFC-0095). A manifest maps a canonical target triple to the
-// publisher-built trusted-exe for that host: its command name, the SHA-256 of the
-// DECODED executable bytes, its size, and the trusted-exe binding-plan digest plus
+// publisher-built trusted-publisher for that host: its command name, the SHA-256 of the
+// DECODED executable bytes, its size, and the trusted-publisher binding-plan digest plus
 // rendered authority. Coven authenticates and freezes these; it does not build them.
 // The rendered authority is audit information, NOT a claim that a native publisher
 // is sandboxed from the user.

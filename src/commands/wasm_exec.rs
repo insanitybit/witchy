@@ -3,7 +3,7 @@
 //! runners used across the differential suite. Extracted from the composition root.
 
 use crate::runtime::Runtime;
-use crate::{artifact, runtime, trusted_exe};
+use crate::{artifact, runtime, trusted_publisher};
 
 /// The `witchy.*` host functions a compiled module imports — its executable
 /// authority floor. A Witchy-produced artifact also carries its source-derived
@@ -264,11 +264,11 @@ pub(crate) fn run_wasm_module(
 /// bindings. This bypasses every consumer grant/default path: there is no cwd
 /// fallback, prompt, or interpretation of application argv as host policy.
 pub(crate) fn run_trusted_application(
-    application: &trusted_exe::OwnedEmbeddedApplication,
+    application: &trusted_publisher::OwnedEmbeddedApplication,
 ) -> Result<i32, String> {
     let cwd = std::env::current_dir()
         .map_err(|error| format!("cannot determine launch working directory: {error}"))?;
-    let resolved = trusted_exe::resolve_binding_plan(
+    let resolved = trusted_publisher::resolve_binding_plan(
         &application.bindings,
         &application.wasm,
         &cwd,
@@ -305,10 +305,11 @@ pub(crate) fn run_trusted_application(
         ..Default::default()
     };
     crate::commands::confinement::arm(&caps, confinement)?;
-    // The executable's embedded descriptor authenticates these exact Wasm
-    // bytes and bindings. Do not let either of the user-writable runtime caches
-    // substitute optimized Wasm or native code after that verification.
-    let mut rt = Runtime::trusted_executable().map_err(|error| error.to_string())?;
+    // The executable's embedded descriptor validates these exact Wasm bytes
+    // and bindings. Publisher applications still use the ordinary cache policy:
+    // cache entries are optimization records and every hit is validated by the
+    // runtime before Wasmtime compiles or instantiates it.
+    let mut rt = Runtime::batch().map_err(|error| error.to_string())?;
     let mut vm = rt
         .spawn(&application.wasm, caps, RUN_MEMORY_PAGES)
         .map_err(|error| error.to_string())?;

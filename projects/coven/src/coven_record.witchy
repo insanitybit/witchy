@@ -28,7 +28,7 @@ type Record derive(Reflect, Deserialize):
     second_factor: Option(String)
     provenance: Option(String)
     // (RFC-0095) The digest of the artifact manifest this version commits to, as
-    // `sha256:<hex>`. `None` for a source-only release (no trusted-exe), which
+    // `sha256:<hex>`. `None` for a source-only release (no trusted-publisher), which
     // signs the legacy coven-v1 payload byte-for-byte. A missing field on an
     // older stored record deserializes to `None`, exactly like `provenance`.
     artifact_digest: Option(String)

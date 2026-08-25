@@ -4181,7 +4181,7 @@ mod tests {
                     (vec![named("Bytes"), named("Int")], named("Bytes"))
                 }
                 // (RFC-0095) crypto.sha256_bytes(Bytes) -> String: hashes raw
-                // decoded bytes (the trusted-exe artifact), not a UTF-8 String.
+                // decoded bytes (the trusted-publisher artifact), not a UTF-8 String.
                 IntrinsicSignature::BytesToString => {
                     (vec![named("Bytes")], named("String"))
                 }

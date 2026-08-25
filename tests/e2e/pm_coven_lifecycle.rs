@@ -1004,7 +1004,7 @@ fn publish_with_artifact_manifest_produces_coven_v2_and_serves_it() {
     let fe = FrontEnd::new(&server, "artifact");
     let app = fe.lib("acme/wrg", "0.1.0", "pub fn go() -> String:\n    \"hi\"\n");
     // A minimal, valid one-target artifact manifest (coven_artifact shape).
-    let manifest = "{\"version\":1,\"artifacts\":{\"aarch64-apple-darwin\":{\"kind\":\"trusted-exe\",\"command\":\"wrg\",\"sha256\":\"416e71b2cf6ce3fb316381f0eec039aa5b586e931f925f4d1f0be1d2d5009b5d\",\"size\":128,\"binding_plan_sha256\":\"\",\"authority\":[]}}}";
+    let manifest = "{\"version\":1,\"artifacts\":{\"aarch64-apple-darwin\":{\"kind\":\"trusted-publisher\",\"command\":\"wrg\",\"sha256\":\"416e71b2cf6ce3fb316381f0eec039aa5b586e931f925f4d1f0be1d2d5009b5d\",\"size\":128,\"binding_plan_sha256\":\"\",\"authority\":[]}}}";
     std::fs::write(app.join("artifact.json"), manifest).unwrap();
 
     let ci = server.ci_token("acme-wrg-repo", "release.yml");
@@ -1047,7 +1047,7 @@ fn publish_with_artifact_manifest_produces_coven_v2_and_serves_it() {
     );
 }
 
-/// RFC-0095: a publisher ships built trusted-exe bytes in `<dir>/artifacts/<target>`.
+/// RFC-0095: a publisher ships built trusted-publisher bytes in `<dir>/artifacts/<target>`.
 /// `pm publish` uploads each after the release; coven re-hashes the decoded bytes
 /// against the SIGNED manifest (crypto.sha256_bytes), so only the attested bytes are
 /// accepted — and `/coven/artifact/bytes` serves them back for the installer. A
@@ -1060,7 +1060,7 @@ fn publish_uploads_artifact_bytes_then_serves_them() {
     // The manifest commits to sha256("hello"); the uploaded bytes must match it.
     let sha_hello = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let manifest = format!(
-        "{{\"version\":1,\"artifacts\":{{\"aarch64-apple-darwin\":{{\"kind\":\"trusted-exe\",\"command\":\"wrg\",\"sha256\":\"{sha_hello}\",\"size\":5,\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}"
+        "{{\"version\":1,\"artifacts\":{{\"aarch64-apple-darwin\":{{\"kind\":\"trusted-publisher\",\"command\":\"wrg\",\"sha256\":\"{sha_hello}\",\"size\":5,\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}"
     );
     std::fs::write(app.join("artifact.json"), &manifest).unwrap();
     std::fs::create_dir_all(app.join("artifacts")).unwrap();
@@ -1109,16 +1109,16 @@ fn publish_uploads_artifact_bytes_then_serves_them() {
 /// RFC-0095 Cut 3: `pm install` runs the full trust chain end to end — resolve the
 /// released version, verify the signed record against the registry root key, read
 /// the coven-v2 artifact_digest, digest-verify the manifest, select the target,
-/// fetch the bytes and check their sha256 — then writes the trusted-exe into the
+/// fetch the bytes and check their sha256 — then writes the trusted-publisher into the
 /// project's `.witchy/bin/`. A source-only package is refused.
 #[test]
-fn install_fetches_verifies_and_writes_a_trusted_exe() {
+fn install_fetches_verifies_and_writes_a_trusted_publisher() {
     let server = RegistryServer::start();
     let fe = FrontEnd::new(&server, "install");
     let appsrc = fe.lib("acme/wrg", "0.3.0", "pub fn go() -> String:\n    \"hi\"\n");
     let sha_hello = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let manifest = format!(
-        "{{\"version\":1,\"artifacts\":{{\"aarch64-apple-darwin\":{{\"kind\":\"trusted-exe\",\"command\":\"wrg\",\"sha256\":\"{sha_hello}\",\"size\":5,\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}"
+        "{{\"version\":1,\"artifacts\":{{\"aarch64-apple-darwin\":{{\"kind\":\"trusted-publisher\",\"command\":\"wrg\",\"sha256\":\"{sha_hello}\",\"size\":5,\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}"
     );
     std::fs::write(appsrc.join("artifact.json"), &manifest).unwrap();
     std::fs::create_dir_all(appsrc.join("artifacts")).unwrap();
@@ -1138,7 +1138,7 @@ fn install_fetches_verifies_and_writes_a_trusted_exe() {
     assert!(out.status.success(), "install failed: {}\n{}", stdout(&out), stderr(&out));
     assert!(stdout(&out).contains("installed wrg"), "install receipt: {}", stdout(&out));
     let installed = fe.home().join("bin").join("wrg");
-    assert!(installed.exists(), "the trusted-exe must be installed into $WITCHY_HOME/bin");
+    assert!(installed.exists(), "the trusted-publisher must be installed into $WITCHY_HOME/bin");
     assert_eq!(std::fs::read(&installed).unwrap(), b"hello", "installed bytes match the published, signed artifact");
 
     // A compromised artifact store can still serve bytes that disagree with
@@ -1238,7 +1238,7 @@ fn publish_rejects_a_typosquat_of_an_existing_name() {
 }
 
 /// RFC-0095 Cut 6 (run-acceptance): the whole product slice end to end. Build a
-/// REAL trusted-exe of the committed minigrep application, publish it to coven (its
+/// REAL trusted-publisher of the committed minigrep application, publish it to coven (its
 /// bytes uploaded in base64 CHUNKS, since a real host launcher far exceeds the net
 /// recv cap in a single body), promote it, then `pm install` it into a hermetic
 /// `$WITCHY_HOME` (fetched back in chunks and sha256-verified against the signed
@@ -1257,7 +1257,7 @@ fn install_and_run_a_trusted_application_end_to_end() {
     let repo = env!("CARGO_MANIFEST_DIR");
 
     // 1. Assemble a publishable, NAMESPACED minigrep rune from the committed example,
-    //    keeping its `[targets.trusted-exe]` binding (cwd Dir[Read] + IGNORE_CASE env).
+    //    keeping its `[targets.trusted-publisher]` binding (cwd Dir[Read] + IGNORE_CASE env).
     let app = fe.base.join("minigrep");
     std::fs::create_dir_all(app.join("src")).unwrap();
     let toml = std::fs::read_to_string(Path::new(repo).join("examples/minigrep/witchy.toml"))
@@ -1271,21 +1271,21 @@ fn install_and_run_a_trusted_application_end_to_end() {
         std::fs::copy(Path::new(repo).join("examples/minigrep").join(f), app.join(f)).unwrap();
     }
 
-    // 2. Build the real trusted-exe: one self-contained host launcher bundling the
+    // 2. Build the real trusted-publisher: one self-contained host launcher bundling the
     //    compiled WASM and its digest-checked launch contract (RFC-0092).
     let built = Command::new(BIN)
         .current_dir(&app)
-        .args(["--release", "build", "--target", "trusted-exe", "."])
+        .args(["--release", "build", "--target", "trusted-publisher", "."])
         .output()
-        .expect("spawn trusted-exe build");
+        .expect("spawn trusted-publisher build");
     assert!(
         built.status.success(),
-        "trusted-exe build failed:\nstdout: {}\nstderr: {}",
+        "trusted-publisher build failed:\nstdout: {}\nstderr: {}",
         stdout(&built),
         stderr(&built)
     );
     let exe = app.join("target/release/minigrep");
-    assert!(exe.is_file(), "missing built trusted-exe at {}", exe.display());
+    assert!(exe.is_file(), "missing built trusted-publisher at {}", exe.display());
     let bytes = std::fs::read(&exe).unwrap();
 
     // 3. Author the artifact manifest the publish commits to: it binds the exe's
@@ -1299,7 +1299,7 @@ fn install_and_run_a_trusted_application_end_to_end() {
     // --target) auto-detects the same triple — exercising host-target auto-detection.
     let target = env!("WITCHY_HOST_TARGET");
     let manifest = format!(
-        "{{\"version\":1,\"artifacts\":{{\"{target}\":{{\"kind\":\"trusted-exe\",\"command\":\"minigrep\",\"sha256\":\"{sha}\",\"size\":{},\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}",
+        "{{\"version\":1,\"artifacts\":{{\"{target}\":{{\"kind\":\"trusted-publisher\",\"command\":\"minigrep\",\"sha256\":\"{sha}\",\"size\":{},\"binding_plan_sha256\":\"\",\"authority\":[]}}}}}}",
         bytes.len()
     );
     std::fs::write(app.join("artifact.json"), &manifest).unwrap();
@@ -1337,7 +1337,7 @@ fn install_and_run_a_trusted_application_end_to_end() {
         stderr(&out)
     );
     let installed = fe.home().join("bin").join("minigrep");
-    assert!(installed.is_file(), "installed trusted-exe missing at {}", installed.display());
+    assert!(installed.is_file(), "installed trusted-publisher missing at {}", installed.display());
     assert_eq!(
         std::fs::read(&installed).unwrap(),
         bytes,
@@ -1349,10 +1349,10 @@ fn install_and_run_a_trusted_application_end_to_end() {
     assert_ne!(
         std::fs::metadata(&installed).unwrap().permissions().mode() & 0o111,
         0,
-        "pm install must set the execute bit on the installed trusted-exe"
+        "pm install must set the execute bit on the installed trusted-publisher"
     );
 
-    // 7. RUN the installed trusted-exe: empty PATH, a fresh cwd, no grant flags — it
+    // 7. RUN the installed trusted-publisher: empty PATH, a fresh cwd, no grant flags — it
     //    is self-contained and its Dir[Read] follows launch cwd (RFC-0092).
     let search = fe.base.join("search");
     std::fs::create_dir_all(&search).unwrap();
@@ -1367,7 +1367,7 @@ fn install_and_run_a_trusted_application_end_to_end() {
         .env_remove("IGNORE_CASE")
         .args(["nobody", "poem.txt"])
         .output()
-        .expect("run the installed trusted-exe");
+        .expect("run the installed trusted-publisher");
     assert_eq!(ran.status.code(), Some(0), "installed app run failed: {}", stderr(&ran));
     assert_eq!(
         stdout(&ran),

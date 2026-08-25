@@ -419,7 +419,7 @@ there: it protects the `Secret` handle, not the variable behind it.
 
 So the host **removes each backing variable as it resolves the secret**, before
 the VM is instantiated and before any guest code runs. Both launch paths
-(`--grants` and a trusted executable's binding plan) resolve through the same
+(`--grants` and a trusted-publisher application's binding plan) resolve through the same
 call, so neither can inject a secret and forget to strip it.
 
 Mutating a process's environment is only sound before that process becomes
@@ -527,5 +527,12 @@ Honest limits, so you can reason about the system:
 - **Granted authority is granted.** If you hand a program `Dir[Write]` on your
   home directory, it can write your home directory. Capabilities make
   authority *visible and minimal*, not magically safe.
+- **Writes can influence future execution.** A writable root includes files
+  that another process may later interpret as commands, build inputs, dynamic
+  modules, or executable-cache state. Granting `Dir[Write]` over such a root
+  accepts that future-execution influence. Witchy does not hide cache paths or
+  authenticate cache records against a writer outside this boundary; callers
+  that need stronger separation must delegate a narrower root or use another
+  OS principal/container boundary.
 - **Covert channels.** Timing and other microarchitectural side channels
   (e.g. Spectre-class) are out of scope.

@@ -11,7 +11,7 @@ use crate::{
     format, idp, link_file_checked, load_signing_seed, lsp, opt, parser, pipeline,
     project_entry_file, report_capabilities, report_capability_diff, report_derived_csp,
     report_grant_check, report_grant_diff,
-    run_benchmarks, runtime, trusted_exe, RUN_MEMORY_PAGES,
+    run_benchmarks, runtime, trusted_publisher, RUN_MEMORY_PAGES,
 };
 use witchy_syntax::linker;
 
@@ -22,21 +22,21 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     // default reads this vtable; a trusted program (pm/coven) calling
     // `compiler.footprint` needs it present before any run.
     witchy_interp::compiler_natives::install();
-    // RFC-0092: a packaged application is a normal command. Detect its
-    // authenticated overlay before interpreting ANY argv as Witchy compiler or
+    // RFC-0157: a packaged application is a normal command. Detect its
+    // checked overlay before interpreting ANY argv as Witchy compiler or
     // grant flags; every token after argv[0] belongs to the application.
     let executable = std::env::current_exe().map_err(wasmtime::Error::from)?;
-    match trusted_exe::load(&executable) {
+    match trusted_publisher::load(&executable) {
         Ok(Some(application)) => match commands::wasm_exec::run_trusted_application(&application) {
             Ok(code) => std::process::exit(code),
             Err(error) => {
-                eprintln!("trusted executable startup failed: {error}");
+                eprintln!("trusted-publisher application startup failed: {error}");
                 std::process::exit(1);
             }
         },
         Ok(None) => {}
         Err(error) => {
-            eprintln!("trusted executable startup failed: {error}");
+            eprintln!("trusted-publisher application startup failed: {error}");
             std::process::exit(1);
         }
     }

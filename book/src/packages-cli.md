@@ -108,7 +108,7 @@ release past its cooldown needs no flag.
 | `witchy new <name>` / `init [name]` | scaffold a rune - `new` makes a subdirectory, `init` writes into the current one (namespaced names like `acme/lib` work) |
 | `witchy add <pkg>[@<version>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]` | resolve + add a **registry** dependency - **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is denied unless `--allow-fresh`. A local **path** dependency is added by hand in `witchy.toml`; `add --path` isn't wired up |
 | `witchy build [<file\|dir>]` | resolve, verify hashes, link, type-check; writes/uses the lock (defaults to the current project) |
-| `witchy --release build --target trusted-exe [--out <path>]` | emit one host-native trusted application containing the runtime and compiled WASM (default `target/release/<rune-name>`) |
+| `witchy --release build --target trusted-publisher [--out <path>]` | emit one host-native trusted application containing the runtime and compiled WASM (default `target/release/<rune-name>`) |
 | `witchy run [<file\|dir>] [args…]` | `build`, then run the app rune |
 | `witchy update [--allow-cap <Cap>]...` | re-resolve; **blocked** until you consent to any widening with `--allow-cap` |
 | `witchy outdated <dir> <coven-host:port>` | what could upgrade, without touching anything |
@@ -128,33 +128,33 @@ file - as a positional argument: pass `.` to inspect the current project, or a
 relative path to inspect one elsewhere (`witchy tree path/to/app`,
 `witchy why path/to/app genlib`).
 
-`trusted-exe` is an installation artifact, not an untrusted sandbox. Running it
+`trusted-publisher` is an installation artifact, not an untrusted sandbox. Running it
 trusts the application, its embedded witchy runtime, and its distributor. The
 application author must bind each resource parameter of `main` in
-`[targets.trusted-exe]`; a directory binding selects exactly one launch-time
+`[targets.trusted-publisher]`; a directory binding selects exactly one launch-time
 root such as cwd or `/`, and witchy operations still accept only paths relative
 to that root. Use portable `.wasm` with consumer-supplied grants when the person
 running the code doesn't want to trust the application beyond a sandbox.
 
 ```toml
-[targets.trusted-exe.dirs]
+[targets.trusted-publisher.dirs]
 workspace = { from = "cwd" }
 filesystem = { from = "path", path = "/" }
 
-[targets.trusted-exe.files]
+[targets.trusted-publisher.files]
 config = { from = "path", path = "./app.toml" }
 
-[targets.trusted-exe.env]
+[targets.trusted-publisher.env]
 environment = { from = "system", names = ["HOME", "LANG"] }
 
-[targets.trusted-exe.net]
+[targets.trusted-publisher.net]
 network = { from = "allow", addresses = ["api.example.com:443"] }
 # `from = "system"` is the explicit unrestricted alternative.
 
-[targets.trusted-exe.exec]
+[targets.trusted-publisher.exec]
 runner = { from = "allow", programs = ["git"] }
 
-[targets.trusted-exe.secrets]
+[targets.trusted-publisher.secrets]
 token = { from = "env:APP_TOKEN", sealed = true }
 ```
 
@@ -163,7 +163,7 @@ must fail on unsupported or partial enforcement records the stricter choice in
 the authenticated binding plan:
 
 ```toml
-[targets.trusted-exe]
+[targets.trusted-publisher]
 confine = "required"
 ```
 

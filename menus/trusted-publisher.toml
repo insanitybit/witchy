@@ -1,4 +1,4 @@
-host = "trusted-exe"
+host = "trusted-publisher"
 axis = "runtime"
 
 [enforcement]

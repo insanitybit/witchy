@@ -18,21 +18,9 @@ audited_ignored_test_names() {
         ' "$source"
     fi
 
-    source="$root/crates/witchy-cache/tests/platform_authenticator.rs"
-    if [ -f "$source" ]; then
-        awk '
-        /^[[:space:]]*#\[ignore([^]]*)?\]/ { armed=1; next }
-        armed {
-            if ($0 ~ /^[[:space:]]*fn platform_authenticator_is_stable_across_processes\(/) {
-                print "platform_authenticator_is_stable_across_processes"
-            }
-            exit
-        }
-        ' "$source"
-    fi
 }
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+repo_root="${WITCHY_NEXTEST_IGNORED_SOURCE_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}"
 
 [ "${1:-}" != "--validate-ignore-policy" ] || {
     cd "${2:-.}"
@@ -47,8 +35,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
     policy_valid=0
     if [ "$ignore_count" -eq "$audited_ignore_count" ]; then
         case "$ignore_paths" in
-            '' | src/stats.rs | crates/witchy-cache/tests/platform_authenticator.rs | \
-                $'crates/witchy-cache/tests/platform_authenticator.rs\nsrc/stats.rs')
+            '' | src/stats.rs)
                 policy_valid=1
                 ;;
         esac

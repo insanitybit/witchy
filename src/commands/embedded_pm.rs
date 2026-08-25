@@ -115,7 +115,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // cwd, ordinal 1 = bin so `Exec` finds the compiler) and surfaces `main`'s
     // `Int` exit code.
     // (RFC-0095 Cut 4) The witchy-home provider: a third `Dir` granted for
-    // $WITCHY_HOME (ordinal 2), so `install` can write trusted-exes into its `bin/`
+    // $WITCHY_HOME (ordinal 2), so `install` can write trusted-publishers into its `bin/`
     // without reaching outside the project `Dir`. Resolve it (WITCHY_HOME, else
     // ~/.witchy) and create it so the grant is valid; other commands ignore it.
     let home = witchy_home_dir();

@@ -254,7 +254,7 @@ pub fn resolve_secret_provider(from: &str) -> Result<Vec<u8>, String> {
 /// reports.
 ///
 /// Resolution and consumption are one operation on purpose: both launch paths
-/// (`--grants` and the trusted-executable plan) call this, so neither can
+/// (`--grants` and the trusted-publisher binding plan) call this, so neither can
 /// resolve a secret and forget to strip it. Each variable is removed once, so
 /// two secrets may legitimately share one provider.
 ///

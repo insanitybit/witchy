@@ -380,11 +380,11 @@ impl Coven:
                 None -> Err(CovenError(404, "${name}@${version} has no artifact manifest (source-only release)"))
         )
 
-    // GET /coven/artifact/bytes?name&version&target — one target's raw trusted-exe
+    // GET /coven/artifact/bytes?name&version&target — one target's raw trusted-publisher
     // bytes, base64-encoded (JSON transport). The installer decodes and verifies the
     // sha256 against the signed manifest before trusting them.
     // GET /coven/artifact/bytes?name&version&target&off=&len= — a RANGE of the
-    // artifact's base64, as a raw text body. Ranged because a real trusted-exe is
+    // artifact's base64, as a raw text body. Ranged because a real trusted-publisher is
     // tens of MB and a whole body would exceed the net recv cap; the installer loops
     // off/len until a short body, concatenates, decodes, and verifies. `off` past the
     // end returns "" (the end marker). `len<=0` serves to the end (small artifacts).
@@ -408,7 +408,7 @@ impl Coven:
         )
 
     // POST /coven/artifact/bytes?name&version&target&seq=&last= with ONE chunk's
-    // base64 as the raw body. Chunked because a real trusted-exe (tens of MB) can't
+    // base64 as the raw body. Chunked because a real trusted-publisher (tens of MB) can't
     // fit one body under the net recv cap — and base64-ing it whole would exceed the
     // runtime's string limits. Each chunk's base64 is decoded to bytes on arrival and
     // written as part `seq`; on last=true the parts are concatenated, sha256-verified

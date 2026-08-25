@@ -73,7 +73,6 @@ identity, arity, ownership, or meaning.
 | Checked front-end pipeline | `witchy-types::pipeline::CheckedModule`; `witchy-interp::pipeline` supplies expansion | Production sinks accept the proof object. Tooling may stop at a named `LinkedModule`; bare `Module` isn't an execution credential. |
 | Type judgment and expression facts | `witchy-types::typeck::{TypedModule,TypeTable}` | Arbitrary AST mutation always reannotates; node-preserving mutation is crate-private. |
 | Capability vocabulary | `witchy-cap-model` | Compiler, analyzer, fixtures, and runtime share names/classes/rights vocabulary without depending upward. |
-| Executable-cache authentication | `witchy-cache` | Host-only authenticators create and verify bounded records; consumers receive authenticated payload bytes without importing compiler or runtime stages. |
 | Capability operation identity, receiver, arity, and coarse result | `witchy-syntax::cap_ops::OPS` | Type checking and trait lowering use receiver-qualified catalog lookup; operation-specific rights remain checker policy. |
 | Effective nominal type parameters | `witchy-syntax::ast::effective_type_params` | Type checking, reflection, storage, traits, and codegen delegate rather than infer separate parameter order. |
 | Runtime declaration identity and closed shapes | `witchy-types::runtime_type` | Backends consume authenticated declaration catalogs; they don't reconstruct ownership from names. |
@@ -95,7 +94,6 @@ stage crates have this maximum direct-dependency graph:
 | Stage | Allowed stage dependencies | Classification | Next boundary change |
 |---|---|---|---|
 | `witchy-cap-model` | none | KEEP | Keep the capability names, classes, arities, and rights vocabulary dependency-bottom and free of syntax, policy, or runtime behavior. |
-| `witchy-cache` | none | KEEP | Keep authenticated executable-cache framing, bounded I/O, and platform credential access dependency-bottom; compiler and runtime consumers supply frozen input and recipe identities from above. |
 | `witchy-testkit` | `cap-model` | KEEP | Keep deterministic fixture models, validation, provider state machines, expectations, and transcripts authority-free and independent of compiler and runtime stages. |
 | `witchy-test-host` | `testkit` | KEEP | Keep backend-neutral fixture dispatch over opaque handles; adapters in the interpreter, Wasmtime runtime, and browser remain consumers rather than dependencies. |
 | `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |
@@ -147,9 +145,9 @@ old path after its callers move.
 | Argument parsing, help, dispatch | `src/cli.rs` owns help/version presentation + flag/secret decoding; `src/commands/dispatch.rs` owns argv routing (lifted from `main.rs`). `main.rs` is a 220-line composition root (install services + call dispatch). | KEEP | Golden help/flag/exit behavior preserved byte-for-byte (CLI subprocess suite). |
 | Project and source loading | `src/source.rs` owns native project discovery, bundled lookup, dependency-aware file loading, linking, checked linking, and expansion; browser resolution in `lib.rs` and LSP loading remain separate adapters | CONSOLIDATE | Introduce filesystem and bundled-source providers so browser and LSP reuse the canonical loader without importing CLI policy. Linking/checking tests cover dependency and diagnostic behavior. |
 | Check, expand, docs, capability reports | `src/commands/{frontend,capabilities}.rs` over `src/source.rs` and checked compiler services | NARROW | Preserve the command-service boundary while typed top-level dispatch replaces repeated argv polling. CLI tests lock stdout, stderr, and status. |
-| AST to Wasm compilation and cache | `src/commands/compile.rs` | KEEP | One native compilation service owns checked artifact emission, trusted-exe packaging, and embedded/source cache publication. Wasm/parity and CLI subprocess tests guard bytes and behavior. |
+| AST to Wasm compilation and cache | `src/commands/compile.rs` | KEEP | One native compilation service owns checked artifact emission, trusted-publisher packaging, and embedded/source cache publication. Wasm/parity and CLI subprocess tests guard bytes and behavior. |
 | Compiled execution and parity | `src/commands/execution.rs` (`run_linked_compiled`, `parity_check`) + `src/commands/wasm_exec.rs` (`run_wasm_*`, trusted-app launch) | KEEP | Extracted from the composition root; differential and exact-error tests remain authoritative. |
-| Sandbox, grants, trusted apps | `src/commands/sandbox.rs`, `trusted_exe`, `witchy-runtime::runtime` | KEEP | Policy adapters extracted from the composition root above the runtime kernel; denial/confinement/trust/e2e tests unchanged. |
+| Sandbox, grants, trusted apps | `src/commands/sandbox.rs`, `trusted_publisher`, `witchy-runtime::runtime` | KEEP | Policy adapters extracted from the composition root above the runtime kernel; denial/confinement/trust/e2e tests unchanged. |
 | Build-step execution | `src/commands/build_steps.rs` | KEEP | Dedicated build-step service extracted from the composition root; compiled build-step tests preserve behavior. |
 | Embedded PM and Coven integration | `src/commands/embedded_pm.rs` + self-hosted `projects/` sources | KEEP | Native launcher extracted from the composition root; the witchy programs remain product source. E2E workflows guard it. |
 

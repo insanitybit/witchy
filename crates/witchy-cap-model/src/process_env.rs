@@ -7,7 +7,7 @@
 //! use-after-free, not a tidy panic.
 //!
 //! The launch paths that strip secret-bearing variables (RFC-0013 grant
-//! documents, RFC-0092 trusted-executable plans) satisfy the requirement because
+//! documents, RFC-0092 trusted-publisher plans) satisfy the requirement because
 //! they run before the VM is instantiated and before the runtime spawns any
 //! thread. That was previously asserted only in a comment — so this module makes
 //! the claim CHECKED instead:

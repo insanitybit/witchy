@@ -29,7 +29,7 @@ procedure is [RELEASING.md](RELEASING.md):
   runner matches the advertised target), packaged reproducibly (pinned
   `SOURCE_DATE_EPOCH`, canonical `release-package.sh` /
   `release-checksums.sh` logic), and smoked via `release-smoke.sh`
-  (installed-archive plus trusted-exe checks) before upload.
+  (installed-archive plus trusted-publisher checks) before upload.
 - A manifest job requires the exact expected target set and generates the
   combined `SHA256SUMS`.
 - The publish job creates an immutable **draft**; going live requires a
@@ -52,7 +52,7 @@ against the uploaded `SHA256SUMS`, extraction, and running the binary.
 | `witchy test` | PASS | Extracted binary runs a temporary project's in-language test. |
 | Project `build` / `run` | PASS | Embedded package front end builds and runs a temporary local project using no checkout inputs. |
 | Portable WASM compile / sandbox | PASS | Extracted binary emits `.wasm`; the same binary runs it with expected output. |
-| [`trusted-exe`](rfcs/0092-trusted-application-executables.md) | PASS | Exercised per target by `release-smoke.sh` in every native artifact job. |
+| [`trusted-publisher`](rfcs/0092-trusted-application-executables.md) | PASS | Exercised per target by `release-smoke.sh` in every native artifact job. |
 | Backend parity | PASS | The release workflow's parity sweep differentially checks every runnable example on the tagged commit; the full gate was green before any artifact was built. |
 | Remote Coven lifecycle | EXCLUDED | Implemented and e2e-tested against loopback, but not part of the 0.1 installability promise. Hosting it is post-0.1.0 work ([RFC-0116](rfcs/0116-hosted-coven-registry-m1.md), in flight). |
 | Grimoire/Coven integrated install ([RFC-0095](rfcs/0095-grimoire-trusted-application-installation.md)) | EXCLUDED | RFC-0095 is rejected by RFC-0157; any future installer requires a new trusted-publisher design and independent evidence. |

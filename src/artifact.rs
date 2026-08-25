@@ -28,7 +28,7 @@ const CAP_TAGS: [(&str, u8); 11] = [
     ("Fetch", 10),
 ];
 
-// These bit positions are WIRE FORMAT: a trusted executable digests the encoded
+// These bit positions are WIRE FORMAT: a trusted-publisher application digests the encoded
 // payload, so an existing right's bit must never be renumbered. New rights take
 // the next free bit. `every_rights_bearing_capability_has_a_bit_table` fails if a
 // capability gains a rights vocabulary without a table here — otherwise its rights
@@ -74,7 +74,7 @@ pub fn launch_contract(wasm: &[u8]) -> Result<Option<capabilities::CapSet>, Stri
 }
 
 /// Return the exact encoded `witchy.launch` payload after validating that the
-/// module carries at most one section. Trusted executables digest these bytes,
+/// module carries at most one section. Trusted-publisher applications digest these bytes,
 /// rather than a reconstructed capability set, so packaging cannot silently
 /// change or discard launch metadata that the runtime will consume.
 pub fn launch_contract_payload(wasm: &[u8]) -> Result<Option<&[u8]>, String> {

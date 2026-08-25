@@ -243,7 +243,7 @@ for p in "${paths[@]}"; do
             add_witchy_test 'diagnostic_golden_tests'
             add "cargo nextest run -E 'test(/^diagnostic_golden_tests/)'" ;;
         src/lib.rs | src/artifact.rs | src/stats.rs | src/idp.rs | \
-        src/trusted_exe.rs | src/capabilities_tests.rs)
+        src/trusted_publisher.rs | src/capabilities_tests.rs)
             any_rust=1
             add_pkg witchy
             add "cargo nextest run -p witchy --lib" ;;

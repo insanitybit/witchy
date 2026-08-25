@@ -17,7 +17,7 @@ type PublishRequest:
     uploaded_by: String
     id_token: Option(String)
     // (RFC-0095) The artifact manifest JSON for an application release (a
-    // target -> trusted-exe map, coven_artifact). `None` for a source-only rune.
+    // target -> trusted-publisher map, coven_artifact). `None` for a source-only rune.
     artifact: Option(String)
 
 // A promote: the decoded rune name + version, promoter identity, and identity token.

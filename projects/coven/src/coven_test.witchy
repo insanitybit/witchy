@@ -280,7 +280,7 @@ fn artifact_hex64() -> String:
 
 fn test_artifact_manifest_parses_and_selects():
     let h = artifact_hex64()
-    let good = "{\"version\":1,\"artifacts\":{\"aarch64-apple-darwin\":{\"kind\":\"witchy-trusted-exe-v1\",\"command\":\"wrg\",\"sha256\":\"" + h + "\",\"size\":12345,\"binding_plan_sha256\":\"" + h + "\",\"authority\":[\"root: cwd Dir[Read]\"]}}}"
+    let good = "{\"version\":1,\"artifacts\":{\"aarch64-apple-darwin\":{\"kind\":\"witchy-trusted-publisher-v1\",\"command\":\"wrg\",\"sha256\":\"" + h + "\",\"size\":12345,\"binding_plan_sha256\":\"" + h + "\",\"authority\":[\"root: cwd Dir[Read]\"]}}}"
     match coven_artifact.parse(good):
         Err(e) -> testing.assert(false, "valid manifest must parse: ${coven_artifact.artifact_error_message(e)}")
         Ok(m) ->

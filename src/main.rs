@@ -39,7 +39,7 @@ pub(crate) use witchy::parser;
 mod idp;
 pub(crate) use witchy::runtime;
 pub(crate) use witchy::typeck;
-pub(crate) use witchy::trusted_exe;
+pub(crate) use witchy::trusted_publisher;
 
 pub(crate) use commands::capabilities::{
     report_capabilities, report_capability_diff, report_derived_csp, report_grant_check, report_grant_diff,

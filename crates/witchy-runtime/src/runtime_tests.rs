@@ -47,14 +47,12 @@
     }
 
     #[test]
-    fn trusted_executable_runtime_has_no_mutable_executable_cache() {
-        let trusted = Runtime::trusted_executable().expect("trusted executable runtime");
+    fn ordinary_batch_runtime_has_mutable_executable_cache() {
+        let publisher = Runtime::batch().expect("publisher runtime");
         assert!(
-            !trusted.executable_cache,
-            "authenticated executables must not consume optimized-Wasm or Wasmtime cache state"
+            publisher.executable_cache,
+            "publisher applications use the ordinary optimized-Wasm and Wasmtime cache policy"
         );
-        let ordinary = Runtime::batch().expect("ordinary batch runtime");
-        assert!(ordinary.executable_cache, "source and portable-Wasm runs retain cache behavior");
     }
 
     fn wasm_with_host_import(name: &str) -> Vec<u8> {

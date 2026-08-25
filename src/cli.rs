@@ -41,7 +41,7 @@ USAGE:
     witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments
     witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--out <file.wasm>]
                                                   compile to a standalone .wasm module
-    witchy --release build --target trusted-exe [--out <file>]
+    witchy --release build --target trusted-publisher [--out <file>]
                                                   build a trusted self-contained native application
     witchy build-step <file.witchy> [--out <dir>] [--read <dir>]...
                                                   run a build-time entrypoint with declared grants

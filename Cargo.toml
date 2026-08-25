@@ -45,7 +45,7 @@ pkg-fmt = "tgz"
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-cache", "crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir"]
+members = ["crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir"]
 
 [lib]
 name = "witchy"
@@ -144,7 +144,7 @@ rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
 # Signs a test id_token for the mock-Google OIDC login e2e (same crypto as the client).
 aws-lc-rs = "1"
-# The RFC-0095 Cut-6 run-acceptance e2e hashes the built trusted-exe to author its
+# The RFC-0095 Cut-6 run-acceptance e2e hashes the built trusted-publisher to author its
 # artifact manifest — the same sha2 coven re-verifies the uploaded bytes against.
 sha2 = "0.11.0"
 

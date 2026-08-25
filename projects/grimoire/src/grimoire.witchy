@@ -162,11 +162,11 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
     let options = build_options(args)
     let dir = options.dir
     if !options.error.is_empty():
-        console.print("usage: grimoire build [--target trusted-exe] [--out <path>] [--release|--debug] [<dir>]")
+        console.print("usage: grimoire build [--target trusted-publisher] [--out <path>] [--release|--debug] [<dir>]")
         console.print(options.error)
         1
-    else if options.target != "wasm" && options.target != "trusted-exe":
-        console.print("unknown build target `${options.target}` (expected `wasm` or `trusted-exe`)")
+    else if options.target != "wasm" && options.target != "trusted-publisher":
+        console.print("unknown build target `${options.target}` (expected `wasm` or `trusted-publisher`)")
         1
     else if root.exists(join_path(dir, "witchy.toml")):
         match ensure_lock_integrity(root, dir):
@@ -191,8 +191,8 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
                     None ->
                         console.print("no entry source under ${join_path(dir, "src")}")
                         1
-    else if options.target == "trusted-exe":
-        console.print("trusted-exe builds require a project directory containing witchy.toml")
+    else if options.target == "trusted-publisher":
+        console.print("trusted-publisher builds require a project directory containing witchy.toml")
         1
     else:
         run_compiler(console, runner, bin, "build", ["compile", dir])
@@ -713,7 +713,7 @@ fn usage(console: Console):
     console.print("  why-cap <dir> <Cap> which deps introduce a capability")
     console.print("  add <pkg>[@<ver>] [host:port]    fetch + vendor a rune, pin it in witchy.lock")
     console.print("  add <name> <req> <coven> <dest>  resolve + fetch a rune into <dest> (explicit)")
-    console.print("  install <pkg>[@<ver>] [host:port] [--target <triple>]  fetch + verify a trusted-exe into \$WITCHY_HOME/bin")
+    console.print("  install <pkg>[@<ver>] [host:port] [--target <triple>]  fetch + verify a trusted-publisher into \$WITCHY_HOME/bin")
     console.print("  publish <dir> [host:port] [id]    stage a rune to a coven registry")
     console.print("  promote <name> <ver> [host:port] [id]  release staged (trusted: COVEN_ID_TOKEN with MFA amr)")
     console.print("  yank  <name> <ver> [host:port]   flag a released version as yanked")
@@ -727,7 +727,7 @@ fn usage(console: Console):
     console.print("  init  [name]        add a manifest to an existing directory")
     console.print("  tree  <dir>         show a rune and its dependencies")
     console.print("  run   <file|dir>    compile and run a program/project (drives the compiler)")
-    console.print("  build [--target trusted-exe] [--out path] [file|dir]  verify or emit a trusted native app")
+    console.print("  build [--target trusted-publisher] [--out path] [file|dir]  verify or emit a trusted native app")
     console.print("  typecheck <file>    type-check a program")
     console.print("  test  <dir>         run a rune's tests")
     console.print("  fmt   <file>        format a source file")

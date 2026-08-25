@@ -1,6 +1,6 @@
 //! Native compilation, artifact emission, and source-cache services.
 
-use witchy::{artifact, enforce_performance_modes, trusted_exe};
+use witchy::{artifact, enforce_performance_modes, trusted_publisher};
 use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_interp::pipeline;
@@ -84,7 +84,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 "--target" => match argv.next() {
                     Some(value) => target = value,
                     None => {
-                        eprintln!("--target needs `wasm` or `trusted-exe`");
+                        eprintln!("--target needs `wasm` or `trusted-publisher`");
                         std::process::exit(1);
                     }
                 },
@@ -107,7 +107,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
         }
         let Some(entry) = entry else {
             eprintln!(
-                "usage: witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--target wasm|trusted-exe] [--manifest witchy.toml] [--out <file>]"
+                "usage: witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--target wasm|trusted-publisher] [--manifest witchy.toml] [--out <file>]"
             );
             std::process::exit(1);
         };
@@ -147,28 +147,28 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
             match target.as_str() {
                 "wasm" => {
                     if manifest.is_some() {
-                        return Err("--manifest applies only to `--target trusted-exe`".into());
+                        return Err("--manifest applies only to `--target trusted-publisher`".into());
                     }
                     if let Some(f) = &out {
                         std::fs::write(f, &bytes)
                             .map_err(|e| format!("cannot write `{f}`: {e}"))?;
                     }
                 }
-                "trusted-exe" => {
+                "trusted-publisher" => {
                     let output = out.as_ref().ok_or_else(|| {
-                        "`witchy compile --target trusted-exe` requires `--out <executable>`"
+                        "`witchy compile --target trusted-publisher` requires `--out <executable>`"
                             .to_string()
                     })?;
                     let manifest = manifest.as_ref().ok_or_else(|| {
-                    "`witchy compile --target trusted-exe` requires `--manifest <witchy.toml>`".to_string()
-                })?;
-                    let source = std::fs::read_to_string(manifest).map_err(|e| {
-                        format!("cannot read trusted-exe manifest `{manifest}`: {e}")
+                        "`witchy compile --target trusted-publisher` requires `--manifest <witchy.toml>`".to_string()
                     })?;
-                    let bindings = trusted_exe::build_binding_plan(linked, &source)?;
+                    let source = std::fs::read_to_string(manifest).map_err(|e| {
+                        format!("cannot read trusted-publisher manifest `{manifest}`: {e}")
+                    })?;
+                    let bindings = trusted_publisher::build_binding_plan(linked, &source)?;
                     let launcher = std::env::current_exe()
-                        .map_err(|e| format!("cannot locate trusted-exe launcher template: {e}"))?;
-                    trusted_exe::package_file(
+                        .map_err(|e| format!("cannot locate trusted-publisher launcher template: {e}"))?;
+                    trusted_publisher::package_file(
                         &launcher,
                         std::path::Path::new(output),
                         &bytes,
@@ -177,7 +177,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 }
                 other => {
                     return Err(format!(
-                        "unknown compile target `{other}` (expected `wasm` or `trusted-exe`)"
+                        "unknown compile target `{other}` (expected `wasm` or `trusted-publisher`; use `trusted-publisher` for a packaged application)"
                     ));
                 }
             }

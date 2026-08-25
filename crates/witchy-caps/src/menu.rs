@@ -469,7 +469,7 @@ const fn axis_name(axis: MenuAxis) -> &'static str {
 
 pub const NATIVE_MENU: &str = include_str!("../../../menus/native.toml");
 pub const BROWSER_MENU: &str = include_str!("../../../menus/browser.toml");
-pub const TRUSTED_EXE_MENU: &str = include_str!("../../../menus/trusted-exe.toml");
+pub const TRUSTED_PUBLISHER_MENU: &str = include_str!("../../../menus/trusted-publisher.toml");
 pub const BUILD_MENU: &str = include_str!("../../../menus/build.toml");
 
 #[cfg(test)]
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn every_published_menu_is_valid_and_typed() {
-        for source in [NATIVE_MENU, BROWSER_MENU, TRUSTED_EXE_MENU, BUILD_MENU] {
+        for source in [NATIVE_MENU, BROWSER_MENU, TRUSTED_PUBLISHER_MENU, BUILD_MENU] {
             let menu = HostMenu::parse(source).expect("published menu must parse");
             assert!(!menu.host.is_empty());
         }
@@ -512,7 +512,7 @@ mod tests {
             }
         );
         assert_eq!(
-            HostMenu::parse(TRUSTED_EXE_MENU).unwrap().enforcement,
+            HostMenu::parse(TRUSTED_PUBLISHER_MENU).unwrap().enforcement,
             native.enforcement
         );
         assert_eq!(

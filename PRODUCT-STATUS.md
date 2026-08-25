@@ -38,7 +38,7 @@ The primary Witchy story is one end-to-end capability workflow:
 5. Compile the same program to portable WebAssembly and run it in the sandbox.
 6. Use `parity` to compare the interpreter oracle with compiled-WASM behavior.
 7. For a deliberately trusted application, build a self-contained
-   `trusted-exe` with checked root bindings.
+   `trusted-publisher` with checked root bindings.
 
 This journey is the front-page contract. Package distribution, a hosted
 registry, browser frameworks, and proposed language mechanisms are interesting
@@ -60,7 +60,7 @@ adjacent work, not prerequisites for it.
 | `witchy parity` | Supported preview | The fail-closed example sweep, diagnostic parity tests, and seeded-divergence positive control prove that the checker detects observable backend disagreement. It is a compiler-verification command, not an application workflow step. |
 | `witchy emit-wat` | Supported preview | It renders the same module used by the compiled sandbox path and is covered by parity-sensitive compiler tests. It is an inspection tool, not a separate backend. |
 | Single-rune `new`, `init`, `build`, and `run` | Supported preview | Hermetic project tests and installed smoke create, build, run, and test temporary local projects without reading compiler inputs from the checkout. Multi-rune dependency behavior is classified separately. |
-| `witchy --release build --target trusted-exe` | Supported preview | RFC-0092 tests and installed smoke cover checked bindings, source deletion, empty-`PATH` execution, argv preservation, Dir confinement, and corruption rejection. Running the result is a whole-artifact trust decision, not sandboxing of its trusted root. |
+| `witchy --release build --target trusted-publisher` | Supported preview | RFC-0092 tests and installed smoke cover checked bindings, source deletion, empty-`PATH` execution, argv preservation, Dir confinement, and corruption rejection. Running the result is a whole-artifact trust decision, not sandboxing of its trusted root. |
 | `witchy expand`, `which`, and `doc` | Experimental | Implemented and tested as authoring/inspection tools, but not required by the primary journey and not yet subjected to a curated first-user workflow. |
 | `witchy pm` and multi-rune/path/registry `add`, `build`, `run`, `update`, `audit`, `tree`, `outdated`, `why`, `why-cap`, `verify`, and `vendor` | Experimental | Substantial hermetic and E2E coverage exists, but dependency identity, update atomicity, build metadata, and documentation remain a broader evolving contract. These commands must not be used to justify the supported core. |
 | `build-step` and package build-capability workflows | Experimental | The confined BuildOut path has tests, but cache, generated-source, dependency, and capability-widening behavior are still an evolving package-system boundary. |
@@ -78,7 +78,7 @@ adjacent work, not prerequisites for it.
 | Typed host capabilities, rights narrowing, footprint inspection, and explicit sandbox grants | Supported preview | This is Witchy's defining product surface. The guarantee is confined to the documented compiler/runtime/host trust boundary; it is not a claim of general memory safety or independent security review. |
 | Interpreter oracle and compiled-WASM backend agreement | Supported preview | Observable success, output, exit behavior, and diagnostics are differential-gated, with a positive control proving the gate can fail. |
 | Portable WASM guest execution | Supported preview | The separately installed Witchy host remains trusted; the guest receives only explicitly bound host capabilities. |
-| `trusted-exe` | Supported preview | Self-contained trusted application artifact with checked embedded bindings and corruption detection. Embedded digests do not authenticate a publisher. |
+| `trusted-publisher` | Supported preview | Self-contained publisher application artifact with checked embedded bindings and corruption detection. Embedded digests validate integrity but do not authenticate a publisher. Publisher applications use the ordinary executable-cache policy. |
 | Standard-library APIs used by the supported journey and curated examples | Supported preview | Documentation freshness and executable examples cover this subset. This status does not silently promote every std module. |
 | Bounded async tasks, typed channels, and structured concurrency ([RFC-0129](rfcs/0129-concurrency-tasks-and-channels.md)) | Supported preview | Deterministic scheduling, typed carriers, structured task obligations, backend parity, one-time resumable state, and the sustained compiled memory gates are covered by the RFC acceptance matrix. This promotes bounded workflows and measured carrier shapes; it does not promise that a logically unbounded channel provides infinite storage. |
 | Parallel worker VMs ([RFC-0129](rfcs/0129-concurrency-tasks-and-channels.md)) | Experimental | Core destination. True parallelism is distinct from deterministic cooperative tasks and crosses owned serialization and capability boundaries. Its cost and availability need a curated workflow separate from `chan` examples. |
@@ -92,7 +92,7 @@ adjacent work, not prerequisites for it.
 | Multi-package dependency resolution and remote package lifecycle | Experimental | Local single-rune workflows are supported separately. Remote identity, update, vendor, build-step, and registry behavior form a larger contract. |
 | Coven, trusted publishing, and Coven Web | Experimental | No public service, availability promise, independent audit, or supported distribution contract is implied. |
 | Glamour, browser applications, playground, and the docs application | Experimental | These provide dogfood and executable documentation evidence. They are not yet promised as a supported general frontend platform. |
-| Grimoire/Coven integrated installation (RFC-0095) | Proposed / internal | Not part of the supported preview or `trusted-exe` contract. |
+| Grimoire/Coven integrated installation (RFC-0095) | Proposed / internal | Not part of the supported preview or `trusted-publisher` contract. |
 | Unaccepted lexical or other proposed language extensions | Proposed / internal | RFC discussion is not product availability. |
 
 ## Promotion rules

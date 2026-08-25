@@ -1,4 +1,4 @@
-//! RFC-0092 trusted-application executable envelope.
+//! RFC-0157 trusted-publisher application envelope.
 //!
 //! The host executable remains a normal platform image. Witchy appends the
 //! ordinary compiled WASM, a checked binding plan, and this fixed descriptor.
@@ -26,7 +26,7 @@ const DIGEST_LEN: usize = 32;
 const DESCRIPTOR_PREFIX_LEN: usize = 16 + 4 + 4 + 8 + 8 + 8 + 8 + DIGEST_LEN * 3;
 const DESCRIPTOR_LEN: usize = DESCRIPTOR_PREFIX_LEN + DIGEST_LEN;
 
-/// A validated application recovered from a trusted executable image.
+/// A validated application recovered from a trusted-publisher application image.
 #[derive(Debug, Clone, Copy)]
 pub struct EmbeddedApplication<'a> {
     pub wasm: &'a [u8],
@@ -143,9 +143,10 @@ struct ProjectManifest {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TargetTables {
-    #[serde(default, rename = "trusted-exe")]
-    trusted_exe: Option<TrustedTarget>,
+    #[serde(default, rename = "trusted-publisher")]
+    trusted_publisher: Option<TrustedTarget>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -216,17 +217,17 @@ struct RawSecretBinding {
 }
 
 /// Check the target configuration against `main` and encode the exact launch
-/// recipe that will be authenticated by the executable envelope.
+/// recipe that will be checked by the publisher application envelope.
 pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8>, String> {
     let parsed: ProjectManifest = toml::from_str(manifest)
-        .map_err(|error| format!("trusted-exe manifest is not valid TOML: {error}"))?;
-    let mut target = parsed.targets.trusted_exe.unwrap_or_default();
+        .map_err(|error| format!("trusted-publisher manifest is not valid TOML: {error}"))?;
+    let mut target = parsed.targets.trusted_publisher.unwrap_or_default();
     let confinement = target
         .confine
         .as_deref()
         .unwrap_or("best-effort")
         .parse::<witchy_confinement::EnforcementMode>()
-        .map_err(|error| format!("trusted-exe manifest: {error}"))?;
+        .map_err(|error| format!("trusted-publisher manifest: {error}"))?;
     let main = module
         .items
         .iter()
@@ -234,7 +235,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
             ast::Item::Function(function) if function.name == "main" => Some(function),
             _ => None,
         })
-        .ok_or_else(|| "trusted-exe target requires a `main` entrypoint".to_string())?;
+        .ok_or_else(|| "trusted-publisher target requires a `main` entrypoint".to_string())?;
     let grantable: BTreeSet<&str> = module
         .items
         .iter()
@@ -253,7 +254,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
     for parameter in &main.params {
         let Some(ty) = parameter.ty.as_ref().map(unqualified) else {
             return Err(format!(
-                "trusted-exe cannot synthesize unannotated `main` parameter `{}`; give it a supported concrete type",
+                "trusted-publisher cannot synthesize unannotated `main` parameter `{}`; give it a supported concrete type",
                 parameter.name
             ));
         };
@@ -264,7 +265,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
             "Console" | "Clock" | "Rand" => {}
             "Env" => {
                 if env.is_some() {
-                    return Err("trusted-exe currently supports one root `Env` parameter".into());
+                    return Err("trusted-publisher currently supports one root `Env` parameter".into());
                 }
                 let binding = target
                     .env
@@ -273,7 +274,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
                 let RawEnvBinding::System { mut names } = binding;
                 if names.iter().any(String::is_empty) {
                     return Err(format!(
-                        "trusted-exe Env binding `{}` contains an empty variable name",
+                        "trusted-publisher Env binding `{}` contains an empty variable name",
                         parameter.name
                     ));
                 }
@@ -291,7 +292,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
                     RawDirBinding::Cwd => DirSource::Cwd,
                     RawDirBinding::Path { path } if path.is_empty() => {
                         return Err(format!(
-                            "trusted-exe directory binding `{}` has an empty `path`",
+                            "trusted-publisher directory binding `{}` has an empty `path`",
                             parameter.name
                         ));
                     }
@@ -311,7 +312,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
                 let RawFileBinding::Path { path } = binding;
                 if path.is_empty() {
                     return Err(format!(
-                        "trusted-exe file binding `{}` has an empty `path`",
+                        "trusted-publisher file binding `{}` has an empty `path`",
                         parameter.name
                     ));
                 }
@@ -336,7 +337,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
             }
             "Exec" => {
                 if exec.is_some() {
-                    return Err("trusted-exe currently supports one root `Exec` parameter".into());
+                    return Err("trusted-publisher currently supports one root `Exec` parameter".into());
                 }
                 let binding = target
                     .exec
@@ -350,7 +351,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
                 };
                 if child_paths.iter().any(String::is_empty) {
                     return Err(format!(
-                        "trusted-exe Exec binding `{}` contains an empty child path",
+                        "trusted-publisher Exec binding `{}` contains an empty child path",
                         parameter.name
                     ));
                 }
@@ -362,20 +363,20 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
             }
             "Secret" => {
                 return Err(format!(
-                    "trusted-exe cannot bind root parameter `{}: Secret`; use `SecretStore` with a named provider",
+                    "trusted-publisher cannot bind root parameter `{}: Secret`; use `SecretStore` with a named provider",
                     parameter.name
                 ));
             }
             "NativeLoader" => {
                 return Err(format!(
-                    "trusted-exe cannot bind root parameter `{}: NativeLoader`; fixed approved module sets are not implemented",
+                    "trusted-publisher cannot bind root parameter `{}: NativeLoader`; fixed approved module sets are not implemented",
                     parameter.name
                 ));
             }
             "List" if matches!(args.as_slice(), [ast::Type::Named(item, inner)] if item == "String" && inner.is_empty()) => {}
             other if grantable.contains(other) => {
                 return Err(format!(
-                    "trusted-exe cannot bind grantable root parameter `{}: {other}`; this target has no checked provider for user-defined capabilities",
+                    "trusted-publisher cannot bind grantable root parameter `{}: {other}`; this target has no checked provider for user-defined capabilities",
                     parameter.name
                 ));
             }
@@ -384,10 +385,10 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
     }
 
     if exec.is_some() && !dirs.iter().any(|dir| dir.rights.read) {
-        return Err("trusted-exe `Exec` requires at least one bound `Dir[Read]` used to name confined executables".into());
+        return Err("trusted-publisher `Exec` requires at least one bound `Dir[Read]` used to name confined executables".into());
     }
     if secret_store_count == 0 && !target.secrets.is_empty() {
-        return Err("trusted-exe configures named secrets, but `main` has no `SecretStore` parameter".into());
+        return Err("trusted-publisher configures named secrets, but `main` has no `SecretStore` parameter".into());
     }
     reject_extra("dirs", &target.dirs)?;
     reject_extra("files", &target.files)?;
@@ -399,12 +400,12 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
     for (name, binding) in target.secrets {
         let Some(variable) = binding.from.strip_prefix("env:") else {
             return Err(format!(
-                "trusted-exe secret `{name}` uses unsupported provider `{}` (expected `env:VAR`)",
+                "trusted-publisher secret `{name}` uses unsupported provider `{}` (expected `env:VAR`)",
                 binding.from
             ));
         };
         if variable.is_empty() {
-            return Err(format!("trusted-exe secret `{name}` has an empty `env:` provider"));
+            return Err(format!("trusted-publisher secret `{name}` has an empty `env:` provider"));
         }
         secrets.push(SecretPlan { name, from: binding.from, sealed: binding.sealed });
     }
@@ -421,7 +422,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
         secrets,
     };
     serde_json::to_vec(&plan)
-        .map_err(|error| format!("cannot encode trusted-exe binding plan: {error}"))
+        .map_err(|error| format!("cannot encode trusted-publisher binding plan: {error}"))
 }
 
 /// Decode, cross-check, and resolve a binding plan on the target machine.
@@ -431,31 +432,31 @@ pub fn resolve_binding_plan(
     cwd: &std::path::Path,
 ) -> Result<ResolvedBindings, String> {
     let plan: BindingPlan = serde_json::from_slice(bytes)
-        .map_err(|error| format!("invalid trusted-exe binding plan: {error}"))?;
+        .map_err(|error| format!("invalid trusted-publisher binding plan: {error}"))?;
     if plan.version != PLAN_VERSION {
         return Err(format!(
-            "trusted-exe binding-plan version {} is unsupported (expected {PLAN_VERSION})",
+            "trusted-publisher binding-plan version {} is unsupported (expected {PLAN_VERSION})",
             plan.version
         ));
     }
     let declared = artifact::launch_contract(wasm)?
-        .ok_or_else(|| "trusted executable application has no `witchy.launch` metadata".to_string())?;
+        .ok_or_else(|| "trusted-publisher application has no `witchy.launch` metadata".to_string())?;
     if owned_contract(&declared) != plan.declared {
-        return Err("trusted-exe binding plan does not match the embedded `witchy.launch` contract".into());
+        return Err("trusted-publisher binding plan does not match the embedded `witchy.launch` contract".into());
     }
     let env_allow = match (declared.contains_key("Env"), plan.env) {
         (true, Some(binding)) => Some(binding.names),
         (true, None) => {
-            return Err("trusted-exe binding plan withholds the declared `Env` root".into());
+            return Err("trusted-publisher binding plan withholds the declared `Env` root".into());
         }
         (false, Some(_)) => {
-            return Err("trusted-exe binding plan grants `Env` outside the launch contract".into());
+            return Err("trusted-publisher binding plan grants `Env` outside the launch contract".into());
         }
         (false, None) => None,
     };
 
     let cwd = std::path::absolute(cwd)
-        .map_err(|error| format!("trusted-exe cannot resolve launch cwd `{}`: {error}", cwd.display()))?;
+        .map_err(|error| format!("trusted-publisher cannot resolve launch cwd `{}`: {error}", cwd.display()))?;
     let mut dir_authorities = Vec::new();
     let mut dir_rights = Vec::new();
     for dir in plan.dirs {
@@ -468,7 +469,7 @@ pub fn resolve_binding_plan(
         };
         let root = ConfinedDir::open_ambient(&candidate).map_err(|error| {
             format!(
-                "trusted-exe cannot admit directory binding `{}` at `{}`: {error}",
+                "trusted-publisher cannot admit directory binding `{}` at `{}`: {error}",
                 dir.name,
                 candidate.display()
             )
@@ -484,7 +485,7 @@ pub fn resolve_binding_plan(
         let candidate = if configured.is_absolute() { configured } else { cwd.join(configured) };
         let authority = ConfinedFile::open_ambient(&candidate).map_err(|error| {
             format!(
-                "trusted-exe cannot admit file binding `{}` at `{}`: {error}",
+                "trusted-publisher cannot admit file binding `{}` at `{}`: {error}",
                 file.name,
                 candidate.display()
             )
@@ -493,7 +494,7 @@ pub fn resolve_binding_plan(
             .validate_access(file.rights.read, file.rights.write)
             .map_err(|error| {
                 format!(
-                    "trusted-exe cannot validate file binding `{}` at `{}` with declared rights: {error}",
+                    "trusted-publisher cannot validate file binding `{}` at `{}` with declared rights: {error}",
                     file.name,
                     candidate.display()
                 )
@@ -511,19 +512,19 @@ pub fn resolve_binding_plan(
             plan.secrets.iter().map(|s| (s.name.as_str(), s.from.as_str())),
             &allow,
         )
-        .map_err(|error| format!("trusted-exe {error}"))?;
+        .map_err(|error| format!("trusted-publisher {error}"))?;
     }
     // Resolve every secret and CONSUME its backing variable before the VM exists,
     // so no guest `Env` (nor a subprocess `Exec` spawns) can read the value back.
     let mut values = grants::resolve_and_consume_secret_env(
         plan.secrets.iter().map(|secret| (secret.name.as_str(), secret.from.as_str())),
     )
-    .map_err(|error| format!("trusted-exe secret provider cannot resolve: {error}"))?;
+    .map_err(|error| format!("trusted-publisher secret provider cannot resolve: {error}"))?;
     let mut secrets = Vec::new();
     for secret in plan.secrets {
         // Keyed by name, so a name can never be bound to another secret's bytes.
         let bytes = values.remove(&secret.name).ok_or_else(|| {
-            format!("trusted-exe secret `{}` did not resolve", secret.name)
+            format!("trusted-publisher secret `{}` did not resolve", secret.name)
         })?;
         secrets.push(runtime::SecretGrant {
             name: secret.name,
@@ -570,7 +571,7 @@ fn fs_rights(args: &[ast::Type], parameter: &str, kind: &str) -> Result<FsRights
             ast::Type::Named(name, inner) if name == "Write" && inner.is_empty() => rights.write = true,
             other => {
                 return Err(format!(
-                    "trusted-exe `{parameter}: {kind}[...]` has unsupported right {other:?}"
+                    "trusted-publisher `{parameter}: {kind}[...]` has unsupported right {other:?}"
                 ));
             }
         }
@@ -580,14 +581,14 @@ fn fs_rights(args: &[ast::Type], parameter: &str, kind: &str) -> Result<FsRights
 
 fn unsupported_parameter(name: &str, ty: &ast::Type) -> String {
     format!(
-        "trusted-exe has no startup provider for `main` parameter `{name}: {ty:?}`; supported injected values are Console, Clock, Rand, Env, Dir, File, Net, Exec, SecretStore, and List[String] argv"
+        "trusted-publisher has no startup provider for `main` parameter `{name}: {ty:?}`; supported injected values are Console, Clock, Rand, Env, Dir, File, Net, Exec, SecretStore, and List[String] argv"
     )
 }
 
 fn reject_extra<T>(section: &str, entries: &BTreeMap<String, T>) -> Result<(), String> {
     if let Some(name) = entries.keys().next() {
         Err(format!(
-            "trusted-exe has extra `[targets.trusted-exe.{section}].{name}` with no matching `main` parameter"
+            "trusted-publisher has extra `[targets.trusted-publisher.{section}].{name}` with no matching `main` parameter"
         ))
     } else {
         Ok(())
@@ -610,10 +611,10 @@ fn binding_error(target: &TrustedTarget, expected: &str, name: &str, ty: &str) -
     };
     match actual {
         Some(section) if section != expected => format!(
-            "trusted-exe binding `[targets.trusted-exe.{section}].{name}` is type-incompatible with `main` parameter `{name}: {ty}`; move it to `[targets.trusted-exe.{expected}]`"
+            "trusted-publisher binding `[targets.trusted-publisher.{section}].{name}` is type-incompatible with `main` parameter `{name}: {ty}`; move it to `[targets.trusted-publisher.{expected}]`"
         ),
         _ => format!(
-            "trusted-exe is missing `[targets.trusted-exe.{expected}].{name}` for `main` parameter `{name}: {ty}`"
+            "trusted-publisher is missing `[targets.trusted-publisher.{expected}].{name}` for `main` parameter `{name}: {ty}`"
         ),
     }
 }
@@ -633,7 +634,7 @@ fn owned_contract(contract: &capabilities::CapSet) -> BTreeMap<String, BTreeSet<
 /// Append a Witchy application to a native launcher template.
 pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>, String> {
     if probe(template)?.is_some() {
-        return Err("trusted executable launcher template already contains an application".into());
+        return Err("trusted-publisher application launcher template already contains an application".into());
     }
     wasmparser::validate(wasm)
         .map_err(|error| format!("cannot package invalid application WASM: {error}"))?;
@@ -645,9 +646,9 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>,
     let wasm_len = u64::try_from(wasm.len()).map_err(|_| "application WASM is too large".to_string())?;
     let bindings_offset = wasm_offset
         .checked_add(wasm_len)
-        .ok_or_else(|| "trusted executable payload offset overflow".to_string())?;
+        .ok_or_else(|| "trusted-publisher application payload offset overflow".to_string())?;
     let bindings_len = u64::try_from(bindings.len())
-        .map_err(|_| "trusted executable binding plan is too large".to_string())?;
+        .map_err(|_| "trusted-publisher application binding plan is too large".to_string())?;
 
     let mut descriptor = Vec::with_capacity(DESCRIPTOR_LEN);
     descriptor.extend_from_slice(MAGIC);
@@ -669,7 +670,7 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>,
         .checked_add(wasm.len())
         .and_then(|n| n.checked_add(bindings.len()))
         .and_then(|n| n.checked_add(DESCRIPTOR_LEN))
-        .ok_or_else(|| "trusted executable image is too large".to_string())?;
+        .ok_or_else(|| "trusted-publisher application image is too large".to_string())?;
     let mut image = Vec::with_capacity(capacity);
     image.extend_from_slice(template);
     image.extend_from_slice(wasm);
@@ -708,7 +709,7 @@ pub fn load(path: &std::path::Path) -> Result<Option<OwnedEmbeddedApplication>, 
     file.read_to_end(&mut image)
         .map_err(|error| format!("cannot read executable `{}`: {error}", path.display()))?;
     let embedded = probe(&image)?
-        .ok_or_else(|| "trusted executable descriptor disappeared while reading the artifact".to_string())?;
+        .ok_or_else(|| "trusted-publisher application descriptor disappeared while reading the artifact".to_string())?;
     Ok(Some(OwnedEmbeddedApplication {
         wasm: embedded.wasm.to_vec(),
         bindings: embedded.bindings.to_vec(),
@@ -732,7 +733,7 @@ pub fn package_file(
             && std::fs::canonicalize(output_path)
                 .is_ok_and(|output| output == template_identity));
     if overwrites_template {
-        return Err("trusted-exe output must not overwrite the running launcher template".into());
+        return Err("trusted-publisher output must not overwrite the running launcher template".into());
     }
     let template = std::fs::read(template_path)
         .map_err(|error| format!("cannot read launcher template `{}`: {error}", template_path.display()))?;
@@ -742,26 +743,26 @@ pub fn package_file(
         .permissions();
     let parent = output_path.parent().unwrap_or_else(|| std::path::Path::new("."));
     std::fs::create_dir_all(parent)
-        .map_err(|error| format!("cannot create trusted-exe output directory `{}`: {error}", parent.display()))?;
+        .map_err(|error| format!("cannot create trusted-publisher output directory `{}`: {error}", parent.display()))?;
     let file_name = output_path.file_name().and_then(|name| name.to_str()).unwrap_or("application");
     let (temporary, mut file) = create_owned_temporary(parent, file_name)?;
     let result = (|| -> Result<(), String> {
         file.write_all(&image)
-            .map_err(|error| format!("cannot write trusted-exe temporary `{}`: {error}", temporary.display()))?;
+            .map_err(|error| format!("cannot write trusted-publisher temporary `{}`: {error}", temporary.display()))?;
         file.sync_all()
-            .map_err(|error| format!("cannot sync trusted-exe temporary `{}`: {error}", temporary.display()))?;
+            .map_err(|error| format!("cannot sync trusted-publisher temporary `{}`: {error}", temporary.display()))?;
         file.set_permissions(permissions)
-            .map_err(|error| format!("cannot make trusted executable `{}` runnable: {error}", temporary.display()))?;
+            .map_err(|error| format!("cannot make trusted-publisher application `{}` runnable: {error}", temporary.display()))?;
         file.sync_all()
-            .map_err(|error| format!("cannot sync trusted-exe permissions `{}`: {error}", temporary.display()))?;
+            .map_err(|error| format!("cannot sync trusted-publisher permissions `{}`: {error}", temporary.display()))?;
         #[cfg(windows)]
         if output_path.exists() {
             std::fs::remove_file(output_path).map_err(|error| {
-                format!("cannot replace trusted executable `{}`: {error}", output_path.display())
+                format!("cannot replace trusted-publisher application `{}`: {error}", output_path.display())
             })?;
         }
         std::fs::rename(&temporary, output_path).map_err(|error| {
-            format!("cannot install trusted executable `{}`: {error}", output_path.display())
+            format!("cannot install trusted-publisher application `{}`: {error}", output_path.display())
         })?;
         Ok(())
     })();
@@ -781,7 +782,7 @@ fn create_owned_temporary(
     for _ in 0..32 {
         let mut random = [0u8; 16];
         getrandom::fill(&mut random)
-            .map_err(|error| format!("cannot obtain randomness for trusted-exe publication: {error}"))?;
+            .map_err(|error| format!("cannot obtain randomness for trusted-publisher publication: {error}"))?;
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let temporary = parent.join(format!(".{file_name}.witchy-tmp-{suffix}"));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
@@ -789,13 +790,13 @@ fn create_owned_temporary(
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(format!(
-                    "cannot create trusted-exe temporary `{}`: {error}",
+                    "cannot create trusted-publisher temporary `{}`: {error}",
                     temporary.display()
                 ));
             }
         }
     }
-    Err("cannot create a unique trusted-exe publication temporary after 32 attempts".into())
+    Err("cannot create a unique trusted-publisher publication temporary after 32 attempts".into())
 }
 
 /// Detect and validate an embedded trusted application.
@@ -813,19 +814,19 @@ pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
     }
     let stored_descriptor_digest = &descriptor[DESCRIPTOR_PREFIX_LEN..];
     if digest(&descriptor[..DESCRIPTOR_PREFIX_LEN]) != stored_descriptor_digest {
-        return Err("trusted executable descriptor digest mismatch (artifact is corrupt)".into());
+        return Err("trusted-publisher application descriptor digest mismatch (artifact is corrupt)".into());
     }
 
     let format = read_u32(descriptor, 16)?;
     if format != FORMAT_VERSION {
         return Err(format!(
-            "trusted executable format version {format} is unsupported by this launcher (expected {FORMAT_VERSION})"
+            "trusted-publisher application format version {format} is unsupported by this launcher (expected {FORMAT_VERSION})"
         ));
     }
     let host_abi = read_u32(descriptor, 20)?;
     if host_abi != HOST_ABI {
         return Err(format!(
-            "trusted executable requires Witchy host ABI {host_abi}, but this launcher implements ABI {HOST_ABI}"
+            "trusted-publisher application requires Witchy host ABI {host_abi}, but this launcher implements ABI {HOST_ABI}"
         ));
     }
     let wasm_offset = read_usize(descriptor, 24, "WASM offset")?;
@@ -835,26 +836,26 @@ pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
     let tail_offset = image.len() - DESCRIPTOR_LEN;
     let wasm_end = wasm_offset
         .checked_add(wasm_len)
-        .ok_or_else(|| "trusted executable WASM range overflows".to_string())?;
+        .ok_or_else(|| "trusted-publisher application WASM range overflows".to_string())?;
     let bindings_end = bindings_offset
         .checked_add(bindings_len)
-        .ok_or_else(|| "trusted executable binding-plan range overflows".to_string())?;
+        .ok_or_else(|| "trusted-publisher application binding-plan range overflows".to_string())?;
     if wasm_end != bindings_offset || bindings_end != tail_offset {
-        return Err("trusted executable descriptor contains non-contiguous or out-of-bounds payload ranges".into());
+        return Err("trusted-publisher application descriptor contains non-contiguous or out-of-bounds payload ranges".into());
     }
     let wasm = image
         .get(wasm_offset..wasm_end)
-        .ok_or_else(|| "trusted executable descriptor points outside the artifact".to_string())?;
+        .ok_or_else(|| "trusted-publisher application descriptor points outside the artifact".to_string())?;
     let bindings = image
         .get(bindings_offset..bindings_end)
-        .ok_or_else(|| "trusted executable descriptor points outside the artifact".to_string())?;
+        .ok_or_else(|| "trusted-publisher application descriptor points outside the artifact".to_string())?;
 
     require_digest("application WASM", wasm, &descriptor[56..88])?;
     require_digest("binding plan", bindings, &descriptor[120..152])?;
     wasmparser::validate(wasm)
-        .map_err(|error| format!("trusted executable contains invalid application WASM: {error}"))?;
+        .map_err(|error| format!("trusted-publisher application contains invalid application WASM: {error}"))?;
     let launch = artifact::launch_contract_payload(wasm)?
-        .ok_or_else(|| "trusted executable application has no `witchy.launch` metadata".to_string())?;
+        .ok_or_else(|| "trusted-publisher application application has no `witchy.launch` metadata".to_string())?;
     require_digest("`witchy.launch` contract", launch, &descriptor[88..120])?;
 
     Ok(Some(EmbeddedApplication { wasm, bindings }))
@@ -864,7 +865,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
     let raw: [u8; 4] = bytes
         .get(offset..offset + 4)
         .and_then(|slice| slice.try_into().ok())
-        .ok_or_else(|| "trusted executable descriptor is truncated".to_string())?;
+        .ok_or_else(|| "trusted-publisher application descriptor is truncated".to_string())?;
     Ok(u32::from_le_bytes(raw))
 }
 
@@ -872,16 +873,16 @@ fn read_usize(bytes: &[u8], offset: usize, label: &str) -> Result<usize, String>
     let raw: [u8; 8] = bytes
         .get(offset..offset + 8)
         .and_then(|slice| slice.try_into().ok())
-        .ok_or_else(|| "trusted executable descriptor is truncated".to_string())?;
+        .ok_or_else(|| "trusted-publisher application descriptor is truncated".to_string())?;
     usize::try_from(u64::from_le_bytes(raw))
-        .map_err(|_| format!("trusted executable {label} does not fit this platform"))
+        .map_err(|_| format!("trusted-publisher application {label} does not fit this platform"))
 }
 
 fn require_digest(label: &str, bytes: &[u8], expected: &[u8]) -> Result<(), String> {
     if digest(bytes) == expected {
         Ok(())
     } else {
-        Err(format!("trusted executable {label} digest mismatch (artifact is corrupt)"))
+        Err(format!("trusted-publisher application {label} digest mismatch (artifact is corrupt)"))
     }
 }
 
@@ -990,7 +991,7 @@ mod tests {
         let source = module(
             "fn main(console: Console, cwd: Dir[Read], root: Dir[Read], args: List[String]):\n    return\n",
         );
-        let manifest = "[targets.trusted-exe.dirs]\n\
+        let manifest = "[targets.trusted-publisher.dirs]\n\
                         cwd = { from = \"cwd\" }\n\
                         root = { from = \"path\", path = \"/\" }\n";
         let bytes = build_binding_plan(&source, manifest).unwrap();
@@ -1060,7 +1061,7 @@ mod tests {
 
         let required = build_binding_plan(
             &source,
-            "[targets.trusted-exe]\nconfine = \"required\"\n",
+            "[targets.trusted-publisher]\nconfine = \"required\"\n",
         )
         .unwrap();
         let encoded: BindingPlan = serde_json::from_slice(&required).unwrap();
@@ -1074,7 +1075,7 @@ mod tests {
 
         let error = build_binding_plan(
             &source,
-            "[targets.trusted-exe]\nconfine = \"disabled\"\n",
+            "[targets.trusted-publisher]\nconfine = \"disabled\"\n",
         )
         .unwrap_err();
         assert!(error.contains("expected `best-effort` or `required`"), "{error}");
@@ -1084,34 +1085,45 @@ mod tests {
     fn missing_and_extra_resource_bindings_fail_the_build() {
         let source = module("fn main(work: Dir[Read]):\n    return\n");
         let missing = build_binding_plan(&source, "").unwrap_err();
-        assert!(missing.contains("missing `[targets.trusted-exe.dirs].work`"), "{missing}");
+        assert!(missing.contains("missing `[targets.trusted-publisher.dirs].work`"), "{missing}");
 
         let extra = build_binding_plan(
             &module("fn main():\n    return\n"),
-            "[targets.trusted-exe.files]\nconfig = { from = \"path\", path = \"x\" }\n",
+            "[targets.trusted-publisher.files]\nconfig = { from = \"path\", path = \"x\" }\n",
         )
         .unwrap_err();
-        assert!(extra.contains("extra `[targets.trusted-exe.files].config`"), "{extra}");
+        assert!(extra.contains("extra `[targets.trusted-publisher.files].config`"), "{extra}");
 
         let mistyped = build_binding_plan(
             &source,
-            "[targets.trusted-exe.files]\nwork = { from = \"path\", path = \"x\" }\n",
+            "[targets.trusted-publisher.files]\nwork = { from = \"path\", path = \"x\" }\n",
         )
         .unwrap_err();
         assert!(mistyped.contains("type-incompatible"), "{mistyped}");
 
         let duplicate = build_binding_plan(
             &source,
-            "[targets.trusted-exe.dirs]\nwork = { from = \"cwd\" }\nwork = { from = \"path\", path = \"/\" }\n",
+            "[targets.trusted-publisher.dirs]\nwork = { from = \"cwd\" }\nwork = { from = \"path\", path = \"/\" }\n",
         )
         .unwrap_err();
         assert!(duplicate.contains("duplicate key"), "{duplicate}");
     }
 
     #[test]
+    fn old_target_name_fails_and_names_trusted_publisher() {
+        let error = build_binding_plan(
+            &module("fn main(console: Console):\n    return\n"),
+            "[targets.trusted-exe]\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("trusted-exe"), "{error}");
+        assert!(error.contains("trusted-publisher"), "{error}");
+    }
+
+    #[test]
     fn env_binding_is_explicit_canonical_and_contract_checked() {
         let source = module("fn main(runtime: Env):\n    return\n");
-        let manifest = "[targets.trusted-exe.env]\n\
+        let manifest = "[targets.trusted-publisher.env]\n\
                         runtime = { from = \"system\", names = [\"LANG\", \"HOME\", \"LANG\"] }\n";
         let bytes = build_binding_plan(&source, manifest).unwrap();
         let plan: BindingPlan = serde_json::from_slice(&bytes).unwrap();
@@ -1121,10 +1133,10 @@ mod tests {
         assert_eq!(resolved.env_allow.unwrap(), ["HOME", "LANG"]);
 
         let missing = build_binding_plan(&source, "").unwrap_err();
-        assert!(missing.contains("missing `[targets.trusted-exe.env].runtime`"), "{missing}");
+        assert!(missing.contains("missing `[targets.trusted-publisher.env].runtime`"), "{missing}");
         let empty = build_binding_plan(
             &source,
-            "[targets.trusted-exe.env]\nruntime = { from = \"system\", names = [\"\"] }\n",
+            "[targets.trusted-publisher.env]\nruntime = { from = \"system\", names = [\"\"] }\n",
         )
         .unwrap_err();
         assert!(empty.contains("empty variable name"), "{empty}");
@@ -1140,7 +1152,7 @@ mod tests {
     fn unsupported_root_secret_fails_the_build() {
         let error = build_binding_plan(
             &module("fn main(key: Secret):\n    return\n"),
-            "[targets.trusted-exe.secrets]\nkey = { from = \"env:KEY\" }\n",
+            "[targets.trusted-publisher.secrets]\nkey = { from = \"env:KEY\" }\n",
         )
         .unwrap_err();
         assert!(error.contains("cannot bind root parameter `key: Secret`"), "{error}");
@@ -1151,12 +1163,12 @@ mod tests {
         let source = module(
             "fn main(root: Dir[Read], network: Net[Connect], listener: Net[Listen], runner: Exec):\n    return\n",
         );
-        let manifest = "[targets.trusted-exe.dirs]\n\
+        let manifest = "[targets.trusted-publisher.dirs]\n\
                         root = { from = \"cwd\" }\n\
-                        [targets.trusted-exe.net]\n\
+                        [targets.trusted-publisher.net]\n\
                         network = { from = \"allow\", addresses = [\"api.example.com:443\"] }\n\
                         listener = { from = \"allow\", addresses = [\"127.0.0.1:8080\"] }\n\
-                        [targets.trusted-exe.exec]\n\
+                        [targets.trusted-publisher.exec]\n\
                         runner = { from = \"allow\", programs = [\"git\"], child-paths = [\"Cargo.toml\"] }\n";
         let bytes = build_binding_plan(&source, manifest).unwrap();
         let plan: BindingPlan = serde_json::from_slice(&bytes).unwrap();
@@ -1173,10 +1185,10 @@ mod tests {
 
         let missing = build_binding_plan(
             &source,
-            "[targets.trusted-exe.dirs]\nroot = { from = \"cwd\" }\n",
+            "[targets.trusted-publisher.dirs]\nroot = { from = \"cwd\" }\n",
         )
         .unwrap_err();
-        assert!(missing.contains("[targets.trusted-exe.net].network"), "{missing}");
+        assert!(missing.contains("[targets.trusted-publisher.net].network"), "{missing}");
     }
 
     #[test]

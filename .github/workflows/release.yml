@@ -323,7 +323,7 @@ jobs:
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --output-dir dist
           ./scripts/release-checksums.sh --output dist/SHA256SUMS "dist/witchy-$VERSION-$TARGET.tar.gz"
-      - name: Installed-archive and trusted-exe smoke
+      - name: Installed-archive and trusted-publisher smoke
         run: |
           ./scripts/release-smoke.sh \
             --version "$VERSION" \

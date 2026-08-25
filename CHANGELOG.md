@@ -28,7 +28,7 @@ GitHub repository and verify them against the attached `SHA256SUMS` file.
 - the implemented indentation-based, statically typed language surface,
   including records and algebraic data types, traits and generics, ownership
   conventions, capabilities, errors, generators, and cooperative concurrency;
-- `witchy --release build --target trusted-exe`, which produces a self-contained
+- `witchy --release build --target trusted-publisher`, which produces a self-contained
   host-native application executable.
 
 The release gate checks interpreter/compiled-WASM agreement, including complete
@@ -52,7 +52,7 @@ has no defects.
   `connect-src` boundary.
 - **Breaking hardening:** allowed `Exec` children inherit the outer fence.
   Tools needing additional read-only host paths must declare `child-paths` in
-  grant documents, build grants, or authenticated trusted-executable bindings.
+  grant documents, build grants, or checked trusted-publisher bindings.
 
 ### Release artifacts and verified targets
 
@@ -75,9 +75,9 @@ only the requested capability imports and explicit launch roots. The module is
 not authenticated merely because Witchy can execute it; consumers must establish
 the module's provenance separately.
 
-### Trusted executable trust model ([RFC-0092](rfcs/0092-trusted-application-executables.md))
+### Trusted-publisher application trust model ([RFC-0092](rfcs/0092-trusted-application-executables.md))
 
-`trusted-exe` appends compiled application WASM and a checked capability-binding
+`trusted-publisher` appends compiled application WASM and a checked capability-binding
 plan to the complete Witchy native runtime. The resulting executable needs no
 separate Witchy installation or launch-time grant flags. Internal SHA-256 digests
 detect corruption and incompatible payloads before `main` executes.

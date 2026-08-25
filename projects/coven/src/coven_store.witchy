@@ -105,7 +105,7 @@ pub fn read_artifact_manifest(store: Dir, name: String, version: String) -> Opti
         None
 
 // --- chunked artifact storage (RFC-0095) -------------------------------------
-// A real trusted-exe is 100+ MB. It can neither traverse one HTTP body (the net
+// A real trusted-publisher is 100+ MB. It can neither traverse one HTTP body (the net
 // recv cap is 64 MiB) nor be held whole in the registry's linear memory: coven is
 // a long-running server on one VM, and assembling 100+ MB into a single value
 // exhausts the guest after a few requests. So an artifact is stored — and served —

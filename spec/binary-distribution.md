@@ -60,13 +60,13 @@ trusted:  target/release/app                           host = embedded Witchy ru
   deny-all capability JS host provides only infrastructure imports and omits every
   capability import, so a capability-using module fails to instantiate
   (deny-by-omission - see [`wasm-abi.md`](wasm-abi.md)).
-- **Trusted application executable.** `witchy --release build --target
-  trusted-exe` packages the same WASM and `witchy.launch` bytes with a native
+- **Trusted-publisher application.** `witchy --release build --target
+  trusted-publisher` packages the same WASM and `witchy.launch` bytes with a native
   launcher and a versioned, digested binding plan. The result is one ordinary
   host-platform executable and doesn't need witchy installed. Running it means
   trusting the application, the embedded runtime, and the distributor, exactly
   as for another native application. Its `main` receives only the resources
-  named by `[targets.trusted-exe]`: for example, a `Dir[Read]` parameter may bind
+  named by `[targets.trusted-publisher]`: for example, a `Dir[Read]` parameter may bind
   to launch cwd or one fixed target-machine path. Every `Dir` is still one
   subtree root and all guest paths remain relative; absolute strings, `..`, and
   symlink escape remain rejected. The launcher treats all argv as application
@@ -104,7 +104,7 @@ dependencies still receive authority only when the root passes a capability.
   which errors on signing keys and sealed secrets). No secret's raw bytes are
   copied into guest linear memory.
 - **No silent capability grants.** A portable host receives concrete resources
-  from consumer launch flags. A trusted executable instead resolves the exact,
+  from consumer launch flags. A trusted-publisher application instead resolves the exact,
   build-checked recipes embedded for `main`; a missing, extra, incompatible, or
   unsupported binding fails the build, never prompts or defaults at runtime.
 
@@ -115,7 +115,7 @@ dependencies still receive authority only when the root passes a capability.
   runtimes (wasmtime CLI, jco, wasmCloud) with no witchy host. witchy's
   `Dir`/`Net` grants map onto WASI's own capability model. Buys ecosystem
   portability; the distribution story above needs none of it.
-- **Slim/AOT launcher.** The first trusted-exe template reuses the native witchy
+- **Slim/AOT launcher.** The first trusted-publisher template reuses the native witchy
   launcher and canonical WASM payload. A smaller runtime-only template or
   engine-specific AOT image is an additive optimization; portable distribution
   remains `app.wasm` plus the consumer's trusted witchy host.

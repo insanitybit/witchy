@@ -7,17 +7,17 @@ use super::support::{run, stderr, stdout, Scratch, BIN};
 
 #[test]
 #[cfg(unix)]
-fn trusted_executable_end_to_end() {
+fn trusted_publisher_application_end_to_end() {
     let scratch = Scratch::new("witchy-rfc0092");
     std::fs::create_dir_all(scratch.join("src")).unwrap();
     std::fs::write(scratch.join("inside.txt"), "cwd-data").unwrap();
     std::fs::write(
         scratch.join("witchy.toml"),
         "[rune]\nname = \"trusted_fixture\"\nversion = \"0.1.0\"\n\n\
-         [targets.trusted-exe.dirs]\n\
+         [targets.trusted-publisher.dirs]\n\
          cwd = { from = \"cwd\" }\n\
          root = { from = \"path\", path = \"/\" }\n\
-         [targets.trusted-exe.env]\n\
+         [targets.trusted-publisher.env]\n\
          env = { from = \"system\", names = [\"RFC0092_TEST_LABEL\"] }\n",
     )
     .unwrap();
@@ -45,7 +45,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     let built = run(
         Command::new(BIN)
             .current_dir(scratch.path())
-            .args(["--release", "build", "--target", "trusted-exe"]),
+            .args(["--release", "build", "--target", "trusted-publisher"]),
     );
     assert!(
         built.status.success(),
@@ -61,7 +61,7 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     std::fs::create_dir_all(scratch.join("installed/bin")).unwrap();
     let installed = scratch.join("installed/bin/trusted_fixture");
     std::fs::copy(&executable, &installed).unwrap();
-    let runtime_cache = scratch.join("runtime-cache-must-stay-empty");
+    let runtime_cache = scratch.join("runtime-cache");
     let relative = run(
         Command::new(&installed)
             .current_dir(scratch.path())
@@ -73,17 +73,14 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     assert_eq!(relative.status.code(), Some(23), "stderr: {}", stderr(&relative));
     assert!(
         stderr(&relative).contains("confinement:"),
-        "trusted executable did not report outer confinement: {}",
+        "trusted-publisher application did not report outer confinement: {}",
         stderr(&relative)
     );
     assert_eq!(
         stdout(&relative),
         "relative:cwd-data\nenv:inherited\nargv:inside.txt|--dir|belongs-to-app\n"
     );
-    assert!(
-        !runtime_cache.exists(),
-        "an authenticated trusted executable must not create or publish mutable executable cache state"
-    );
+    assert!(runtime_cache.exists(), "publisher launch must use the ordinary cache location");
 
     // The app—not the launcher—routes an absolute OS argument through the
     // separately root-bound Dir after converting it to Dir-relative syntax.
@@ -154,13 +151,13 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
 
 #[test]
 #[cfg(all(unix, not(target_os = "linux")))]
-fn trusted_executable_required_confinement_fails_before_main() {
+fn trusted_publisher_application_required_confinement_fails_before_main() {
     let scratch = Scratch::new("witchy-rfc0092");
     let manifest = scratch.join("witchy.toml");
     std::fs::write(
         &manifest,
         "[rune]\nname = \"required_fixture\"\nversion = \"0.1.0\"\n\n\
-         [targets.trusted-exe]\nconfine = \"required\"\n",
+         [targets.trusted-publisher]\nconfine = \"required\"\n",
     )
     .unwrap();
     let source = scratch.join("required_fixture.witchy");
@@ -174,7 +171,7 @@ fn trusted_executable_required_confinement_fails_before_main() {
         "compile",
         source.to_str().unwrap(),
         "--target",
-        "trusted-exe",
+        "trusted-publisher",
         "--manifest",
         manifest.to_str().unwrap(),
         "--out",
@@ -196,7 +193,7 @@ fn trusted_executable_required_confinement_fails_before_main() {
 fn dependency_footprint_does_not_widen_the_trusted_root() {
     let scratch = Scratch::new("witchy-rfc0092");
     let manifest = scratch.join("witchy.toml");
-    std::fs::write(&manifest, "[rune]\nname = \"root\"\nversion = \"0.1.0\"\n[targets.trusted-exe]\n").unwrap();
+    std::fs::write(&manifest, "[rune]\nname = \"root\"\nversion = \"0.1.0\"\n[targets.trusted-publisher]\n").unwrap();
     let dependency = scratch.join("dependency.witchy");
     std::fs::write(
         &dependency,
@@ -216,7 +213,7 @@ fn dependency_footprint_does_not_widen_the_trusted_root() {
         "--dep",
         &format!("dependency={}", dependency.display()),
         "--target",
-        "trusted-exe",
+        "trusted-publisher",
         "--manifest",
         manifest.to_str().unwrap(),
         "--out",
@@ -242,9 +239,9 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
     std::fs::write(
         &manifest,
         "[rune]\nname = \"providers\"\nversion = \"0.1.0\"\n\n\
-         [targets.trusted-exe.files]\n\
+         [targets.trusted-publisher.files]\n\
          config = { from = \"path\", path = \"config.txt\" }\n\
-         [targets.trusted-exe.secrets]\n\
+         [targets.trusted-publisher.secrets]\n\
          token = { from = \"env:RFC0092_SECRET\" }\n",
     )
     .unwrap();
@@ -253,7 +250,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
         "compile",
         entry.to_str().unwrap(),
         "--target",
-        "trusted-exe",
+        "trusted-publisher",
         "--manifest",
         manifest.to_str().unwrap(),
         "--out",
@@ -283,7 +280,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
         "compile",
         entry.to_str().unwrap(),
         "--target",
-        "trusted-exe",
+        "trusted-publisher",
         "--manifest",
         incomplete.to_str().unwrap(),
         "--out",
@@ -291,7 +288,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
     ]));
     assert!(!rejected.status.success());
     assert!(
-        stderr(&rejected).contains("missing `[targets.trusted-exe.files].config`"),
+        stderr(&rejected).contains("missing `[targets.trusted-publisher.files].config`"),
         "{}",
         stderr(&rejected)
     );
@@ -311,9 +308,9 @@ fn explicit_exec_policy_uses_a_separately_bound_readable_dir() {
     std::fs::write(
         &manifest,
         "[rune]\nname = \"exec_app\"\nversion = \"0.1.0\"\n\n\
-         [targets.trusted-exe.dirs]\n\
+         [targets.trusted-publisher.dirs]\n\
          tools = { from = \"path\", path = \"/bin\" }\n\
-         [targets.trusted-exe.exec]\n\
+         [targets.trusted-publisher.exec]\n\
          runner = { from = \"allow\", programs = [\"echo\"] }\n",
     )
     .unwrap();
@@ -322,7 +319,7 @@ fn explicit_exec_policy_uses_a_separately_bound_readable_dir() {
         "compile",
         entry.to_str().unwrap(),
         "--target",
-        "trusted-exe",
+        "trusted-publisher",
         "--manifest",
         manifest.to_str().unwrap(),
         "--out",

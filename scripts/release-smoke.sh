@@ -321,7 +321,7 @@ printf '%s\n' \
     'name = "trusted_smoke"' \
     'version = "0.1.0"' \
     '' \
-    '[targets.trusted-exe.dirs]' \
+    '[targets.trusted-publisher.dirs]' \
     'cwd = { from = "cwd" }' > trusted/witchy.toml
 printf '%s\n' \
     'import list' \
@@ -336,13 +336,25 @@ printf '%s\n' \
     '[rune]' \
     'name = "trusted_smoke"' \
     'version = "0.1.0"' > invalid-binding/witchy.toml
-if witchy --release build --target trusted-exe invalid-binding >missing-binding.err 2>&1; then
-    echo "release-smoke: trusted-exe build accepted a missing binding" >&2
+if witchy --release build --target trusted-publisher invalid-binding >missing-binding.err 2>&1; then
+    echo "release-smoke: trusted-publisher build accepted a missing binding" >&2
     exit 1
 fi
 case "$(<missing-binding.err)" in
-    *'missing `[targets.trusted-exe.dirs].cwd`'*) ;;
+    *'missing `[targets.trusted-publisher.dirs].cwd`'*) ;;
     *) echo "release-smoke: missing binding failed for the wrong reason" >&2; exit 1 ;;
+esac
+
+"$MKDIR" -p old-target/src
+"$CP" trusted/src/trusted_smoke.witchy old-target/src/trusted_smoke.witchy
+sed 's/trusted-publisher/trusted-exe/g' trusted/witchy.toml >old-target/witchy.toml
+if witchy --release build --target trusted-exe old-target >old-target.err 2>&1; then
+    echo "release-smoke: legacy trusted-exe target was accepted" >&2
+    exit 1
+fi
+case "$(<old-target.err)" in
+    *trusted-exe*trusted-publisher*|*trusted-publisher*trusted-exe*) ;;
+    *) echo "release-smoke: legacy target failed without naming trusted-publisher" >&2; exit 1 ;;
 esac
 
 "$CP" trusted/src/trusted_smoke.witchy incompatible-binding/src/trusted_smoke.witchy
@@ -351,10 +363,10 @@ printf '%s\n' \
     'name = "trusted_smoke"' \
     'version = "0.1.0"' \
     '' \
-    '[targets.trusted-exe.files]' \
+    '[targets.trusted-publisher.files]' \
     'cwd = { from = "path", path = "inside.txt" }' > incompatible-binding/witchy.toml
-if witchy --release build --target trusted-exe incompatible-binding >incompatible-binding.err 2>&1; then
-    echo "release-smoke: trusted-exe build accepted an incompatible binding" >&2
+if witchy --release build --target trusted-publisher incompatible-binding >incompatible-binding.err 2>&1; then
+    echo "release-smoke: trusted-publisher build accepted an incompatible binding" >&2
     exit 1
 fi
 case "$(<incompatible-binding.err)" in
@@ -362,11 +374,11 @@ case "$(<incompatible-binding.err)" in
     *) echo "release-smoke: incompatible binding failed for the wrong reason" >&2; exit 1 ;;
 esac
 
-witchy --release build --target trusted-exe trusted >/dev/null
+witchy --release build --target trusted-publisher trusted >/dev/null
 trusted_built="trusted/target/release/trusted_smoke"
-[ -x "$trusted_built" ] || { echo "release-smoke: trusted executable was not built" >&2; exit 1; }
+[ -x "$trusted_built" ] || { echo "release-smoke: trusted-publisher application was not built" >&2; exit 1; }
 "$CP" "$trusted_built" installed/trusted-smoke
-"$RM" -rf trusted invalid-binding incompatible-binding project
+"$RM" -rf trusted invalid-binding incompatible-binding old-target project
 printf '%s' 'inside-data' > run-root/inside.txt
 printf '%s' 'outside-data' > outside.txt
 
@@ -376,13 +388,13 @@ expected_output="main-entered
 data:inside-data
 argv:inside.txt|--dir|looks-like-grant|--net|example.invalid:1"
 [ "$trusted_output" = "$expected_output" ] || {
-    echo "release-smoke: installed trusted executable output mismatch" >&2
+    echo "release-smoke: installed trusted-publisher application output mismatch" >&2
     printf '%s\n' "$trusted_output" >&2
     exit 1
 }
 
 if (cd run-root && PATH='' "$trusted" ../outside.txt >escape.out 2>escape.err); then
-    echo "release-smoke: trusted executable allowed '..' to escape its Dir" >&2
+    echo "release-smoke: trusted-publisher application allowed '..' to escape its Dir" >&2
     exit 1
 fi
 case "$(<run-root/escape.err)" in
@@ -390,7 +402,7 @@ case "$(<run-root/escape.err)" in
     *) echo "release-smoke: parent escape failed for the wrong reason" >&2; exit 1 ;;
 esac
 if (cd run-root && PATH='' "$trusted" /inside.txt >absolute.out 2>absolute.err); then
-    echo "release-smoke: trusted executable allowed an absolute guest path" >&2
+    echo "release-smoke: trusted-publisher application allowed an absolute guest path" >&2
     exit 1
 fi
 case "$(<run-root/absolute.err)" in
@@ -409,27 +421,27 @@ data = bytearray(source.read_bytes())
 descriptor_len = 16 + 4 + 4 + 8 * 4 + 32 * 4
 descriptor = data[-descriptor_len:]
 if descriptor[:16] != b"WITCHY-EXE-0092!":
-    raise SystemExit("release-smoke: trusted executable has no RFC-0092 descriptor")
+    raise SystemExit("release-smoke: trusted-publisher application has no RFC-0092 descriptor")
 wasm_offset = struct.unpack_from("<Q", descriptor, 24)[0]
 wasm_len = struct.unpack_from("<Q", descriptor, 32)[0]
 if wasm_len < 16 or wasm_offset + wasm_len > len(data) - descriptor_len:
-    raise SystemExit("release-smoke: trusted executable has invalid WASM bounds")
+    raise SystemExit("release-smoke: trusted-publisher application has invalid WASM bounds")
 data[wasm_offset + 8] ^= 1
 destination.write_bytes(data)
 destination.chmod(source.stat().st_mode & 0o777)
 PY
 corrupt="$work/installed/trusted-smoke-corrupt"
 if (cd run-root && PATH='' "$corrupt" inside.txt >corrupt.out 2>corrupt.err); then
-    echo "release-smoke: corrupted trusted executable started successfully" >&2
+    echo "release-smoke: corrupted trusted-publisher application started successfully" >&2
     exit 1
 fi
 [ ! -s run-root/corrupt.out ] || {
-    echo "release-smoke: corrupted trusted executable entered main" >&2
+    echo "release-smoke: corrupted trusted-publisher application entered main" >&2
     exit 1
 }
 case "$(<run-root/corrupt.err)" in
     *'digest mismatch'*) ;;
-    *) echo "release-smoke: corrupted trusted executable failed for the wrong reason" >&2; exit 1 ;;
+    *) echo "release-smoke: corrupted trusted-publisher application failed for the wrong reason" >&2; exit 1 ;;
 esac
 
 echo "release-smoke: PASS $target $commit"

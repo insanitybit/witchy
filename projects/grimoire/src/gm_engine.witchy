@@ -24,13 +24,13 @@ from gm_core import BuildOptions, FootprintError, LockIntegrityError, LockPinErr
 from gm_core import add_unique, arg, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
 
 pub fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
-    if options.target == "trusted-exe":
+    if options.target == "trusted-publisher":
         let manifest = join_path(dir, "witchy.toml")
         let configured = if options.out.is_empty(): trusted_output(root, dir, options.mode) else: options.out
-        let target_flags = ["--target", "trusted-exe", "--manifest", manifest, "--out", configured, "--${options.mode}"]
+        let target_flags = ["--target", "trusted-publisher", "--manifest", manifest, "--out", configured, "--${options.mode}"]
         run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, flatten_argv(build_flags, target_flags))))
     else if !options.out.is_empty():
-        console.print("--out is supported by `build --target trusted-exe`; portable project builds remain verification-only")
+        console.print("--out is supported by `build --target trusted-publisher`; portable project builds remain verification-only")
         1
     else:
         run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, build_flags)))
@@ -614,7 +614,7 @@ pub fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manif
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
     // (RFC-0095) An application release ships an `artifact.json` manifest beside
-    // its witchy.toml (a target -> trusted-exe map). Attach it if present; a
+    // its witchy.toml (a target -> trusted-publisher map). Attach it if present; a
     // source-only rune omits it and the record stays coven-v1.
     let artifact = read_optional_artifact(root, dir)
     let resp = registry_post(net, origin, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token, artifact))
@@ -628,7 +628,7 @@ pub fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manif
     else:
         1
 
-// (RFC-0095) After an application release publishes, upload each built trusted-exe
+// (RFC-0095) After an application release publishes, upload each built trusted-publisher
 // in `<dir>/artifacts/` (one file per target, filename = target triple). The server
 // re-hashes each against the signed manifest, so a wrong/corrupt file is refused.
 // Source-only runes (no artifact manifest) have nothing to upload.
@@ -1233,7 +1233,7 @@ pub fn refetch(console: Console, net: Net, root: Dir, origin: String, fullname: 
         (1, false, false)
 
 // (RFC-0095) `pm install <pkg>[@ver] [host] --target <triple>` — install a released
-// application's trusted-exe. The FULL trust chain, reusing the same verified pieces
+// application's trusted-publisher. The FULL trust chain, reusing the same verified pieces
 // `add` uses: resolve the released version, verify the signed record against the
 // (pinned) registry root key, read the coven-v2 artifact_digest, fetch + digest-verify
 // the manifest, select the host target, fetch the bytes and check their sha256, then
@@ -1308,7 +1308,7 @@ pub fn install_selected_entry(net: Net, origin: String, name: String, version: S
 pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clock, origin: String, name: String, version: String, target: String, command: String, sha: String, size: Int) -> Int:
     // `home` is the granted $WITCHY_HOME provider; installs land in its `bin/` so an
     // added-to-PATH launcher finds them. Stream the artifact chunk by chunk straight
-    // to disk (append_bytes) — a real trusted-exe is 100+ MB and can neither traverse
+    // to disk (append_bytes) — a real trusted-publisher is 100+ MB and can neither traverse
     // one HTTP body nor be held whole in memory, so nothing ever accumulates the whole
     // in the guest. Then read the written file back once to verify its sha256.
     fs.ensure_dir(home, "bin")
@@ -1360,7 +1360,7 @@ pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clo
         console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
         1
     else:
-        // The verified trusted-exe is written non-executable; flip it runnable so the
+        // The verified trusted-publisher is written non-executable; flip it runnable so the
         // installed command can be launched directly from $WITCHY_HOME/bin.
         home.set_executable(staged)
         home.rename(staged, binpath)

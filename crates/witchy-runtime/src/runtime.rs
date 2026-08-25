@@ -1283,9 +1283,8 @@ pub struct Runtime {
     engine: Engine,
     next_id: VmId,
     preempt: bool,
-    /// Whether mutable executable caches may supply transformed Wasm or native
-    /// code. Authenticated trusted executables disable this: their embedded
-    /// artifact, not user-writable cache state, is the execution authority.
+    /// Whether the ordinary optimized-Wasm and Wasmtime compilation caches are
+    /// enabled for this runtime.
     executable_cache: bool,
     /// Injected into every VM's state; the Wasmtime compiler-service adapters
     /// call this interface rather than the compiler implementation directly.
@@ -1309,14 +1308,6 @@ impl Runtime {
     /// fully in force, so this is a speed choice, not a security relaxation.
     pub fn batch() -> Result<Self> {
         Self::configured(false, wasmtime::OptLevel::Speed, true)
-    }
-
-    /// A run-to-completion runtime for an authenticated, self-contained
-    /// trusted executable. Mutable optimized-Wasm and Wasmtime native caches
-    /// are deliberately absent: only the artifact embedded in the executable
-    /// may determine what code runs.
-    pub fn trusted_executable() -> Result<Self> {
-        Self::configured(false, wasmtime::OptLevel::Speed, false)
     }
 
     /// Same sandbox and ABI as [`Self::batch`], but Cranelift skips Speed-tier

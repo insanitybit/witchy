@@ -30,7 +30,7 @@ for the promise and trust boundaries behind that label.
 | 2 | [generic_stack](generic_stack/) | Generic recursive ADTs and `Option`, with interpreter/WASM parity and sandbox execution. |
 | 3 | [capability_rights](capability_rights/) | Auditable per-function authority and explicit narrowing from broader to narrower rights. |
 | 4 | [file_capability](file_capability/) | Least-authority file handles and the `Dir`/`File` confinement boundary. |
-| 5 | [minigrep](minigrep/) | A useful capability-typed CLI with tests and a checked `trusted-exe` binding plan. |
+| 5 | [minigrep](minigrep/) | A useful capability-typed CLI with tests and a checked `trusted-publisher` binding plan. |
 | 6 | [fixture_showcase](../projects/fixture-showcase/) | Data-only unit tests plus deterministic capability fixtures with interpreter/Wasmtime parity and checked effect counts. |
 
 From the repository root, the following sequence checks the source, runs its
@@ -61,10 +61,10 @@ witchy test --fixtures projects/fixture-showcase/release.fixture.json \
   projects/fixture-showcase
 ```
 
-`minigrep` also has a checked `trusted-exe` binding plan:
+`minigrep` also has a checked `trusted-publisher` binding plan:
 
 ```sh
-witchy --release build --target trusted-exe examples/minigrep
+witchy --release build --target trusted-publisher examples/minigrep
 ```
 
 Running that native result is a whole-artifact trust decision: it embeds the
