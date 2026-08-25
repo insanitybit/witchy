@@ -1,10 +1,13 @@
 # RFC-0155 acceptance ledger
 
-This ledger is the durable completion index for RFC-0155. The RFC remains
-proposed and this ledger remains incomplete until every core row has landed
-evidence. Raw timing, profile, fuzz, and adversarial artifacts remain outside
-source control, but each recorded artifact must identify its source commit,
-host, toolchain, command, configuration, and digest.
+RFC-0155 was rejected on 2026-08-25 by RFC-0157. This ledger is closed and its
+pending tracks are cancelled. Existing branches and measurements remain
+historical evidence, not work authorized to land under RFC-0155. The already
+landed cache-independent trusted-executable runtime is explicit implementation
+debt for RFC-0157 to remove.
+
+The remainder of this file preserves the incomplete ledger at rejection time.
+It is not a current completion plan.
 
 ## Completion contract
 

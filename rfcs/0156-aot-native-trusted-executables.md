@@ -1,7 +1,7 @@
 ---
 rfc: 0156
 title: "Ahead-of-Time Native Compilation for Trusted Executables"
-status: proposed
+status: rejected
 created: 2026-08-25
 superseded-by:
 related:
@@ -10,7 +10,7 @@ related:
   - "0092 (trusted application executables)"
   - "0095 (trusted application installation)"
   - "0155 (authenticated executable caches)"
-tracking: "Proposes ahead-of-time target compilation for trusted executable bundles, eliminating JIT compilation latency and providing sub-millisecond cold startup while preserving capability confinement."
+tracking: "Rejected by RFC-0157: its cache-poisoning premise was removed, and AOT work requires measured performance evidence plus a separate compatible-runtime design."
 ---
 
 # RFC-0156: Ahead-of-Time Native Compilation for Trusted Executables
@@ -255,3 +255,9 @@ For repeated CLI invocations, total startup latency drops by over 85 to 95 perce
       latency on reference benchmark hardware.
 - [ ] Cryptographic digest mismatch or corrupted AOT payloads fail closed cleanly.
 - [ ] All capability isolation tests and sandboxing invariants pass without modification.
+
+> 2026-08-25: Rejected after adopting RFC-0157. Cache independence is no
+> longer a security requirement, the stated startup numbers were not established
+> by matched measurements, and the proposed native deserialization path did not
+> preserve the existing Witchy VM execution seam. AOT may be proposed again on
+> performance evidence without reviving the rejected cache-writer threat model.

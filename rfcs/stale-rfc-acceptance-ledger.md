@@ -38,7 +38,7 @@ individual RFC tracking fields carry the durable disposition.
 | RFC-0084 | Scoped extensions/interception have an accepted, testable implementation contract | EXPLICITLY DEFERRED | No implementation branch or acceptance ledger; revive after RFC-0082 dynamic dispatch is implemented and the RFC gains explicit acceptance criteria. |
 | RFC-0085 | Capability-bounded dynamic compilation/loading has its prerequisite loader and isolation contracts | EXPLICITLY DEFERRED | No implementation branch; revive after RFC-0080/0082 and an authenticated loader/authority-ceiling contract are implemented. |
 | RFC-0086 | Native extension ABI and trust boundary are accepted for implementation | EXPLICITLY DEFERRED | No implementation branch; `trusted-exe` explicitly rejects `NativeLoader`, and this expands the trusted computing base. Revive only with a separately approved ABI/security effort. |
-| RFC-0095 | Grimoire trusted application discovery/install is in the current release contract | EXPLICITLY DEFERRED | `RELEASE-READINESS.md` excludes it. Revive after 0.1 when Coven artifacts, byte-safe atomic installation, and the required trusted-exe bindings are scheduled together. |
+| RFC-0095 | Grimoire trusted application discovery/install is in the current release contract | REJECTED | `RELEASE-READINESS.md` excludes it. RFC-0157 rejects the whole-native-artifact trust model; any future installer needs a new trusted-publisher proposal. |
 
 ## Scoped terminal dispositions
 
@@ -56,7 +56,7 @@ individual RFC tracking fields carry the durable disposition.
 | RFC-0084 | `deferred` behind RFC-0082 dynamic dispatch and explicit acceptance criteria. |
 | RFC-0085 | `deferred` behind the metaprogramming/dynamic stack and an authenticated loader authority ceiling. |
 | RFC-0086 | `deferred` pending a separately approved native ABI and trust-boundary effort. |
-| RFC-0095 | `deferred` until the post-0.1 Coven artifact/install stack is scheduled. |
+| RFC-0095 | `rejected` by RFC-0157; a future installer requires a new trusted-publisher proposal. |
 
 ## Goal-owned live work
 

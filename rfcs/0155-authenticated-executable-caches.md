@@ -1,14 +1,14 @@
 ---
 rfc: 0155
 title: "Authenticated Executable Caches and Cache-Independent Distribution"
-status: proposed
+status: rejected
 created: 2026-08-24
 superseded-by:
 related:
   - "0092 (trusted application executables)"
   - "0095 (trusted application installation)"
   - "0126 (capability effects contract)"
-tracking: "Proposes cache-independent trusted executables, authenticated local executable caches, fail-closed fallback, and optional guest cache exclusion."
+tracking: "Rejected by RFC-0157: write authority over executable state is an accepted future-execution boundary, so cache writers are outside the integrity threat model."
 ---
 
 # RFC-0155: Authenticated Executable Caches and Cache-Independent Distribution
@@ -756,3 +756,9 @@ remain useful whether or not a daemon is added.
     appending dated change-notes below.
   - The current behavior lives in spec/ and the code — NOT here.
 -->
+
+> 2026-08-25: Rejected after adopting RFC-0157. Witchy accepts that write
+> authority over files later consumed as executable state can influence future
+> execution. Callers preserve isolation by delegating narrow filesystem roots;
+> Witchy does not add an authenticator, credential service, or cache-exclusion
+> shadow policy for an attacker who already controls the executable cache.

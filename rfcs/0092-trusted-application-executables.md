@@ -1,9 +1,9 @@
 ---
 rfc: 0092
 title: Trusted application executables
-status: implemented
+status: superseded
 created: 2026-07-15
-superseded-by:
+superseded-by: "0157 (trusted publishers and executable-state writes)"
 tracking: >
   Implemented. `witchy build --target trusted-exe` emits a versioned,
   digest-checked native launcher containing the ordinary compiled WASM and a
@@ -505,3 +505,9 @@ trusted native launcher + Witchy runtime + app.wasm
 
 Portable WASM remains the answer for code the user does not trust.
 `trusted-exe` is the answer when running the binary is itself the trust decision.
+
+> 2026-08-25: RFC-0157 superseded this RFC's whole-executable trust statement
+> and `trusted-exe` terminology. The implemented artifact mechanism remains
+> historical evidence; the replacement model trusts the publisher as the root
+> principal while retaining sandboxing and capability attenuation for guest
+> dependencies.

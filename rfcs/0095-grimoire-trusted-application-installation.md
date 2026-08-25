@@ -1,14 +1,14 @@
 ---
 rfc: 0095
 title: "Grimoire and trusted application installation from Coven"
-status: deferred
+status: rejected
 created: 2026-07-15
 superseded-by:
 tracking: >
-  Deferred beyond 0.1, whose release-readiness contract explicitly excludes
-  integrated Coven installation. Revive when Coven artifact publication,
-  byte-safe atomic installation, and the required trusted-exe bindings are
-  scheduled as one product slice.
+  Rejected by RFC-0157. A future installation proposal must use the
+  trusted-publisher model, preserve the Witchy enforcement substrate, and must
+  not treat a publisher signature as permission to install arbitrary native
+  code under a Witchy application label.
 related:
   - "0004 (self-hosted CLI — Grimoire remains the package-management frontend)"
   - "0005 (unforgeable capabilities — Grimoire delegates authority explicitly)"
@@ -578,3 +578,9 @@ resources. Coven does not make the installed application untrusted or
 sandboxed; it makes the identity, release state, target, and bytes precise.
 That is the missing distribution layer between "build a trusted executable"
 and "an end user can install and run a Witchy application."
+
+> 2026-08-25: Rejected after adopting RFC-0157. This proposal authenticates a
+> publisher-built native executable as a whole, while the replacement trust
+> model keeps transitive guest dependencies sandboxed and requires a trusted
+> Witchy enforcement substrate. Installation can be redesigned under that
+> boundary when it becomes product work.
