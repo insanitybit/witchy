@@ -6,7 +6,7 @@
 //! the ordinary Task/Step scheduler unchanged.
 
 use witchy_types::suspension_carrier::{
-    CarrierLane, ChannelPayloadLayout, ReadyChannelRegionPlan, ScalarExecutorState,
+    CarrierLane, ChannelPayloadLayout, ScalarExecutorPlan, ScalarExecutorState,
     ScalarTransition,
 };
 use witchy_wir::wir::{
@@ -44,7 +44,7 @@ enum ScalarPayload {
 /// fixed-select and bounded-wait emitters: the direct path may decline a
 /// layout or graph shape, but it must not reconstruct channel typing from
 /// erased scheduler values.
-pub(super) fn synthesize(plan: &ReadyChannelRegionPlan, module: &mut WirModule) -> bool {
+pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> bool {
     let Some(fold) = recognize(plan, module) else {
         return false;
     };
@@ -163,7 +163,7 @@ pub(super) fn synthesize(plan: &ReadyChannelRegionPlan, module: &mut WirModule) 
 }
 
 fn recognize<'a>(
-    plan: &'a ReadyChannelRegionPlan,
+    plan: &'a ScalarExecutorPlan,
     module: &WirModule,
 ) -> Option<ScalarChannelFold<'a>> {
     let mut spawns = plan.states.iter().filter(|state| {
@@ -285,7 +285,7 @@ fn recognize<'a>(
 }
 
 fn producer_payload_shape(
-    plan: &ReadyChannelRegionPlan,
+    plan: &ScalarExecutorPlan,
     module: &WirModule,
     source: &str,
     send_function: &str,
@@ -346,7 +346,7 @@ fn matches_payload_layout(payload: ScalarPayload, layout: &ChannelPayloadLayout)
 }
 
 fn receiver_fold_shape(
-    plan: &ReadyChannelRegionPlan,
+    plan: &ScalarExecutorPlan,
     module: &WirModule,
     receive: &ScalarExecutorState,
     accumulator: &str,
@@ -597,7 +597,7 @@ fn terminal_arguments(
 /// scalar graph, so unsupported control flow or task work stays on the normal
 /// scheduler path.
 fn eager_region_prologue(
-    plan: &ReadyChannelRegionPlan,
+    plan: &ScalarExecutorPlan,
     module: &WirModule,
     main: &WirFunc,
 ) -> Option<EagerRegionPrologue> {

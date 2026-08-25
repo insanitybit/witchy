@@ -6349,7 +6349,7 @@ fn assemble_wir_module_with_structs_mode(
                     exports
                 },
             };
-            if let Ok(plan) = suspension_carrier.ready_channel_region_plan() {
+            if let Ok(plan) = suspension_carrier.scalar_executor_plan() {
                 super::scalar_executor::synthesize(&plan, &mut wir_module);
             }
             return Ok((wir_module, gc_structs, gc_arrays, layout_bundle, suspension_carrier));
