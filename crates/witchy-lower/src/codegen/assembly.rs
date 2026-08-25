@@ -6349,6 +6349,11 @@ fn assemble_wir_module_with_structs_mode(
                     exports
                 },
             };
+            // RFC-0152 body capture is intentionally metadata-only for now.
+            // Keeping this extraction adjacent to the completed WIR module is
+            // the future ready executor's only source for exact ordinary state
+            // prefixes; it does not alter function selection or runtime calls.
+            let _ready_state_wir = super::ready_executor::extract(&suspension_carrier, &wir_module);
             if let Ok(plan) = suspension_carrier.scalar_executor_plan() {
                 super::scalar_executor::synthesize(&plan, &mut wir_module);
             }
@@ -7082,6 +7087,55 @@ mod checked_codegen_boundary_tests {
             formation.regions.iter().all(|region| region.id != guarded_state),
             "no path beneath an effectful conditional may form a ready region: {formation:#?}"
         );
+    }
+
+    #[test]
+    fn ready_state_wir_capture_preserves_effectful_prefix_and_excludes_non_ready_paths() {
+        let checked = authenticated_checked(
+            "import task\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    console.print(\"before-send\")\n    chan.send(tx, 7).await\n    let ignored = task.map(task.done(1), fn(own value): value + 1).await\n    let value = chan.recv(rx).await\n    console.print(\"value=${value}\")\n",
+        );
+        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        )
+        .expect("assemble ready-state capture fixture");
+
+        let captured = super::ready_executor::extract(&carrier, &wir);
+        assert!(
+            captured.iter().any(|state| format!("{:?}", state.prefix).contains("print")),
+            "the direct boundary must retain the once-only effectful prefix: {captured:#?}"
+        );
+        let excluded = carrier.ready_channel_regions().excluded;
+        assert!(excluded.iter().any(|excluded| matches!(
+            &excluded.reason,
+            witchy_types::suspension_carrier::ReadyChannelRegionExclusionReason::UnsupportedTransition { detail }
+                if detail.contains("task.map")
+        )));
+        assert!(
+            captured.iter().all(|state| excluded.iter().all(|excluded| {
+                (excluded.id, excluded.path_ordinal) != (state.state, state.path_ordinal)
+            })),
+            "an unsupported terminal must not be extracted as a direct body: captured={captured:#?}, excluded={excluded:#?}"
+        );
+
+        let guarded = authenticated_checked(
+            "import task\n\nasync fn worker(take_send: Bool, tx: chan.Sender(Int)):\n    let work = if take_send:\n        chan.send(tx, 7)\n    else:\n        task.map(task.done(1), fn(own value): ())\n    work.await\n\nasync fn main():\n    let (tx, _rx) = chan.channel(1).await\n    worker(true, tx).await\n",
+        );
+        let (guarded_wir, _, _, _, guarded_carrier) = assemble_optimized_wir_with_structs_mode(
+            guarded.module(), false, None, None, false,
+        )
+        .expect("assemble guarded ready-state capture fixture");
+        let guarded_capture = super::ready_executor::extract(&guarded_carrier, &guarded_wir);
+        let guarded_ids = guarded_carrier
+            .ready_channel_regions()
+            .excluded
+            .into_iter()
+            .filter_map(|excluded| matches!(
+                excluded.reason,
+                witchy_types::suspension_carrier::ReadyChannelRegionExclusionReason::GuardedControlFlow
+            ).then_some((excluded.id, excluded.path_ordinal)))
+            .collect::<Vec<_>>();
+        assert!(!guarded_ids.is_empty(), "fixture must form a guarded fallback");
+        assert!(guarded_capture.iter().all(|state| !guarded_ids.contains(&(state.state, state.path_ordinal))));
     }
 
     #[test]

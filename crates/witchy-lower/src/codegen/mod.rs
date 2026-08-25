@@ -49,6 +49,7 @@ mod indexed_kernels;
 mod specialization;
 mod glamour_metadata;
 mod scalar_executor;
+mod ready_executor;
 pub mod linear_builder;
 pub use linear_builder::{LinearBuildPlan, LinearValueKind, RangeFact};
 pub use glamour_metadata::{
