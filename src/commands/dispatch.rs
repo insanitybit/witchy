@@ -151,6 +151,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         }
         match witchy::stats::compute_timed(&src) {
             Ok(timed) => {
+                println!("gc_heap_capacity_bytes {}", timed.gc_heap_capacity_bytes);
                 let s = timed.stats;
                 println!("checker_time_us {}", timed.checker_time_us);
                 println!("execution_time_us {}", timed.execution_time_us);
@@ -174,6 +175,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 println!("rc_reused_bytes {}", s.rc_reused_bytes);
                 println!("live_cells {}", s.live_cells);
                 println!("rc_alloc_calls {}", s.rc_alloc_calls);
+                println!("rc_alloc_requested_bytes {}", s.rc_alloc_requested_bytes);
                 println!("bump_alloc_calls {}", s.bump_alloc_calls);
                 println!("rc_reuse_calls {}", s.rc_reuse_calls);
                 println!("rc_free_calls {}", s.rc_free_calls);

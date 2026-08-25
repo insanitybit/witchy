@@ -40,7 +40,8 @@ done
 
 mkdir -p "$OUT_DIR"
 COUNTERS=(
-    heap_bytes rc_alloc_calls bump_alloc_calls rc_reuse_calls rc_free_calls
+    heap_bytes gc_heap_capacity_bytes
+    rc_alloc_calls rc_alloc_requested_bytes bump_alloc_calls rc_reuse_calls rc_free_calls
     scheduler_slot_transitions scheduler_wait_installs scheduler_wake_claims
     selected_result_materializations
 )

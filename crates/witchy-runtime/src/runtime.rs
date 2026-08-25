@@ -1139,6 +1139,12 @@ impl Vm {
         self.i64_counter("__witchy_rc_alloc_calls")
     }
 
+    /// Logical payload bytes requested from `$rc_alloc`, excluding its hidden
+    /// RC/size header and independent of free-list reuse.
+    pub fn rc_alloc_requested_bytes(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_rc_alloc_requested_bytes")
+    }
+
     pub fn bump_alloc_calls(&mut self) -> Option<i64> {
         self.i64_counter("__witchy_bump_alloc_calls")
     }

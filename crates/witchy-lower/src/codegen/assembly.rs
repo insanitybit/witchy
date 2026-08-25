@@ -5900,6 +5900,18 @@ fn assemble_wir_module_with_structs_mode(
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_rc_alloc_calls".into()),
                     },
+                    // Requested payload bytes handed to `$rc_alloc`. This differs from
+                    // `$heap` high-water: an allocation may reuse a free-list cell, and
+                    // the allocator's hidden header is deliberately not charged to the
+                    // source-level request. RFC-0152 records both this work counter and
+                    // the final heap/GC high-water when comparing ready and wait paths.
+                    WirGlobal {
+                        name: "__witchy_rc_alloc_requested_bytes".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_rc_alloc_requested_bytes".into()),
+                    },
                     // (RFC-0111) Descriptor-specific counters distinguish physical
                     // packed construction from the shared allocator's other traffic.
                     // Direct packed boundaries do not touch these: canonical

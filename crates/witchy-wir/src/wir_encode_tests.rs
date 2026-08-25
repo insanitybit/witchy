@@ -184,6 +184,7 @@
                 ("__rc_reused_bytes", Kind::I64, GlobalInit::I64(0)),
                 ("__witchy_live_cells", Kind::I64, GlobalInit::I64(0)),
                 ("__witchy_rc_alloc_calls", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_rc_alloc_requested_bytes", Kind::I64, GlobalInit::I64(0)),
                 ("__witchy_bump_alloc_calls", Kind::I64, GlobalInit::I64(0)),
                 ("__witchy_rc_reuse_calls", Kind::I64, GlobalInit::I64(0)),
                 ("__witchy_rc_free_calls", Kind::I64, GlobalInit::I64(0)),

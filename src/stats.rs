@@ -57,6 +57,10 @@ pub struct Stats {
     /// RFC-0089 allocator/reclaimer operation counts. For an FIP kernel these
     /// stay fixed as only the kernel's recursive depth increases.
     pub rc_alloc_calls: i64,
+    /// Logical payload bytes requested through `$rc_alloc`; this excludes the
+    /// allocator header and remains nonzero when a request is satisfied from
+    /// the free list.
+    pub rc_alloc_requested_bytes: i64,
     pub bump_alloc_calls: i64,
     pub rc_reuse_calls: i64,
     pub rc_free_calls: i64,
@@ -187,6 +191,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
         live_cells: vm.live_cells().unwrap_or(0),
         rc_alloc_calls: vm.rc_alloc_calls().unwrap_or(0),
+        rc_alloc_requested_bytes: vm.rc_alloc_requested_bytes().unwrap_or(0),
         bump_alloc_calls: vm.bump_alloc_calls().unwrap_or(0),
         rc_reuse_calls: vm.rc_reuse_calls().unwrap_or(0),
         rc_free_calls: vm.rc_free_calls().unwrap_or(0),
@@ -465,6 +470,10 @@ mod tests {
             resources(&small),
             resources(&large),
             "recursive depth must add no allocator, reuse, free, or rewind operations"
+        );
+        assert!(
+            small.rc_alloc_requested_bytes > 0 && large.rc_alloc_requested_bytes > 0,
+            "each run's logical allocation requests must be reported"
         );
         assert_eq!(small.rc_reuse_calls, 0);
         assert_eq!(small.rc_free_calls, 0);

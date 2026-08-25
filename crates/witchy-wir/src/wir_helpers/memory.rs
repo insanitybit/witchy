@@ -462,6 +462,23 @@ pub(crate) fn rc_alloc_helper() -> WirFunc {
         locals: ["cur", "prev", "base"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             increment_counter("__witchy_rc_alloc_calls"),
+            // Preserve the caller's logical request separately from the
+            // allocator's hidden header and from whether the request reused a
+            // free-list cell. This is the allocation-byte attribution used by
+            // the RFC-0152 ready/wait matrix.
+            N::SetGlobal {
+                global: "__witchy_rc_alloc_requested_bytes".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(E::GetGlobal("__witchy_rc_alloc_requested_bytes".into())),
+                    rhs: Box::new(E::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(getl("size")),
+                    }),
+                },
+            },
             // (RFC-0035) one more live object — both the reuse and the bump paths below return
             // a cell, so count it once here (the reuse path re-lives a cell that `$rc_free` had
             // decremented). Off the RC path no `$rc_free` runs, so it is inert bookkeeping.
