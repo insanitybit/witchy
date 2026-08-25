@@ -68,6 +68,7 @@ The queue answers "was the pipeline fast?" It cannot answer any of:
 - Did the author run the pre-submit shard, and did it predict the gate?
 - How large or risky was this change? Did it touch parity-sensitive code?
 - Is a red gate a real defect, a flake, or infrastructure?
+- Did the pre-submit shard actually complete, or was it cut short?
 
 The blocker is attribution, and it is total:
 
@@ -141,13 +142,42 @@ touches: ["typeck","codegen","interp","analysis","wasm-abi","std","docs","queue-
 named in the witchy-dev briefing. This is what makes "red rate" interpretable:
 a 29% red rate on compiler changes and on docs changes are different facts.
 
-### D. Pre-submit evidence
+### D. Pre-submit evidence — persist the receipt that already exists
 
-`check.sh` writes a receipt to `state/merge-queue/receipts/<sha>.json`
-(shard name, exit status, duration, git SHA). `submit` reads it and records
-`presubmit_shard` and `presubmit_sha_match`. This directly tests the leading
-hypothesis for the red-rate regression: that `--fast` no longer predicts the
-full gate, or is being skipped.
+`check.sh` **already emits a structured per-stage receipt** on stdout:
+
+```
+WITCHY_TIMING {"schema":1,"kind":"foreground","step":1,
+  "name":"tests (workspace, minus e2e)","status":"green",
+  "started_epoch":...,"finished_epoch":...,"elapsed_s":397,"gate_elapsed_s":397}
+```
+
+It has a schema version, a per-stage `status`, and timings. Nothing consumes
+it — not `merge-queue.sh`, not CI. It is printed and discarded.
+
+So this is not a new format, it is persistence and consumption of an existing
+one. `check.sh` appends its `WITCHY_TIMING` lines to
+`state/merge-queue/receipts/<sha>.jsonl`; `submit` reads that file and records
+`presubmit_shard`, `presubmit_status`, and `presubmit_sha_match`.
+
+`status` MUST distinguish three outcomes, not two:
+
+- `green` — the stage ran to completion and passed.
+- `red` — the stage ran to completion and failed.
+- `truncated` — the stage was killed before completing (timeout, SIGTERM,
+  operator interrupt).
+
+The third value is load-bearing. While preparing this RFC I ran the pre-submit
+shard as `timeout 900 ./scripts/check.sh --fast | tail -20`, which failed in
+both available ways at once: the pipe reported `tail`'s exit status rather than
+the gate's, and the 900s budget SIGTERM'd nextest 207 tests into 3,107. The run
+reported **exit 0 while 2,900 tests never executed**, and I read that as green.
+A receipt that only knows pass/fail reproduces exactly this ambiguity — a
+truncated run is not evidence of anything and must never satisfy criterion 1.
+`submit` warns when the receipt for the submitted SHA is `truncated` or absent.
+
+This also directly tests the leading hypothesis for the red-rate regression:
+that `--fast` no longer predicts the full gate, or is being skipped.
 
 ### E. Red-cause classification
 
@@ -245,8 +275,9 @@ kept alongside. Existing consumers of `elapsed_s` are unaffected.
 ## Acceptance criteria
 
 1. `submit` records `actor`, `session`, `trailer_present`, `files_changed`,
-   `insertions`, `deletions`, `touches`, `presubmit_shard`,
-   `presubmit_sha_match`.
+   `insertions`, `deletions`, `touches`, `presubmit_shard`, `presubmit_status`,
+   `presubmit_sha_match`. A `truncated` or absent receipt is warned on and is
+   never treated as evidence of a green shard.
 2. `red`, `batch_red`, `timeout` carry `failing_stage`, `failure_line`,
    `red_class`.
 3. `run` emits `heartbeat` at most 5 minutes apart while alive.
