@@ -5076,6 +5076,11 @@ impl<'types> Codegen<'types> {
     /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
         self.range_built_lists.clear();
+        // Literal-size facts are local-variable facts, never module facts.
+        // A code generator is reused across functions (and generated async
+        // frames), so carrying a same-named list from an earlier body could
+        // incorrectly prove a later masked access and perturb unrelated WIR.
+        self.known_static_list_lengths.clear();
         let mut expected_loan_keys = HashSet::new();
         collect_loan_event_keys(body, &self.loan_facts, &mut expected_loan_keys);
         self.loan_fact_stack.push((expected_loan_keys, HashSet::new()));
