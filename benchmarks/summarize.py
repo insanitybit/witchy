@@ -163,7 +163,7 @@ def wasmtime_configuration():
     path = ROOT_DIR / "crates/witchy-runtime/src/runtime.rs"
     source = path.read_text()
     match = re.search(
-        r"pub fn batch\(\).*?Self::with_preemption\(false, wasmtime::OptLevel::(\w+)\)",
+        r"pub fn batch\(\).*?Self::(?:with_preemption|configured)\(false,\s*wasmtime::OptLevel::(\w+)",
         source,
         re.DOTALL,
     )

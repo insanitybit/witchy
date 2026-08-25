@@ -1448,7 +1448,7 @@ impl<'a> Ctx<'a> {
             })
             .cloned()
             .collect();
-        if lanes.iter().any(|lane| !used.contains(&lane.name)) {
+        if !lanes.is_empty() || lanes.iter().any(|lane| !used.contains(&lane.name)) {
             return Ok(None);
         }
 
