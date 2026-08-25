@@ -1,7 +1,7 @@
 ---
 rfc: 0153
 title: "Effect-Safe Range and Loop Optimization: Typed Facts, Trap Preservation, and Reusable Sequence Plans"
-status: proposed
+status: planned
 created: 2026-08-24
 superseded-by:
 related:
@@ -10,7 +10,7 @@ related:
   - "0127 (ownership and opt mode)"
   - "0134 (codegen and compute roadmap)"
   - "0146 (sequence plans and rejected range reducer)"
-tracking: "Proposes a new effect- and trap-aware range analysis after RFC-0146 Track 4 was rejected; implementation evidence will live in an RFC-0153 acceptance ledger."
+tracking: "Selected as the next performance cut on 2026-08-25. Tracks 0-5 are merged; attribution, target closure, generalization, and promotion remain open in the RFC-0153 acceptance ledger."
 ---
 
 # RFC-0153: Effect-Safe Range and Loop Optimization
@@ -34,6 +34,14 @@ evaluation, trap order, ownership invalidation, and exact integer semantics.
 The same facts drive bounds-check elimination, pointer induction, stable-header
 reuse, and residual arithmetic simplification across lists, bytes, strings,
 and numeric loops.
+
+> **2026-08-25 preparation checkpoint:** RFC-0153 is planned as the next
+> performance cut. The fact producers and initial consumers from Tracks 0-5 are
+> merged, but this is not an implementation-complete claim. Current fast
+> exploration still leaves `collatz`, `nsieve`, and `fannkuch` above the
+> matched-Go threshold, and the generalization and promotion evidence is open.
+> The acceptance ledger freezes the shared interfaces, dependency graph,
+> independent tracks, and transfer rule for costs this RFC does not own.
 
 ## Motivation
 
