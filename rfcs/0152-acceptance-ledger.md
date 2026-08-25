@@ -38,6 +38,8 @@ scheduler control.  They must remain separate in all timing reports.
 | Ready-plan consumer seam | `5eaa9ef8c` | `scalar_channel_region_preserves_an_effectful_eager_prologue` | The existing direct scalar graph now receives the complete `ReadyChannelRegionPlan`, including an effect-preserving prologue. Its graph recognition remains narrow and is not general ready send/receive. |
 | Fixed three-way select frame loop | `a94c90e3`, `2bc7ba259`, `f28117ed9`, `c3a20360d` (gate rebaseline `a86f738e7`) | syntax/lowerer frame-bridge checks and `rfc0152_select3_frame_preserves_source_order_and_closed_wake_on_both_backends` | Adds a typed three-way compiler-owned frame bridge, preserves mutable frame semantics, and avoids erased-payload recovery when every arm is a wildcard. This lowers continuation allocation; it does not bypass `task.run` or prove a direct-ready path. |
 | Matrix-capable deterministic stats | `52572918e` | `stats_grants_clock_for_in_program_benchmark_kernels`; CLI `stats benchmarks/chan_scheduler.witchy` | Grants the safe local Clock capability to stats runs so timed channel fixtures can report deterministic counters. This is measurement infrastructure, not a scheduler optimization. |
+| Reusable frame-install counter | `960123bd7` | `reusable_select_frame_reports_one_initial_wait_installation` | Separates the compiler-owned initial reusable-frame installation from ordinary cumulative `Wait*` constructor counts. It is an attribution primitive, not a proof of bounded live registration across every close/cancel path. |
+| Sole-live ready select drain | `a700c1f12` (gate rebaseline `068180131`) | `sole_live_select_frame_drains_a_buffered_source_order_run`; WAT contains `task.is_only_live_slot`; protected `channels` and `worker_pool` examples retain interpreter/Wasm parity | When a reusable two-way frame is the sole live slot, the scheduler drains source-order buffered messages through the existing `step`/`done_fn` closures without re-entering an outer scheduler round per message. Competing active or parked slots retain ordinary round-robin scheduling. This is a runtime ready-path increment, not the general typed lowerer executor required by the remaining rows. |
 
 The fixed three-way frame-loop increment is recorded above because its merge
 event exists. Empty-frame work remains only an implementation increment until
@@ -93,6 +95,15 @@ The candidate also recorded 12,295 `rc_alloc` calls and 4,097 wait installs,
 versus 8,199 allocations and the same 4,097 wait installs for the control.
 The current frame-loop lowering avoids local `Selected` materialization but
 still re-enters the ordinary scheduler; it is not a ready-path promotion.
+
+The later local attribution run
+`benchmarks/.build/rfc0152-sole-live-select-drain-20260825-083022` used twelve
+counterbalanced pairs and matching output hashes. Its candidate reduced the
+`select_fanin` median from roughly 1,655,000 ns to 1,327,000 ns, scheduler wait
+installs from 4,097 to 2, RC allocations from 12,295 to 8,200, and retained
+heap bytes from 582,047 to 270,853. The artifact was produced before the final
+queue rebase and remains ignored, so it is local attribution only; it does not
+close any acceptance row or replace the required durable post-landing matrix.
 
 ## Matrix and acceptance status
 
