@@ -4331,6 +4331,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Pull2ReadyFrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Pull4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`

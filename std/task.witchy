@@ -66,6 +66,12 @@ sealed type Step(a):
     // task. The frame, step closure, and done task can therefore remain live
     // for the entire scalar select loop.
     Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    // The ready-probing entry form of Pull2FrameLoop. It is compiler-private:
+    // task.run owns the only channel-ring state and either consumes the first
+    // ready arm immediately or installs the exact same Wait2FrameLoop fallback.
+    // The separate tag gives typed Wasm lowering a scheduler-local seam; it is
+    // not a second channel representation or a different scheduling contract.
+    Pull2ReadyFrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     // Three-way counterpart of Pull2FrameLoop. The endpoint fields remain
     // separate so the scheduler can preserve the source-order first-ready
     // rule without allocating a receiver-id list on each iteration.
@@ -139,6 +145,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         PullFrameLoop(_, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         Pull2FrameLoop(_, _, _, _, _) ->
+            Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
+        Pull2ReadyFrameLoop(_, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         Pull3FrameLoop(_, _, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
@@ -238,7 +246,7 @@ fn __channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), st
     match a:
         ChannelId(ia) ->
             match b:
-                ChannelId(ib) -> Task(fn(): Pull2FrameLoop(ia, ib, frame, step, done_fn))
+                ChannelId(ib) -> Task(fn(): Pull2ReadyFrameLoop(ia, ib, frame, step, done_fn))
 
 pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     __channel_select2_frame_loop(a, b, frame, step, done_fn)
@@ -946,6 +954,41 @@ pub fn run(root: Task(Nil)):
                             __rfc0152_reusable_wait_install()
                             list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
                             prog = true
+                        Pull2ReadyFrameLoop(ch0, ch1, frame, step, done_fn) ->
+                            if is_only_live_slot(0, i, slots):
+                                let (buf0, head0, count0, cap0) = list.at(channels, ch0)
+                                if count0 > 0:
+                                    let msg = list.at(buf0, head0)
+                                    let physcap = list.length(buf0)
+                                    var frame = frame
+                                    list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                                    if step(0, Some(msg), frame):
+                                        list.set_at(slots, i, Active(done_fn(frame)))
+                                    else:
+                                        __rfc0152_reusable_wait_install()
+                                        list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
+                                    prog = true
+                                else:
+                                    let (buf1, head1, count1, cap1) = list.at(channels, ch1)
+                                    if count1 > 0:
+                                        let msg = list.at(buf1, head1)
+                                        let physcap = list.length(buf1)
+                                        var frame = frame
+                                        list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                                        if step(1, Some(msg), frame):
+                                            list.set_at(slots, i, Active(done_fn(frame)))
+                                        else:
+                                            __rfc0152_reusable_wait_install()
+                                            list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
+                                        prog = true
+                                    else:
+                                        __rfc0152_reusable_wait_install()
+                                        list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
+                                        prog = true
+                            else:
+                                __rfc0152_reusable_wait_install()
+                                list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
+                                prog = true
                         Pull3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
                             __rfc0152_reusable_wait_install()
                             list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
