@@ -5,7 +5,12 @@ from chan import Sender
 async fn produce(let tx: Sender(Int), let start: Int, let count: Int):
     var i = 0
     while i < count:
-        chan.send(tx, start + i * 2).await
+        // The typed ready-channel plan carries local operands across the
+        // suspension boundary. Keep the arithmetic in this ordinary prefix,
+        // then send its named result so the direct transition need not replay
+        // an expression with a different effect/trap contract.
+        let payload = start + i * 2
+        chan.send(tx, payload).await
         i = i + 1
 
 fn expected_checksum(let per_source: Int) -> Int:
