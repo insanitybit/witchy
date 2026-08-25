@@ -910,9 +910,6 @@ pub fn run(root: Task(Nil)):
                             list.set_at(slots, i, Active(cont(Some((k, msg)))))
                             prog = true
                         None -> unit()
-                        // The ready probe is deliberately a strict
-                        // specialization of Pull2: first arm wins ties,
-                        // and an empty pair parks in the same Wait2 slot.
                 WaitJoin(t, cont) ->
                     match list.at(slots, t):
                         Ended ->
@@ -1061,22 +1058,25 @@ pub fn run(root: Task(Nil)):
                             prog = true
                         PullReadyFrameLoop(ch, frame, step, done_fn) ->
                             if is_only_live_slot(0, i, slots):
-                                let (buf, head, count, cap) = list.at(channels, ch)
-                                if count > 0:
-                                    let msg = list.at(buf, head)
-                                    let physcap = list.length(buf)
-                                    var frame = frame
-                                    list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
-                                    if step(Some(msg), frame):
-                                        list.set_at(slots, i, Active(done_fn(frame)))
+                                var frame = frame
+                                var draining = true
+                                while draining:
+                                    let (buf, head, count, cap) = list.at(channels, ch)
+                                    if count > 0:
+                                        let msg = list.at(buf, head)
+                                        let physcap = list.length(buf)
+                                        list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                        if step(Some(msg), frame):
+                                            list.set_at(slots, i, Active(done_fn(frame)))
+                                            prog = true
+                                            draining = false
+                                        else:
+                                            prog = true
                                     else:
                                         __rfc0152_reusable_wait_install()
                                         list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
-                                    prog = true
-                                else:
-                                    __rfc0152_reusable_wait_install()
-                                    list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
-                                    prog = true
+                                        prog = true
+                                        draining = false
                             else:
                                 __rfc0152_reusable_wait_install()
                                 list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))

@@ -473,6 +473,29 @@ mod tests {
     }
 
     #[test]
+    fn sole_live_receive_frame_drains_a_buffered_run_before_installing_wait() {
+        // The payload-free receive frame is compiler-owned and its root is
+        // the only live scheduler slot after the eager sends. It may drain
+        // the ready FIFO run directly, but must still install one reusable
+        // wait when it reaches the open, empty ring.
+        const SOURCE: &str = "mode opt\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(4).await\n    chan.send(tx, 3).await\n    chan.send(tx, 5).await\n    chan.send(tx, 7).await\n    chan.send(tx, 11).await\n    var seen = 0\n    for await _value in rx:\n        seen = seen + 1\n    console.print(\"seen=${seen}\")\n";
+        let first = compute(SOURCE).expect("run sole-live buffered receive frame");
+        let second = compute(SOURCE).expect("repeat sole-live buffered receive frame");
+        assert_eq!(first.output, ["seen=4"]);
+        assert_eq!(first.scheduler_reusable_wait_installs, 1,
+            "the receive frame must install only after draining the buffered run: {first:?}");
+        assert_eq!(first.scheduler_wait_installs, 2,
+            "the frame's final park and the ordinary completion wait are distinct: {first:?}");
+        assert_eq!(first.scheduler_slot_transitions, 15,
+            "direct draining keeps each buffered receive in the compiler-owned frame instead of retagging the slot: {first:?}");
+        assert_eq!(first.scheduler_frame_allocation_calls, 1,
+            "one compiler-owned eager frame entry serves the complete run: {first:?}");
+        assert_eq!(first.scheduler_ready_frame_allocation_calls, 1,
+            "the entry is the eager ready-probe constructor: {first:?}");
+        assert_eq!(first, second, "sole-live receive draining must be deterministic");
+    }
+
+    #[test]
     fn compiler_frame_registration_is_bounded_through_cancel_and_close() {
         // This is the reusable select-frame cancellation/close contract, but
         // measured here at its representation seam.  The frame may be re-armed
