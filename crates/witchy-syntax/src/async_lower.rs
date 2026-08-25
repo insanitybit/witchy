@@ -3461,7 +3461,7 @@ mod tests {
         let lowered = lower_module(module).expect("lower select4 loop");
         let rendered = crate::format::module(&lowered, &[]);
         assert!(rendered.contains("chan.select4_frame_loop"), "{rendered}");
-        assert!(rendered.contains("chan.select4_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select4_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select4_frame_decode"), "{rendered}");
     }
 
