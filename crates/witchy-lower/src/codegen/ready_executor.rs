@@ -6,7 +6,8 @@
 //! state prefix and must execute exactly once before a direct probe or fallback.
 
 use witchy_types::suspension_carrier::{
-    ReadyChannelOperation, SuspensionCarrierCatalog,
+    ChannelEndpointDirection, ChannelEndpointPlace, ChannelOwnershipEnvelope, ChannelPayloadLayout,
+    ReadyChannelOperation, ReadyChannelOperationKind, SuspensionCarrierCatalog, TypedChannelPlan,
 };
 use witchy_wir::wir::{WirExpr, WirModule, WirNode, WirSeq};
 
@@ -24,6 +25,35 @@ pub(super) struct ReadyStateWir {
     pub prefix: WirSeq,
     pub terminal: WirNode,
     pub operations: Vec<ReadyChannelOperation>,
+    /// Physical carrier references for every operation in `operations`, in
+    /// transition order. `None` is an explicit local rejection: later
+    /// scheduler-context lowering must retain this captured ordinary fallback,
+    /// rather than recover a channel from a source name or an erased `__Msg`
+    /// value.
+    pub storage_uses: Option<Vec<ReadyStorageUse>>,
+}
+
+/// One channel operation's exact carrier references. `Open` has no endpoint
+/// to probe in its input state and therefore has an empty `endpoints` list;
+/// every send, receive, and fixed select lists its endpoint slots in source
+/// order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReadyStorageUse {
+    pub transition_ordinal: usize,
+    pub endpoints: Vec<ReadyStorageEndpoint>,
+}
+
+/// A direct typed-ring endpoint identified only by its physical suspension
+/// carrier location. The representation and ownership facts travel with that
+/// location, so a later emitter cannot accidentally reinterpret erased
+/// scheduler storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReadyStorageEndpoint {
+    pub slot: usize,
+    pub lane: usize,
+    pub direction: ChannelEndpointDirection,
+    pub payload_layout: ChannelPayloadLayout,
+    pub ownership: ChannelOwnershipEnvelope,
 }
 
 /// Extract WIR bodies only for individually formed, unguarded ready regions.
@@ -47,6 +77,7 @@ pub(super) fn extract(
                 .iter()
                 .find(|function| function.name == region.state.function)?;
             let (terminal, prefix) = split_terminal_task_node(&function.body)?;
+            let storage_uses = bind_storage_uses(&region.typed_channels, &region.operations);
             Some(ReadyStateWir {
                 state: region.id,
                 path_ordinal: region.path_ordinal,
@@ -54,9 +85,90 @@ pub(super) fn extract(
                 prefix,
                 terminal,
                 operations: region.operations,
+                storage_uses,
             })
         })
         .collect()
+}
+
+/// Bind source-level operation descriptions to their physical carrier slots
+/// exactly once, while both views are still available. A missing static slot,
+/// mismatched direction, or non-direct lane rejects only this metadata capture;
+/// the original scheduler path remains selected.
+fn bind_storage_uses(
+    channels: &[TypedChannelPlan],
+    operations: &[ReadyChannelOperation],
+) -> Option<Vec<ReadyStorageUse>> {
+    operations
+        .iter()
+        .map(|operation| {
+            let endpoints = operation_endpoint_places(&operation.kind)
+                .into_iter()
+                .map(|(place, direction)| bind_storage_endpoint(channels, place, direction))
+                .collect::<Option<Vec<_>>>()?;
+            Some(ReadyStorageUse {
+                transition_ordinal: operation.transition_ordinal,
+                endpoints,
+            })
+        })
+        .collect()
+}
+
+fn bind_storage_endpoint(
+    channels: &[TypedChannelPlan],
+    place: &ChannelEndpointPlace,
+    direction: ChannelEndpointDirection,
+) -> Option<ReadyStorageEndpoint> {
+    let ChannelEndpointPlace::Static(place) = place else {
+        return None;
+    };
+    let channel = channels.iter().find(|channel| {
+        channel.endpoint_place == *place && channel.direction == direction
+    })?;
+    Some(ReadyStorageEndpoint {
+        slot: channel.endpoint_slot,
+        lane: channel.endpoint_lane?,
+        direction: channel.direction,
+        payload_layout: channel.payload_layout.clone(),
+        ownership: channel.ownership,
+    })
+}
+
+fn operation_endpoint_places(
+    operation: &ReadyChannelOperationKind,
+) -> Vec<(&ChannelEndpointPlace, ChannelEndpointDirection)> {
+    match operation {
+        ReadyChannelOperationKind::Open { .. } => Vec::new(),
+        ReadyChannelOperationKind::Send(send) => {
+            vec![(&send.endpoint, ChannelEndpointDirection::Send)]
+        }
+        ReadyChannelOperationKind::Receive(receive) => {
+            vec![(&receive.endpoint, ChannelEndpointDirection::Receive)]
+        }
+        ReadyChannelOperationKind::ReceiveFrameLoop(receive) => {
+            vec![(&receive.channel, ChannelEndpointDirection::Receive)]
+        }
+        ReadyChannelOperationKind::Select2(select) => vec![
+            (&select.first_channel, ChannelEndpointDirection::Receive),
+            (&select.second_channel, ChannelEndpointDirection::Receive),
+        ],
+        ReadyChannelOperationKind::Select2FrameLoop(select) => vec![
+            (&select.first_channel, ChannelEndpointDirection::Receive),
+            (&select.second_channel, ChannelEndpointDirection::Receive),
+        ],
+        ReadyChannelOperationKind::Select3(select)
+        | ReadyChannelOperationKind::Select4(select) => select
+            .endpoints
+            .iter()
+            .map(|endpoint| (endpoint, ChannelEndpointDirection::Receive))
+            .collect(),
+        ReadyChannelOperationKind::Select3FrameLoop(select)
+        | ReadyChannelOperationKind::Select4FrameLoop(select) => select
+            .endpoints
+            .iter()
+            .map(|endpoint| (endpoint, ChannelEndpointDirection::Receive))
+            .collect(),
+    }
 }
 
 /// The async lowerer writes the task expression as the final statement of a
@@ -94,7 +206,39 @@ fn split_terminal_value_node(node: &WirNode) -> Option<(WirNode, WirSeq)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use witchy_types::suspension_carrier::{
+        AwaitChannelOperationPlan, CarrierLane, ChannelMessageOperand,
+    };
     use witchy_wir::wir::{WirExpr, WirNode};
+
+    fn endpoint(
+        place: &str,
+        slot: usize,
+        lane: usize,
+        direction: ChannelEndpointDirection,
+    ) -> TypedChannelPlan {
+        TypedChannelPlan {
+            state: 4,
+            endpoint_slot: slot,
+            endpoint_lane: Some(lane),
+            endpoint_place: place.into(),
+            direction,
+            message_type: "Int".into(),
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+        }
+    }
+
+    fn operation(
+        ordinal: usize,
+        kind: ReadyChannelOperationKind,
+    ) -> ReadyChannelOperation {
+        ReadyChannelOperation {
+            state: 4,
+            transition_ordinal: ordinal,
+            kind,
+        }
+    }
 
     #[test]
     fn splits_only_a_final_value_boundary() {
@@ -117,5 +261,83 @@ mod tests {
         let (terminal, prefix) = split_terminal_task_node(&body).expect("nested final task value");
         assert!(matches!(terminal, WirNode::Push(WirExpr::ConstI32(0))));
         assert!(matches!(prefix.as_slice(), [WirNode::Do(WirExpr::CallHost { import, .. })] if import == "effect"));
+    }
+
+    #[test]
+    fn binds_operations_to_physical_typed_endpoint_lanes() {
+        let channels = vec![
+            endpoint("tx", 1, 1, ChannelEndpointDirection::Send),
+            endpoint("rx", 3, 4, ChannelEndpointDirection::Receive),
+        ];
+        let send = AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("tx".into()),
+            message: Some(ChannelMessageOperand::Static("value".into())),
+            result: None,
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 5,
+        };
+        let receive = AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("rx".into()),
+            message: None,
+            result: Some(witchy_types::suspension_carrier::ChannelReceiveResult::Discarded),
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 6,
+        };
+        let uses = bind_storage_uses(
+            &channels,
+            &[
+                operation(2, ReadyChannelOperationKind::Send(send)),
+                operation(5, ReadyChannelOperationKind::Receive(receive)),
+            ],
+        )
+        .expect("static direct endpoints bind");
+        assert_eq!(
+            uses,
+            vec![
+                ReadyStorageUse {
+                    transition_ordinal: 2,
+                    endpoints: vec![ReadyStorageEndpoint {
+                        slot: 1,
+                        lane: 1,
+                        direction: ChannelEndpointDirection::Send,
+                        payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                        ownership: ChannelOwnershipEnvelope::InlineValue,
+                    }],
+                },
+                ReadyStorageUse {
+                    transition_ordinal: 5,
+                    endpoints: vec![ReadyStorageEndpoint {
+                        slot: 3,
+                        lane: 4,
+                        direction: ChannelEndpointDirection::Receive,
+                        payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                        ownership: ChannelOwnershipEnvelope::InlineValue,
+                    }],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_erased_storage_bindings() {
+        let channels = vec![TypedChannelPlan {
+            endpoint_lane: None,
+            ..endpoint("rx", 0, 0, ChannelEndpointDirection::Receive)
+        }];
+        let receive = AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("rx".into()),
+            message: None,
+            result: Some(witchy_types::suspension_carrier::ChannelReceiveResult::Discarded),
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 6,
+        };
+        assert!(bind_storage_uses(
+            &channels,
+            &[operation(0, ReadyChannelOperationKind::Receive(receive))],
+        )
+        .is_none());
     }
 }
