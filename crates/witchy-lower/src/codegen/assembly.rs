@@ -7222,6 +7222,30 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn proven_four_way_select_loop_preserves_source_order_in_the_frame_bridge() {
+        let checked = authenticated_checked(
+            "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    let (d_tx, d_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    chan.send(d_tx, 4).await\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select4(a_rx, b_rx, c_rx, d_rx).await\n        match selected:\n            First4(value) -> seen = seen + value - value + 1\n            Second4(value) -> seen = seen + value - value + 1\n            Third4(value) -> seen = seen + value - value + 1\n            Fourth4(value) -> seen = seen + value - value + 1\n            Closed4 -> seen = 4\n    console.print(\"seen=${seen}\")\n",
+        );
+        let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble four-way select-loop fixture");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(wat.contains("select4_frame_loop"), "missing four-way frame-loop bridge");
+        let fused_segment = wat
+            .split("(func ")
+            .find(|segment| segment.contains("call $chan.select4_frame_loop"))
+            .expect("four-way frame-loop call must be in a lowered segment");
+        assert!(
+            !fused_segment.contains("call $rc_alloc"),
+            "four-way select frame segment must not allocate a continuation per iteration"
+        );
+        assert!(
+            wat.contains("call $chan.select4_frame_decode"),
+            "the nominal Selected4 fallback must retain its explicit decode boundary"
+        );
+    }
+
+    #[test]
     fn scalar_channel_region_preserves_an_effectful_eager_prologue() {
         let checked = authenticated_checked(
             "mode opt\n\nfrom chan import Receiver, Sender\n\nasync fn producer(tx: Sender(Int), n: Int):\n    var i = 0\n    while i < n:\n        chan.send(tx, i).await\n        i = i + 1\n\nasync fn main(console: Console, clock: Clock):\n    let _started = clock.now_monotonic()\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, 16)).await\n    var sum = 0\n    for await value in rx:\n        sum = sum + value\n    chan.join(producer_handle).await\n    console.print(\"sum=${sum}\")\n",
