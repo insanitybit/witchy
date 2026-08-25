@@ -252,6 +252,28 @@ impl<'types> Codegen<'types> {
         indices
     }
 
+    /// Four-lane lowering pays for four copies of the source body and, for a
+    /// dynamic range, four exit guards.  A single cursor access has too little
+    /// independent work to amortize that expansion on the native Wasm backend;
+    /// the scalar cursor loop has the same direct address calculation without
+    /// the cloned control flow.  Two independently planned accesses (different
+    /// roots or induction variables) do amortize it.  This is deliberately a
+    /// structural cost model, never a workload or intrinsic-name recognizer.
+    pub(super) fn dynamic_sequence_unroll_is_profitable(
+        &self,
+        index: &str,
+        body: &Block,
+    ) -> bool {
+        let mut scan = DevirtScan::default();
+        scan.walk_block(body);
+        scan.direct_indexed_accesses
+            .keys()
+            .filter(|(candidate, _)| candidate == index)
+            .take(2)
+            .count()
+            >= 2
+    }
+
     /// Fully unroll a tiny literal range only when the already-lowered WIR body
     /// fits a fixed code-size budget. Larger or dynamic loops retain the landed
     /// four-lane loop with its scalar remainder guards.

@@ -362,6 +362,13 @@ mod tests {
         run_int_module(&module)
     }
 
+    fn run_int_with_opt(src: &str, opt: witchy_syntax::opt::OptSet) -> i64 {
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let result = run_int(src);
+        witchy_syntax::opt::set_for_tests(None);
+        result
+    }
+
     fn run_int_module(module: &witchy_syntax::ast::Module) -> i64 {
         let bytes = compile_module_binary(module)
             .expect_lowered("the binary path lowers this program");
@@ -5148,6 +5155,61 @@ fn main() -> Int:
             main.matches("local.get $values\n    i32.load").count(),
             1,
             "the loop setup loads length once and condition/body reuse the plan local:\n{main}",
+        );
+    }
+
+    #[test]
+    fn dynamic_cursor_unroll_requires_multiple_independent_accesses() {
+        let one_cursor = r#"
+fn main() -> Int:
+    let values = [1, 2, 3, 4]
+    var total = 0
+    for i in 0..list.length(values):
+        total = total + values[i]
+    total
+"#;
+        let two_cursors = r#"
+fn main() -> Int:
+    let left = [1, 2, 3, 4]
+    let right = [5, 6, 7, 8]
+    var total = 0
+    for i in 0..list.length(left):
+        total = total + left[i] + right[i]
+    total
+"#;
+        assert_eq!(run_int(one_cursor), 10);
+        assert_eq!(run_int(two_cursors), 36);
+
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let one_wat = optimized_wir_wat(one_cursor, default);
+        let one_main = one_wat.split("(func $main").nth(1).expect("one-cursor main WAT");
+        let one_main = one_main.split("(func $").next().expect("one-cursor main body");
+        assert_eq!(
+            one_main.matches("local.set $i").count(),
+            1,
+            "a dynamic one-cursor loop retains one direct scalar lane:\n{one_main}",
+        );
+        assert!(one_main.contains("i64.load"), "the scalar lane remains cursorized:\n{one_main}");
+
+        let two_wat = optimized_wir_wat(two_cursors, default);
+        let two_main = two_wat.split("(func $main").nth(1).expect("two-cursor main WAT");
+        let two_main = two_main.split("(func $").next().expect("two-cursor main body");
+        assert_eq!(
+            two_main.matches("local.set $i").count(),
+            4,
+            "multiple independent cursor plans amortize four lanes:\n{two_main}",
+        );
+
+        let deopt = witchy_syntax::opt::OptSet::none();
+        assert_eq!(
+            run_int_with_opt(one_cursor, deopt),
+            10,
+            "the fully deoptimized path preserves the one-cursor result",
+        );
+        assert_eq!(
+            run_int_with_opt(two_cursors, deopt),
+            36,
+            "the fully deoptimized path preserves the multi-cursor result",
         );
     }
 

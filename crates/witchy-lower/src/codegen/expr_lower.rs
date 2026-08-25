@@ -1768,7 +1768,16 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::GetLocal(r.to_string())),
                 };
                 let exit_op = if *inclusive { witchy_wir::wir::BinOp::Gt } else { witchy_wir::wir::BinOp::Ge };
-                let lanes = if unroll_safe { 4 } else { 1 };
+                // Dynamic one-cursor loops keep one scalar lane.  They retain
+                // the cursor and proven direct access, but avoid cloning a
+                // tiny body plus four exit guards that the native backend
+                // cannot amortize.  Literal ranges remain four-wide because
+                // their static trip information can remove the group remainder.
+                let static_range = matches!((lo.as_ref(), hi.as_ref()), (Expr::Int(_), Expr::Int(_)));
+                let cursor_unroll_profitable = sequence_plan_count == 0
+                    || static_range
+                    || self.dynamic_sequence_unroll_is_profitable(var, body);
+                let lanes = if unroll_safe && cursor_unroll_profitable { 4 } else { 1 };
                 let mut loop_body: witchy_wir::wir::WirSeq = Vec::new();
                 let exact_literal_batches = lanes > 1
                     && builder_plan.is_none()
