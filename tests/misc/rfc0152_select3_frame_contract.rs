@@ -37,6 +37,37 @@ async fn main(console: Console):
     console.print("seen=${seen} sum=${sum}")
 "#;
 
+const SELECT2_FRAME_CANCEL_AND_CLOSE: &str = r#"
+mode opt
+
+from chan import Sender
+
+async fn producer(tx: Sender(Int)):
+    chan.send(tx, 7).await
+    chan.yield_now().await
+    chan.send(tx, 9).await
+
+async fn main(console: Console):
+    let (tx, a) = chan.channel(1).await
+    let (_unused, b) = chan.channel(1).await
+    let worker = chan.spawn(producer(tx)).await
+    chan.yield_now().await
+    chan.cancel(worker).await
+
+    var seen = 0
+    var sum = 0
+    var closed = false
+    while !closed:
+        let selected = chan.select(a, b).await
+        match selected:
+            First(value) ->
+                seen = seen + 1
+                sum = sum + value
+            Second(_value) -> fail("unexpected second receiver")
+            Closed -> closed = true
+    console.print("seen=${seen} sum=${sum} closed=${closed}")
+"#;
+
 fn run_compiled(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0152 select3 frame contract must check");
@@ -68,4 +99,17 @@ fn rfc0152_select3_frame_preserves_source_order_and_closed_wake_on_both_backends
 
     assert_eq!(compiled, interpreted, "three-way frame scheduling must retain interpreter semantics");
     assert_eq!(interpreted, ["seen=7 sum=333"]);
+}
+
+#[test]
+fn rfc0152_select_frame_preserves_buffered_value_then_cancelled_close_on_both_backends() {
+    let checked = witchy::resolve_std_only_checked(SELECT2_FRAME_CANCEL_AND_CLOSE)
+        .expect("RFC-0152 select cancel contract must check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("run RFC-0152 select cancel contract on the interpreter");
+    let compiled = run_compiled(SELECT2_FRAME_CANCEL_AND_CLOSE);
+
+    assert_eq!(compiled, interpreted,
+        "a reusable select frame must retain the buffered value before its cancelled producer's final closed wake");
+    assert_eq!(interpreted, ["seen=1 sum=7 closed=true"]);
 }
