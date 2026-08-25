@@ -2309,14 +2309,31 @@ fn rewrite_local_select_match(
     if arms.iter().any(|arm| arm.guard.is_some()) {
         return None;
     }
-    let first_body = bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?;
-    let second_body = bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?;
+    let uses_payload = !matches!(&first.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
+        || !matches!(&second.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]));
+    let first_body = if uses_payload {
+        bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?
+    } else {
+        first.body.clone()
+    };
+    let second_body = if uses_payload {
+        bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?
+    } else {
+        second.body.clone()
+    };
     Some(Expr::Match {
-        scrutinee: Box::new(call("chan.select2_frame_payload", vec![Expr::Var(option.into())])),
+        scrutinee: Box::new(if uses_payload {
+            call("chan.select2_frame_payload", vec![Expr::Var(option.into())])
+        } else {
+            Expr::Var(option.into())
+        }),
         arms: vec![
             MatchArm {
                 line: first.line,
-                pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(payload.into())] },
+                pattern: Pattern::Ctor {
+                    name: "Some".into(),
+                    args: vec![if uses_payload { Pattern::Var(payload.into()) } else { Pattern::Wildcard }],
+                },
                 guard: None,
                 body: Expr::If {
                     cond: Box::new(Expr::Binary {
@@ -2433,15 +2450,37 @@ fn rewrite_local_select3_match(
     if arms.iter().any(|arm| arm.guard.is_some()) {
         return None;
     }
-    let first_body = bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?;
-    let second_body = bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?;
-    let third_body = bind_select_payload(&third.pattern, payload, third.body.clone(), third.line)?;
+    let uses_payload = !matches!(&first.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
+        || !matches!(&second.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
+        || !matches!(&third.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]));
+    let first_body = if uses_payload {
+        bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?
+    } else {
+        first.body.clone()
+    };
+    let second_body = if uses_payload {
+        bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?
+    } else {
+        second.body.clone()
+    };
+    let third_body = if uses_payload {
+        bind_select_payload(&third.pattern, payload, third.body.clone(), third.line)?
+    } else {
+        third.body.clone()
+    };
     Some(Expr::Match {
-        scrutinee: Box::new(call("chan.select3_frame_payload", vec![Expr::Var(option.into())])),
+        scrutinee: Box::new(if uses_payload {
+            call("chan.select3_frame_payload", vec![Expr::Var(option.into())])
+        } else {
+            Expr::Var(option.into())
+        }),
         arms: vec![
             MatchArm {
                 line: first.line,
-                pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(payload.into())] },
+                pattern: Pattern::Ctor {
+                    name: "Some".into(),
+                    args: vec![if uses_payload { Pattern::Var(payload.into()) } else { Pattern::Wildcard }],
+                },
                 guard: None,
                 body: Expr::If {
                     cond: Box::new(Expr::Binary {
@@ -3009,7 +3048,7 @@ mod tests {
 
     #[test]
     fn select_loop_uses_owned_frame_bridge_when_scalar_lanes_are_proven() {
-        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int)):\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(_) -> seen = seen + 1\n            Second(_) -> seen = seen + 1\n            Closed -> seen = 4\n";
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int)):\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(value) -> seen = seen + value - value + 1\n            Second(value) -> seen = seen + value - value + 1\n            Closed -> seen = 4\n";
         let module = crate::parser::parse_module(source).expect("parse select loop");
         let lowered = lower_module(module).expect("lower select loop");
         let rendered = crate::format::module(&lowered, &[]);
@@ -3045,6 +3084,7 @@ mod tests {
         let rendered = crate::format::module(&lowered, &[]);
         assert!(rendered.contains("chan.select3_frame_loop"), "{rendered}");
         assert!(!rendered.contains("chan.select2_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select3_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select3_frame_decode"), "{rendered}");
     }
 

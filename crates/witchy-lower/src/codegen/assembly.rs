@@ -7139,7 +7139,7 @@ mod checked_codegen_boundary_tests {
     #[test]
     fn proven_three_way_select_loop_emits_reusable_frame_loop_bridge() {
         let checked = authenticated_checked(
-            "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(_) -> seen = seen + 1\n            Second3(_) -> seen = seen + 1\n            Third3(_) -> seen = seen + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
+            "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) -> seen = seen + value - value + 1\n            Second3(value) -> seen = seen + value - value + 1\n            Third3(value) -> seen = seen + value - value + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
         );
         let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
