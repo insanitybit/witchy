@@ -96,6 +96,13 @@ pub enum ChannelOwnershipEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedChannelPlan {
     pub state: usize,
+    /// Stable parameter position in the compiler-generated suspension state.
+    /// This is a physical carrier reference, not a source-name lookup.
+    pub endpoint_slot: usize,
+    /// First direct carrier lane for `endpoint_slot`, when the complete state
+    /// is direct. A future ready emitter must reject `None` rather than trying
+    /// to recover a channel id from the erased scheduler representation.
+    pub endpoint_lane: Option<usize>,
     pub endpoint_place: String,
     pub direction: ChannelEndpointDirection,
     pub message_type: String,
@@ -443,6 +450,10 @@ pub struct AwaitChannelOperationPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadyChannelOperation {
     pub state: usize,
+    /// Position in the state transition list before non-channel transitions
+    /// were filtered. This lets a scheduler-context emitter return to the
+    /// exact original terminal/fallback boundary without name-based recovery.
+    pub transition_ordinal: usize,
     pub kind: ReadyChannelOperationKind,
 }
 
@@ -590,14 +601,21 @@ impl SuspensionCarrierCatalog {
             .map(CarrierState::lane_width)
             .max()
             .unwrap_or(0);
+        let definitions_ref = &definitions;
         let typed_channel_plans = states
             .iter()
             .flat_map(|state| {
-                state.slots.iter().filter_map(|slot| {
+                let state_is_direct = state.direct && state.slots.iter().all(|slot| slot.lanes.is_some());
+                let mut next_lane = 0usize;
+                state.slots.iter().enumerate().filter_map(move |(endpoint_slot, slot)| {
+                    let endpoint_lane = state_is_direct.then_some(next_lane);
+                    next_lane += slot.lanes.as_ref().map_or(0, Vec::len);
                     let (direction, message) = channel_endpoint_type(&slot.ty)?;
-                    let payload_layout = channel_payload_layout(message, &definitions);
+                    let payload_layout = channel_payload_layout(message, definitions_ref);
                     Some(TypedChannelPlan {
                         state: state.id,
+                        endpoint_slot,
+                        endpoint_lane,
                         endpoint_place: slot.name.clone(),
                         direction,
                         message_type: witchy_syntax::format::type_str(message),
@@ -996,7 +1014,8 @@ fn ready_channel_operations(
 ) -> Vec<ReadyChannelOperation> {
     transitions
         .iter()
-        .filter_map(|transition| {
+        .enumerate()
+        .filter_map(|(transition_ordinal, transition)| {
             let kind = match transition {
                 ScalarTransition::ChannelOpen { resume } => {
                     ReadyChannelOperationKind::Open {
@@ -1032,7 +1051,11 @@ fn ready_channel_operations(
                 }
                 _ => return None,
             };
-            Some(ReadyChannelOperation { state, kind })
+            Some(ReadyChannelOperation {
+                state,
+                transition_ordinal,
+                kind,
+            })
         })
         .collect()
 }
@@ -2525,6 +2548,7 @@ mod tests {
             formation.regions[0].operations.as_slice(),
             [ReadyChannelOperation {
                 state: 4,
+                transition_ordinal: 0,
                 kind: ReadyChannelOperationKind::Open { resume_target: 9 },
             }]
         ));
@@ -2532,6 +2556,7 @@ mod tests {
             formation.regions[1].operations.as_slice(),
             [ReadyChannelOperation {
                 state: 12,
+                transition_ordinal: 0,
                 kind: ReadyChannelOperationKind::Receive(_),
             }]
         ));
@@ -2902,6 +2927,8 @@ mod tests {
             &[
                 TypedChannelPlan {
                     state: 0,
+                    endpoint_slot: 0,
+                    endpoint_lane: Some(0),
                     endpoint_place: "tx".into(),
                     direction: ChannelEndpointDirection::Send,
                     message_type: "String".into(),
@@ -2910,6 +2937,8 @@ mod tests {
                 },
                 TypedChannelPlan {
                     state: 0,
+                    endpoint_slot: 1,
+                    endpoint_lane: Some(1),
                     endpoint_place: "rx".into(),
                     direction: ChannelEndpointDirection::Receive,
                     message_type: "Bytes".into(),
@@ -2918,6 +2947,8 @@ mod tests {
                 },
                 TypedChannelPlan {
                     state: 0,
+                    endpoint_slot: 2,
+                    endpoint_lane: Some(2),
                     endpoint_place: "ints".into(),
                     direction: ChannelEndpointDirection::Receive,
                     message_type: "Int".into(),
@@ -2926,6 +2957,8 @@ mod tests {
                 },
                 TypedChannelPlan {
                     state: 0,
+                    endpoint_slot: 3,
+                    endpoint_lane: Some(3),
                     endpoint_place: "packets".into(),
                     direction: ChannelEndpointDirection::Receive,
                     message_type: "Packet".into(),
@@ -3088,6 +3121,7 @@ mod tests {
                     source_callable: "producer".into(),
                     slots: Vec::new(),
                     transitions: vec![
+                        ScalarTransition::Jump { target: 3 },
                         ScalarTransition::ChannelOpen { resume: 2 },
                         ScalarTransition::ChannelSend(send.clone()),
                     ],
@@ -3118,22 +3152,27 @@ mod tests {
             vec![
                 ReadyChannelOperation {
                     state: 3,
+                    transition_ordinal: 1,
                     kind: ReadyChannelOperationKind::Open { resume_target: 2 },
                 },
                 ReadyChannelOperation {
                     state: 3,
+                    transition_ordinal: 2,
                     kind: ReadyChannelOperationKind::Send(send),
                 },
                 ReadyChannelOperation {
                     state: 8,
+                    transition_ordinal: 0,
                     kind: ReadyChannelOperationKind::Receive(receive),
                 },
                 ReadyChannelOperation {
                     state: 13,
+                    transition_ordinal: 0,
                     kind: ReadyChannelOperationKind::Select3(select3),
                 },
                 ReadyChannelOperation {
                     state: 13,
+                    transition_ordinal: 1,
                     kind: ReadyChannelOperationKind::Select4(select4),
                 },
             ],
