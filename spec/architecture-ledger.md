@@ -73,6 +73,7 @@ identity, arity, ownership, or meaning.
 | Checked front-end pipeline | `witchy-types::pipeline::CheckedModule`; `witchy-interp::pipeline` supplies expansion | Production sinks accept the proof object. Tooling may stop at a named `LinkedModule`; bare `Module` isn't an execution credential. |
 | Type judgment and expression facts | `witchy-types::typeck::{TypedModule,TypeTable}` | Arbitrary AST mutation always reannotates; node-preserving mutation is crate-private. |
 | Capability vocabulary | `witchy-cap-model` | Compiler, analyzer, fixtures, and runtime share names/classes/rights vocabulary without depending upward. |
+| Executable-cache authentication | `witchy-cache` | Host-only authenticators create and verify bounded records; consumers receive authenticated payload bytes without importing compiler or runtime stages. |
 | Capability operation identity, receiver, arity, and coarse result | `witchy-syntax::cap_ops::OPS` | Type checking and trait lowering use receiver-qualified catalog lookup; operation-specific rights remain checker policy. |
 | Effective nominal type parameters | `witchy-syntax::ast::effective_type_params` | Type checking, reflection, storage, traits, and codegen delegate rather than infer separate parameter order. |
 | Runtime declaration identity and closed shapes | `witchy-types::runtime_type` | Backends consume authenticated declaration catalogs; they don't reconstruct ownership from names. |
@@ -94,6 +95,7 @@ stage crates have this maximum direct-dependency graph:
 | Stage | Allowed stage dependencies | Classification | Next boundary change |
 |---|---|---|---|
 | `witchy-cap-model` | none | KEEP | Keep the capability names, classes, arities, and rights vocabulary dependency-bottom and free of syntax, policy, or runtime behavior. |
+| `witchy-cache` | none | KEEP | Keep authenticated executable-cache framing, bounded I/O, and platform credential access dependency-bottom; compiler and runtime consumers supply frozen input and recipe identities from above. |
 | `witchy-testkit` | `cap-model` | KEEP | Keep deterministic fixture models, validation, provider state machines, expectations, and transcripts authority-free and independent of compiler and runtime stages. |
 | `witchy-test-host` | `testkit` | KEEP | Keep backend-neutral fixture dispatch over opaque handles; adapters in the interpreter, Wasmtime runtime, and browser remain consumers rather than dependencies. |
 | `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |

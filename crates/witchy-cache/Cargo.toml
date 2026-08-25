@@ -1,0 +1,31 @@
+[package]
+name = "witchy-cache"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Authenticated executable-cache records for Witchy"
+
+[features]
+test-support = []
+
+[dependencies]
+blake3 = "1.8.3"
+cap-fs-ext = "4.0.2"
+cap-std = "4.0.2"
+getrandom = "0.4.2"
+subtle = "2.6.1"
+zeroize = "1.8.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["linux-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+security-framework = "3.7.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

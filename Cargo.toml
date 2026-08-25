@@ -45,7 +45,7 @@ pkg-fmt = "tgz"
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir"]
+members = ["crates/witchy-cache", "crates/witchy-cap-model", "crates/witchy-caps", "crates/witchy-confinement", "crates/witchy-interp", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-test-host", "crates/witchy-testkit", "crates/witchy-types", "crates/witchy-wir"]
 
 [lib]
 name = "witchy"

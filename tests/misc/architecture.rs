@@ -5,6 +5,7 @@ use std::process::Command;
 use serde_json::Value;
 
 const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
+    ("witchy-cache", &[]),
     ("witchy-cap-model", &[]),
     ("witchy-testkit", &["witchy-cap-model"]),
     ("witchy-test-host", &["witchy-testkit"]),

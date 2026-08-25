@@ -23,6 +23,16 @@ printf '%s\n' 'fn chan_throughput_bounded_by_rc_floor() {}' \
     >"$zero_ignore_root/src/stats.rs"
 "$wrapper" --validate-ignore-policy "$zero_ignore_root"
 
+multiple_ignore_root="$tmp/multiple-ignore-policy"
+mkdir -p "$multiple_ignore_root/src" \
+    "$multiple_ignore_root/crates/witchy-cache/tests" "$multiple_ignore_root/tests"
+printf '%s\n' '#[ignore]' 'fn chan_throughput_bounded_by_rc_floor() {}' \
+    >"$multiple_ignore_root/src/stats.rs"
+printf '%s\n' '#[ignore = "uses the OS credential store"]' \
+    'fn platform_authenticator_is_stable_across_processes() {}' \
+    >"$multiple_ignore_root/crates/witchy-cache/tests/platform_authenticator.rs"
+"$wrapper" --validate-ignore-policy "$multiple_ignore_root"
+
 unexpected_ignore_root="$tmp/unexpected-ignore-policy"
 mkdir -p "$unexpected_ignore_root/src" "$unexpected_ignore_root/crates" \
     "$unexpected_ignore_root/tests"
@@ -66,6 +76,26 @@ zero_ignored="$tmp/zero-ignored.out"
 )
 [ "$(cat "$zero_normal")" = "stats::tests::chan_throughput_bounded_by_rc_floor: test" ]
 [ ! -s "$zero_ignored" ]
+
+# Every audited ignored test present in a binary is copied from that binary's
+# ordinary inventory; names belonging to other binaries are naturally absent.
+multiple_normal="$tmp/multiple-normal.out"
+multiple_ignored="$tmp/multiple-ignored.out"
+(
+    cd "$multiple_ignore_root"
+    NEXTEST_RUN_ID=multiple-ignore TMPDIR="$tmp" \
+        "$wrapper" /bin/bash -c \
+        'printf "%s\n" "platform_authenticator_is_stable_across_processes: test" "ordinary: test"' \
+        >"$multiple_normal" &
+    multiple_normal_pid=$!
+    NEXTEST_RUN_ID=multiple-ignore TMPDIR="$tmp" \
+        "$wrapper" /bin/bash -c 'exit 99' --ignored >"$multiple_ignored" &
+    multiple_ignored_pid=$!
+    wait "$multiple_normal_pid"
+    wait "$multiple_ignored_pid"
+)
+[ "$(cat "$multiple_ignored")" = \
+    "platform_authenticator_is_stable_across_processes: test" ]
 
 cache_dir="$tmp/cache"
 telemetry="$tmp/telemetry"
