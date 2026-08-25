@@ -422,6 +422,8 @@ Compiler-owned three-way frame bridge. The public spelling keeps the receiver ow
 
 Compiler-owned one-way frame bridge for a payload-free receive loop. A final `None` is delivered exactly once by task's close pass.
 
+#### `fn select4_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+
 #### `fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n)`
 
 #### `fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m)`
@@ -432,6 +434,10 @@ Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased mess
 
 Three-way counterpart of `select2_frame_decode`. Escaping and complex matches materialize the public result; local exhaustive matches use the payload bridge below instead.
 
+#### `fn select4_frame_decode(tag: Int, o: Option(__Msg)) -> Selected4(m)`
+
+Four-way frame counterpart.  This remains the ordinary nominal-result path; a later typed-lane extension may bypass it only for a proven local match.
+
 #### `fn select2_frame_payload(o: Option(__Msg)) -> Option(m)`
 
 Compiler-owned scalar frame support. A locally consumed select result can dispatch on the scheduler tag and this typed payload option directly, rather than first allocating a `Selected(m)` value. Escaping and complex matches still use `select2_frame_decode` above.
@@ -439,6 +445,10 @@ Compiler-owned scalar frame support. A locally consumed select result can dispat
 #### `fn select3_frame_payload(o: Option(__Msg)) -> Option(m)`
 
 Three-way counterpart of `select2_frame_payload`; the tag remains in the compiler-owned step callback, so this bridge only carries typed payload.
+
+#### `fn select4_frame_payload(o: Option(__Msg)) -> Option(m)`
+
+Four-way counterpart; source-arm identity remains in the separate tag lane.
 
 #### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
 
@@ -4322,6 +4332,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Pull4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
@@ -4356,6 +4367,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Wait4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
@@ -4401,6 +4413,8 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 #### `fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+
+#### `fn channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
