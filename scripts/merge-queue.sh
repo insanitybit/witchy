@@ -149,6 +149,24 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
 strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
 
+# Host contention at a point in time. The gate's dominant cost driver is not the
+# gate but the machine under it: several agents share this checkout and
+# oversubscribe the CPU, so an identical branch gates in ~140s on an idle box
+# and trips the 300s stall timeout on a loaded one. Journalling the 1-minute
+# load average beside every attempt's phase timings is what makes those two
+# separable after the fact -- without it "this branch is slow" and "the box was
+# at load 80" are the same row. Best effort by construction: an unreadable
+# probe yields an empty field, never a failed attempt.
+load1() {
+    if [ -r /proc/loadavg ]; then
+        cut -d ' ' -f1 /proc/loadavg 2>/dev/null || true
+    else
+        sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}' || true
+    fi
+}
+host_ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '')"
+# Load is only interpretable against core count, so both travel together.
+
 # The selector is state, not a caller-controlled path. Only these two sibling
 # Cargo generations are valid; old state directories have no selector and use
 # the historical target/ generation.
@@ -289,6 +307,13 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     local event="$1" branch="$2" attempt_start="$3" prepare_finished="$4"
     local lock_acquired="$5" gate_start="$6" gate_end="$7" finish="$8"
     shift 8
+    # One choke point for every outcome (merged/red/timeout/requeued/...), so
+    # the contention covariate can never be present for some events and absent
+    # for others -- which would silently bias any comparison drawn from it.
+    local contention=()
+    [ -n "$gate_load_start" ] && contention+=(gate_load_start "$gate_load_start")
+    [ -n "$gate_load_end" ] && contention+=(gate_load_end "$gate_load_end")
+    [ -n "$host_ncpu" ] && contention+=(host_ncpu "$host_ncpu")
     record "$event" "$branch" \
         attempt_timing_schema "1" \
         elapsed_s "$((gate_end - gate_start))" \
@@ -298,6 +323,7 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
         preflight_elapsed_s "$((gate_start - lock_acquired))" \
         gate_elapsed_s "$((gate_end - gate_start))" \
         landing_elapsed_s "$((finish - gate_end))" \
+        ${contention[@]+"${contention[@]}"} \
         "$@"
 }
 
@@ -944,6 +970,9 @@ try_replay_over_docs_only_master() { # try_replay_over_docs_only_master <old-bas
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
+# Sampled at the gate boundaries; empty for attempts that end before gating.
+gate_load_start=""
+gate_load_end=""
 run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only] [cargo-target] [census-proof-sha] [skip-glamour]
     local log="$1"
     local progress_file="${log}.progress"
@@ -1690,6 +1719,8 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
 
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
+    gate_load_start=""
+    gate_load_end=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
     change_id="$(jq -r '.change_id // empty' "$f")"
@@ -2195,12 +2226,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
 
     note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]); log: $log"
     local gate_started; gate_started="$(date +%s)"
+    gate_load_start="$(load1)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
         "$cargo_target_dir" "$census_proof_sha" "$ungated" "$skip_sweeps" \
         "$skip_book" "$nextest_args" "$nextest_expr" \
         "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages" \
         "$skip_fmt"
     local gate_finished; gate_finished="$(date +%s)"
+    gate_load_end="$(load1)"
     local gate_took=$((gate_finished - gate_started))
 
     case "$gate_result" in

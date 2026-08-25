@@ -174,6 +174,15 @@ jq -sn \
         {count:(map(select(. != null))|length),
          p50:(percentile(0.50)), p90:(percentile(0.90)), max:(map(select(. != null))|max//null)};
     def numeric($value): if $value==null then null else ($value|tonumber) end;
+    # Load per core at gate start. Absent on attempts journalled before the
+    # contention signal landed, and on hosts where the probe failed -- both
+    # must read as "no sample", never as zero load.
+    def load_per_core:
+        if (.gate_load_start//null)==null or (.host_ncpu//null)==null
+        then null
+        else ((.host_ncpu|tonumber) as $n
+              | if $n==0 then null else ((.gate_load_start|tonumber)/$n) end)
+        end;
     ($journal | map(select((.ts|fromdateiso8601) >= $cutoff))) as $recent
     | ($recent | map(select(terminal and .log != null and .elapsed_s != null)) | unique_by(.log)) as $attempts
     | ($recent | map(select(.event=="merged" and .log != null and .elapsed_s != null))) as $merged
@@ -220,7 +229,18 @@ jq -sn \
                              clippy:($phases|map(.clippy_s)|distribution),
                              wasm:($phases|map(.wasm_s)|distribution),
                              book:($phases|map(.book_s)|distribution)},
-        suite:{tests:($phases|map(.tests)|distribution), binaries:($phases|map(.binaries)|distribution)}
+        suite:{tests:($phases|map(.tests)|distribution), binaries:($phases|map(.binaries)|distribution)},
+        contention:(($attempts|map(select(load_per_core != null))) as $c
+          | {samples:($c|length),
+             load_per_core:($c|map(load_per_core)|distribution),
+             buckets:([{name:"idle (<1x cores)",  sel:($c|map(select(load_per_core < 1)))},
+                       {name:"busy (1-3x)",       sel:($c|map(select(load_per_core >= 1 and load_per_core < 3)))},
+                       {name:"saturated (>=3x)",  sel:($c|map(select(load_per_core >= 3)))}]
+                      | map({name:.name, n:(.sel|length),
+                             gate_p50:(.sel|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution|.p50),
+                             gate_p90:(.sel|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution|.p90),
+                             red_rate:(if (.sel|length)==0 then null
+                                       else ((.sel|map(select(.event!="merged"))|length)/(.sel|length)) end)}))})
       }
 ' >"$report"
 
@@ -272,5 +292,15 @@ jq -r '
     "  requeued / conflict / blocked: \(.outcomes.requeued) / \(.outcomes.conflict) / \(.outcomes.blocked)",
     "  automatic retry events: \(.outcomes.automatic_retries)",
     "",
-    "Discovery is estimated as test-stage wall time minus Cargo compile and nextest execution."
+    (if .contention.samples == 0 then
+        "Host contention: no samples yet (attempts predate the contention signal)."
+     else
+        ("Host contention at gate start (load per core; p50 / p90 / max)\n"
+         + "  load per core (n=\(.contention.samples)): \(decimal(.contention.load_per_core.p50)) / \(decimal(.contention.load_per_core.p90)) / \(decimal(.contention.load_per_core.max))\n"
+         + "  gate p50 / p90 and failure rate by load bucket:\n"
+         + (.contention.buckets | map("    \(.name): n=\(.n)  gate \(value(.gate_p50; "s")) / \(value(.gate_p90; "s"))  failed \(if .red_rate==null then "n/a" else ((.red_rate*100|round|tostring)+"%") end)") | join("\n")))
+     end),
+    "",
+    "Discovery is estimated as test-stage wall time minus Cargo compile and nextest execution.",
+    "A gate is only comparable to another at similar load per core; see the contention buckets."
 ' "$report"

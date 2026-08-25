@@ -88,6 +88,19 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   `validated` (test-mode green, merge skipped), `swept`. `merged`/`red`/
   `timeout` carry the gate log path, elapsed seconds, and a stage-timing
   summary parsed from check.sh's `==> [N] stage (t+Ns)` markers.
+  Every attempt-terminal event also carries a **contention covariate** written
+  from the one `record_attempt` choke point: `gate_load_start` /
+  `gate_load_end` (1-minute load average sampled at the gate boundaries) and
+  `host_ncpu`. This exists because the gate's dominant cost driver is the
+  machine, not the branch — several agents share this checkout, and an
+  identical branch gates in ~140s idle but trips the 300s stall timeout under
+  load. Without the covariate, "this branch is slow" and "the box was at load
+  80" are the same journal row. The fields are best effort: a host where the
+  probe fails writes none, and every consumer must read that as *no sample*
+  rather than as zero load. `gate-report.sh` buckets attempts by load per core
+  and reports gate p50/p90 and failure rate per bucket, so a timing claim can
+  be qualified by the load it was measured at. **Never compare two gate
+  measurements taken at different load per core.**
 - `status` resolves all queued entries from one queue/registry snapshot, so it
   remains usable when a large batch is waiting.
 - `logs/` — full gate output per attempt (nextest streams one line per test:

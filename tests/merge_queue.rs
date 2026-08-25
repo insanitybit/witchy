@@ -378,6 +378,18 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         "external lock wait was not separated from the gate: {validated}",
     );
     assert_eq!(validated["elapsed_s"], validated["gate_elapsed_s"]);
+
+    // The contention covariate rides on the same record_attempt choke point as
+    // the phase timings, so it must be present on a real coordinator attempt --
+    // not merely renderable by gate-report.sh. Without it a slow gate and a
+    // saturated host are the same journal row.
+    for field in ["gate_load_start", "gate_load_end", "host_ncpu"] {
+        validated[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing {field} in {validated}"))
+            .parse::<f64>()
+            .unwrap_or_else(|_| panic!("non-numeric {field} in {validated}"));
+    }
     let phase_total: u64 = [
         "prepare_elapsed_s",
         "lock_wait_s",

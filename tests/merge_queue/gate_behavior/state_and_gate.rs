@@ -183,10 +183,10 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
         concat!(
             "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:03:20Z\",\"event\":\"submitted\",\"branch\":\"c\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"log\":{timeout:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"gate_load_start\":\"40.00\",\"gate_load_end\":\"41.00\",\"host_ncpu\":\"10\",\"log\":{timeout:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:05:00Z\",\"event\":\"submitted\",\"branch\":\"d\"}}\n",
             "{{\"ts\":\"2026-07-16T00:05:40Z\",\"event\":\"red\",\"branch\":\"d\",\"elapsed_s\":\"40\",\"log\":{red:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:06:00Z\",\"event\":\"requeued\",\"branch\":\"e\"}}\n",
@@ -243,6 +243,19 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["attempt_phases_s"]["landing"]["p50"], 5);
     assert_eq!(report["outcomes"]["requeued"], 1);
     assert_eq!(report["outcomes"]["conflict"], 1);
+
+    // Contention covariate. Branch `d` deliberately carries no load fields:
+    // journals written before the signal landed must read as "no sample"
+    // rather than as a zero-load gate, which would drag every bucket toward
+    // idle and make a loaded box look fast.
+    assert_eq!(report["contention"]["samples"], 2);
+    let buckets = report["contention"]["buckets"]
+        .as_array()
+        .expect("contention buckets are an array");
+    assert_eq!(buckets[0]["n"], 1, "idle bucket: {buckets:?}");
+    assert_eq!(buckets[0]["red_rate"], 0.0, "idle gate did not fail: {buckets:?}");
+    assert_eq!(buckets[2]["n"], 1, "saturated bucket: {buckets:?}");
+    assert_eq!(buckets[2]["red_rate"], 1.0, "saturated gate failed: {buckets:?}");
     assert_eq!(report["outcomes"]["blocked"], 1);
     assert_eq!(report["outcomes"]["automatic_retries"], 1);
     assert_eq!(report["phases_s"]["compile"]["p50"], 20);
