@@ -198,10 +198,17 @@ impl<'types> Codegen<'types> {
             arg: Box::new(get_i.clone()),
         };
 
-        let seq = vec![
+        let bounds_proven = matches!((bytes_expr, idx_expr), (Expr::Var(bytes), Expr::Var(index))
+            if self.elide_index_list.iter().any(|(proved_index, proved_root)| {
+                proved_index == index && proved_root == bytes
+            }));
+
+        let mut seq = vec![
             N::SetLocal { local: b_scratch, value: b },
             N::SetLocal { local: i_scratch, value: i },
-            N::If {
+        ];
+        if !bounds_proven {
+            seq.push(N::If {
                 cond: bin32(
                     BinOp::Or,
                     bin64(BinOp::Lt, get_i.clone(), W::ConstI64(0)),
@@ -215,20 +222,20 @@ impl<'types> Codegen<'types> {
                 ),
                 els: vec![],
                 result: None,
-            },
-            N::Push(W::Convert {
-                from: WirKind::I32,
-                to: WirKind::I64,
-                arg: Box::new(W::Load8U {
-                    ptr: Box::new(bin32(
-                        BinOp::Add,
-                        bin32(BinOp::Add, get_b, W::ConstI32(4)),
-                        i_i32,
-                    )),
-                    offset: 0,
-                }),
+            });
+        }
+        seq.push(N::Push(W::Convert {
+            from: WirKind::I32,
+            to: WirKind::I64,
+            arg: Box::new(W::Load8U {
+                ptr: Box::new(bin32(
+                    BinOp::Add,
+                    bin32(BinOp::Add, get_b, W::ConstI32(4)),
+                    i_i32,
+                )),
+                offset: 0,
             }),
-        ];
+        }));
         Some(W::Seq(seq))
     }
 
@@ -288,6 +295,11 @@ impl<'types> Codegen<'types> {
             arg: Box::new(get_v.clone()),
         };
 
+        let bounds_proven = matches!((bytes_expr, idx_expr), (Expr::Var(bytes), Expr::Var(index))
+            if self.elide_index_list.iter().any(|(proved_index, proved_root)| {
+                proved_index == index && proved_root == bytes
+            }));
+
         let mut seq = vec![
             N::SetLocal { local: b_scratch, value: b },
             N::SetLocal { local: i_scratch, value: i },
@@ -307,21 +319,23 @@ impl<'types> Codegen<'types> {
             });
         }
 
-        seq.push(N::If {
-            cond: bin32(
-                BinOp::Or,
-                bin64(BinOp::Lt, get_i.clone(), W::ConstI64(0)),
-                bin64(BinOp::Ge, get_i.clone(), len_i64.clone()),
-            ),
-            then_: witchy_wir::wir_helpers::abort_nodes(
-                witchy_syntax::diag::DiagTemplate::BytesIndexOob,
-                get_i,
-                len_i64,
-                W::ConstI32(0),
-            ),
-            els: vec![],
-            result: None,
-        });
+        if !bounds_proven {
+            seq.push(N::If {
+                cond: bin32(
+                    BinOp::Or,
+                    bin64(BinOp::Lt, get_i.clone(), W::ConstI64(0)),
+                    bin64(BinOp::Ge, get_i.clone(), len_i64.clone()),
+                ),
+                then_: witchy_wir::wir_helpers::abort_nodes(
+                    witchy_syntax::diag::DiagTemplate::BytesIndexOob,
+                    get_i,
+                    len_i64,
+                    W::ConstI32(0),
+                ),
+                els: vec![],
+                result: None,
+            });
+        }
 
         seq.push(N::Store8 {
             ptr: bin32(

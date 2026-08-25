@@ -1634,6 +1634,9 @@ impl<'types> Codegen<'types> {
                 // load. Popped right after the body, so the stack stays balanced even on
                 // the early `None` bail below.
                 let elide_pair = bounds_elide_pair(var, lo, hi, *inclusive, body);
+                let byte_elide_pair = super::type_vars::bytes_bounds_elide_pair(
+                    var, lo, hi, *inclusive, body,
+                );
                 if let Some(p) = &elide_pair {
                     self.elide_index_list.push(p.clone());
                 }
@@ -1651,6 +1654,9 @@ impl<'types> Codegen<'types> {
                     self.elide_index_list.push(pair.clone());
                 }
                 let sequence_extra_elide = sequence_pairs.len() - usize::from(elide_pair.is_some());
+                if let Some(p) = &byte_elide_pair {
+                    self.elide_index_list.push(p.clone());
+                }
                 let (sequence_plan_count, sequence_setup) =
                     self.install_sequence_access_plans(
                         &sequence_pairs,
@@ -1701,10 +1707,13 @@ impl<'types> Codegen<'types> {
                 } else {
                     0
                 };
-                if elide_pair.is_some() {
+                if byte_elide_pair.is_some() {
                     self.elide_index_list.pop();
                 }
                 for _ in 0..sequence_extra_elide {
+                    self.elide_index_list.pop();
+                }
+                if elide_pair.is_some() {
                     self.elide_index_list.pop();
                 }
                 if wm.is_some() {

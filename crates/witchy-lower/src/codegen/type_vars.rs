@@ -451,6 +451,31 @@ pub(super) fn bounds_elide_pair(
     inclusive: bool,
     body: &Block,
 ) -> Option<(String, String)> {
+    bounds_elide_pair_for_length(var, lo, hi, inclusive, body, intrinsics::LIST_LENGTH)
+}
+
+/// The byte-buffer analogue of [`bounds_elide_pair`].  Both consumers share
+/// the same counter, half-open range, and stable-root proof; only the length
+/// operation differs.  Keeping that fact producer shared prevents the byte
+/// path from becoming a second, method-specific bounds recognizer.
+pub(super) fn bytes_bounds_elide_pair(
+    var: &str,
+    lo: &Expr,
+    hi: &Expr,
+    inclusive: bool,
+    body: &Block,
+) -> Option<(String, String)> {
+    bounds_elide_pair_for_length(var, lo, hi, inclusive, body, intrinsics::BYTES_LENGTH)
+}
+
+fn bounds_elide_pair_for_length(
+    var: &str,
+    lo: &Expr,
+    hi: &Expr,
+    inclusive: bool,
+    body: &Block,
+    length_intrinsic: &str,
+) -> Option<(String, String)> {
     if inclusive || !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
         return None;
     }
@@ -458,8 +483,18 @@ pub(super) fn bounds_elide_pair(
         Expr::Int(k) if *k >= 0 => {}
         _ => return None,
     }
+    // Linked stdlib bridge functions (for example `bytes.length`) remain as
+    // named calls while an intrinsic body uses its private spelling.  Both
+    // spellings name the same pure length operation; accepting the catalog's
+    // public diagnostic spelling keeps this fact producer representation-
+    // agnostic without teaching its consumers about individual methods.
+    let is_length_call = |name: &str| {
+        name == length_intrinsic
+            || witchy_syntax::intrinsics::lookup(length_intrinsic)
+                .is_some_and(|spec| name == spec.diagnostic_name)
+    };
     let xs = match hi {
-        Expr::Call { name, args } if name == intrinsics::LIST_LENGTH && args.len() == 1 => {
+        Expr::Call { name, args } if is_length_call(name) && args.len() == 1 => {
             match &args[0] {
                 Expr::Var(x) => x.clone(),
                 _ => return None,
@@ -470,7 +505,7 @@ pub(super) fn bounds_elide_pair(
         {
             match lhs.as_ref() {
                 Expr::Call { name, args }
-                    if name == intrinsics::LIST_LENGTH && args.len() == 1 =>
+                    if is_length_call(name) && args.len() == 1 =>
                 {
                     match &args[0] {
                         Expr::Var(x) => x.clone(),

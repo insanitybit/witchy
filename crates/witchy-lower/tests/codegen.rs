@@ -245,6 +245,19 @@ mod tests {
         )
     }
 
+    fn link_bytes_app(source: &str) -> witchy_syntax::ast::Module {
+        let bytes_module = parse_module(
+            witchy_syntax::linker::bundled_source("bytes").expect("bundled bytes module"),
+        )
+        .expect("parse bundled bytes module");
+        let app = parse_module(source).expect("parse bytes app");
+        link_test_modules(
+            vec![("bytes".into(), bytes_module), ("app".into(), app)],
+            "app",
+            &std::collections::HashSet::from(["app".to_string()]),
+        )
+    }
+
     #[test]
     fn public_lowering_outcome_distinguishes_success_and_rejection() {
         let lowered = parse_module("fn main() -> Int:\n    1\n").expect("parse lowered module");
@@ -4515,6 +4528,78 @@ fn main() -> Int:
         let wir = assemble_wir_module(&module).expect_lowered("lower indexed-kernel fixture");
         witchy_syntax::opt::set_for_tests(None);
         witchy_wir::wir::to_wat(&wir)
+    }
+
+    #[test]
+    fn byte_counted_range_elides_only_the_shared_bounds_proof() {
+        let positive = r#"
+import bytes
+
+fn sum(input: Bytes) -> Int:
+    var total = 0
+    for i in 0..bytes.length(input):
+        total = total + bytes.at(input, i)
+    total
+
+fn rewrite(var output: Bytes) -> Int:
+    for i in 0..bytes.length(output):
+        bytes.set_at(output, i, 65)
+    bytes.at(output, 0)
+
+fn main() -> Int:
+    var output = bytes.from_string("xyz")
+    sum(bytes.from_string("ABC")) + rewrite(output)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let module = link_bytes_app(positive);
+        assert_eq!(run_int_module(&module), 263, "known byte range preserves reads and writes");
+
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower byte range fixture"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let sum = wat.split("(func $app.sum").nth(1).expect("sum WAT");
+        let sum = sum.split("(func $").next().expect("sum body");
+        assert!(sum.contains("i32.load8_u"), "the promoted byte read remains direct:\n{sum}");
+        assert!(
+            !sum.contains("call $__witchy_abort"),
+            "the proven half-open byte range removes only its redundant bounds abort:\n{sum}",
+        );
+
+        let off = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        witchy_syntax::opt::set_for_tests(Some(off));
+        let deopt_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower byte range deopt fixture"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let deopt_sum = deopt_wat.split("(func $app.sum").nth(1).expect("deopt sum WAT");
+        let deopt_sum = deopt_sum.split("(func $").next().expect("deopt sum body");
+        assert!(
+            deopt_sum.contains("call $__witchy_abort"),
+            "the deoptimized byte path retains its exact bounds abort:\n{deopt_sum}",
+        );
+
+        let near_miss = r#"
+import bytes
+
+fn read_past(input: Bytes, n: Int) -> Int:
+    var total = 0
+    for i in 0..n:
+        total = total + bytes.at(input, i)
+    total
+
+fn main() -> Int:
+    read_past(bytes.from_string("x"), 2)
+"#;
+        let near_miss = link_bytes_app(near_miss);
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let optimized_trap = compiled_module_trap(&near_miss);
+        witchy_syntax::opt::set_for_tests(Some(off));
+        let deoptimized_trap = compiled_module_trap(&near_miss);
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(optimized_trap.contains("app.read_past"), "optimized near miss traps: {optimized_trap}");
+        assert!(deoptimized_trap.contains("app.read_past"), "deoptimized near miss traps: {deoptimized_trap}");
     }
 
     fn optimizer_policy_payloads(source: &str) -> Vec<Vec<u8>> {
