@@ -1376,7 +1376,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Lower the narrow, compiler-owned select loop ABI.  This is deliberately
-    /// proof-gated: only a two-way `chan.select(...).await` in the first body
+    /// proof-gated: only a fixed-arity `chan.select(...).await` in the first body
     /// statement, with scalar mutable lanes and no other suspension/control
     /// escape, is eligible.  Everything else keeps the ordinary named-segment
     /// lowering.
@@ -1395,7 +1395,12 @@ impl<'a> Ctx<'a> {
         let Expr::Call { name, args } = selected_call else {
             return Ok(None);
         };
-        if name != "chan.select" || args.len() != 2 || body.stmts.len() < 2 {
+        let arity = match name.as_str() {
+            "chan.select" => 2,
+            "chan.select3" => 3,
+            _ => return Ok(None),
+        };
+        if args.len() != arity || body.stmts.len() < 2 {
             return Ok(None);
         }
         let tail_body = &body.stmts[1..];
@@ -1487,19 +1492,17 @@ impl<'a> Ctx<'a> {
                 value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64)]), lane),
             });
         }
-        let direct_result_arms = rewrite_local_select_matches(
-            tail_body,
-            &selected,
-            &tag,
-            &option,
-            &payload,
-        );
+        let direct_result_arms = match arity {
+            2 => rewrite_local_select_matches(tail_body, &selected, &tag, &option, &payload),
+            3 => rewrite_local_select3_matches(tail_body, &selected, &tag, &option, &payload),
+            _ => unreachable!("fixed arity was validated above"),
+        };
         let direct_result_used = direct_result_arms.is_some();
         if let Some(rewritten) = direct_result_arms {
             step_stmts.extend(rewritten);
         } else {
             let selected_expr = call(
-                "chan.select2_frame_decode",
+                if arity == 2 { "chan.select2_frame_decode" } else { "chan.select3_frame_decode" },
                 vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
             );
             step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
@@ -1517,13 +1520,28 @@ impl<'a> Ctx<'a> {
                 ],
             }
         } else {
+            let (closed_ctor, ready_ctors) = if arity == 2 {
+                ("Closed", ["First", "Second", ""])
+            } else {
+                ("Closed3", ["First3", "Second3", "Third3"])
+            };
+            let mut arms = vec![MatchArm {
+                line: 0,
+                pattern: Pattern::Ctor { name: closed_ctor.into(), args: vec![] },
+                guard: None,
+                body: Expr::Bool(true),
+            }];
+            for ctor in ready_ctors.into_iter().filter(|ctor| !ctor.is_empty()) {
+                arms.push(MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor { name: ctor.into(), args: vec![Pattern::Wildcard] },
+                    guard: None,
+                    body: Expr::Bool(false),
+                });
+            }
             Expr::Match {
                 scrutinee: Box::new(Expr::Var(selected.clone())),
-                arms: vec![
-                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "Closed".into(), args: vec![] }, guard: None, body: Expr::Bool(true) },
-                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "First".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
-                    MatchArm { line: 0, pattern: Pattern::Ctor { name: "Second".into(), args: vec![Pattern::Wildcard] }, guard: None, body: Expr::Bool(false) },
-                ],
+                arms,
             }
         };
         step_stmts.push(Stmt::Let { name: closed.clone(), ty: Some(Type::Named("Bool".into(), vec![])), mutable: false, value: closed_expr });
@@ -1570,7 +1588,12 @@ impl<'a> Ctx<'a> {
             },
         });
         let done_name = match setup.last() { Some(Stmt::Let { name, .. }) => name.clone(), _ => unreachable!() };
-        setup.push(Stmt::Expr(call("chan.select2_frame_loop", vec![args[0].clone(), args[1].clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)])));
+        let mut frame_args = args.clone();
+        frame_args.extend([Expr::Var(frame), Expr::Var(step), Expr::Var(done_name)]);
+        setup.push(Stmt::Expr(call(
+            if arity == 2 { "chan.select2_frame_loop" } else { "chan.select3_frame_loop" },
+            frame_args,
+        )));
         Ok(Some(Expr::Block(Block { lines: vec![cont.line; setup.len()], stmts: setup, region: None })))
     }
 
@@ -2315,6 +2338,139 @@ fn rewrite_local_select_match(
     })
 }
 
+/// Three-way counterpart of `rewrite_local_select_matches`.  Keep this
+/// deliberately separate from arbitrary-select lowering: the compiler-owned
+/// frame ABI is fixed arity and all three payload constructors must be present.
+fn rewrite_local_select3_matches(
+    tail: &[Stmt],
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+) -> Option<Vec<Stmt>> {
+    let mut rewritten_any = false;
+    let rewritten = tail
+        .iter()
+        .map(|stmt| rewrite_local_select3_match_stmt(
+            stmt,
+            selected,
+            tag,
+            option,
+            payload,
+            &mut rewritten_any,
+        ))
+        .collect::<Vec<_>>();
+    if !rewritten_any {
+        return None;
+    }
+    let free = crate::suspension::free_bindings_in_block(
+        &Block {
+            stmts: rewritten.clone(),
+            lines: vec![0; rewritten.len()],
+            region: None,
+        },
+        &HashSet::default(),
+    );
+    (!free.iter().any(|name| name == selected)).then_some(rewritten)
+}
+
+fn rewrite_local_select3_match_stmt(
+    stmt: &Stmt,
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+    rewritten_any: &mut bool,
+) -> Stmt {
+    let rewrite = |value: &Expr, rewritten_any: &mut bool| {
+        let Some(rewritten) = rewrite_local_select3_match(value, selected, tag, option, payload) else {
+            return value.clone();
+        };
+        *rewritten_any = true;
+        rewritten
+    };
+    match stmt {
+        Stmt::Let { name, ty, mutable, value } => Stmt::Let {
+            name: name.clone(), ty: ty.clone(), mutable: *mutable,
+            value: rewrite(value, rewritten_any),
+        },
+        Stmt::Assign { name, value } => Stmt::Assign {
+            name: name.clone(), value: rewrite(value, rewritten_any),
+        },
+        Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
+            pattern: pattern.clone(), value: rewrite(value, rewritten_any),
+        },
+        Stmt::Return(Some(value)) => Stmt::Return(Some(rewrite(value, rewritten_any))),
+        Stmt::Yield(value) => Stmt::Yield(rewrite(value, rewritten_any)),
+        Stmt::Expr(value) => Stmt::Expr(rewrite(value, rewritten_any)),
+        _ => stmt.clone(),
+    }
+}
+
+fn rewrite_local_select3_match(
+    expression: &Expr,
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+) -> Option<Expr> {
+    let Expr::Match { scrutinee, arms } = expression else { return None };
+    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 4 {
+        return None;
+    }
+    let first = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "First3" && args.len() == 1
+    ))?;
+    let second = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "Second3" && args.len() == 1
+    ))?;
+    let third = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "Third3" && args.len() == 1
+    ))?;
+    let closed = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "Closed3" && args.is_empty()
+    ))?;
+    if arms.iter().any(|arm| arm.guard.is_some()) {
+        return None;
+    }
+    let first_body = bind_select_payload(&first.pattern, payload, first.body.clone(), first.line)?;
+    let second_body = bind_select_payload(&second.pattern, payload, second.body.clone(), second.line)?;
+    let third_body = bind_select_payload(&third.pattern, payload, third.body.clone(), third.line)?;
+    Some(Expr::Match {
+        scrutinee: Box::new(call("chan.select3_frame_payload", vec![Expr::Var(option.into())])),
+        arms: vec![
+            MatchArm {
+                line: first.line,
+                pattern: Pattern::Ctor { name: "Some".into(), args: vec![Pattern::Var(payload.into())] },
+                guard: None,
+                body: Expr::If {
+                    cond: Box::new(Expr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(Expr::Var(tag.into())),
+                        rhs: Box::new(Expr::Int(0)),
+                    }),
+                    then_block: tail_block_at(first_body, first.line),
+                    else_block: Some(tail_block(Expr::If {
+                        cond: Box::new(Expr::Binary {
+                            op: BinOp::Eq,
+                            lhs: Box::new(Expr::Var(tag.into())),
+                            rhs: Box::new(Expr::Int(1)),
+                        }),
+                        then_block: tail_block_at(second_body, second.line),
+                        else_block: Some(tail_block_at(third_body, third.line)),
+                    })),
+                },
+            },
+            MatchArm {
+                line: closed.line,
+                pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
+                guard: None,
+                body: closed.body.clone(),
+            },
+        ],
+    })
+}
+
 fn bind_select_payload(pattern: &Pattern, payload: &str, body: Expr, line: u32) -> Option<Expr> {
     let Pattern::Ctor { args, .. } = pattern else { return None };
     match args.as_slice() {
@@ -2877,8 +3033,19 @@ mod tests {
             rendered.contains("list.repeat(0, 0)"),
             "the reusable bridge owns an explicitly empty frame: {rendered}"
         );
-        assert!(rendered.contains("chan.select2_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select2_frame_payload"), "{rendered}");
         assert!(!rendered.contains("chan.select2_frame_decode"), "{rendered}");
+    }
+
+    #[test]
+    fn select3_loop_uses_owned_frame_bridge_when_scalar_lanes_are_proven() {
+        let source = "from chan import Receiver\n\nasync fn run(a: Receiver(Int), b: Receiver(Int), c: Receiver(Int)):\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select3(a, b, c).await\n        match selected:\n            First3(_) -> seen = seen + 1\n            Second3(_) -> seen = seen + 1\n            Third3(_) -> seen = seen + 1\n            Closed3 -> seen = 4\n";
+        let module = crate::parser::parse_module(source).expect("parse select3 loop");
+        let lowered = lower_module(module).expect("lower select3 loop");
+        let rendered = crate::format::module(&lowered, &[]);
+        assert!(rendered.contains("chan.select3_frame_loop"), "{rendered}");
+        assert!(!rendered.contains("chan.select2_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select3_frame_decode"), "{rendered}");
     }
 
     #[test]

@@ -63,6 +63,10 @@ sealed type Step(a):
     // task. The frame, step closure, and done task can therefore remain live
     // for the entire scalar select loop.
     Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    // Three-way counterpart of Pull2FrameLoop. The endpoint fields remain
+    // separate so the scheduler can preserve the source-order first-ready
+    // rule without allocating a receiver-id list on each iteration.
+    Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))
     Wait(Int, fn(Nil) -> Task(a))
     Cancel(Int, fn(Nil) -> Task(a))
@@ -122,6 +126,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Pull2Frame(_, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         Pull2FrameLoop(_, _, _, _, _) ->
+            Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
+        Pull3FrameLoop(_, _, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         PullAny(chs, cont) -> PullAny(chs, fn(o): and_then(cont(o), k))
         Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
@@ -222,6 +228,17 @@ fn __channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), st
 pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     __channel_select2_frame_loop(a, b, frame, step, done_fn)
 
+fn __channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+    match a:
+        ChannelId(ia) ->
+            match b:
+                ChannelId(ib) ->
+                    match c:
+                        ChannelId(ic) -> Task(fn(): Pull3FrameLoop(ia, ib, ic, frame, step, done_fn))
+
+pub fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+    __channel_select3_frame_loop(a, b, c, frame, step, done_fn)
+
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
     Task(fn(): PullAny(channel_ids(channels), k))
 
@@ -263,6 +280,7 @@ sealed type Slot:
     Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
     Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))
     Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))
     WaitJoin(Int, fn(Nil) -> Task(Nil))
     Ended
@@ -278,6 +296,7 @@ fn is_live(s: Slot) -> Bool:
         Wait4(_, _, _, _, _) -> true
         Wait2Frame(_, _, _, _, _) -> true
         Wait2FrameLoop(_, _, _, _, _) -> true
+        Wait3FrameLoop(_, _, _, _, _, _) -> true
         WaitAny(_, _) -> true
         WaitJoin(_, _) -> true
 
@@ -290,6 +309,7 @@ fn is_parked(s: Slot) -> Bool:
         Wait4(_, _, _, _, _) -> true
         Wait2Frame(_, _, _, _, _) -> true
         Wait2FrameLoop(_, _, _, _, _) -> true
+        Wait3FrameLoop(_, _, _, _, _, _) -> true
         WaitAny(_, _) -> true
         WaitJoin(_, _) -> true
         Active(_) -> false
@@ -537,6 +557,47 @@ pub fn run(root: Task(Nil)):
                             prog = true
                         else:
                             unit()
+                Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
+                    let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
+                    if frame_count0 > 0:
+                        let frame_msg0 = list.at(frame_buf0, frame_head0)
+                        let frame_physcap0 = list.length(frame_buf0)
+                        list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
+                        var frame = frame
+                        if step(0, Some(frame_msg0), frame):
+                            __rfc0152_wake_claim()
+                            list.set_at(slots, i, Active(done_fn(frame)))
+                        else:
+                            list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
+                        prog = true
+                    else:
+                        let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
+                        if frame_count1 > 0:
+                            let frame_msg1 = list.at(frame_buf1, frame_head1)
+                            let frame_physcap1 = list.length(frame_buf1)
+                            list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
+                            var frame = frame
+                            if step(1, Some(frame_msg1), frame):
+                                __rfc0152_wake_claim()
+                                list.set_at(slots, i, Active(done_fn(frame)))
+                            else:
+                                list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
+                            prog = true
+                        else:
+                            let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
+                            if frame_count2 > 0:
+                                let frame_msg2 = list.at(frame_buf2, frame_head2)
+                                let frame_physcap2 = list.length(frame_buf2)
+                                list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
+                                var frame = frame
+                                if step(2, Some(frame_msg2), frame):
+                                    __rfc0152_wake_claim()
+                                    list.set_at(slots, i, Active(done_fn(frame)))
+                                else:
+                                    list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
+                                prog = true
+                            else:
+                                unit()
                 WaitAny(chs, cont) ->
                     match first_ready(0, chs, channels):
                         Some(hit) ->
@@ -697,6 +758,9 @@ pub fn run(root: Task(Nil)):
                         Pull2FrameLoop(ch0, ch1, frame, step, done_fn) ->
                             list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
                             prog = true
+                        Pull3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
+                            list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
+                            prog = true
                         PullAny(chs, cont) ->
                             match first_ready(0, chs, channels):
                                 Some(hit) ->
@@ -756,6 +820,13 @@ pub fn run(root: Task(Nil)):
                             list.set_at(slots, j, Active(done_fn(frame)))
                         else:
                             list.set_at(slots, j, Wait2FrameLoop(_ch0, _ch1, frame, step, done_fn))
+                    Wait3FrameLoop(_ch0, _ch1, _ch2, frame, step, done_fn) ->
+                        var frame = frame
+                        if step(0, None, frame):
+                            __rfc0152_wake_claim()
+                            list.set_at(slots, j, Active(done_fn(frame)))
+                        else:
+                            list.set_at(slots, j, Wait3FrameLoop(_ch0, _ch1, _ch2, frame, step, done_fn))
                     WaitAny(_chs, cont) ->
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(None)))

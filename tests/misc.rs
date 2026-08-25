@@ -63,6 +63,8 @@ mod rfc0129_negative_matrix;
 mod rfc0129_cooperative_worker_boundary;
 #[path = "misc/rfc0129_channel_contract.rs"]
 mod rfc0129_channel_contract;
+#[path = "misc/rfc0152_select3_frame_contract.rs"]
+mod rfc0152_select3_frame_contract;
 #[path = "misc/typed_errors.rs"]
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]

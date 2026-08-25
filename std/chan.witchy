@@ -393,6 +393,17 @@ pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step
             match b:
                 Receiver(ib) -> task.channel_select2_frame_loop(ia, ib, frame, step, done_fn)
 
+// Compiler-owned three-way frame bridge. The public spelling keeps the
+// receiver ownership surface typed while task owns the fixed endpoint ids and
+// deterministic source-order wake protocol.
+pub fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+    match a:
+        Receiver(ia) ->
+            match b:
+                Receiver(ib) ->
+                    match c:
+                        Receiver(ic) -> task.channel_select3_frame_loop(ia, ib, ic, frame, step, done_fn)
+
 pub fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n):
     match a:
         Receiver(ia) ->
@@ -476,11 +487,32 @@ pub fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m):
             __rfc0152_selected_materialized()
             Closed
 
+// Three-way counterpart of `select2_frame_decode`. Escaping and complex
+// matches materialize the public result; local exhaustive matches use the
+// payload bridge below instead.
+pub fn select3_frame_decode(tag: Int, o: Option(__Msg)) -> Selected3(m):
+    match o:
+        Some(msg) ->
+            if tag == 0:
+                First3(__unerase(msg))
+            else if tag == 1:
+                Second3(__unerase(msg))
+            else:
+                Third3(__unerase(msg))
+        None -> Closed3
+
 // Compiler-owned scalar frame support. A locally consumed select result can
 // dispatch on the scheduler tag and this typed payload option directly, rather
 // than first allocating a `Selected(m)` value. Escaping and complex matches
 // still use `select2_frame_decode` above.
 pub fn select2_frame_payload(o: Option(__Msg)) -> Option(m):
+    match o:
+        Some(msg) -> Some(__unerase(msg))
+        None -> None
+
+// Three-way counterpart of `select2_frame_payload`; the tag remains in the
+// compiler-owned step callback, so this bridge only carries typed payload.
+pub fn select3_frame_payload(o: Option(__Msg)) -> Option(m):
     match o:
         Some(msg) -> Some(__unerase(msg))
         None -> None

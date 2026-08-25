@@ -7137,6 +7137,34 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn proven_three_way_select_loop_emits_reusable_frame_loop_bridge() {
+        let checked = authenticated_checked(
+            "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(_) -> seen = seen + 1\n            Second3(_) -> seen = seen + 1\n            Third3(_) -> seen = seen + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
+        );
+        let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble three-way select-loop fixture");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        assert!(wat.contains("select3_frame_loop"), "missing three-way frame-loop bridge");
+        let fused_segment = wat
+            .split("(func ")
+            .find(|segment| segment.contains("call $chan.select3_frame_loop"))
+            .expect("three-way frame-loop call must be in a lowered segment");
+        assert!(
+            !fused_segment.contains("call $rc_alloc"),
+            "three-way select frame segment must not allocate a continuation per iteration"
+        );
+        assert!(
+            wat.contains("call $chan.select3_frame_payload"),
+            "a non-escaping local three-way match must consume the typed payload lane directly"
+        );
+        assert!(
+            !wat.contains("call $chan.select3_frame_decode"),
+            "a non-escaping local three-way match must not materialize Selected3"
+        );
+    }
+
+    #[test]
     fn scalar_channel_region_preserves_an_effectful_eager_prologue() {
         let checked = authenticated_checked(
             "mode opt\n\nfrom chan import Receiver, Sender\n\nasync fn producer(tx: Sender(Int), n: Int):\n    var i = 0\n    while i < n:\n        chan.send(tx, i).await\n        i = i + 1\n\nasync fn main(console: Console, clock: Clock):\n    let _started = clock.now_monotonic()\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, 16)).await\n    var sum = 0\n    for await value in rx:\n        sum = sum + value\n    chan.join(producer_handle).await\n    console.print(\"sum=${sum}\")\n",
@@ -7286,6 +7314,11 @@ mod checked_codegen_boundary_tests {
             "if step(0, Some(frame_msg0), frame):",
             "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))",
             "if step(0, None, frame):",
+            "Pull3FrameLoop(Int, Int, Int, List(Int)",
+            "Wait3FrameLoop(Int, Int, Int, List(Int)",
+            "Pull3FrameLoop(ch0, ch1, ch2, frame, step, done_fn)",
+            "Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn)",
+            "if step(2, Some(frame_msg2), frame):",
         ] {
             assert!(source.contains(marker), "missing reusable frame ABI marker: {marker}");
         }

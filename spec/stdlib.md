@@ -414,15 +414,27 @@ Four-way counterpart of `select3`, retaining the same deterministic first-ready 
 
 #### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
+#### `fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+
+Compiler-owned three-way frame bridge. The public spelling keeps the receiver ownership surface typed while task owns the fixed endpoint ids and deterministic source-order wake protocol.
+
 #### `fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n)`
 
 #### `fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m)`
 
 Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased message directly into the callback's scalar frame step, so the callback does not allocate a per-message Task/continuation.
 
+#### `fn select3_frame_decode(tag: Int, o: Option(__Msg)) -> Selected3(m)`
+
+Three-way counterpart of `select2_frame_decode`. Escaping and complex matches materialize the public result; local exhaustive matches use the payload bridge below instead.
+
 #### `fn select2_frame_payload(o: Option(__Msg)) -> Option(m)`
 
 Compiler-owned scalar frame support. A locally consumed select result can dispatch on the scheduler tag and this typed payload option directly, rather than first allocating a `Selected(m)` value. Escaping and complex matches still use `select2_frame_decode` above.
+
+#### `fn select3_frame_payload(o: Option(__Msg)) -> Option(m)`
+
+Three-way counterpart of `select2_frame_payload`; the tag remains in the compiler-owned step callback, so this bridge only carries typed payload.
 
 #### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
 
@@ -4304,6 +4316,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
@@ -4336,6 +4349,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
 - `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
 - `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
@@ -4377,6 +4391,8 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 #### `fn __channel_select4_map(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
 
 #### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+
+#### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
