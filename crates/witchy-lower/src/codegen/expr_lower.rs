@@ -1361,7 +1361,26 @@ impl<'types> Codegen<'types> {
                 let id = self.next_label;
                 self.next_label += 1;
                 let elide_pairs = self.while_bounds_elide_pairs(cond, body);
-                let sequence_indices = self.sequence_candidate_indices(body);
+                // Sequence cursors are initialized once before the loop. Only
+                // a canonical induction variable has a value that is valid at
+                // that point; arbitrary locals used as indexed reads (for
+                // example a frame ordinal assigned inside the body) must stay
+                // on the ordinary bounds-checked path. Installing a cursor
+                // for those locals hoisted their read before the assignment.
+                let induction = self.analyze_canonical_induction(cond, body);
+                let sequence_indices = self
+                    .sequence_candidate_indices(body)
+                    .into_iter()
+                    .filter(|candidate| {
+                        induction.as_ref().is_some_and(|plan| {
+                            candidate == &plan.local
+                                || plan
+                                    .affine_derived
+                                    .iter()
+                                    .any(|(derived, _, _)| candidate == derived)
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 let batch_level = (!sequence_indices.is_empty()
                     && self.loop_unroll_safe(body)
                     && self.counter_batch_stack.len() < WM_POOL)
@@ -1381,7 +1400,7 @@ impl<'types> Codegen<'types> {
                         body,
                         true,
                     );
-                if let Some(induction) = self.analyze_canonical_induction(cond, body) {
+                if let Some(induction) = induction {
                     self.refine_sequence_index_domain(induction);
                 }
                 let cond_w = match self.lower_expr(cond) {
