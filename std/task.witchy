@@ -62,7 +62,7 @@ sealed type Step(a):
     // result re-arms the same parked frame instead of returning through a new
     // task. The frame, step closure, and done task can therefore remain live
     // for the entire scalar select loop.
-    Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))
     Wait(Int, fn(Nil) -> Task(a))
     Cancel(Int, fn(Nil) -> Task(a))
@@ -207,13 +207,13 @@ fn __channel_select2_frame(a: ChannelId, b: ChannelId, frame: List(Int), step: f
 // Compiler-owned reusable scalar select frame. The scheduler keeps the same
 // task/frame/step closure parked until `step` returns true, so a hot loop does
 // not rebuild a continuation task for every ready message.
-fn __channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+fn __channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     match a:
         ChannelId(ia) ->
             match b:
                 ChannelId(ib) -> Task(fn(): Pull2FrameLoop(ia, ib, frame, step, done_fn))
 
-pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     __channel_select2_frame_loop(a, b, frame, step, done_fn)
 
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
@@ -256,7 +256,7 @@ sealed type Slot:
     Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
     Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
     Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))
-    Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))
     WaitJoin(Int, fn(Nil) -> Task(Nil))
     Ended
@@ -496,6 +496,7 @@ pub fn run(root: Task(Nil)):
                         let frame_msg0 = list.at(frame_buf0, frame_head0)
                         let frame_physcap0 = list.length(frame_buf0)
                         list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
+                        var frame = frame
                         if step(0, Some(frame_msg0), frame):
                             list.set_at(slots, i, Active(done_fn(frame)))
                         else:
@@ -507,6 +508,7 @@ pub fn run(root: Task(Nil)):
                             let frame_msg1 = list.at(frame_buf1, frame_head1)
                             let frame_physcap1 = list.length(frame_buf1)
                             list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
+                            var frame = frame
                             if step(1, Some(frame_msg1), frame):
                                 list.set_at(slots, i, Active(done_fn(frame)))
                             else:
@@ -715,6 +717,7 @@ pub fn run(root: Task(Nil)):
                         else:
                             list.set_at(slots, j, Wait2Frame(_ch0, _ch1, frame, step, done_task))
                     Wait2FrameLoop(_ch0, _ch1, frame, step, done_fn) ->
+                        var frame = frame
                         if step(0, None, frame):
                             list.set_at(slots, j, Active(done_fn(frame)))
                         else:

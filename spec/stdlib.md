@@ -4303,7 +4303,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Pull4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
-- `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(Nil) -> Task(a))`
 - `Cancel(Int, fn(Nil) -> Task(a))`
@@ -4335,7 +4335,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
 - `Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
 - `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
-- `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`

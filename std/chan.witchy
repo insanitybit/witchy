@@ -381,7 +381,7 @@ pub fn select4(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m)) -
                             match d:
                                 Receiver(id) -> task.__channel_select4_map(ia, ib, ic, id, fn(k, o): select4_result(k, o))
 
-pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     match a:
         Receiver(ia) ->
             match b:

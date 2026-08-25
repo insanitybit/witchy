@@ -1448,7 +1448,7 @@ impl<'a> Ctx<'a> {
             })
             .cloned()
             .collect();
-        if !lanes.is_empty() || lanes.iter().any(|lane| !used.contains(&lane.name)) {
+        if lanes.iter().any(|lane| !used.contains(&lane.name)) {
             return Ok(None);
         }
 
@@ -1464,34 +1464,22 @@ impl<'a> Ctx<'a> {
         let mut setup = vec![Stmt::Let {
             name: frame.clone(),
             ty: Some(frame_ty),
-            mutable: true,
-            value: call("list.repeat", vec![Expr::Int(0), Expr::Int(lanes.len() as i64)]),
+            mutable: false,
+            value: Expr::List(
+                lanes
+                    .iter()
+                    .map(|lane| encode_lane(Expr::Var(lane.name.clone()), lane))
+                    .collect(),
+            ),
         }];
-        for (index, lane) in lanes.iter().enumerate() {
-            setup.push(Stmt::Expr(call(
-                "list.set_at",
-                vec![
-                    Expr::Var(frame.clone()),
-                    Expr::Int(index as i64),
-                    encode_lane(Expr::Var(lane.name.clone()), lane),
-                ],
-            )));
-        }
 
         let mut step_stmts = Vec::new();
-        let frame_mut = self.fresh_tmp();
-        step_stmts.push(Stmt::Let {
-            name: frame_mut.clone(),
-            ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])),
-            mutable: true,
-            value: Expr::Var(frame.clone()),
-        });
         for (index, lane) in lanes.iter().enumerate() {
             step_stmts.push(Stmt::Let {
                 name: lane.name.clone(),
                 ty: lane.ty.clone(),
                 mutable: true,
-                value: decode_lane(call("list.at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64)]), lane),
+                value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64)]), lane),
             });
         }
         let direct_result_arms = rewrite_local_select_matches(
@@ -1513,7 +1501,7 @@ impl<'a> Ctx<'a> {
             step_stmts.extend(tail_body.iter().cloned());
         }
         for (index, lane) in lanes.iter().enumerate() {
-            step_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame_mut.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
+            step_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
         }
         let closed_expr = if direct_result_used {
             Expr::Match {
@@ -1548,7 +1536,7 @@ impl<'a> Ctx<'a> {
                 params: vec![
                     Param { name: tag.clone(), ty: Some(Type::Named("Int".into(), vec![])), convention: Convention::Let, default: None },
                     Param { name: option.clone(), ty: None, convention: Convention::Let, default: None },
-            Param { name: frame.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Let, default: None },
+                    Param { name: frame.clone(), ty: Some(Type::Named("List".into(), vec![Type::Named("Int".into(), vec![])])), convention: Convention::Var, default: None },
                 ],
                 body: Block { stmts: step_stmts, lines: vec![first_line(&body.lines); 1 + lanes.len() * 2 + tail_body.len() + 2], region: None },
                 ret: Some(Type::Named("Bool".into(), vec![])),
