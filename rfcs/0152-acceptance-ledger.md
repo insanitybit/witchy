@@ -40,6 +40,7 @@ scheduler control.  They must remain separate in all timing reports.
 | Matrix-capable deterministic stats | `52572918e` | `stats_grants_clock_for_in_program_benchmark_kernels`; CLI `stats benchmarks/chan_scheduler.witchy` | Grants the safe local Clock capability to stats runs so timed channel fixtures can report deterministic counters. This is measurement infrastructure, not a scheduler optimization. |
 | Reusable frame-install counter | `960123bd7` | `reusable_select_frame_reports_one_initial_wait_installation` | Separates the compiler-owned initial reusable-frame installation from ordinary cumulative `Wait*` constructor counts. It is an attribution primitive, not a proof of bounded live registration across every close/cancel path. |
 | Sole-live ready select drain | `a700c1f12` (gate rebaseline `068180131`) | `sole_live_select_frame_drains_a_buffered_source_order_run`; WAT contains `task.is_only_live_slot`; protected `channels` and `worker_pool` examples retain interpreter/Wasm parity | When a reusable two-way frame is the sole live slot, the scheduler drains source-order buffered messages through the existing `step`/`done_fn` closures without re-entering an outer scheduler round per message. Competing active or parked slots retain ordinary round-robin scheduling. This is a runtime ready-path increment, not the general typed lowerer executor required by the remaining rows. |
+| Scalar receive-frame carrier | `222e2067b` (queued) | `recv_loop_uses_reusable_frame_bridge_for_scalar_fold`; `scalar_receive_frame_retains_typed_ready_region_facts`; `compiled_channel_soak_has_a_wholly_direct_wasm_carrier`; receive-frame interpreter/Wasm parity | Lowers scalar `for await` folds onto a reusable one-way frame while retaining the static endpoint, exact Int lane, generated step/done identities, and close continuation in the typed ready-region plan. The existing scalar executor recognizes that bounded form and retains its zero-per-message allocation path. Nominal-payload matches and mutable roots retain ordinary lowering until their typed lanes are emitted. |
 
 The fixed three-way frame-loop increment is recorded above because its merge
 event exists. Empty-frame work remains only an implementation increment until
@@ -104,6 +105,18 @@ installs from 4,097 to 2, RC allocations from 12,295 to 8,200, and retained
 heap bytes from 582,047 to 270,853. The artifact was produced before the final
 queue rebase and remains ignored, so it is local attribution only; it does not
 close any acceptance row or replace the required durable post-landing matrix.
+
+The pre-queue local control run
+`benchmarks/.build/rfc0152-ready-oneway-final-20260825-145005` records the
+twelve paired samples, three matching deterministic counter payloads, and
+matching output hashes for the pre-rebase candidate `196f31006` (the
+implementation was rebased as `222e2067b`). `chan_throughput` retains
+the scalar executor's 2 allocation calls, 8,354 heap bytes, and zero scheduler
+transitions; `chan_scheduler` counters are unchanged; `select_fanin` counters
+are unchanged from its already-landed ready-select path. The artifact is
+ignored local attribution pending the queue rebase, so it records a
+non-regression proof for this scalar receive-frame increment but closes no
+RFC acceptance row.
 
 ## Matrix and acceptance status
 
