@@ -1461,16 +1461,21 @@ impl<'a> Ctx<'a> {
             "List".to_string(),
             vec![Type::Named("Int".to_string(), vec![])],
         );
-        let mut setup = vec![Stmt::Let {
-            name: frame.clone(),
-            ty: Some(frame_ty),
-            mutable: false,
-            value: Expr::List(
+        let frame_val = if lanes.is_empty() {
+            call("list.repeat", vec![Expr::Int(0), Expr::Int(0)])
+        } else {
+            Expr::List(
                 lanes
                     .iter()
                     .map(|lane| encode_lane(Expr::Var(lane.name.clone()), lane))
                     .collect(),
-            ),
+            )
+        };
+        let mut setup = vec![Stmt::Let {
+            name: frame.clone(),
+            ty: Some(frame_ty),
+            mutable: false,
+            value: frame_val,
         }];
 
         let mut step_stmts = Vec::new();
