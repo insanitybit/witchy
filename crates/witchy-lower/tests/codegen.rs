@@ -4568,6 +4568,28 @@ fn main() -> Int:
         let deoptimized_trap = compiled_trap(near_miss, off);
         assert!(optimized_trap.contains("list_at"), "optimized fallback traps: {optimized_trap}");
         assert!(deoptimized_trap.contains("list_at"), "deoptimized fallback traps: {deoptimized_trap}");
+
+        // `Codegen` is reused for the functions in one module. The literal
+        // fact belongs to `seed` only; a same-named parameter in `dynamic`
+        // must retain its range guard even though this particular call happens
+        // to supply four elements.
+        let cross_function = r#"
+fn seed() -> Int:
+    let bins = [0, 0, 0, 0]
+    bins[-5 & 3]
+
+fn dynamic(bins: List(Int), raw: Int) -> Int:
+    bins[raw & 3]
+
+fn main() -> Int:
+    seed() + dynamic([1, 2, 3, 4], -1)
+"#;
+        assert_eq!(run_int(cross_function), 4, "cross-function fallback preserves the value");
+        let (cross_function_shape, _, _) = call_shape(cross_function, default);
+        assert!(
+            cross_function_shape.contains("list_at"),
+            "a literal fact must not cross into a same-named parameter: {cross_function_shape:?}",
+        );
     }
 
     fn optimized_wir_wat(source: &str, opt: witchy_syntax::opt::OptSet) -> String {
