@@ -9,7 +9,7 @@
 #
 # Usage:
 #   CONTROL_WITCHY=target/release/witchy CANDIDATE_WITCHY=target/release/witchy \
-#     CONTROL_OPT=-rfc0152 CANDIDATE_OPT=all ./benchmarks/rfc0152_matrix.sh
+#     CONTROL_OPT=none CANDIDATE_OPT=all ./benchmarks/rfc0152_matrix.sh
 #
 # Optional variables: LABEL, OUT_DIR, WORKLOADS, RUNS (must be 12), WARMUP.
 set -euo pipefail
