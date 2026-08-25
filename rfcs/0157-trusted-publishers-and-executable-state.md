@@ -260,3 +260,8 @@ is no longer in scope is the smaller long-term system.
     appending dated change-notes below.
   - The current behavior lives in spec/ and the code, not here.
 -->
+
+> 2026-08-25: Implemented by `9e143bfe7` and startup evidence follow-up
+> `132a4cc5a`: current targets and manifests use `trusted-publisher`, publisher
+> launches use the ordinary cache-enabled runtime, and the RFC-0155 cache
+> authenticator crate was removed.
