@@ -7118,7 +7118,7 @@ mod checked_codegen_boundary_tests {
         );
 
         let guarded = authenticated_checked(
-            "import task\n\nasync fn worker(take_send: Bool, tx: chan.Sender(Int)):\n    let work = if take_send:\n        chan.send(tx, 7)\n    else:\n        task.map(task.done(1), fn(own value): ())\n    work.await\n\nasync fn main():\n    let (tx, _rx) = chan.channel(1).await\n    worker(true, tx).await\n",
+            "import task\n\nasync fn worker(take_send: Bool, tx: chan.Sender(Int), rx: chan.Receiver(Int)):\n    let work = if take_send:\n        chan.send(tx, 7)\n    else:\n        task.map(task.done(1), fn(own value): ())\n    work.await\n    let value = chan.recv(rx).await\n\nasync fn main():\n    let (tx, rx) = chan.channel(1).await\n    worker(true, tx, rx).await\n",
         );
         let (guarded_wir, _, _, _, guarded_carrier) = assemble_optimized_wir_with_structs_mode(
             guarded.module(), false, None, None, false,
