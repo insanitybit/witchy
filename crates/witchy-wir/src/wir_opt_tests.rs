@@ -1898,3 +1898,67 @@
             _ => panic!("expected Call in caller node 2"),
         }
     }
+
+    #[test]
+    fn expands_self_recursive_scalar_function() {
+        use crate::wir::{BinOp, Kind};
+
+        let mut module = module_with(WirFunc {
+            name: "fib".into(),
+            params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::If {
+                result: Some(WirTy::Int),
+                cond: WirExpr::Binary {
+                    op: BinOp::Lt,
+                    kind: Kind::I64,
+                    lhs: Box::new(WirExpr::GetLocal("n".into())),
+                    rhs: Box::new(WirExpr::ConstI64(2)),
+                },
+                then_: vec![WirNode::Push(WirExpr::GetLocal("n".into()))],
+                els: vec![WirNode::Push(WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(WirExpr::Call {
+                        func: "fib".into(),
+                        args: vec![WirExpr::Binary {
+                            op: BinOp::Sub,
+                            kind: Kind::I64,
+                            lhs: Box::new(WirExpr::GetLocal("n".into())),
+                            rhs: Box::new(WirExpr::ConstI64(1)),
+                        }],
+                    }),
+                    rhs: Box::new(WirExpr::Call {
+                        func: "fib".into(),
+                        args: vec![WirExpr::Binary {
+                            op: BinOp::Sub,
+                            kind: Kind::I64,
+                            lhs: Box::new(WirExpr::GetLocal("n".into())),
+                            rhs: Box::new(WirExpr::ConstI64(2)),
+                        }],
+                    }),
+                })],
+            }],
+            raw_body: None,
+        });
+
+        crate::wir_opt::inline_recursive_calls(&mut module);
+
+        // After recursive expansion, the else branch contains inlined if-expressions
+        // rather than immediate top-level calls to fib.
+        let func = &module.funcs[0];
+        let else_branch = match &func.body[0] {
+            WirNode::If { els, .. } => els,
+            _ => panic!("expected top-level If node"),
+        };
+        assert_eq!(else_branch.len(), 1);
+        match &else_branch[0] {
+            WirNode::Push(WirExpr::Binary { lhs, rhs, .. }) => {
+                // Both lhs and rhs of the Add are now inlined If expressions
+                assert!(matches!(lhs.as_ref(), WirExpr::Control(_)));
+                assert!(matches!(rhs.as_ref(), WirExpr::Control(_)));
+            }
+            _ => panic!("expected Push(Binary(Add)) in else branch"),
+        }
+    }

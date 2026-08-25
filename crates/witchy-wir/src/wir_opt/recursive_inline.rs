@@ -1,4 +1,4 @@
-use crate::wir::{Kind, WirExpr, WirFunc, WirLocal, WirModule, WirNode, WirSeq, WirTy};
+use crate::wir::{WirExpr, WirFunc, WirLocal, WirModule, WirNode, WirSeq, WirTy};
 use std::collections::HashMap;
 
 pub fn inline_recursive_calls(module: &mut WirModule) {
@@ -209,68 +209,40 @@ fn replace_get_locals_seq(seq: &mut WirSeq, args_map: &HashMap<String, WirExpr>)
     for node in seq { replace_get_locals_node(node, args_map); }
 }
 
-fn extract_single_expr(seq: &[WirNode]) -> Option<&WirExpr> {
-    if seq.len() != 1 { return None; }
+fn extract_func_expr(func: &WirFunc) -> Option<WirExpr> {
+    if !func.locals.is_empty() {
+        return None;
+    }
+    extract_single_expr(&func.body, func.ret.first())
+}
+
+fn extract_single_expr(seq: &[WirNode], ret_ty: Option<&WirTy>) -> Option<WirExpr> {
+    if seq.len() != 1 {
+        return None;
+    }
     match &seq[0] {
-        WirNode::Push(expr) | WirNode::Return(Some(expr)) => Some(expr),
-        WirNode::Source { body, .. } | WirNode::Block { body, .. } | WirNode::Loop { body, .. } => extract_single_expr(body),
+        WirNode::Push(expr) | WirNode::Return(Some(expr)) => Some(expr.clone()),
+        WirNode::If { result, cond, then_, els } => {
+            let res = if result.is_some() {
+                seq[0].clone()
+            } else if let Some(ty) = ret_ty {
+                WirNode::If {
+                    result: Some(ty.clone()),
+                    cond: cond.clone(),
+                    then_: then_.clone(),
+                    els: els.clone(),
+                }
+            } else {
+                seq[0].clone()
+            };
+            Some(WirExpr::Control(Box::new(res)))
+        }
+        WirNode::Source { body, .. } | WirNode::Block { body, .. } => extract_single_expr(body, ret_ty),
         _ => None,
     }
 }
 
-fn contains_call_to(expr: &WirExpr, target: &str) -> bool {
-    match expr {
-        WirExpr::Call { func, .. } if func == target => true,
-        WirExpr::Binary { lhs, rhs, .. } => contains_call_to(lhs, target) || contains_call_to(rhs, target),
-        WirExpr::Unary { arg, .. } | WirExpr::ToSlot(arg, _) | WirExpr::FromSlot(arg, _) | WirExpr::Convert { arg, .. } => contains_call_to(arg, target),
-        WirExpr::Call { args, .. } => args.iter().any(|a| contains_call_to(a, target)),
-        WirExpr::Control(node) => node_contains_call_to(node, target),
-        WirExpr::Seq(seq) => seq.iter().any(|n| node_contains_call_to(n, target)),
-        _ => false,
-    }
-}
-
-fn node_contains_call_to(node: &WirNode, target: &str) -> bool {
-    match node {
-        WirNode::Source { body, .. } | WirNode::Block { body, .. } | WirNode::Loop { body, .. } => body.iter().any(|n| node_contains_call_to(n, target)),
-        WirNode::If { cond, then_, els, .. } => contains_call_to(cond, target) || then_.iter().any(|n| node_contains_call_to(n, target)) || els.iter().any(|n| node_contains_call_to(n, target)),
-        WirNode::Push(e) | WirNode::Return(Some(e)) | WirNode::SetLocal { value: e, .. } | WirNode::SetGlobal { value: e, .. } => contains_call_to(e, target),
-        _ => false,
-    }
-}
-
 fn inline_expr(expr: &mut WirExpr, target: &WirFunc, parent_name: &str, parent_params: &[WirLocal], parent_locals: &[WirLocal], new_locals: &mut Vec<WirLocal>, changed: &mut bool) {
-    if false && let WirExpr::Binary { lhs, rhs, kind, op } = expr {
-        if contains_call_to(lhs, &target.name) || contains_call_to(rhs, &target.name) {
-            let left_name = format!("lhs_{}", new_locals.len());
-            let right_name = format!("rhs_{}", new_locals.len());
-            
-            new_locals.push(WirLocal { name: left_name.clone(), ty: WirTy::Int }); // Assuming Int for simplification, or we can get it from context. Wait!
-            new_locals.push(WirLocal { name: right_name.clone(), ty: WirTy::Int });
-            
-            let t = match kind { Kind::F64 => WirTy::Float, _ => WirTy::Int };
-            new_locals.last_mut().unwrap().ty = t.clone();
-            let mut lhs_box = Box::new(WirExpr::ConstI64(0));
-            let mut rhs_box = Box::new(WirExpr::ConstI64(0));
-            std::mem::swap(lhs, &mut lhs_box);
-            std::mem::swap(rhs, &mut rhs_box);
-            
-            let mut seq = vec![
-                WirNode::SetLocal { local: left_name.clone(), value: *lhs_box },
-                WirNode::SetLocal { local: right_name.clone(), value: *rhs_box },
-                WirNode::Push(WirExpr::Binary {
-                    op: *op,
-                    kind: *kind,
-                    lhs: Box::new(WirExpr::GetLocal(left_name)),
-                    rhs: Box::new(WirExpr::GetLocal(right_name)),
-                }),
-            ];
-            inline_seq(&mut seq, target, parent_name, parent_params, parent_locals, new_locals, changed);
-            *expr = WirExpr::Seq(seq);
-            return;
-        }
-    }
-
     match expr {
         WirExpr::ToSlot(inner, _) | WirExpr::FromSlot(inner, _) | WirExpr::Unary { arg: inner, .. } |
         WirExpr::Convert { arg: inner, .. } | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. } |
@@ -301,20 +273,17 @@ fn inline_expr(expr: &mut WirExpr, target: &WirFunc, parent_name: &str, parent_p
                 inline_expr(a, target, parent_name, parent_params, parent_locals, new_locals, changed);
             }
             if func == &target.name {
-                *changed = true;
-                
-                if target.locals.is_empty() {
-                    if let Some(inner_expr) = extract_single_expr(&target.body) {
-                        let mut cloned_expr = inner_expr.clone();
-                        let mut args_map = HashMap::new();
-                        let mut temp_args = Vec::new();
-                        std::mem::swap(&mut temp_args, args);
-                        for (param, arg) in target.params.iter().zip(temp_args) {
-                            args_map.insert(param.name.clone(), arg);
-                        }
-                        replace_get_locals_expr(&mut cloned_expr, &args_map);
-                        *expr = cloned_expr;
+                if let Some(inner_expr) = extract_func_expr(target) {
+                    *changed = true;
+                    let mut cloned_expr = inner_expr;
+                    let mut args_map = HashMap::new();
+                    let mut temp_args = Vec::new();
+                    std::mem::swap(&mut temp_args, args);
+                    for (param, arg) in target.params.iter().zip(temp_args) {
+                        args_map.insert(param.name.clone(), arg);
                     }
+                    replace_get_locals_expr(&mut cloned_expr, &args_map);
+                    *expr = cloned_expr;
                 }
             }
         }
