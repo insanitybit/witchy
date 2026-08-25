@@ -129,8 +129,14 @@ pub struct SuspensionCarrierCatalog {
     /// Terminal control-flow paths retained independently for ready-region
     /// formation. The legacy aggregate below deliberately remains
     /// all-or-nothing for its existing scalar-executor consumers.
-    region_transition_paths: Vec<Vec<Result<Vec<ScalarTransition>, String>>>,
+    region_transition_paths: Vec<Vec<RegionTransitionPath>>,
     scalar_transitions: Vec<Result<Vec<ScalarTransition>, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RegionTransitionPath {
+    guarded: bool,
+    transitions: Result<Vec<ScalarTransition>, String>,
 }
 
 /// Closed eligibility proof for RFC-0059's allocation-free compiled scheduler.
@@ -216,6 +222,10 @@ pub struct ReadyChannelRegionExclusion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadyChannelRegionExclusionReason {
+    /// A terminal branch or opaque task construction could require re-evaluating
+    /// an effectful predicate. Keep it on the original state dispatcher until a
+    /// later emitter can lower the construction exactly once.
+    GuardedControlFlow,
     BoxedState,
     BoxedChannel {
         channel: String,
@@ -573,17 +583,29 @@ impl SuspensionCarrierCatalog {
                     _ => None,
                 });
                 let Some(function) = function else {
-                    return vec![Err(format!(
-                        "carrier state `{}` has no typed function body",
-                        state.function
-                    ))];
+                    return vec![RegionTransitionPath {
+                        guarded: false,
+                        transitions: Err(format!(
+                            "carrier state `{}` has no typed function body",
+                            state.function
+                        )),
+                    }];
                 };
                 scalar_transition_paths_for_function(function, &state_ids, typed.table(), &definitions)
             })
             .collect::<Vec<_>>();
-        let scalar_transitions = region_transition_paths
+        let scalar_transitions = states
             .iter()
-            .map(|paths| aggregate_scalar_transition_paths(paths))
+            .map(|state| {
+                let function = typed.module().items.iter().find_map(|item| match item {
+                    Item::Function(function) if function.name == state.function => Some(function),
+                    _ => None,
+                });
+                let function = function.ok_or_else(|| {
+                    format!("carrier state `{}` has no typed function body", state.function)
+                })?;
+                scalar_transitions_for_function(function, &state_ids, typed.table(), &definitions)
+            })
             .collect();
         Ok(Self {
             states,
@@ -642,15 +664,27 @@ impl SuspensionCarrierCatalog {
                 .filter(|channel| channel.state == state.id)
                 .cloned()
                 .collect::<Vec<_>>();
-            for (path_ordinal, transitions) in self.region_transition_paths[state_index].iter().enumerate() {
-                let transitions = match transitions {
+            for (path_ordinal, path) in self.region_transition_paths[state_index].iter().enumerate() {
+                if path.guarded {
+                    formation.excluded.push(rejection(
+                        path_ordinal,
+                        ReadyChannelRegionExclusionReason::GuardedControlFlow,
+                    ));
+                    continue;
+                }
+                let transitions = match &path.transitions {
                     Ok(transitions) => transitions,
                     Err(detail) => {
-                        formation.excluded.push(rejection(
-                            path_ordinal,
+                        let reason = if detail.starts_with("unsupported awaited task expression `Var(") {
+                            ReadyChannelRegionExclusionReason::GuardedControlFlow
+                        } else {
                             ReadyChannelRegionExclusionReason::UnsupportedTransition {
                                 detail: detail.clone(),
-                            },
+                            }
+                        };
+                        formation.excluded.push(rejection(
+                            path_ordinal,
+                            reason,
                         ));
                         continue;
                     }
@@ -1109,29 +1143,37 @@ fn scalar_executor_payload_supported(payload: &ChannelPayloadLayout) -> bool {
     }
 }
 
-fn aggregate_scalar_transition_paths(
-    paths: &[Result<Vec<ScalarTransition>, String>],
+fn scalar_transitions_for_function(
+    function: &Function,
+    state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
+    definitions: &HashMap<String, &TypeDef>,
 ) -> Result<Vec<ScalarTransition>, String> {
     let mut transitions = Vec::new();
-    for path in paths {
-        transitions.extend(path.clone()?);
-    }
+    let bindings = HashMap::new();
+    collect_scalar_transitions_in_block(
+        &function.body,
+        state_ids,
+        table,
+        definitions,
+        &bindings,
+        &mut transitions,
+    )?;
     if transitions.is_empty() {
         return Err("state body has no terminal transition".into());
     }
     Ok(transitions)
 }
 
-/// Collect terminal paths independently. The legacy scalar-executor proof
-/// still aggregates these with [`aggregate_scalar_transition_paths`], but
-/// ready-region formation must be able to decline one branch without erasing
-/// its eligible siblings.
+/// Collect terminal paths independently for formation. The legacy
+/// scalar-executor proof remains on its original collector, so conservative
+/// formation metadata cannot change existing ready-plan eligibility.
 fn scalar_transition_paths_for_function(
     function: &Function,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
     definitions: &HashMap<String, &TypeDef>,
-) -> Vec<Result<Vec<ScalarTransition>, String>> {
+) -> Vec<RegionTransitionPath> {
     let bindings = HashMap::new();
     scalar_transition_paths_in_block(
         &function.body,
@@ -1139,6 +1181,7 @@ fn scalar_transition_paths_for_function(
         table,
         definitions,
         &bindings,
+        false,
     )
 }
 
@@ -1148,23 +1191,26 @@ fn scalar_transition_paths_in_block<'a, 'd>(
     table: &TypeTable,
     definitions: &HashMap<String, &'d TypeDef>,
     inherited: &HashMap<String, &'a ast::Expr>,
-) -> Vec<Result<Vec<ScalarTransition>, String>> {
+    guarded: bool,
+) -> Vec<RegionTransitionPath> {
     let mut bindings = inherited.clone();
     for statement in &block.stmts {
-        if let ast::Stmt::Let {
-            name,
-            value: value @ ast::Expr::Lambda { .. },
-            ..
-        } = statement
-            && is_generated_closure_binding(name)
-        {
+        if let ast::Stmt::Let { name, value, .. } = statement {
+            // Region formation needs the terminal task's construction shape as
+            // well as compiler-generated closures: `let work = if ...; work`
+            // must retain its conditional fallback instead of hiding it behind
+            // a source local. This is formation-only; the legacy aggregate
+            // collector below remains intentionally conservative.
             bindings.insert(name.clone(), value);
         }
     }
     let Some(terminal) = terminal_block_expr(block) else {
-        return vec![Err("state body has no terminal expression".into())];
+        return vec![RegionTransitionPath {
+            guarded,
+            transitions: Err("state body has no terminal expression".into()),
+        }];
     };
-    scalar_transition_paths(terminal, state_ids, table, definitions, &bindings)
+    scalar_transition_paths(terminal, state_ids, table, definitions, &bindings, guarded)
 }
 
 fn scalar_transition_paths<'a, 'd>(
@@ -1173,10 +1219,40 @@ fn scalar_transition_paths<'a, 'd>(
     table: &TypeTable,
     definitions: &HashMap<String, &'d TypeDef>,
     bindings: &HashMap<String, &'a ast::Expr>,
-) -> Vec<Result<Vec<ScalarTransition>, String>> {
+    guarded: bool,
+) -> Vec<RegionTransitionPath> {
     match expression {
+        ast::Expr::Call { name, args }
+            if (call_family(name, "task.run") && args.len() == 1)
+                || (call_family(name, "task.and_then") && args.len() == 2) =>
+        {
+            if let Some(paths) = guarded_task_construction_paths(&args[0], bindings) {
+                return paths;
+            }
+            let mut transitions = Vec::new();
+            vec![RegionTransitionPath {
+                guarded,
+                transitions: collect_scalar_transitions(
+                    expression,
+                    state_ids,
+                    table,
+                    definitions,
+                    bindings,
+                    &mut transitions,
+                )
+                .map(|()| transitions),
+            }]
+        }
+        ast::Expr::Var(name) if bindings.contains_key(name) => scalar_transition_paths(
+            bindings[name],
+            state_ids,
+            table,
+            definitions,
+            bindings,
+            guarded,
+        ),
         ast::Expr::Block(block) => {
-            scalar_transition_paths_in_block(block, state_ids, table, definitions, bindings)
+            scalar_transition_paths_in_block(block, state_ids, table, definitions, bindings, guarded)
         }
         ast::Expr::If {
             then_block,
@@ -1189,6 +1265,7 @@ fn scalar_transition_paths<'a, 'd>(
                 table,
                 definitions,
                 bindings,
+                true,
             );
             paths.extend(scalar_transition_paths_in_block(
                 else_block,
@@ -1196,18 +1273,27 @@ fn scalar_transition_paths<'a, 'd>(
                 table,
                 definitions,
                 bindings,
+                true,
             ));
             paths
         }
-        ast::Expr::Match { arms, .. } if !arms.is_empty() => arms
-            .iter()
-            .flat_map(|arm| {
-                scalar_transition_paths(&arm.body, state_ids, table, definitions, bindings)
-            })
-            .collect(),
+        ast::Expr::Match { arms, .. } if !arms.is_empty() => {
+            arms.iter().flat_map(|arm| {
+                scalar_transition_paths(
+                    &arm.body,
+                    state_ids,
+                    table,
+                    definitions,
+                    bindings,
+                    true,
+                )
+            }).collect()
+        }
         _ => {
             let mut transitions = Vec::new();
-            vec![collect_scalar_transitions(
+            vec![RegionTransitionPath {
+                guarded,
+                transitions: collect_scalar_transitions(
                 expression,
                 state_ids,
                 table,
@@ -1215,8 +1301,50 @@ fn scalar_transition_paths<'a, 'd>(
                 bindings,
                 &mut transitions,
             )
-            .map(|()| transitions)]
+                .map(|()| transitions),
+            }]
         }
+    }
+}
+
+/// Detect a conditional task construction nested below the terminal scheduler
+/// wrapper. The current scalar transition ABI cannot re-emit that predicate,
+/// so every such path is deliberately kept on the original dispatcher.
+fn guarded_task_construction_paths<'a>(
+    expression: &'a ast::Expr,
+    inherited: &HashMap<String, &'a ast::Expr>,
+) -> Option<Vec<RegionTransitionPath>> {
+    match expression {
+        ast::Expr::Var(name) => inherited
+            .get(name)
+            .and_then(|bound| guarded_task_construction_paths(bound, inherited)),
+        ast::Expr::Block(block) => {
+            let mut bindings = inherited.clone();
+            for statement in &block.stmts {
+                if let ast::Stmt::Let { name, value, .. } = statement {
+                    bindings.insert(name.clone(), value);
+                }
+            }
+            terminal_block_expr(block)
+                .and_then(|terminal| guarded_task_construction_paths(terminal, &bindings))
+        }
+        ast::Expr::If { .. } => Some(vec![
+            RegionTransitionPath {
+                guarded: true,
+                transitions: Err("guarded terminal path".into()),
+            },
+            RegionTransitionPath {
+                guarded: true,
+                transitions: Err("guarded terminal path".into()),
+            },
+        ]),
+        ast::Expr::Match { arms, .. } if !arms.is_empty() => Some(
+            arms.iter().map(|_| RegionTransitionPath {
+                guarded: true,
+                transitions: Err("guarded terminal path".into()),
+            }).collect(),
+        ),
+        _ => None,
     }
 }
 
@@ -2215,14 +2343,14 @@ mod tests {
             max_lane_width: 0,
             typed_channel_plans: Vec::new(),
             region_transition_paths: vec![
-                vec![Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }])],
-                vec![Err("unsupported awaited task call `task.map`".into())],
-                vec![Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
+                vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }]) }],
+                vec![RegionTransitionPath { guarded: false, transitions: Err("unsupported awaited task call `task.map`".into()) }],
+                vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
                     payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                     resume_target: 13,
-                })])],
+                })]) }],
             ],
             scalar_transitions: vec![
                 Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }]),
@@ -2301,8 +2429,8 @@ mod tests {
             max_lane_width: 0,
             typed_channel_plans: Vec::new(),
             region_transition_paths: vec![vec![
-                Ok(vec![send.clone()]),
-                Err("unsupported awaited task call `task.map`".into()),
+                RegionTransitionPath { guarded: false, transitions: Ok(vec![send.clone()]) },
+                RegionTransitionPath { guarded: false, transitions: Err("unsupported awaited task call `task.map`".into()) },
             ]],
             // The existing scalar proof remains all-or-nothing; ready-region
             // formation must instead retain the supported terminal path.
@@ -2321,6 +2449,42 @@ mod tests {
             formation.excluded[0].reason,
             ReadyChannelRegionExclusionReason::UnsupportedTransition { .. }
         ));
+    }
+
+    #[test]
+    fn guarded_terminal_paths_stay_on_the_original_dispatcher() {
+        let catalog = SuspensionCarrierCatalog {
+            states: vec![CarrierState {
+                id: 4,
+                function: "branch".into(),
+                source_callable: "main".into(),
+                kind: CarrierStateKind::Segment,
+                direct: true,
+                slots: Vec::new(),
+            }],
+            async_regions: vec![Some(40)],
+            max_lane_width: 0,
+            typed_channel_plans: Vec::new(),
+            region_transition_paths: vec![vec![
+                RegionTransitionPath {
+                    guarded: true,
+                    transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 8 }]),
+                },
+                RegionTransitionPath {
+                    guarded: true,
+                    transitions: Err("unsupported awaited task call `task.map`".into()),
+                },
+            ]],
+            scalar_transitions: vec![Err("unsupported awaited task call `task.map`".into())],
+        };
+
+        let formation = catalog.ready_channel_regions();
+        assert!(formation.regions.is_empty());
+        assert_eq!(formation.excluded.len(), 2);
+        assert!(formation.excluded.iter().all(|excluded| matches!(
+            excluded.reason,
+            ReadyChannelRegionExclusionReason::GuardedControlFlow
+        )));
     }
 
     #[test]
@@ -2634,12 +2798,7 @@ mod tests {
         let state_ids = HashMap::from_iter([("resume".to_string(), 7)]);
 
         assert_eq!(
-            aggregate_scalar_transition_paths(&scalar_transition_paths_for_function(
-                function,
-                &state_ids,
-                &table,
-                &HashMap::new(),
-            )),
+            scalar_transitions_for_function(function, &state_ids, &table, &HashMap::new()),
             Ok(vec![ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
                 endpoint: ChannelEndpointPlace::Static("tx".into()),
                 payload_layout: ChannelPayloadLayout::Boxed,

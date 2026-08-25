@@ -7053,6 +7053,36 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn ready_region_formation_keeps_guarded_task_paths_on_the_original_dispatcher() {
+        let checked = authenticated_checked(
+            "import task\n\nasync fn worker(take_send: Bool, tx: chan.Sender(Int), rx: chan.Receiver(Int)):\n    let work = if take_send:\n        chan.send(tx, 7)\n    else:\n        task.map(task.done(1), fn(own value): ())\n    work.await\n    let value = chan.recv(rx).await\n\nasync fn main():\n    let (tx, rx) = chan.channel(1).await\n    worker(true, tx, rx).await\n",
+        );
+        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble guarded task-map fixture");
+
+        let formation = carrier.ready_channel_regions();
+        assert!(formation.regions.iter().any(|region| region.operations.iter().any(|operation| {
+            matches!(operation.kind, witchy_types::suspension_carrier::ReadyChannelOperationKind::Open { .. })
+        })), "the unguarded prologue region remains independently eligible: {formation:#?}");
+        let guarded_state = formation.excluded.iter().find_map(|excluded| {
+            matches!(
+                excluded.reason,
+                witchy_types::suspension_carrier::ReadyChannelRegionExclusionReason::GuardedControlFlow
+            ).then_some(excluded.id)
+        }).expect("conditional task construction must be an explicit scheduler fallback: {formation:#?}");
+        assert_eq!(
+            carrier.states()[guarded_state].source_callable,
+            "main.worker",
+            "the guarded exclusion must belong to the lowered conditional worker"
+        );
+        assert!(
+            formation.regions.iter().all(|region| region.id != guarded_state),
+            "no path beneath an effectful conditional may form a ready region: {formation:#?}"
+        );
+    }
+
+    #[test]
     fn awaited_select_uses_the_fused_typed_bridge_in_wir() {
         // Keep this carrier-plan assertion on the immediate two-way select
         // substrate.  The benchmark fixture also contains the newer

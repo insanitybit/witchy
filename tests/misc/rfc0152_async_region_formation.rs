@@ -1,6 +1,7 @@
 //! RFC-0152 Phase 1: effects outside an eligible channel region remain normal
-//! source-order work, even when an unsupported awaited task splits the middle
-//! of the enclosing async function.
+//! source-order work. Unsupported awaits are covered by the non-executing
+//! lowered-carrier test, because this executable oracle must not depend on an
+//! unsupported task implementation.
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
@@ -21,6 +22,24 @@ async fn main(console: Console):
     console.print("value=${value}")
     console.print("after")
 "#;
+
+fn guarded_boundary_contract(take_send: bool) -> String {
+    format!(
+        r#"
+import task
+
+async fn main(console: Console):
+    console.print("before")
+    let work = if {take_send}:
+        task.done("sent")
+    else:
+        task.done("skipped")
+    let outcome = work.await
+    console.print(outcome)
+    console.print("after")
+"#
+    )
+}
 
 fn compiled_output(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
@@ -64,4 +83,21 @@ fn rfc0152_region_boundaries_preserve_effect_order_and_backend_parity() {
     assert_eq!(optimized_interpreted, expected, "optimized interpreter result");
     assert_eq!(optimized_compiled, optimized_interpreted, "optimized Wasm parity");
     assert_eq!(optimized_compiled, ordinary_compiled, "region formation does not move effects");
+}
+
+#[test]
+fn rfc0152_guarded_paths_preserve_both_outcomes_and_backend_parity() {
+    for (take_send, expected) in [
+        (true, vec!["before", "sent", "after"]),
+        (false, vec!["before", "skipped", "after"]),
+    ] {
+        let ordinary = guarded_boundary_contract(take_send);
+        let optimized = format!("mode opt\n\n{ordinary}");
+        for source in [&ordinary, &optimized] {
+            let interpreted = interpreted_output(source);
+            let compiled = compiled_output(source);
+            assert_eq!(interpreted, expected, "interpreter outcome for take_send={take_send}");
+            assert_eq!(compiled, interpreted, "Wasm outcome for take_send={take_send}");
+        }
+    }
 }
