@@ -412,7 +412,7 @@ Receive from the first ready receiver among `a`, `b`, and `c`. A tie is resolved
 
 Four-way counterpart of `select3`, retaining the same deterministic first-ready rule and fixed endpoint ABI.
 
-#### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n)`
 
@@ -4376,7 +4376,7 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 
 #### `fn __channel_select4_map(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
 
-#### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
