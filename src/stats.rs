@@ -473,6 +473,33 @@ mod tests {
     }
 
     #[test]
+    fn sole_live_fixed_select_frames_drain_before_one_reusable_wait_install() {
+        // The fixed-arity frames enter through Pull3/Pull4 rather than the
+        // scalar select2 entry. With no other live slot, each frame must keep
+        // its mutable state through the complete source-order ready run, then
+        // install exactly one ordinary Wait*FrameLoop for the closed wake.
+        const SELECT3: &str = "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(2).await\n    let (b_tx, b_rx) = chan.channel(2).await\n    let (c_tx, c_rx) = chan.channel(2).await\n    chan.send(a_tx, 1).await\n    chan.send(a_tx, 2).await\n    chan.send(b_tx, 10).await\n    chan.send(b_tx, 20).await\n    chan.send(c_tx, 100).await\n    chan.send(c_tx, 200).await\n    var seen = 0\n    var sum = 0\n    while seen < 7:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Second3(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Third3(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Closed3 -> seen = 7\n    console.print(\"seen=${seen} sum=${sum}\")\n";
+        const SELECT4: &str = "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(2).await\n    let (b_tx, b_rx) = chan.channel(2).await\n    let (c_tx, c_rx) = chan.channel(2).await\n    let (d_tx, d_rx) = chan.channel(2).await\n    chan.send(a_tx, 1).await\n    chan.send(a_tx, 2).await\n    chan.send(b_tx, 10).await\n    chan.send(b_tx, 20).await\n    chan.send(c_tx, 100).await\n    chan.send(c_tx, 200).await\n    chan.send(d_tx, 1000).await\n    chan.send(d_tx, 2000).await\n    var seen = 0\n    var sum = 0\n    while seen < 9:\n        let selected = chan.select4(a_rx, b_rx, c_rx, d_rx).await\n        match selected:\n            First4(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Second4(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Third4(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Fourth4(value) ->\n                sum = sum + value\n                seen = seen + 1\n            Closed4 -> seen = 9\n    console.print(\"seen=${seen} sum=${sum}\")\n";
+
+        for (label, source, expected) in [
+            ("select3", SELECT3, "seen=7 sum=333"),
+            ("select4", SELECT4, "seen=9 sum=3333"),
+        ] {
+            let first = compute(source).unwrap_or_else(|error| panic!("run sole-live {label} frame: {error}"));
+            let second = compute(source).unwrap_or_else(|error| panic!("repeat sole-live {label} frame: {error}"));
+            assert_eq!(first.output, [expected], "{label} must retain source-order output");
+            assert_eq!(first.output, interp(source), "{label} frame counters must preserve parity");
+            assert_eq!(first.scheduler_reusable_wait_installs, 1,
+                "{label} installs exactly one wait after its ready run: {first:?}");
+            assert_eq!(first.scheduler_frame_allocation_calls, 1,
+                "{label} reuses one compiler-owned frame for the entire run: {first:?}");
+            assert_eq!(first.scheduler_ready_frame_allocation_calls, 1,
+                "{label} begins through the fixed-arity ready entry: {first:?}");
+            assert_eq!(first, second, "{label} sole-live ready draining must be deterministic");
+        }
+    }
+
+    #[test]
     fn sole_live_receive_frame_drains_a_buffered_run_before_installing_wait() {
         // The payload-free receive frame is compiler-owned and its root is
         // the only live scheduler slot after the eager sends. It may drain

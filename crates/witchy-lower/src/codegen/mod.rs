@@ -11308,7 +11308,10 @@ fn task_compiler_owned_frame_entry_ctor(name: &str, owner_key: &str) -> Option<b
         return None;
     }
     match name.rsplit('.').next() {
-        Some("PullReadyFrameLoop") | Some("Pull2ReadyFrameLoop") => Some(true),
+        Some("PullReadyFrameLoop")
+        | Some("Pull2ReadyFrameLoop")
+        | Some("Pull3ReadyFrameLoop")
+        | Some("Pull4ReadyFrameLoop") => Some(true),
         Some("Pull2Frame")
         | Some("PullFrameLoop")
         | Some("Pull2FrameLoop")

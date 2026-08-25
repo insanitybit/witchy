@@ -7537,10 +7537,14 @@ mod checked_codegen_boundary_tests {
             "list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))",
             "if step(0, None, frame):",
             "Pull3FrameLoop(Int, Int, Int, List(Int)",
+            "Pull3ReadyFrameLoop(Int, Int, Int, List(Int)",
             "Wait3FrameLoop(Int, Int, Int, List(Int)",
-            "Pull3FrameLoop(ch0, ch1, ch2, frame, step, done_fn)",
+            "Pull3ReadyFrameLoop(ch0, ch1, ch2, frame, step, done_fn)",
             "Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn)",
             "if step(2, Some(frame_msg2), frame):",
+            "Pull4ReadyFrameLoop(Int, Int, Int, Int, List(Int)",
+            "Pull4ReadyFrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn)",
+            "Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn)",
         ] {
             assert!(source.contains(marker), "missing reusable frame ABI marker: {marker}");
         }
