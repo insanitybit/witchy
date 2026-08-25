@@ -420,25 +420,28 @@ claim_queue_entry_for_gate() { # claim_queue_entry_for_gate <queue-file> <change
 # coordinator.lock; no live coordinator can be preparing or gating an attempt
 # concurrently.
 recover_orphaned_change_claims() {
-    local cf state id sha attempt branch qf tmp matched
+    local cf state id sha attempt branch qf tmp
     acquire_change_lock
-    for cf in "$changes_dir"/*.json; do
+    # Only an entry that is still present in the live queue can be recovered.
+    # Walking the complete historical change ledger here spawned one `jq` per
+    # old record on every coordinator restart, delaying a recovered gate by
+    # minutes. Start with the (normally tiny) live queue, then prove that its
+    # current change record is the matching in-flight attempt.
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        branch="$(jq -r '.branch // empty' "$qf")"
+        id="$(jq -r '.change_id // empty' "$qf")"
+        sha="$(jq -r '.sha // empty' "$qf")"
+        attempt="$(jq -r '.attempt_id // empty' "$qf")"
+        [ -n "$branch" ] && [ -n "$id" ] && [ -n "$sha" ] && [ -n "$attempt" ] || continue
+        cf="$(change_file_for_branch "$branch")"
         [ -f "$cf" ] || continue
         state="$(jq -r '.state // empty' "$cf")"
         case "$state" in gating | validated) ;; *) continue ;; esac
-        id="$(jq -r '.change_id // empty' "$cf")"
-        sha="$(jq -r '.current_sha // empty' "$cf")"
-        attempt="$(jq -r '.current_attempt // empty' "$cf")"
-        branch="$(jq -r '.branch // empty' "$cf")"
-        matched=0
-        for qf in "$queue_dir"/*.json; do
-            [ -f "$qf" ] || continue
-            if queue_entry_matches "$qf" "$id" "$sha" "$attempt"; then
-                matched=1
-                break
-            fi
-        done
-        [ "$matched" -eq 1 ] || continue
+        queue_entry_matches "$qf" "$id" "$sha" "$attempt" || continue
+        jq -e --arg id "$id" --arg sha "$sha" --arg attempt "$attempt" \
+            'select(.change_id==$id and (.current_sha // "")==$sha and
+              (.current_attempt // "")==$attempt)' "$cf" >/dev/null 2>&1 || continue
         tmp="$cf.tmp.$$"
         jq --arg state queued --arg updated "$(now)" \
             '.state=$state | .updated=$updated' "$cf" >"$tmp"
