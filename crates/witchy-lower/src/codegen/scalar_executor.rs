@@ -6,7 +6,8 @@
 //! the ordinary Task/Step scheduler unchanged.
 
 use witchy_types::suspension_carrier::{
-    CarrierLane, ChannelPayloadLayout, ScalarExecutorPlan, ScalarExecutorState, ScalarTransition,
+    CarrierLane, ChannelPayloadLayout, ReadyChannelRegionPlan, ScalarExecutorState,
+    ScalarTransition,
 };
 use witchy_wir::wir::{
     BinOp, Kind, WirExpr as E, WirFunc, WirLocal, WirModule, WirNode as N, WirTy,
@@ -38,7 +39,12 @@ enum ScalarPayload {
     CounterAndSuccessor,
 }
 
-pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> bool {
+/// Emit the currently supported direct one-way region from the complete
+/// ready-region ABI. This deliberately consumes the same plan as future
+/// fixed-select and bounded-wait emitters: the direct path may decline a
+/// layout or graph shape, but it must not reconstruct channel typing from
+/// erased scheduler values.
+pub(super) fn synthesize(plan: &ReadyChannelRegionPlan, module: &mut WirModule) -> bool {
     let Some(fold) = recognize(plan, module) else {
         return false;
     };
@@ -157,7 +163,7 @@ pub(super) fn synthesize(plan: &ScalarExecutorPlan, module: &mut WirModule) -> b
 }
 
 fn recognize<'a>(
-    plan: &'a ScalarExecutorPlan,
+    plan: &'a ReadyChannelRegionPlan,
     module: &WirModule,
 ) -> Option<ScalarChannelFold<'a>> {
     let mut spawns = plan.states.iter().filter(|state| {
@@ -263,7 +269,7 @@ fn recognize<'a>(
 }
 
 fn producer_payload_shape(
-    plan: &ScalarExecutorPlan,
+    plan: &ReadyChannelRegionPlan,
     module: &WirModule,
     source: &str,
     send_function: &str,
@@ -324,7 +330,7 @@ fn matches_payload_layout(payload: ScalarPayload, layout: &ChannelPayloadLayout)
 }
 
 fn receiver_fold_shape(
-    plan: &ScalarExecutorPlan,
+    plan: &ReadyChannelRegionPlan,
     module: &WirModule,
     receive: &ScalarExecutorState,
     accumulator: &str,
@@ -524,7 +530,7 @@ fn terminal_arguments(
 /// scalar graph, so unsupported control flow or task work stays on the normal
 /// scheduler path.
 fn eager_region_prologue(
-    plan: &ScalarExecutorPlan,
+    plan: &ReadyChannelRegionPlan,
     module: &WirModule,
     main: &WirFunc,
 ) -> Option<EagerRegionPrologue> {

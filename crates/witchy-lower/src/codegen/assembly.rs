@@ -6329,7 +6329,7 @@ fn assemble_wir_module_with_structs_mode(
                     exports
                 },
             };
-            if let Ok(plan) = suspension_carrier.scalar_executor_plan() {
+            if let Ok(plan) = suspension_carrier.ready_channel_region_plan() {
                 super::scalar_executor::synthesize(&plan, &mut wir_module);
             }
             return Ok((wir_module, gc_structs, gc_arrays, layout_bundle, suspension_carrier));
@@ -7112,10 +7112,10 @@ mod checked_codegen_boundary_tests {
         let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble effectful scalar-region fixture");
-        let scalar = carrier
-            .scalar_executor_plan()
-            .expect("the terminal task after an eager block prologue is scalar");
-        assert!(scalar.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
+        let ready = carrier
+            .ready_channel_region_plan()
+            .expect("the terminal task after an eager block prologue has a direct ready-region ABI");
+        assert!(ready.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
             matches!(
                 transition,
                 witchy_types::suspension_carrier::ScalarTransition::ChannelSend(plan)
@@ -7131,7 +7131,7 @@ mod checked_codegen_boundary_tests {
                     )
             )
         }), "a one-way send must retain its exact typed endpoint plan");
-        assert!(scalar.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
+        assert!(ready.states.iter().flat_map(|state| state.transitions.iter()).any(|transition| {
             matches!(
                 transition,
                 witchy_types::suspension_carrier::ScalarTransition::ChannelReceive(plan)
