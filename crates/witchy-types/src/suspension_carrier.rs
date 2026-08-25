@@ -256,6 +256,8 @@ pub enum ReadyChannelOperationKind {
     Send(AwaitChannelOperationPlan),
     Receive(AwaitChannelOperationPlan),
     Select2(AwaitSelect2Plan),
+    Select3(AwaitFixedSelectPlan),
+    Select4(AwaitFixedSelectPlan),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -674,6 +676,12 @@ impl ReadyChannelRegionPlan {
                         }
                         ScalarTransition::ChannelSelect2(select) => {
                             ReadyChannelOperationKind::Select2(select.clone())
+                        }
+                        ScalarTransition::ChannelSelect3(select) => {
+                            ReadyChannelOperationKind::Select3(select.clone())
+                        }
+                        ScalarTransition::ChannelSelect4(select) => {
+                            ReadyChannelOperationKind::Select4(select.clone())
                         }
                         _ => return None,
                     };
@@ -1761,8 +1769,31 @@ mod tests {
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 5,
         };
+        let select3 = AwaitFixedSelectPlan {
+            endpoints: vec![
+                ChannelEndpointPlace::Static("a".into()),
+                ChannelEndpointPlace::Static("b".into()),
+                ChannelEndpointPlace::Static("c".into()),
+            ],
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            payload_lane: Some(CarrierLane::I64),
+            resume_target: 6,
+            result_use: SelectResultUse::ImmediateMatch,
+        };
+        let select4 = AwaitFixedSelectPlan {
+            endpoints: vec![
+                ChannelEndpointPlace::Static("d".into()),
+                ChannelEndpointPlace::Static("e".into()),
+                ChannelEndpointPlace::Static("f".into()),
+                ChannelEndpointPlace::Static("g".into()),
+            ],
+            payload_layout: ChannelPayloadLayout::Packed(vec![CarrierLane::I64, CarrierLane::I64]),
+            payload_lane: None,
+            resume_target: 7,
+            result_use: SelectResultUse::Escape,
+        };
         let plan = ReadyChannelRegionPlan {
-            state_count: 2,
+            state_count: 3,
             max_lane_width: 1,
             states: vec![
                 ScalarExecutorState {
@@ -1782,6 +1813,16 @@ mod tests {
                     slots: Vec::new(),
                     transitions: vec![ScalarTransition::ChannelReceive(receive.clone())],
                 },
+                ScalarExecutorState {
+                    id: 13,
+                    function: "fixed-selects".into(),
+                    source_callable: "consumer".into(),
+                    slots: Vec::new(),
+                    transitions: vec![
+                        ScalarTransition::ChannelSelect3(select3.clone()),
+                        ScalarTransition::ChannelSelect4(select4.clone()),
+                    ],
+                },
             ],
             typed_channels: Vec::new(),
         };
@@ -1800,6 +1841,14 @@ mod tests {
                 ReadyChannelOperation {
                     state: 8,
                     kind: ReadyChannelOperationKind::Receive(receive),
+                },
+                ReadyChannelOperation {
+                    state: 13,
+                    kind: ReadyChannelOperationKind::Select3(select3),
+                },
+                ReadyChannelOperation {
+                    state: 13,
+                    kind: ReadyChannelOperationKind::Select4(select4),
                 },
             ],
         );
