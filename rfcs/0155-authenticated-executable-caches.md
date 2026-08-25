@@ -62,17 +62,27 @@ contract from implementation choices that still require prototypes.
 
 ### Result of the adversarial composition review
 
-The review treats a control as required only when removing it enables an attack
-that the remaining controls do not stop. The resulting cache-integrity core is:
+The review treats a control as security-essential only when removing it enables
+an in-scope integrity, memory-safety, or authority attack that the remaining
+controls do not stop. The resulting cache-integrity core is:
 
 1. an authenticator unavailable to the in-scope attacker and no
    attacker-controlled signing oracle;
 2. authentication over the complete compilation relationship;
 3. producer-side input freezing and consumer-side exact-byte use;
-4. authentication and bounds checks before any trust-requiring native parse;
+4. authentication before any artifact parse or load that relies on trusted
+   provenance, especially native deserialization;
 5. capability authority derived independently from current trusted input and
    current launch policy; and
-6. cache-off fallback with no production downgrade switch.
+6. failure closed when authentication is absent or fails, with no production
+   unauthenticated downgrade.
+
+Uncached recomputation, non-interactive credential access, length bounds, and
+bounded diagnostics remain required by this RFC, but they are not independent
+members of the integrity core. Refusing to run would also preserve integrity
+when credentials are absent, so recomputation earns its place as the
+availability and usability policy. Length bounds constrain denial of service
+and parser exposure; they do not make an unauthenticated native artifact safe.
 
 Trusted executables use a disjoint mitigation: they do not consult persistent
 executable caches. They therefore do not depend on any member of the
@@ -333,6 +343,11 @@ Lookup proceeds as follows:
 7. Consume the same opened bytes that were authenticated. Do not verify a path
    and reopen it.
 
+Before authentication, decoding is limited to fixed-size framing needed to
+locate the expected tag and bounded payload. It must not allocate according to
+an attacker-provided length or invoke an artifact parser. Payload hashing is
+streaming; bounding the payload does not require reading it into one allocation.
+
 For engine-native serialized artifacts, authentication and length bounds must
 complete before calling any unsafe or trust-requiring deserialization API. The
 implementation must also document why artifacts emitted by the authenticated
@@ -423,9 +438,9 @@ The authenticated-cache core is:
 protected authenticator and trusted-only record production
 + complete canonical relationship binding
 + frozen producer inputs and same-open consumer bytes
-+ bounded envelope parsing and authentication before artifact consumption
++ authentication before trust-requiring artifact consumption
 + authority derived independently of cache contents
-+ cache-off fallback without a downgrade switch
++ fail closed without an unauthenticated downgrade
 ```
 
 The first line is one obligation, not two stackable mitigations. A strong key is
@@ -442,14 +457,49 @@ Each remaining line blocks a different failure after the preceding lines hold:
 | Protected authenticator and trusted producer | Forge a self-consistent malicious record, or use the host as a signing oracle |
 | Complete relationship binding | Replay an authentic artifact for a different input, toolchain, target, configuration, or epoch |
 | Frozen producer inputs and same-open consumer bytes | Swap source after hashing or artifact after verification |
-| Bounded envelope parse and pre-consumption authentication | Reach an artifact parser, especially a native unsafe deserializer, with attacker-controlled payload bytes before rejection |
+| Authentication before trust-requiring artifact consumption | Reach an artifact parser, especially a native unsafe deserializer, with attacker-controlled payload bytes before rejection |
 | Authority independent of cache | Reuse stale or mismatched cached grants and bindings even with authentic code |
-| Cache-off fallback without downgrade | Turn credential failure into acceptance of unauthenticated state |
+| Fail closed without unauthenticated downgrade | Turn credential failure into acceptance of unauthenticated state |
 
-No proper subset of these obligations covers all listed attacks. Content
-addressing, per-program keys, program identity, guest path denial, and OS
-sandboxing for a WebAssembly guest without native-child authority do not replace
-any member of the core.
+No proper subset of these security obligations covers all listed attacks.
+Content addressing, per-program keys, program identity, guest path denial, and
+OS sandboxing for a WebAssembly guest without native-child authority do not
+replace any member of the core. Conversely, uncached recomputation and length
+bounds do not belong in that minimality claim: both remain mandatory product
+requirements, but neither repairs missing authenticity, byte continuity, or
+authority separation.
+
+### Control disposition after composition review
+
+| Control | Disposition | Why it earns or does not earn a place |
+|---|---|---|
+| Protected authenticator plus trusted-only production | Required as one obligation | Either a forgeable tag or a signing oracle permits a self-consistent malicious relationship |
+| Complete input-artifact-recipe binding | Required as one obligation | Omitting any output-affecting input permits authentic replay or substitution; its individual fields are not independent mitigations |
+| Frozen producer input and same-open consumer bytes | Required | A valid record otherwise authenticates bytes different from those compiled or consumed |
+| Authentication before trust-requiring artifact consumption | Required | A forged native artifact otherwise reaches an unsafe deserializer before the cache can reject it |
+| Authority derived outside the cache | Required | Authentic code does not make stale cached grants, imports, bindings, or resources authoritative |
+| No unauthenticated downgrade | Required | Credential failure must not select attacker-controlled legacy state |
+| Uncached recomputation on failure | Required behavior, not integrity-minimal | Refusing execution is secure but violates the availability and non-interactive startup contract |
+| Length and allocation bounds | Required hardening, not integrity-minimal | Limits denial of service and parser exposure; authentication remains the native safety gate |
+| Content-addressed filenames | Optional layout optimization | Improves deduplication and corruption detection but cannot authenticate a mapping |
+| Per-program identity or derived keys | Rejected as required controls | Complete relationship binding already separates distinct inputs, while identical-input sharing transfers no authority |
+| Guest cache path exclusion | Optional defense in depth | Reduces attack surface and cache deletion but is redundant for integrity once the complete core holds |
+| OS worker sandbox | Conditional | Redundant for an ordinary WebAssembly guest under the core; required only for a claimed contained native child |
+| Compiler/cache daemon | Substitutable architecture | Can replace the authenticator and trusted-producer mechanism only when it compiles frozen inputs under a distinct identity; otherwise it is merely another signing oracle |
+| Trusted-executable cache independence | Complete mode-specific mitigation | Eliminates the mutable substitution path, making local cache authentication and credential access redundant for that mode |
+
+Several superficially strong combinations remain insufficient:
+
+- Content addressing plus guest path exclusion still fails if an alias,
+  confinement defect, or native child can replace a self-consistent mapping.
+- A protected key plus program identity still permits replay when the tag omits
+  an output-affecting source, tool, target, configuration, or epoch input.
+- A complete MAC plus path reopening still permits a verify-then-swap attack.
+- A complete MAC plus cached authority still permits an authentic stale grant
+  or binding to expand the consumer's current policy.
+- A daemon plus caller-supplied output merely relocates the signing oracle.
+- Authentication plus native deserialization is insufficient when deserialization
+  occurs first or when the recipe omits the engine compatibility identity.
 
 The controls compose by execution mode rather than accumulating globally:
 
@@ -545,9 +595,10 @@ demonstrated:
    rejected. Identical-input cross-program reuse remains safe and permitted.
 5. Invalid and unavailable credentials run successfully without persistent
    cache access or interactive prompts.
-6. Cache records are length-bounded and authenticated before artifact
-   consumption, and native deserialization additionally has a documented
-   producer-to-deserializer safety contract.
+6. Cache records are length-bounded without pre-authentication
+   attacker-sized allocations. Authentication precedes trust-requiring
+   artifact consumption, and native deserialization additionally has a
+   documented producer-to-deserializer safety contract.
 7. Capability footprints, imports, bindings, and grants are derived outside the
    cache and mismatches fail closed.
 8. Production binaries expose no unauthenticated executable-cache override.

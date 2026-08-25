@@ -67,7 +67,7 @@ this ledger.
 | 3. Self-consistent malicious record and artifact are rejected | pending | Production cache attack fixture for every enabled artifact kind | none |
 | 4. Cross-input, target, configuration, and epoch replays fail; identical-input sharing is safe | pending | Canonical-record tests and at least one production replay fixture | none |
 | 5. Invalid or unavailable credentials run without persistent access or prompts | pending | Injected-provider tests and headless subprocess test | none |
-| 6. Bounds and authentication precede artifact consumption; native safety contract documented | pending | Instrumented ordering test, malformed artifact fixture, and native-cache decision | none |
+| 6. Authentication precedes trust-requiring artifact consumption; native safety contract documented; bounds prevent pre-auth allocation | pending | Instrumented ordering and allocation test, malformed artifact fixture, and native-cache decision | none |
 | 7. Footprints, imports, bindings, and grants are independent of cache state | pending | Cache-metadata mutation tests and current-input derivation audit | none |
 | 8. No production unauthenticated override exists | pending | CLI, environment, config, and source census | none |
 | 9. External optimizer identity is authenticated and ambient `PATH` cannot sign output | pending | Substituted-`PATH` production fixture and exact-executable recipe evidence | none |
