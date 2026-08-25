@@ -86,6 +86,25 @@ async fn main(console: Console):
     console.print("seen=${seen} sum=${sum}")
 "#;
 
+// The compiler-owned receive frame currently accepts only a payload-free body.
+// This fixture therefore exercises the scheduler-local ready entry itself,
+// rather than the ordinary value-consuming receive fallback above.
+const RECV_READY_FRAME_CONTRACT: &str = r#"
+mode opt
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    chan.send(tx, 3).await
+    chan.send(tx, 5).await
+    chan.send(tx, 7).await
+    chan.send(tx, 11).await
+
+    var seen = 0
+    for await _value in rx:
+        seen = seen + 1
+    console.print("seen=${seen}")
+"#;
+
 fn run_compiled(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0152 select3 frame contract must check");
@@ -142,4 +161,24 @@ fn rfc0152_recv_frame_drains_buffered_values_then_closes_on_both_backends() {
 
     assert_eq!(compiled, interpreted, "one-way frame scheduling must retain interpreter semantics");
     assert_eq!(interpreted, ["seen=4 sum=26"]);
+}
+
+#[test]
+fn rfc0152_payload_free_receive_frame_uses_the_sole_live_ready_entry() {
+    let checked = witchy::resolve_std_only_checked(RECV_READY_FRAME_CONTRACT)
+        .expect("RFC-0152 ready receive-frame contract must check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("run RFC-0152 ready receive-frame contract on the interpreter");
+    let compiled = run_compiled(RECV_READY_FRAME_CONTRACT);
+
+    assert_eq!(compiled, interpreted, "the ready receive frame must retain interpreter semantics");
+    assert_eq!(interpreted, ["seen=4"]);
+
+    let wir = codegen::assemble_checked_optimized_wir_module(&checked)
+        .expect_lowered("assemble RFC-0152 ready receive-frame contract");
+    let wat = witchy_wir::wir::to_wat(&wir);
+    assert!(
+        wat.contains("call $chan.recv_frame_loop"),
+        "payload-free receive loops must retain the compiler-owned frame bridge"
+    );
 }

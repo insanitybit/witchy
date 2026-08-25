@@ -61,6 +61,10 @@ sealed type Step(a):
     // One-way counterpart of Pull2FrameLoop. It retains one receiver, frame,
     // step, and completion closure across a receive-until-closed fold.
     PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    // Compiler-private ready-probing entry form. As with the fixed-arity
+    // select entry, task.run owns the sole ring and retains PullFrameLoop's
+    // ordinary reusable-wait fallback whenever an eager probe is not proven.
+    PullReadyFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
     // Reusable compiler-owned frame loop. Unlike Pull2Frame, a false step
     // result re-arms the same parked frame instead of returning through a new
     // task. The frame, step closure, and done task can therefore remain live
@@ -143,6 +147,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Pull2Frame(_, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         PullFrameLoop(_, _, _, _) ->
+            Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
+        PullReadyFrameLoop(_, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         Pull2FrameLoop(_, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
@@ -256,7 +262,7 @@ pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), 
 // same registration and a final `None` is delivered by the close pass.
 fn __channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     match ch:
-        ChannelId(id) -> Task(fn(): PullFrameLoop(id, frame, step, done_fn))
+        ChannelId(id) -> Task(fn(): PullReadyFrameLoop(id, frame, step, done_fn))
 
 pub fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
     __channel_recv_frame_loop(ch, frame, step, done_fn)
@@ -950,6 +956,28 @@ pub fn run(root: Task(Nil)):
                             __rfc0152_reusable_wait_install()
                             list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
                             prog = true
+                        PullReadyFrameLoop(ch, frame, step, done_fn) ->
+                            if is_only_live_slot(0, i, slots):
+                                let (buf, head, count, cap) = list.at(channels, ch)
+                                if count > 0:
+                                    let msg = list.at(buf, head)
+                                    let physcap = list.length(buf)
+                                    var frame = frame
+                                    list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                    if step(Some(msg), frame):
+                                        list.set_at(slots, i, Active(done_fn(frame)))
+                                    else:
+                                        __rfc0152_reusable_wait_install()
+                                        list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
+                                    prog = true
+                                else:
+                                    __rfc0152_reusable_wait_install()
+                                    list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
+                                    prog = true
+                            else:
+                                __rfc0152_reusable_wait_install()
+                                list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
+                                prog = true
                         Pull2FrameLoop(ch0, ch1, frame, step, done_fn) ->
                             __rfc0152_reusable_wait_install()
                             list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
