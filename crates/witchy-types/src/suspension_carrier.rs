@@ -285,6 +285,20 @@ pub enum ChannelEndpointPlace {
     Dynamic,
 }
 
+/// The exact source operand supplied to a send transition. A promoted emitter
+/// may consume a named carrier/WIR value or a literal directly, but it must
+/// leave a computed expression on the ordinary scheduler rather than evaluate
+/// it a second time while probing a ready ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelMessageOperand {
+    Static(String),
+    Int(i64),
+    Duration(i64),
+    Bool(bool),
+    String(String),
+    Dynamic,
+}
+
 /// A reusable select loop either resumes a compiler-owned state or completes
 /// the surrounding task after its frame is drained.  Keeping completion in the
 /// typed graph lets a ready emitter avoid inventing a synthetic continuation
@@ -393,6 +407,10 @@ pub struct AwaitFixedSelectPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitChannelOperationPlan {
     pub endpoint: ChannelEndpointPlace,
+    /// `None` for receive. Send retains the source operand independently of
+    /// the endpoint so a direct emitter never has to recover it from erased
+    /// `__Msg` storage or re-walk the source expression.
+    pub message: Option<ChannelMessageOperand>,
     pub payload_layout: ChannelPayloadLayout,
     pub ownership: ChannelOwnershipEnvelope,
     pub resume_target: usize,
@@ -1094,6 +1112,11 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
     };
     match transition {
         ScalarTransition::ChannelSend(operation) if !is_static(&operation.endpoint) => Err("send"),
+        ScalarTransition::ChannelSend(operation)
+            if matches!(operation.message.as_ref(), None | Some(ChannelMessageOperand::Dynamic)) =>
+        {
+            Err("send payload")
+        }
         ScalarTransition::ChannelReceive(operation) if !is_static(&operation.endpoint) => {
             Err("receive")
         }
@@ -1616,6 +1639,7 @@ fn collect_task_expression<'a, 'd>(
         ScalarTransition::ChannelSend(channel_operation_plan(
             table,
             args.first(),
+            args.get(1),
             ChannelEndpointDirection::Send,
             definitions,
             resume,
@@ -1624,6 +1648,7 @@ fn collect_task_expression<'a, 'd>(
         ScalarTransition::ChannelReceive(channel_operation_plan(
             table,
             args.first(),
+            None,
             ChannelEndpointDirection::Receive,
             definitions,
             resume,
@@ -1716,6 +1741,7 @@ fn channel_endpoint_place(endpoint: Option<&ast::Expr>) -> ChannelEndpointPlace 
 fn channel_operation_plan(
     table: &TypeTable,
     endpoint: Option<&ast::Expr>,
+    message: Option<&ast::Expr>,
     direction: ChannelEndpointDirection,
     definitions: &HashMap<String, &TypeDef>,
     resume_target: usize,
@@ -1727,9 +1753,21 @@ fn channel_operation_plan(
     let ownership = channel_ownership_envelope(&payload_layout);
     AwaitChannelOperationPlan {
         endpoint: channel_endpoint_place(endpoint),
+        message: message.map(channel_message_operand),
         payload_layout,
         ownership,
         resume_target,
+    }
+}
+
+fn channel_message_operand(message: &ast::Expr) -> ChannelMessageOperand {
+    match message {
+        ast::Expr::Var(name) => ChannelMessageOperand::Static(name.clone()),
+        ast::Expr::Int(value) => ChannelMessageOperand::Int(*value),
+        ast::Expr::Duration(value) => ChannelMessageOperand::Duration(*value),
+        ast::Expr::Bool(value) => ChannelMessageOperand::Bool(*value),
+        ast::Expr::Str(value) => ChannelMessageOperand::String(value.clone()),
+        _ => ChannelMessageOperand::Dynamic,
     }
 }
 
@@ -2328,6 +2366,26 @@ mod tests {
     }
 
     #[test]
+    fn channel_send_operands_preserve_static_and_literal_values() {
+        assert_eq!(
+            channel_message_operand(&ast::Expr::Var("value".into())),
+            ChannelMessageOperand::Static("value".into())
+        );
+        assert_eq!(
+            channel_message_operand(&ast::Expr::Int(42)),
+            ChannelMessageOperand::Int(42)
+        );
+        assert_eq!(
+            channel_message_operand(&ast::Expr::Call {
+                name: "effectful".into(),
+                args: Vec::new(),
+            }),
+            ChannelMessageOperand::Dynamic,
+            "computed values remain on the ordinary scheduler until the emitter can preserve their evaluation exactly once"
+        );
+    }
+
+    #[test]
     fn ready_region_formation_keeps_supported_neighbours_when_one_region_is_unsupported() {
         let state = |id, function: &str| CarrierState {
             id,
@@ -2347,6 +2405,7 @@ mod tests {
                 vec![RegionTransitionPath { guarded: false, transitions: Err("unsupported awaited task call `task.map`".into()) }],
                 vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
+                    message: None,
                     payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                     resume_target: 13,
@@ -2357,6 +2416,7 @@ mod tests {
                 Err("unsupported awaited task call `task.map`".into()),
                 Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
+                    message: None,
                     payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                     resume_target: 13,
@@ -2419,6 +2479,7 @@ mod tests {
         };
         let send = ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("tx".into()),
+            message: Some(ChannelMessageOperand::Static("value".into())),
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 8,
@@ -2720,11 +2781,21 @@ mod tests {
 
         let dynamic = ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Dynamic,
+            message: None,
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 1,
         });
         assert_eq!(ready_transition_is_static(&dynamic), Err("receive"));
+
+        let computed_send = ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("tx".into()),
+            message: Some(ChannelMessageOperand::Dynamic),
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 1,
+        });
+        assert_eq!(ready_transition_is_static(&computed_send), Err("send payload"));
     }
 
     #[test]
@@ -2801,6 +2872,7 @@ mod tests {
             scalar_transitions_for_function(function, &state_ids, &table, &HashMap::new()),
             Ok(vec![ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
                 endpoint: ChannelEndpointPlace::Static("tx".into()),
+                message: Some(ChannelMessageOperand::Static("value".into())),
                 payload_layout: ChannelPayloadLayout::Boxed,
                 ownership: ChannelOwnershipEnvelope::BoxedValue,
                 resume_target: 7,
@@ -2858,12 +2930,14 @@ mod tests {
     fn ready_region_operations_keep_state_order_and_typed_channel_facts() {
         let send = AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("tx".into()),
+            message: Some(ChannelMessageOperand::String("ready".into())),
             payload_layout: ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
             ownership: ChannelOwnershipEnvelope::BufferRoot,
             resume_target: 4,
         };
         let receive = AwaitChannelOperationPlan {
             endpoint: ChannelEndpointPlace::Static("rx".into()),
+            message: None,
             payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
             ownership: ChannelOwnershipEnvelope::InlineValue,
             resume_target: 5,
