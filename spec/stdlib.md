@@ -414,7 +414,7 @@ Four-way counterpart of `select3`, retaining the same deterministic first-ready 
 
 #### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
-#### `fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 Compiler-owned three-way frame bridge. The public spelling keeps the receiver ownership surface typed while task owns the fixed endpoint ids and deterministic source-order wake protocol.
 
@@ -4392,7 +4392,7 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 
 #### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
-#### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
 
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
