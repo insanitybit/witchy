@@ -75,6 +75,12 @@ pub struct Stats {
     pub scheduler_slot_transitions: i64,
     /// Executed transitions into one of the ordinary scheduler's wait states.
     pub scheduler_wait_installs: i64,
+    /// A parked scheduler operation resumed after a concrete ready or close
+    /// outcome was claimed. Re-parking a reusable frame is not a claim.
+    pub scheduler_wake_claims: i64,
+    /// Nominal `Selected*` values constructed at a select escape boundary.
+    /// Non-escaping direct result lanes must leave this at zero.
+    pub selected_result_materializations: i64,
     /// RFC-0088 semantic dictionary searches performed by fused extraction.
     pub extract_searches: i64,
     /// Key comparisons made within those searches.
@@ -194,6 +200,8 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         sequence_small_loops_unrolled: vm.sequence_small_loops_unrolled().unwrap_or(0),
         scheduler_slot_transitions: vm.scheduler_slot_transitions().unwrap_or(0),
         scheduler_wait_installs: vm.scheduler_wait_installs().unwrap_or(0),
+        scheduler_wake_claims: vm.scheduler_wake_claims().unwrap_or(0),
+        selected_result_materializations: vm.selected_result_materializations().unwrap_or(0),
         extract_searches: vm.extract_searches().unwrap_or(0),
         extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
         extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
@@ -278,6 +286,8 @@ mod tests {
         assert_eq!(stats.packed_alloc_bytes, 0);
         assert_eq!(stats.scheduler_slot_transitions, 0);
         assert_eq!(stats.scheduler_wait_installs, 0);
+        assert_eq!(stats.scheduler_wake_claims, 0);
+        assert_eq!(stats.selected_result_materializations, 0);
         assert_eq!(stats.loan_active_points, 0);
         assert_eq!(stats.loan_active_events, 0);
         assert_eq!(stats.loan_opens, 0);
@@ -319,6 +329,10 @@ mod tests {
             first.scheduler_wait_installs > 0,
             "the full bounded send must install a wait slot: {first:?}"
         );
+        assert!(
+            first.scheduler_wake_claims > 0,
+            "the close pass must claim the blocked sender exactly once: {first:?}"
+        );
         assert_eq!(first, second, "scheduler instrumentation must be deterministic");
     }
 
@@ -338,6 +352,23 @@ mod tests {
             "a blocking select3 must install a counted Wait3 slot: {first:?}"
         );
         assert_eq!(first, second, "fixed select instrumentation must be deterministic");
+    }
+
+    #[test]
+    fn selected_result_materialization_counter_distinguishes_the_nominal_adapter() {
+        // This ordinary `select` deliberately retains its public `Selected`
+        // value. A later direct local-result lane must keep the same output but
+        // drive this counter to zero instead of merely hiding an allocation.
+        const SOURCE: &str = "async fn main(console: Console):\n    let (left_tx, left_rx) = chan.channel(1).await\n    let (_right_tx, right_rx) = chan.channel(1).await\n    chan.send(left_tx, 7).await\n    let selected = chan.select(left_rx, right_rx).await\n    match selected:\n        First(value) -> console.print(\"first=${value}\")\n        Second(value) -> console.print(\"second=${value}\")\n        Closed -> console.print(\"closed\")\n";
+        let first = compute(SOURCE).expect("run nominal select adapter fixture");
+        let second = compute(SOURCE).expect("repeat nominal select adapter fixture");
+        assert_eq!(first.output, ["first=7"]);
+        assert_eq!(first.scheduler_wake_claims, 0, "already-ready select does not park");
+        assert!(
+            first.selected_result_materializations > 0,
+            "the public Selected adapter must record its nominal construction: {first:?}"
+        );
+        assert_eq!(first, second, "select counters must be deterministic");
     }
 
     #[test]

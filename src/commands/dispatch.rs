@@ -196,6 +196,11 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 );
                 println!("scheduler_slot_transitions {}", s.scheduler_slot_transitions);
                 println!("scheduler_wait_installs {}", s.scheduler_wait_installs);
+                println!("scheduler_wake_claims {}", s.scheduler_wake_claims);
+                println!(
+                    "selected_result_materializations {}",
+                    s.selected_result_materializations
+                );
                 println!("extract_searches {}", s.extract_searches);
                 println!("extract_key_comparisons {}", s.extract_key_comparisons);
                 println!("extract_copied_bytes {}", s.extract_copied_bytes);

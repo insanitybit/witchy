@@ -3269,6 +3269,32 @@ impl<'types> Codegen<'types> {
                 if !self.collect_wir {
                     return None;
                 }
+                // RFC-0152 Phase 0 deterministic scheduler counters. These
+                // private stdlib markers preserve interpreter behavior as `Nil`,
+                // while instrumented WIR records the exact dynamic event without
+                // putting a counter branch on ordinary artifacts. A marker is
+                // emitted only at a source-proven wake claim or selected-union
+                // construction; it is not inferred from an arbitrary `Active`
+                // constructor or a similarly named user function.
+                if args.is_empty() {
+                    let counter = match name.as_str() {
+                        "task.__rfc0152_wake_claim" => Some("__witchy_scheduler_wake_claims"),
+                        "chan.__rfc0152_selected_materialized" => {
+                            Some("__witchy_selected_result_materializations")
+                        }
+                        _ => None,
+                    };
+                    if let Some(counter) = counter {
+                        return Some(if deterministic_sequence_counters_enabled() {
+                            W::Seq(vec![
+                                Self::increment_counter(counter),
+                                N::Push(W::ConstI32(0)),
+                            ])
+                        } else {
+                            W::ConstI32(0)
+                        });
+                    }
+                }
                 let surface = witchy_syntax::cap_ops::surface_name(name);
                 if surface == witchy_syntax::intrinsics::ERASE && args.len() == 1 {
                     return self.lower_message_erase(&args[0]);

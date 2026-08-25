@@ -78,6 +78,12 @@ fn poll(t: Task(a)) -> Step(a):
 fn unit():
     let _ignore = 0
 
+// Private deterministic-instrumentation marker. The interpreter executes this
+// as `Nil`; instrumented WIR recognizes the exact call site and increments the
+// scheduler wake-claim counter without adding work to normal artifacts.
+fn __rfc0152_wake_claim():
+    unit()
+
 fn direct_frame_unreachable() -> Task(a):
     Task(fn(): Yield(direct_frame_unreachable()))
 
@@ -376,6 +382,7 @@ pub fn run(root: Task(Nil)):
                         let msg = list.at(buf, head)
                         let physcap = list.length(buf)
                         list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                        __rfc0152_wake_claim()
                         list.set_at(slots, i, Active(cont(Some(msg))))
                         prog = true
                     else:
@@ -384,6 +391,7 @@ pub fn run(root: Task(Nil)):
                     let (wait_buf, head, count, cap) = list.at(channels, ch)
                     if cap == 0 || count < cap:
                         list.set_at(channels, ch, ring_put(wait_buf, head, count, msg, cap))
+                        __rfc0152_wake_claim()
                         list.set_at(slots, i, Active(cont(unit())))
                         prog = true
                     else:
@@ -394,6 +402,7 @@ pub fn run(root: Task(Nil)):
                         let msg = list.at(buf0, head0)
                         let physcap = list.length(buf0)
                         list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                        __rfc0152_wake_claim()
                         list.set_at(slots, i, Active(cont(0, Some(msg))))
                         prog = true
                     else:
@@ -402,6 +411,7 @@ pub fn run(root: Task(Nil)):
                             let msg = list.at(buf1, head1)
                             let physcap = list.length(buf1)
                             list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(cont(1, Some(msg))))
                             prog = true
                         else:
@@ -412,6 +422,7 @@ pub fn run(root: Task(Nil)):
                         let msg = list.at(buf0, head0)
                         let physcap = list.length(buf0)
                         list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                        __rfc0152_wake_claim()
                         list.set_at(slots, i, Active(cont(0, Some(msg))))
                         prog = true
                     else:
@@ -420,6 +431,7 @@ pub fn run(root: Task(Nil)):
                             let msg = list.at(buf1, head1)
                             let physcap = list.length(buf1)
                             list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(cont(1, Some(msg))))
                             prog = true
                         else:
@@ -428,6 +440,7 @@ pub fn run(root: Task(Nil)):
                                 let msg = list.at(buf2, head2)
                                 let physcap = list.length(buf2)
                                 list.set_at(channels, ch2, (buf2, (head2 + 1) % physcap, count2 - 1, cap2))
+                                __rfc0152_wake_claim()
                                 list.set_at(slots, i, Active(cont(2, Some(msg))))
                                 prog = true
                             else:
@@ -438,6 +451,7 @@ pub fn run(root: Task(Nil)):
                         let msg = list.at(buf0, head0)
                         let physcap = list.length(buf0)
                         list.set_at(channels, ch0, (buf0, (head0 + 1) % physcap, count0 - 1, cap0))
+                        __rfc0152_wake_claim()
                         list.set_at(slots, i, Active(cont(0, Some(msg))))
                         prog = true
                     else:
@@ -446,6 +460,7 @@ pub fn run(root: Task(Nil)):
                             let msg = list.at(buf1, head1)
                             let physcap = list.length(buf1)
                             list.set_at(channels, ch1, (buf1, (head1 + 1) % physcap, count1 - 1, cap1))
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(cont(1, Some(msg))))
                             prog = true
                         else:
@@ -454,6 +469,7 @@ pub fn run(root: Task(Nil)):
                                 let msg = list.at(buf2, head2)
                                 let physcap = list.length(buf2)
                                 list.set_at(channels, ch2, (buf2, (head2 + 1) % physcap, count2 - 1, cap2))
+                                __rfc0152_wake_claim()
                                 list.set_at(slots, i, Active(cont(2, Some(msg))))
                                 prog = true
                             else:
@@ -462,6 +478,7 @@ pub fn run(root: Task(Nil)):
                                     let msg = list.at(buf3, head3)
                                     let physcap = list.length(buf3)
                                     list.set_at(channels, ch3, (buf3, (head3 + 1) % physcap, count3 - 1, cap3))
+                                    __rfc0152_wake_claim()
                                     list.set_at(slots, i, Active(cont(3, Some(msg))))
                                     prog = true
                                 else:
@@ -473,6 +490,7 @@ pub fn run(root: Task(Nil)):
                         let frame_physcap0 = list.length(frame_buf0)
                         list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
                         if step(0, Some(frame_msg0), frame):
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(done_task))
                         else:
                             list.set_at(slots, i, Wait2Frame(ch0, ch1, frame, step, done_task))
@@ -484,6 +502,7 @@ pub fn run(root: Task(Nil)):
                             let frame_physcap1 = list.length(frame_buf1)
                             list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
                             if step(1, Some(frame_msg1), frame):
+                                __rfc0152_wake_claim()
                                 list.set_at(slots, i, Active(done_task))
                             else:
                                 list.set_at(slots, i, Wait2Frame(ch0, ch1, frame, step, done_task))
@@ -498,6 +517,7 @@ pub fn run(root: Task(Nil)):
                         list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
                         var frame = frame
                         if step(0, Some(frame_msg0), frame):
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(done_fn(frame)))
                         else:
                             list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
@@ -510,6 +530,7 @@ pub fn run(root: Task(Nil)):
                             list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
                             var frame = frame
                             if step(1, Some(frame_msg1), frame):
+                                __rfc0152_wake_claim()
                                 list.set_at(slots, i, Active(done_fn(frame)))
                             else:
                                 list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
@@ -524,6 +545,7 @@ pub fn run(root: Task(Nil)):
                             let msg = list.at(buf, head)
                             let physcap = list.length(buf)
                             list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(cont(Some((k, msg)))))
                             prog = true
                         None -> unit()
@@ -533,6 +555,7 @@ pub fn run(root: Task(Nil)):
                 WaitJoin(t, cont) ->
                     match list.at(slots, t):
                         Ended ->
+                            __rfc0152_wake_claim()
                             list.set_at(slots, i, Active(cont(unit())))
                             prog = true
                         _ -> unit()
@@ -703,27 +726,42 @@ pub fn run(root: Task(Nil)):
             var j = 0
             while j < m:
                 match list.at(slots, j):
-                    WaitRecv(_ch, cont) -> list.set_at(slots, j, Active(cont(None)))
+                    WaitRecv(_ch, cont) ->
+                        __rfc0152_wake_claim()
+                        list.set_at(slots, j, Active(cont(None)))
                     WaitSend(ch, msg, cont) ->
                         let (close_buf, head, count, cap) = list.at(channels, ch)
+                        __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(unit())))
                         list.set_at(channels, ch, ring_put(close_buf, head, count, msg, cap))
-                    Wait2(_ch0, _ch1, cont) -> list.set_at(slots, j, Active(cont(0, None)))
-                    Wait3(_ch0, _ch1, _ch2, cont) -> list.set_at(slots, j, Active(cont(0, None)))
-                    Wait4(_ch0, _ch1, _ch2, _ch3, cont) -> list.set_at(slots, j, Active(cont(0, None)))
+                    Wait2(_ch0, _ch1, cont) ->
+                        __rfc0152_wake_claim()
+                        list.set_at(slots, j, Active(cont(0, None)))
+                    Wait3(_ch0, _ch1, _ch2, cont) ->
+                        __rfc0152_wake_claim()
+                        list.set_at(slots, j, Active(cont(0, None)))
+                    Wait4(_ch0, _ch1, _ch2, _ch3, cont) ->
+                        __rfc0152_wake_claim()
+                        list.set_at(slots, j, Active(cont(0, None)))
                     Wait2Frame(_ch0, _ch1, frame, step, done_task) ->
                         if step(0, None, frame):
+                            __rfc0152_wake_claim()
                             list.set_at(slots, j, Active(done_task))
                         else:
                             list.set_at(slots, j, Wait2Frame(_ch0, _ch1, frame, step, done_task))
                     Wait2FrameLoop(_ch0, _ch1, frame, step, done_fn) ->
                         var frame = frame
                         if step(0, None, frame):
+                            __rfc0152_wake_claim()
                             list.set_at(slots, j, Active(done_fn(frame)))
                         else:
                             list.set_at(slots, j, Wait2FrameLoop(_ch0, _ch1, frame, step, done_fn))
-                    WaitAny(_chs, cont) -> list.set_at(slots, j, Active(cont(None)))
-                    WaitJoin(_t, cont) -> list.set_at(slots, j, Active(cont(unit())))
+                    WaitAny(_chs, cont) ->
+                        __rfc0152_wake_claim()
+                        list.set_at(slots, j, Active(cont(None)))
+                    WaitJoin(_t, cont) ->
+                        __rfc0152_wake_claim()
+                        list.set_at(slots, j, Active(cont(unit())))
                     _ -> unit()
 
                 j = j + 1

@@ -350,6 +350,12 @@ type Selected4(m):
     Fourth4(m)
     Closed4
 
+// Private deterministic-instrumentation marker. The compiler records this only
+// in `witchy stats` builds, exactly where the ordinary adapter materializes a
+// nominal selected union. Direct local result lanes do not call it.
+fn __rfc0152_selected_materialized():
+    Nil
+
 // Receive from whichever of `a` or `b` has a message first; a tie favours `a`.
 // Yields `Closed` once both channels are closed.
 pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(Selected(m)):
@@ -397,43 +403,62 @@ fn __select2_decode(k: fn(own Selected(m)) -> Task(n), tag: Int, o: Option(__Msg
     match o:
         Some(msg) ->
             if tag == 0:
+                __rfc0152_selected_materialized()
                 k(First(__unerase(msg)))
             else:
+                __rfc0152_selected_materialized()
                 k(Second(__unerase(msg)))
-        None -> k(Closed)
+        None ->
+            __rfc0152_selected_materialized()
+            k(Closed)
 
 fn select2_result(k: Int, o: Option(__Msg)) -> Task(Selected(m)):
     match o:
         Some(msg) ->
             if k == 0:
+                __rfc0152_selected_materialized()
                 done(First(__unerase(msg)))
             else:
+                __rfc0152_selected_materialized()
                 done(Second(__unerase(msg)))
-        None -> done(Closed)
+        None ->
+            __rfc0152_selected_materialized()
+            done(Closed)
 
 fn select3_result(k: Int, o: Option(__Msg)) -> Task(Selected3(m)):
     match o:
         Some(msg) ->
             if k == 0:
+                __rfc0152_selected_materialized()
                 done(First3(__unerase(msg)))
             else if k == 1:
+                __rfc0152_selected_materialized()
                 done(Second3(__unerase(msg)))
             else:
+                __rfc0152_selected_materialized()
                 done(Third3(__unerase(msg)))
-        None -> done(Closed3)
+        None ->
+            __rfc0152_selected_materialized()
+            done(Closed3)
 
 fn select4_result(k: Int, o: Option(__Msg)) -> Task(Selected4(m)):
     match o:
         Some(msg) ->
             if k == 0:
+                __rfc0152_selected_materialized()
                 done(First4(__unerase(msg)))
             else if k == 1:
+                __rfc0152_selected_materialized()
                 done(Second4(__unerase(msg)))
             else if k == 2:
+                __rfc0152_selected_materialized()
                 done(Third4(__unerase(msg)))
             else:
+                __rfc0152_selected_materialized()
                 done(Fourth4(__unerase(msg)))
-        None -> done(Closed4)
+        None ->
+            __rfc0152_selected_materialized()
+            done(Closed4)
 
 // Compiler-owned frame-loop bridge.  Unlike `select`, this decodes the erased
 // message directly into the callback's scalar frame step, so the callback does
@@ -442,10 +467,14 @@ pub fn select2_frame_decode(tag: Int, o: Option(__Msg)) -> Selected(m):
     match o:
         Some(msg) ->
             if tag == 0:
+                __rfc0152_selected_materialized()
                 First(__unerase(msg))
             else:
+                __rfc0152_selected_materialized()
                 Second(__unerase(msg))
-        None -> Closed
+        None ->
+            __rfc0152_selected_materialized()
+            Closed
 
 // Compiler-owned scalar frame support. A locally consumed select result can
 // dispatch on the scheduler tag and this typed payload option directly, rather

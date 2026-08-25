@@ -1195,6 +1195,18 @@ impl Vm {
         self.i64_counter("__witchy_scheduler_wait_installs")
     }
 
+    /// Executed claims that resume an ordinary scheduler wait slot. A claim is
+    /// counted only after the scheduler has selected a concrete wake outcome.
+    pub fn scheduler_wake_claims(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_wake_claims")
+    }
+
+    /// Nominal `Selected*` values constructed by the ordinary select adapter.
+    /// A direct local-result lane must leave this at zero.
+    pub fn selected_result_materializations(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_selected_result_materializations")
+    }
+
     pub fn extract_searches(&mut self) -> Option<i64> {
         self.i64_counter("__witchy_extract_searches")
     }
