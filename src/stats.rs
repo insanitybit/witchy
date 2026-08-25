@@ -392,6 +392,23 @@ mod tests {
     }
 
     #[test]
+    fn sole_live_select_frame_drains_a_buffered_source_order_run() {
+        // All messages are buffered before the compiler-owned select frame is
+        // entered, and this root is the only live slot. RFC-0152 may therefore
+        // consume the ready run without interleaving another task, but it must
+        // retain first-arm priority and the same observable result.
+        const SOURCE: &str = "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(2).await\n    let (b_tx, b_rx) = chan.channel(2).await\n    chan.send(a_tx, 1).await\n    chan.send(a_tx, 2).await\n    chan.send(b_tx, 10).await\n    chan.send(b_tx, 20).await\n    var seen = 0\n    var sum = 0\n    while seen < 4:\n        let selected = chan.select(a_rx, b_rx).await\n        match selected:\n            First(value) ->\n                sum = sum * 10 + value\n                seen = seen + 1\n            Second(value) ->\n                sum = sum * 10 + value\n                seen = seen + 1\n            Closed -> fail(\"select closed before buffered values\")\n    console.print(\"seen=${seen} sum=${sum}\")\n";
+        let first = compute(SOURCE).expect("run sole-live buffered select frame");
+        let second = compute(SOURCE).expect("repeat sole-live buffered select frame");
+        assert_eq!(first.output, ["seen=4 sum=1320"]);
+        assert_eq!(first.scheduler_wait_installs, 1,
+            "the reusable frame installs once, then drains its already-ready messages: {first:?}");
+        assert_eq!(first.scheduler_wake_claims, 1,
+            "only the final completion claims a parked reusable frame: {first:?}");
+        assert_eq!(first, second, "sole-live ready draining must be deterministic");
+    }
+
+    #[test]
     fn selected_result_materialization_counter_distinguishes_the_nominal_adapter() {
         // This ordinary `select` deliberately retains its public `Selected`
         // value. A later direct local-result lane must keep the same output but
