@@ -95,6 +95,8 @@ pub enum IntrinsicId {
     CompilerDoc,
     CompilerDocResultJson,
     RegexMatchSpans,
+    RegexCount,
+    RegexReplaceAll,
     EncodingUtf8Lossy,
     EncodingHexEncode,
     EncodingHexEncodeBytes,
@@ -618,6 +620,8 @@ pub const COMPILER_DOC: &str = "compiler.doc";
 pub const COMPILER_DOC_RESULT_JSON: &str = "compiler.__doc_result_json";
 
 pub const REGEX_MATCH_SPANS: &str = "regex.match_spans";
+pub const REGEX_COUNT: &str = "regex.count";
+pub const REGEX_REPLACE_ALL: &str = "regex.replace_all";
 
 pub const ENCODING_UTF8_LOSSY: &str = "encoding.utf8_lossy";
 pub const ENCODING_HEX_ENCODE: &str = "encoding.hex_encode";
@@ -2027,6 +2031,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::RegexCount,
+        name: REGEX_COUNT,
+        arity: 2,
+        signature: IntrinsicSignature::StringStringToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["regex_count"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: REGEX_COUNT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::RegexReplaceAll,
+        name: REGEX_REPLACE_ALL,
+        arity: 3,
+        signature: IntrinsicSignature::StringStringStringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["regex_replace_all"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: REGEX_REPLACE_ALL,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::EncodingUtf8Lossy,
         name: ENCODING_UTF8_LOSSY,
         arity: 1,
@@ -3177,7 +3211,7 @@ pub const CRYPTO_OPERATIONS: &[&str] = &[
     CRYPTO_SHAKE256,
 ];
 
-pub const REGEX_OPERATIONS: &[&str] = &[REGEX_MATCH_SPANS];
+pub const REGEX_OPERATIONS: &[&str] = &[REGEX_MATCH_SPANS, REGEX_COUNT, REGEX_REPLACE_ALL];
 
 pub const STRING_OPERATIONS: &[&str] = &[
     STRING_LENGTH,
@@ -3403,7 +3437,12 @@ pub fn is_crypto_operation(name: &str) -> bool {
 }
 
 pub fn is_regex_operation(name: &str) -> bool {
-    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::RegexMatchSpans)
+    lookup(name).is_some_and(|spec| {
+        matches!(
+            spec.id,
+            IntrinsicId::RegexMatchSpans | IntrinsicId::RegexCount | IntrinsicId::RegexReplaceAll
+        )
+    })
 }
 
 pub fn is_math_operation(name: &str) -> bool {
@@ -3756,6 +3795,8 @@ mod tests {
             COMPILER_DOC,
             COMPILER_DOC_RESULT_JSON,
             REGEX_MATCH_SPANS,
+            REGEX_COUNT,
+            REGEX_REPLACE_ALL,
             ENCODING_UTF8_LOSSY,
             ENCODING_HEX_ENCODE,
             ENCODING_HEX_ENCODE_BYTES,
@@ -4057,7 +4098,7 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 1);
+        assert_eq!(actual.len(), 3);
 
         let spec = lookup(REGEX_MATCH_SPANS).expect("regex operation");
         assert_eq!(spec.arity, 2);
@@ -4069,6 +4110,16 @@ mod tests {
         assert_eq!(sole_wir_helper(spec.name), Some("regex_match_spans"));
         assert!(!spec.dynamic_wir_helpers);
         assert!(spec.wir_host_call.is_none());
+
+        let count = lookup(REGEX_COUNT).expect("regex count operation");
+        assert_eq!(count.arity, 2);
+        assert_eq!(count.signature, IntrinsicSignature::StringStringToInt);
+        assert_eq!(sole_wir_helper(count.name), Some("regex_count"));
+
+        let replace = lookup(REGEX_REPLACE_ALL).expect("regex replacement operation");
+        assert_eq!(replace.arity, 3);
+        assert_eq!(replace.signature, IntrinsicSignature::StringStringStringToString);
+        assert_eq!(sole_wir_helper(replace.name), Some("regex_replace_all"));
     }
 
     #[test]

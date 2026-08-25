@@ -567,6 +567,12 @@ impl Codegen<'_> {
                 self.uses_regex_spans = true;
                 call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
+            (intrinsics::REGEX_COUNT, 2) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
+            }
+            (intrinsics::REGEX_REPLACE_ALL, 3) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
             // Encoding transforms share one selector-based WIR helper. The catalog
             // owns both the helper and selector so codegen cannot drift from the
             // runtime host dispatch table.

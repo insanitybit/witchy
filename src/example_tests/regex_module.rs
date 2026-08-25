@@ -3,11 +3,12 @@ use crate::{codegen, interpreter, typeck};
 
     /// The `std/regex` toolkit — greedy quantifiers, escapes (`\d`/`\w`/`\s` and
     /// literal metacharacters), character classes with ranges and negation, and
-    /// the span-based API (`find`/`find_all`/`extract`/`replace_all`/`split`) —
+    /// the positional and native aggregate/rewrite API (`find`/`find_all`/
+    /// `extract`/`count`/`replace_all`/`split`) —
     /// agrees on both backends, including the `Option((Int, Int))` span payload.
     #[test]
     fn regex_module_toolkit_agrees_on_both_backends() {
-        let src = "import regex\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"h.llo\", \"say hello\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12345\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12a45\")}\")\n    console.print(\"${regex.extract(\"\\\\d+\", \"a1b22c333\")}\")\n    console.print(regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    console.print(\"${regex.split(\",\\\\s*\", \"a, b,c\")}\")\n    console.print(\"${regex.matches(\"[a-f]+\", \"deadbeef\")}\")\n    console.print(\"${regex.matches(\"^[^0-9]+$\", \"abc\")}\")\n    console.print(\"${regex.find(\"a+\", \"caat\")}\")\n    console.print(\"${regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")}\")\n    console.print(regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
+        let src = "import regex\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"h.llo\", \"say hello\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12345\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12a45\")}\")\n    console.print(\"${regex.extract(\"\\\\d+\", \"a1b22c333\")}\")\n    console.print(regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    console.print(\"${regex.split(\",\\\\s*\", \"a, b,c\")}\")\n    console.print(\"${regex.matches(\"[a-f]+\", \"deadbeef\")}\")\n    console.print(\"${regex.matches(\"^[^0-9]+$\", \"abc\")}\")\n    console.print(\"${regex.find(\"a+\", \"caat\")}\")\n    console.print(\"${regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")}\")\n    console.print(\"${regex.count(\"a+\", \"baacaa\")}\")\n    console.print(regex.replace_all(\"a+\", \"baacaa\", \"$1\"))\n    console.print(regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
         let want: Vec<String> = [
             "true",
             "true",
@@ -19,6 +20,8 @@ use crate::{codegen, interpreter, typeck};
             "true",
             "Some((1, 3))",
             "true",
+            "2",
+            "b$1c$1",
             "r#d#",
         ]
         .iter()

@@ -24,6 +24,8 @@ pub(in crate::runtime) fn link_staging(linker: &mut Linker<VmState>) -> Result<(
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "user_cap_field_len", host_user_cap_field_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
+    linker.func_wrap("witchy", "regex_count", host_regex_count)?;
+    linker.func_wrap("witchy", "regex_replace_all_len", host_regex_replace_all_len)?;
     linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
     linker.func_wrap("witchy", "string_from_code", host_string_from_code)?;
     linker.func_wrap("witchy", "encoding", host_encoding)?;
@@ -103,6 +105,47 @@ fn host_regex_match_spans_len(
     };
     let len = spans.len() as i32;
     caller.data_mut().pending = Some(spans.into_bytes());
+    Ok(len)
+}
+
+/// `regex_count(pat_ptr, text_ptr) -> Int`: count matches in the host engine
+/// without allocating, copying, and decoding the complete span list.
+fn host_regex_count(mut caller: Caller<'_, VmState>, pat_ptr: i32, text_ptr: i32) -> Result<i64> {
+    use crate::value::NativeValue as Value;
+    let mem = memory_of(&mut caller)?;
+    let pattern = read_wstr(mem.data(&caller), pat_ptr)?;
+    let text = read_wstr(mem.data(&caller), text_ptr)?;
+    let f = crate::native::lookup(intrinsics::REGEX_COUNT)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::REGEX_COUNT)))?;
+    match f(&[Value::Str(pattern), Value::Str(text)]).map_err(|e| Error::msg(e.message))? {
+        Value::Int(count) => Ok(count),
+        _ => Err(Error::msg(format!("{} did not return an Int", intrinsics::REGEX_COUNT))),
+    }
+}
+
+/// `regex_replace_all_len(pat_ptr, text_ptr, replacement_ptr) -> Int`: perform
+/// literal global replacement in the host engine and stage its String result.
+fn host_regex_replace_all_len(
+    mut caller: Caller<'_, VmState>,
+    pat_ptr: i32,
+    text_ptr: i32,
+    replacement_ptr: i32,
+) -> Result<i32> {
+    use crate::value::NativeValue as Value;
+    let mem = memory_of(&mut caller)?;
+    let pattern = read_wstr(mem.data(&caller), pat_ptr)?;
+    let text = read_wstr(mem.data(&caller), text_ptr)?;
+    let replacement = read_wstr(mem.data(&caller), replacement_ptr)?;
+    let f = crate::native::lookup(intrinsics::REGEX_REPLACE_ALL)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::REGEX_REPLACE_ALL)))?;
+    let replaced = match f(&[Value::Str(pattern), Value::Str(text), Value::Str(replacement)])
+        .map_err(|e| Error::msg(e.message))?
+    {
+        Value::Str(value) => value,
+        _ => return Err(Error::msg(format!("{} did not return a String", intrinsics::REGEX_REPLACE_ALL))),
+    };
+    let len = replaced.len() as i32;
+    caller.data_mut().pending = Some(replaced.into_bytes());
     Ok(len)
 }
 

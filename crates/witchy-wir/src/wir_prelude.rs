@@ -314,6 +314,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "now_monotonic" (func $now_monotonic_host (result i64)))
   (import "witchy" "rand_u64" (func $rand_u64_host (result i64)))
   (import "witchy" "regex_match_spans_len" (func $regex_match_spans_len_host (param i32 i32) (result i32)))
+  (import "witchy" "regex_count" (func $regex_count_host (param i32 i32) (result i64)))
+  (import "witchy" "regex_replace_all_len" (func $regex_replace_all_len_host (param i32 i32 i32) (result i32)))
   (import "witchy" "crypto.__ecdsa_p256_verify_status" (func $crypto_ecdsa_p256_verify_status (param i32 i32 i32) (result i64)))
   (import "witchy" "crypto.__ecdsa_p256_verify_hex_status" (func $crypto_ecdsa_p256_verify_hex_status (param i32 i32 i32) (result i64)))
   (import "witchy" "crypto.__rsa_pkcs1_sha256_verify_status" (func $crypto_rsa_pkcs1_sha256_verify_status (param i32 i32 i32) (result i64)))
@@ -329,11 +331,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 106;
+pub const IMPORT_COUNT: usize = 108;
 
 /// Version of the public `"witchy"` host-import contract.
-/// v9 (RFC-0106): adds the browser-omitted `crypto.__shake128`/`__shake256` XOFs.
-pub const WITCHY_ABI_VERSION: u32 = 9;
+/// v10: adds native regex counting and literal global replacement imports.
+pub const WITCHY_ABI_VERSION: u32 = 10;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -474,6 +476,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "print_float"
         | "string_from_code"
         | "regex_match_spans_len"
+        | "regex_count"
+        | "regex_replace_all_len"
         | "crypto.__ecdsa_p256_verify_status"
         | "crypto.__ecdsa_p256_verify_hex_status"
         | "crypto.__rsa_pkcs1_sha256_verify_status"
@@ -638,6 +642,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
             | "print_float"
             | "string_from_code"
             | "regex_match_spans_len"
+            | "regex_count"
+            | "regex_replace_all_len"
             | "crypto.__ecdsa_p256_verify_status"
             | "crypto.__ecdsa_p256_verify_hex_status"
             | "crypto.__rsa_pkcs1_sha256_verify_status"

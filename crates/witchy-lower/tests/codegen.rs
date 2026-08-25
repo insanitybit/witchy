@@ -91,7 +91,7 @@ mod tests {
             intrinsics::DICT_OPERATIONS,
             intrinsics::CRYPTO_OPERATIONS,
             intrinsics::SECRETSTORE_OPERATIONS,
-            &[intrinsics::REGEX_MATCH_SPANS],
+            intrinsics::REGEX_OPERATIONS,
         ] {
             assert_catalog_names_live_wir_helpers(operations);
         }
@@ -125,9 +125,13 @@ mod tests {
             );
         }
 
-        let helper = intrinsics::sole_wir_helper(intrinsics::REGEX_MATCH_SPANS)
-            .expect("regex operation has one WIR helper");
-        assert_eq!(helper, "regex_match_spans");
+        for (name, helper) in [
+            (intrinsics::REGEX_MATCH_SPANS, "regex_match_spans"),
+            (intrinsics::REGEX_COUNT, "regex_count"),
+            (intrinsics::REGEX_REPLACE_ALL, "regex_replace_all"),
+        ] {
+            assert_eq!(intrinsics::sole_wir_helper(name), Some(helper));
+        }
 
         for name in intrinsics::SECRETSTORE_OPERATIONS {
             let helper = intrinsics::sole_wir_helper(name)

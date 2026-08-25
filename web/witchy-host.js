@@ -728,6 +728,16 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
   // the lib's exports — reusing the real Rust regex/sha2 path, byte-for-byte.
   let pending = new Uint8Array(0); // staged by `regex_match_spans_len`, drained by `fill_pending`
   let pendingList = null;
+  const regexSpans = (patPtr, textPtr) => {
+    const p = readWstr(patPtr), t = readWstr(textPtr);
+    const pp = toLib(p), tp = toLib(t);
+    const res = wasm.witchy_regex(pp, p.length, tp, t.length);
+    wasm.witchy_free(pp, p.length || 1);
+    wasm.witchy_free(tp, t.length || 1);
+    const bytes = takeLibBytes(res);
+    if (bytes[0] === 0x1f) throw new Error(dec.decode(bytes.slice(1)));
+    return dec.decode(bytes);
+  };
   const args = Array.isArray(opts.args) ? opts.args.map(String) : [];
   const hashOp = (op) => (inPtr, outPtr) => {
     const input = readWstr(inPtr);
@@ -785,15 +795,28 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
     "crypto.__ecdsa_p256_verify_hex_status": verifyOp(2),
     "crypto.__rsa_pkcs1_sha256_verify_status": () => -4n,
     regex_match_spans_len(patPtr, textPtr) {
-      const p = readWstr(patPtr), t = readWstr(textPtr);
-      const pp = toLib(p), tp = toLib(t);
-      const res = wasm.witchy_regex(pp, p.length, tp, t.length);
-      wasm.witchy_free(pp, p.length || 1);
-      wasm.witchy_free(tp, t.length || 1);
-      pending = takeLibBytes(res);
-      if (pending[0] === 0x1f) {
-        throw new Error(dec.decode(pending.slice(1)));
+      pending = new TextEncoder().encode(regexSpans(patPtr, textPtr));
+      return pending.length;
+    },
+    regex_count(patPtr, textPtr) {
+      const spans = regexSpans(patPtr, textPtr);
+      return BigInt(spans === "" ? 0 : spans.split(";").length);
+    },
+    regex_replace_all_len(patPtr, textPtr, replacementPtr) {
+      const text = readWstrText(textPtr), replacement = readWstrText(replacementPtr);
+      const spans = regexSpans(patPtr, textPtr);
+      if (spans === "") {
+        pending = new TextEncoder().encode(text);
+        return pending.length;
       }
+      const chars = [...text];
+      let out = "", previous = 0;
+      for (const pair of spans.split(";")) {
+        const [start, end] = pair.split(",").map(Number);
+        out += chars.slice(previous, start).join("") + replacement;
+        previous = end;
+      }
+      pending = new TextEncoder().encode(out + chars.slice(previous).join(""));
       return pending.length;
     },
     fill_pending(outPtr) {

@@ -1058,6 +1058,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "regex_count" => Some(WirHelperSpec {
+            func: host_call_helper_ret("regex_count", "regex_count", 2, WirTy::Int),
+            helper_deps: &[],
+            import_deps: &["regex_count"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "regex_replace_all" => Some(WirHelperSpec {
+            func: staged_string_helper("regex_replace_all", &["pattern", "text", "replacement"], "regex_replace_all_len"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["regex_replace_all_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "dir_read" => Some(WirHelperSpec {
             func: dir_read_helper(),
             helper_deps: &["rc_alloc"],

@@ -34,7 +34,7 @@ fn main(let console: Console, let clock: Clock):
     var vi = 0
     while vi < 9:
         let v = variants[vi]
-        let c = list.length(regex.find_all(v, text))
+        let c = regex.count(v, text)
         console.print("${v} ${c}")
         vi = vi + 1
 

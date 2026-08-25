@@ -106,6 +106,8 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         intrinsics::ENCODING_BASE64URL_DECODE_BYTES_RAW => Some(encoding::base64url_decode_bytes_raw),
         intrinsics::ENCODING_BASE64URL_TO_HEX_LOSSY => Some(encoding::base64url_to_hex_lossy),
         intrinsics::REGEX_MATCH_SPANS => Some(regexp::match_spans),
+        intrinsics::REGEX_COUNT => Some(regexp::count),
+        intrinsics::REGEX_REPLACE_ALL => Some(regexp::replace_all),
         intrinsics::STRING_FROM_CODE => Some(string::from_code),
         _ => None,
     }
@@ -826,11 +828,11 @@ mod encoding {
 
 /// The `regex` module's engine: the Rust `regex` crate (RE2 semantics — linear
 /// time, full alternation `|` and grouping `(...)`). This single native carries
-/// the matching; the whole public `std/regex` API (matches/find/find_all/extract/
-/// replace_all/split) is built in witchy on the spans it returns. Positions are
-/// CHARACTER indices (witchy strings are char-indexed), converted from the
-/// crate's byte offsets, so they feed `string.substring` directly. An invalid
-/// pattern is a loud error on every backend, not a silent non-match.
+/// matching. Positional operations use encoded spans; count and literal global
+/// replacement stay native to avoid materializing spans or output fragments.
+/// Positions are CHARACTER indices (witchy strings are char-indexed), converted
+/// from the crate's byte offsets, so they feed `string.substring` directly. An
+/// invalid pattern is a loud error on every backend, not a silent non-match.
 mod regexp {
     use super::{intrinsics, type_error, Value};
     use crate::value::NativeError as RuntimeError;
@@ -874,6 +876,36 @@ mod regexp {
             let _ = write!(out, "{s_char},{e_char}");
         }
         Ok(Value::Str(out))
+    }
+
+    /// Count non-overlapping matches without serializing their spans through the
+    /// Wasm boundary. This is the common predicate/aggregation case.
+    pub fn count(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(pattern), Value::Str(text)] = args else {
+            return Err(type_error(format!(
+                "{} expects (pattern, text) strings",
+                intrinsics::REGEX_COUNT
+            )));
+        };
+        let re = regex::Regex::new(pattern).map_err(|e| RuntimeError {
+            message: format!("invalid regex pattern `{pattern}`: {e}"),
+        })?;
+        Ok(Value::Int(re.find_iter(text).count() as i64))
+    }
+
+    /// Literal global replacement in one native operation. `NoExpand` is
+    /// required: Witchy's replacement contract does not expand `$1` captures.
+    pub fn replace_all(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(pattern), Value::Str(text), Value::Str(replacement)] = args else {
+            return Err(type_error(format!(
+                "{} expects (pattern, text, replacement) strings",
+                intrinsics::REGEX_REPLACE_ALL
+            )));
+        };
+        let re = regex::Regex::new(pattern).map_err(|e| RuntimeError {
+            message: format!("invalid regex pattern `{pattern}`: {e}"),
+        })?;
+        Ok(Value::Str(re.replace_all(text, regex::NoExpand(replacement)).into_owned()))
     }
 }
 
@@ -946,6 +978,24 @@ mod intrinsic_catalog_tests {
             error.message.contains("invalid regex pattern"),
             "{}",
             error.message
+        );
+
+        let count = super::lookup(intrinsics::REGEX_COUNT).expect("cataloged regex count hook");
+        assert_eq!(
+            count(&[Value::Str("a+".into()), Value::Str("baacaa".into())])
+                .expect("valid regex count"),
+            Value::Int(2)
+        );
+        let replace = super::lookup(intrinsics::REGEX_REPLACE_ALL)
+            .expect("cataloged regex replacement hook");
+        assert_eq!(
+            replace(&[
+                Value::Str("a+".into()),
+                Value::Str("baacaa".into()),
+                Value::Str("$1".into()),
+            ])
+            .expect("valid literal replacement"),
+            Value::Str("b$1c$1".into())
         );
     }
 

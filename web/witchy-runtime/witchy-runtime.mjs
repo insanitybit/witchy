@@ -23,7 +23,7 @@
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured non-authority import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
-export const WITCHY_ABI_VERSION = 9;
+export const WITCHY_ABI_VERSION = 10;
 
 // Exact deny-by-omission surface implemented below. The Rust ABI catalog test
 // compares this list with `wir_prelude` and `instantiate` compares it with the
@@ -50,7 +50,9 @@ export const WITCHY_BROWSER_IMPORTS = Object.freeze([
   "print",
   "print_float",
   "print_int",
+  "regex_count",
   "regex_match_spans_len",
+  "regex_replace_all_len",
   "string_from_code",
   "user_cap_field_len",
   "write_pending_list",
@@ -1999,8 +2001,30 @@ export async function instantiate(wasmBytes, opts = {}) {
       return writeAt(encodingOp(op, readWstr(inPtr)), outPtr);
     },
     regex_match_spans_len(patPtr, textPtr) {
+        const spans = matchSpans(readWstrText(patPtr), readWstrText(textPtr));
+        pending = utf8.encode(spans);
+        return pending.length;
+    },
+    regex_count(patPtr, textPtr) {
       const spans = matchSpans(readWstrText(patPtr), readWstrText(textPtr));
-      pending = utf8.encode(spans);
+      return BigInt(spans === "" ? 0 : spans.split(";").length);
+    },
+    regex_replace_all_len(patPtr, textPtr, replacementPtr) {
+      const text = readWstrText(textPtr);
+      const replacement = readWstrText(replacementPtr);
+      const spans = matchSpans(readWstrText(patPtr), text);
+      if (spans === "") {
+        pending = utf8.encode(text);
+        return pending.length;
+      }
+      const chars = [...text];
+      let out = "", previous = 0;
+      for (const pair of spans.split(";")) {
+        const [start, end] = pair.split(",").map(Number);
+        out += chars.slice(previous, start).join("") + replacement;
+        previous = end;
+      }
+      pending = utf8.encode(out + chars.slice(previous).join(""));
       return pending.length;
     },
 

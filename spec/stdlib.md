@@ -3456,11 +3456,15 @@ Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each suppor
 
 ## `regex`
 
-Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` - and a loud error, not a silent non-match, on an invalid pattern. The engine itself is the native `match_spans`, which returns the character spans of every match; the whole public API here is built on those spans in plain witchy, so it runs the same on the interpreter and the compiled backend. Positions are character indices.
+Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` - and a loud error, not a silent non-match, on an invalid pattern. The native engine powers positional spans plus count and literal global replacement; the remaining public API is built from spans in plain witchy. Positions are character indices.
 
 #### `fn matches(pattern: String, text: String) -> Bool`
 
 True if `pattern` matches anywhere in `text`.
+
+#### `fn count(pattern: String, text: String) -> Int`
+
+Number of non-overlapping matches. This is native so callers that only need a count do not materialize and decode every span.
 
 #### `fn find(pattern: String, text: String) -> Option((Int, Int))`
 
@@ -3476,7 +3480,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 #### `fn replace_all(pattern: String, text: String, replacement: String) -> String`
 
-`text` with every match replaced (the replacement is literal - no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b".
+`text` with every match replaced (the replacement is literal - no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b". Native to avoid routing every span and output fragment through guest memory.
 
 #### `fn split(pattern: String, text: String) -> List(String)`
 

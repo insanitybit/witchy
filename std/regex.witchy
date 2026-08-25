@@ -1,9 +1,8 @@
 // Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear
 // time, with full alternation `a|b` and grouping `(...)` - and a loud error, not
-// a silent non-match, on an invalid pattern. The engine itself is the native
-// `match_spans`, which returns the character spans of every match; the whole
-// public API here is built on those spans in plain witchy, so it runs the same
-// on the interpreter and the compiled backend. Positions are character indices.
+// a silent non-match, on an invalid pattern. The native engine powers positional
+// spans plus count and literal global replacement; the remaining public API is
+// built from spans in plain witchy. Positions are character indices.
 
 import bytes
 
@@ -17,6 +16,13 @@ fn match_spans(pattern: String, text: String) -> String:
 // True if `pattern` matches anywhere in `text`.
 pub fn matches(pattern: String, text: String) -> Bool:
     !match_spans(pattern, text).is_empty()
+
+// Number of non-overlapping matches. This is native so callers that only need a
+// count do not materialize and decode every span.
+pub fn count(pattern: String, text: String) -> Int:
+    pattern
+    text
+    0
 
 // The leftmost match as a (start, end) character span - end exclusive - or None.
 pub fn find(pattern: String, text: String) -> Option((Int, Int)):
@@ -67,19 +73,13 @@ pub fn extract(pattern: String, text: String) -> List(String):
     out
 
 // `text` with every match replaced (the replacement is literal - no `$1` group
-// expansion): replace_all("\\s+", "a  b", "-") is "a-b".
+// expansion): replace_all("\\s+", "a  b", "-") is "a-b". Native to avoid
+// routing every span and output fragment through guest memory.
 pub fn replace_all(pattern: String, text: String, replacement: String) -> String:
-    let spans = find_all(pattern, text)
-    if list.length(spans) == 0:
-        return text
-    var out = ""
-    var prev = 0
-    for span in spans:
-        let (s, e) = span
-        out = out + text.substring(prev, s)
-        out = out + replacement
-        prev = e
-    out + text.drop(prev)
+    pattern
+    text
+    replacement
+    ""
 
 // `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 pub fn split(pattern: String, text: String) -> List(String):

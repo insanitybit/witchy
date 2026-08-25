@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **9**. The JavaScript host pins it as
+The current ABI version is **10**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -37,6 +37,8 @@ artifact's canonical `witchy.layouts` bundle before selecting an adapter. All
 version-8 production imports declare an empty accepted set and therefore reject
 specialized structured values until their real adapters land. Earlier
 pre-release import counts were not separately published ABI versions.
+Version 10 adds native regex match counting and literal global replacement so
+the common aggregate and rewrite operations avoid span serialization.
 
 ## Import inclusion is tree-shaken
 
@@ -261,6 +263,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `now_monotonic` | `() -> i64` | capability authority | Clock | omitted |
 | `rand_u64` | `() -> i64` | capability authority | Rand | omitted |
 | `regex_match_spans_len` | `(i32, i32) -> i32` | non-authority infrastructure | none | provided |
+| `regex_count` | `(i32, i32) -> i64` | non-authority infrastructure | none | provided |
+| `regex_replace_all_len` | `(i32, i32, i32) -> i32` | non-authority infrastructure | none | provided |
 | `crypto.__ecdsa_p256_verify_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
 | `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
 | `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
