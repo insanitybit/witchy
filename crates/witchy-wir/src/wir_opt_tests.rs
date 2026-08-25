@@ -1827,3 +1827,74 @@
         assert!(matches!(rhs.as_ref(), WirExpr::ConstI64(7)));
     }
 
+    #[test]
+    fn specializes_function_by_constant_arguments_and_shares_clones() {
+        use crate::wir::{BinOp, Kind};
+
+        let helper = WirFunc {
+            name: "multiply_add".into(),
+            params: vec![
+                WirLocal { name: "factor".into(), ty: WirTy::Int },
+                WirLocal { name: "x".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Binary {
+                op: BinOp::Mul,
+                kind: Kind::I64,
+                lhs: Box::new(WirExpr::GetLocal("factor".into())),
+                rhs: Box::new(WirExpr::GetLocal("x".into())),
+            })],
+            raw_body: None,
+        };
+
+        let caller = WirFunc {
+            name: "caller".into(),
+            params: vec![WirLocal { name: "a".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![
+                // First call with constant factor 7
+                WirNode::Push(WirExpr::Call {
+                    func: "multiply_add".into(),
+                    args: vec![WirExpr::ConstI64(7), WirExpr::GetLocal("a".into())],
+                }),
+                // Second call also with constant factor 7 (should share clone)
+                WirNode::Push(WirExpr::Call {
+                    func: "multiply_add".into(),
+                    args: vec![WirExpr::ConstI64(7), WirExpr::ConstI64(10)],
+                }),
+                // Third call with constant factor 7 and variable a (should share same clone)
+                WirNode::Push(WirExpr::Call {
+                    func: "multiply_add".into(),
+                    args: vec![WirExpr::ConstI64(7), WirExpr::GetLocal("a".into())],
+                }),
+            ],
+            raw_body: None,
+        };
+
+        let mut module = module_with(helper);
+        module.funcs.push(caller);
+
+        crate::wir_opt::specialize_by_call_site_facts(&mut module);
+
+        // Exactly one specialized clone was created (multiply_add_spec_1)
+        assert_eq!(module.funcs.len(), 3);
+        let spec_func = &module.funcs[2];
+        assert_eq!(spec_func.name, "multiply_add_spec_1");
+
+        // The caller function's calls to multiply_add with const 7 were redirected to multiply_add_spec_1
+        let caller_func = &module.funcs[1];
+        match &caller_func.body[0] {
+            WirNode::Push(WirExpr::Call { func, .. }) => {
+                assert_eq!(func, "multiply_add_spec_1");
+            }
+            _ => panic!("expected Call in caller node 0"),
+        }
+        match &caller_func.body[2] {
+            WirNode::Push(WirExpr::Call { func, .. }) => {
+                assert_eq!(func, "multiply_add_spec_1");
+            }
+            _ => panic!("expected Call in caller node 2"),
+        }
+    }

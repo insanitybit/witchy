@@ -46,6 +46,8 @@ mod recursive_inline;
 pub use recursive_inline::inline_recursive_calls;
 mod inline;
 pub use inline::inline_direct_calls;
+pub mod specialize;
+pub use specialize::specialize_by_call_site_facts;
 
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq};
 
