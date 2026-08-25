@@ -3,9 +3,9 @@
 use witchy::stats;
 use witchy_syntax::opt::{self, Opt, OptSet};
 
-const FIXTURE: &str = include_str!("rfc0122/telemetry_reference_list.witchy");
-const RETURN_FIXTURE: &str = include_str!("rfc0122/telemetry_reference_return.witchy");
-const PRECISION_ARTIFACT: &str = include_str!("rfc0122/telemetry_precision.expected");
+const FIXTURE: &str = include_str!("telemetry_reference_list.witchy");
+const RETURN_FIXTURE: &str = include_str!("telemetry_reference_return.witchy");
+const PRECISION_ARTIFACT: &str = include_str!("telemetry_precision.expected");
 
 #[test]
 fn aggregate_reference_timing_reports_checker_and_execution_samples() {

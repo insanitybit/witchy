@@ -9,7 +9,7 @@ use witchy_syntax::format::migrate_references;
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
-#[path = "support/temp_dir.rs"]
+#[path = "../support/temp_dir.rs"]
 mod temp_dir;
 use temp_dir::TempDir;
 

@@ -104,3 +104,46 @@ fn stage_crates_follow_the_declared_dependency_dag() {
         );
     }
 }
+
+/// Every `tests/*.rs` file in the root package is a separately linked test
+/// binary that nextest must also discover. Discovery is not free: a measured
+/// full gate spent 240s before the first test ran -- 119s compiling and ~121s
+/// discovering 50 binaries, roughly 2.4s each -- against 554s of actual test
+/// execution. That is why the architecture ledger keeps the consolidated
+/// driver pattern (`tests/misc.rs` + `tests/misc/`) as a KEEP decision.
+///
+/// The decision was previously enforced only by review, and drifted: an
+/// earlier consolidation reached 43 binaries and the count grew back to 50 as
+/// new RFC suites each arrived as their own top-level file. This budget is the
+/// enforcement the ledger row lacked.
+///
+/// Adding a genuinely independent suite is fine -- raise the budget and say
+/// why in the commit. What this catches is the unthinking default of one new
+/// top-level file per RFC, which costs every gate for every branch.
+#[test]
+fn root_integration_test_binaries_stay_within_budget() {
+    const BUDGET: usize = 24;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut drivers: Vec<String> = std::fs::read_dir(&root)
+        .expect("read tests/")
+        .filter_map(|entry| {
+            let path = entry.expect("read tests/ entry").path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                path.file_name().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    drivers.sort();
+
+    assert!(
+        drivers.len() <= BUDGET,
+        "{} top-level test binaries exceeds the budget of {BUDGET}. Each one costs \
+         a link plus ~2.4s of nextest discovery on every gate. Fold the new suite \
+         into an existing driver (see tests/misc.rs for the `#[path]` pattern) or \
+         raise BUDGET deliberately.\nbinaries: {drivers:#?}",
+        drivers.len(),
+    );
+}
