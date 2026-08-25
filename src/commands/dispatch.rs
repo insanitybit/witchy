@@ -204,6 +204,18 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                     s.scheduler_reusable_wait_installs
                 );
                 println!(
+                    "scheduler_frame_live_wait_registrations {}",
+                    s.scheduler_frame_live_wait_registrations
+                );
+                println!(
+                    "scheduler_frame_peak_live_wait_registrations {}",
+                    s.scheduler_frame_peak_live_wait_registrations
+                );
+                println!(
+                    "scheduler_frame_wait_registration_rearms {}",
+                    s.scheduler_frame_wait_registration_rearms
+                );
+                println!(
                     "selected_result_materializations {}",
                     s.selected_result_materializations
                 );

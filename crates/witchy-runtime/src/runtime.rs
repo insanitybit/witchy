@@ -1212,6 +1212,26 @@ impl Vm {
         self.i64_counter("__witchy_scheduler_reusable_wait_installs")
     }
 
+    /// Live compiler-owned frame registrations at program completion, keyed by
+    /// `task.run` slot. A cleanly completed bounded scheduler run leaves this
+    /// at zero.
+    pub fn scheduler_frame_live_wait_registrations(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_frame_live_wait_registrations")
+    }
+
+    /// Exact high-water number of parked compiler-owned `task.run` frame
+    /// slots. Re-arming a wait in the same slot does not increase this number.
+    pub fn scheduler_frame_peak_live_wait_registrations(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_frame_peak_live_wait_registrations")
+    }
+
+    /// Compiler-frame wait-to-wait slot retags, which retain the same
+    /// scheduler-slot registration identity rather than installing another
+    /// live registration.
+    pub fn scheduler_frame_wait_registration_rearms(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_scheduler_frame_wait_registration_rearms")
+    }
+
     /// Nominal `Selected*` values constructed by the ordinary select adapter.
     /// A direct local-result lane must leave this at zero.
     pub fn selected_result_materializations(&mut self) -> Option<i64> {

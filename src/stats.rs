@@ -84,6 +84,16 @@ pub struct Stats {
     pub scheduler_wake_claims: i64,
     /// One-time installations of compiler-owned reusable select wait frames.
     pub scheduler_reusable_wait_installs: i64,
+    /// Live compiler-owned frame wait registrations at program completion.
+    /// This is zero for a completed bounded run; a `task.run` slot is the
+    /// registration identity.
+    pub scheduler_frame_live_wait_registrations: i64,
+    /// High-water compiler-owned frame wait registrations. Re-arming a parked
+    /// slot does not increase the value.
+    pub scheduler_frame_peak_live_wait_registrations: i64,
+    /// Compiler-frame wait-to-wait slot retags that preserve a registration
+    /// identity.
+    pub scheduler_frame_wait_registration_rearms: i64,
     /// Nominal `Selected*` values constructed at a select escape boundary.
     /// Non-escaping direct result lanes must leave this at zero.
     pub selected_result_materializations: i64,
@@ -217,6 +227,15 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         scheduler_wait_installs: vm.scheduler_wait_installs().unwrap_or(0),
         scheduler_wake_claims: vm.scheduler_wake_claims().unwrap_or(0),
         scheduler_reusable_wait_installs: vm.scheduler_reusable_wait_installs().unwrap_or(0),
+        scheduler_frame_live_wait_registrations: vm
+            .scheduler_frame_live_wait_registrations()
+            .unwrap_or(0),
+        scheduler_frame_peak_live_wait_registrations: vm
+            .scheduler_frame_peak_live_wait_registrations()
+            .unwrap_or(0),
+        scheduler_frame_wait_registration_rearms: vm
+            .scheduler_frame_wait_registration_rearms()
+            .unwrap_or(0),
         selected_result_materializations: vm.selected_result_materializations().unwrap_or(0),
         extract_searches: vm.extract_searches().unwrap_or(0),
         extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
@@ -313,6 +332,9 @@ mod tests {
         assert_eq!(stats.scheduler_wait_installs, 0);
         assert_eq!(stats.scheduler_wake_claims, 0);
         assert_eq!(stats.scheduler_reusable_wait_installs, 0);
+        assert_eq!(stats.scheduler_frame_live_wait_registrations, 0);
+        assert_eq!(stats.scheduler_frame_peak_live_wait_registrations, 0);
+        assert_eq!(stats.scheduler_frame_wait_registration_rearms, 0);
         assert_eq!(stats.selected_result_materializations, 0);
         assert_eq!(stats.loan_active_points, 0);
         assert_eq!(stats.loan_active_events, 0);
@@ -359,6 +381,15 @@ mod tests {
             first.scheduler_wake_claims > 0,
             "the close pass must claim the blocked sender exactly once: {first:?}"
         );
+        assert!(
+            first.scheduler_frame_peak_live_wait_registrations == 0,
+            "ordinary sender waits are intentionally outside frame registration telemetry: {first:?}"
+        );
+        assert_eq!(
+            first.scheduler_frame_live_wait_registrations, 0,
+            "completion must remove every live compiler-owned frame registration: {first:?}"
+        );
+        assert_eq!(first.output, interp(SOURCE), "Wasm counters must not change scheduler output");
         assert_eq!(first, second, "scheduler instrumentation must be deterministic");
     }
 
@@ -371,6 +402,11 @@ mod tests {
             stats.scheduler_wait_installs > stats.scheduler_reusable_wait_installs,
             "cumulative ordinary wait retags must remain distinct from the one reusable frame"
         );
+        assert_eq!(
+            stats.scheduler_frame_wait_registration_rearms, 0,
+            "this one-shot fixture must not be mistaken for a frame re-arm: {stats:?}"
+        );
+        assert_eq!(stats.scheduler_frame_live_wait_registrations, 0);
     }
 
     #[test]
@@ -406,6 +442,29 @@ mod tests {
         assert_eq!(first.scheduler_wake_claims, 1,
             "only the final completion claims a parked reusable frame: {first:?}");
         assert_eq!(first, second, "sole-live ready draining must be deterministic");
+    }
+
+    #[test]
+    fn compiler_frame_registration_is_bounded_through_cancel_and_close() {
+        // This is the reusable select-frame cancellation/close contract, but
+        // measured here at its representation seam.  The frame may be re-armed
+        // after consuming the buffered value; it must retain the same slot
+        // identity and never create a second live frame registration.
+        const SOURCE: &str = "mode opt\n\nfrom chan import Sender\n\nasync fn producer(tx: Sender(Int)):\n    chan.send(tx, 7).await\n    chan.yield_now().await\n    chan.send(tx, 9).await\n\nasync fn main(console: Console):\n    let (tx, a) = chan.channel(1).await\n    let (_unused, b) = chan.channel(1).await\n    let worker = chan.spawn(producer(tx)).await\n    chan.yield_now().await\n    chan.cancel(worker).await\n\n    var seen = 0\n    var sum = 0\n    var closed = false\n    while !closed:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(value) ->\n                seen = seen + 1\n                sum = sum + value\n            Second(_value) -> fail(\"unexpected second receiver\")\n            Closed -> closed = true\n    console.print(\"seen=${seen} sum=${sum} closed=${closed}\")\n";
+        let first = compute(SOURCE).expect("run cancel/close frame registration fixture");
+        let second = compute(SOURCE).expect("repeat cancel/close frame registration fixture");
+        assert_eq!(first.output, ["seen=1 sum=7 closed=true"]);
+        assert_eq!(first.output, interp(SOURCE), "counter instrumentation must preserve parity");
+        assert_eq!(first.scheduler_frame_live_wait_registrations, 0, "completed frame must unregister");
+        assert_eq!(
+            first.scheduler_frame_peak_live_wait_registrations, 1,
+            "one select site must install exactly one live frame registration: {first:?}"
+        );
+        assert!(
+            first.scheduler_frame_wait_registration_rearms > 0,
+            "the close continuation must re-arm the same frame registration: {first:?}"
+        );
+        assert_eq!(first, second, "frame registration counters must be deterministic");
     }
 
     #[test]

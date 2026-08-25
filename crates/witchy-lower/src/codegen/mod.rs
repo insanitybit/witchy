@@ -7385,6 +7385,13 @@ impl<'types> Codegen<'types> {
         if layout_id != struct_id || layout.field_types.len() != args.len() {
             return None;
         }
+        // Compiler-owned `*Frame*` wait states share a stable `slots` table.
+        // The table index is their registration identity: retagging a parked
+        // frame slot to another compiler frame re-arms that same registration,
+        // while crossing between a frame wait and another slot state installs
+        // or removes it. Keep this entirely in the deterministic stats build;
+        // normal scheduler artifacts remain the same in-place `StructSet`s.
+        let frame_wait_slot_tags = self.task_frame_wait_slot_tags(&layout.owner_key);
         let fields = self.gc_structs.get(struct_id as usize)?.fields.clone();
         let level = self.assign_level;
         if level >= APPLY_POOL {
@@ -7463,6 +7470,21 @@ impl<'types> Codegen<'types> {
                 },
             },
         ]);
+        // Read the old tag before the first `StructSet` mutates this confined
+        // slot in place.  Afterwards `item` has the replacement tag and no
+        // longer identifies whether this was an install, removal, or re-arm.
+        if deterministic_sequence_counters_enabled() {
+            nodes.push(Self::increment_counter("__witchy_scheduler_slot_transitions"));
+            if task_wait_slot_ctor(name) {
+                nodes.push(Self::increment_counter("__witchy_scheduler_wait_installs"));
+            }
+            nodes.extend(Self::scheduler_wait_registration_nodes(
+                struct_id,
+                &item,
+                &frame_wait_slot_tags,
+                task_frame_wait_slot_ctor(name),
+            ));
+        }
         nodes.extend(fields.into_iter().enumerate().map(|(field, _)| N::StructSet {
             struct_id,
             field: field as u32,
@@ -7474,13 +7496,109 @@ impl<'types> Codegen<'types> {
         // fields have been evaluated and the bounds check has succeeded.  This
         // is instrumentation for `witchy stats` only; normal artifacts retain
         // the allocation-free slot-reuse path unchanged.
-        if deterministic_sequence_counters_enabled() {
-            nodes.push(Self::increment_counter("__witchy_scheduler_slot_transitions"));
-            if task_wait_slot_ctor(name) {
-                nodes.push(Self::increment_counter("__witchy_scheduler_wait_installs"));
-            }
-        }
         Some(nodes)
+    }
+
+    /// The compiler-owned frame-wait tags for one scheduler `Slot` sum.
+    ///
+    /// This deliberately derives the tags from the finalized GC layout rather
+    /// than relying on declaration order. A new compiler-owned `Wait*Frame*`
+    /// constructor therefore cannot silently escape the bounded-frame census.
+    fn task_frame_wait_slot_tags(&self, owner_key: &str) -> Vec<u32> {
+        let mut tags = self
+            .gc_ctor_layouts
+            .iter()
+            .filter_map(|((_owner, ctor), layout)| {
+                (layout.owner_key == owner_key && task_frame_wait_slot_ctor(ctor))
+                    .then_some(layout.tag)
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        tags.sort_unstable();
+        tags.dedup();
+        tags
+    }
+
+    /// Instrument compiler-owned frame registration state. A frame-wait to
+    /// frame-wait retag is an identity-preserving re-arm, not a second live
+    /// registration. This is exact for `task.run` frame slots; it deliberately
+    /// excludes ordinary `WaitRecv`/`WaitSend`/`Wait*` scheduler state.
+    fn scheduler_wait_registration_nodes(
+        struct_id: u32,
+        item: &str,
+        wait_slot_tags: &[u32],
+        new_is_wait: bool,
+    ) -> witchy_wir::wir::WirSeq {
+        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N};
+        if wait_slot_tags.is_empty() {
+            return Vec::new();
+        }
+        let old_wait = wait_slot_tags.iter().copied().map(|tag| W::Binary {
+            op: BinOp::Eq,
+            kind: WK::I32,
+            lhs: Box::new(W::StructGet {
+                struct_id,
+                field: 0,
+                base: Box::new(W::GetLocal(item.to_string())),
+            }),
+            rhs: Box::new(W::ConstI32(tag as i32)),
+        }).reduce(|lhs, rhs| W::Binary {
+            op: BinOp::Or,
+            kind: WK::I32,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        }).expect("nonempty wait tags");
+        let live = "__witchy_scheduler_frame_live_wait_registrations";
+        let peak = "__witchy_scheduler_frame_peak_live_wait_registrations";
+        let update_peak = N::If {
+            cond: W::Binary {
+                op: BinOp::Gt,
+                kind: WK::I64,
+                lhs: Box::new(W::GetGlobal(live.into())),
+                rhs: Box::new(W::GetGlobal(peak.into())),
+            },
+            then_: vec![N::SetGlobal {
+                global: peak.into(),
+                value: W::GetGlobal(live.into()),
+            }],
+            els: vec![],
+            result: None,
+        };
+        let add_live = N::SetGlobal {
+            global: live.into(),
+            value: W::Binary {
+                op: BinOp::Add,
+                kind: WK::I64,
+                lhs: Box::new(W::GetGlobal(live.into())),
+                rhs: Box::new(W::ConstI64(1)),
+            },
+        };
+        let remove_live = N::SetGlobal {
+            global: live.into(),
+            value: W::Binary {
+                op: BinOp::Sub,
+                kind: WK::I64,
+                lhs: Box::new(W::GetGlobal(live.into())),
+                rhs: Box::new(W::ConstI64(1)),
+            },
+        };
+        if new_is_wait {
+            vec![N::If {
+                cond: old_wait,
+                then_: vec![Self::increment_counter(
+                    "__witchy_scheduler_frame_wait_registration_rearms",
+                )],
+                els: vec![add_live, update_peak],
+                result: None,
+            }]
+        } else {
+            vec![N::If {
+                cond: old_wait,
+                then_: vec![remove_live],
+                els: vec![],
+                result: None,
+            }]
+        }
     }
 
     fn lower_gc_function_list_concat(
@@ -11087,9 +11205,26 @@ fn task_wait_slot_ctor(name: &str) -> bool {
             | Some("Wait3")
             | Some("Wait4")
             | Some("Wait2Frame")
+            | Some("WaitFrameLoop")
             | Some("Wait2FrameLoop")
+            | Some("Wait3FrameLoop")
+            | Some("Wait4FrameLoop")
             | Some("WaitAny")
             | Some("WaitJoin")
+    )
+}
+
+/// The compiler-owned frame states covered by RFC-0152's bounded-registration
+/// criterion. Ordinary scheduler waits are intentionally outside this counter:
+/// they need a separate lifetime ABI rather than a misleading shared number.
+fn task_frame_wait_slot_ctor(name: &str) -> bool {
+    matches!(
+        name.rsplit('.').next(),
+        Some("Wait2Frame")
+            | Some("WaitFrameLoop")
+            | Some("Wait2FrameLoop")
+            | Some("Wait3FrameLoop")
+            | Some("Wait4FrameLoop")
     )
 }
 

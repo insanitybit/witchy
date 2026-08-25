@@ -6050,6 +6050,9 @@ fn assemble_wir_module_with_structs_mode(
                     "__witchy_scheduler_wait_installs",
                     "__witchy_scheduler_wake_claims",
                     "__witchy_scheduler_reusable_wait_installs",
+                    "__witchy_scheduler_frame_live_wait_registrations",
+                    "__witchy_scheduler_frame_peak_live_wait_registrations",
+                    "__witchy_scheduler_frame_wait_registration_rearms",
                     "__witchy_selected_result_materializations",
                 ] {
                     pruned_globals.push(WirGlobal {

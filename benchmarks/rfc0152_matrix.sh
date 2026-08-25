@@ -44,6 +44,8 @@ COUNTERS=(
     rc_alloc_calls rc_alloc_requested_bytes bump_alloc_calls rc_reuse_calls rc_free_calls
     scheduler_slot_transitions scheduler_wait_installs scheduler_wake_claims
     scheduler_reusable_wait_installs
+    scheduler_frame_live_wait_registrations scheduler_frame_peak_live_wait_registrations
+    scheduler_frame_wait_registration_rearms
     selected_result_materializations
 )
 
