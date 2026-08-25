@@ -431,7 +431,9 @@ fn apply_strength_reductions(expr: &mut WirExpr, env: &HashMap<String, RangeFact
             rhs,
         } => {
             if let WirExpr::ConstI64(63) = rhs.as_ref() {
-                if compute_fact(lhs, env).is_non_negative() {
+                if compute_fact(lhs, env).is_non_negative()
+                    && crate::wir_opt::properties::evaluate_expr(lhs).is_safe_to_eliminate()
+                {
                     *expr = WirExpr::ConstI64(0);
                 }
             } else if let WirExpr::ConstI64(0) = lhs.as_ref() {
@@ -453,9 +455,13 @@ fn apply_strength_reductions(expr: &mut WirExpr, env: &HashMap<String, RangeFact
             }
         }
         WirExpr::Binary { op: BinOp::And, kind: Kind::I64, lhs, rhs } => {
-            if let WirExpr::ConstI64(0) = rhs.as_ref() {
+            if let WirExpr::ConstI64(0) = rhs.as_ref()
+                && crate::wir_opt::properties::evaluate_expr(lhs).is_safe_to_eliminate()
+            {
                 *expr = WirExpr::ConstI64(0);
-            } else if let WirExpr::ConstI64(0) = lhs.as_ref() {
+            } else if let WirExpr::ConstI64(0) = lhs.as_ref()
+                && crate::wir_opt::properties::evaluate_expr(rhs).is_safe_to_eliminate()
+            {
                 *expr = WirExpr::ConstI64(0);
             }
         }
@@ -464,9 +470,13 @@ fn apply_strength_reductions(expr: &mut WirExpr, env: &HashMap<String, RangeFact
                 *expr = *lhs.clone();
             } else if let WirExpr::ConstI64(1) = lhs.as_ref() {
                 *expr = *rhs.clone();
-            } else if let WirExpr::ConstI64(0) = rhs.as_ref() {
+            } else if let WirExpr::ConstI64(0) = rhs.as_ref()
+                && crate::wir_opt::properties::evaluate_expr(lhs).is_safe_to_eliminate()
+            {
                 *expr = WirExpr::ConstI64(0);
-            } else if let WirExpr::ConstI64(0) = lhs.as_ref() {
+            } else if let WirExpr::ConstI64(0) = lhs.as_ref()
+                && crate::wir_opt::properties::evaluate_expr(rhs).is_safe_to_eliminate()
+            {
                 *expr = WirExpr::ConstI64(0);
             }
         }

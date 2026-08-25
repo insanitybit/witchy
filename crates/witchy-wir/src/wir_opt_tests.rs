@@ -1626,6 +1626,75 @@
     }
 
     #[test]
+    fn strength_reduction_retains_effectful_zero_operands() {
+        // RFC-0153 may fold identities only when the discarded operand is
+        // total. Each expression below would have the same numeric result as
+        // zero, but removing it would respectively lose a host effect, an
+        // allocation, a trapping read, or a memory write.
+        let cases = [
+            (
+                "host effect",
+                BinOp::And,
+                WirExpr::Seq(vec![
+                    WirNode::Do(WirExpr::CallHost {
+                        import: "print_int".into(),
+                        args: vec![WirExpr::ConstI64(1)],
+                    }),
+                    WirNode::Push(WirExpr::ConstI64(7)),
+                ]),
+            ),
+            (
+                "allocation",
+                BinOp::Mul,
+                WirExpr::Seq(vec![
+                    WirNode::Drop(WirExpr::MemoryGrow(Box::new(WirExpr::ConstI32(1)))),
+                    WirNode::Push(WirExpr::ConstI64(7)),
+                ]),
+            ),
+            (
+                "trapping read",
+                BinOp::And,
+                WirExpr::Load {
+                    ptr: Box::new(WirExpr::ConstI32(0)),
+                    kind: Kind::I64,
+                    offset: 0,
+                },
+            ),
+            (
+                "memory write",
+                BinOp::Mul,
+                WirExpr::Seq(vec![
+                    WirNode::Store {
+                        ptr: WirExpr::ConstI32(0),
+                        value: WirExpr::ConstI64(1),
+                        kind: Kind::I64,
+                        offset: 0,
+                    },
+                    WirNode::Push(WirExpr::ConstI64(7)),
+                ]),
+            ),
+        ];
+
+        for (label, op, lhs) in cases {
+            let mut module = module_with(func_returning(WirExpr::Binary {
+                op,
+                kind: Kind::I64,
+                lhs: Box::new(lhs),
+                rhs: Box::new(WirExpr::ConstI64(0)),
+            }));
+            crate::wir_opt::strength_reduce::simplify_integer_ranges(&mut module);
+            assert!(
+                matches!(
+                    module.funcs[0].body.as_slice(),
+                    [WirNode::Return(Some(WirExpr::Binary { op: actual_op, .. }))] if *actual_op == op
+                ),
+                "{label} must be evaluated instead of being folded to zero: {:?}",
+                module.funcs[0].body,
+            );
+        }
+    }
+
+    #[test]
     fn range_opt_stats_deterministic_payload_and_diagnostics() {
         use crate::wir_opt::stats::{LoopRejectionReason, RangeOptStats};
 
