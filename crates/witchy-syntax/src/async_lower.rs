@@ -1509,10 +1509,7 @@ impl<'a> Ctx<'a> {
         let direct_result_arms = match arity {
             2 => rewrite_local_select_matches(tail_body, &selected, &tag, &option, &payload),
             3 => rewrite_local_select3_matches(tail_body, &selected, &tag, &option, &payload),
-            // The frame itself is still allocation-bounded for select4.  Its
-            // nominal Selected4 materialization remains the explicit escape
-            // boundary until the four-way typed payload-lane ABI lands.
-            4 => None,
+            4 => rewrite_local_select4_matches(tail_body, &selected, &tag, &option, &payload),
             _ => unreachable!("fixed arity was validated above"),
         };
         let direct_result_used = direct_result_arms.is_some();
@@ -2692,6 +2689,145 @@ fn rewrite_local_select3_match(
     })
 }
 
+/// Four-way counterpart of `rewrite_local_select3_matches`. The source-order
+/// tag is retained in the compiler-owned step callback; the typed payload is
+/// materialized only as an `Option(m)`, never as a nominal `Selected4(m)`.
+fn rewrite_local_select4_matches(
+    tail: &[Stmt],
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+) -> Option<Vec<Stmt>> {
+    let mut rewritten_any = false;
+    let rewritten = tail
+        .iter()
+        .map(|stmt| rewrite_local_select4_match_stmt(
+            stmt, selected, tag, option, payload, &mut rewritten_any,
+        ))
+        .collect::<Vec<_>>();
+    if !rewritten_any {
+        return None;
+    }
+    let free = crate::suspension::free_bindings_in_block(
+        &Block { stmts: rewritten.clone(), lines: vec![0; rewritten.len()], region: None },
+        &HashSet::default(),
+    );
+    (!free.iter().any(|name| name == selected)).then_some(rewritten)
+}
+
+fn rewrite_local_select4_match_stmt(
+    stmt: &Stmt,
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+    rewritten_any: &mut bool,
+) -> Stmt {
+    let rewrite = |value: &Expr, rewritten_any: &mut bool| {
+        let Some(rewritten) = rewrite_local_select4_match(value, selected, tag, option, payload) else {
+            return value.clone();
+        };
+        *rewritten_any = true;
+        rewritten
+    };
+    match stmt {
+        Stmt::Let { name, ty, mutable, value } => Stmt::Let {
+            name: name.clone(), ty: ty.clone(), mutable: *mutable,
+            value: rewrite(value, rewritten_any),
+        },
+        Stmt::Assign { name, value } => Stmt::Assign {
+            name: name.clone(), value: rewrite(value, rewritten_any),
+        },
+        Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
+            pattern: pattern.clone(), value: rewrite(value, rewritten_any),
+        },
+        Stmt::Return(Some(value)) => Stmt::Return(Some(rewrite(value, rewritten_any))),
+        Stmt::Yield(value) => Stmt::Yield(rewrite(value, rewritten_any)),
+        Stmt::Expr(value) => Stmt::Expr(rewrite(value, rewritten_any)),
+        _ => stmt.clone(),
+    }
+}
+
+fn rewrite_local_select4_match(
+    expression: &Expr,
+    selected: &str,
+    tag: &str,
+    option: &str,
+    payload: &str,
+) -> Option<Expr> {
+    let Expr::Match { scrutinee, arms } = expression else { return None };
+    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == selected) || arms.len() != 5 {
+        return None;
+    }
+    let arm = |name| arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name: found, args } if found == name && args.len() == 1
+    ));
+    let first = arm("First4")?;
+    let second = arm("Second4")?;
+    let third = arm("Third4")?;
+    let fourth = arm("Fourth4")?;
+    let closed = arms.iter().find(|arm| matches!(&arm.pattern,
+        Pattern::Ctor { name, args } if name == "Closed4" && args.is_empty()
+    ))?;
+    if arms.iter().any(|arm| arm.guard.is_some()) {
+        return None;
+    }
+    let uses_payload = [first, second, third, fourth].iter().any(|arm| {
+        !matches!(&arm.pattern, Pattern::Ctor { args, .. } if matches!(args.as_slice(), [Pattern::Wildcard]))
+    });
+    let body = |arm: &MatchArm| {
+        if uses_payload {
+            bind_select_payload(&arm.pattern, payload, arm.body.clone(), arm.line)
+        } else {
+            Some(arm.body.clone())
+        }
+    };
+    let first_body = body(first)?;
+    let second_body = body(second)?;
+    let third_body = body(third)?;
+    let fourth_body = body(fourth)?;
+    let branch = |index, then_body, else_body, line| Expr::If {
+        cond: Box::new(Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(Expr::Var(tag.into())),
+            rhs: Box::new(Expr::Int(index)),
+        }),
+        then_block: tail_block_at(then_body, line),
+        else_block: Some(tail_block(else_body)),
+    };
+    let dispatched = branch(
+        0,
+        first_body,
+        branch(1, second_body, branch(2, third_body, fourth_body, third.line), second.line),
+        first.line,
+    );
+    Some(Expr::Match {
+        scrutinee: Box::new(if uses_payload {
+            call("chan.select4_frame_payload", vec![Expr::Var(option.into())])
+        } else {
+            Expr::Var(option.into())
+        }),
+        arms: vec![
+            MatchArm {
+                line: first.line,
+                pattern: Pattern::Ctor {
+                    name: "Some".into(),
+                    args: vec![if uses_payload { Pattern::Var(payload.into()) } else { Pattern::Wildcard }],
+                },
+                guard: None,
+                body: dispatched,
+            },
+            MatchArm {
+                line: closed.line,
+                pattern: Pattern::Ctor { name: "None".into(), args: vec![] },
+                guard: None,
+                body: closed.body.clone(),
+            },
+        ],
+    })
+}
+
 fn bind_select_payload(pattern: &Pattern, payload: &str, body: Expr, line: u32) -> Option<Expr> {
     let Pattern::Ctor { args, .. } = pattern else { return None };
     match args.as_slice() {
@@ -3325,7 +3461,8 @@ mod tests {
         let lowered = lower_module(module).expect("lower select4 loop");
         let rendered = crate::format::module(&lowered, &[]);
         assert!(rendered.contains("chan.select4_frame_loop"), "{rendered}");
-        assert!(rendered.contains("chan.select4_frame_decode"), "{rendered}");
+        assert!(rendered.contains("chan.select4_frame_payload"), "{rendered}");
+        assert!(!rendered.contains("chan.select4_frame_decode"), "{rendered}");
     }
 
     #[test]

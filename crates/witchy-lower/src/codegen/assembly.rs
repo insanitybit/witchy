@@ -7240,8 +7240,12 @@ mod checked_codegen_boundary_tests {
             "four-way select frame segment must not allocate a continuation per iteration"
         );
         assert!(
-            wat.contains("call $chan.select4_frame_decode"),
-            "the nominal Selected4 fallback must retain its explicit decode boundary"
+            wat.contains("call $chan.select4_frame_payload"),
+            "a non-escaping local four-way match must consume the typed payload lane directly"
+        );
+        assert!(
+            !wat.contains("call $chan.select4_frame_decode"),
+            "a non-escaping local four-way match must not materialize Selected4"
         );
     }
 
