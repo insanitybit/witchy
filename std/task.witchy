@@ -701,100 +701,203 @@ pub fn run(root: Task(Nil)):
                             else:
                                 unit()
                 Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
-                    let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
-                    if frame_count0 > 0:
-                        let frame_msg0 = list.at(frame_buf0, frame_head0)
-                        let frame_physcap0 = list.length(frame_buf0)
-                        list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
-                        var frame = frame
-                        if step(0, Some(frame_msg0), frame):
-                            __rfc0152_wake_claim()
-                            list.set_at(slots, i, Active(done_fn(frame)))
-                        else:
-                            list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
-                        prog = true
+                    var frame = frame
+                    if is_only_live_slot(0, i, slots):
+                        // The closed frame owns the only runnable slot, so it
+                        // may drain ready arms without changing inter-task
+                        // fairness. Probe in source order on every message.
+                        var draining = true
+                        while draining:
+                            let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
+                            if frame_count0 > 0:
+                                let frame_msg0 = list.at(frame_buf0, frame_head0)
+                                let frame_physcap0 = list.length(frame_buf0)
+                                list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
+                                if step(0, Some(frame_msg0), frame):
+                                    __rfc0152_wake_claim()
+                                    list.set_at(slots, i, Active(done_fn(frame)))
+                                    prog = true
+                                    draining = false
+                                else:
+                                    prog = true
+                            else:
+                                let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
+                                if frame_count1 > 0:
+                                    let frame_msg1 = list.at(frame_buf1, frame_head1)
+                                    let frame_physcap1 = list.length(frame_buf1)
+                                    list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
+                                    if step(1, Some(frame_msg1), frame):
+                                        __rfc0152_wake_claim()
+                                        list.set_at(slots, i, Active(done_fn(frame)))
+                                        prog = true
+                                        draining = false
+                                    else:
+                                        prog = true
+                                else:
+                                    let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
+                                    if frame_count2 > 0:
+                                        let frame_msg2 = list.at(frame_buf2, frame_head2)
+                                        let frame_physcap2 = list.length(frame_buf2)
+                                        list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
+                                        if step(2, Some(frame_msg2), frame):
+                                            __rfc0152_wake_claim()
+                                            list.set_at(slots, i, Active(done_fn(frame)))
+                                            prog = true
+                                            draining = false
+                                        else:
+                                            prog = true
+                                    else:
+                                        list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
+                                        draining = false
                     else:
-                        let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
-                        if frame_count1 > 0:
-                            let frame_msg1 = list.at(frame_buf1, frame_head1)
-                            let frame_physcap1 = list.length(frame_buf1)
-                            list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
-                            var frame = frame
-                            if step(1, Some(frame_msg1), frame):
+                        let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
+                        if frame_count0 > 0:
+                            let frame_msg0 = list.at(frame_buf0, frame_head0)
+                            let frame_physcap0 = list.length(frame_buf0)
+                            list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
+                            if step(0, Some(frame_msg0), frame):
                                 __rfc0152_wake_claim()
                                 list.set_at(slots, i, Active(done_fn(frame)))
                             else:
                                 list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
                             prog = true
                         else:
-                            let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
-                            if frame_count2 > 0:
-                                let frame_msg2 = list.at(frame_buf2, frame_head2)
-                                let frame_physcap2 = list.length(frame_buf2)
-                                list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
-                                var frame = frame
-                                if step(2, Some(frame_msg2), frame):
+                            let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
+                            if frame_count1 > 0:
+                                let frame_msg1 = list.at(frame_buf1, frame_head1)
+                                let frame_physcap1 = list.length(frame_buf1)
+                                list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
+                                if step(1, Some(frame_msg1), frame):
                                     __rfc0152_wake_claim()
                                     list.set_at(slots, i, Active(done_fn(frame)))
                                 else:
                                     list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
                                 prog = true
                             else:
-                                unit()
+                                let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
+                                if frame_count2 > 0:
+                                    let frame_msg2 = list.at(frame_buf2, frame_head2)
+                                    let frame_physcap2 = list.length(frame_buf2)
+                                    list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
+                                    if step(2, Some(frame_msg2), frame):
+                                        __rfc0152_wake_claim()
+                                        list.set_at(slots, i, Active(done_fn(frame)))
+                                    else:
+                                        list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
+                                    prog = true
+                                else:
+                                    unit()
                 Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn) ->
-                    let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
-                    if frame_count0 > 0:
-                        let frame_msg0 = list.at(frame_buf0, frame_head0)
-                        let frame_physcap0 = list.length(frame_buf0)
-                        list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
-                        var frame = frame
-                        if step(0, Some(frame_msg0), frame):
-                            __rfc0152_wake_claim()
-                            list.set_at(slots, i, Active(done_fn(frame)))
-                        else:
-                            list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
-                        prog = true
+                    var frame = frame
+                    if is_only_live_slot(0, i, slots):
+                        // As for the three-way form, only a closed sole-live
+                        // frame can drain more than one message in one turn.
+                        var draining = true
+                        while draining:
+                            let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
+                            if frame_count0 > 0:
+                                let frame_msg0 = list.at(frame_buf0, frame_head0)
+                                let frame_physcap0 = list.length(frame_buf0)
+                                list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
+                                if step(0, Some(frame_msg0), frame):
+                                    __rfc0152_wake_claim()
+                                    list.set_at(slots, i, Active(done_fn(frame)))
+                                    prog = true
+                                    draining = false
+                                else:
+                                    prog = true
+                            else:
+                                let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
+                                if frame_count1 > 0:
+                                    let frame_msg1 = list.at(frame_buf1, frame_head1)
+                                    let frame_physcap1 = list.length(frame_buf1)
+                                    list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
+                                    if step(1, Some(frame_msg1), frame):
+                                        __rfc0152_wake_claim()
+                                        list.set_at(slots, i, Active(done_fn(frame)))
+                                        prog = true
+                                        draining = false
+                                    else:
+                                        prog = true
+                                else:
+                                    let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
+                                    if frame_count2 > 0:
+                                        let frame_msg2 = list.at(frame_buf2, frame_head2)
+                                        let frame_physcap2 = list.length(frame_buf2)
+                                        list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
+                                        if step(2, Some(frame_msg2), frame):
+                                            __rfc0152_wake_claim()
+                                            list.set_at(slots, i, Active(done_fn(frame)))
+                                            prog = true
+                                            draining = false
+                                        else:
+                                            prog = true
+                                    else:
+                                        let (frame_buf3, frame_head3, frame_count3, frame_cap3) = list.at(channels, ch3)
+                                        if frame_count3 > 0:
+                                            let frame_msg3 = list.at(frame_buf3, frame_head3)
+                                            let frame_physcap3 = list.length(frame_buf3)
+                                            list.set_at(channels, ch3, (frame_buf3, (frame_head3 + 1) % frame_physcap3, frame_count3 - 1, frame_cap3))
+                                            if step(3, Some(frame_msg3), frame):
+                                                __rfc0152_wake_claim()
+                                                list.set_at(slots, i, Active(done_fn(frame)))
+                                                prog = true
+                                                draining = false
+                                            else:
+                                                prog = true
+                                        else:
+                                            list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
+                                            draining = false
                     else:
-                        let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
-                        if frame_count1 > 0:
-                            let frame_msg1 = list.at(frame_buf1, frame_head1)
-                            let frame_physcap1 = list.length(frame_buf1)
-                            list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
-                            var frame = frame
-                            if step(1, Some(frame_msg1), frame):
+                        let (frame_buf0, frame_head0, frame_count0, frame_cap0) = list.at(channels, ch0)
+                        if frame_count0 > 0:
+                            let frame_msg0 = list.at(frame_buf0, frame_head0)
+                            let frame_physcap0 = list.length(frame_buf0)
+                            list.set_at(channels, ch0, (frame_buf0, (frame_head0 + 1) % frame_physcap0, frame_count0 - 1, frame_cap0))
+                            if step(0, Some(frame_msg0), frame):
                                 __rfc0152_wake_claim()
                                 list.set_at(slots, i, Active(done_fn(frame)))
                             else:
                                 list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
                             prog = true
                         else:
-                            let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
-                            if frame_count2 > 0:
-                                let frame_msg2 = list.at(frame_buf2, frame_head2)
-                                let frame_physcap2 = list.length(frame_buf2)
-                                list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
-                                var frame = frame
-                                if step(2, Some(frame_msg2), frame):
+                            let (frame_buf1, frame_head1, frame_count1, frame_cap1) = list.at(channels, ch1)
+                            if frame_count1 > 0:
+                                let frame_msg1 = list.at(frame_buf1, frame_head1)
+                                let frame_physcap1 = list.length(frame_buf1)
+                                list.set_at(channels, ch1, (frame_buf1, (frame_head1 + 1) % frame_physcap1, frame_count1 - 1, frame_cap1))
+                                if step(1, Some(frame_msg1), frame):
                                     __rfc0152_wake_claim()
                                     list.set_at(slots, i, Active(done_fn(frame)))
                                 else:
                                     list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
                                 prog = true
                             else:
-                                let (frame_buf3, frame_head3, frame_count3, frame_cap3) = list.at(channels, ch3)
-                                if frame_count3 > 0:
-                                    let frame_msg3 = list.at(frame_buf3, frame_head3)
-                                    let frame_physcap3 = list.length(frame_buf3)
-                                    list.set_at(channels, ch3, (frame_buf3, (frame_head3 + 1) % frame_physcap3, frame_count3 - 1, frame_cap3))
-                                    var frame = frame
-                                    if step(3, Some(frame_msg3), frame):
+                                let (frame_buf2, frame_head2, frame_count2, frame_cap2) = list.at(channels, ch2)
+                                if frame_count2 > 0:
+                                    let frame_msg2 = list.at(frame_buf2, frame_head2)
+                                    let frame_physcap2 = list.length(frame_buf2)
+                                    list.set_at(channels, ch2, (frame_buf2, (frame_head2 + 1) % frame_physcap2, frame_count2 - 1, frame_cap2))
+                                    if step(2, Some(frame_msg2), frame):
                                         __rfc0152_wake_claim()
                                         list.set_at(slots, i, Active(done_fn(frame)))
                                     else:
                                         list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
                                     prog = true
                                 else:
-                                    unit()
+                                    let (frame_buf3, frame_head3, frame_count3, frame_cap3) = list.at(channels, ch3)
+                                    if frame_count3 > 0:
+                                        let frame_msg3 = list.at(frame_buf3, frame_head3)
+                                        let frame_physcap3 = list.length(frame_buf3)
+                                        list.set_at(channels, ch3, (frame_buf3, (frame_head3 + 1) % frame_physcap3, frame_count3 - 1, frame_cap3))
+                                        if step(3, Some(frame_msg3), frame):
+                                            __rfc0152_wake_claim()
+                                            list.set_at(slots, i, Active(done_fn(frame)))
+                                        else:
+                                            list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
+                                        prog = true
+                                    else:
+                                        unit()
                 WaitAny(chs, cont) ->
                     match first_ready(0, chs, channels):
                         Some(hit) ->
