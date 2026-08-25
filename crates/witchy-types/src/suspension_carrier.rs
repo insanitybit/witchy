@@ -224,6 +224,26 @@ pub struct AwaitSelect2Plan {
     pub result_use: SelectResultUse,
 }
 
+/// Compiler-owned ABI for the reusable two-way select frame loop.
+///
+/// Unlike an ordinary one-shot select, the frame loop has observable work in
+/// both closures: `step` updates the captured frame after every selected value
+/// and `done` performs the post-loop continuation exactly once.  Their names
+/// are compiler-reserved local identities, not user-provided hints; an emitter
+/// may promote this transition only when it can invoke all three values in the
+/// original order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitSelect2FrameLoopPlan {
+    pub first_channel: ChannelEndpointPlace,
+    pub second_channel: ChannelEndpointPlace,
+    pub frame: String,
+    pub step: String,
+    pub done: String,
+    pub payload_layout: ChannelPayloadLayout,
+    pub payload_lane: Option<CarrierLane>,
+    pub resume_target: SelectResume,
+}
+
 /// Exact facts for a fixed-arity select with three or four receivers.
 ///
 /// The endpoint vector is deliberately bounded at construction time. It is not
@@ -268,6 +288,7 @@ pub enum ReadyChannelOperationKind {
     Send(AwaitChannelOperationPlan),
     Receive(AwaitChannelOperationPlan),
     Select2(AwaitSelect2Plan),
+    Select2FrameLoop(AwaitSelect2FrameLoopPlan),
     Select3(AwaitFixedSelectPlan),
     Select4(AwaitFixedSelectPlan),
 }
@@ -280,6 +301,7 @@ pub enum ScalarTransition {
     ChannelSend(AwaitChannelOperationPlan),
     ChannelReceive(AwaitChannelOperationPlan),
     ChannelSelect2(AwaitSelect2Plan),
+    ChannelSelect2FrameLoop(AwaitSelect2FrameLoopPlan),
     ChannelSelect3(AwaitFixedSelectPlan),
     ChannelSelect4(AwaitFixedSelectPlan),
     Spawn { child: usize, resume: usize },
@@ -689,6 +711,9 @@ impl ReadyChannelRegionPlan {
                         ScalarTransition::ChannelSelect2(select) => {
                             ReadyChannelOperationKind::Select2(select.clone())
                         }
+                        ScalarTransition::ChannelSelect2FrameLoop(select) => {
+                            ReadyChannelOperationKind::Select2FrameLoop(select.clone())
+                        }
                         ScalarTransition::ChannelSelect3(select) => {
                             ReadyChannelOperationKind::Select3(select.clone())
                         }
@@ -717,6 +742,11 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
             Err("receive")
         }
         ScalarTransition::ChannelSelect2(select)
+            if !is_static(&select.first_channel) || !is_static(&select.second_channel) =>
+        {
+            Err("select")
+        }
+        ScalarTransition::ChannelSelect2FrameLoop(select)
             if !is_static(&select.first_channel) || !is_static(&select.second_channel) =>
         {
             Err("select")
@@ -980,15 +1010,13 @@ fn collect_task_expression<'a, 'd>(
         return Ok(());
     }
     if call_family(name, "chan.select2_frame_loop") && args.len() == 5 {
-        let resume_target = select_loop_resume(&args[4], state_ids, bindings)?;
-        transitions.push(ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
-            first_channel: channel_endpoint_place(args.first()),
-            second_channel: channel_endpoint_place(args.get(1)),
-            payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
-            payload_lane: select_payload_lane(table, args.first(), args.get(1)),
-            resume_target,
-            result_use: SelectResultUse::ImmediateMatch,
-        }));
+        transitions.push(ScalarTransition::ChannelSelect2FrameLoop(select2_frame_loop_plan(
+            table,
+            args,
+            definitions,
+            state_ids,
+            bindings,
+        )?));
         return Ok(());
     }
     let resume =
@@ -1012,11 +1040,9 @@ fn collect_task_expression<'a, 'd>(
             resume,
         ))
     } else if call_family(name, "task.__channel_select2") {
-        let first_channel = channel_endpoint_place(args.first());
-        let second_channel = channel_endpoint_place(args.get(1));
         ScalarTransition::ChannelSelect2(AwaitSelect2Plan {
-            first_channel,
-            second_channel,
+            first_channel: channel_endpoint_place(args.first()),
+            second_channel: channel_endpoint_place(args.get(1)),
             payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
             payload_lane: select_payload_lane(table, args.first(), args.get(1)),
             resume_target: SelectResume::State(resume),
@@ -1116,6 +1142,65 @@ fn channel_operation_plan(
         ownership,
         resume_target,
     }
+}
+
+fn select2_frame_loop_plan(
+    table: &TypeTable,
+    args: &[ast::Expr],
+    definitions: &HashMap<String, &TypeDef>,
+    state_ids: &HashMap<String, usize>,
+    bindings: &HashMap<String, &ast::Expr>,
+) -> Result<AwaitSelect2FrameLoopPlan, String> {
+    let frame = compiler_generated_place(
+        args.get(2),
+        "select frame",
+        bindings,
+        false,
+    )?;
+    let step = compiler_generated_place(
+        args.get(3),
+        "select step closure",
+        bindings,
+        true,
+    )?;
+    let done = compiler_generated_place(
+        args.get(4),
+        "select completion closure",
+        bindings,
+        true,
+    )?;
+    Ok(AwaitSelect2FrameLoopPlan {
+        first_channel: channel_endpoint_place(args.first()),
+        second_channel: channel_endpoint_place(args.get(1)),
+        frame,
+        step,
+        done: done.clone(),
+        payload_layout: select_payload_layout(table, args.first(), args.get(1), definitions),
+        payload_lane: select_payload_lane(table, args.first(), args.get(1)),
+        resume_target: select_loop_resume(
+            args.get(4).expect("five-argument frame loop has completion closure"),
+            state_ids,
+            bindings,
+        )?,
+    })
+}
+
+fn compiler_generated_place(
+    expression: Option<&ast::Expr>,
+    role: &str,
+    bindings: &HashMap<String, &ast::Expr>,
+    require_lambda: bool,
+) -> Result<String, String> {
+    let Some(ast::Expr::Var(name)) = expression else {
+        return Err(format!("{role} is not a compiler-generated local"));
+    };
+    if !is_generated_closure_binding(name) {
+        return Err(format!("{role} is not a reserved compiler local"));
+    }
+    if require_lambda && !matches!(bindings.get(name), Some(ast::Expr::Lambda { .. })) {
+        return Err(format!("{role} is not a direct compiler-generated lambda binding"));
+    }
+    Ok(name.clone())
 }
 
 fn continuation_state(

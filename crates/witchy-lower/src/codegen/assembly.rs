@@ -7088,20 +7088,21 @@ mod checked_codegen_boundary_tests {
         let ready = carrier
             .ready_channel_region_plan()
             .expect("a reusable select frame has a typed ready-region transition");
-        assert!(ready.operations().iter().any(|operation| {
-            matches!(
-                &operation.kind,
-                witchy_types::suspension_carrier::ReadyChannelOperationKind::Select2(plan)
-                    if matches!(
-                        (&plan.first_channel, &plan.second_channel, plan.resume_target),
-                        (
-                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
-                            witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
-                            witchy_types::suspension_carrier::SelectResume::Done,
-                        )
+        assert!(ready.operations().iter().any(|operation| match &operation.kind {
+            witchy_types::suspension_carrier::ReadyChannelOperationKind::Select2FrameLoop(plan) => {
+                matches!(
+                    (&plan.first_channel, &plan.second_channel, plan.resume_target),
+                    (
+                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
+                        witchy_types::suspension_carrier::SelectResume::Done,
                     )
-            )
-        }), "the locally-bound completion lambda must become a terminal select transition");
+                ) && plan.frame.starts_with("__await")
+                    && plan.step.starts_with("__await")
+                    && plan.done.starts_with("__await")
+            }
+            _ => false,
+        }), "the frame loop must retain the compiler-owned frame and both closures");
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("select2_frame_loop"), "missing compiler-owned frame-loop bridge");
         assert!(!wat.contains("select2_frame_loop_state"), "stateful ABI must reuse Pull2FrameLoop");
