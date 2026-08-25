@@ -7031,6 +7031,28 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
+    fn ready_region_formation_splits_unsupported_task_map_between_channel_regions() {
+        let checked = authenticated_checked(
+            "import task\n\nasync fn main(console: Console):\n    console.print(\"before\")\n    let (tx, rx) = chan.channel(1).await\n    let ignored = task.map(task.done(1), fn(own value): value + 1).await\n    chan.send(tx, 7).await\n    let value = chan.recv(rx).await\n    console.print(\"value=${value}\")\n",
+        );
+        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        ).expect("assemble task-map split fixture");
+
+        let formation = carrier.ready_channel_regions();
+        assert!(formation.regions.len() >= 3, "channel regions before and after task.map must survive: {formation:#?}");
+        assert!(formation.regions.windows(2).all(|pair| pair[0].id <= pair[1].id));
+        assert!(formation.regions.iter().all(|region| {
+            region.operations.iter().all(|operation| operation.state == region.id)
+        }), "formed operations retain their existing carrier-state identity");
+        assert!(formation.excluded.iter().any(|excluded| matches!(
+            &excluded.reason,
+            witchy_types::suspension_carrier::ReadyChannelRegionExclusionReason::UnsupportedTransition { detail }
+                if detail.contains("task.map")
+        )), "task.map must exclude only its own suspension-bounded path: {formation:#?}");
+    }
+
+    #[test]
     fn awaited_select_uses_the_fused_typed_bridge_in_wir() {
         // Keep this carrier-plan assertion on the immediate two-way select
         // substrate.  The benchmark fixture also contains the newer

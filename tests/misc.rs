@@ -67,6 +67,8 @@ mod rfc0129_channel_contract;
 mod rfc0152_select3_frame_contract;
 #[path = "misc/rfc0152_semantic_matrix.rs"]
 mod rfc0152_semantic_matrix;
+#[path = "misc/rfc0152_async_region_formation.rs"]
+mod rfc0152_async_region_formation;
 #[path = "misc/typed_errors.rs"]
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]

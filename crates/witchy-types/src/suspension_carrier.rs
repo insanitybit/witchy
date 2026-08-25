@@ -120,8 +120,16 @@ impl CarrierState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuspensionCarrierCatalog {
     states: Vec<CarrierState>,
+    /// Stable async-region identity parallel to `states`. Generator states
+    /// deliberately have no async region and are excluded from ready-region
+    /// formation.
+    async_regions: Vec<Option<usize>>,
     max_lane_width: usize,
     typed_channel_plans: Vec<TypedChannelPlan>,
+    /// Terminal control-flow paths retained independently for ready-region
+    /// formation. The legacy aggregate below deliberately remains
+    /// all-or-nothing for its existing scalar-executor consumers.
+    region_transition_paths: Vec<Vec<Result<Vec<ScalarTransition>, String>>>,
     scalar_transitions: Vec<Result<Vec<ScalarTransition>, String>>,
 }
 
@@ -158,6 +166,79 @@ pub struct ReadyChannelRegionPlan {
     pub max_lane_width: usize,
     pub states: Vec<ScalarExecutorState>,
     pub typed_channels: Vec<TypedChannelPlan>,
+}
+
+/// One independently promotable, suspension-bounded async region.
+///
+/// Async lowering assigns the identity before source lowering erases the
+/// ordinary statements around the terminal task expression.  The region owns
+/// only the transition in its state; effects before that transition remain in
+/// its entry state and effects after it remain in the successor state.  An
+/// emitter therefore has a narrow boundary on which it may decline without
+/// moving, dropping, or duplicating either set of effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyChannelRegion {
+    /// Existing dense carrier-state identity.  Consumers dispatch by this id;
+    /// formation never invents a parallel region or runtime identity.
+    pub id: usize,
+    /// Stable ordinal of this terminal control-flow path within `id`. This is
+    /// ordering metadata, not a runtime identity; dispatch remains by `id`.
+    pub path_ordinal: usize,
+    /// Source/suspension boundary identity attached by async lowering.
+    pub lowering_region: usize,
+    pub state: ScalarExecutorState,
+    /// Exact endpoint facts used by this state, in parameter order.
+    pub typed_channels: Vec<TypedChannelPlan>,
+    /// Typed channel operations in their existing transition/source order.
+    /// A consumer must preserve this order rather than rebuilding it from
+    /// names, an erased message, or a runtime receiver list.
+    pub operations: Vec<ReadyChannelOperation>,
+    /// The state ids to which this region can transfer after its terminal
+    /// transition.  They are boundaries, not a license to inline the next
+    /// region or its ordinary epilogue.
+    pub successor_states: Vec<usize>,
+}
+
+/// A rejected region is recorded independently so one unsupported statement
+/// cannot make a neighbouring eligible channel region disappear from the
+/// carrier catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyChannelRegionExclusion {
+    /// Existing dense carrier-state identity.
+    pub id: usize,
+    /// Terminal control-flow path matching [`ReadyChannelRegion::path_ordinal`].
+    pub path_ordinal: usize,
+    /// Source/suspension boundary identity attached by async lowering.
+    pub lowering_region: usize,
+    pub function: String,
+    pub reason: ReadyChannelRegionExclusionReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadyChannelRegionExclusionReason {
+    BoxedState,
+    BoxedChannel {
+        channel: String,
+        message: String,
+    },
+    DynamicEndpoint {
+        operation: &'static str,
+    },
+    UnsupportedTransition {
+        detail: String,
+    },
+}
+
+/// Region-formation result for RFC-0152 Phase 1.
+///
+/// This is intentionally separate from [`ReadyChannelRegionPlan`].  The
+/// latter is the pre-existing all-or-nothing graph proof used by the narrow
+/// scalar executor.  Formation makes the split explicit and is non-enabling:
+/// a later ready emitter chooses which individual regions it can execute.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReadyChannelRegionFormation {
+    pub regions: Vec<ReadyChannelRegion>,
+    pub excluded: Vec<ReadyChannelRegionExclusion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,6 +481,7 @@ impl SuspensionCarrierCatalog {
     pub fn from_typed(typed: &TypedModule) -> Result<Self, String> {
         let definitions = type_definitions(typed.module());
         let mut states = Vec::new();
+        let mut async_regions = Vec::new();
 
         for item in &typed.module().items {
             let Item::Function(function) = item else {
@@ -419,6 +501,7 @@ impl SuspensionCarrierCatalog {
             // the whole-program dispatch identity in that order instead of
             // re-sorting by a non-unique source-local number.
             let id = states.len();
+            let async_region = witchy_syntax::suspension::async_region(function);
             let direct = !function
                 .attributes
                 .iter()
@@ -453,6 +536,7 @@ impl SuspensionCarrierCatalog {
                 direct,
                 slots,
             });
+            async_regions.push(async_region);
         }
 
         let max_lane_width = states
@@ -481,26 +565,32 @@ impl SuspensionCarrierCatalog {
             .iter()
             .map(|state| (state.function.clone(), state.id))
             .collect();
-        let scalar_transitions = states
+        let region_transition_paths = states
             .iter()
             .map(|state| {
                 let function = typed.module().items.iter().find_map(|item| match item {
                     Item::Function(function) if function.name == state.function => Some(function),
                     _ => None,
                 });
-                let function = function.ok_or_else(|| {
-                    format!(
+                let Some(function) = function else {
+                    return vec![Err(format!(
                         "carrier state `{}` has no typed function body",
                         state.function
-                    )
-                })?;
-                scalar_transitions_for_function(function, &state_ids, typed.table(), &definitions)
+                    ))];
+                };
+                scalar_transition_paths_for_function(function, &state_ids, typed.table(), &definitions)
             })
+            .collect::<Vec<_>>();
+        let scalar_transitions = region_transition_paths
+            .iter()
+            .map(|paths| aggregate_scalar_transition_paths(paths))
             .collect();
         Ok(Self {
             states,
+            async_regions,
             max_lane_width,
             typed_channel_plans,
+            region_transition_paths,
             scalar_transitions,
         })
     }
@@ -518,6 +608,94 @@ impl SuspensionCarrierCatalog {
     /// and can therefore be used as a compiler ABI without source-name sorting.
     pub fn typed_channel_plans(&self) -> &[TypedChannelPlan] {
         &self.typed_channel_plans
+    }
+
+    /// Form independently promotable async regions without changing the
+    /// existing all-or-nothing ready-plan ABI.
+    ///
+    /// Region ids and typed-operation order are inherited verbatim from async
+    /// lowering and the carrier graph.  A failed qualification is local to one
+    /// suspension-bounded region: adjacent regions continue to be reported,
+    /// and their ordinary prologue/epilogue states stay in the original graph.
+    /// This is formation metadata only; it does not select a runtime path.
+    pub fn ready_channel_regions(&self) -> ReadyChannelRegionFormation {
+        let mut formation = ReadyChannelRegionFormation::default();
+
+        for (state_index, state) in self.states.iter().enumerate() {
+            let Some(lowering_region) = self.async_regions.get(state_index).copied().flatten() else {
+                continue;
+            };
+            let rejection = |path_ordinal, reason| ReadyChannelRegionExclusion {
+                id: state.id,
+                path_ordinal,
+                lowering_region,
+                function: state.function.clone(),
+                reason,
+            };
+            if !state.is_direct() {
+                formation.excluded.push(rejection(0, ReadyChannelRegionExclusionReason::BoxedState));
+                continue;
+            }
+            let typed_channels = self
+                .typed_channel_plans
+                .iter()
+                .filter(|channel| channel.state == state.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            for (path_ordinal, transitions) in self.region_transition_paths[state_index].iter().enumerate() {
+                let transitions = match transitions {
+                    Ok(transitions) => transitions,
+                    Err(detail) => {
+                        formation.excluded.push(rejection(
+                            path_ordinal,
+                            ReadyChannelRegionExclusionReason::UnsupportedTransition {
+                                detail: detail.clone(),
+                            },
+                        ));
+                        continue;
+                    }
+                };
+                if let Some(channel) = typed_channels.iter().find(|channel| {
+                    matches!(channel.payload_layout, ChannelPayloadLayout::Boxed)
+                }) {
+                    formation.excluded.push(rejection(
+                        path_ordinal,
+                        ReadyChannelRegionExclusionReason::BoxedChannel {
+                            channel: channel.endpoint_place.clone(),
+                            message: channel.message_type.clone(),
+                        },
+                    ));
+                    continue;
+                }
+                if let Some(operation) = transitions.iter().find_map(|transition| {
+                    ready_transition_is_static(transition).err()
+                }) {
+                    formation.excluded.push(rejection(
+                        path_ordinal,
+                        ReadyChannelRegionExclusionReason::DynamicEndpoint { operation },
+                    ));
+                    continue;
+                }
+                if !transitions.iter().any(is_ready_channel_transition) {
+                    // A non-channel state is an ordinary boundary, not a failed
+                    // channel region.  Omitting it lets a later emitter preserve
+                    // its effects exactly instead of attempting to consume it.
+                    continue;
+                }
+                formation.regions.push(ReadyChannelRegion {
+                    id: state.id,
+                    path_ordinal,
+                    lowering_region,
+                    state: planned_state(state, transitions),
+                    typed_channels: typed_channels.clone(),
+                    operations: ready_channel_operations(state.id, transitions),
+                    successor_states: transition_successors(transitions),
+                });
+            }
+        }
+        formation.regions.sort_by_key(|region| (region.id, region.path_ordinal));
+        formation.excluded.sort_by_key(|region| (region.id, region.path_ordinal));
+        formation
     }
 
     pub fn is_wholly_direct(&self) -> bool {
@@ -737,50 +915,142 @@ impl ReadyChannelRegionPlan {
     pub fn operations(&self) -> Vec<ReadyChannelOperation> {
         self.states
             .iter()
-            .flat_map(|state| {
-                state.transitions.iter().filter_map(move |transition| {
-                    let kind = match transition {
-                        ScalarTransition::ChannelOpen { resume } => {
-                            ReadyChannelOperationKind::Open {
-                                resume_target: *resume,
-                            }
-                        }
-                        ScalarTransition::ChannelSend(operation) => {
-                            ReadyChannelOperationKind::Send(operation.clone())
-                        }
-                        ScalarTransition::ChannelReceive(operation) => {
-                            ReadyChannelOperationKind::Receive(operation.clone())
-                        }
-                        ScalarTransition::ChannelReceiveFrameLoop(receive) => {
-                            ReadyChannelOperationKind::ReceiveFrameLoop(receive.clone())
-                        }
-                        ScalarTransition::ChannelSelect2(select) => {
-                            ReadyChannelOperationKind::Select2(select.clone())
-                        }
-                        ScalarTransition::ChannelSelect2FrameLoop(select) => {
-                            ReadyChannelOperationKind::Select2FrameLoop(select.clone())
-                        }
-                        ScalarTransition::ChannelSelect3FrameLoop(select) => {
-                            ReadyChannelOperationKind::Select3FrameLoop(select.clone())
-                        }
-                        ScalarTransition::ChannelSelect4FrameLoop(select) => {
-                            ReadyChannelOperationKind::Select4FrameLoop(select.clone())
-                        }
-                        ScalarTransition::ChannelSelect3(select) => {
-                            ReadyChannelOperationKind::Select3(select.clone())
-                        }
-                        ScalarTransition::ChannelSelect4(select) => {
-                            ReadyChannelOperationKind::Select4(select.clone())
-                        }
-                        _ => return None,
-                    };
-                    Some(ReadyChannelOperation {
-                        state: state.id,
-                        kind,
-                    })
-                })
-            })
+            .flat_map(|state| ready_channel_operations(state.id, &state.transitions))
             .collect()
+    }
+}
+
+fn ready_channel_operations(
+    state: usize,
+    transitions: &[ScalarTransition],
+) -> Vec<ReadyChannelOperation> {
+    transitions
+        .iter()
+        .filter_map(|transition| {
+            let kind = match transition {
+                ScalarTransition::ChannelOpen { resume } => {
+                    ReadyChannelOperationKind::Open {
+                        resume_target: *resume,
+                    }
+                }
+                ScalarTransition::ChannelSend(operation) => {
+                    ReadyChannelOperationKind::Send(operation.clone())
+                }
+                ScalarTransition::ChannelReceive(operation) => {
+                    ReadyChannelOperationKind::Receive(operation.clone())
+                }
+                ScalarTransition::ChannelReceiveFrameLoop(receive) => {
+                    ReadyChannelOperationKind::ReceiveFrameLoop(receive.clone())
+                }
+                ScalarTransition::ChannelSelect2(select) => {
+                    ReadyChannelOperationKind::Select2(select.clone())
+                }
+                ScalarTransition::ChannelSelect2FrameLoop(select) => {
+                    ReadyChannelOperationKind::Select2FrameLoop(select.clone())
+                }
+                ScalarTransition::ChannelSelect3FrameLoop(select) => {
+                    ReadyChannelOperationKind::Select3FrameLoop(select.clone())
+                }
+                ScalarTransition::ChannelSelect4FrameLoop(select) => {
+                    ReadyChannelOperationKind::Select4FrameLoop(select.clone())
+                }
+                ScalarTransition::ChannelSelect3(select) => {
+                    ReadyChannelOperationKind::Select3(select.clone())
+                }
+                ScalarTransition::ChannelSelect4(select) => {
+                    ReadyChannelOperationKind::Select4(select.clone())
+                }
+                _ => return None,
+            };
+            Some(ReadyChannelOperation { state, kind })
+        })
+        .collect()
+}
+
+fn planned_state(state: &CarrierState, transitions: &[ScalarTransition]) -> ScalarExecutorState {
+    let mut lane_start = 0;
+    let slots = state
+        .slots
+        .iter()
+        .map(|slot| {
+            let lanes = slot
+                .lanes
+                .clone()
+                .expect("ready-region formation rejected boxed frame slots");
+            let planned = ScalarExecutorSlot {
+                name: slot.name.clone(),
+                lane_start,
+                lanes,
+            };
+            lane_start += planned.lanes.len();
+            planned
+        })
+        .collect();
+    ScalarExecutorState {
+        id: state.id,
+        function: state.function.clone(),
+        source_callable: state.source_callable.clone(),
+        slots,
+        transitions: transitions.to_vec(),
+    }
+}
+
+fn is_ready_channel_transition(transition: &ScalarTransition) -> bool {
+    matches!(
+        transition,
+        ScalarTransition::ChannelOpen { .. }
+            | ScalarTransition::ChannelSend(_)
+            | ScalarTransition::ChannelReceive(_)
+            | ScalarTransition::ChannelReceiveFrameLoop(_)
+            | ScalarTransition::ChannelSelect2(_)
+            | ScalarTransition::ChannelSelect2FrameLoop(_)
+            | ScalarTransition::ChannelSelect3(_)
+            | ScalarTransition::ChannelSelect3FrameLoop(_)
+            | ScalarTransition::ChannelSelect4(_)
+            | ScalarTransition::ChannelSelect4FrameLoop(_)
+    )
+}
+
+fn transition_successors(transitions: &[ScalarTransition]) -> Vec<usize> {
+    let mut successors = transitions
+        .iter()
+        .flat_map(|transition| match transition {
+            ScalarTransition::Jump { target } => vec![*target],
+            ScalarTransition::ChannelOpen { resume }
+            | ScalarTransition::Join { resume }
+            | ScalarTransition::Yield { resume }
+                => vec![*resume],
+            ScalarTransition::Spawn { child, resume } => vec![*child, *resume],
+            ScalarTransition::Call { callee, resume } => vec![*callee, *resume],
+            ScalarTransition::ChannelSend(operation)
+            | ScalarTransition::ChannelReceive(operation) => vec![operation.resume_target],
+            ScalarTransition::ChannelSelect3(select)
+            | ScalarTransition::ChannelSelect4(select) => vec![select.resume_target],
+            ScalarTransition::ChannelSelect2(select) => {
+                select_resume_target(select.resume_target).into_iter().collect()
+            }
+            ScalarTransition::ChannelReceiveFrameLoop(receive) => {
+                select_resume_target(receive.resume_target).into_iter().collect()
+            }
+            ScalarTransition::ChannelSelect2FrameLoop(select) => {
+                select_resume_target(select.resume_target).into_iter().collect()
+            }
+            ScalarTransition::ChannelSelect3FrameLoop(select)
+            | ScalarTransition::ChannelSelect4FrameLoop(select) => {
+                select_resume_target(select.resume_target).into_iter().collect()
+            }
+            ScalarTransition::Done => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    successors.sort_unstable();
+    successors.dedup();
+    successors
+}
+
+fn select_resume_target(resume: SelectResume) -> Option<usize> {
+    match resume {
+        SelectResume::State(state) => Some(state),
+        SelectResume::Done => None,
     }
 }
 
@@ -839,26 +1109,115 @@ fn scalar_executor_payload_supported(payload: &ChannelPayloadLayout) -> bool {
     }
 }
 
-fn scalar_transitions_for_function(
+fn aggregate_scalar_transition_paths(
+    paths: &[Result<Vec<ScalarTransition>, String>],
+) -> Result<Vec<ScalarTransition>, String> {
+    let mut transitions = Vec::new();
+    for path in paths {
+        transitions.extend(path.clone()?);
+    }
+    if transitions.is_empty() {
+        return Err("state body has no terminal transition".into());
+    }
+    Ok(transitions)
+}
+
+/// Collect terminal paths independently. The legacy scalar-executor proof
+/// still aggregates these with [`aggregate_scalar_transition_paths`], but
+/// ready-region formation must be able to decline one branch without erasing
+/// its eligible siblings.
+fn scalar_transition_paths_for_function(
     function: &Function,
     state_ids: &HashMap<String, usize>,
     table: &TypeTable,
     definitions: &HashMap<String, &TypeDef>,
-) -> Result<Vec<ScalarTransition>, String> {
-    let mut transitions = Vec::new();
+) -> Vec<Result<Vec<ScalarTransition>, String>> {
     let bindings = HashMap::new();
-    collect_scalar_transitions_in_block(
+    scalar_transition_paths_in_block(
         &function.body,
         state_ids,
         table,
         definitions,
         &bindings,
-        &mut transitions,
-    )?;
-    if transitions.is_empty() {
-        return Err("state body has no terminal transition".into());
+    )
+}
+
+fn scalar_transition_paths_in_block<'a, 'd>(
+    block: &'a ast::Block,
+    state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
+    definitions: &HashMap<String, &'d TypeDef>,
+    inherited: &HashMap<String, &'a ast::Expr>,
+) -> Vec<Result<Vec<ScalarTransition>, String>> {
+    let mut bindings = inherited.clone();
+    for statement in &block.stmts {
+        if let ast::Stmt::Let {
+            name,
+            value: value @ ast::Expr::Lambda { .. },
+            ..
+        } = statement
+            && is_generated_closure_binding(name)
+        {
+            bindings.insert(name.clone(), value);
+        }
     }
-    Ok(transitions)
+    let Some(terminal) = terminal_block_expr(block) else {
+        return vec![Err("state body has no terminal expression".into())];
+    };
+    scalar_transition_paths(terminal, state_ids, table, definitions, &bindings)
+}
+
+fn scalar_transition_paths<'a, 'd>(
+    expression: &'a ast::Expr,
+    state_ids: &HashMap<String, usize>,
+    table: &TypeTable,
+    definitions: &HashMap<String, &'d TypeDef>,
+    bindings: &HashMap<String, &'a ast::Expr>,
+) -> Vec<Result<Vec<ScalarTransition>, String>> {
+    match expression {
+        ast::Expr::Block(block) => {
+            scalar_transition_paths_in_block(block, state_ids, table, definitions, bindings)
+        }
+        ast::Expr::If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } => {
+            let mut paths = scalar_transition_paths_in_block(
+                then_block,
+                state_ids,
+                table,
+                definitions,
+                bindings,
+            );
+            paths.extend(scalar_transition_paths_in_block(
+                else_block,
+                state_ids,
+                table,
+                definitions,
+                bindings,
+            ));
+            paths
+        }
+        ast::Expr::Match { arms, .. } if !arms.is_empty() => arms
+            .iter()
+            .flat_map(|arm| {
+                scalar_transition_paths(&arm.body, state_ids, table, definitions, bindings)
+            })
+            .collect(),
+        _ => {
+            let mut transitions = Vec::new();
+            vec![collect_scalar_transitions(
+                expression,
+                state_ids,
+                table,
+                definitions,
+                bindings,
+                &mut transitions,
+            )
+            .map(|()| transitions)]
+        }
+    }
 }
 
 /// Follow the reserved compiler closure bindings in a generated state. The
@@ -1841,6 +2200,141 @@ mod tests {
     }
 
     #[test]
+    fn ready_region_formation_keeps_supported_neighbours_when_one_region_is_unsupported() {
+        let state = |id, function: &str| CarrierState {
+            id,
+            function: function.into(),
+            source_callable: "main".into(),
+            kind: CarrierStateKind::Segment,
+            direct: true,
+            slots: Vec::new(),
+        };
+        let catalog = SuspensionCarrierCatalog {
+            states: vec![state(4, "open"), state(9, "unsupported"), state(12, "recv")],
+            async_regions: vec![Some(40), Some(41), Some(42)],
+            max_lane_width: 0,
+            typed_channel_plans: Vec::new(),
+            region_transition_paths: vec![
+                vec![Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }])],
+                vec![Err("unsupported awaited task call `task.map`".into())],
+                vec![Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
+                    endpoint: ChannelEndpointPlace::Static("rx".into()),
+                    payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                    resume_target: 13,
+                })])],
+            ],
+            scalar_transitions: vec![
+                Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }]),
+                Err("unsupported awaited task call `task.map`".into()),
+                Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
+                    endpoint: ChannelEndpointPlace::Static("rx".into()),
+                    payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                    resume_target: 13,
+                })]),
+            ],
+        };
+
+        let formation = catalog.ready_channel_regions();
+        assert_eq!(
+            formation.regions.iter().map(|region| region.id).collect::<Vec<_>>(),
+            [4, 12],
+            "region identity remains the existing carrier-state id"
+        );
+        assert_eq!(
+            formation
+                .regions
+                .iter()
+                .map(|region| region.lowering_region)
+                .collect::<Vec<_>>(),
+            [40, 42],
+            "source suspension boundaries remain visible to the emitter"
+        );
+        assert_eq!(formation.regions[0].successor_states, [9]);
+        assert_eq!(formation.regions[1].successor_states, [13]);
+        assert!(matches!(
+            formation.regions[0].operations.as_slice(),
+            [ReadyChannelOperation {
+                state: 4,
+                kind: ReadyChannelOperationKind::Open { resume_target: 9 },
+            }]
+        ));
+        assert!(matches!(
+            formation.regions[1].operations.as_slice(),
+            [ReadyChannelOperation {
+                state: 12,
+                kind: ReadyChannelOperationKind::Receive(_),
+            }]
+        ));
+        assert_eq!(formation.excluded.len(), 1);
+        assert_eq!(formation.excluded[0].id, 9);
+        assert_eq!(formation.excluded[0].lowering_region, 41);
+        assert_eq!(
+            formation.excluded[0].reason,
+            ReadyChannelRegionExclusionReason::UnsupportedTransition {
+                detail: "unsupported awaited task call `task.map`".into(),
+            },
+            "one unsupported interior region must not reject its supported neighbours"
+        );
+    }
+
+    #[test]
+    fn ready_region_formation_keeps_supported_sibling_path() {
+        let state = CarrierState {
+            id: 4,
+            function: "branch".into(),
+            source_callable: "main".into(),
+            kind: CarrierStateKind::Segment,
+            direct: true,
+            slots: Vec::new(),
+        };
+        let send = ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
+            endpoint: ChannelEndpointPlace::Static("tx".into()),
+            payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+            ownership: ChannelOwnershipEnvelope::InlineValue,
+            resume_target: 8,
+        });
+        let catalog = SuspensionCarrierCatalog {
+            states: vec![state],
+            async_regions: vec![Some(40)],
+            max_lane_width: 0,
+            typed_channel_plans: Vec::new(),
+            region_transition_paths: vec![vec![
+                Ok(vec![send.clone()]),
+                Err("unsupported awaited task call `task.map`".into()),
+            ]],
+            // The existing scalar proof remains all-or-nothing; ready-region
+            // formation must instead retain the supported terminal path.
+            scalar_transitions: vec![Err("unsupported awaited task call `task.map`".into())],
+        };
+
+        let formation = catalog.ready_channel_regions();
+        assert_eq!(formation.regions.len(), 1);
+        assert_eq!(formation.regions[0].id, 4);
+        assert_eq!(formation.regions[0].path_ordinal, 0);
+        assert_eq!(formation.regions[0].operations, ready_channel_operations(4, &[send]));
+        assert_eq!(formation.excluded.len(), 1);
+        assert_eq!(formation.excluded[0].id, 4);
+        assert_eq!(formation.excluded[0].path_ordinal, 1);
+        assert!(matches!(
+            formation.excluded[0].reason,
+            ReadyChannelRegionExclusionReason::UnsupportedTransition { .. }
+        ));
+    }
+
+    #[test]
+    fn region_successors_include_all_spawn_and_call_targets() {
+        assert_eq!(
+            transition_successors(&[
+                ScalarTransition::Spawn { child: 9, resume: 4 },
+                ScalarTransition::Call { callee: 12, resume: 4 },
+            ]),
+            [4, 9, 12]
+        );
+    }
+
+    #[test]
     fn typed_catalog_flattens_owned_scalar_wrappers_and_pins_state_order() {
         let mut module = witchy_syntax::parser::parse_module(
             "type Id:\n    Id(Int)\n\nfn entry(id: Id, n: Int) -> Nil:\n    ()\n\nfn resume(own id: Id, own n: Int) -> Nil:\n    ()\n",
@@ -2140,7 +2634,12 @@ mod tests {
         let state_ids = HashMap::from_iter([("resume".to_string(), 7)]);
 
         assert_eq!(
-            scalar_transitions_for_function(function, &state_ids, &table, &HashMap::new()),
+            aggregate_scalar_transition_paths(&scalar_transition_paths_for_function(
+                function,
+                &state_ids,
+                &table,
+                &HashMap::new(),
+            )),
             Ok(vec![ScalarTransition::ChannelSend(AwaitChannelOperationPlan {
                 endpoint: ChannelEndpointPlace::Static("tx".into()),
                 payload_layout: ChannelPayloadLayout::Boxed,
