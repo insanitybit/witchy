@@ -601,6 +601,59 @@ fn git_output(root: &Path, args: &[&str]) -> std::process::Output {
         .expect("run git for queue fixture")
 }
 
+/// `check.sh` writes a per-commit receipt when a focused shard goes green, and
+/// `submit` warns when the commit being queued has none.
+///
+/// This is worth a test rather than trusting the message to stay wired up:
+/// over 7 days, 51% of all merge-gate seconds went to attempts that never
+/// landed, and 168 of 179 genuine reds -- 10.8h, 21% of ALL gate time -- died
+/// in the `tests` stage that `check.sh --fast` runs locally. The warning is
+/// the only thing telling an author their submission was never validated.
+///
+/// Keyed by COMMIT: a receipt for a different SHA must not silence the warning,
+/// or amending a branch after validating it would submit unvalidated work
+/// quietly. Advisory by design -- both submissions must still SUCCEED.
+#[test]
+fn submit_warns_when_the_commit_has_no_green_shard_receipt() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+
+    let unvalidated = fixture.mq_ok(&["submit", "a"], "true");
+    let stderr = String::from_utf8_lossy(&unvalidated.stderr).into_owned();
+    assert!(
+        stderr.contains("no green shard recorded"),
+        "an unvalidated submission must say so: {stderr}",
+    );
+
+    // A receipt for some OTHER commit must not count.
+    let receipts = fixture.state.join("receipts");
+    fs::create_dir_all(&receipts).expect("create receipts dir");
+    fs::write(receipts.join(format!("{}.json", "0".repeat(40))), "{}\n")
+        .expect("write unrelated receipt");
+    let still_unvalidated = fixture.mq_ok(&["submit", "a"], "true");
+    assert!(
+        String::from_utf8_lossy(&still_unvalidated.stderr).contains("no green shard recorded"),
+        "a receipt for a different commit must not silence the warning",
+    );
+
+    // The real receipt for this commit does.
+    let sha = String::from_utf8_lossy(
+        &run_git(&fixture.root, &["rev-parse", "refs/heads/a"]).stdout,
+    )
+    .trim()
+    .to_owned();
+    fs::write(
+        receipts.join(format!("{sha}.json")),
+        format!("{{\"sha\":\"{sha}\",\"shard\":\"fast\"}}\n"),
+    )
+    .expect("write receipt for the submitted commit");
+    let validated = fixture.mq_ok(&["submit", "a"], "true");
+    assert!(
+        !String::from_utf8_lossy(&validated.stderr).contains("no green shard recorded"),
+        "a validated commit must not be warned about: {}",
+        String::from_utf8_lossy(&validated.stderr),
+    );
+}
+
 fn submit_stack(fixture: &QueueFixture, branches: &[&str]) {
     for (index, branch) in branches.iter().enumerate() {
         if index == 0 {

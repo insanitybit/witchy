@@ -513,6 +513,44 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+# Record that THIS commit passed a focused shard, so `merge-queue.sh submit`
+# can tell a qualified branch from an unvalidated one.
+#
+# Why this exists: over 7 days, 51% of all merge-gate seconds went to attempts
+# that never landed, and 168 of 179 genuine reds (10.8h -- 21% of ALL gate
+# time) failed in the `tests` stage. That is precisely what `--fast` runs, so
+# those were failures a pre-submit shard would have caught. Each one burns a
+# whole serialized gate while every queued branch waits.
+#
+# Keyed by COMMIT, not branch: amending or adding a commit must invalidate the
+# receipt, because the thing that was validated no longer exists. Receipts are
+# advisory metadata -- a failure to write one must never fail a green shard,
+# so every step here tolerates error.
+#
+# Serialized coordinator gates are skipped (WITCHY_GATE_SCOPE is set): that IS
+# the gate, not evidence gathered before submitting to it.
+record_shard_receipt() { # record_shard_receipt <shard-label>
+    [ -z "${WITCHY_GATE_SCOPE+x}" ] || return 0
+    local sha main_git main_root dir
+    sha="$(git rev-parse HEAD 2>/dev/null)" || return 0
+    [ -n "$sha" ] || return 0
+    # A dirty tree means the shard validated HEAD *plus* uncommitted edits, so a
+    # receipt naming HEAD would certify content that was never run -- exactly
+    # the false confidence this mechanism exists to remove. Found by dogfooding:
+    # the first real green shard wrote a receipt for master's tip while the
+    # change under test sat uncommitted beside it.
+    [ -z "$(git status --porcelain 2>/dev/null)" ] || return 0
+    main_git="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+    main_root="$(dirname "$main_git")"
+    # shellcheck source=/dev/null
+    . "$main_root/scripts/state-paths.sh" 2>/dev/null || return 0
+    dir="$(witchy_merge_queue_state_dir "$main_root" 2>/dev/null)/receipts" || return 0
+    mkdir -p "$dir" 2>/dev/null || return 0
+    printf '{"sha":"%s","shard":"%s","at":"%s"}\n' \
+        "$sha" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$dir/$sha.json" 2>/dev/null || return 0
+    return 0
+}
+
 witchy_fmt_check() {
     local files=()
     local f
@@ -632,6 +670,7 @@ if [ -n "$shard" ]; then
             cargo nextest run --workspace -E "$ungated_filter_grimoire"
             ;;
     esac
+    record_shard_receipt "$shard"
     printf '\n\033[1;32mshard %s green\033[0m in %ds\n' "$shard" "$(( $(date +%s) - shard_t0 ))"
     exit 0
 fi
@@ -961,6 +1000,7 @@ if [ "$fast" -eq 1 ]; then
     # Run its hermetic shard after all product work so it reuses that artifact
     # and no background compiler load can distort process/timing assertions.
     [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
+    record_shard_receipt fast
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
     exit 0
 fi
@@ -1077,6 +1117,7 @@ if [ "$full" -eq 1 ]; then
     fi
 fi
 
+record_shard_receipt full
 printf '\n\033[1;32mall green\033[0m'
 [ "$full" -eq 1 ] || printf ' — run with --full for the e2e acceptance test'
 printf '\n'

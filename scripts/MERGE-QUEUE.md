@@ -78,6 +78,20 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   separate from `gate.lock`; unrelated editing and agent checks do not wait on
   it. Atomic mutation makes concurrent submissions cycle-safe and prevents a
   coordinator state update from overwriting a resubmission.
+- `receipts/<sha>.json` — per-COMMIT evidence that a focused shard went green,
+  written by `check.sh` (skipped for serialized coordinator gates, which are
+  the gate rather than evidence gathered before it). `submit` warns when the
+  commit being queued has none. Keyed by commit so amending invalidates it,
+  and written ONLY from a clean tree: a shard run over uncommitted edits
+  validated HEAD-plus-those-edits, so a receipt naming HEAD would certify
+  content that never ran.
+  Rationale, measured over 7d: 51% of all gate seconds went to attempts that
+  never landed, and **168 of 179 genuine reds -- 10.8h, 21% of ALL gate time
+  -- failed in the `tests` stage**, which `check.sh --fast` runs locally.
+  Those gates rediscovered, under the lock, what a shard would have reported
+  in the author's own worktree. The warning is **advisory on purpose**:
+  refusing an unvalidated submission is a protocol change for every agent, so
+  measure how often it fires before anything starts blocking.
 - `journal.jsonl` — append-only event log, the system's ground truth.
   Events: `submitted`, `merged`, `red`, `timeout`, `conflict` (won't rebase),
   `blocked` (gate GREEN but ff-merge refused — see below), `requeued`

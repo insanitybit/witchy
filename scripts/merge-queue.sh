@@ -1206,6 +1206,27 @@ cmd_submit() {
         note "overlap warning skipped: queue has $queue_count pending changes (authoritative gate conflict check remains enabled)"
     fi
 
+    # Shard receipt. `check.sh` writes one per COMMIT when a focused shard goes
+    # green; its absence means this exact commit was never validated locally.
+    #
+    # Measured over 7d: 51% of all gate seconds went to attempts that never
+    # landed, and 168 of 179 genuine reds -- 10.8h, 21% of ALL gate time --
+    # failed in the `tests` stage, which `check.sh --fast` runs. Those gates
+    # were spent rediscovering what a shard would have reported in the
+    # author's own worktree, while every queued branch waited behind them.
+    #
+    # ADVISORY ONLY, deliberately. Refusing an unvalidated submission would be
+    # a protocol change for every agent, and a warning first tells us how often
+    # this actually fires before anything starts blocking.
+    local tip_sha receipt_dir
+    tip_sha="$(git -C "$root" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+    receipt_dir="$(witchy_merge_queue_state_dir "$root" 2>/dev/null || true)/receipts"
+    if [ -n "$tip_sha" ] && [ ! -f "$receipt_dir/$tip_sha.json" ]; then
+        note "WARNING: no green shard recorded for $branch@${tip_sha:0:9}."
+        note "         Run './scripts/test-for-paths.sh --run' (or check.sh --fast) first:"
+        note "         a red gate here costs every queued branch a full serialized cycle."
+    fi
+
     # A change ID is stable across updated SHAs and red-parent resubmissions.
     # Dependencies store IDs rather than branch names, so a child cannot become
     # accidentally ready merely because its parent's queue file was replaced.
