@@ -4673,6 +4673,28 @@ fn main() -> Int:
         assert!(deoptimized_trap.contains("app.scan"), "deoptimized near miss traps: {deoptimized_trap}");
     }
 
+    #[test]
+    fn brainfuck_dynamic_tape_pointer_retains_byte_bounds_guard() {
+        // The repository's Brainfuck interpreter is a real byte consumer, but
+        // its tape pointer is controlled by the program being interpreted. It
+        // is therefore deliberately a negative RFC-0153 case: optimizing the
+        // code cursor must not turn a separate dynamic tape access unchecked.
+        let module = link_bytes_app(include_str!("../../../examples/brainfuck/src/brainfuck.witchy"));
+        let default = witchy_syntax::opt::OptSet::default_set();
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&module).expect_lowered("lower Brainfuck byte fallback"),
+        );
+        witchy_syntax::opt::set_for_tests(None);
+        let run = wat.split("(func $app.run").nth(1).expect("Brainfuck run WAT");
+        let run = run.split("(func $").next().expect("Brainfuck run body");
+        assert!(run.contains("i32.load8_u"), "Brainfuck still performs byte reads:\n{run}");
+        assert!(
+            run.contains("call $__witchy_abort"),
+            "the dynamic tape pointer keeps its byte bounds guard:\n{run}",
+        );
+    }
+
     fn optimizer_policy_payloads(source: &str) -> Vec<Vec<u8>> {
         let module = parse_module(source).expect("parse optimizer-policy fixture");
         let bytes = compile_module_binary(&module).expect_lowered("lower optimizer-policy fixture");
