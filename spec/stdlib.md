@@ -4328,6 +4328,9 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Open(Int, fn(Int) -> Task(a))`
 - `Push(Int, __Msg, fn(Nil) -> Task(a))`
 - `Pull(Int, fn(Option(__Msg)) -> Task(a))`
+- `OpenI64(Int, fn(Int) -> Task(a))`
+- `PushI64(Int, Int, fn(Nil) -> Task(a))`
+- `PullI64(Int, fn(Option(Int)) -> Task(a))`
 - `Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
@@ -4380,6 +4383,10 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitJoin(Int, fn(Nil) -> Task(Nil))`
 - `Ended`
 
+#### `type __TypedI64Ring = (List(Int), Int, Int, Int)`
+
+The compiler-owned Int ring is deliberately parallel to `channels`, not a replacement for it. A channel id has at most one active typed entry. Once a no-ready path materializes its FIFO values below, that entry becomes None and every later operation is handled by the ordinary erased scheduler ring.
+
 #### `fn done(own x: a) -> Task(a)`
 
 A finished task.
@@ -4407,6 +4414,14 @@ Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
 
 Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
+
+#### `fn __channel_open_i64(capacity: Int) -> Task(ChannelId)`
+
+RFC-0152 compiler-private typed ready-path bridge. These functions retain the public ChannelId and Task contracts; only the yielded Step carries its exact Int payload. `task.run` falls back to the ordinary ring on the first blocking operation.
+
+#### `fn __channel_send_i64(channel: ChannelId, msg: Int) -> Task(Nil)`
+
+#### `fn __channel_recv_i64(channel: ChannelId) -> Task(Option(Int))`
 
 #### `fn __channel_select2_map(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
 
