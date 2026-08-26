@@ -29,6 +29,82 @@ pub(super) fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<F
     }
 }
 
+pub(super) fn dir_file_value_for_policy(
+    dir: &DirValue,
+    policy: &str,
+    rel: &str,
+    write: bool,
+) -> Result<FileValue, RuntimeError> {
+    let base = match dir {
+        DirValue::Fs(base) => base,
+        #[cfg(feature = "test-fixtures")]
+        DirValue::Fixture(_) => {
+            return err("internal error: fixture Dir bypassed fixture dispatch");
+        }
+    };
+    if policy.is_empty() {
+        return dir_file_value(dir, rel, write);
+    }
+    match base
+        .entry_kind_exact(rel)
+        .map_err(|error| RuntimeError { message: error.0 })?
+    {
+        Some(witchy_runtime::confine::ConfinedEntryKind::File) => {}
+        None if write => {}
+        None => return dir_file_value(dir, rel, write),
+        Some(witchy_runtime::confine::ConfinedEntryKind::Directory) => {
+            return err(format!("`{rel}` is a directory, not a file"));
+        }
+        Some(witchy_runtime::confine::ConfinedEntryKind::Other) => {
+            return err(format!("`{rel}` is a filesystem alias or unsupported entry"));
+        }
+    }
+    dir_file_value(dir, rel, true)
+}
+
+pub(super) fn visible_entry_kind(
+    dir: &DirValue,
+    policy: &str,
+    rel: &str,
+) -> Result<Option<bool>, RuntimeError> {
+    let base = match dir {
+        DirValue::Fs(base) => base,
+        #[cfg(feature = "test-fixtures")]
+        DirValue::Fixture(_) => {
+            return err("internal error: fixture Dir bypassed fixture dispatch");
+        }
+    };
+    if policy.is_empty() {
+        if !base.exists(rel).unwrap_or(false) {
+            return Ok(None);
+        }
+        return Ok(Some(base.is_dir(rel).unwrap_or(false)));
+    }
+    let kind = base
+        .entry_kind_exact(rel)
+        .map_err(|error| RuntimeError { message: error.0 })?;
+    Ok(match kind {
+        Some(witchy_runtime::confine::ConfinedEntryKind::File)
+            if witchy_caps::capabilities::dir_admits(policy, rel, false) => Some(false),
+        Some(witchy_runtime::confine::ConfinedEntryKind::Directory)
+            if witchy_caps::capabilities::dir_admits(policy, rel, true) => Some(true),
+        _ => None,
+    })
+}
+
+pub(super) fn exact_entry_kind(
+    dir: &DirValue,
+    rel: &str,
+) -> Result<Option<witchy_runtime::confine::ConfinedEntryKind>, RuntimeError> {
+    match dir {
+        DirValue::Fs(base) => base
+            .entry_kind_exact(rel)
+            .map_err(|error| RuntimeError { message: error.0 }),
+        #[cfg(feature = "test-fixtures")]
+        DirValue::Fixture(_) => err("internal error: fixture Dir bypassed fixture dispatch"),
+    }
+}
+
 pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> {
     match file {
         FileValue::Fs(file) => {

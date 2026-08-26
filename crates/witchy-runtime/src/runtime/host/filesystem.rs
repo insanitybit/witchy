@@ -183,8 +183,41 @@ fn dir_child_backing(dir: &DirAuthority, name: &str) -> Result<DirBacking> {
 fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBacking> {
     match &dir.backing {
         DirBacking::Fs(base) => {
-            Ok(FileBacking::Fs(confine(base.file(rel, !write))?))
+            if dir.policy.is_empty() {
+                return Ok(FileBacking::Fs(confine(base.file(rel, !write))?));
+            }
+            match confine(base.entry_kind_exact(rel))? {
+                Some(crate::confine::ConfinedEntryKind::File) => {}
+                None if write => {}
+                None => return Ok(FileBacking::Fs(confine(base.file(rel, true))?)),
+                Some(crate::confine::ConfinedEntryKind::Directory) => {
+                    return Err(Error::msg(format!("`{rel}` is a directory, not a file")));
+                }
+                Some(crate::confine::ConfinedEntryKind::Other) => {
+                    return Err(Error::msg(format!(
+                        "`{rel}` is a filesystem alias or unsupported entry"
+                    )));
+                }
+            }
+            Ok(FileBacking::Fs(confine(base.file(rel, false))?))
         }
+    }
+}
+
+fn visible_entry_kind(dir: &DirAuthority, rel: &str) -> Result<Option<bool>> {
+    let DirBacking::Fs(base) = &dir.backing;
+    if dir.policy.is_empty() {
+        if !base.exists(rel).unwrap_or(false) {
+            return Ok(None);
+        }
+        return Ok(Some(base.is_dir(rel).unwrap_or(false)));
+    }
+    match confine(base.entry_kind_exact(rel))? {
+        Some(crate::confine::ConfinedEntryKind::File)
+            if witchy_caps::capabilities::dir_admits(&dir.policy, rel, false) => Ok(Some(false)),
+        Some(crate::confine::ConfinedEntryKind::Directory)
+            if witchy_caps::capabilities::dir_admits(&dir.policy, rel, true) => Ok(Some(true)),
+        _ => Ok(None),
     }
 }
 
@@ -477,9 +510,7 @@ fn host_dir_exists(
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let ok = match &dir.backing {
-        DirBacking::Fs(base) => base.exists(&rel).unwrap_or(false),
-    };
+    let ok = visible_entry_kind(&dir, &rel).ok().flatten().is_some();
     Ok(ok as i32)
 }
 
@@ -493,9 +524,7 @@ fn host_dir_is_dir(
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let ok = match &dir.backing {
-        DirBacking::Fs(base) => base.is_dir(&rel).unwrap_or(false),
-    };
+    let ok = visible_entry_kind(&dir, &rel).ok().flatten() == Some(true);
     Ok(ok as i32)
 }
 
@@ -647,6 +676,7 @@ fn host_dir_create_new(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
+    let _ = dir_file_backing(&dir, &rel, true)?;
     let created = match &dir.backing {
         DirBacking::Fs(base) => base.create_new(&rel, contents.as_bytes()).map_err(|e| {
             Error::msg(format!("create_new failed for `{rel}`: {}", e.0))
@@ -671,6 +701,7 @@ fn host_dir_replace(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
+    let _ = dir_file_backing(&dir, &rel, true)?;
     match &dir.backing {
         DirBacking::Fs(base) => base.replace(&rel, contents.as_bytes()).map_err(|e| {
             Error::msg(format!("replace failed for `{rel}`: {}", e.0))
@@ -692,8 +723,38 @@ fn host_dir_rename(
     let to = read_wstr(data, to_ptr)?;
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
-    dir_guard(&dir, &from, false)?;
-    dir_guard(&dir, &to, false)?;
+    let source_is_dir = if dir.policy.is_empty() {
+        false
+    } else {
+        let DirBacking::Fs(base) = &dir.backing;
+        match confine(base.entry_kind_exact(&from))? {
+            Some(crate::confine::ConfinedEntryKind::File) => false,
+            Some(crate::confine::ConfinedEntryKind::Directory) => true,
+            Some(crate::confine::ConfinedEntryKind::Other) => {
+                return Err(Error::msg(format!(
+                    "`{from}` is a filesystem alias or unsupported entry"
+                )));
+            }
+            None => return Err(Error::msg(format!("rename source `{from}` does not exist"))),
+        }
+    };
+    dir_guard(&dir, &from, source_is_dir)?;
+    dir_guard(&dir, &to, source_is_dir)?;
+    if !dir.policy.is_empty() {
+        let DirBacking::Fs(base) = &dir.backing;
+        if let Some(kind) = confine(base.entry_kind_exact(&to))? {
+            let destination_is_dir = match kind {
+                crate::confine::ConfinedEntryKind::File => false,
+                crate::confine::ConfinedEntryKind::Directory => true,
+                crate::confine::ConfinedEntryKind::Other => {
+                    return Err(Error::msg(format!(
+                        "`{to}` is a filesystem alias or unsupported entry"
+                    )));
+                }
+            };
+            dir_guard(&dir, &to, destination_is_dir)?;
+        }
+    }
     match &dir.backing {
         DirBacking::Fs(base) => base.rename(&from, &to).map_err(|e| {
             Error::msg(format!("rename failed (`{from}` -> `{to}`): {}", e.0))

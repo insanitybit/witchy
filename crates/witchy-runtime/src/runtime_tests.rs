@@ -357,6 +357,48 @@
             (call $file_write (call $mint_file (i32.const 0)) (i32.const 0))))
     "#;
 
+    const VM_WITH_DIR_START_AUTHORITY: &str = r#"
+        (module
+          (import "witchy" "print" (func $print (param i32 i32)))
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_exists" (func $dir_exists (param externref i32) (result i32)))
+          (import "witchy" "fill_pending" (func $fill_pending (param i32)))
+          (import "witchy" "vm_with_dir_run"
+            (func $vm_with_dir_run (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "\0a\00\00\00Cargo.toml")
+          (data (i32.const 128) "\00\00\00\00")
+          (data (i32.const 260) "STOLEN")
+          (global $found (mut i32) (i32.const 0))
+          (func $start
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            call $dir_exists
+            global.set $found)
+          (start $start)
+          (func (export "__galloc") (param i32) (result i32) i32.const 1024)
+          (func (export "__call_dir_bytes") (param i32 externref i32) (result i32)
+            i32.const 256
+            global.get $found
+            if (result i32) i32.const 6 else i32.const 0 end
+            i32.store
+            i32.const 256)
+          (func (export "run")
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            i32.const 128
+            call $vm_with_dir_run
+            drop
+            i32.const 512
+            call $fill_pending
+            i32.const 516
+            i32.const 512
+            i32.load
+            call $print))
+    "#;
+
     /// The core thesis: a capability that was not granted simply does not exist
     /// for the VM, so it cannot even be instantiated.
     #[test]
@@ -379,6 +421,30 @@
             .spawn(IMPORTS_PRINT, Capabilities { print: true, ..Default::default() }, 4)
             .unwrap();
         vm.run().unwrap();
+    }
+
+    #[test]
+    fn vm_with_dir_start_observes_only_the_delegated_dir() {
+        let root = tempfile::tempdir().expect("empty delegated root");
+        assert!(std::path::Path::new("Cargo.toml").exists(), "test requires workspace cwd marker");
+        assert!(!root.path().join("Cargo.toml").exists());
+
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(
+                VM_WITH_DIR_START_AUTHORITY,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.path().to_path_buf()),
+                    dir_read: true,
+                    ..Capabilities::default()
+                },
+                4,
+            )
+            .expect("instantiate authority probe");
+        vm.run().expect("run authority probe");
+        assert_eq!(vm.output(), vec![String::new()]);
     }
 
     /// Each VM's linear memory is its own; the runtime hands out separate

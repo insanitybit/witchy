@@ -4,7 +4,6 @@
 //! private fields and helpers.
 
 use std::io::{BufReader, Read, Write};
-use std::net::TcpListener;
 use std::rc::Rc;
 
 use witchy_runtime::net::Stream;
@@ -2318,7 +2317,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::File(dir_file_value(base, rel, false)?)))
+                    Ok(Some(Value::File(dir_file_value_for_policy(base, pol, rel, false)?)))
                 }
                 _ => err("read_file expects a Dir and a relative path"),
             },
@@ -2341,7 +2340,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::File(dir_file_value(base, rel, true)?)))
+                    Ok(Some(Value::File(dir_file_value_for_policy(base, pol, rel, true)?)))
                 }
                 _ => err("write_file expects a Dir and a relative path"),
             },
@@ -2396,9 +2395,16 @@ impl Interpreter {
                             return err("exec cannot run programs from a fixture-backed Dir");
                         }
                     };
-                    let prog = base
-                        .file(path, true)
-                        .map_err(|error| RuntimeError { message: error.0 })?;
+                    let prog = match dir_file_value_for_policy(
+                        &DirValue::Fs(base.clone()),
+                        pol,
+                        path,
+                        false,
+                    )? {
+                        FileValue::Fs(file) => file,
+                        #[cfg(feature = "test-fixtures")]
+                        FileValue::Fixture(_) => unreachable!(),
+                    };
                     let argv: Vec<&str> =
                         if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
                     let output = match prog.run(&argv, stdin) {
@@ -2452,7 +2458,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::str(read_file_value(&dir_file_value(base, rel, false)?)?)))
+                    Ok(Some(Value::str(read_file_value(&dir_file_value_for_policy(base, pol, rel, false)?)?)))
                 }
                 // A `File` is already a confined path; read it directly (RFC-0012).
                 [Value::File(file)] => Ok(Some(Value::str(read_file_value(file)?))),
@@ -2507,7 +2513,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    write_file_value(&dir_file_value(base, rel, true)?, contents)?;
+                    write_file_value(&dir_file_value_for_policy(base, pol, rel, true)?, contents)?;
                     Ok(Some(Value::Unit))
                 }
                 // A `File` is already a confined path; write it directly (RFC-0012).
@@ -2547,7 +2553,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    match dir_file_value(base, rel, true)? {
+                    match dir_file_value_for_policy(base, pol, rel, true)? {
                         FileValue::Fs(file) => {
                             match file.append_all(contents.as_bytes()) {
                                 Ok(()) => Ok(Some(Value::Unit)),
@@ -2595,7 +2601,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    match dir_file_value(base, rel, true)? {
+                    match dir_file_value_for_policy(base, pol, rel, true)? {
                         FileValue::Fs(file) => {
                             match file.append_all(data) {
                                 Ok(()) => Ok(Some(Value::Unit)),
@@ -2632,7 +2638,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::Bytes(read_file_value_bytes(&dir_file_value(base, rel, false)?)?)))
+                    Ok(Some(Value::Bytes(read_file_value_bytes(&dir_file_value_for_policy(base, pol, rel, false)?)?)))
                 }
                 _ => err("read_bytes expects a Dir and a relative path"),
             },
@@ -2659,7 +2665,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    write_file_value_bytes(&dir_file_value(base, rel, true)?, data)?;
+                    write_file_value_bytes(&dir_file_value_for_policy(base, pol, rel, true)?, data)?;
                     Ok(Some(Value::Unit))
                 }
                 _ => err("write_bytes expects a Dir, a relative path, and Bytes"),
@@ -2674,7 +2680,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    match dir_file_value(base, rel, false)? {
+                    match dir_file_value_for_policy(base, pol, rel, false)? {
                         FileValue::Fs(file) =>
                             match file.set_executable() {
                                 Ok(()) => Ok(Some(Value::Unit)),
@@ -2717,6 +2723,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
+                    let _ = dir_file_value_for_policy(base, pol, rel, true)?;
                     match base {
                         DirValue::Fs(base) => match base.create_new(rel, contents.as_bytes()) {
                             Ok(created) => Ok(Some(Value::Bool(created))),
@@ -2755,6 +2762,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
+                    let _ = dir_file_value_for_policy(base, pol, rel, true)?;
                     match base {
                         DirValue::Fs(base) => match base.replace(rel, contents.as_bytes()) {
                             Ok(()) => Ok(Some(Value::Unit)),
@@ -2789,11 +2797,37 @@ impl Interpreter {
                     }
                 }
                 [Value::Dir(base, pol), Value::Str(from), Value::Str(to)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, from, false) {
+                    let source_is_dir = if pol.is_empty() {
+                        false
+                    } else {
+                        match exact_entry_kind(base, from)? {
+                            Some(witchy_runtime::confine::ConfinedEntryKind::File) => false,
+                            Some(witchy_runtime::confine::ConfinedEntryKind::Directory) => true,
+                            Some(witchy_runtime::confine::ConfinedEntryKind::Other) => {
+                                return err(format!("`{from}` is a filesystem alias or unsupported entry"));
+                            }
+                            None => return err(format!("rename source `{from}` does not exist")),
+                        }
+                    };
+                    if !witchy_caps::capabilities::dir_admits(pol, from, source_is_dir) {
                         return err(format!("`{from}` is not permitted by this Dir capability's entry policy"));
                     }
-                    if !witchy_caps::capabilities::dir_admits(pol, to, false) {
+                    if !witchy_caps::capabilities::dir_admits(pol, to, source_is_dir) {
                         return err(format!("`{to}` is not permitted by this Dir capability's entry policy"));
+                    }
+                    if !pol.is_empty() {
+                        if let Some(destination) = exact_entry_kind(base, to)? {
+                            let destination_is_dir = match destination {
+                                witchy_runtime::confine::ConfinedEntryKind::File => false,
+                                witchy_runtime::confine::ConfinedEntryKind::Directory => true,
+                                witchy_runtime::confine::ConfinedEntryKind::Other => {
+                                    return err(format!("`{to}` is a filesystem alias or unsupported entry"));
+                                }
+                            };
+                            if !witchy_caps::capabilities::dir_admits(pol, to, destination_is_dir) {
+                                return err(format!("`{to}` is not permitted by this Dir capability's entry policy"));
+                            }
+                        }
                     }
                     match base {
                         DirValue::Fs(base) => match base.rename(from, to) {
@@ -2824,12 +2858,8 @@ impl Interpreter {
                         )),
                     }
                 }
-                [Value::Dir(base, _), Value::Str(rel)] => {
-                    let ok = match base {
-                        DirValue::Fs(base) => base.exists(rel).unwrap_or(false),
-                        #[cfg(feature = "test-fixtures")]
-                        DirValue::Fixture(_) => false,
-                    };
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    let ok = visible_entry_kind(base, pol, rel).ok().flatten().is_some();
                     Ok(Some(Value::Bool(ok)))
                 }
                 _ => err("exists expects a Dir and a relative path"),
@@ -2850,12 +2880,8 @@ impl Interpreter {
                         )),
                     }
                 }
-                [Value::Dir(base, _), Value::Str(rel)] => {
-                    let ok = match base {
-                        DirValue::Fs(base) => base.is_dir(rel).unwrap_or(false),
-                        #[cfg(feature = "test-fixtures")]
-                        DirValue::Fixture(_) => false,
-                    };
+                [Value::Dir(base, pol), Value::Str(rel)] => {
+                    let ok = visible_entry_kind(base, pol, rel).ok().flatten() == Some(true);
                     Ok(Some(Value::Bool(ok)))
                 }
                 _ => err("is_dir expects a Dir and a relative path"),
@@ -3541,14 +3567,18 @@ impl Interpreter {
                 }
                 _ => err("try_connect expects a Net and an address"),
             },
-            // (RFC-0020) Resolve a hostname to its current IP literals. No allowlist
-            // filtering — the program inspects the IPs and `connect_pinned` re-checks
-            // the chosen one, so resolve adds no authority beyond `connect`. An empty
-            // list signals a resolution failure (the std wrapper turns it into `Err`).
+            // (RFC-0020) Resolve a hostname to its current IP literals. DNS queries
+            // are observable network operations, so the host must be explicitly
+            // admitted by this Net before the ambient resolver is invoked.
             "resolve" => match args {
-                [Value::Net(_allow), Value::Str(host)] => {
-                    let ips = witchy_runtime::net::resolve_ips(host);
-                    Ok(Some(Value::list(ips.into_iter().map(Value::str).collect())))
+                [Value::Net(allow), Value::Str(host)] => {
+                    let ips = match witchy_caps::capabilities::resolve_host_admitted(allow, host) {
+                        Ok(ips) => ips,
+                        Err(error) => return err(format!("resolve: {error}")),
+                    };
+                    Ok(Some(Value::list(
+                        ips.into_iter().map(|ip| Value::str(ip.to_string())).collect(),
+                    )))
                 }
                 _ => err("resolve expects a Net and a host"),
             },
@@ -3716,16 +3746,13 @@ impl Interpreter {
             // server side of the network capability. Returns a `Listener`.
             "listen" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    if !witchy_caps::capabilities::net_allows(allow, addr) {
-                        return err(format!("listen: `{addr}` is not permitted by this Net capability"));
-                    }
-                    match TcpListener::bind(addr.as_str()) {
+                    match witchy_runtime::net::bind_admitted_listener(allow, addr) {
                         Ok(listener) => {
                             let id = self.listeners.len();
                             self.listeners.push((listener, None));
                             Ok(Some(Value::Listener(id)))
                         }
-                        Err(e) => err(format!("listen on `{addr}` failed: {e}")),
+                        Err(e) => err(e),
                     }
                 }
                 _ => err("listen expects a Net and an address"),
@@ -3737,20 +3764,17 @@ impl Interpreter {
             // host-side and yield ordinary `Socket`s.
             "listen_tls" => match args {
                 [Value::Net(allow), Value::Str(addr), Value::Str(cert_pem), Value::Secret(key_bytes, _)] => {
-                    if !witchy_caps::capabilities::net_allows(allow, addr) {
-                        return err(format!("listen: `{addr}` is not permitted by this Net capability"));
-                    }
                     let config = match witchy_runtime::net::server_tls_config(cert_pem, key_bytes) {
                         Ok(config) => config,
                         Err(message) => return err(message),
                     };
-                    match TcpListener::bind(addr.as_str()) {
+                    match witchy_runtime::net::bind_admitted_listener(allow, addr) {
                         Ok(listener) => {
                             let id = self.listeners.len();
                             self.listeners.push((listener, Some(config)));
                             Ok(Some(Value::Listener(id)))
                         }
-                        Err(e) => err(format!("listen on `{addr}` failed: {e}")),
+                        Err(e) => err(e),
                     }
                 }
                 _ => err("listen_tls expects a Net, an address, a certificate PEM, and a Secret key"),

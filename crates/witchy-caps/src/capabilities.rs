@@ -106,31 +106,30 @@ fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
 /// `host:*` (any port on that host), `A.B.C.D/n:port` (any IPv4 in the block,
 /// that port), or `A.B.C.D/n:*` (any IPv4 in the block, any port).
 ///
-/// Exact string equality is the fast path and the fallback (so existing
-/// `host:port` allowlists behave unchanged). Shared by BOTH backends so the
-/// network confinement check is one implementation — the same discipline as
-/// the shared handle-anchored `ConfinedDir` (a deliberate parity/security
-/// invariant).
+/// Network identities are compared after parsing: DNS names are ASCII
+/// case-insensitive with an optional root dot, IP literals use [`std::net::IpAddr`]
+/// identity, and decimal ports use their numeric value. IPv4-mapped IPv6 literals
+/// are treated as their IPv4 identity, so alternate spellings cannot bypass an
+/// exact or CIDR deny. Shared by BOTH backends so the network confinement check is
+/// one implementation — the same discipline as the shared handle-anchored
+/// `ConfinedDir` (a deliberate parity/security invariant).
 ///
 /// `target` is expected to be concrete (a literal IP or a resolved host); the
 /// connect path additionally re-checks the *resolved* IP, so a CIDR pattern with
 /// a hostname target is matched against the address actually dialed, not the
 /// name (DNS-rebinding safe — see the interpreter/runtime connect sites).
 pub fn address_admits(pattern: &str, target: &str) -> bool {
-    if pattern == target {
-        return true;
-    }
     let (phost, pport) = split_host_port(pattern);
     let (thost, tport) = split_host_port(target);
-    if pport != "*" && pport != tport {
+    if !port_admits(pport, tport) {
         return false;
     }
-    if phost == thost {
+    if phost == "*" {
         return true;
     }
     // A CIDR host pattern admits a literal IP target inside the block — IPv4…
     if let Some((base, bits)) = parse_ipv4_cidr(phost) {
-        if let Ok(ip) = thost.parse::<std::net::Ipv4Addr>() {
+        if let Some(ip) = parse_ipv4_identity(thost) {
             return ipv4_in_cidr(ip, base, bits);
         }
     }
@@ -138,11 +137,54 @@ pub fn address_admits(pattern: &str, target: &str) -> bool {
     // `fe80::/10`, `fc00::/7` ranges only ever exact-matched before, so an internal IPv6
     // address slipped past `net.deny(confine.private())`). Hosts may be bracketed (`[::1]`).
     if let Some((base, bits)) = parse_ipv6_cidr(phost) {
-        if let Ok(ip) = strip_brackets(thost).parse::<std::net::Ipv6Addr>() {
+        if let Some(ip) = parse_ipv6_identity(thost) {
             return ipv6_in_cidr(ip, base, bits);
         }
     }
-    false
+    host_eq(phost, thost)
+}
+
+fn port_admits(pattern: &str, target: &str) -> bool {
+    pattern == "*"
+        || match (pattern.parse::<u16>(), target.parse::<u16>()) {
+            (Ok(pattern), Ok(target)) => pattern == target,
+            _ => pattern == target,
+        }
+}
+
+fn canonical_dns_name(host: &str) -> String {
+    strip_brackets(host)
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+}
+
+fn parse_ipv4_identity(host: &str) -> Option<std::net::Ipv4Addr> {
+    let host = strip_brackets(host);
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        return Some(ip);
+    }
+    host.parse::<std::net::Ipv6Addr>()
+        .ok()
+        .and_then(|ip| ip.to_ipv4_mapped())
+}
+
+fn parse_ipv6_identity(host: &str) -> Option<std::net::Ipv6Addr> {
+    let ip = strip_brackets(host).parse::<std::net::Ipv6Addr>().ok()?;
+    ip.to_ipv4_mapped().is_none().then_some(ip)
+}
+
+fn host_eq(left: &str, right: &str) -> bool {
+    match (
+        parse_ipv4_identity(left),
+        parse_ipv4_identity(right),
+        parse_ipv6_identity(left),
+        parse_ipv6_identity(right),
+    ) {
+        (Some(left), Some(right), _, _) => left == right,
+        (_, _, Some(left), Some(right)) => left == right,
+        (None, None, None, None) => canonical_dns_name(left) == canonical_dns_name(right),
+        _ => false,
+    }
 }
 
 /// Split `host:port` on the LAST colon (so a bracketed IPv6 `[::1]:80` keeps its
@@ -394,6 +436,12 @@ pub fn resolve_admitted_typed(
     use std::net::ToSocketAddrs;
     let denied =
         || AdmitFailure::Denied(format!("`{addr}` is not permitted by this Net capability"));
+    // A deny on the requested name/address remains a floor even when a broader
+    // CIDR allow admits one of its resolved IPs. Otherwise changing DNS spelling
+    // or resolving a denied hostname through an allowed network erases the deny.
+    if net_denied(allow, addr) {
+        return Err(denied());
+    }
     // Whether the address STRING itself is allowlisted (an exact `host:port` or a
     // literal-IP pattern). The capability denial takes precedence over any DNS
     // failure, so a disallowed host reports "not permitted", never a resolver leak.
@@ -437,6 +485,59 @@ pub fn resolve_admitted_typed(
             "`{addr}` could not be resolved: {e}"
         ))),
         Err(_) => Err(denied()),
+    }
+}
+
+/// Resolve the bare hostname accepted by `Net.resolve`, but only after proving
+/// that the capability explicitly admits that host for at least one endpoint.
+/// DNS itself is observable network authority, so a capability for an unrelated
+/// address must not be usable as an arbitrary DNS-query channel.
+pub fn resolve_host_admitted(allow: &[String], host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+    use std::net::ToSocketAddrs;
+
+    let admitted = allow.iter().filter(|entry| !entry.starts_with('!')).any(|entry| {
+        let (_, port) = split_host_port(entry);
+        let port = if port == "*" { "0" } else { port };
+        let target = format!("{}:{port}", bracket_ipv6_host(host));
+        net_allows(allow, &target)
+    });
+    if !admitted {
+        return Err(format!("`{host}` is not permitted by this Net capability"));
+    }
+
+    // Query the same canonical DNS identity that policy evaluation admitted.
+    // In particular, macOS's special `localhost` resolver does not accept the
+    // otherwise equivalent absolute spelling `localhost.`.
+    let canonical = canonical_dns_name(host);
+    let bare = canonical.as_str();
+    let mut ips = Vec::new();
+    let addrs = (bare, 0u16)
+        .to_socket_addrs()
+        .map_err(|error| format!("`{host}` could not be resolved: {error}"))?;
+    for addr in addrs {
+        let ip = normalize_ip(addr.ip());
+        if !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    }
+    Ok(ips)
+}
+
+fn bracket_ipv6_host(host: &str) -> String {
+    if strip_brackets(host).contains(':') {
+        format!("[{}]", strip_brackets(host))
+    } else {
+        host.to_string()
+    }
+}
+
+fn normalize_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(std::net::IpAddr::V4)
+            .unwrap_or(std::net::IpAddr::V6(ip)),
+        ip => ip,
     }
 }
 
@@ -1117,7 +1218,59 @@ mod net_only_tests {
 
 #[cfg(test)]
 mod resolve_admitted_tests {
-    use super::resolve_admitted;
+    use super::{address_admits, net_allows, resolve_admitted, resolve_host_admitted};
+
+    #[test]
+    fn network_identity_comparison_canonicalizes_equivalent_spellings() {
+        assert!(address_admits("*:*", "example.com:443"));
+        assert!(address_admits("localhost:443", "LOCALHOST.:0443"));
+        assert!(address_admits("[::1]:19104", "[0:0:0:0:0:0:0:1]:019104"));
+        assert!(address_admits("127.0.0.1:80", "[::ffff:127.0.0.1]:080"));
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_obeys_ipv4_deny_ranges() {
+        let allow = vec![
+            "::/0:*".to_string(),
+            "0.0.0.0/0:*".to_string(),
+            "!127.0.0.0/8:*".to_string(),
+            "!10.0.0.0/8:*".to_string(),
+            "!169.254.0.0/16:*".to_string(),
+        ];
+        for denied in [
+            "[::ffff:127.0.0.1]:80",
+            "[::ffff:10.1.2.3]:443",
+            "[::ffff:169.254.169.254]:80",
+        ] {
+            assert!(!net_allows(&allow, denied), "{denied} must retain its IPv4 identity");
+        }
+        assert!(net_allows(&allow, "[::ffff:93.184.216.34]:443"));
+    }
+
+    #[test]
+    fn canonical_hostname_deny_is_not_erased_by_broad_ip_allow() {
+        let allow = vec![
+            "127.0.0.0/8:*".to_string(),
+            "!localhost:19102".to_string(),
+        ];
+        let error = resolve_admitted(&allow, "LOCALHOST.:019102")
+            .expect_err("canonical requested-name deny must remain a floor");
+        assert!(error.contains("not permitted"), "{error}");
+    }
+
+    #[test]
+    fn resolve_requires_explicit_authority_for_the_queried_host() {
+        let unrelated = vec!["127.0.0.1:9".to_string()];
+        let error = resolve_host_admitted(&unrelated, "example.invalid")
+            .expect_err("unrelated Net authority must not emit a DNS query");
+        assert!(error.contains("not permitted"), "{error}");
+
+        let local = vec!["localhost:443".to_string()];
+        let ips = resolve_host_admitted(&local, "LOCALHOST.")
+            .expect("an explicitly admitted canonical hostname may resolve");
+        assert!(!ips.is_empty());
+        assert!(ips.iter().all(std::net::IpAddr::is_loopback));
+    }
 
     // A name-allowlisted destination whose resolved IP is `!`-deny-matched must NOT
     // be dialed: the deny floor applies to the resolved IPs even when the address

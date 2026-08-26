@@ -585,11 +585,45 @@ fn main(console: Console, root: Dir[Read]):
         );
         err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"secret.key\"))\n");
 
+        // SEC-056/062: policy uses the actual no-follow entry identity. A files-only
+        // handle cannot rename/chmod a directory, and an admitted extension alias
+        // cannot lead to a denied file on either backend.
+        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    d.rename(\"sub\", \"moved\")\n");
+        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    d.set_executable(\"sub\")\n");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("secret.key", root.join("alias.txt"))
+                .expect("seed in-root alias");
+            std::os::unix::fs::symlink("alias.txt", root.join("multi.txt"))
+                .expect("seed multi-hop alias");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"alias.txt\"))\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"multi.txt\"))\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    let b = d.read_bytes(\"alias.txt\")\n    console.print(\"${b.length()}\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read_file(\"alias.txt\").read())\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"alias.txt\", \"changed\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.replace(\"alias.txt\", \"changed\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.create_new(\"alias.txt\", \"changed\")}\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.set_executable(\"alias.txt\")\n");
+            assert_eq!(std::fs::read_to_string(root.join("secret.key")).unwrap(), "TOPSECRET");
+        }
+        std::fs::write(root.join("classified.TXT"), "case-private").expect("seed case alias");
+        if root.join("classified.txt").exists() {
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"classified.txt\"))\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.write(\"classified.txt\", \"changed\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"classified.txt\", \"changed\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.replace(\"classified.txt\", \"changed\")\n");
+            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.create_new(\"classified.txt\", \"changed\")}\")\n");
+            assert_eq!(
+                std::fs::read_to_string(root.join("classified.TXT")).unwrap(),
+                "case-private",
+            );
+        }
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn narrowed_dir_list_hides_denied_entries_but_named_probes_work() {
+    fn narrowed_dir_hides_denied_entries_from_lists_and_named_probes() {
         use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_dir_probe_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -599,10 +633,13 @@ fn main(console: Console, root: Dir[Read]):
         let hidden = "550e8400-e29b-41d4-a716-446655440000.key";
         std::fs::write(root.join(hidden), "secret").expect("seed secret");
         let root_str = root.to_str().expect("utf8 root").to_string();
-        let src = "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.exists(\"550e8400-e29b-41d4-a716-446655440000.key\")}\")\n    console.print(\"${d.is_dir(\"private-dir\")}\")\n    for name in d.list():\n        console.print(name)\n";
+        let src = "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.exists(\"550e8400-e29b-41d4-a716-446655440000.key\")}\")\n    console.print(\"${d.is_dir(\"private-dir\")}\")\n    let files = dir.only(Dir.files())\n    console.print(\"${files.exists(\"private-dir\")}\")\n    console.print(\"${files.is_dir(\"private-dir\")}\")\n    let dirs = dir.only(Dir.dirs())\n    console.print(\"${dirs.exists(\"public.txt\")}\")\n    for name in d.list():\n        console.print(name)\n";
         let expected = vec![
+            "false".to_string(),
             "true".to_string(),
-            "true".to_string(),
+            "false".to_string(),
+            "false".to_string(),
+            "false".to_string(),
             "private-dir".to_string(),
             "public.txt".to_string(),
         ];
@@ -610,7 +647,7 @@ fn main(console: Console, root: Dir[Read]):
         assert_eq!(
             interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
             expected,
-            "interpreter filters denied entry names",
+            "interpreter hides policy-denied entry metadata",
         );
         let bytes = codegen::compile_module_binary(&resolve_std_src(src))
             .expect_lowered("probe lowers");
@@ -623,7 +660,7 @@ fn main(console: Console, root: Dir[Read]):
             ..Default::default()
         }, 64).expect("spawn");
         actor.run().expect("run");
-        assert_eq!(actor.output(), expected, "Wasm filters denied entry names");
+        assert_eq!(actor.output(), expected, "Wasm hides policy-denied entry metadata");
         let _ = std::fs::remove_dir_all(&root);
     }
 

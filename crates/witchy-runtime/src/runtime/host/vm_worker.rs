@@ -9,7 +9,7 @@ use witchy_test_host::{FixtureHost, HostHandle};
 
 use super::super::{
     link_capability_imports, memory_of, read_wbytes, read_wbytes_list, slice,
-    vmstate_from_caps, Capabilities, DirAuthority, ListenerResource, VmState,
+    vmstate_from_caps, Capabilities, DirAuthority, DirBacking, ListenerResource, VmState,
 };
 
 /// Register the always-available `vm.*` worker imports (RFC-0032).
@@ -165,12 +165,13 @@ fn spawn_worker(
     caps: &Capabilities,
     sandboxed: bool,
     worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
+    worker_dirs: Option<Vec<DirAuthority>>,
     limits: StoreLimits,
 ) -> Result<(Store<VmState>, Instance)> {
     // Workers re-wire the default registry-backed services; threading the
     // parent's handle through the spawn signatures is the follow-up when the
     // implementation moves above the kernel.
-    let state = vmstate_from_caps(
+    let mut state = vmstate_from_caps(
         0,
         caps,
         limits,
@@ -180,6 +181,11 @@ fn spawn_worker(
         preempt,
         Arc::new(super::super::compiler::RegistryCompilerServices),
     )?;
+    // Wasm start functions execute inside `instantiate`, so exact delegated
+    // authorities must be present before the Store can run any guest code.
+    if let Some(dirs) = worker_dirs {
+        state.dirs = dirs;
+    }
     let mut store = Store::new(engine, state);
     store.limiter(|s| &mut s.limits);
     if preempt {
@@ -208,6 +214,7 @@ fn sandbox_worker(
         preempt,
         &Capabilities::default(),
         true,
+        None,
         None,
         StoreLimitsBuilder::new().build(),
     )
@@ -275,22 +282,27 @@ fn run_with_dir_worker(
     code_idx: i32,
     input: &[u8],
 ) -> Result<Vec<u8>> {
+    let DirBacking::Fs(preopened) = &dir.backing;
     let caps = Capabilities {
-        // The real authority is installed into `store.data_mut().dirs[0]` below.
-        // This synthetic root only makes the worker linker expose the Dir imports.
-        dir_root: Some(std::path::PathBuf::from(".")),
+        // Select the Dir import family with the already-open confined handle.
+        // The complete authority, including entry policy, is installed below
+        // before instantiation; no ambient placeholder is ever opened.
+        preopened_dirs: vec![preopened.clone()],
         dir_read: dir.rights.read,
         dir_write: dir.rights.write,
         dir_rights: vec![dir.rights],
         ..Capabilities::default()
     };
-    let (mut store, instance) =
-        spawn_worker(engine, module, preempt, &caps, true, None, StoreLimitsBuilder::new().build())?;
-    // Attach the exact granted Dir (including entry policy and backing) to the
-    // worker's sole root grant.
-    if let Some(d) = store.data_mut().dirs.get_mut(0) {
-        *d = dir.clone();
-    }
+    let (mut store, instance) = spawn_worker(
+        engine,
+        module,
+        preempt,
+        &caps,
+        true,
+        None,
+        Some(vec![dir.clone()]),
+        StoreLimitsBuilder::new().build(),
+    )?;
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let dir_ref = ExternRef::new(&mut store, dir)?;
     let call = instance.get_typed_func::<
@@ -617,6 +629,7 @@ fn run_server_worker(
         caps,
         false,
         Some(listener),
+        None,
         StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
     )?;
     let run = instance.get_typed_func::<(), ()>(&mut store, "run")?;

@@ -71,6 +71,15 @@ pub struct ConfinedDir {
     display: Arc<PathBuf>,
 }
 
+/// The no-follow kind of one direct filesystem entry. Entry policies operate on
+/// this identity rather than on a caller-supplied guess about the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfinedEntryKind {
+    File,
+    Directory,
+    Other,
+}
+
 impl std::fmt::Debug for ConfinedDir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("ConfinedDir").field(&self.display).finish()
@@ -210,6 +219,50 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = path;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
+    /// Inspect an entry without following its leaf and require the caller's
+    /// spelling to be the actual directory-entry spelling. This closes both
+    /// symlink and case-folding aliases for a finer-grained `Dir.only` policy.
+    /// A missing entry is `Ok(None)`; confinement and I/O failures remain loud.
+    pub fn entry_kind_exact(&self, rel: &str) -> Result<Option<ConfinedEntryKind>, ConfineError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = self.file(rel, false)?;
+            let metadata = match file.parent.inner.symlink_metadata(&file.name) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(inaccessible(&file.display, error)),
+            };
+            let requested = file.name.file_name().ok_or_else(|| {
+                ConfineError(format!("cannot access `{}`: path does not name an entry", file.display.display()))
+            })?;
+            let exact = file
+                .parent
+                .inner
+                .entries()
+                .map_err(|error| inaccessible(&file.display, error))?
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name() == requested);
+            if !exact {
+                return err(format!(
+                    "`{rel}` resolves through a differently named filesystem entry"
+                ));
+            }
+            let file_type = metadata.file_type();
+            Ok(Some(if file_type.is_file() {
+                ConfinedEntryKind::File
+            } else if file_type.is_dir() {
+                ConfinedEntryKind::Directory
+            } else {
+                ConfinedEntryKind::Other
+            }))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = rel;
             err("host filesystem capabilities are unavailable on this target")
         }
     }
@@ -808,5 +861,30 @@ mod tests {
         assert!(leaf.write_all(b"changed").is_err());
         assert!(leaf.append_all(b"changed").is_err());
         assert_eq!(std::fs::read_to_string(scratch.join("secret")).unwrap(), "private");
+    }
+
+    #[test]
+    fn exact_entry_identity_rejects_symlink_and_case_aliases() {
+        let scratch = Scratch::new();
+        let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
+        std::fs::write(scratch.join("secret.key"), "private").unwrap();
+        std::os::unix::fs::symlink("secret.key", scratch.join("alias.txt")).unwrap();
+
+        assert_eq!(
+            root.entry_kind_exact("secret.key").unwrap(),
+            Some(ConfinedEntryKind::File)
+        );
+        assert_eq!(
+            root.entry_kind_exact("alias.txt").unwrap(),
+            Some(ConfinedEntryKind::Other)
+        );
+
+        std::fs::write(scratch.join("classified.TXT"), "case-private").unwrap();
+        if root.exists("classified.txt").unwrap_or(false) {
+            assert!(
+                root.entry_kind_exact("classified.txt").is_err(),
+                "a case-folded alias must not satisfy an exact entry policy"
+            );
+        }
     }
 }

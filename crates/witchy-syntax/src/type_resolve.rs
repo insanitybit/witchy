@@ -193,6 +193,37 @@ fn ambient_trait_declaration_allowed(home: &str, user_module: bool, name: &str) 
         && !user_module
 }
 
+/// Canonical owner of the ambient types that intentionally expose inherent
+/// methods. An unqualified ambient name has no module identity left after type
+/// resolution, so enforce this while the impl's definition site is still known.
+fn ambient_inherent_owner(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Bytes" => "bytes",
+        "Duration" => "duration",
+        "List" => "list",
+        "Dict" => "dict",
+        "String" | "str" => "string",
+        "Set" => "set",
+        "Option" => "option",
+        "Result" => "result",
+        "Iter" => "iter",
+        "Rand" | "Secret" => "crypto",
+        "SecretStore" => "secretstore",
+        // RFC-0011's policy builders are the only inherent methods on host
+        // capabilities. The module is bundled toolchain source, never a user
+        // package merely named `policy`.
+        "Net" | "Dir" => "policy",
+        _ => return None,
+    })
+}
+
+fn inherent_impl_allowed(home: &str, user_module: bool, target: &str) -> bool {
+    if let Some((owner, _)) = target.rsplit_once('.') {
+        return owner == home;
+    }
+    ambient_inherent_owner(target).is_some_and(|owner| owner == home && !user_module)
+}
+
 /// Compiler-synthesized type heads that name no module and stay bare: the
 /// `TupleN` head a tuple `impl` dispatches under, the shape-keyed `__anon…`
 /// record a `.{…}` literal/type desugars to, and the anonymous-union `__union…`
@@ -1414,6 +1445,16 @@ impl<'a> Scope<'a> {
                         *trait_name = self.resolve_trait_name(trait_name)?;
                     }
                     im.type_name = self.resolve_type_name(&im.type_name)?;
+                    if im.trait_name.is_none()
+                        && !is_synthetic_type(&im.type_name)
+                        && !inherent_impl_allowed(self.home, self.user_module, &im.type_name)
+                    {
+                        return lerr(format!(
+                            "module `{}` cannot define inherent methods on non-owned type `{}`; \
+                             define the method in the type's owning module or use a trait",
+                            self.home, im.type_name
+                        ));
+                    }
                     for t in &mut im.target_args {
                         self.resolve_type(t)?;
                     }
@@ -2257,6 +2298,56 @@ mod tests {
         let user_modules = std::collections::HashSet::from(["policy".to_string()]);
         let err = resolve_with_user_modules(&mut local_policy, &user_modules).unwrap_err();
         assert!(err.message.contains("type `NetPolicy` shadows the ambient built-in name"));
+    }
+
+    #[test]
+    fn inherent_impls_require_definition_site_type_ownership() {
+        let err = resolve_src(&[(
+            "malicious",
+            "impl Net:\n    pub fn audit(self: Net) -> String:\n        \"stolen\"\n",
+        )])
+        .unwrap_err();
+        assert!(
+            err.message.contains("cannot define inherent methods on non-owned type `Net`"),
+            "{}",
+            err.message
+        );
+
+        let err = resolve_src(&[
+            ("model", "type Token:\n    Token(Int)\n"),
+            (
+                "malicious",
+                "import model\n\nimpl model.Token:\n    pub fn audit(self: model.Token) -> String:\n        \"stolen\"\n",
+            ),
+        ])
+        .unwrap_err();
+        assert!(
+            err.message
+                .contains("cannot define inherent methods on non-owned type `model.Token`"),
+            "{}",
+            err.message
+        );
+
+        resolve_src(&[(
+            "model",
+            "type Token:\n    Token(Int)\n\nimpl Token:\n    pub fn value(self: Token) -> Int:\n        1\n",
+        )])
+        .expect("a module may define inherent methods on its own nominal type");
+
+        resolve_src(&[(
+            "policy",
+            "impl Net:\n    pub fn marker(self: Net) -> String:\n        \"toolchain\"\n",
+        )])
+        .expect("the canonical bundled owner may define Net policy builders");
+
+        let mut local_policy = vec![(
+            "policy".to_string(),
+            parse_module("impl Net:\n    pub fn audit(self: Net) -> String:\n        \"stolen\"\n")
+                .expect("parse"),
+        )];
+        let user_modules = std::collections::HashSet::from(["policy".to_string()]);
+        let err = resolve_with_user_modules(&mut local_policy, &user_modules).unwrap_err();
+        assert!(err.message.contains("cannot define inherent methods on non-owned type `Net`"));
     }
 
     #[test]

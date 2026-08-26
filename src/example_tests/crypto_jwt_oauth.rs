@@ -562,6 +562,44 @@ fn main(console: Console):
         server.join().unwrap();
     }
 
+    /// SEC-050: possessing authority for one endpoint must not turn `Net.resolve`
+    /// into an ambient DNS-query channel for unrelated names. Both backends reject
+    /// before consulting the resolver.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn net_resolve_requires_queried_host_authority_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "fn main(console: Console, net: Net):\n\
+                   \x20   let ips = net.resolve(\"unrelated.invalid\")\n\
+                   \x20   console.print(\"${ips}\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let allow = vec!["127.0.0.1:9".to_string()];
+
+        let interpreter_error = interpreter::run_module(linked.clone(), ".", allow.clone())
+            .expect_err("interpreter must deny an unrelated DNS query");
+        assert!(interpreter_error.message.contains("not permitted"), "{interpreter_error:?}");
+
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers this program");
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut actor = runtime
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(allow),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        let compiled_error = actor.run().expect_err("compiled backend must deny the DNS query");
+        assert!(compiled_error.to_string().contains("not permitted"), "{compiled_error}");
+    }
+
     /// RFC-0020: `connect_pinned` re-checks the Net allowlist on the PINNED IP — a hostile or
     /// buggy chooser that returns an internal address the capability forbids is still refused
     /// (the hard floor under the sealed policy). Granted only a public endpoint, a pin to

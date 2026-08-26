@@ -146,10 +146,10 @@ pub fn parse_scheme(addr: &str) -> (bool, &str) {
     }
 }
 
-/// Resolve a hostname to its current IP literals (deduped, order-preserving). Backs
-/// `net.resolve` (RFC-0020) so a program can inspect addresses before pinning one; it
-/// adds no authority, since `connect_pinned` re-checks the chosen IP against the Net
-/// allowlist. An empty result signals a resolution failure to the caller.
+/// Resolve a hostname to its current IP literals (deduped, order-preserving).
+/// Callers must apply the `Net` policy before entering this ambient resolver;
+/// [`witchy_caps::capabilities::resolve_host_admitted`] is the capability-bearing
+/// entry point used by both backends.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_ips(host: &str) -> Vec<String> {
     use std::net::ToSocketAddrs;
@@ -170,6 +170,28 @@ pub fn resolve_ips(host: &str) -> Vec<String> {
 #[cfg(target_arch = "wasm32")]
 pub fn resolve_ips(_host: &str) -> Vec<String> {
     Vec::new()
+}
+
+/// Resolve, authorize, and bind one exact socket identity. The OS never sees an
+/// unchecked hostname spelling: the same concrete [`std::net::SocketAddr`] values
+/// that passed the shared Net policy are passed to `TcpListener::bind`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn bind_admitted_listener(
+    allow: &[String],
+    addr: &str,
+) -> Result<std::net::TcpListener, String> {
+    let targets = witchy_caps::capabilities::resolve_admitted(allow, addr)
+        .map_err(|error| format!("listen: {error}"))?;
+    std::net::TcpListener::bind(targets.as_slice())
+        .map_err(|error| format!("listen on `{addr}` failed: {error}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn bind_admitted_listener(
+    _allow: &[String],
+    addr: &str,
+) -> Result<std::net::TcpListener, String> {
+    Err(format!("listen on `{addr}` is unavailable in the wasm build"))
 }
 
 /// Build a `host:port` authority, bracketing a bare IPv6 literal (`::1` -> `[::1]:80`) so
@@ -398,6 +420,23 @@ mod tests {
         );
         // The still-connected client keeps `_client` alive until here.
         drop(_client);
+    }
+
+    #[test]
+    fn listener_binds_only_the_concrete_identity_admitted_by_policy() {
+        let allowed = vec!["127.0.0.1:0".to_string()];
+        let listener = bind_admitted_listener(&allowed, "127.0.0.1:00000")
+            .expect("numeric-equivalent admitted endpoint binds");
+        assert!(listener.local_addr().unwrap().ip().is_loopback());
+
+        let denied = vec![
+            "localhost:0".to_string(),
+            "!127.0.0.0/8:*".to_string(),
+            "!::1/128:*".to_string(),
+        ];
+        let error = bind_admitted_listener(&denied, "LOCALHOST.:0")
+            .expect_err("resolved loopback deny must apply before bind");
+        assert!(error.contains("not permitted"), "{error}");
     }
 }
 

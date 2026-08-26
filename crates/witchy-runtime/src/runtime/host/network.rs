@@ -205,8 +205,8 @@ fn host_net_try_connect(
 
 /// `net_resolve_size(net, host_ptr) -> bytes` (RFC-0020): resolve `host` to its
 /// current IP literals NOW, stage them, and report the `List(String)` byte size
-/// the guest reserves. Resolve itself adds no authority, but the guest must still
-/// pass a real `Net` externref so null/forged values fail closed.
+/// the guest reserves. DNS is an observable network operation, so the requested
+/// host must be explicitly admitted by the supplied `Net` policy before resolution.
 fn host_net_resolve_size(
     mut caller: Caller<'_, VmState>,
     net_ref: Option<Rooted<ExternRef>>,
@@ -214,8 +214,12 @@ fn host_net_resolve_size(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
-    let _net = net_authority_ref(&caller, net_ref)?;
-    let ips = crate::net::resolve_ips(&host);
+    let net = net_authority_ref(&caller, net_ref)?;
+    let ips: Vec<String> = witchy_caps::capabilities::resolve_host_admitted(&net.allow, &host)
+        .map_err(|error| Error::msg(format!("resolve: {error}")))?
+        .into_iter()
+        .map(|ip| ip.to_string())
+        .collect();
     let size = 4 + 8 * ips.len() + ips.iter().map(|s| 4 + s.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(ips);
     Ok(size as i32)
@@ -277,16 +281,18 @@ fn host_net_listen(
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let net = net_authority_ref(&caller, net_ref)?;
-    if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
-        bail!("listen: `{addr}` is not permitted by this Net capability");
-    }
     let shared = caller.data().worker_listener.clone();
     let (listener, tls) = match shared {
-        Some(entry) => entry,
+        Some(entry) if worker_listener_matches(&entry, &net.allow, &addr, false) => entry,
         None => (
             std::sync::Arc::new(
-                std::net::TcpListener::bind(&addr)
-                    .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?,
+                crate::net::bind_admitted_listener(&net.allow, &addr).map_err(Error::msg)?,
+            ),
+            None,
+        ),
+        Some(_) => (
+            std::sync::Arc::new(
+                crate::net::bind_admitted_listener(&net.allow, &addr).map_err(Error::msg)?,
             ),
             None,
         ),
@@ -308,25 +314,95 @@ fn host_net_listen_tls(
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let cert_pem = read_wstr(mem.data(&caller), cert_ptr)?;
     let net = net_authority_ref(&caller, net_ref)?;
-    if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
-        bail!("listen: `{addr}` is not permitted by this Net capability");
-    }
     let key_bytes = secret_material_ref(&caller, key_ref)?.bytes;
     let shared = caller.data().worker_listener.clone();
     let (listener, tls) = match shared {
-        Some(entry) => entry,
+        Some(entry) if worker_listener_matches(&entry, &net.allow, &addr, true) => entry,
         None => {
             let config = crate::net::server_tls_config(&cert_pem, &key_bytes).map_err(Error::msg)?;
             (
                 std::sync::Arc::new(
-                    std::net::TcpListener::bind(&addr)
-                        .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?,
+                    crate::net::bind_admitted_listener(&net.allow, &addr).map_err(Error::msg)?,
+                ),
+                Some(config),
+            )
+        }
+        Some(_) => {
+            let config = crate::net::server_tls_config(&cert_pem, &key_bytes).map_err(Error::msg)?;
+            (
+                std::sync::Arc::new(
+                    crate::net::bind_admitted_listener(&net.allow, &addr).map_err(Error::msg)?,
                 ),
                 Some(config),
             )
         }
     };
     listener_ref(&mut caller, listener, tls)
+}
+
+fn worker_listener_matches(
+    entry: &(
+        std::sync::Arc<std::net::TcpListener>,
+        Option<crate::net::ServerTlsConfig>,
+    ),
+    allow: &[String],
+    requested: &str,
+    expects_tls: bool,
+) -> bool {
+    (entry.1.is_some() == expects_tls)
+        && entry.0.local_addr().is_ok_and(|bound| {
+            witchy_caps::capabilities::resolve_admitted(allow, requested)
+                .is_ok_and(|targets| {
+                    targets.iter().any(|target| {
+                        target.ip() == bound.ip()
+                            && (target.port() == 0 || target.port() == bound.port())
+                    })
+                })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_listener_matches;
+
+    #[test]
+    fn pool_listener_is_reused_only_for_its_bound_identity_and_mode() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fixture");
+        let bound = listener.local_addr().expect("fixture address");
+        let entry = (std::sync::Arc::new(listener), None);
+        let other = if bound.port() == 65_535 { 65_534 } else { bound.port() + 1 };
+        let allow = vec![
+            bound.to_string(),
+            format!("127.0.0.1:{other}"),
+        ];
+
+        assert!(worker_listener_matches(
+            &entry,
+            &allow,
+            &bound.to_string(),
+            false,
+        ));
+        assert!(!worker_listener_matches(
+            &entry,
+            &allow,
+            &format!("127.0.0.1:{other}"),
+            false,
+        ));
+        assert!(!worker_listener_matches(
+            &entry,
+            &allow,
+            &bound.to_string(),
+            true,
+        ));
+
+        let ephemeral = vec!["127.0.0.1:0".to_string()];
+        assert!(worker_listener_matches(
+            &entry,
+            &ephemeral,
+            "127.0.0.1:0",
+            false,
+        ));
+    }
 }
 
 /// `net_accept(listener) -> Socket`: block for a client connection. TLS listeners
