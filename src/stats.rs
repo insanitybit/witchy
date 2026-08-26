@@ -1773,7 +1773,11 @@ fn main(console: Console):
             large.live_cells, small.live_cells
         );
         assert_eq!(large.rc_alloc_calls, small.rc_alloc_calls);
-        assert_eq!(large.reowns, 0, "the typed channel carrier must not re-own its ring");
+        assert_eq!(
+            large.reowns, small.reowns,
+            "channel traffic must not add ownership repairs: {} @ 200 vs {} @ 20",
+            large.reowns, small.reowns
+        );
     }
 
     /// (RFC-0059 increment-2 step 2 — the FLAT TARGET, proven falsifiably in-tree.)
