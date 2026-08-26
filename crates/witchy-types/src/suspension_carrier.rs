@@ -241,6 +241,10 @@ pub enum ReadyChannelRegionExclusionReason {
     DynamicEndpoint {
         operation: &'static str,
     },
+    /// A computed channel capacity would have to be re-evaluated before a
+    /// typed ring can be allocated. Keep that state on the ordinary task path
+    /// until the scheduler-context emitter has an exact evaluated-value lane.
+    DynamicChannelCapacity,
     UnsupportedTransition {
         detail: String,
     },
@@ -465,6 +469,7 @@ pub enum ReadyChannelOperationKind {
     /// a later local spelling.
     Open {
         resume_target: usize,
+        capacity: ChannelMessageOperand,
         payload_layout: ChannelPayloadLayout,
         ownership: ChannelOwnershipEnvelope,
     },
@@ -488,6 +493,7 @@ pub enum ScalarTransition {
     /// the successor state.
     ChannelOpen {
         resume: usize,
+        capacity: ChannelMessageOperand,
         payload_layout: ChannelPayloadLayout,
         ownership: ChannelOwnershipEnvelope,
     },
@@ -786,9 +792,14 @@ impl SuspensionCarrierCatalog {
                 if let Some(operation) = transitions.iter().find_map(|transition| {
                     ready_transition_is_static(transition).err()
                 }) {
+                    let reason = if operation == "channel capacity" {
+                        ReadyChannelRegionExclusionReason::DynamicChannelCapacity
+                    } else {
+                        ReadyChannelRegionExclusionReason::DynamicEndpoint { operation }
+                    };
                     formation.excluded.push(rejection(
                         path_ordinal,
-                        ReadyChannelRegionExclusionReason::DynamicEndpoint { operation },
+                        reason,
                     ));
                     continue;
                 }
@@ -1045,9 +1056,10 @@ fn ready_channel_operations(
         .enumerate()
         .filter_map(|(transition_ordinal, transition)| {
             let kind = match transition {
-                ScalarTransition::ChannelOpen { resume, payload_layout, ownership } => {
+                ScalarTransition::ChannelOpen { resume, capacity, payload_layout, ownership } => {
                     ReadyChannelOperationKind::Open {
                         resume_target: *resume,
+                        capacity: capacity.clone(),
                         payload_layout: payload_layout.clone(),
                         ownership: *ownership,
                     }
@@ -1182,6 +1194,9 @@ fn ready_transition_is_static(transition: &ScalarTransition) -> Result<(), &'sta
         matches!(endpoint, ChannelEndpointPlace::Static(_))
     };
     match transition {
+        ScalarTransition::ChannelOpen { capacity: ChannelMessageOperand::Dynamic, .. } => {
+            Err("channel capacity")
+        }
         ScalarTransition::ChannelSend(operation) if !is_static(&operation.endpoint) => Err("send"),
         ScalarTransition::ChannelSend(operation)
             if matches!(operation.message.as_ref(), None | Some(ChannelMessageOperand::Dynamic)) =>
@@ -1712,7 +1727,7 @@ fn collect_task_expression<'a, 'd>(
     let resume =
         resume.ok_or_else(|| format!("effect task `{name}` has no compiler-owned resume state"))?;
     let transition = if call_family(name, "chan.channel") {
-        channel_open_plan(table, task, definitions, resume)
+        channel_open_plan(table, task, args.first(), definitions, resume)
     } else if call_family(name, "chan.send") {
         ScalarTransition::ChannelSend(channel_operation_plan(
             table,
@@ -2324,6 +2339,7 @@ fn channel_ownership_envelope(layout: &ChannelPayloadLayout) -> ChannelOwnership
 fn channel_open_plan(
     table: &TypeTable,
     task: &ast::Expr,
+    capacity: Option<&ast::Expr>,
     definitions: &HashMap<String, &TypeDef>,
     resume: usize,
 ) -> ScalarTransition {
@@ -2335,6 +2351,7 @@ fn channel_open_plan(
     let ownership = channel_ownership_envelope(&payload_layout);
     ScalarTransition::ChannelOpen {
         resume,
+        capacity: capacity.map(channel_message_operand).unwrap_or(ChannelMessageOperand::Dynamic),
         payload_layout,
         ownership,
     }
@@ -2618,7 +2635,7 @@ mod tests {
             max_lane_width: 0,
             typed_channel_plans: Vec::new(),
             region_transition_paths: vec![
-                vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 9, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]) }],
+                vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 9, capacity: ChannelMessageOperand::Int(8), payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]) }],
                 vec![RegionTransitionPath { guarded: false, transitions: Err("unsupported awaited task call `task.map`".into()) }],
                 vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
@@ -2630,7 +2647,7 @@ mod tests {
                 })]) }],
             ],
             scalar_transitions: vec![
-                Ok(vec![ScalarTransition::ChannelOpen { resume: 9, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]),
+                Ok(vec![ScalarTransition::ChannelOpen { resume: 9, capacity: ChannelMessageOperand::Int(8), payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]),
                 Err("unsupported awaited task call `task.map`".into()),
                 Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
@@ -2667,6 +2684,7 @@ mod tests {
                 transition_ordinal: 0,
                 kind: ReadyChannelOperationKind::Open {
                     resume_target: 9,
+                    capacity: ChannelMessageOperand::Int(8),
                     payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                 },
@@ -2755,7 +2773,7 @@ mod tests {
             region_transition_paths: vec![vec![
                 RegionTransitionPath {
                     guarded: true,
-                    transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 8, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]),
+                    transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 8, capacity: ChannelMessageOperand::Int(8), payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]),
                 },
                 RegionTransitionPath {
                     guarded: true,
@@ -3242,7 +3260,7 @@ mod tests {
                     slots: Vec::new(),
                     transitions: vec![
                         ScalarTransition::Jump { target: 3 },
-                        ScalarTransition::ChannelOpen { resume: 2, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue },
+                        ScalarTransition::ChannelOpen { resume: 2, capacity: ChannelMessageOperand::Int(8), payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue },
                         ScalarTransition::ChannelSend(send.clone()),
                     ],
                 },
@@ -3275,6 +3293,7 @@ mod tests {
                     transition_ordinal: 1,
                     kind: ReadyChannelOperationKind::Open {
                         resume_target: 2,
+                        capacity: ChannelMessageOperand::Int(8),
                         payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                         ownership: ChannelOwnershipEnvelope::InlineValue,
                     },

@@ -6,8 +6,9 @@
 //! state prefix and must execute exactly once before a direct probe or fallback.
 
 use witchy_types::suspension_carrier::{
-    ChannelEndpointDirection, ChannelEndpointPlace, ChannelOwnershipEnvelope, ChannelPayloadLayout,
-    ReadyChannelOperation, ReadyChannelOperationKind, SuspensionCarrierCatalog, TypedChannelPlan,
+    ChannelEndpointDirection, ChannelEndpointPlace, ChannelMessageOperand, ChannelOwnershipEnvelope,
+    ChannelPayloadLayout, ReadyChannelOperation, ReadyChannelOperationKind, SuspensionCarrierCatalog,
+    TypedChannelPlan,
 };
 use witchy_wir::wir::{WirExpr, WirModule, WirNode, WirSeq};
 
@@ -66,6 +67,10 @@ pub(super) struct ReadyTypedStorageDomain {
     pub opening_path_ordinal: usize,
     pub opening_transition_ordinal: usize,
     pub resume_state: usize,
+    /// The source capacity expression is retained only when it is a literal or
+    /// a stable carrier operand. A computed capacity must keep the ordinary
+    /// task construction so a typed allocator can never evaluate it twice.
+    pub capacity: ChannelMessageOperand,
     pub payload_layout: ChannelPayloadLayout,
     pub ownership: ChannelOwnershipEnvelope,
 }
@@ -116,6 +121,7 @@ pub(super) fn storage_domains(states: &[ReadyStateWir]) -> Vec<ReadyTypedStorage
             state.operations.iter().filter_map(move |operation| {
                 let ReadyChannelOperationKind::Open {
                     resume_target,
+                    capacity,
                     payload_layout,
                     ownership,
                 } = &operation.kind else {
@@ -126,6 +132,7 @@ pub(super) fn storage_domains(states: &[ReadyStateWir]) -> Vec<ReadyTypedStorage
                     opening_path_ordinal: state.path_ordinal,
                     opening_transition_ordinal: operation.transition_ordinal,
                     resume_state: *resume_target,
+                    capacity: capacity.clone(),
                     payload_layout: payload_layout.clone(),
                     ownership: *ownership,
                 })
@@ -404,6 +411,7 @@ mod tests {
                 3,
                 ReadyChannelOperationKind::Open {
                     resume_target: 7,
+                    capacity: ChannelMessageOperand::Int(8),
                     payload_layout: ChannelPayloadLayout::Packed(vec![
                         CarrierLane::I64,
                         CarrierLane::I64,
@@ -420,6 +428,7 @@ mod tests {
                 opening_path_ordinal: 2,
                 opening_transition_ordinal: 3,
                 resume_state: 7,
+                capacity: ChannelMessageOperand::Int(8),
                 payload_layout: ChannelPayloadLayout::Packed(vec![
                     CarrierLane::I64,
                     CarrierLane::I64,

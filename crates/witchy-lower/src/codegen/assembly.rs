@@ -7053,6 +7053,7 @@ mod checked_codegen_boundary_tests {
             matches!(
                 operation.kind,
                 witchy_types::suspension_carrier::ReadyChannelOperationKind::Open {
+                    capacity: witchy_types::suspension_carrier::ChannelMessageOperand::Int(1),
                     payload_layout: witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
                         witchy_types::suspension_carrier::CarrierLane::I64,
                     ),
@@ -7070,6 +7071,23 @@ mod checked_codegen_boundary_tests {
             witchy_types::suspension_carrier::ReadyChannelRegionExclusionReason::UnsupportedTransition { detail }
                 if detail.contains("task.map")
         )), "task.map must exclude only its own suspension-bounded path: {formation:#?}");
+    }
+
+    #[test]
+    fn ready_region_formation_keeps_call_valued_channel_capacity_on_scheduler() {
+        let checked = authenticated_checked(
+            "fn capacity() -> Int:\n    2\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(capacity()).await\n    chan.send(tx, 7).await\n    console.print(\"done\")\n",
+        );
+        let (_, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        )
+        .expect("assemble call-valued-capacity fallback fixture");
+
+        let formation = carrier.ready_channel_regions();
+        assert!(formation.excluded.iter().any(|excluded| matches!(
+            excluded.reason,
+            witchy_types::suspension_carrier::ReadyChannelRegionExclusionReason::DynamicChannelCapacity,
+        )), "a typed-ring allocator may not replay a computed capacity: {formation:#?}");
     }
 
     #[test]
