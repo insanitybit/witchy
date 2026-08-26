@@ -278,12 +278,29 @@ failure_summary() {
     plain="$(strip_ansi <"$log" 2>/dev/null)" || return 0
     local stage; stage="$(echo "$plain" | grep -E '^==> \[' | tail -1 | sed 's/^==> //')"
     local fail_line=""
-    fail_line="$(echo "$plain" | grep -m1 '^ *FAIL \[' | sed 's/^ *//' || true)"
+    fail_line="$(echo "$plain" | grep -m1 -E '^ *(FAIL|TIMEOUT) \[' | sed 's/^ *//' || true)"
     [ -z "$fail_line" ] && fail_line="$(echo "$plain" | grep -m1 '^error\[E\|^error:' | head -c120 || true)"
     [ -z "$fail_line" ] && fail_line="$(echo "$plain" | grep -m1 'could not compile' || true)"
     local summary="${stage:+$stage}"
     [ -n "$fail_line" ] && summary="${summary:+$summary: }$fail_line"
     echo "${summary:-unknown failure}"
+}
+
+# Tests that failed and then passed on retry. nextest prints these as
+# `FLAKY [ ... ] (n/m) binary test`, and on a green gate they are otherwise
+# invisible: the retry absorbs them and nobody learns the test is rotting.
+# Journaling the count is what turns "aggressively fix or delete flaky tests"
+# into a decision backed by numbers rather than by whoever got bitten last.
+flaky_summary() { # flaky_summary <log>
+    local log="$1" plain
+    plain="$(strip_ansi <"$log" 2>/dev/null)" || return 0
+    echo "$plain" | grep -cE '^ *FLAKY \[' || true
+}
+
+flaky_tests() { # flaky_tests <log> -- the names, for triage
+    local log="$1" plain
+    plain="$(strip_ansi <"$log" 2>/dev/null)" || return 0
+    echo "$plain" | grep -E '^ *FLAKY \[' | sed 's/^ *//' | cut -c1-300 | tr '\n' ';'
 }
 
 record() { # record <event> <branch> [key value]...
@@ -2667,7 +2684,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             "$lock_acquired" "$gate_started" "$gate_finished" "$landed_finished" sha "$sha" log "$log" \
             change_id "${batch_ids[$i]}" attempt_id "${batch_attempt_ids[$i]}" \
             submitted_sha "${batch_submitted_shas[$i]}" batch "${#batch_branches[@]}" \
-            stages "$(stage_summary "$log")"
+            stages "$(stage_summary "$log")" \
+            flaky_count "$(flaky_summary "$log")" flaky "$(flaky_tests "$log")"
         set_change_state "${batch_ids[$i]}" merged "${batch_submitted_shas[$i]}" \
             "${batch_attempt_ids[$i]}" || true
         bf="${batch_files[$i]}"
