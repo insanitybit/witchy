@@ -10,7 +10,13 @@ related:
   - "[0157](0157-trusted-publishers-and-executable-state.md) (trusted publishers — the deployment mode that most wants `--confine=required`)"
   - "[0020](0020-rebinding-resistant-http.md) (pinned dials — the finer network enforcement this layer only bounds)"
 tracking: >
-  Proposed. Feasibility was measured, not assumed: the API surface, the
+  Proposed; revised 2026-08-26 after review. The revision narrows the write
+  preamble (unrestricted `file-write-data` would have voided every derived
+  write rule while still reporting `Enforced`), makes `process-fork`
+  conditional on `SyscallClass::Process`, adds a preflight self-test for the
+  silent-SIGABRT failure mode, adds a macOS CI canary, and states up front
+  that `--confine=required` remains unavailable on macOS after this lands.
+  Feasibility was measured, not assumed: the API surface, the
   SBPL preamble, exec inheritance, and network expressiveness were each
   probed on macOS 26.3.1 (Darwin 25.3, Apple Silicon) before this RFC was
   written. Every result those probes produced is reproduced inline in
@@ -60,6 +66,32 @@ the *single-layer* configuration exclusively, and the derived-policy code
 path gets no local coverage at all — the derivation is only ever executed
 for real on Linux CI. A provider here is worth as much for the feedback loop
 as for the deployment.
+
+#### What this RFC does and does not unlock
+
+Stated plainly, because the section above invites a stronger reading than
+this RFC delivers: **`--confine=required` still refuses to launch on macOS
+after this lands.** `EnforcementReport::fully_enforced` requires *every*
+layer to report `Enforced`, and macOS has no syscall-granular filter, so
+`Layer::Syscalls` reports `Partial` permanently. The refusal becomes
+accurate and per-layer instead of a flat host-level "unavailable", which is
+an improvement in honesty, not in capability.
+
+What this RFC actually delivers is three things, all real:
+
+1. **`best-effort` gains two enforcing layers** on macOS where it had none —
+   defense in depth for the trust base §Threat model describes.
+2. **The derivation gets local coverage.** The `Policy` → provider path is
+   exercised on the platform witchy is developed on, every time an agent
+   runs a confined program, instead of only in Linux CI.
+3. **The superset invariant gets a second independent witness.** A
+   derivation bug that both Linux providers happen to tolerate has a second
+   chance to surface.
+
+Whether `required` *should* mean "every layer this platform can express"
+rather than "all three layers" is a live question, but it is a change to
+RFC-0103's mode vocabulary that affects Linux and the browser too. It is
+recorded in §Open questions and deliberately not smuggled in here.
 
 ### The threat model does not change at the platform boundary
 
@@ -219,7 +251,8 @@ dependency.
 | `network.connect` port *p* | `(allow network-outbound (remote ip "*:p"))` |
 | `network.bind` port *p* | `(allow network-bind (local ip "*:p"))` |
 | no network grant | omit both — `(deny default)` covers it |
-| `SyscallClass::Process` absent | omit `process-exec*`/`process-fork` |
+| `SyscallClass::Process` present | `(allow process-fork)` |
+| `SyscallClass::Process` absent | omit `process-fork`; emit no `process-exec*` |
 
 `FsScope::Path` resolves to `literal` or `subpath` from the same opened
 object the provider uses to install the rule, matching the Landlock
@@ -233,22 +266,47 @@ seccomp's promise classes are:
 ```
 (version 1)
 (deny default)
-(allow process-fork)
 (allow signal sysctl-read mach-lookup ipc-posix-shm*)
 (allow file-read-metadata)
 (allow file-read* (literal "/"))
 (allow file-read* (subpath "/bin") (subpath "/usr/lib") (subpath "/System"))
-(allow file-write-data)
+(allow file-write-data
+    (literal "/dev/stdout") (literal "/dev/stderr")
+    (literal "/dev/tty") (literal "/dev/null"))
 ```
 
-Two notes on scope. `file-write-data` unrestricted is the analogue of
-Landlock leaving pre-opened descriptors alone: `Console` writes to inherited
-fds must not need a rule, and Seatbelt filters writes on open descriptors.
-Tightening it to `(literal "/dev/stdout")`-style rules is future work, not a
-correctness requirement — under the superset invariant, over-permitting in
-the preamble is the safe direction. The `/bin`, `/usr/lib`, `/System`
-subtrees are the loader and platform-binary paths; they are read-only and
-carry no `file-write*` or `process-exec` right unless a grant supplies one.
+Three notes on scope.
+
+**Writes are narrow, and this is a correctness requirement, not polish.**
+An earlier draft of this RFC emitted `(allow file-write-data)` unrestricted,
+reasoning that `Console` writes to inherited descriptors must not need a
+rule and that over-permitting is safe under RFC-0103's superset invariant.
+That reasoning is wrong, and the error is worth recording so it is not
+reintroduced. The superset invariant governs *program compatibility* — a
+program that runs unconfined must run confined. It says nothing about what
+the fence may claim to deny. Seatbelt checks `file-write-data` at `open`
+for write as well as on writes, so an unrestricted rule permits overwriting
+the contents of any existing file DAC allows — `~/.zshrc`,
+`~/.ssh/authorized_keys`, a git hook — while `Layer::Filesystem` reports
+`Enforced`. That combination is worse than reporting nothing, because it
+makes a false claim in the enforcement report. Every `file-write*` row in
+the table above must therefore be the *only* source of write authority.
+
+**If the narrow rules prove insufficient, the provider downgrades rather
+than widens.** Phase 2's evidence includes an inherited-descriptor write
+test. If it shows the standard streams need rights this list does not
+cover, the resolution is to add the specific `(literal …)` rules the probe
+names — and if no bounded rule set suffices, to report `Layer::Filesystem`
+as `Partial` with a detail string saying writes are not confined. Widening
+back to unrestricted `file-write-data` while still reporting `Enforced` is
+not an available option.
+
+**Read paths.** The `/bin`, `/usr/lib`, `/System` subtrees are the loader
+and platform-binary paths; they are read-only and carry no `file-write*` or
+`process-exec` right unless a grant supplies one. `file-read-metadata` and
+the root node are genuinely unavoidable (§The finding an implementer would
+otherwise lose a day to) and widen metadata visibility only, never file
+contents.
 
 ### Path canonicalization
 
@@ -263,6 +321,28 @@ preserving phase 1's handle-anchored property.
 `materialize_write_targets` in `src/commands/confinement.rs` already
 pre-creates write-grant targets so a rule can be anchored on them; that
 logic is platform-neutral and applies here for the same reason.
+
+### Preflight self-test
+
+The failure mode measured above is the worst kind: a malformed profile
+aborts the process in dyld with SIGABRT, no stderr, and no unified-log
+entry, because the profile denies dyld's own diagnostic write. A provider
+whose breakage is indistinguishable from a crash is not operable, and the
+preamble is version-sensitive by the RFC's own admission, so the provider
+must not rely on the guest to reveal a broken profile.
+
+Immediately after arming and before handing control to the guest, the
+provider performs a bounded self-test:
+
+1. `stat` and open-for-read one path the policy grants; expect success.
+2. `stat` a path the policy does not grant; expect `EPERM`.
+3. Write one byte to stderr; expect success.
+
+Any deviation is an `EnforcementError` with the SBPL text attached, not a
+silent continue. The self-test costs three syscalls and converts the
+undebuggable failure into a diagnosable one. The `(literal "/dev/stderr")`
+write rule in the preamble is what keeps step 3 — and therefore every
+future diagnostic — from being denied by the very profile being tested.
 
 ### Layer reporting
 
@@ -364,12 +444,17 @@ buys.
   (SIGABRT, no diagnostic). This is the main ongoing maintenance cost, and
   §Evidence answers it with a canary rather than with optimism.
 - **`Syscalls` reports `Partial` forever on macOS**, so `required` stays
-  unavailable there under the current mode vocabulary. Honest, but it means
-  this RFC improves `best-effort` without unlocking `required`.
-- **The preamble over-permits** (`file-read-metadata`, `file-write-data`,
-  the root node). Correct per the superset invariant, but it means the macOS
-  fence is a coarser bound than the Linux one, and the report should not
-  imply otherwise.
+  unavailable there under the current mode vocabulary. This is the RFC's
+  largest limitation and §What this RFC does and does not unlock states it
+  up front rather than leaving it to this list: the deliverable is a
+  two-layer `best-effort` fence and local coverage of the derivation, not
+  strict-mode parity with Linux.
+- **The preamble still over-permits reads** (`file-read-metadata`
+  unrestricted, the root node). Both are forced by dyld, not chosen, and
+  they widen metadata and directory-node visibility rather than file
+  contents — but it does mean the macOS read fence is a coarser bound than
+  the Linux one. Writes are *not* in this category: see §The preamble for
+  why unrestricted `file-write-data` is not an acceptable simplification.
 
 ## Prior art
 
@@ -396,17 +481,51 @@ buys.
    `linux_seccomp::tests::seccomp_denies_socket_without_network_promise` —
    arm a policy in a child, then assert `PermissionDenied` outside the grant
    and success inside it, for filesystem and for an out-of-policy port.
+   **This phase must include a write-confinement assertion**: create a file
+   outside every grant, arm, and assert opening it for write fails. That is
+   the test the earlier unrestricted-`file-write-data` preamble would have
+   failed, and it is the one that keeps `Layer::Filesystem = Enforced`
+   honest. It must also assert the preflight self-test fires on a
+   deliberately malformed profile rather than aborting the test process.
 3. **Exec inheritance.** Evidence: a child-spawn test asserting the
    RFC-0103 `child-paths` contract holds on macOS — inherited denial by
    default, declared widening honoured.
 4. **The superset canary.** Evidence: the full differential suite run on
    macOS under an armed best-effort fence. Per RFC-0103's superset
    invariant, *any* outer-fence denial during that run is a derivation bug
-   and fails the build. This is also the mechanism that catches an OS
-   upgrade invalidating the preamble, which is the drawback above.
-5. **Docs.** `book/src/capabilities-sandbox.md` ("other hosts report the
+   and fails the build.
+
+5. **A CI canary for the preamble.** The drawback above — SBPL is
+   undocumented and breaks silently on OS upgrade — is not answered by a
+   local canary alone, because a workstation upgrades when its owner decides
+   to and the break is silent until someone runs a confined program.
+   `.github/workflows/ci.yml` already provisions one `macos-latest` job
+   (`browser-confinement`); add a small sibling that arms a minimal policy
+   and runs the phase-2/3 confinement tests. GitHub rotates that runner
+   image on its own schedule, which is exactly the trigger this canary
+   exists to catch, and it catches it on a pull request rather than on a
+   developer's machine.
+6. **Docs.** `book/src/capabilities-sandbox.md` ("other hosts report the
    layer as unavailable") and its "Outer enforcement is provider-specific"
    bullet both become stale on landing and are updated with the change.
+
+## Open questions
+
+**Should `required` mean "every implemented layer" or "every layer this
+platform can express"?** Under today's vocabulary macOS can never satisfy
+`required`, so the deployment posture RFC-0103 exists to offer remains
+Linux-only. The alternative reading would let a platform's best expressible
+policy satisfy `required`, at the cost of making the mode's guarantee
+platform-dependent — a deployment that reads "required" would mean
+different things on different hosts, which is precisely what the current
+vocabulary avoids. A third option is a distinct mode name. This affects
+Linux and the browser as much as macOS and belongs in an amendment to
+RFC-0103, not here; this RFC is written to be correct under either outcome.
+
+**Can the write preamble be empty?** If Seatbelt turns out not to check
+inherited descriptors at all, the four `(literal …)` rules can go, and the
+only write authority on the process is what the grants supply. Phase 2's
+inherited-descriptor test settles it.
 
 ## Compatibility
 
