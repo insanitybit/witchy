@@ -90,8 +90,9 @@ master directly — full gates must be serialized (the publish e2e is
 load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
 
 - In your worktree run only focused checks: `./scripts/test-for-paths.sh`
-  prints the ones matching your diff (`--run` executes them); the building
-  blocks are `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
+  prints the ones matching your diff (`--run` executes them; `--focused` runs
+  crate-scoped checks without full workspace builds); the building blocks are
+  `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
 - When your branch is green on its shard: `./scripts/merge-queue.sh submit <branch>`,
   then **KEEP WORKING — do not idle on the gate.** Start the next queue item on
   a fresh branch off master immediately. The gate lock serializes full gates

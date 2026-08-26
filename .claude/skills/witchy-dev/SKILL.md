@@ -102,11 +102,16 @@ type Account:
     balance: Int
 ```
 
-Records construct positionally or by name (`Account(name: "bob", balance: 5)`),
+Records construct positionally, by identifier name, or by string literal name
+(`Account(name: "bob", balance: 5)`, `.{ "host": "127.0.0.1", port: 8080 }`),
 read by `.field`, and update by spread (`Account(balance: n, ..acc)`).
 `type X = …` names a shape and never mints a type; `type X: …` mints a nominal
 type. `sealed type` confines *construction* to the defining module (field reads
 and `match` still work anywhere) — that's how invariants get one choke point.
+
+**Boolean operators** are C/Rust style: `&&`, `||`, `!`. Python keywords `and`,
+`or`, `not` are rejected with targeted compiler diagnostics. Length across all
+strings and collections is universally `.length()` (`s.length()`, `xs.length()`).
 
 **Value semantics, everywhere.** Every boundary that carries a value out of a
 scope — a call argument, a closure capture, a task message — carries a **copy**.
@@ -328,7 +333,10 @@ a shared dir — cargo's build lock would serialize concurrent agents.
 **never merge to master while a full gate is running** — it invalidates that
 gate. The coordinator (`scripts/merge-queue.sh`) enforces both. Protocol:
 
-1. **In your worktree, run a focused shard**, not the full gate:
+1. **In your worktree, run focused checks**, not the full gate:
+   `./scripts/test-for-paths.sh --run` prints and runs the focused checks for
+   your diff (pass `--focused` to restrict strictly to touched crates/tests and
+   avoid full workspace builds during inner-loop iteration). Shard building blocks:
    `./scripts/check.sh --fast` (tests minus e2e, clippy overlapped in the
    background), or `--e2e` / `--examples` / `--wasm` for the section your change
    touches. A green shard **qualifies** you for the queue; it doesn't replace
