@@ -45,6 +45,13 @@ sealed type Step(a):
     Open(Int, fn(Int) -> Task(a))
     Push(Int, __Msg, fn(Nil) -> Task(a))
     Pull(Int, fn(Option(__Msg)) -> Task(a))
+    // Compiler-private typed-ring steps. These share ChannelId numbering with
+    // the erased scheduler ring, but keep an Int payload out of `__Msg` until
+    // the first blocking or ordinary operation materializes FIFO contents.
+    // User source cannot construct these variants.
+    OpenI64(Int, fn(Int) -> Task(a))
+    PushI64(Int, Int, fn(Nil) -> Task(a))
+    PullI64(Int, fn(Option(Int)) -> Task(a))
     Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))
     // Fixed-arity select keeps its endpoint set and source order explicit.
     // The ordinary scheduler still owns the fallback; later RFC-0152 lowering
@@ -145,6 +152,9 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Open(cap, cont) -> Open(cap, fn(c): and_then(cont(c), k))
         Push(ch, msg, cont) -> Push(ch, msg, fn(u): and_then(cont(u), k))
         Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
+        OpenI64(cap, cont) -> OpenI64(cap, fn(c): and_then(cont(c), k))
+        PushI64(ch, msg, cont) -> PushI64(ch, msg, fn(u): and_then(cont(u), k))
+        PullI64(ch, cont) -> PullI64(ch, fn(o): and_then(cont(o), k))
         Pull2(ch0, ch1, cont) -> Pull2(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
         Pull3(ch0, ch1, ch2, cont) -> Pull3(ch0, ch1, ch2, fn(tag, o): and_then(cont(tag, o), k))
         Pull4(ch0, ch1, ch2, ch3, cont) -> Pull4(ch0, ch1, ch2, ch3, fn(tag, o): and_then(cont(tag, o), k))
@@ -210,6 +220,21 @@ fn __channel_send(channel: ChannelId, msg: __Msg) -> Task(Nil):
 fn __channel_recv(channel: ChannelId, decode: fn(Option(__Msg)) -> a) -> Task(a):
     match channel:
         ChannelId(id) -> Task(fn(): Pull(id, fn(msg): done(decode(msg))))
+
+// RFC-0152 compiler-private typed ready-path bridge. These functions retain
+// the public ChannelId and Task contracts; only the yielded Step carries its
+// exact Int payload. `task.run` falls back to the ordinary ring on the first
+// blocking operation.
+pub fn __channel_open_i64(capacity: Int) -> Task(ChannelId):
+    Task(fn(): OpenI64(capacity, fn(id): Task(fn(): Done(ChannelId(id)))))
+
+pub fn __channel_send_i64(channel: ChannelId, msg: Int) -> Task(Nil):
+    match channel:
+        ChannelId(id) -> Task(fn(): PushI64(id, msg, fn(_done): ready_unit()))
+
+pub fn __channel_recv_i64(channel: ChannelId) -> Task(Option(Int)):
+    match channel:
+        ChannelId(id) -> Task(fn(): PullI64(id, fn(msg): done(msg)))
 
 // Fast-path 2-receiver select avoiding channel ID list construction (RFC-0139 / RFC-0145).
 fn __channel_select2(a: ChannelId, b: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a):
@@ -426,6 +451,54 @@ fn ring_put(own buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -
     else:
         ring_grow(out, head, count, msg, cap)
 
+// The compiler-owned Int ring is deliberately parallel to `channels`, not a
+// replacement for it. A channel id has at most one active typed entry. Once a
+// no-ready path materializes its FIFO values below, that entry becomes None and
+// every later operation is handled by the ordinary erased scheduler ring.
+type __TypedI64Ring = (List(Int), Int, Int, Int)
+
+fn typed_i64_ring_new(cap: Int) -> __TypedI64Ring:
+    let physcap = if cap > 0: cap else: 1
+    (list.repeat(0, physcap), 0, 0, cap)
+
+fn typed_i64_ring_grow(buf: List(Int), head: Int, count: Int, msg: Int, cap: Int) -> __TypedI64Ring:
+    let physcap = list.length(buf)
+    let newcap = if physcap == 0: 1 else: physcap * 2
+    var next = list.repeat(0, newcap)
+    var k = 0
+    while k < count:
+        list.set_at(next, k, list.at(buf, (head + k) % physcap))
+        k = k + 1
+    list.set_at(next, count, msg)
+    (next, 0, count + 1, cap)
+
+fn typed_i64_ring_put(own buf: List(Int), head: Int, count: Int, msg: Int, cap: Int) -> __TypedI64Ring:
+    var out = move buf
+    let physcap = list.length(out)
+    if count < physcap:
+        list.set_at(out, (head + count) % physcap, msg)
+        (out, head, count + 1, cap)
+    else:
+        typed_i64_ring_grow(out, head, count, msg, cap)
+
+// The only typed-to-erased bridge. It runs once per domain, only after a
+// blocking/ordinary boundary, and preserves the existing FIFO order exactly.
+fn typed_i64_materialize(buf: List(Int), head: Int, count: Int, cap: Int) -> (List(__Msg), Int, Int, Int):
+    let (empty, _zero, _none, _same_cap) = ring_new(cap)
+    var erased = empty
+    var k = 0
+    while k < count:
+        let (next, _next_head, _next_count, _next_cap) = ring_put(erased, 0, k, __erase(list.at(buf, (head + k) % list.length(buf))), cap)
+
+        erased = next
+        k = k + 1
+    (erased, 0, count, cap)
+
+fn unerase_i64_option(value: Option(__Msg)) -> Option(Int):
+    match value:
+        Some(msg) -> Some(__unerase(msg))
+        None -> None
+
 // The local index (within `chs`) and global id of the first listed channel with a
 // pending message, or None if all are empty. Drives the `PullAny`/`select` path.
 fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int, Int, Int))) -> Option((Int, Int)):
@@ -471,6 +544,7 @@ pub fn run(root: Task(Nil)):
     // pass (closed receivers get `None`; blocked senders/joiners are released).
     var slots = [Active(root)]
     var channels = []
+    var typed_i64_channels = []
     var go = true
     while go:
         let n = list.length(slots)
@@ -919,6 +993,8 @@ pub fn run(root: Task(Nil)):
                             list.set_at(slots, i, Active(cont(Some((k, msg)))))
                             prog = true
                         None -> unit()
+                        // Keep an empty ordinary ring aligned by channel id
+                        // so materialization is a one-slot replacement.
                 WaitJoin(t, cont) ->
                     match list.at(slots, t):
                         Ended ->
@@ -943,6 +1019,13 @@ pub fn run(root: Task(Nil)):
                             let cid = list.length(channels)
                             list.set_at(slots, i, Active(cont(cid)))
                             list.push(channels, ring_new(cap))
+                            list.push(typed_i64_channels, None)
+                            prog = true
+                        OpenI64(cap, cont) ->
+                            let cid = list.length(channels)
+                            list.set_at(slots, i, Active(cont(cid)))
+                            list.push(channels, ring_new(cap))
+                            list.push(typed_i64_channels, Some(typed_i64_ring_new(cap)))
                             prog = true
                         Push(ch, msg, cont) ->
                             let (push_buf, head, count, cap) = list.at(channels, ch)
@@ -962,6 +1045,50 @@ pub fn run(root: Task(Nil)):
                                 prog = true
                             else:
                                 list.set_at(slots, i, WaitRecv(ch, cont))
+                        PushI64(ch, msg, cont) ->
+                            match list.at(typed_i64_channels, ch):
+                                Some((typed_buf, typed_head, typed_count, typed_cap)) ->
+                                    if typed_cap == 0 || typed_count < typed_cap:
+                                        list.set_at(typed_i64_channels, ch, Some(typed_i64_ring_put(typed_buf, typed_head, typed_count, msg, typed_cap)))
+                                        list.set_at(slots, i, Active(cont(unit())))
+                                        prog = true
+                                    else:
+                                        let erased = typed_i64_materialize(typed_buf, typed_head, typed_count, typed_cap)
+                                        list.set_at(channels, ch, erased)
+                                        list.set_at(typed_i64_channels, ch, None)
+                                        list.set_at(slots, i, WaitSend(ch, __erase(msg), cont))
+                                None ->
+                                    let (push_buf, head, count, cap) = list.at(channels, ch)
+                                    if cap == 0 || count < cap:
+                                        list.set_at(channels, ch, ring_put(push_buf, head, count, __erase(msg), cap))
+                                        list.set_at(slots, i, Active(cont(unit())))
+                                        prog = true
+                                    else:
+                                        list.set_at(slots, i, WaitSend(ch, __erase(msg), cont))
+                        PullI64(ch, cont) ->
+                            match list.at(typed_i64_channels, ch):
+                                Some((typed_buf, typed_head, typed_count, typed_cap)) ->
+                                    if typed_count > 0:
+                                        let msg = list.at(typed_buf, typed_head)
+                                        let physcap = list.length(typed_buf)
+                                        list.set_at(typed_i64_channels, ch, Some((typed_buf, (typed_head + 1) % physcap, typed_count - 1, typed_cap)))
+                                        list.set_at(slots, i, Active(cont(Some(msg))))
+                                        prog = true
+                                    else:
+                                        let erased = typed_i64_materialize(typed_buf, typed_head, typed_count, typed_cap)
+                                        list.set_at(channels, ch, erased)
+                                        list.set_at(typed_i64_channels, ch, None)
+                                        list.set_at(slots, i, WaitRecv(ch, fn(value): cont(unerase_i64_option(value))))
+                                None ->
+                                    let (buf, head, count, cap) = list.at(channels, ch)
+                                    if count > 0:
+                                        let msg = list.at(buf, head)
+                                        let physcap = list.length(buf)
+                                        list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                        list.set_at(slots, i, Active(cont(Some(__unerase(msg)))))
+                                        prog = true
+                                    else:
+                                        list.set_at(slots, i, WaitRecv(ch, fn(value): cont(unerase_i64_option(value))))
                         Pull2(ch0, ch1, cont) ->
                             let (buf0, head0, count0, cap0) = list.at(channels, ch0)
                             if count0 > 0:
