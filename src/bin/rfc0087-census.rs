@@ -36,25 +36,27 @@ fn run() -> Result<(), String> {
     println!("path\tline\tcategory\tcallee\tparameter\troot");
     // Each file's census (link + typecheck + trait-lowering) is fully
     // independent — no shared mutable state beyond the (thread-safe) parse
-    // cache above. With parsing now cached, this loop is CPU-bound on
-    // typecheck/trait-lowering, so it's a straightforward, zero-risk win to
-    // run every file's census on its own thread and only serialize the
-    // final output pass (which must stay in `files`' sorted order to match
-    // the checked-in TSV byte-for-byte). Measured 2026-08-10: cut the
-    // remaining post-parse-cache wall time roughly in proportion to the
-    // core count on a 10-core machine.
+    // cache above. Keep a small, bounded worker wave rather than spawning one
+    // typechecker per corpus file: each typecheck retains a substantial module
+    // graph, and an unbounded wave can exhaust memory before the gate starts.
+    // Reports remain in sorted input order, so the checked-in TSV is unchanged.
     let parse_cache: Mutex<BTreeMap<String, Arc<OnceLock<Result<ast::Module, String>>>>> =
         Mutex::new(BTreeMap::new());
+    let jobs = census_jobs(files.len());
     let reports: Vec<Result<Census, String>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = files
-            .iter()
-            .map(|path| {
-                let source_index = &source_index;
-                let parse_cache = &parse_cache;
-                scope.spawn(move || link_file(path, source_index, parse_cache))
-            })
-            .collect();
-        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+        let mut reports = Vec::with_capacity(files.len());
+        for wave in files.chunks(jobs) {
+            let handles: Vec<_> = wave
+                .iter()
+                .map(|path| {
+                    let source_index = &source_index;
+                    let parse_cache = &parse_cache;
+                    scope.spawn(move || link_file(path, source_index, parse_cache))
+                })
+                .collect();
+            reports.extend(handles.into_iter().map(|handle| handle.join().unwrap()));
+        }
+        reports
     });
     for (path, report) in files.iter().zip(reports) {
         let report = report?;
@@ -127,6 +129,14 @@ fn run() -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Bound concurrent compiler graphs in the census. Four workers retains useful
+/// parallelism on development machines without allowing a corpus-sized memory
+/// spike during a serialized merge gate.
+fn census_jobs(file_count: usize) -> usize {
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    available.min(4).min(file_count).max(1)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -378,4 +388,16 @@ fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, Strin
 
 fn display_from(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::census_jobs;
+
+    #[test]
+    fn census_job_count_is_nonzero_and_corpus_bounded() {
+        assert_eq!(census_jobs(0), 1);
+        assert_eq!(census_jobs(1), 1);
+        assert!(census_jobs(usize::MAX) <= 4);
+    }
 }
