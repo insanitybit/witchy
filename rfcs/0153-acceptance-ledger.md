@@ -86,6 +86,26 @@ binary and preserves results. It does **not** meet the 10% real-workload row
 threshold or the target Go-parity requirement, so it cannot close Track 6C or
 6E.
 
+### Guarded range completion checkpoint (2026-08-26)
+
+`/tmp/rfc0153-guarded-range/matrix-fann-20260826-154214` is a two-warmup,
+twelve-pair counterbalanced matrix between control
+`0feee2551e7a4eea58b52cb24849b29fce1cc17473bc41e636a6546013c7200b` and
+candidate `a178e4c902f0a5fa7cbde4f89761524456506d10f37c535643e638b1c98b38d4`.
+It records identical fannkuch output hashes and three exact counter payloads.
+The guarded normal-completion proof raises cursorized accesses from
+319,638,933 to 338,344,833 and removes three `list_at` fallbacks.
+
+| Workload | Control median | Guarded-range median | Ratio | Interpretation |
+|---|---:|---:|---:|---|
+| `fannkuch` | 156.965 ms | 150.266 ms | 0.9573x | 4.27% improvement; retained mechanism evidence only |
+
+`d2b5d6c6fb1cc45fca765bc9670d340d5296e993` merged this proof and its
+positive, deoptimized, zero-trap, and reordered-update fallback coverage via
+`mq-3ed9884b2118a96b7e231fe20f2ca34fcbdd0d6b` (gate 262s). The gain is
+attributable and correctness-preserving, but remains below the 10% promotion
+threshold and therefore cannot close Track 6C or 6E.
+
 ### Deoptimization repair checkpoint (2026-08-26)
 
 Two regressions found while exercising the required forced-copy matrix were
