@@ -29,27 +29,6 @@ platform = "cfg(target_os = \"macos\")"
 list-wrapper = "bounded-list"
 
 [profile.default]
-# One retry, and it is the single highest-leverage line in this file.
-#
-# The merge gate runs THIS profile with `--max-fail=1:immediate`, so before
-# this, one flaky test did not cost one test -- it killed the whole serialized
-# gate, SIGTERM'd every test in flight, skipped the remaining ~3,000, and sent
-# the branch back to the queue behind everyone else. Measured 2026-08-26: two
-# consecutive RFC-0158 gates died that way (480s and 300s) to a single
-# throughput test, and `chan_throughput_bounded_by_rc_floor` alone has red 7
-# gates across 4 unrelated branches.
-#
-# `profile.ci` has had `retries = 2` since it was written; the gate -- where a
-# flake is far more expensive, because it blocks every other branch -- had
-# none. That asymmetry was backwards.
-#
-# The deliberate trade: a genuinely failing test now runs twice, so a red gate
-# costs one extra execution of it. That is bounded and small against a whole
-# forfeited gate cycle. A test that fails then passes is reported as FLAKY
-# rather than silently swallowed, which is the point -- flakiness becomes a
-# COUNTABLE fact instead of an anecdote, so "fix or delete it" can rest on
-# data. Retries are not a licence to leave one in place.
-retries = 1
 # Surface every failure in one run rather than stopping at the first.
 fail-fast = false
 # Show a failing test's output as it fails, then recap all failures at the end.
@@ -186,6 +165,10 @@ priority = 90
 filter = 'test(/chan_throughput_bounded_by_rc_floor/)'
 test-group = 'perf-serial'
 slow-timeout = { period = "240s", terminate-after = 2 }
+# Retry only the tests we have evidence are flaky. A profile-wide retry was
+# tried first and was worse: it lengthens the whole stage against the hard 600s
+# MERGE_QUEUE_WORKSPACE_TEST_BUDGET, trading a red gate for a timed-out one.
+retries = 1
 priority = 90
 
 # The RFC-0152 scheduler/select stats tests instantiate whole async programs
@@ -202,6 +185,7 @@ priority = 90
 [[profile.default.overrides]]
 filter = 'test(/sole_live_fixed_select_frames_drain_before_one_reusable_wait_install|sole_live_receive_frame_drains_a_buffered_run_before_installing_wait|sole_live_select_frame_drains_a_buffered_source_order_run|rfc0152_actor_mailbox_preserves_request_order|rfc0152_guarded_paths_preserve_both_outcomes_and_backend_parity|compiler_frame_registration_is_bounded_through_cancel_and_close/)'
 slow-timeout = { period = "240s", terminate-after = 2 }
+retries = 1
 priority = 85
 
 # RFC-0129's million-message measurements create a Wasmtime instance per
