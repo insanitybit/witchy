@@ -82,7 +82,11 @@ pub fn apply(
     {
         crate::linux::apply(policy, mode)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::apply(policy, mode)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = policy;
         let report = EnforcementReport {
@@ -123,6 +127,10 @@ const fn syscall_provider() -> &'static str {
         any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
     )) {
         "seccomp-bpf"
+    } else if cfg!(target_os = "macos") {
+        // Operation classes, not syscall numbers: macOS has no seccomp analogue
+        // and the provider must not overclaim. See RFC-0158 §Layer reporting.
+        "seatbelt"
     } else {
         "none"
     }
@@ -131,6 +139,8 @@ const fn syscall_provider() -> &'static str {
 const fn platform_provider() -> &'static str {
     if cfg!(target_os = "linux") {
         "landlock"
+    } else if cfg!(target_os = "macos") {
+        "seatbelt"
     } else {
         "none"
     }
@@ -149,7 +159,7 @@ mod tests {
             .all(|layer| layer.status == LayerStatus::Disabled));
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn required_mode_rejects_a_host_without_a_provider() {
         let error = apply(&Policy::default(), EnforcementMode::Required).unwrap_err();
