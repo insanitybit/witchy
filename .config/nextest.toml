@@ -188,6 +188,22 @@ test-group = 'perf-serial'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
+# The RFC-0152 scheduler/select stats tests instantiate whole async programs
+# and count scheduler transitions, so their runtime tracks CPU availability.
+# Measured across 2,014 gate logs (scripts/gate-test-cost.py + per-test
+# aggregation): these sit at 42-63% of the default 135s slow-kill at p50, which
+# is not a margin -- it is a budget that any contention exhausts. One of them
+# (sole_live_fixed_select_frames…, p50 84.9s) red the very gate that was
+# landing the fix for chan_throughput_bounded_by_rc_floor.
+#
+# Widened rather than serialized: unlike the throughput floors above these do
+# not assert a rate, so they are correct when slow -- they only need to be
+# allowed to finish. Bounded 2 x 240s hard cap; assertions unchanged.
+[[profile.default.overrides]]
+filter = 'test(/sole_live_fixed_select_frames_drain_before_one_reusable_wait_install|sole_live_receive_frame_drains_a_buffered_run_before_installing_wait|sole_live_select_frame_drains_a_buffered_source_order_run|rfc0152_actor_mailbox_preserves_request_order|rfc0152_guarded_paths_preserve_both_outcomes_and_backend_parity|compiler_frame_registration_is_bounded_through_cancel_and_close/)'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 85
+
 # RFC-0129's million-message measurements create a Wasmtime instance per
 # sample and therefore peak far above ordinary unit-test memory.  They are
 # correctness and allocation guards, not throughput that benefits from
