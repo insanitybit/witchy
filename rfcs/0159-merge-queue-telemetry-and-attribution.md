@@ -423,9 +423,20 @@ statement about tooling. It is not a ranking of people.
 ## Migration
 
 Per house style, one cut and no compatibility layer. New fields are additive to
-an append-only journal, so old events simply lack them; `stats --since` windows
-default to 7d, well inside the post-change period. `cmd_stats` is replaced, not
-kept alongside. Existing consumers of `elapsed_s` are unaffected.
+an append-only journal, so old events simply lack them; `gate-report.sh
+--since` windows default well inside the post-change period. `cmd_stats`'s
+cumulative implementation is deleted in one cut — the name survives only as a
+forwarder to `gate-report.sh`, which is a single entry point for one
+implementation, not a compatibility shim over two. Existing consumers of
+`elapsed_s` are unaffected.
+
+Two schema bumps land with this work and are stated here so they are not
+discovered by a downstream consumer: `WITCHY_TIMING` goes `"schema":1` →
+`"schema":2` when `status` gains `truncated` (§D), and `gate-report.sh`
+goes schema 2 → 3 when it gains the dimensions in §G. Neither format is
+consumed by anything outside this repo today, which is why both can move in
+one cut; a consumer added later must reject an unknown schema rather than
+guess.
 
 ## Acceptance criteria
 
