@@ -352,6 +352,14 @@ Send `msg`; on a bounded channel this blocks until there is room while some task
 
 Receive the next message, or `None` when the executor reaches quiescence with this receive parked. `for await x in rx:` loops until this `None`. Because witchy does not refcount sender values, a `Sender` retained by later code may still send after such a quiescent close. The erased value is recovered at `m` at this boundary.
 
+#### `fn __rfc0152_channel_i64(capacity: Int) -> Task((Sender(Int), Receiver(Int)))`
+
+Compiler-private exact-Int bridges. The lowerer selects these only from a proved RFC-0152 ready region; public generic channel APIs and all unproved operations continue to use the erased scheduler bridge above.
+
+#### `fn __rfc0152_send_i64(tx: Sender(Int), msg: Int) -> Task(Nil)`
+
+#### `fn __rfc0152_recv_i64(rx: Receiver(Int)) -> Task(Option(Int))`
+
 #### `fn spawn(child: Task(Nil)) -> Task(Handle)`
 
 Start `child` as a concurrent task; the returned handle completes when it does.
