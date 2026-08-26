@@ -42,10 +42,22 @@ pub(crate) fn arm(
 /// dynamic loader's library roots, and for the same reason: the derived policy
 /// stays a deterministic function of the grants.
 ///
-/// This is a real widening, and it is bounded deliberately: read+write on one
-/// cache directory, no execute. The cache is not a security boundary — every
-/// hit re-enters Wasmtime through `Module::new` validation — so a payload that
-/// can write there can waste work, not gain authority.
+/// READ ONLY, and that restriction is load-bearing rather than tidy.
+/// `$XDG_CACHE_HOME/witchy/wasm/modules` holds Wasmtime's *serialized compiled
+/// modules* — native code, loaded through `Module::deserialize`, which Wasmtime
+/// documents as unsafe for untrusted input. A write grant there would let a
+/// guest (or a payload that escaped into one) plant a poisoned artifact that
+/// the NEXT launch executes as native code, outside the wasm sandbox and
+/// persisting across runs. That converts a contained escape into host code
+/// execution, which is the whole thing this fence exists to prevent.
+///
+/// Only `optimized-wasm` holds ordinary wasm that is re-validated by
+/// `Module::new` on every hit; that guarantee does not extend to the sibling
+/// directories, and an earlier version of this function widened the whole tree
+/// to read+write on the strength of it. Read-only keeps the cache usable for
+/// confined runs while making a confined run unable to populate or corrupt it.
+/// Authenticating cache contents so that trust is not positional is RFC-0155's
+/// subject, not this rule's.
 ///
 /// Found on macOS, the first platform whose provider actually enforces this
 /// path. Landlock reports unavailable in the containerized CI that otherwise
@@ -69,7 +81,7 @@ fn add_runtime_cache_rule(policy: &mut witchy_confinement::Policy) {
     policy.add_fs_rule(
         dir,
         witchy_confinement::FsScope::Tree,
-        witchy_confinement::FsAccess::new(true, true, false),
+        witchy_confinement::FsAccess::new(true, false, false),
     );
 }
 
@@ -120,4 +132,31 @@ fn materialize_write_targets(caps: &runtime::Capabilities) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cache tree holds Wasmtime's serialized compiled modules — native
+    /// code loaded through `Module::deserialize`. A write grant there lets a
+    /// confined guest plant an artifact the next launch executes outside the
+    /// wasm sandbox, so this rule must never become write-capable. An earlier
+    /// version of it was, on the mistaken belief that every cache hit is
+    /// re-validated; only `optimized-wasm` carries that guarantee.
+    #[test]
+    fn the_runtime_cache_rule_is_never_write_capable() {
+        let mut policy = witchy_confinement::Policy::default();
+        add_runtime_cache_rule(&mut policy);
+        for rule in &policy.filesystem {
+            assert!(
+                !rule.access.write,
+                "runtime cache rule grants write: {rule:?}"
+            );
+            assert!(
+                !rule.access.execute,
+                "runtime cache rule grants execute: {rule:?}"
+            );
+        }
+    }
 }
