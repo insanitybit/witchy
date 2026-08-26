@@ -287,6 +287,15 @@ Remaining work, therefore:
   SHA forever in a gitignored directory nobody looks at. Prune on write:
   drop receipts older than 30 days, and drop any whose SHA is an ancestor
   of current master.
+- **Suppress the warning where no shard is possible.** Observed while
+  landing this RFC: a prose-only branch cannot obtain a receipt —
+  `test-for-paths.sh` reports "no focused checks needed" and the
+  docs-scope gate does not write one — so `submit` warns on every
+  documentation change. A warning that fires on changes with nothing to
+  validate trains submitters to ignore it, which costs exactly the
+  branches where it matters. `submit` should consult the same path
+  classification `test-for-paths.sh` uses and stay quiet when the diff has
+  no gate stage to run.
 
 One limit the reporting must not overstate: **a receipt is a claim about
 the author's tree, not a prediction of the gate.** The coordinator rebases
