@@ -7048,6 +7048,18 @@ mod checked_codegen_boundary_tests {
 
         let formation = carrier.ready_channel_regions();
         assert!(formation.regions.len() >= 3, "channel regions before and after task.map must survive: {formation:#?}");
+        assert!(formation.regions.iter().any(|region| region.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                witchy_types::suspension_carrier::ReadyChannelOperationKind::Open {
+                    payload_layout: witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
+                        witchy_types::suspension_carrier::CarrierLane::I64,
+                    ),
+                    ownership: witchy_types::suspension_carrier::ChannelOwnershipEnvelope::InlineValue,
+                    ..
+                }
+            )
+        })), "the allocation edge must retain its typed Int ring layout: {formation:#?}");
         assert!(formation.regions.windows(2).all(|pair| pair[0].id <= pair[1].id));
         assert!(formation.regions.iter().all(|region| {
             region.operations.iter().all(|operation| operation.state == region.id)

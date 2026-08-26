@@ -459,7 +459,15 @@ pub struct ReadyChannelOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadyChannelOperationKind {
-    Open { resume_target: usize },
+    /// The open transition owns the layout selected for the new runtime
+    /// channel id. Later states may rename or destructure the endpoint pair,
+    /// so an emitter must use this boundary rather than infer the payload from
+    /// a later local spelling.
+    Open {
+        resume_target: usize,
+        payload_layout: ChannelPayloadLayout,
+        ownership: ChannelOwnershipEnvelope,
+    },
     Send(AwaitChannelOperationPlan),
     Receive(AwaitChannelOperationPlan),
     ReceiveFrameLoop(AwaitReceiveFrameLoopPlan),
@@ -475,7 +483,14 @@ pub enum ReadyChannelOperationKind {
 pub enum ScalarTransition {
     Jump { target: usize },
     Done,
-    ChannelOpen { resume: usize },
+    /// A new channel's exact representation is attached to the allocation
+    /// edge, before the `(Sender(m), Receiver(m))` result is destructured in
+    /// the successor state.
+    ChannelOpen {
+        resume: usize,
+        payload_layout: ChannelPayloadLayout,
+        ownership: ChannelOwnershipEnvelope,
+    },
     ChannelSend(AwaitChannelOperationPlan),
     ChannelReceive(AwaitChannelOperationPlan),
     ChannelReceiveFrameLoop(AwaitReceiveFrameLoopPlan),
@@ -755,6 +770,19 @@ impl SuspensionCarrierCatalog {
                     ));
                     continue;
                 }
+                if transitions.iter().any(|transition| matches!(
+                    transition,
+                    ScalarTransition::ChannelOpen { payload_layout: ChannelPayloadLayout::Boxed, .. }
+                )) {
+                    formation.excluded.push(rejection(
+                        path_ordinal,
+                        ReadyChannelRegionExclusionReason::BoxedChannel {
+                            channel: "chan.channel result".into(),
+                            message: "unknown".into(),
+                        },
+                    ));
+                    continue;
+                }
                 if let Some(operation) = transitions.iter().find_map(|transition| {
                     ready_transition_is_static(transition).err()
                 }) {
@@ -1017,9 +1045,11 @@ fn ready_channel_operations(
         .enumerate()
         .filter_map(|(transition_ordinal, transition)| {
             let kind = match transition {
-                ScalarTransition::ChannelOpen { resume } => {
+                ScalarTransition::ChannelOpen { resume, payload_layout, ownership } => {
                     ReadyChannelOperationKind::Open {
                         resume_target: *resume,
+                        payload_layout: payload_layout.clone(),
+                        ownership: *ownership,
                     }
                 }
                 ScalarTransition::ChannelSend(operation) => {
@@ -1109,7 +1139,7 @@ fn transition_successors(transitions: &[ScalarTransition]) -> Vec<usize> {
         .iter()
         .flat_map(|transition| match transition {
             ScalarTransition::Jump { target } => vec![*target],
-            ScalarTransition::ChannelOpen { resume }
+            ScalarTransition::ChannelOpen { resume, .. }
             | ScalarTransition::Join { resume }
             | ScalarTransition::Yield { resume }
                 => vec![*resume],
@@ -1682,7 +1712,7 @@ fn collect_task_expression<'a, 'd>(
     let resume =
         resume.ok_or_else(|| format!("effect task `{name}` has no compiler-owned resume state"))?;
     let transition = if call_family(name, "chan.channel") {
-        ScalarTransition::ChannelOpen { resume }
+        channel_open_plan(table, task, definitions, resume)
     } else if call_family(name, "chan.send") {
         ScalarTransition::ChannelSend(channel_operation_plan(
             table,
@@ -2287,6 +2317,64 @@ fn channel_ownership_envelope(layout: &ChannelPayloadLayout) -> ChannelOwnership
     }
 }
 
+/// Capture the type of `chan.channel` before async lowering replaces its
+/// `(Sender(m), Receiver(m))` result with an unannotated continuation bind.
+/// The call result is the only source-independent allocation boundary: neither
+/// capacity nor later endpoint names can recover `m` safely.
+fn channel_open_plan(
+    table: &TypeTable,
+    task: &ast::Expr,
+    definitions: &HashMap<String, &TypeDef>,
+    resume: usize,
+) -> ScalarTransition {
+    let payload_layout = table
+        .type_of(task)
+        .and_then(crate::typeck::ty_to_ast)
+        .map(|task_type| channel_open_payload_layout(&task_type, definitions))
+        .unwrap_or(ChannelPayloadLayout::Boxed);
+    let ownership = channel_ownership_envelope(&payload_layout);
+    ScalarTransition::ChannelOpen {
+        resume,
+        payload_layout,
+        ownership,
+    }
+}
+
+fn channel_open_payload_layout(
+    task_type: &Type,
+    definitions: &HashMap<String, &TypeDef>,
+) -> ChannelPayloadLayout {
+    let Type::Named(name, arguments) = task_type.unqualified() else {
+        return ChannelPayloadLayout::Boxed;
+    };
+    if name.rsplit('.').next() != Some("Task") || arguments.len() != 1 {
+        return ChannelPayloadLayout::Boxed;
+    }
+    channel_pair_payload_layout(&arguments[0], definitions)
+        .unwrap_or(ChannelPayloadLayout::Boxed)
+}
+
+fn channel_pair_payload_layout(
+    ty: &Type,
+    definitions: &HashMap<String, &TypeDef>,
+) -> Option<ChannelPayloadLayout> {
+    let Type::Tuple(fields) = ty.unqualified() else {
+        return None;
+    };
+    let [first, second] = fields.as_slice() else {
+        return None;
+    };
+    let (first_direction, first_message) = channel_endpoint_type(first)?;
+    let (second_direction, second_message) = channel_endpoint_type(second)?;
+    if first_direction != ChannelEndpointDirection::Send
+        || second_direction != ChannelEndpointDirection::Receive
+        || first_message != second_message
+    {
+        return None;
+    }
+    Some(channel_payload_layout(first_message, definitions))
+}
+
 fn push_u32(bytes: &mut Vec<u8>, value: usize) {
     bytes.extend_from_slice(
         &u32::try_from(value)
@@ -2487,6 +2575,34 @@ mod tests {
     }
 
     #[test]
+    fn channel_open_binds_layout_from_its_typed_task_result() {
+        let pair = Type::Tuple(vec![
+            Type::Named("Sender".into(), vec![Type::Named("String".into(), Vec::new())]),
+            Type::Named("Receiver".into(), vec![Type::Named("String".into(), Vec::new())]),
+        ]);
+        let task = Type::Named("Task".into(), vec![pair]);
+        assert_eq!(
+            channel_open_payload_layout(&task, &HashMap::default()),
+            ChannelPayloadLayout::BufferRoot(ChannelBufferRoot::String),
+        );
+    }
+
+    #[test]
+    fn channel_open_refuses_mismatched_endpoint_pairs() {
+        let pair = Type::Tuple(vec![
+            Type::Named("Sender".into(), vec![Type::Named("Int".into(), Vec::new())]),
+            Type::Named("Receiver".into(), vec![Type::Named("String".into(), Vec::new())]),
+        ]);
+        assert_eq!(
+            channel_open_payload_layout(
+                &Type::Named("Task".into(), vec![pair]),
+                &HashMap::default(),
+            ),
+            ChannelPayloadLayout::Boxed,
+        );
+    }
+
+    #[test]
     fn ready_region_formation_keeps_supported_neighbours_when_one_region_is_unsupported() {
         let state = |id, function: &str| CarrierState {
             id,
@@ -2502,7 +2618,7 @@ mod tests {
             max_lane_width: 0,
             typed_channel_plans: Vec::new(),
             region_transition_paths: vec![
-                vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }]) }],
+                vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 9, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]) }],
                 vec![RegionTransitionPath { guarded: false, transitions: Err("unsupported awaited task call `task.map`".into()) }],
                 vec![RegionTransitionPath { guarded: false, transitions: Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
@@ -2514,7 +2630,7 @@ mod tests {
                 })]) }],
             ],
             scalar_transitions: vec![
-                Ok(vec![ScalarTransition::ChannelOpen { resume: 9 }]),
+                Ok(vec![ScalarTransition::ChannelOpen { resume: 9, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]),
                 Err("unsupported awaited task call `task.map`".into()),
                 Ok(vec![ScalarTransition::ChannelReceive(AwaitChannelOperationPlan {
                     endpoint: ChannelEndpointPlace::Static("rx".into()),
@@ -2549,7 +2665,11 @@ mod tests {
             [ReadyChannelOperation {
                 state: 4,
                 transition_ordinal: 0,
-                kind: ReadyChannelOperationKind::Open { resume_target: 9 },
+                kind: ReadyChannelOperationKind::Open {
+                    resume_target: 9,
+                    payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                },
             }]
         ));
         assert!(matches!(
@@ -2635,7 +2755,7 @@ mod tests {
             region_transition_paths: vec![vec![
                 RegionTransitionPath {
                     guarded: true,
-                    transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 8 }]),
+                    transitions: Ok(vec![ScalarTransition::ChannelOpen { resume: 8, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue }]),
                 },
                 RegionTransitionPath {
                     guarded: true,
@@ -3122,7 +3242,7 @@ mod tests {
                     slots: Vec::new(),
                     transitions: vec![
                         ScalarTransition::Jump { target: 3 },
-                        ScalarTransition::ChannelOpen { resume: 2 },
+                        ScalarTransition::ChannelOpen { resume: 2, payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64), ownership: ChannelOwnershipEnvelope::InlineValue },
                         ScalarTransition::ChannelSend(send.clone()),
                     ],
                 },
@@ -3153,7 +3273,11 @@ mod tests {
                 ReadyChannelOperation {
                     state: 3,
                     transition_ordinal: 1,
-                    kind: ReadyChannelOperationKind::Open { resume_target: 2 },
+                    kind: ReadyChannelOperationKind::Open {
+                        resume_target: 2,
+                        payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                        ownership: ChannelOwnershipEnvelope::InlineValue,
+                    },
                 },
                 ReadyChannelOperation {
                     state: 3,
