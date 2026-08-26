@@ -1218,10 +1218,36 @@ cmd_submit() {
     # ADVISORY ONLY, deliberately. Refusing an unvalidated submission would be
     # a protocol change for every agent, and a warning first tells us how often
     # this actually fires before anything starts blocking.
-    local tip_sha receipt_dir
+    local tip_sha receipt_dir receipt_file
+    local presubmit_shard="" presubmit_at="" presubmit_sha_match="false"
     tip_sha="$(git -C "$root" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
     receipt_dir="$(witchy_merge_queue_state_dir "$root" 2>/dev/null || true)/receipts"
-    if [ -n "$tip_sha" ] && [ ! -f "$receipt_dir/$tip_sha.json" ]; then
+    receipt_file="$receipt_dir/$tip_sha.json"
+    if [ -n "$tip_sha" ] && [ -f "$receipt_file" ]; then
+        presubmit_sha_match="true"
+        presubmit_shard="$(jq -r '((.shards // [.shard]) | map(select(. != null)) | join(",")) // ""' \
+            "$receipt_file" 2>/dev/null || true)"
+        presubmit_at="$(jq -r '.at // ""' "$receipt_file" 2>/dev/null || true)"
+    fi
+    # Suppress the warning where no shard is *possible*. A prose-only branch
+    # cannot obtain a receipt -- test-for-paths reports no focused checks and a
+    # docs-scope gate writes none -- so warning on every documentation change
+    # trains submitters to ignore the warning, which costs exactly the branches
+    # where it matters. Reuse the gate's own path classifier rather than a
+    # second definition of "documentation".
+    local submit_changed="" submit_docs_safe=0
+    if [ -n "$tip_sha" ]; then
+        local submit_base
+        submit_base="$(git -C "$root" merge-base master "$tip_sha" 2>/dev/null || true)"
+        if [ -n "$submit_base" ]; then
+            submit_changed="$(git -C "$root" diff --name-only "$submit_base" "$tip_sha" 2>/dev/null || true)"
+            if [ -n "$submit_changed" ] && diff_is_docs_safe "$submit_changed"; then
+                submit_docs_safe=1
+            fi
+        fi
+    fi
+    if [ -n "$tip_sha" ] && [ "$presubmit_sha_match" = "false" ] \
+        && [ "$submit_docs_safe" -eq 0 ]; then
         note "WARNING: no green shard recorded for $branch@${tip_sha:0:9}."
         note "         Run './scripts/test-for-paths.sh --run' (or check.sh --fast) first:"
         note "         a red gate here costs every queued branch a full serialized cycle."
@@ -1301,7 +1327,9 @@ cmd_submit() {
               submitted:$ts, by:$by, note:$note}' >"$tmp"
         mv "$tmp" "$existing_qf"
         record resubmitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
-            submitted_sha "$sha" after "$after_words" by "${USER:-unknown}"
+            submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
+            presubmit_sha_match "$presubmit_sha_match" \
+            presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at"
         if [ "$front" -eq 1 ]; then
             front_qf="$queue_dir/$(front_stamp)-$(branch_key "$branch").json"
             mv "$existing_qf" "$front_qf"
@@ -1320,7 +1348,9 @@ cmd_submit() {
             '{schema:2, change_id:$id, attempt_id:$attempt, branch:$branch, sha:$sha, after:$after,
               submitted:$ts, by:$by, note:$note}' >"$queue_dir/$fname"
         record submitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
-            submitted_sha "$sha" after "$after_words" by "${USER:-unknown}"
+            submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
+            presubmit_sha_match "$presubmit_sha_match" \
+            presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at"
         note "queued $branch as $change_id ($fname)"
     fi
     release_change_lock
@@ -1328,8 +1358,31 @@ cmd_submit() {
     if [ -n "$cpid" ]; then
         note "coordinator (pid $cpid) will gate + merge it"
     else
-        note "NO COORDINATOR RUNNING — your submission will sit until one starts:"
-        note "  ./scripts/merge-queue.sh daemon"
+        # Coordinator idle is the single largest latency contributor: over the
+        # tail, changes waited orders of magnitude longer for a coordinator to
+        # exist than they spent being gated. Start one rather than printing an
+        # instruction the submitter has to act on.
+        #
+        # It MUST be the detached daemon, not a child of this shell. A
+        # coordinator parented to a submitting agent's session dies when that
+        # session ends -- which is exactly when an agent submits its last branch
+        # and exits, recreating the gap this closes, intermittently and
+        # invisibly. `daemon` already leaves the launcher's process group and
+        # holds the same singleton lock, so this cannot produce a duplicate.
+        if [ "${MERGE_QUEUE_AUTOSTART:-1}" = "1" ]; then
+            note "no coordinator running; starting the detached daemon"
+            if cmd_daemon; then
+                local started; started="$(coordinator_pid 2>/dev/null || true)"
+                record coordinator_started "$branch" pid "${started:-unknown}" \
+                    origin "submit-autostart" actor "${MERGE_QUEUE_ACTOR:-unset}"
+            else
+                note "WARNING: could not start a coordinator; your submission will sit until one starts:"
+                note "  ./scripts/merge-queue.sh daemon"
+            fi
+        else
+            note "NO COORDINATOR RUNNING — your submission will sit until one starts:"
+            note "  ./scripts/merge-queue.sh daemon"
+        fi
     fi
 }
 
@@ -1747,6 +1800,16 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     change_id="$(jq -r '.change_id // empty' "$f")"
     submitted_sha="$(jq -r '.sha // empty' "$f")"
     attempt_id="$(jq -r '.attempt_id // empty' "$f")"
+    # Cheap early check: a dirty shared checkout blocks landing regardless of
+    # what this candidate is, so bail before spending a rebase (p50 64s) that
+    # will only be discarded. This is an OPTIMISATION, not the guard -- the
+    # authoritative check stays under gate.lock further down, because another
+    # agent can dirty the checkout during the rebase this skips. Removing that
+    # one in favour of this one would be a time-of-check/time-of-use race.
+    if ! main_worktree_is_ready_to_land; then
+        return 2
+    fi
+
     if ! git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
         note "branch $branch vanished; dropping"
         record dropped "$branch" change_id "$change_id" attempt_id "$attempt_id" \
@@ -2732,6 +2795,8 @@ cmd_run() {
         eval "exec ${ready_fd}>&-"
         unset MERGE_QUEUE_DAEMON_READY_FD
     fi
+    # Consecutive dirty-checkout deferrals, driving the backoff below.
+    local deferrals=0
     while :; do
         if ! coordinator_lock_owned; then
             note "lost coordinator singleton ownership; exiting instead of becoming an unnamed sibling"
@@ -2760,13 +2825,35 @@ cmd_run() {
         fi
         local process_status=0
         process_one "$queue_dir/$f" || process_status=$?
+        [ "$process_status" -ne 2 ] && deferrals=0
         [ "$process_status" -eq 0 ] && continue
         if [ "$process_status" -eq 2 ]; then
             if [ "$once" -eq 1 ]; then
                 note "queue deferred: main master checkout has tracked changes"
                 break
             fi
-            sleep "$poll_interval"
+            # Exponential backoff while the blocking reason persists. A flat 15s
+            # retry against a checkout nobody is watching produced 1,052 requeues
+            # over 24.3h with zero merges repo-wide; the policy (never gate
+            # against a dirty shared checkout) is right, only the retry shape was
+            # wrong. Log once per backoff period rather than once per poll.
+            deferrals=$((deferrals + 1))
+            if [ "$deferrals" -eq 3 ]; then
+                local blocked_reason; blocked_reason="$(main_worktree_block_reason)"
+                note "STALLED: $blocked_reason"
+                record stalled "" reason "${blocked_reason:-main master checkout has tracked changes}" \
+                    deferrals "$deferrals"
+            fi
+            local backoff="$poll_interval"
+            local doublings=$((deferrals - 1))
+            [ "$doublings" -gt 6 ] && doublings=6
+            local i=0
+            while [ "$i" -lt "$doublings" ]; do
+                backoff=$((backoff * 2))
+                i=$((i + 1))
+            done
+            [ "$backoff" -gt 600 ] && backoff=600
+            sleep "$backoff"
         else
             sleep "$retry_interval"
         fi

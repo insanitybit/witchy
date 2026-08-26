@@ -1483,3 +1483,104 @@ fn concurrent_daemon_starts_create_exactly_one_coordinator() {
     assert!(!process_is_alive(pid), "winning coordinator ignored termination");
 }
 
+
+/// RFC-0159 §D. The receipt mechanism exists; what was missing is that nothing
+/// journaled it, so "do pre-submit shards predict gate outcomes?" stayed
+/// unanswerable. Absence must be an explicit `false`, never a missing field, or
+/// adoption cannot be counted.
+#[test]
+fn submit_journals_whether_a_presubmit_receipt_covers_the_tip() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    let submitted = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "submitted")
+        .next_back()
+        .expect("a submitted event");
+    assert_eq!(
+        submitted["presubmit_sha_match"], "false",
+        "absence must be recorded explicitly: {submitted}"
+    );
+
+    // Now mint a receipt for the branch tip, exactly as a green shard would.
+    let tip = String::from_utf8(
+        git_output(&fixture.root, &["rev-parse", "refs/heads/a"]).stdout,
+    )
+    .expect("tip sha is utf8")
+    .trim()
+    .to_owned();
+    let receipts = fixture.state.join("receipts");
+    fs::create_dir_all(&receipts).expect("create receipts dir");
+    fs::write(
+        receipts.join(format!("{tip}.json")),
+        format!(
+            "{{\"sha\":\"{tip}\",\"shards\":[\"fast\",\"wasm\"],\"at\":\"2026-08-26T00:00:00Z\"}}"
+        ),
+    )
+    .expect("write receipt");
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    let resubmitted = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "resubmitted")
+        .next_back()
+        .expect("a resubmitted event");
+    assert_eq!(resubmitted["presubmit_sha_match"], "true");
+    assert_eq!(
+        resubmitted["presubmit_shard"], "fast,wasm",
+        "every shard that covered the tip must survive, not just the last writer"
+    );
+    assert_eq!(resubmitted["presubmit_at"], "2026-08-26T00:00:00Z");
+}
+
+/// A prose-only branch cannot obtain a receipt at all: `test-for-paths` reports
+/// no focused checks and a docs-scope gate writes none. Warning on every
+/// documentation change trains submitters to ignore the warning, which costs
+/// exactly the branches where it matters.
+#[test]
+fn a_prose_only_submission_is_not_warned_about_a_missing_shard() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+
+    // Replace the branch's payload with a documentation-only change.
+    run_git(&fixture.root, &["checkout", "--quiet", "a"]);
+    fs::create_dir_all(fixture.root.join("rfcs")).expect("create rfcs dir");
+    fs::write(fixture.root.join("rfcs/0001-note.md"), "prose\n")
+        .expect("write prose file");
+    fs::remove_file(fixture.root.join("a.txt")).ok();
+    run_git(&fixture.root, &["add", "-A"]);
+    run_git(&fixture.root, &["commit", "--quiet", "-m", "docs only"]);
+    run_git(&fixture.root, &["checkout", "--quiet", "master"]);
+
+    let output = fixture.mq_ok(&["submit", "a"], "true");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("no green shard recorded"),
+        "prose-only submission warned about an unobtainable shard:\n{stderr}"
+    );
+
+    // The field is still journaled — suppressing the warning must not suppress
+    // the measurement.
+    let submitted = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "submitted")
+        .next_back()
+        .expect("a submitted event");
+    assert_eq!(submitted["presubmit_sha_match"], "false");
+}
+
+/// A code change with no receipt must still warn — the suppression above is
+/// scoped to diffs with nothing to validate, not a blanket removal.
+#[test]
+fn a_code_submission_without_a_receipt_still_warns() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let output = fixture.mq_ok(&["submit", "a"], "true");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no green shard recorded"),
+        "code submission lost its missing-shard warning:\n{stderr}"
+    );
+}

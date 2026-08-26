@@ -546,8 +546,30 @@ record_shard_receipt() { # record_shard_receipt <shard-label>
     . "$main_root/scripts/state-paths.sh" 2>/dev/null || return 0
     dir="$(witchy_merge_queue_state_dir "$main_root" 2>/dev/null)/receipts" || return 0
     mkdir -p "$dir" 2>/dev/null || return 0
-    printf '{"sha":"%s","shard":"%s","at":"%s"}\n' \
-        "$sha" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$dir/$sha.json" 2>/dev/null || return 0
+
+    # Accumulate shards rather than overwrite. One file per SHA keyed by last
+    # writer loses the fact that `--fast` ran before `--wasm`, and "which shards
+    # covered this tip" is exactly what submit-time reporting joins against.
+    local prior='[]'
+    if [ -f "$dir/$sha.json" ]; then
+        prior="$(jq -c '(.shards // [.shard]) | map(select(. != null))' \
+            "$dir/$sha.json" 2>/dev/null || echo '[]')"
+        [ -n "$prior" ] || prior='[]'
+    fi
+    local tmp="$dir/$sha.json.tmp.$$"
+    if jq -cn --arg sha "$sha" --arg shard "$1" \
+        --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson prior "$prior" \
+        '{sha:$sha, shards: ($prior + [$shard] | unique), at:$at}' \
+        >"$tmp" 2>/dev/null; then
+        mv "$tmp" "$dir/$sha.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+        rm -f "$tmp" 2>/dev/null
+    fi
+
+    # Retention. One file per certified SHA forever, in a gitignored directory
+    # nobody looks at. Prune on write; like everything else here it must never
+    # fail a green shard.
+    find "$dir" -name '*.json' -type f -mtime +30 -delete 2>/dev/null || true
     return 0
 }
 

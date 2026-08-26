@@ -115,6 +115,33 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   and reports gate p50/p90 and failure rate per bucket, so a timing claim can
   be qualified by the load it was measured at. **Never compare two gate
   measurements taken at different load per core.**
+
+  `submitted` and `resubmitted` additionally carry the pre-submit receipt
+  join (RFC-0159 §D): `presubmit_sha_match` (`"true"`/`"false"` — whether a
+  receipt exists for the *submitted tip*, not merely for some ancestor),
+  `presubmit_shard` (comma-joined list of every shard that covered that tip),
+  and `presubmit_at`. Absence is written as an explicit `"false"` and an empty
+  shard list, never as a missing field, so adoption is countable rather than
+  inferred from silence. `stalled` names the blocking files when a dirty
+  shared checkout has deferred landing three times running, and
+  `coordinator_started` records an auto-started detached daemon and the actor
+  that triggered it.
+
+  **Recorded verbatim vs. derived.** `branch`, `sha`, `submitted_sha`,
+  `change_id`, `attempt_id`, `by`, and `note` are recorded verbatim from the
+  submission. `presubmit_*`, `gate_load_*`, `host_ncpu`, `stages`, and
+  `reason` are derived by the coordinator at record time. Never backfill a
+  derived field onto an older event: the journal is append-only and its value
+  is that each row says what was true when it was written.
+- `receipts/<sha>.json` — one file per certified tip, written by `check.sh`
+  only when a shard goes **green** and only when the tree is clean. Absence is
+  therefore the negative signal, and there is no `status` field to misread: a
+  shard killed mid-run never reaches the writer, and a dirty tree would mean
+  the shard validated HEAD *plus* uncommitted edits. Shards accumulate
+  (`{"shards":["fast","wasm"]}`) rather than last-writer-wins, and receipts
+  older than 30 days are pruned on write. A green receipt is a claim about the
+  author's tree, **not** a prediction of the gate — the coordinator rebases
+  onto current master before gating.
 - `status` resolves all queued entries from one queue/registry snapshot, so it
   remains usable when a large batch is waiting.
 - `logs/` — full gate output per attempt (nextest streams one line per test:
