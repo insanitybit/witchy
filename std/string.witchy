@@ -419,10 +419,6 @@ impl String:
 // --- impl str: string slice methods ---
 impl str:
     // The string slice's length in BYTES (UTF-8).
-    pub fn len(self: &'a str) -> Int:
-        string.len(self)
-
-    // The string slice's length in BYTES (UTF-8).
     pub fn length(self: &'a str) -> Int:
         string.len(self)
 

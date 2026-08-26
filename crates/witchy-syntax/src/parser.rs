@@ -391,6 +391,15 @@ impl Parser {
             self.advance();
             Ok(())
         } else if matches!(k, Tok::LBrace) {
+            if let Tok::Ident(name) = self.kind() {
+                if name == "and" {
+                    return Err(self.error("expected an indented block; add `:` after the header (found `and` — note: Witchy uses `&&` for logical AND)"));
+                } else if name == "or" {
+                    return Err(self.error("expected an indented block; add `:` after the header (found `or` — note: Witchy uses `||` for logical OR)"));
+                } else if name == "not" {
+                    return Err(self.error("expected an indented block; add `:` after the header (found `not` — note: Witchy uses `!` for logical NOT)"));
+                }
+            }
             Err(self.error(format!(
                 "expected an indented block; add `:` after the header (found `{}`)",
                 self.kind()
@@ -426,6 +435,31 @@ impl Parser {
             Tok::Ident(name) => {
                 self.advance();
                 Ok(name)
+            }
+            other => Err(self.error(format!("expected an identifier, found `{other}`"))),
+        }
+    }
+
+    fn record_field_name(&mut self) -> Result<String, ParseError> {
+        match self.kind().clone() {
+            Tok::Ident(name) => {
+                self.advance();
+                Ok(name)
+            }
+            Tok::Str(s) => {
+                let mut chars = s.chars();
+                let is_valid = match chars.next() {
+                    Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                        chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    }
+                    _ => false,
+                };
+                if is_valid {
+                    self.advance();
+                    Ok(s)
+                } else {
+                    Err(self.error(format!("string `{s}` is not a valid field identifier")))
+                }
             }
             other => Err(self.error(format!("expected an identifier, found `{other}`"))),
         }
@@ -1855,6 +1889,17 @@ impl Parser {
     }
 
     fn prefix_inner(&mut self) -> Result<Expr, ParseError> {
+        if self.at_ident("not")
+            && let Some(next) = self.toks.get(self.pos + 1)
+            && next.line == self.cur().line
+            && matches!(
+                next.kind,
+                Tok::Ident(_) | Tok::True | Tok::False | Tok::Int(_) | Tok::Float(_) | Tok::Str(_) | Tok::LParen | Tok::Bang | Tok::Minus
+            )
+            && next.kind != Tok::Colon
+        {
+            return Err(self.error("unexpected identifier `not` — note: Witchy uses `!` for logical NOT"));
+        }
         if self.eat(&Tok::Minus) {
             let expr = self.prefix()?;
             return Ok(Expr::Unary {
@@ -3629,7 +3674,7 @@ impl Parser {
     fn peek_named_record(&self) -> bool {
         match self.toks.get(self.pos + 1).map(|t| &t.kind) {
             Some(Tok::DotDot) => true,
-            Some(Tok::Ident(_)) => {
+            Some(Tok::Ident(_)) | Some(Tok::Str(_)) => {
                 matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::Colon))
             }
             _ => false,
@@ -3649,7 +3694,7 @@ impl Parser {
                 spread = Some(Box::new(self.expr(0)?));
                 break;
             }
-            let field = self.ident()?;
+            let field = self.record_field_name()?;
             self.expect(&Tok::Colon)?;
             fields.push((field, self.expr(0)?));
             if !self.eat(&Tok::Comma) {
@@ -3682,7 +3727,7 @@ impl Parser {
         let mut fields = Vec::new();
         let mut seen = HashSet::default();
         while !self.at(&Tok::RBrace) {
-            let field = self.ident()?;
+            let field = self.record_field_name()?;
             if !seen.insert(field.clone()) {
                 return Err(self.error(format!(
                     "field `{field}` is declared more than once in anonymous record type"
@@ -3791,7 +3836,7 @@ impl Parser {
                 spread = Some(Box::new(self.expr(0)?));
                 break; // a spread is the last element
             }
-            let field = self.ident()?;
+            let field = self.record_field_name()?;
             self.expect(&Tok::Colon)?;
             fields.push((field, self.expr(0)?));
             if !self.eat(&Tok::Comma) {

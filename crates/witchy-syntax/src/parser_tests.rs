@@ -2059,3 +2059,60 @@ fn named_once_and_unsupported_function_kind_qualifiers_are_rejected() {
         parse_module(source).expect_err(source);
     }
 }
+
+#[test]
+fn and_or_not_diagnostics_suggest_witchy_operators() {
+    let and_err = parse_module("fn f(a: Bool, b: Bool):\n    if a and b:\n        Nil\n").unwrap_err();
+    assert!(and_err.to_string().contains("Witchy uses `&&` for logical AND"), "{and_err}");
+
+    let or_err = parse_module("fn f(a: Bool, b: Bool):\n    if a or b:\n        Nil\n").unwrap_err();
+    assert!(or_err.to_string().contains("Witchy uses `||` for logical OR"), "{or_err}");
+
+    let not_err = parse_module("fn f(a: Bool):\n    if not a:\n        Nil\n").unwrap_err();
+    assert!(not_err.to_string().contains("Witchy uses `!` for logical NOT"), "{not_err}");
+}
+
+#[test]
+fn record_literal_and_type_allow_string_literal_field_names() {
+    let source = r#"
+type Config = .{ "host": String, "port": Int }
+
+fn make() -> Config:
+    Config("host": "127.0.0.1", "port": 8080)
+
+fn make_anon():
+    .{ "host": "127.0.0.1", "port": 8080 }
+"#;
+    let module = parse_module(source).expect("string literal record field names parse");
+    let type_alias = module.items.iter().find_map(|item| match item {
+        Item::TypeAlias { name, ty: Type::Named(type_name, type_args), .. } if name == "Config" => {
+            Some((type_name, type_args))
+        }
+        _ => None,
+    }).expect("expected Config type alias");
+    assert!(type_alias.0.starts_with("__anon"));
+    assert_eq!(type_alias.1.len(), 2);
+
+    let make_fn = module.items.iter().find_map(|item| match item {
+        Item::Function(f) if f.name == "make" => Some(f),
+        _ => None,
+    }).expect("expected make function");
+    let Stmt::Expr(Expr::Record { name, fields, .. }) = &make_fn.body.stmts[0] else {
+        panic!("expected record expr");
+    };
+    assert_eq!(name, "Config");
+    assert_eq!(fields[0].0, "host");
+    assert_eq!(fields[1].0, "port");
+
+    let anon_fn = module.items.iter().find_map(|item| match item {
+        Item::Function(f) if f.name == "make_anon" => Some(f),
+        _ => None,
+    }).expect("expected anon function");
+    let Stmt::Expr(Expr::Record { name, fields, .. }) = &anon_fn.body.stmts[0] else {
+        panic!("expected anon record expr");
+    };
+    assert!(name.starts_with("__anon"));
+    assert_eq!(fields[0].0, "host");
+    assert_eq!(fields[1].0, "port");
+}
+
