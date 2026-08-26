@@ -20,10 +20,13 @@ tracking: >
   Phases 1, 2, 3, 5, and 6 are complete and the macos-confinement CI job is the
   standing canary for the preamble. Verified
   on macOS 26.3.1 from an unsigned, un-entitled binary. Implementation amended
-  three things this document had wrong: the preamble needed device *read*
-  rules for `Command::output` to spawn at all, the preflight negative probe had
+  five things this document had wrong: the preamble needed device *read*
+  rules for `Command::output` to spawn at all; the preflight negative probe had
   to read data rather than `stat` (unrestricted `file-read-metadata` makes a
-  metadata probe vacuous), and the per-OS menu was deferred because nothing
+  metadata probe vacuous); `network-bind` needs `network-inbound` beside it or
+  a granted bind is denied; a literal port `0` is an SBPL syntax error that
+  fails arming entirely, so ephemeral grants map to `"*:*"` and downgrade
+  `Layer::Tcp` to `Partial`; and the per-OS menu was deferred because nothing
   reads `EnforcementMenu`. Revised 2026-08-26 after review; that revision
   narrowed the write preamble (unrestricted `file-write-data` would have voided every derived
   write rule while still reporting `Enforced`), makes `process-fork`
@@ -263,14 +266,32 @@ dependency.
 | `FsRule { scope: File, access.write }` | `(allow file-write* (literal "<canonical>"))` |
 | `FsAccess.execute` | `(allow process-exec (subpath "<canonical>"))` |
 | `network.connect` port *p* | `(allow network-outbound (remote ip "*:p"))` |
-| `network.bind` port *p* | `(allow network-bind (local ip "*:p"))` |
-| no network grant | omit both — `(deny default)` covers it |
+| `network.bind` port *p* | `(allow network-inbound (local ip "*:p"))` **and** `(allow network-bind (local ip "*:p"))` |
+| either, port `0` (ephemeral) | `"*:*"` in place of `"*:p"`, and `Layer::Tcp` drops to `Partial` |
+| no network grant | omit all — `(deny default)` covers it |
 | `SyscallClass::Process` present | `(allow process-fork)` |
 | `SyscallClass::Process` absent | omit `process-fork`; emit no `process-exec*` |
 
 `FsScope::Path` resolves to `literal` or `subpath` from the same opened
 object the provider uses to install the rule, matching the Landlock
 provider's contract.
+
+Two properties of the network rows were established by implementation after
+the first version of this table proved wrong in both directions, and both were
+invisible to a test suite that only ever asserted *denial*:
+
+- **`network-bind` alone does not permit a bind.** Seatbelt requires
+  `network-inbound` covering the same address as well; with only
+  `(allow network-bind (local ip "*:8080"))`, binding 8080 still returns
+  `EPERM`. Port granularity survives — a granted port binds and a neighbouring
+  one is denied — but both rules must be emitted.
+- **Port 0 is a syntax error, not a mis-scoped rule.** `(local ip "*:0")`
+  fails profile *compilation* with `invalid port in network address`, so a
+  program binding an ephemeral port does not get a loose fence, it gets no
+  fence: arming fails outright. The only expressible approximation is `"*:*"`,
+  which is "any local port" and therefore not port enforcement at all — hence
+  the `Partial` downgrade rather than a silent widening under an `Enforced`
+  label. This is the same honesty rule the write preamble follows.
 
 ### The preamble
 
