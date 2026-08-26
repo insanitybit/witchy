@@ -505,6 +505,16 @@ added later must reject an unknown schema rather than guess.
 Two branches, in this order. They are separable because the operational
 fixes depend on none of the telemetry fields.
 
+**Landed as one branch, not two.** The split below describes the order the
+work was *built* in, and it held: branch 1's items were implemented and
+verified first. It did not survive as two *merges*, because the focused shard
+found defects in branch 1's own items (the early readiness check swallowed its
+deferral journal entry, and `submit`'s coordinator auto-start consumed queues
+that tests were about to inspect) whose fixes live in files branch 2 also
+touches. Gating a parent that is known red wastes a full serialized cycle for
+every branch behind it, so the two were landed together. Decomposition bought
+the implementation order; it did not need to buy two merges.
+
 **Branch 1 — recover the wasted gate time.** §D (journal the receipt,
 accumulate shards, add retention), operational defect 1 (backoff plus the
 two-phase readiness check), operational defect 2 (detached auto-start). This is the whole measured win: 33% of gate time in

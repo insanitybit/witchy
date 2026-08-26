@@ -156,6 +156,7 @@ while :; do /bin/sleep 1; done
         .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
         .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
         .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+            .env("MERGE_QUEUE_AUTOSTART", "0")
         .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", gate)
         .env("MERGE_QUEUE_ALLOW_MERGE", "1")
@@ -314,6 +315,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
         .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
         .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+            .env("MERGE_QUEUE_AUTOSTART", "0")
         .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", gate)
         .env("MERGE_QUEUE_ALLOW_MERGE", "1")
@@ -447,6 +449,7 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
         .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
         .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
         .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+            .env("MERGE_QUEUE_AUTOSTART", "0")
         .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", gate)
         .env("MERGE_QUEUE_ALLOW_MERGE", "1")
@@ -642,6 +645,7 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
         .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
         .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
         .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+            .env("MERGE_QUEUE_AUTOSTART", "0")
         .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", gate)
         .env("MERGE_QUEUE_ALLOW_MERGE", "1")
@@ -770,6 +774,7 @@ fn doctor_treats_denied_process_inspection_as_advisory() {
     let output = Command::new(root.join("scripts/merge-queue.sh"))
         .arg("doctor")
         .env("MERGE_QUEUE_STATE_DIR", &state)
+            .env("MERGE_QUEUE_AUTOSTART", "0")
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()),

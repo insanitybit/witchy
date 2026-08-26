@@ -1438,6 +1438,7 @@ fn concurrent_daemon_starts_create_exactly_one_coordinator() {
             Command::new(root.join("scripts/merge-queue.sh"))
                 .arg("daemon")
                 .env("MERGE_QUEUE_STATE_DIR", &state)
+            .env("MERGE_QUEUE_AUTOSTART", "0")
                 .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
                 .env("MERGE_QUEUE_GATE_CMD", "true")
                 .env(

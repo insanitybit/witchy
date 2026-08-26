@@ -1928,16 +1928,6 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     change_id="$(jq -r '.change_id // empty' "$f")"
     submitted_sha="$(jq -r '.sha // empty' "$f")"
     attempt_id="$(jq -r '.attempt_id // empty' "$f")"
-    # Cheap early check: a dirty shared checkout blocks landing regardless of
-    # what this candidate is, so bail before spending a rebase (p50 64s) that
-    # will only be discarded. This is an OPTIMISATION, not the guard -- the
-    # authoritative check stays under gate.lock further down, because another
-    # agent can dirty the checkout during the rebase this skips. Removing that
-    # one in favour of this one would be a time-of-check/time-of-use race.
-    if ! main_worktree_is_ready_to_land; then
-        return 2
-    fi
-
     if ! git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
         note "branch $branch vanished; dropping"
         record dropped "$branch" change_id "$change_id" attempt_id "$attempt_id" \
@@ -2015,6 +2005,26 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         consume_queue_entry "$f" "$change_id" "$submitted_sha" "$attempt_id" && return 0
         return 1
     fi
+    # Cheap early check: a dirty shared checkout blocks landing regardless of
+    # which candidate this is, so defer before claiming the entry for the gate.
+    # This is an OPTIMISATION, not the guard -- the authoritative check stays
+    # under gate.lock below, because another agent can dirty the checkout during
+    # the rebase this skips, and dropping that one in favour of this one would
+    # be a time-of-check/time-of-use race.
+    #
+    # It runs BEFORE `claim_queue_entry_for_gate` so a deferral never
+    # transitions the change to `gating` -- a state it cannot proceed from and
+    # which `cmd_drop` refuses. And it records the deferral with the SAME reason
+    # the locked path uses: skipping the rebase is the saving, skipping the
+    # journal entry would only hide the wait, and a ready queue with a free gate
+    # lock already looks idle.
+    if ! main_worktree_is_ready_to_land; then
+        record requeued "$branch" change_id "$change_id" attempt_id "$attempt_id" \
+            submitted_sha "$submitted_sha" sha "$submitted_sha" \
+            reason "main master checkout has tracked changes before gate"
+        return 2
+    fi
+
     # Preparation can take long enough for an operator drop or resubmission to
     # win. Revalidate both the queue attempt and its metadata transition before
     # admitting it to the gate; once state is `gating`, cmd_drop rejects it.

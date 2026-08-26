@@ -230,7 +230,7 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
         .as_f64()
         .expect("failed gate minutes is numeric");
     assert!((failed_gate_minutes - (100.0 / 60.0)).abs() < f64::EPSILON);
-    assert_eq!(report["schema"], 2);
+    assert_eq!(report["schema"], 3);
     assert_eq!(report["attempt_s"]["p50"], 60);
     assert_eq!(report["attempt_s"]["p90"], 302);
     assert_eq!(report["gate_s"]["p50"], 60);
