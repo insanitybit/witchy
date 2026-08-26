@@ -86,6 +86,32 @@ binary and preserves results. It does **not** meet the 10% real-workload row
 threshold or the target Go-parity requirement, so it cannot close Track 6C or
 6E.
 
+### Deoptimization repair checkpoint (2026-08-26)
+
+Two regressions found while exercising the required forced-copy matrix were
+repaired and merged through the serialized queue:
+
+- `3dd3638597aea4195d8797ed88534d28b2423f57` gates immediate checked
+  store-to-load forwarding on `inplace`. Before this repair, `fannkuch`
+  produced `0` under `WITCHY_OPT=release,-inplace` and `WITCHY_OPT=none`;
+  the repaired release binary returns the expected `73196038` in `all`,
+  `release,-inplace`, and `none`.
+- `d59e274c7e3fb601eb75ec3f1491e9813cf25ad7` declares a zero-capacity
+  ownership slot for any surviving forced-copy structural fallback. Before it,
+  `knucleotide` failed to encode with `unknown local $counts__cap` under
+  `-inplace`. The focused lowering test compiles the linked benchmark in that
+  mode, and the in-place gate now classifies its known copying-path failure as
+  the allowed resource cliff rather than an invalid WIR module.
+
+The fresh deterministic current-master artifact is
+`/tmp/rfc0153-attribution-d59e274c`. It records three identical counter
+payloads and matching optimized output checksums. It confirms the retained
+target loops have no checked indexed loads: `fannkuch` has 319,638,933
+cursorized accesses and 9,864,090 coalesced bounds checks, while `list_index`
+has 10,000,000 cursorized accesses. This repair/attribution checkpoint does
+not close the complete deoptimization census, the promotion matrix, or the
+Go-parity criteria.
+
 The current local fast artifact is
 `benchmarks/.build/results-fast.json`
 (`sha256:044023a887764d65c6cbc261432dc61ca896f03a92538b7330337ffef8214ae9`).
