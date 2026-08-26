@@ -122,13 +122,18 @@ security boundary is shared rather than reimplemented for parity.
 
 Strict `witchy sandbox` launches also derive an outer native policy from those
 same resolved grants immediately before guest execution. Linux hosts apply
-Landlock filesystem and TCP restrictions when the running kernel supports them;
-other hosts report the layer as unavailable and continue in best-effort mode.
+Landlock filesystem and TCP restrictions when the running kernel supports them.
+macOS hosts apply a Seatbelt profile covering the same filesystem and TCP
+grants; because macOS has no syscall-granular filter, its syscall layer reports
+`partial` — operation classes rather than syscall numbers. Hosts with no
+provider report every layer as unavailable and continue in best-effort mode.
 Each strict launch prints the provider and enforcement status on stderr. Ordinary
 development runs and reusable embedded runtimes don't arm irreversible
 process-wide policy, because their process may need to host more than one guest.
 Use `--confine=required` when deployment must fail before `main` unless every
-currently implemented outer layer is fully enforced:
+currently implemented outer layer is fully enforced. That mode is satisfied on
+Linux; on macOS it refuses, naming the syscall layer that cannot enforce, since
+the platform has no equivalent of seccomp:
 
 ```sh
 witchy sandbox --confine=required --dir . main.witchy
@@ -236,10 +241,13 @@ The boundary has explicit limits:
   chose to give somehow safe.
 - **Side channels are out of scope.** Timing and microarchitectural channels
   (Spectre-class) aren't defended against.
-- **Outer enforcement is provider-specific.** Landlock/seccomp is the current
-  Linux provider and CSP is the browser provider. Other native hosts still use
-  handle-anchored per-operation confinement, report the absent outer layer in
-  best-effort mode, and fail before `main` in required mode.
+- **Outer enforcement is provider-specific.** Landlock/seccomp is the Linux
+  provider, Seatbelt is the macOS provider, and CSP is the browser provider.
+  Each reports what it can and cannot express rather than a single verdict, so
+  macOS reports its filesystem and TCP layers as enforced and its syscall layer
+  as partial. Hosts with no provider still use handle-anchored per-operation
+  confinement, report the absent outer layers in best-effort mode, and fail
+  before `main` in required mode.
 
 Inside those boundaries you don't have to trust the program. You read its type
 and the VM holds it to that.

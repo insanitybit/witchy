@@ -79,6 +79,29 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: cargo nextest run --workspace --profile ci --all-targets --partition "count:${SHARD}/4"
 
+  # SBPL is undocumented and version-sensitive, and a preamble that an OS
+  # upgrade invalidates fails as a SIGABRT in dyld with no stderr and no
+  # unified-log entry -- the profile denies dyld's own diagnostic write. A local
+  # canary is not enough, because a workstation upgrades when its owner decides
+  # to and the break stays silent until someone runs a confined program. GitHub
+  # rotates the macos-latest image on its own schedule, which is exactly the
+  # trigger this job exists to catch, and it catches it on a pull request.
+  macos-confinement:
+    name: macOS Seatbelt confinement (RFC-0158)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      # Covers Policy -> SBPL translation, arming, filesystem read AND write
+      # confinement, TCP port denial, and exec inheritance. The arming cases
+      # re-exec this test binary as a child because arming is irreversible.
+      - name: Provider translation and arming tests
+        run: cargo test -p witchy-confinement
+
   heap-check:
     name: Checked heap (RFC-0023)
     runs-on: ubuntu-latest

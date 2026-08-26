@@ -10,8 +10,14 @@ related:
   - "[0157](0157-trusted-publishers-and-executable-state.md) (trusted publishers — the deployment mode that most wants `--confine=required`)"
   - "[0020](0020-rebinding-resistant-http.md) (pinned dials — the finer network enforcement this layer only bounds)"
 tracking: >
-  Proposed; revised 2026-08-26 after review. The revision narrows the write
-  preamble (unrestricted `file-write-data` would have voided every derived
+  Implemented 2026-08-26 (`crates/witchy-confinement/src/macos.rs`), verified
+  on macOS 26.3.1 from an unsigned, un-entitled binary. Implementation amended
+  three things this document had wrong: the preamble needed device *read*
+  rules for `Command::output` to spawn at all, the preflight negative probe had
+  to read data rather than `stat` (unrestricted `file-read-metadata` makes a
+  metadata probe vacuous), and the per-OS menu was deferred because nothing
+  reads `EnforcementMenu`. Revised 2026-08-26 after review; that revision
+  narrowed the write preamble (unrestricted `file-write-data` would have voided every derived
   write rule while still reporting `Enforced`), makes `process-fork`
   conditional on `SyscallClass::Process`, adds a preflight self-test for the
   silent-SIGABRT failure mode, adds a macOS CI canary, and states up front
@@ -270,12 +276,25 @@ seccomp's promise classes are:
 (allow file-read-metadata)
 (allow file-read* (literal "/"))
 (allow file-read* (subpath "/bin") (subpath "/usr/lib") (subpath "/System"))
+(allow file-read*
+    (literal "/dev/null") (literal "/dev/zero")
+    (literal "/dev/random") (literal "/dev/urandom"))
 (allow file-write-data
     (literal "/dev/stdout") (literal "/dev/stderr")
     (literal "/dev/tty") (literal "/dev/null"))
 ```
 
-Three notes on scope.
+Four notes on scope.
+
+**The device *read* rule was found by implementation, not by design.** It is
+recorded here because its absence produces a failure that looks like a bug in
+exec confinement rather than a missing preamble rule.
+`std::process::Command::output` points the child's stdin at `/dev/null`, so
+with no read right on that node every captured-output spawn fails `EPERM`
+*even when the program carries a valid execute grant* — while
+`Command::spawn`, which inherits stdin, succeeds. That split is what isolated
+it. These nodes carry no user data, so unlike the write rules this is not a
+widening of what the fence protects.
 
 **Writes are narrow, and this is a correctness requirement, not polish.**
 An earlier draft of this RFC emitted `(allow file-write-data)` unrestricted,
@@ -334,9 +353,17 @@ must not rely on the guest to reveal a broken profile.
 Immediately after arming and before handing control to the guest, the
 provider performs a bounded self-test:
 
-1. `stat` and open-for-read one path the policy grants; expect success.
-2. `stat` a path the policy does not grant; expect `EPERM`.
-3. Write one byte to stderr; expect success.
+1. `stat` one path the policy grants; expect success.
+2. **Read the contents of** a path the policy does not grant; expect `EPERM`.
+3. Write to stderr; expect success.
+
+Step 2 must read *data*, and the first implementation of it was wrong in a way
+worth recording. It probed with `stat`, which the preamble's unrestricted
+`file-read-metadata` permits on every path — so the probe was allowed no matter
+what the profile said, and the self-test could never observe the fence at all.
+A metadata probe is vacuous by construction here. The probe also treats
+`NotFound` as inconclusive rather than as a failure: that outcome means the
+probe file is absent on this host, not that the fence let a read through.
 
 Any deviation is an `EnforcementError` with the SBPL text attached, not a
 silent continue. The self-test costs three syscalls and converts the
@@ -388,6 +415,23 @@ net     = "seatbelt-port"
 syscall = "seatbelt-classes"    # operation classes, not syscall numbers
 per-op  = "handle-anchored"
 ```
+
+### Menu — deferred, with the evidence
+
+RFC-0102 says the host menu advertises enforcement, and an earlier draft of
+this section proposed a `menus/native-macos.toml` carrying
+`fs = "seatbelt"`. Implementation found that this would be dead weight today:
+`menus/native.toml` is a single 74-line static included by
+`crates/witchy-caps/src/menu.rs`, its `[enforcement]` block is read by exactly
+one assertion inside that same file, and **no code outside `menu.rs` reads
+`EnforcementMenu` at all**. A per-OS menu would therefore mean either
+duplicating 68 lines of platform-neutral grants that would drift, or building
+a selection mechanism nothing consumes.
+
+The block is inert documentation, so it is left alone until something reads
+it. When a consumer appears — `witchy caps` printing outer enforcement is the
+obvious one — the menu should become per-host in the same change, so the
+mechanism and its first consumer land together.
 
 ## Non-goals
 

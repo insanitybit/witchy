@@ -57,8 +57,18 @@ pub(crate) fn apply(
     policy: &Policy,
     mode: EnforcementMode,
 ) -> Result<EnforcementReport, EnforcementError> {
+    let Some(entry) = sandbox_entry() else {
+        let report = unavailable_report();
+        if mode == EnforcementMode::Required {
+            return Err(EnforcementError(
+                "required platform confinement is unavailable on this host: libsandbox does not export sandbox_init_with_parameters"
+                    .into(),
+            ));
+        }
+        return Ok(report);
+    };
     let profile = profile(policy);
-    arm(&profile)?;
+    arm(&profile, entry)?;
     self_test(policy)?;
 
     let report = EnforcementReport {
@@ -220,19 +230,59 @@ fn quote(value: &str) -> String {
     out
 }
 
-unsafe extern "C" {
-    /// Deprecated since macOS 10.8 and still load-bearing for Chromium, Nix,
-    /// Bazel, and `sandbox-exec`. Declared rather than `dlsym`'d because the
-    /// symbol is present in `libSystem`, which every Rust binary already links;
-    /// `sandbox_available` below keeps the fail-closed behaviour a future
-    /// removal would need.
-    fn sandbox_init_with_parameters(
-        profile: *const c_char,
-        flags: u64,
-        parameters: *const *const c_char,
-        errorbuf: *mut *mut c_char,
-    ) -> c_int;
-    fn sandbox_free_error(errorbuf: *mut c_char);
+type SandboxInitWithParameters = unsafe extern "C" fn(
+    *const c_char,
+    u64,
+    *const *const c_char,
+    *mut *mut c_char,
+) -> c_int;
+type SandboxFreeError = unsafe extern "C" fn(*mut c_char);
+
+/// Resolve the Seatbelt entry point at runtime rather than linking it.
+///
+/// The whole family is `API_DEPRECATED(… macos(10.5, 10.8))` — deprecated since
+/// 2012 and still load-bearing for Chromium, Nix, Bazel, and `sandbox-exec`. A
+/// direct `extern` declaration would make a future macOS that finally removes
+/// it fail *every* witchy invocation at image load. Resolving it here means such
+/// a host degrades to `Unavailable`, exactly as a host with no provider does,
+/// and `required` still refuses to launch.
+fn sandbox_entry() -> Option<(SandboxInitWithParameters, Option<SandboxFreeError>)> {
+    // SAFETY: `dlsym` with `RTLD_DEFAULT` searches the already-loaded images and
+    // returns null when the symbol is absent; the transmute matches the
+    // documented C prototype in `sandbox.h`.
+    unsafe {
+        let init = libc::dlsym(
+            libc::RTLD_DEFAULT,
+            c"sandbox_init_with_parameters".as_ptr(),
+        );
+        if init.is_null() {
+            return None;
+        }
+        let free = libc::dlsym(libc::RTLD_DEFAULT, c"sandbox_free_error".as_ptr());
+        Some((
+            std::mem::transmute::<*mut std::ffi::c_void, SandboxInitWithParameters>(init),
+            (!free.is_null()).then(|| {
+                std::mem::transmute::<*mut std::ffi::c_void, SandboxFreeError>(free)
+            }),
+        ))
+    }
+}
+
+/// The report a host without a usable Seatbelt returns: identical in shape to a
+/// platform with no provider at all, so `required` refuses for the same reason.
+fn unavailable_report() -> EnforcementReport {
+    let detail = "libsandbox does not export sandbox_init_with_parameters on this host";
+    EnforcementReport {
+        layers: [Layer::Filesystem, Layer::Tcp, Layer::Syscalls]
+            .into_iter()
+            .map(|layer| LayerReport {
+                layer,
+                provider: "seatbelt",
+                status: LayerStatus::Unavailable,
+                detail: detail.into(),
+            })
+            .collect(),
+    }
 }
 
 /// `flags` must be `0` for the inline-SBPL form. `0x0001` is `SANDBOX_NAMED`
@@ -240,7 +290,17 @@ unsafe extern "C" {
 /// — fails with the misleading `File name too long`.
 const SANDBOX_INLINE_PROFILE: u64 = 0;
 
-fn arm(profile: &str) -> Result<(), EnforcementError> {
+fn arm(
+    profile: &str,
+    entry: (SandboxInitWithParameters, Option<SandboxFreeError>),
+) -> Result<(), EnforcementError> {
+    let (sandbox_init_with_parameters, sandbox_free_error) = entry;
+    let free_error = |buffer: *mut c_char| {
+        if let Some(free) = sandbox_free_error {
+            // SAFETY: non-null buffer returned by the same API.
+            unsafe { free(buffer) };
+        }
+    };
     let profile = CString::new(profile).map_err(|_| {
         EnforcementError(
             "derived Seatbelt profile contains an interior NUL byte".into(),
@@ -260,8 +320,7 @@ fn arm(profile: &str) -> Result<(), EnforcementError> {
     };
     if rc == 0 {
         if !errorbuf.is_null() {
-            // SAFETY: non-null buffer returned by the same API.
-            unsafe { sandbox_free_error(errorbuf) };
+            free_error(errorbuf);
         }
         return Ok(());
     }
@@ -273,8 +332,7 @@ fn arm(profile: &str) -> Result<(), EnforcementError> {
         let message = unsafe { std::ffi::CStr::from_ptr(errorbuf) }
             .to_string_lossy()
             .into_owned();
-        // SAFETY: non-null buffer returned by the same API.
-        unsafe { sandbox_free_error(errorbuf) };
+        free_error(errorbuf);
         format!(": {message}")
     };
     Err(EnforcementError(format!(
