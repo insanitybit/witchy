@@ -113,6 +113,15 @@ fn tcp_layer(policy: &Policy) -> LayerReport {
                 .into(),
         };
     }
+    if has_ephemeral_port(policy) {
+        return LayerReport {
+            layer: Layer::Tcp,
+            provider: "seatbelt",
+            status: LayerStatus::Partial,
+            detail: "an ephemeral (port 0) grant is expressible only as any local port; SBPL rejects a literal port 0"
+                .into(),
+        };
+    }
     LayerReport {
         layer: Layer::Tcp,
         provider: "seatbelt",
@@ -197,13 +206,45 @@ pub(crate) fn profile(policy: &Policy) -> String {
 
     for port in &policy.network.connect_tcp_ports {
         out.push_str(&format!(
-            "(allow network-outbound (remote ip \"*:{port}\"))\n"
+            "(allow network-outbound (remote ip {}))\n",
+            quote(&address_pattern(*port))
         ));
     }
     for port in &policy.network.bind_tcp_ports {
-        out.push_str(&format!("(allow network-bind (local ip \"*:{port}\"))\n"));
+        // `network-bind` alone is not sufficient: Seatbelt denies the bind
+        // unless `network-inbound` covers the same address. Measured -- with
+        // only `(allow network-bind (local ip "*:8080"))` a bind to 8080 still
+        // returns EPERM.
+        let pattern = quote(&address_pattern(*port));
+        out.push_str(&format!("(allow network-inbound (local ip {pattern}))\n"));
+        out.push_str(&format!("(allow network-bind (local ip {pattern}))\n"));
     }
     out
+}
+
+/// SBPL address for a granted TCP port.
+///
+/// Port 0 means "let the kernel choose an ephemeral port". SBPL cannot express
+/// that: `"*:0"` is a **syntax error** (`invalid port in network address`) that
+/// makes the whole profile fail to compile, which would take confinement from
+/// enforced to absent for any program that binds an ephemeral port. The only
+/// expressible approximation is `"*:*"` — any local port — so an ephemeral
+/// grant costs port-granularity for that direction, and
+/// [`tcp_layer`] reports `Partial` rather than claiming enforcement it does not
+/// have.
+fn address_pattern(port: u16) -> String {
+    if port == 0 {
+        "*:*".to_string()
+    } else {
+        format!("*:{port}")
+    }
+}
+
+/// Whether the policy grants an ephemeral (kernel-chosen) port, which SBPL can
+/// only express as "any port".
+fn has_ephemeral_port(policy: &Policy) -> bool {
+    policy.network.connect_tcp_ports.contains(&0)
+        || policy.network.bind_tcp_ports.contains(&0)
 }
 
 /// Canonicalize a grant path, reporting whether it names a directory.
@@ -413,6 +454,7 @@ mod tests {
     const FS_CHILD: &str = "WITCHY_SEATBELT_FS_CHILD";
     const TCP_CHILD: &str = "WITCHY_SEATBELT_TCP_CHILD";
     const EXEC_CHILD: &str = "WITCHY_SEATBELT_EXEC_CHILD";
+    const BIND_CHILD: &str = "WITCHY_SEATBELT_BIND_CHILD";
 
     fn scratch(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -557,6 +599,72 @@ mod tests {
             (FS_CHILD, &root),
         );
         std::fs::remove_dir_all(&root).ok();
+        assert_child_ok(output);
+    }
+
+    /// `"*:0"` is an SBPL *syntax error* — `invalid port in network address` —
+    /// so emitting it does not merely mis-scope a rule, it makes the entire
+    /// profile fail to compile and confinement silently go from enforced to
+    /// absent. Caught by the suite when `witchy sandbox --net 127.0.0.1:0`
+    /// stopped working.
+    #[test]
+    fn profile_never_emits_a_literal_zero_port() {
+        let mut policy = Policy::default();
+        policy.network.bind_tcp_ports.insert(0);
+        policy.network.connect_tcp_ports.insert(0);
+        let sbpl = profile(&policy);
+        assert!(!sbpl.contains(":0\""), "literal port 0 in profile:\n{sbpl}");
+        assert!(sbpl.contains("*:*"), "{sbpl}");
+    }
+
+    /// An ephemeral grant is expressible only as "any local port", so the layer
+    /// must say `Partial` rather than claim port enforcement it does not have.
+    #[test]
+    fn an_ephemeral_grant_downgrades_the_tcp_layer() {
+        let mut policy = Policy::default();
+        policy.network.bind_tcp_ports.insert(0);
+        assert_eq!(tcp_layer(&policy).status, LayerStatus::Partial);
+
+        let mut fixed = Policy::default();
+        fixed.network.bind_tcp_ports.insert(8080);
+        assert_eq!(tcp_layer(&fixed).status, LayerStatus::Enforced);
+    }
+
+    /// The gap that let the bind bug through: every network test asserted
+    /// DENIAL, so nothing noticed that a granted bind was denied too.
+    /// `network-bind` alone is insufficient — Seatbelt also requires
+    /// `network-inbound` on the same address.
+    #[test]
+    fn seatbelt_allows_a_granted_bind_and_denies_an_ungranted_one() {
+        if let Some(port) = std::env::var_os(BIND_CHILD) {
+            let port: u16 = port.to_string_lossy().parse().unwrap();
+            let mut policy = Policy::default();
+            policy.network.bind_tcp_ports.insert(port);
+            policy.normalize_classes();
+            let report = apply(&policy, EnforcementMode::BestEffort).unwrap();
+            assert_eq!(report.layers[1].status, LayerStatus::Enforced, "{report:?}");
+
+            std::net::TcpListener::bind(("127.0.0.1", port))
+                .expect("a granted bind port must still bind");
+            let error = std::net::TcpListener::bind(("127.0.0.1", port + 1))
+                .expect_err("an ungranted bind port must be denied");
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            return;
+        }
+
+        // Pick a free pair by binding then releasing.
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "macos::tests::seatbelt_allows_a_granted_bind_and_denies_an_ungranted_one",
+                "--nocapture",
+            ])
+            .env(BIND_CHILD, port.to_string())
+            .output()
+            .unwrap();
         assert_child_ok(output);
     }
 

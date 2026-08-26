@@ -182,11 +182,21 @@ fn trusted_publisher_application_required_confinement_fails_before_main() {
     let output = run(&mut Command::new(&executable));
     assert!(!output.status.success());
     assert!(!stdout(&output).contains("main-ran"), "guest ran before required confinement");
+    let stderr = stderr(&output);
+    // The guarantee under test is that `required` refuses BEFORE `main` on a
+    // platform that cannot fully enforce. How it says so is platform-specific.
+    assert!(stderr.contains("required platform confinement"), "{stderr}");
+    // macOS has a provider (RFC-0158) but no syscall-granular filter, so it
+    // refuses by naming the layer that cannot enforce rather than refusing flat
+    // at the host level. Other non-Linux unixes have no provider at all and
+    // still report the flat form.
+    #[cfg(target_os = "macos")]
     assert!(
-        stderr(&output).contains("required platform confinement is unavailable"),
-        "{}",
-        stderr(&output)
+        stderr.contains("not fully enforced") && stderr.contains("Syscalls"),
+        "macOS must name the layer that blocks required mode: {stderr}"
     );
+    #[cfg(not(target_os = "macos"))]
+    assert!(stderr.contains("unavailable"), "{stderr}");
 }
 
 #[test]
