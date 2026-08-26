@@ -1,7 +1,7 @@
 ---
 rfc: 0158
 title: "macOS Seatbelt confinement provider"
-status: proposed
+status: implemented
 created: 2026-08-25
 predecessors:
   - "[0103](0103-derived-platform-confinement.md) (derived platform confinement — this RFC fills its `Seatbelt` future-work slice; every doctrine section there governs here)"
@@ -10,7 +10,15 @@ related:
   - "[0157](0157-trusted-publishers-and-executable-state.md) (trusted publishers — the deployment mode that most wants `--confine=required`)"
   - "[0020](0020-rebinding-resistant-http.md) (pinned dials — the finer network enforcement this layer only bounds)"
 tracking: >
-  Implemented 2026-08-26 (`crates/witchy-confinement/src/macos.rs`), verified
+  Implemented 2026-08-26 (`crates/witchy-confinement/src/macos.rs`) with one
+  named residual: phase 4, the superset canary, is NOT built. Running the full
+  differential suite under an armed best-effort fence is not the bounded piece
+  of work this document implies -- arming is process-wide and irreversible, so
+  it would have to happen at test-binary start under a policy broad enough for
+  cargo, temp dirs, and the network, and a fence that permissive would not
+  adjudicate anything. It needs its own design rather than a checkbox here.
+  Phases 1, 2, 3, 5, and 6 are complete and the macos-confinement CI job is the
+  standing canary for the preamble. Verified
   on macOS 26.3.1 from an unsigned, un-entitled binary. Implementation amended
   three things this document had wrong: the preamble needed device *read*
   rules for `Command::output` to spawn at all, the preflight negative probe had
