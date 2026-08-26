@@ -48,7 +48,7 @@
 //! field-assignment (`p.x = …`, a whole-value `RecordUpdate` read) already
 //! disqualifies a candidate, so SROA only ever sees read-only aggregates.
 
-use crate::analysis::Summaries;
+use crate::analysis::{fresh_heap_builtin_offset, Summaries};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -521,11 +521,16 @@ fn scan_uses_expr(e: &Expr, mode: UseScan, call: CallExempt, out: &mut HashSet<S
 /// Restricted to `let`/`var` locals: a borrowed parameter's buffer belongs to
 /// the caller, so its old value must never be freed here.
 pub fn confined_reassigned_vars(f: &Function, summaries: &Summaries) -> HashSet<String> {
-    confined_reassigned_vars_block(&f.body, summaries)
+    confined_reassigned_vars_block(&f.body, summaries, &HashSet::new(), &HashSet::new())
 }
 
 /// As [`confined_reassigned_vars`], over a body block directly.
-pub(crate) fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> HashSet<String> {
+pub(crate) fn confined_reassigned_vars_block(
+    body: &Block,
+    summaries: &Summaries,
+    proven_fresh_calls: &HashSet<String>,
+    shadowed_call_names: &HashSet<String>,
+) -> HashSet<String> {
     let mut bound = HashSet::new();
     collect_let_names(body, &mut bound);
     let mut reassigned = HashSet::new();
@@ -534,18 +539,40 @@ pub(crate) fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries
     if bound.is_empty() {
         return HashSet::new();
     }
-    // (RFC-0016 soundness) A var whose INITIAL binding aliases another value — `var rest = s`
-    // (`s` a borrowed param or a still-live local), or a field/index projection of one — does
-    // NOT own its first buffer. free-at-overwrite frees `x`'s old buffer at the first `x = f(x)`,
-    // which for such a var is the SOURCE's buffer → a use-after-free of the caller's value
-    // (e.g. `std/string.last_index_of`: `var rest = s; rest = string.substring(rest, …)`). Later
-    // reassignments are fresh allocations, but excluding the whole var is the sound, simple floor
-    // (a missed reclamation only leaks). Fresh-allocation inits (`[]`, `dict.new()`, a literal, a
-    // call result) are NOT aliases and stay eligible — so `var d = dict.new(); d = dict.__remove(d,…)`
-    // (the cache-eviction accumulator) is unaffected.
+    // (RFC-0016 soundness) Free-at-overwrite requires POSITIVE proof that the initial
+    // value owns fresh storage. Merely failing to see a top-level `Var` is not proof:
+    // calls may return an input unchanged and `if` / `match` / `?` can transport a
+    // borrowed pointer behind another AST node. Exclude every initializer except a
+    // compiler-known fresh constructor or primitive allocator. A missed candidate
+    // leaks; admitting an alias frees caller-owned storage.
     let mut alias_init = HashSet::new();
-    collect_alias_initialized_vars(body, &mut alias_init);
-    bound.retain(|x| !alias_init.contains(x));
+    let mut visited_initializers = HashSet::new();
+    collect_alias_initialized_vars(
+        body,
+        proven_fresh_calls,
+        shadowed_call_names,
+        &mut alias_init,
+        &mut visited_initializers,
+    );
+    // Fail closed if a future AST binder is added to `collect_let_names` without
+    // teaching the initializer classifier about it.
+    bound.retain(|x| visited_initializers.contains(x) && !alias_init.contains(x));
+    if bound.is_empty() {
+        return HashSet::new();
+    }
+    // Freshness is an invariant across the binding's whole lifetime, not merely
+    // its initializer. A later `x = borrowed` destroys the proof just as surely
+    // as `var x = borrowed`; a subsequent allocating self-update would otherwise
+    // free the borrowed publisher's buffer. Default-deny every assignment whose
+    // RHS is not independently authenticated fresh storage.
+    let mut alias_assignment = HashSet::new();
+    collect_alias_assigned_vars(
+        body,
+        proven_fresh_calls,
+        shadowed_call_names,
+        &mut alias_assignment,
+    );
+    bound.retain(|x| !alias_assignment.contains(x));
     if bound.is_empty() {
         return HashSet::new();
     }
@@ -644,18 +671,131 @@ fn mark_all_refs(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-/// `let`/`var` bindings whose value ALIASES another binding — a bare variable read
-/// (`var x = y`) or a projection of one (`var x = r.field`, `var x = xs[i]`). Such a
-/// binding's first buffer is owned by that source, not by `x`, so `x` must not be
-/// free-at-overwrite-reclaimed (see [`confined_reassigned_vars_block`]).
-fn collect_alias_initialized_vars(b: &Block, out: &mut HashSet<String>) {
+/// `let`/`var` bindings whose initializer is not proven to own fresh storage.
+/// This is intentionally default-deny: arbitrary direct/indirect calls and
+/// control-flow wrappers may return an existing input pointer.
+fn collect_alias_initialized_vars(
+    b: &Block,
+    proven_fresh_calls: &HashSet<String>,
+    shadowed_call_names: &HashSet<String>,
+    out: &mut HashSet<String>,
+    visited: &mut HashSet<String>,
+) {
     for s in &b.stmts {
         if let Stmt::Let { name, value, .. } = s {
-            if matches!(value, Expr::Var(_) | Expr::Field { .. } | Expr::Index { .. }) {
+            visited.insert(name.clone());
+            if !expression_has_fresh_storage(value, proven_fresh_calls, shadowed_call_names) {
                 out.insert(name.clone());
             }
         }
-        each_block_in_stmt(s, &mut |blk| collect_alias_initialized_vars(blk, out));
+        each_block_in_stmt(s, &mut |blk| {
+            collect_alias_initialized_vars(
+                blk,
+                proven_fresh_calls,
+                shadowed_call_names,
+                out,
+                visited,
+            )
+        });
+    }
+}
+
+fn collect_alias_assigned_vars(
+    b: &Block,
+    proven_fresh_calls: &HashSet<String>,
+    shadowed_call_names: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    for s in &b.stmts {
+        if let Stmt::Assign { name, value } = s {
+            if !assignment_preserves_fresh_storage(
+                name,
+                value,
+                proven_fresh_calls,
+                shadowed_call_names,
+            ) {
+                out.insert(name.clone());
+            }
+        }
+        each_block_in_stmt(s, &mut |blk| {
+            collect_alias_assigned_vars(
+                blk,
+                proven_fresh_calls,
+                shadowed_call_names,
+                out,
+            )
+        });
+    }
+}
+
+fn assignment_preserves_fresh_storage(
+    target: &str,
+    value: &Expr,
+    proven_fresh_calls: &HashSet<String>,
+    shadowed_call_names: &HashSet<String>,
+) -> bool {
+    if expression_has_fresh_storage(value, proven_fresh_calls, shadowed_call_names) {
+        return true;
+    }
+    // Copy-on-write casing is not fresh initializer provenance, but the exact
+    // self-threaded overwrite shape is safe: codegen evaluates the call first
+    // and frees the old buffer only when the returned pointer differs. A prior
+    // aliasing assignment is still collected separately and disqualifies the
+    // binding for its entire lifetime.
+    matches!(value, Expr::Call { name, args }
+        if !shadowed_call_names.contains(name)
+            && matches!(args.first(), Some(Expr::Var(source)) if source == target)
+            && fresh_heap_builtin_offset(name, args.len()).is_some())
+}
+
+/// The overwrite table is broader than initializer provenance: casing helpers
+/// are copy-on-write and may return their input, which is safe only at the
+/// overwrite site that compares old and new pointers before freeing. Keep that
+/// runtime-guarded table intact while excluding its aliasing entries here.
+fn always_fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
+    match name {
+        intrinsics::STRING_TO_UPPER | intrinsics::STRING_TO_LOWER => None,
+        _ => fresh_heap_builtin_offset(name, argc),
+    }
+}
+
+fn expression_has_fresh_storage(
+    value: &Expr,
+    proven_fresh_calls: &HashSet<String>,
+    shadowed_call_names: &HashSet<String>,
+) -> bool {
+    match value {
+        // Linear aggregate constructors and RecordUpdate lower through `mkN`,
+        // `lower_aggregate`, or a fresh packed allocation; `$rc_free` is shallow
+        // and frees only that outer buffer. GC/externref and transparent-reference
+        // constructors are filtered by codegen's reference-kind guard before a
+        // free is emitted. Scalar/static literals are harmless candidates:
+        // `$rc_free`'s heap-base guard keeps them out of the allocator.
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::List(_)
+        | Expr::Tuple(_)
+        | Expr::Ctor { .. }
+        | Expr::AnonCtor { .. }
+        | Expr::Lambda { .. }
+        | Expr::Range { .. }
+        | Expr::RecordUpdate { .. } => true,
+        Expr::Call { name, args } => {
+            !shadowed_call_names.contains(name)
+                && (proven_fresh_calls.contains(name)
+                    || always_fresh_heap_builtin_offset(name, args.len()).is_some()
+                // `dict.new` is a zero-input intrinsic, so its empty result cannot
+                // alias caller storage. Do not accept qualified/suffix lookalikes:
+                // dependency-controlled names are not allocation provenance.
+                    || (args.is_empty() && name == intrinsics::DICT_NEW))
+        }
+        // These nodes may preserve an existing pointer or have no authenticated
+        // allocation contract. In particular, every user/closure call defaults
+        // here even when its spelling resembles a constructor.
+        _ => false,
     }
 }
 
@@ -964,14 +1104,15 @@ mod tests {
             .expect("a function")
     }
 
-    /// Run [`confined_reassigned_vars`] on the first function, with summaries built
-    /// from the whole module (so user-fn leak facts are available).
+    /// Run [`confined_reassigned_vars`] on the last function, with summaries built
+    /// from the whole module (so helper declarations can precede the target).
     fn rc_floor(src: &str) -> HashSet<String> {
         let m = parser::parse_module(src).expect("parse");
         let summaries = crate::analysis::Summaries::of_module(&m);
         let f = m
             .items
             .iter()
+            .rev()
             .find_map(|it| match it {
                 witchy_syntax::ast::Item::Function(f) => Some(f),
                 _ => None,
@@ -998,6 +1139,115 @@ mod tests {
         // so its buffer may be aliased out → not reclaimable.
         let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.__insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
         assert!(!rc_floor(src).contains("d"), "a var aliased out by a call escapes");
+    }
+
+    #[test]
+    fn arbitrary_call_result_is_not_an_rc_floor_candidate() {
+        let src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> Nil:\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        assert!(
+            !rc_floor(src).contains("working"),
+            "an ordinary call may return an input alias"
+        );
+    }
+
+    #[test]
+    fn qualified_dict_new_lookalike_is_not_fresh_provenance() {
+        let lookalike = Expr::Call { name: "dependency.dict.new".into(), args: vec![] };
+        assert!(!expression_has_fresh_storage(
+            &lookalike,
+            &HashSet::new(),
+            &HashSet::new()
+        ));
+    }
+
+    #[test]
+    fn checked_unique_destination_call_is_fresh_provenance() {
+        let call = Expr::Call { name: "choose".into(), args: vec![] };
+        let mut proven = HashSet::new();
+        proven.insert("choose".to_string());
+        assert!(expression_has_fresh_storage(&call, &proven, &HashSet::new()));
+
+        let mut shadowed = HashSet::new();
+        shadowed.insert("choose".to_string());
+        assert!(!expression_has_fresh_storage(&call, &proven, &shadowed));
+    }
+
+    #[test]
+    fn shadowed_destination_function_name_cannot_prove_freshness() {
+        let src = "fn damage(choose: fn(String) -> String, x: String) -> Nil:\n    var working = choose(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let summaries = crate::analysis::Summaries::of_module(&module);
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("damage function");
+        let mut proven = HashSet::new();
+        proven.insert("choose".to_string());
+        let mut shadowed = HashSet::new();
+        shadowed.insert("choose".to_string());
+        let candidates = confined_reassigned_vars_block(
+            &function.body,
+            &summaries,
+            &proven,
+            &shadowed,
+        );
+        assert!(!candidates.contains("working"));
+    }
+
+    #[test]
+    fn control_flow_aliases_are_not_rc_floor_candidates() {
+        let if_src = "fn damage(x: String) -> Nil:\n    var working = if true: x else: x\n    working = string.substring(working, 1, string.length(working))\n";
+        assert!(!rc_floor(if_src).contains("working"));
+
+        let match_src = "fn damage(x: String) -> Nil:\n    var working = match true:\n        true -> x\n        false -> x\n    working = string.substring(working, 1, string.length(working))\n";
+        assert!(!rc_floor(match_src).contains("working"));
+
+        let nested_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> Nil:\n    if true:\n        var working = identity(x)\n        working = string.substring(working, 1, string.length(working))\n";
+        assert!(
+            !rc_floor(nested_src).contains("working"),
+            "nested initializers must be visited by the default-deny classifier"
+        );
+    }
+
+    #[test]
+    fn later_alias_assignment_disqualifies_rc_floor_candidate() {
+        let src = "fn damage(trusted: String) -> Nil:\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
+        assert!(
+            !rc_floor(src).contains("working"),
+            "a later assignment can destroy initializer freshness"
+        );
+    }
+
+    #[test]
+    fn self_threaded_cow_assignment_preserves_rc_floor_candidate() {
+        let src = "fn transform() -> Nil:\n    var working = \"FRESH\"\n    working = string.to_lower(working)\n";
+        assert!(
+            rc_floor(src).contains("working"),
+            "the guarded self-threaded COW overwrite must remain reclaimable"
+        );
+    }
+
+    #[test]
+    fn freshness_table_excludes_in_place_and_passthrough_operations() {
+        assert_eq!(fresh_heap_builtin_offset("list_push_cap", 3), None);
+        assert_eq!(fresh_heap_builtin_offset("str_append_cap", 3), None);
+        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_SLICE, 3), None);
+        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_AS_STR, 1), None);
+        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_REPLACE, 3), None);
+        assert_eq!(fresh_heap_builtin_offset(intrinsics::STRING_SUBSTRING, 3), Some(0));
+        assert_eq!(always_fresh_heap_builtin_offset(intrinsics::STRING_TO_UPPER, 1), None);
+        assert_eq!(always_fresh_heap_builtin_offset(intrinsics::STRING_TO_LOWER, 1), None);
+        assert_eq!(always_fresh_heap_builtin_offset(intrinsics::STRING_SUBSTRING, 3), Some(0));
+    }
+
+    #[test]
+    fn proven_fresh_constructor_remains_an_rc_floor_candidate() {
+        let src = "type Pair:\n    left: Int\n    right: Int\nfn build() -> Nil:\n    var pair = Pair(1, 2)\n    pair = Pair(3, 4)\n";
+        assert!(rc_floor(src).contains("pair"));
     }
 
     #[test]

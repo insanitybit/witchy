@@ -146,6 +146,112 @@ use crate::{ast, codegen, parser, typeck};
         }
     }
 
+    /// (SEC-078) A dependency call may return its String input unchanged. The
+    /// returned binding therefore does not prove fresh ownership: reclaiming it
+    /// at overwrite would free the publisher's retained alias and let the next
+    /// same-sized allocation replace the publisher's trusted path.
+    #[test]
+    fn rc_free_at_overwrite_does_not_free_an_aliased_call_result_sec_078() {
+        use crate::opt::{self, Opt, OptSet};
+        // Recursive `slice` cannot be erased as a trivial identity call. Folding
+        // is disabled so both concatenations allocate same-sized runtime buffers:
+        // the pre-fix free-at-overwrite path recycled `trusted_path` for the
+        // attacker allocation and printed `evil.txt` in the first slot.
+        let src = "fn slice(text: String, depth: Int) -> String:\n    if depth <= 0:\n        text\n    else:\n        slice(text, depth - 1)\n\nfn suffix() -> String:\n    \".txt\"\n\nfn main(console: Console):\n    let trusted_path = \"safe\" + suffix()\n    var dependency_result = slice(trusted_path, 0)\n    dependency_result = string.substring(dependency_result, 1, string.length(dependency_result))\n    let attacker_allocation = \"evil\" + suffix()\n    console.print(trusted_path)\n    console.print(dependency_result)\n    console.print(attacker_allocation)\n";
+        let oracle = link_run(src);
+        assert_eq!(oracle, vec!["safe.txt", "afe.txt", "evil.txt"]);
+
+        opt::set_for_tests(Some(OptSet::all().without(Opt::Fold)));
+        let optimized = wasm_run(src);
+        opt::set_for_tests(None);
+        assert_eq!(optimized, oracle, "SEC-078: aliased call result freed publisher storage");
+
+        // Pin the load-bearing optimizer judgment independently of allocator
+        // reuse order: an ordinary call result is not authenticated fresh
+        // storage, even when the call is direct and its result stays confined.
+        let analysis_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> Nil:\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let module = parser::parse_module(analysis_src).expect("parse SEC-078 analysis fixture");
+        let summaries = witchy_lower::analysis::Summaries::of_module(&module);
+        let damage = module
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                ast::Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("damage function");
+        let candidates = witchy_lower::escape::confined_reassigned_vars(damage, &summaries);
+        assert!(
+            !candidates.contains("working"),
+            "SEC-078: arbitrary call result admitted as fresh storage: {candidates:?}"
+        );
+    }
+
+    /// (SEC-078) Casing helpers are copy-on-write: an already-lowercase input
+    /// is returned unchanged and therefore cannot authenticate fresh storage.
+    #[test]
+    fn rc_free_at_overwrite_does_not_free_a_cow_casing_alias_sec_078() {
+        use crate::opt::{self, Opt, OptSet};
+        let src = "fn suffix() -> String:\n    \".txt\"\n\nfn main(console: Console):\n    let trusted_path = \"safe\" + suffix()\n    var working = string.to_lower(trusted_path)\n    working = string.substring(working, 1, string.length(working))\n    let attacker_allocation = \"evil\" + suffix()\n    console.print(trusted_path)\n    console.print(working)\n    console.print(attacker_allocation)\n";
+        let oracle = link_run(src);
+        assert_eq!(oracle, vec!["safe.txt", "afe.txt", "evil.txt"]);
+
+        opt::set_for_tests(Some(OptSet::all().without(Opt::Fold)));
+        let optimized = wasm_run(src);
+        opt::set_for_tests(None);
+        assert_eq!(optimized, oracle, "SEC-078: COW casing result freed publisher storage");
+
+        let analysis_src = "fn damage(x: String) -> Nil:\n    var working = string.to_lower(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let module = parser::parse_module(analysis_src).expect("parse COW analysis fixture");
+        let summaries = witchy_lower::analysis::Summaries::of_module(&module);
+        let damage = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("damage function");
+        let candidates = witchy_lower::escape::confined_reassigned_vars(damage, &summaries);
+        assert!(
+            !candidates.contains("working"),
+            "SEC-078: COW casing result admitted as fresh storage: {candidates:?}"
+        );
+    }
+
+    /// (SEC-078) Freshness must survive every assignment. A binding that later
+    /// receives a borrowed pointer cannot be reclaimed on a subsequent update.
+    #[test]
+    fn rc_free_at_overwrite_disqualifies_a_later_alias_assignment_sec_078() {
+        use crate::opt::{self, Opt, OptSet};
+        let src = "fn suffix() -> String:\n    \".txt\"\n\nfn main(console: Console):\n    let trusted_path = \"safe\" + suffix()\n    var working = \"fresh.txt\"\n    working = trusted_path\n    working = string.substring(working, 1, string.length(working))\n    let attacker_allocation = \"evil\" + suffix()\n    console.print(trusted_path)\n    console.print(working)\n    console.print(attacker_allocation)\n";
+        let oracle = link_run(src);
+        assert_eq!(oracle, vec!["safe.txt", "afe.txt", "evil.txt"]);
+
+        opt::set_for_tests(Some(OptSet::all().without(Opt::Fold)));
+        let optimized = wasm_run(src);
+        opt::set_for_tests(None);
+        assert_eq!(optimized, oracle, "SEC-078: later alias assignment freed publisher storage");
+
+        let analysis_src = "fn damage(trusted: String) -> Nil:\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
+        let module = parser::parse_module(analysis_src).expect("parse later-alias analysis fixture");
+        let summaries = witchy_lower::analysis::Summaries::of_module(&module);
+        let damage = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("damage function");
+        let candidates = witchy_lower::escape::confined_reassigned_vars(damage, &summaries);
+        assert!(
+            !candidates.contains("working"),
+            "SEC-078: later alias assignment preserved stale freshness: {candidates:?}"
+        );
+    }
+
     /// `region:` Phase 1 (rfcs/regions.md): the syntax parses (with optional
     /// `-> T` ascription), the block's value escapes, scalar outer
     /// assignments are allowed, and both backends agree — a region NEVER

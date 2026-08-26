@@ -5238,15 +5238,34 @@ impl<'types> Codegen<'types> {
         // (RFC-0016) RC-floor reclamation: free a confined heap `var`'s OLD buffer
         // when it is overwritten by a freshly-allocated one. Opt-in via `rc-floor`;
         // off in forced-copy mode so the de-opt sweep exercises the leaking path.
+        // A checked unique packed-result producer is the one non-primitive
+        // call whose result has authenticated fresh storage provenance.
+        let proven_fresh_calls: HashSet<String> =
+            self.fn_destination_layouts.keys().cloned().collect();
+        // A bare Call name can denote a function-typed parameter or local. Those
+        // bindings must never inherit a same-spelled top-level function's fresh
+        // destination contract. `infer_locals` has already populated every
+        // function-scope parameter and local before `begin_unit` runs.
+        let shadowed_call_names: HashSet<String> = self.locals.keys().cloned().collect();
         self.rc_floor_vars = if !force_copy_mode()
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
         {
-            crate::escape::confined_reassigned_vars_block(body, &self.summaries)
+            crate::escape::confined_reassigned_vars_block(
+                body,
+                &self.summaries,
+                &proven_fresh_calls,
+                &shadowed_call_names,
+            )
         } else {
             HashSet::new()
         };
         self.destination_forward_vars = if !force_copy_mode() {
-            crate::escape::confined_reassigned_vars_block(body, &self.summaries)
+            crate::escape::confined_reassigned_vars_block(
+                body,
+                &self.summaries,
+                &proven_fresh_calls,
+                &shadowed_call_names,
+            )
         } else {
             HashSet::new()
         };
