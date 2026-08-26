@@ -791,8 +791,14 @@ fn doctor_treats_denied_process_inspection_as_advisory() {
         "doctor lost coordinator health output",
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // doctor now lists branches with readiness rather than queue filenames; the
+    // property under test is unchanged -- sidecars must not count as entries.
     assert!(
-        stdout.contains("queue       : 1 pending — 0001.json"),
+        stdout.contains("queue       : 1 pending"),
+        "doctor counted queue sidecars as logical entries: {stdout}",
+    );
+    assert!(
+        !stdout.contains("2 pending") && !stdout.contains("3 pending"),
         "doctor counted queue sidecars as logical entries: {stdout}",
     );
     assert!(

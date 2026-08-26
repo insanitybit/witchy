@@ -1609,15 +1609,25 @@ cmd_doctor() {
         # at the HEAD of the listing, which reads as "next up" rather than
         # "going nowhere until its parent lands".
         echo "queue       : $n pending"
-        queue_entries_with_status 2>/dev/null | jq -r '
-            (.branch // "?") as $b
-            | (.readiness // "?") as $r
+        # Never let this listing fail `doctor`. It runs under `set -e` +
+        # pipefail, and doctor is most often invoked precisely when the queue
+        # metadata is malformed -- a diagnostic that dies on bad input is
+        # useless. Compute into a variable, tolerate any error, fall back to
+        # the raw filenames.
+        local queue_lines=""
+        queue_lines="$(queue_entries_with_status 2>/dev/null | jq -r '
+            (.branch // .change_id // "unknown") as $b
+            | (.readiness // "ready") as $r
             | (if $r == "blocked"
                then "  BLOCKED  \($b) — blocked by \([.blocked_by[]? | "\(.branch // .change_id) (\(.state))"] | join(", "))"
                elif $r == "waiting"
                then "  waiting  \($b) — after \([.waiting_on[]? | (.branch // .change_id)] | join(", "))"
-               else "  ready    \($b)" end)' \
-            || printf '  %s\n' "${queue_files[@]}"
+               else "  ready    \($b)" end)' 2>/dev/null || true)"
+        if [ -n "$queue_lines" ]; then
+            printf '%s\n' "$queue_lines"
+        else
+            printf '  %s\n' "${queue_files[@]}"
+        fi
     else
         echo "queue       : empty"
     fi
