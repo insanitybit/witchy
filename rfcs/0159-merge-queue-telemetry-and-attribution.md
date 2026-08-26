@@ -15,7 +15,9 @@ tracking: >
   host-contention covariate (`71237deac`) — corrects §E now that red
   `reason`/`stages` are known to carry the failing stage already, promotes
   the pre-submit receipt to the lead lever on re-derived numbers, and fixes
-  a TOCTOU in the proposed dirty-checkout remedy. No implementation yet.
+  a TOCTOU in the proposed dirty-checkout remedy. §D was rewritten again
+  after the shard-receipt mechanism it proposed was found already landed:
+  what remains there is journaling and retention, not construction.
 ---
 
 # RFC-0159: Merge-queue telemetry and change attribution
@@ -26,12 +28,13 @@ The merge queue records how *the pipeline* behaved but almost nothing about
 *the changes flowing through it*. Every submission is attributed to the OS
 user, so the journal cannot distinguish one agent, model, or workflow from
 another. This RFC makes the queue record actor, change shape, and pre-submit
-evidence at submit time; replaces the cumulative `stats` command with a
-windowed one that reports the latency decomposition the journal already
-captures; and fixes two operational defects the data exposed.
+evidence at submit time; extends `scripts/gate-report.sh` with the latency
+decomposition the journal already captures; and fixes two operational
+defects the data exposed.
 
-It deliberately does **not** introduce per-person productivity scoring. §7
-says why, and which questions this data may and may not be used to answer.
+It deliberately does **not** introduce per-person productivity scoring.
+§What this is not says why, and which questions this data may and may not be
+used to answer.
 
 ## Motivation
 
@@ -86,7 +89,9 @@ The queue answers "was the pipeline fast?" It cannot answer any of:
 
 - Which agent, model, or workflow produced this change?
 - Are changes from one workflow redder than another?
-- Did the author run the pre-submit shard, and did it predict the gate?
+- Did the pre-submit shard predict the gate? (Whether one *ran* is now
+  detectable at submit time — see §D — but the answer is not journaled, so
+  the predictive question stays open.)
 - How large or risky was this change? Did it touch parity-sensitive code?
 - Did the pre-submit shard actually complete, or was it cut short?
 
@@ -225,60 +230,69 @@ touches: ["typeck","codegen","interp","analysis","wasm-abi","std","docs","queue-
 named in the witchy-dev briefing. This is what makes "red rate" interpretable:
 a 29% red rate on compiler changes and on docs changes are different facts.
 
-### D. Pre-submit evidence — persist the receipt that already exists
+### D. Pre-submit evidence — journal the receipt that now exists
 
-`check.sh` **already emits a structured per-stage receipt** on stdout:
+**Revised 2026-08-26.** An earlier draft of this section proposed building a
+receipt mechanism. It has since landed, and it is better than what was
+proposed. `check.sh` writes `state/merge-queue/receipts/<sha>.json`:
 
 ```
-WITCHY_TIMING {"schema":1,"kind":"foreground","step":1,
-  "name":"tests (workspace, minus e2e)","status":"green",
-  "started_epoch":...,"finished_epoch":...,"elapsed_s":397,"gate_elapsed_s":397}
+{"sha":"8903f43ea…","shard":"wasm","at":"2026-08-25T22:50:04Z"}
 ```
 
-It has a schema version, a per-stage `status`, and timings. Nothing consumes
-it — not `merge-queue.sh`, not CI. It is printed and discarded.
+and `cmd_submit` already warns when the submitted tip has no receipt:
 
-So this is not a new format, it is persistence and consumption of an existing
-one. `check.sh` appends its `WITCHY_TIMING` lines to
-`state/merge-queue/receipts/<sha>.jsonl`; `submit` reads that file and records
-`presubmit_shard`, `presubmit_status`, and `presubmit_sha_match`.
+```
+merge-queue: WARNING: no green shard recorded for <branch>@<sha>.
+```
 
-`status` MUST distinguish three outcomes, not two:
+Two design choices in the landed version resolve problems this RFC raised,
+and should be recorded rather than re-litigated:
 
-- `green` — the stage ran to completion and passed.
-- `red` — the stage ran to completion and failed.
-- `truncated` — the stage was killed before completing (timeout, SIGTERM,
-  operator interrupt).
+- **The receipt is written only on a green shard**, so absence *is* the
+  negative signal and there is no `status` field to misread. The
+  `truncated` case from the earlier draft — a shard SIGTERM'd mid-run and
+  read as green — cannot mint a receipt at all, because the writer never
+  runs. This is a stronger guarantee than a three-valued `status`, and the
+  `WITCHY_TIMING` schema bump the earlier draft required is not needed for
+  the receipt. (`WITCHY_TIMING` may still want `truncated` for its own
+  sake; that is now out of scope here.)
+- **A dirty tree suppresses the receipt.** `check.sh` refuses to certify
+  `HEAD` when uncommitted edits sit beside it — the shard validated
+  `HEAD` *plus* those edits, so a receipt naming `HEAD` would certify
+  content that was never run. The in-tree comment records that this was
+  found by dogfooding, on the first real green shard.
 
-The third value is load-bearing. While preparing this RFC I ran the pre-submit
-shard as `timeout 900 ./scripts/check.sh --fast | tail -20`, which failed in
-both available ways at once: the pipe reported `tail`'s exit status rather than
-the gate's, and the 900s budget SIGTERM'd nextest 207 tests into 3,107. The run
-reported **exit 0 while 2,900 tests never executed**, and I read that as green.
-A receipt that only knows pass/fail reproduces exactly this ambiguity — a
-truncated run is not evidence of anything and must never satisfy criterion 1.
-`submit` warns when the receipt for the submitted SHA is `truncated` or absent.
+What remains is the part that makes the 33% figure actionable: **nothing is
+journaled.** The warning is printed to the submitter's terminal and
+discarded, so the question "do pre-submit shards predict gate outcomes?"
+is still unanswerable, and the warning's effect on behaviour is unmeasurable.
 
-This also directly tests the leading hypothesis for the red-rate regression:
-that `--fast` no longer predicts the full gate, or is being skipped.
+Remaining work, therefore:
 
-Three details the implementation must not skip:
+- **Journal the receipt at submit time**: `presubmit_shard`,
+  `presubmit_at`, and `presubmit_sha_match` (whether a receipt exists for
+  the *submitted tip*, not merely for some ancestor). Absence is recorded
+  as an explicit `false`, never as a missing field, so adoption is
+  countable.
+- **Accumulate shards rather than overwrite.** The receipt is one file per
+  SHA keyed by last writer, so a `--fast` run followed by a `--wasm` run
+  leaves only `"shard":"wasm"`. Record a list; "which shards covered this
+  tip" is the question `touches` (§C) will be joined against.
+- **Report the join.** `gate-report.sh` (§G) reports gate outcome split by
+  receipt presence. That is the measurement that decides whether the
+  warning should ever become a refusal — and it is the only honest basis
+  for that decision.
+- **Retention.** `state/merge-queue/receipts/` grows one file per certified
+  SHA forever in a gitignored directory nobody looks at. Prune on write:
+  drop receipts older than 30 days, and drop any whose SHA is an ancestor
+  of current master.
 
-- **The receipt is a claim about the author's tree, not a prediction of the
-  gate.** The coordinator rebases onto current master before gating, so a
-  green receipt on SHA *X* says "*X* was green in isolation", not "the
-  rebased tree will be green". `presubmit_sha_match` records whether the
-  receipt even refers to the submitted SHA; reporting must not present a
-  matching green receipt as a guarantee. It is expected to shrink the 171
-  tests-stage reds, not to eliminate them.
-- **Adding `truncated` changes the `WITCHY_TIMING` contract.** `status`
-  gains a third value, so the record's `"schema":1` becomes `"schema":2`,
-  and any consumer added later must reject a schema it does not know rather
-  than treat an unrecognised `status` as green.
-- **`state/merge-queue/receipts/` needs a retention rule.** One file per
-  shard run per SHA grows without bound in a gitignored directory nobody
-  looks at. Prune on write: drop receipts older than 30 days, and drop any
-  receipt whose SHA is an ancestor of current master.
+One limit the reporting must not overstate: **a receipt is a claim about
+the author's tree, not a prediction of the gate.** The coordinator rebases
+onto current master before gating, so a green receipt on SHA *X* says "*X*
+was green in isolation", not "the rebased tree will be green". Receipts
+should shrink the 171 tests-stage reds; they cannot eliminate them.
 
 ### E. Red-cause classification
 
@@ -430,20 +444,19 @@ forwarder to `gate-report.sh`, which is a single entry point for one
 implementation, not a compatibility shim over two. Existing consumers of
 `elapsed_s` are unaffected.
 
-Two schema bumps land with this work and are stated here so they are not
-discovered by a downstream consumer: `WITCHY_TIMING` goes `"schema":1` →
-`"schema":2` when `status` gains `truncated` (§D), and `gate-report.sh`
-goes schema 2 → 3 when it gains the dimensions in §G. Neither format is
-consumed by anything outside this repo today, which is why both can move in
-one cut; a consumer added later must reject an unknown schema rather than
-guess.
+One schema bump lands with this work and is stated here so it is not
+discovered by a downstream consumer: `gate-report.sh` goes schema 2 → 3 when
+it gains the dimensions in §G. The receipt file gains a `shard` *list* where
+it had a string, which is a breaking change to a format written and read
+only by this repo's own scripts, so it moves in the same cut. A consumer
+added later must reject an unknown schema rather than guess.
 
 ## Acceptance criteria
 
-1. `submit` records `actor`, `session`, `trailer_present`, `files_changed`,
-   `insertions`, `deletions`, `touches`, `presubmit_shard`, `presubmit_status`,
-   `presubmit_sha_match`. A `truncated` or absent receipt is warned on and is
-   never treated as evidence of a green shard.
+1. `submit` records `actor`, `actor_hint`, `session`, `trailer_present`,
+   `files_changed`, `insertions`, `deletions`, `touches`, `presubmit_shard`
+   (a list), `presubmit_at`, and `presubmit_sha_match`. An absent receipt is
+   recorded as an explicit `false` and warned on, never omitted.
 2. `red`, `batch_red`, `timeout` carry `failing_stage`, `failure_line`,
    `red_class`.
 3. `run` emits `heartbeat` at most 5 minutes apart while alive.
@@ -469,10 +482,9 @@ guess.
 Two branches, in this order. They are separable because the operational
 fixes depend on none of the telemetry fields.
 
-**Branch 1 — recover the wasted gate time.** §D (receipts, including the
-`truncated` status and the schema bump), operational defect 1 (backoff plus
-the two-phase readiness check), operational defect 2 (detached
-auto-start). This is the whole measured win: 33% of gate time in
+**Branch 1 — recover the wasted gate time.** §D (journal the receipt,
+accumulate shards, add retention), operational defect 1 (backoff plus the
+two-phase readiness check), operational defect 2 (detached auto-start). This is the whole measured win: 33% of gate time in
 `tests`-stage reds, and 99% of tail latency in coordinator idle. It touches
 `check.sh` and `merge-queue.sh` only, and none of it needs a schema
 negotiation with `gate-report.sh`.
