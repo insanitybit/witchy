@@ -152,6 +152,21 @@ test-group = 'perf-serial'
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
+# `chan_throughput_bounded_by_rc_floor` asserts a channel throughput FLOOR, so
+# it is inherently sensitive to how much CPU it actually gets. Measured
+# 2026-08-26: it takes 99.5s in isolation on an idle box -- 74% of the default
+# 135s slow-kill -- so any contention at all pushes it over. It has taken 9+
+# gates red across 5 unrelated branches since 2026-08-12, and because nextest
+# fail-fast cancels the run, each timeout also SIGTERMs ~7 innocent tests and
+# skips the remaining ~3,000, turning one slow test into a whole red gate.
+# Same treatment as the perf tests above: one-wide, early, bounded hard cap.
+# Assertions unchanged.
+[[profile.default.overrides]]
+filter = 'test(/chan_throughput_bounded_by_rc_floor/)'
+test-group = 'perf-serial'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 90
+
 # RFC-0129's million-message measurements create a Wasmtime instance per
 # sample and therefore peak far above ordinary unit-test memory.  They are
 # correctness and allocation guards, not throughput that benefits from
