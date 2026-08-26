@@ -4469,6 +4469,55 @@ fn main() -> Int:
     }
 
     #[test]
+    fn list_element_value_is_not_a_sequence_length_fact() {
+        // An element value is arbitrary user data, not a proof that it is a
+        // valid index.  Treating `xs[0]` as an upper bound for `xs` would make
+        // the optimized loop write past the one-element list instead of taking
+        // the same observable bounds trap as the deoptimized path.
+        let source = r#"
+fn main() -> Int:
+    var xs = [99]
+    let upper = xs[0]
+    var i = 0
+    while i < upper:
+        xs[i] = 0
+        i = i + 1
+    0
+"#;
+        let module = link_list_app(source);
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let none = witchy_syntax::opt::OptSet::none();
+        let optimized = compiled_module_trap_with_opt(&module, default);
+        let deoptimized = compiled_module_trap_with_opt(&module, none);
+        assert!(optimized.contains("list_at"), "optimized path preserves bounds trap: {optimized}");
+        assert!(deoptimized.contains("list_at"), "deoptimized path preserves bounds trap: {deoptimized}");
+    }
+
+    #[test]
+    fn list_capacity_is_not_a_sequence_length_fact() {
+        // Capacity reserves storage, but it does not create elements.  A loop
+        // bounded by that reservation must retain the same out-of-bounds trap
+        // as the deoptimized path when it indexes the empty list.
+        let source = r#"
+fn main() -> Int:
+    let upper = 99
+    var xs: List(Int) = list.with_capacity(upper)
+    var i = 0
+    while i < upper:
+        xs[i] = 0
+        i = i + 1
+    0
+"#;
+        let module = link_list_app(source);
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let none = witchy_syntax::opt::OptSet::none();
+        let optimized = compiled_module_trap_with_opt(&module, default);
+        let deoptimized = compiled_module_trap_with_opt(&module, none);
+        assert!(optimized.contains("list_at"), "optimized path preserves bounds trap: {optimized}");
+        assert!(deoptimized.contains("list_at"), "deoptimized path preserves bounds trap: {deoptimized}");
+    }
+
+    #[test]
     fn guarded_range_countdown_elides_only_after_normal_completion_and_return_gate() {
         // The first checked countdown store proves on its normal-completion
         // path that the range-built list has a positive representable length.

@@ -219,13 +219,9 @@ impl<'types> Codegen<'types> {
                             if let Expr::Var(xs_name) = &args[0] {
                                 self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
                             }
-                        } else if (fname == "list.repeat" || fname == "repeat" || fname == intrinsics::LIST_WITH_CAPACITY) && !args.is_empty() {
+                        } else if (fname == "list.repeat" || fname == "repeat") && !args.is_empty() {
                             if let Expr::Var(n_name) = args.last().unwrap() {
                                 self.known_length_vars.entry(n_name.clone()).or_default().insert(name.clone());
-                            }
-                        } else if fname == intrinsics::LIST_AT && args.len() == 2 {
-                            if let Expr::Var(xs_name) = &args[0] {
-                                self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
                             }
                         }
                     } else if let Expr::Binary { op: BinOp::Sub, lhs, rhs } = value {
