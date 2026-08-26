@@ -1,7 +1,7 @@
 ---
 rfc: 0159
 title: "Merge-queue telemetry and change attribution"
-status: proposed
+status: implemented
 created: 2026-08-25
 superseded-by:
 related:
@@ -9,7 +9,21 @@ related:
   - "0093 (gate performance restructuring)"
   - "0079 (queue-sharded fan-out)"
 tracking: >
-  Proposed; revised 2026-08-26 after review. The revision reconciles the
+  Implemented 2026-08-26 across two stacked branches, in the sequence
+  §Delivery sequencing sets out. Branch 1: receipt journaling, shard
+  accumulation, retention, the prose-only warning suppression, the
+  dirty-checkout backoff, and the detached coordinator auto-start. Branch 2:
+  actor/`actor_hint`/session, the Co-Authored-By warning, change shape and
+  `touches`, red-cause structuring with load-aware `red_class`, the
+  coordinator heartbeat, and `gate-report.sh` schema 3 with `cmd_stats`
+  reduced to a forwarder. Two things the RFC asked for were NOT built, both
+  because implementation found them already present or actively wrong: §D's
+  receipt mechanism existed (only the journaling was missing), and §E's
+  capture existed (only the structuring was missing). One proposed fix was
+  rejected as written: moving the dirty-checkout readiness check before
+  `prepare` is a TOCTOU, so the early check was added *beside* the
+  authoritative one rather than replacing it.
+  Previously proposed; revised 2026-08-26 after review. The revision reconciles the
   design with two things that landed on 2026-08-25 while it was being
   written — `scripts/gate-report.sh` (windowed, `--json`, schema 2) and the
   host-contention covariate (`71237deac`) — corrects §E now that red
