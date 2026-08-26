@@ -858,6 +858,10 @@ struct SavedScope {
     linear_build_plans: HashMap<String, LinearBuildPlan>,
     linear_build_epoch: u32,
     range_built_lists: HashMap<String, HashSet<String>>,
+    /// Path-sensitive facts for guarded loops. The expression is retained as
+    /// the key because lowering clones AST nodes before consuming it; structural
+    /// equality survives that boundary whereas pointer identity does not.
+    guarded_range_pairs: Vec<(Expr, Vec<(String, String)>)>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
     packed_candidates: HashSet<String>,
@@ -1017,6 +1021,7 @@ struct Codegen<'types> {
     /// length is `max(bound, 0)`, which is sufficient to prove a later
     /// exclusive `0..<bound` indexed loop without claiming `bound >= 0`.
     range_built_lists: HashMap<String, HashSet<String>>,
+    guarded_range_pairs: Vec<(Expr, Vec<(String, String)>)>,
     /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -1686,6 +1691,7 @@ impl<'types> Codegen<'types> {
             known_length_vars: HashMap::new(),
             known_static_list_lengths: HashMap::new(),
             range_built_lists: HashMap::new(),
+            guarded_range_pairs: Vec::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),
@@ -5083,6 +5089,7 @@ impl<'types> Codegen<'types> {
     /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
         self.range_built_lists.clear();
+        self.guarded_range_pairs = indexed_kernels::guarded_range_built_loop_pairs(body);
         // Literal-size facts are local-variable facts, never module facts.
         // A code generator is reused across functions (and generated async
         // frames), so carrying a same-named list from an earlier body could
@@ -10058,6 +10065,7 @@ impl<'types> Codegen<'types> {
             linear_build_plans: std::mem::take(&mut self.linear_build_plans),
             linear_build_epoch: self.linear_build_epoch,
             range_built_lists: std::mem::take(&mut self.range_built_lists),
+            guarded_range_pairs: std::mem::take(&mut self.guarded_range_pairs),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
             packed_candidates: std::mem::take(&mut self.packed_candidates),
@@ -10120,6 +10128,7 @@ impl<'types> Codegen<'types> {
         self.linear_build_plans = s.linear_build_plans;
         self.linear_build_epoch = s.linear_build_epoch;
         self.range_built_lists = s.range_built_lists;
+        self.guarded_range_pairs = s.guarded_range_pairs;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;
         self.packed_candidates = s.packed_candidates;

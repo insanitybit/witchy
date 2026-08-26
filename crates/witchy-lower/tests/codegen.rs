@@ -4469,6 +4469,81 @@ fn main() -> Int:
     }
 
     #[test]
+    fn guarded_range_countdown_elides_only_after_normal_completion_and_return_gate() {
+        // The first checked countdown store proves on its normal-completion
+        // path that the range-built list has a positive representable length.
+        // The following `r == n` return gate then makes every later `r` access
+        // strict-in-bounds until the final monotonic increment. This is a
+        // path-sensitive proof, not a caller precondition: zero still traps
+        // in the countdown and one returns through the gate.
+        let guarded = r#"
+import list
+
+fn rotate(let n: Int) -> Int:
+    var count = []
+    for i in 0..n:
+        list.push(count, 0)
+    var r = n
+    while r != 1:
+        list.set_at(count, r - 1, r)
+        r = r - 1
+    var advanced = false
+    while !advanced:
+        if r == n:
+            return 0
+        list.set_at(count, r, list.at(count, r) - 1)
+        if list.at(count, r) > 0:
+            advanced = true
+        else:
+            r = r + 1
+    list.at(count, r)
+
+fn main() -> Int:
+    rotate(3)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let none = witchy_syntax::opt::OptSet::none();
+        let guarded_module = link_list_app(guarded);
+        assert_eq!(run_int_module_with_opt(&guarded_module, default), 1, "optimized guarded loop");
+        assert_eq!(run_int_module_with_opt(&guarded_module, none), 1, "fully deoptimized guarded loop");
+
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let on = witchy_wir::wir::to_wat(&assemble_wir_module(&guarded_module).expect_lowered("lower guarded loop"));
+        witchy_syntax::opt::set_for_tests(Some(none));
+        let off = witchy_wir::wir::to_wat(&assemble_wir_module(&guarded_module).expect_lowered("lower guarded loop deopt"));
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(
+            on.matches("call $list_at").count() < off.matches("call $list_at").count(),
+            "the guarded loop consumes the bounds fact only with bounds elision on:\n{on}",
+        );
+
+        for (n, expected) in [(1, 0)] {
+            let source = guarded.replace("rotate(3)", &format!("rotate({n})"));
+            let module = link_list_app(&source);
+            assert_eq!(run_int_module_with_opt(&module, default), expected, "optimized n={n}");
+            assert_eq!(run_int_module_with_opt(&module, none), expected, "deoptimized n={n}");
+        }
+        let zero = guarded.replace("rotate(3)", "rotate(0)");
+        let zero_module = link_list_app(&zero);
+        let optimized_trap = compiled_module_trap_with_opt(&zero_module, default);
+        let deoptimized_trap = compiled_module_trap_with_opt(&zero_module, none);
+        assert!(optimized_trap.contains("list_at"), "optimized zero retains countdown trap: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "deoptimized zero retains countdown trap: {deoptimized_trap}");
+
+        let reordered = guarded.replace(
+            "if list.at(count, r) > 0:\n            advanced = true\n        else:\n            r = r + 1",
+            "if list.at(count, r) > 0:\n            r = r + 1\n        else:\n            advanced = true\n        let after = list.at(count, r)\n        advanced = after == 99",
+        );
+        let reordered_module = link_list_app(&reordered);
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let fallback = witchy_wir::wir::to_wat(&assemble_wir_module(&reordered_module).expect_lowered("lower reordered guarded loop"));
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(fallback.contains("call $list_at"), "a post-increment access must retain the checked helper: {fallback}");
+        let reordered_trap = compiled_module_trap_with_opt(&reordered_module, default);
+        assert!(reordered_trap.contains("list_at"), "reordered access must trap through list_at: {reordered_trap}");
+    }
+
+    #[test]
     fn paired_cursors_elide_only_a_stable_length_minus_constant_bound() {
         // RFC-0153 binary-transform shape: `lo` starts non-negative and grows,
         // `hi` starts at `length(xs) - 1` and shrinks, and the guard `lo < hi`

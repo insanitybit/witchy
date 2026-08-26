@@ -13,6 +13,160 @@ use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind, WirExpr as W, WirNode 
 const SEQUENCE_POLICY_EXACT: u8 = 1;
 const SEQUENCE_POLICY_GENERALIZED: u8 = 2;
 
+/// Return checked-index pairs that are safe after a normal-completing
+/// range-initialized countdown and an upper-bound return gate.
+///
+/// The proof is deliberately statement-ordered. A countdown write at `r - 1`
+/// into a list whose length is `max(n, 0)` traps unless its normal completion
+/// has established a positive, representable `n`. It exits with `r == 1`.
+/// The following loop returns before its body when `r == n`; every remaining
+/// `r` access is therefore in `1..n`. The only accepted mutation is a final
+/// `r = r + 1`, so it cannot wrap before that next return gate.
+pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(String, String)>)> {
+    #[derive(Clone, Default)]
+    struct Facts {
+        aliases: HashMap<String, String>,
+        built: HashMap<String, HashSet<String>>,
+        countdown: HashMap<String, String>,
+    }
+
+    fn stmt_value(stmt: &Stmt) -> Option<&Expr> {
+        match stmt {
+            Stmt::Expr(value) | Stmt::Assign { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
+    fn range_builder(previous: Option<&Stmt>, current: &Stmt, facts: &mut Facts) {
+        let Some(Stmt::Let { name: list, value: Expr::List(items), .. }) = previous else { return };
+        let Stmt::Expr(Expr::For { iter, body, .. }) = current else { return };
+        let Expr::Range { lo, hi, inclusive: false } = iter.as_ref() else { return };
+        let (Expr::Int(0), Expr::Var(bound)) = (lo.as_ref(), hi.as_ref()) else { return };
+        let pushes = matches!(body.stmts.as_slice(), [stmt]
+            if stmt_value(stmt).is_some_and(|value|
+                matches!(analysis::self_inplace_op(list, value), Some(analysis::InPlaceOp::Push(_)))));
+        if items.is_empty() && pushes {
+            facts.built.entry(bound.clone()).or_default().insert(list.clone());
+        }
+    }
+
+    fn is_increment(value: &Expr, index: &str) -> bool {
+        matches!(value, Expr::Binary { op: BinOp::Add, lhs, rhs }
+            if matches!(lhs.as_ref(), Expr::Var(name) if name == index)
+                && matches!(rhs.as_ref(), Expr::Int(1)))
+    }
+
+    fn normal_countdown(expr: &Expr, facts: &Facts) -> Option<(String, String)> {
+        let Expr::While { cond, body } = expr else { return None };
+        let Expr::Binary { op: BinOp::NotEq, lhs, rhs } = cond.as_ref() else { return None };
+        let (Expr::Var(index), Expr::Int(1)) = (lhs.as_ref(), rhs.as_ref()) else { return None };
+        let bound = facts.aliases.get(index)?.clone();
+        let lists = facts.built.get(&bound)?;
+        let [first, last] = body.stmts.as_slice() else { return None };
+        let checked_write = matches!(stmt_value(first), Some(Expr::Call { name, args })
+            if name == intrinsics::LIST_SET_AT
+                && matches!(args.first(), Some(Expr::Var(root)) if lists.contains(root))
+                && matches!(args.get(1), Some(Expr::Binary { op: BinOp::Sub, lhs, rhs })
+                    if matches!(lhs.as_ref(), Expr::Var(name) if name == index)
+                        && matches!(rhs.as_ref(), Expr::Int(1))));
+        let decrement = matches!(last, Stmt::Assign { name, value } if name == index
+            && matches!(value, Expr::Binary { op: BinOp::Sub, lhs, rhs }
+                if matches!(lhs.as_ref(), Expr::Var(name) if name == index)
+                    && matches!(rhs.as_ref(), Expr::Int(1))));
+        (checked_write && decrement).then_some((index.clone(), bound))
+    }
+
+    fn return_gate(stmt: Option<&Stmt>, index: &str, bound: &str) -> bool {
+        matches!(stmt, Some(Stmt::Expr(Expr::If { cond, then_block, else_block: None }))
+            if matches!(cond.as_ref(), Expr::Binary { op: BinOp::Eq, lhs, rhs }
+                if matches!(lhs.as_ref(), Expr::Var(name) if name == index)
+                    && matches!(rhs.as_ref(), Expr::Var(name) if name == bound))
+                && matches!(then_block.stmts.as_slice(), [Stmt::Return(_)]))
+    }
+
+    /// The only permitted increment is the final else-arm, after its condition
+    /// has evaluated. This prevents accepting an access after `r` became `n`.
+    fn final_increment(stmt: Option<&Stmt>, index: &str) -> bool {
+        matches!(stmt, Some(Stmt::Expr(Expr::If { then_block, else_block: Some(else_block), .. }))
+            if !block_assigns(then_block, index)
+                && matches!(else_block.stmts.as_slice(), [Stmt::Assign { name, value }]
+                    if name == index && is_increment(value, index)))
+    }
+
+    fn block_assigns(block: &Block, name: &str) -> bool {
+        block.stmts.iter().any(|stmt| match stmt {
+            Stmt::Assign { name: assigned, .. } => assigned == name,
+            Stmt::Expr(Expr::If { then_block, else_block, .. }) => {
+                block_assigns(then_block, name)
+                    || else_block.as_ref().is_some_and(|block| block_assigns(block, name))
+            }
+            Stmt::Expr(Expr::While { body, .. }) | Stmt::Expr(Expr::For { body, .. }) => block_assigns(body, name),
+            _ => false,
+        })
+    }
+
+    fn guarded_pairs(expr: &Expr, facts: &Facts) -> Vec<(String, String)> {
+        let Expr::While { cond, body } = expr else { return Vec::new() };
+        if !matches!(cond.as_ref(), Expr::Unary { op: UnOp::Not, expr } if matches!(expr.as_ref(), Expr::Var(_))) {
+            return Vec::new();
+        }
+        let Some((index, bound)) = facts.countdown.iter().next() else { return Vec::new() };
+        if facts.countdown.len() != 1
+            || !return_gate(body.stmts.first(), index, bound)
+            || body.stmts.len() < 3
+            || body.stmts[..body.stmts.len() - 1].iter().any(|stmt| block_assigns(&Block { stmts: vec![stmt.clone()], lines: vec![], region: None }, index))
+            || !final_increment(body.stmts.last(), index)
+        {
+            return Vec::new();
+        }
+        let Some(lists) = facts.built.get(bound) else { return Vec::new() };
+        let mut scan = DevirtScan::default();
+        scan.walk_block(body);
+        lists.iter().filter(|list| {
+            scan.direct_indexed_accesses.contains_key(&(index.clone(), (*list).clone()))
+                && !scan.length_changing_reassigned.contains(*list)
+                && !scan.opaque_call_roots.contains(*list)
+        }).map(|list| (index.clone(), list.clone())).collect()
+    }
+
+    fn walk_expr(expr: &Expr, facts: &mut Facts, out: &mut Vec<(Expr, Vec<(String, String)>)>) {
+        match expr {
+            Expr::While { body, .. } => {
+                let pairs = guarded_pairs(expr, facts);
+                if !pairs.is_empty() { out.push((expr.clone(), pairs)); }
+                let mut nested = facts.clone();
+                walk_block(body, &mut nested, out);
+            }
+            Expr::If { then_block, else_block, .. } => {
+                let mut nested = facts.clone();
+                walk_block(then_block, &mut nested, out);
+                if let Some(block) = else_block { walk_block(block, &mut nested, out); }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_block(block: &Block, facts: &mut Facts, out: &mut Vec<(Expr, Vec<(String, String)>)>) {
+        for (position, stmt) in block.stmts.iter().enumerate() {
+            if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt {
+                if let Expr::Var(source) = value { facts.aliases.insert(name.clone(), source.clone()); }
+                else { facts.aliases.remove(name); facts.countdown.remove(name); }
+            }
+            if let Stmt::Expr(expr) = stmt {
+                walk_expr(expr, facts, out);
+                if let Some((index, bound)) = normal_countdown(expr, facts) {
+                    facts.countdown.insert(index, bound);
+                }
+            }
+            range_builder(position.checked_sub(1).and_then(|previous| block.stmts.get(previous)), stmt, facts);
+        }
+    }
+
+    let mut out = Vec::new();
+    walk_block(body, &mut Facts::default(), &mut out);
+    out
+}
+
 #[derive(Default)]
 pub(super) struct SequenceBackendPolicyTriggers(std::cell::Cell<u8>);
 
