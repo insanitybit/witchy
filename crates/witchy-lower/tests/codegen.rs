@@ -5201,6 +5201,42 @@ fn main() -> Int:
     let wrapped = 9223372036854775807 + 1
     if wrapped < 0: parity + steps else: 0
 "#, 7),
+            ("empty range", r#"
+fn main() -> Int:
+    var total = 17
+    for i in 4..4:
+        total = total + i
+    total
+"#, 17),
+            ("maximum no-wrap loop", r#"
+fn main() -> Int:
+    var cursor = 9223372036854775806
+    var steps = 0
+    while cursor < 9223372036854775807:
+        cursor = cursor + 1
+        steps = steps + 1
+    if cursor == 9223372036854775807: steps else: 0
+"#, 1),
+            ("wrapping loop with break", r#"
+fn main() -> Int:
+    var cursor = 9223372036854775807
+    var steps = 0
+    while cursor >= 0:
+        cursor = cursor + 1
+        steps = steps + 1
+        if steps == 1:
+            break
+    if cursor < 0: steps else: 0
+"#, 1),
+            ("zero-step false entry", r#"
+fn main() -> Int:
+    var cursor = 1
+    var total = 23
+    while cursor < 1:
+        total = total + cursor
+        cursor = cursor + 0
+    total
+"#, 23),
             ("same-address forwarding", r#"
 fn main() -> Int:
     var values = [3, 2]

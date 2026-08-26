@@ -289,9 +289,10 @@ indexed here, and `collatz` plus `nsieve` missed the required 1.00x threshold.
 - Numeric loop: `power_of_two_modulo_strength_reduction` proves the signed
   modulo negative case alongside the optimized positive remainder shape.
   `rfc0153_full_deoptimization_matrix_preserves_results_and_traps` adds a
-  positive modulo loop, maximum-Int wrap, and early-break parity under the
-  default and fully deoptimized pipelines. It is not the full
-  wrapping/no-wrap/empty-range/zero-step boundary census required by 6D.
+  positive modulo loop, empty range, maximum-Int no-wrap, loop-local wrapping
+  with break, and zero-step false-entry parity under the default and fully
+  deoptimized pipelines. The non-terminating zero-step shape separately proves
+  that cursorization is declined in WAT.
 - Full deoptimization: `rfc0153_full_deoptimization_matrix_preserves_results_and_traps`
   executes the byte-parser, paired-binary, matrix, histogram, serializer,
   numeric-loop, and same-address-forwarding positive fixtures under both the
@@ -303,3 +304,14 @@ indexed here, and `collatz` plus `nsieve` missed the required 1.00x threshold.
   Brainfuck, Glamour, and `std/cbor` paths under executable interpreter/Wasm
   semantic coverage. These are protected-source evidence, not performance rows
   or a claim that their individual loops are promoted.
+
+### Boundary-census checkpoint (2026-08-26)
+
+`rfc0153_full_deoptimization_matrix_preserves_results_and_traps` now executes
+the remaining numeric boundary shapes under both `OptSet::default_set()` and
+`OptSet::none()`: an empty range, a one-trip maximum-Int no-wrap loop, a
+maximum-Int wrapping loop stopped by an explicit break, and a false-entry
+zero-step loop. The existing `zero_step_while_declines_sequence_cursorization`
+WAT fixture retains the complementary non-terminating case and verifies that
+no sequence cursor is installed. The focused test passed locally; queue
+evidence remains pending.
