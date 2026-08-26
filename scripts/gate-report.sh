@@ -196,7 +196,7 @@ jq -sn \
           | (($events[$i].ts|fromdateiso8601)-($events[$submitted].ts|fromdateiso8601))
        ]) as $waits
     | {
-        schema:2, generated_at:$generated, since:$since, state_dir:$state_dir,
+        schema:3, generated_at:$generated, since:$since, state_dir:$state_dir,
         throughput:{submissions:($recent|map(select(.event=="submitted"))|length),
                     merged_branches:($merged|length), green_gates:($green|length),
                     failed_attempts:($failed|length),
@@ -240,7 +240,58 @@ jq -sn \
                              gate_p50:(.sel|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution|.p50),
                              gate_p90:(.sel|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution|.p90),
                              red_rate:(if (.sel|length)==0 then null
-                                       else ((.sel|map(select(.event!="merged"))|length)/(.sel|length)) end)}))})
+                                       else ((.sel|map(select(.event!="merged"))|length)/(.sel|length)) end)}))}),
+        # RFC-0159. Attribution and change shape, recorded at submit time.
+        # "unset" is a first-class value: it must stay visible so adoption is
+        # measurable rather than silently defaulting to a wrong name.
+        attribution:(($recent|map(select(.event=="submitted" or .event=="resubmitted"))) as $subs
+          | {submissions:($subs|length),
+             actor_adoption:(if ($subs|length)==0 then null
+                             else (($subs|map(select((.actor//"unset")!="unset"))|length)/($subs|length)) end),
+             trailer_adoption:(if ($subs|length)==0 then null
+                               else (($subs|map(select(.trailer_present=="true"))|length)/($subs|length)) end),
+             presubmit_receipt_rate:(if ($subs|length)==0 then null
+                                     else (($subs|map(select(.presubmit_sha_match=="true"))|length)/($subs|length)) end),
+             by_actor:($subs|group_by(.actor//"unset")
+                       |map({actor:(.[0].actor//"unset"), submissions:length})|sort_by(-.submissions)),
+             by_touches:($subs|map(select((.touches//"")!=""))|group_by(.touches)
+                         |map({touches:.[0].touches, submissions:length})|sort_by(-.submissions))}),
+        red_causes:($failed|group_by(.red_class//"unclassified")
+                    |map({red_class:(.[0].red_class//"unclassified"), n:length,
+                          gate_minutes:((map(numeric(.gate_elapsed_s // .elapsed_s))|add // 0)/60)})
+                    |sort_by(-.gate_minutes)),
+        # The decomposition that makes the latency picture legible: time a
+        # change spent being worked on versus time it spent waiting for a
+        # coordinator to exist. The tail is dominated by the second, which no
+        # amount of gate-speed work can touch.
+        work_vs_idle_s:(([ $journal | group_by(.branch)[] | sort_by(.ts) as $events
+              | range(0; $events|length) as $i
+              | select($events[$i].event=="merged" and (($events[$i].ts|fromdateiso8601) >= $cutoff))
+              | ([range(0;$i) | select($events[.].event=="submitted")] | last) as $submitted
+              | select($submitted != null)
+              | (($events[$i].ts|fromdateiso8601)-($events[$submitted].ts|fromdateiso8601)) as $total
+              | ([range($submitted;$i+1) | $events[.] | numeric(.attempt_elapsed_s) // 0] | add) as $work
+              | {total:$total, work:$work, idle:(if $total>$work then $total-$work else 0 end)}
+           ]) as $rows
+          | {time_to_land:($rows|map(.total)|distribution),
+             attempt_work:($rows|map(.work)|distribution),
+             idle_in_queue:($rows|map(.idle)|distribution)}),
+        first_pass_clean:(([ $journal | group_by(.change_id//.branch)[] | sort_by(.ts) as $events
+              | select($events|map(select(.event=="merged"))|length > 0)
+              | select(($events|map(select(.event=="merged"))|last|.ts|fromdateiso8601) >= $cutoff)
+              | (($events|map(select(.event=="red" or .event=="batch_red" or .event=="timeout"))|length)==0)
+           ]) as $clean
+          | if ($clean|length)==0 then null
+            else (($clean|map(select(.))|length)/($clean|length)) end),
+        # Uptime is computable only because the coordinator now writes a
+        # heartbeat when nothing is happening. Before that, "no coordinator"
+        # and "no queue" were the same silence.
+        coordinator:(($recent|map(select(.event=="heartbeat"))) as $beats
+          | {heartbeats:($beats|length),
+             covered_s:(($beats|length) * 300),
+             window_s:((now|floor) - $cutoff),
+             uptime_ratio:(if ((now|floor) - $cutoff) <= 0 then null
+                           else ((($beats|length) * 300) / ((now|floor) - $cutoff)) end)})
       }
 ' >"$report"
 
@@ -301,6 +352,23 @@ jq -r '
          + (.contention.buckets | map("    \(.name): n=\(.n)  gate \(value(.gate_p50; "s")) / \(value(.gate_p90; "s"))  failed \(if .red_rate==null then "n/a" else ((.red_rate*100|round|tostring)+"%") end)") | join("\n")))
      end),
     "",
+    "Work vs idle for changes that landed (p50 / p90)",
+    "  time to land:            \(value(.work_vs_idle_s.time_to_land.p50; "s")) / \(value(.work_vs_idle_s.time_to_land.p90; "s"))",
+    "  attempt work:            \(value(.work_vs_idle_s.attempt_work.p50; "s")) / \(value(.work_vs_idle_s.attempt_work.p90; "s"))",
+    "  idle in queue:           \(value(.work_vs_idle_s.idle_in_queue.p50; "s")) / \(value(.work_vs_idle_s.idle_in_queue.p90; "s"))",
+    "  first-pass-clean rate:   \(if .first_pass_clean==null then "n/a" else ((.first_pass_clean*100|round|tostring)+"%") end)",
+    "  coordinator uptime:      \(if .coordinator.uptime_ratio==null then "n/a" else ((.coordinator.uptime_ratio*100|round|tostring)+"% (\(.coordinator.heartbeats) heartbeats)") end)",
+    "",
+    "Pre-submit evidence and attribution (n=\(.attribution.submissions) submissions)",
+    "  green shard receipt:     \(if .attribution.presubmit_receipt_rate==null then "n/a" else ((.attribution.presubmit_receipt_rate*100|round|tostring)+"%") end)",
+    "  actor set (not \"unset\"): \(if .attribution.actor_adoption==null then "n/a" else ((.attribution.actor_adoption*100|round|tostring)+"%") end)",
+    "  Co-Authored-By trailer:  \(if .attribution.trailer_adoption==null then "n/a" else ((.attribution.trailer_adoption*100|round|tostring)+"%") end)",
+    (if (.red_causes|length)==0 then "" else
+        ("\nFailed gate time by cause\n"
+         + (.red_causes | map("  \(.red_class): n=\(.n)  \(value(.gate_minutes; "m"))") | join("\n")))
+     end),
+    "",
     "Discovery is estimated as test-stage wall time minus Cargo compile and nextest execution.",
-    "A gate is only comparable to another at similar load per core; see the contention buckets."
+    "A gate is only comparable to another at similar load per core; see the contention buckets.",
+    "A green shard receipt certifies the AUTHOR'"'"'S tree, not the rebased tree the gate runs."
 ' "$report"

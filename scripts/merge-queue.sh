@@ -314,6 +314,57 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "$gate_load_start" ] && contention+=(gate_load_start "$gate_load_start")
     [ -n "$gate_load_end" ] && contention+=(gate_load_end "$gate_load_end")
     [ -n "$host_ncpu" ] && contention+=(host_ncpu "$host_ncpu")
+
+    # RFC-0159 E. `reason` already carries the failing stage and failure line,
+    # concatenated into prose -- so grouping reds by cause meant re-parsing a
+    # human string. Split it here, at the same choke point, so grouping is a
+    # field lookup. `reason` is KEPT: it is the readable form and existing
+    # consumers read it.
+    local classified=()
+    case "$event" in
+        red | batch_red | timeout)
+            local kv=("$@") reason_value="" j=0
+            while [ "$j" -lt "${#kv[@]}" ]; do
+                if [ "${kv[$j]}" = "reason" ]; then
+                    reason_value="${kv[$((j + 1))]}"
+                    break
+                fi
+                j=$((j + 2))
+            done
+            local failing_stage="" failure_line="" red_class="unknown"
+            if [ -n "$reason_value" ]; then
+                failing_stage="$(printf '%s' "$reason_value" \
+                    | sed -n 's/^\[[0-9]*\] \(.*\) (t+.*/\1/p')"
+                failure_line="${reason_value#*: }"
+                [ "$failure_line" = "$reason_value" ] && failure_line=""
+            fi
+            # Deliberately coarse. The one judgement it makes is the load one:
+            # a stall timeout on an oversubscribed box is weather, the same
+            # timeout on an idle box is a flake worth a bug -- and since the
+            # contention covariate landed, that distinction is available here
+            # rather than guessed later.
+            local loaded=0
+            if [ -n "$gate_load_start" ] && [ -n "$host_ncpu" ] && [ "$host_ncpu" -gt 0 ] 2>/dev/null; then
+                loaded="$(awk -v l="$gate_load_start" -v n="$host_ncpu" \
+                    'BEGIN { print (l / n >= 2.0) ? 1 : 0 }' 2>/dev/null || echo 0)"
+            fi
+            case "$reason_value" in
+                *"no log output"* | *"exceeded"* | *"timed out"* | *"creating test list failed"*)
+                    if [ "$loaded" = "1" ]; then red_class="infra"; else red_class="timeout"; fi ;;
+                *)
+                    case "$failing_stage" in
+                        tests*)                 red_class="test" ;;
+                        *compile*)              red_class="compile" ;;
+                        *clippy*)               red_class="clippy" ;;
+                        *fmt*)                  red_class="fmt" ;;
+                        *"queue infrastructure"*) red_class="infra" ;;
+                        *)  [ "$event" = "timeout" ] && red_class="timeout" ;;
+                    esac ;;
+            esac
+            classified+=(failing_stage "$failing_stage" failure_line "$failure_line" red_class "$red_class")
+            ;;
+    esac
+
     record "$event" "$branch" \
         attempt_timing_schema "1" \
         elapsed_s "$((gate_end - gate_start))" \
@@ -324,6 +375,7 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
         gate_elapsed_s "$((gate_end - gate_start))" \
         landing_elapsed_s "$((finish - gate_end))" \
         ${contention[@]+"${contention[@]}"} \
+        ${classified[@]+"${classified[@]}"} \
         "$@"
 }
 
@@ -849,6 +901,33 @@ ensure_gate_worktree() {
 # after a successful, expensive gate. Untracked local state is intentionally
 # excluded: it is common in the shared checkout and only blocks Git when the
 # candidate would overwrite the same path.
+# RFC-0159 C. Which contracts a diff touches, so a red rate is interpretable:
+# a 29% red rate on compiler changes and on documentation changes are different
+# facts. Deliberately coarse and additive -- a path may land in several classes,
+# and an unmatched path contributes none.
+classify_touches() { # classify_touches <newline-separated-paths>
+    local paths="$1" out=""
+    local pair name pattern
+    for pair in \
+        'typeck:^crates/witchy-types/' \
+        'codegen:^crates/(witchy-lower/src/codegen|witchy-wir)/' \
+        'analysis:^crates/witchy-lower/src/analysis\.rs$' \
+        'interp:^crates/witchy-interp/' \
+        'wasm-abi:^crates/witchy-runtime/' \
+        'confinement:^crates/witchy-confinement/' \
+        'std:^std/' \
+        'docs:^(rfcs|book|spec|docs|wiki)/' \
+        'queue-infra:^(scripts/(merge-queue|check|gate-report|test-for-paths)\.sh|tests/merge_queue)' \
+        ; do
+        name="${pair%%:*}"
+        pattern="${pair#*:}"
+        if printf '%s\n' "$paths" | grep -qE "$pattern"; then
+            out="$out,$name"
+        fi
+    done
+    printf '%s' "${out#,}"
+}
+
 main_worktree_is_ready_to_land() {
     local current_branch
     current_branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -1246,6 +1325,49 @@ cmd_submit() {
             fi
         fi
     fi
+    # RFC-0159 A. Actor identity. Recorded verbatim and never inferred; "unset"
+    # is a first-class value so adoption is measurable rather than silently
+    # defaulting to a wrong name. `by` stays $USER -- the machine account, not
+    # the author.
+    local actor="${MERGE_QUEUE_ACTOR:-unset}"
+    local session="${MERGE_QUEUE_SESSION:-}"
+    # A derived second opinion: an environment variable an agent forgets to set
+    # is weak evidence, but the worktree path is structural. Kept DISTINCT from
+    # `actor` on purpose -- one is verbatim, one is a guess -- so a disagreement
+    # between them is visible instead of silently resolved.
+    local actor_hint="unknown"
+    case "$PWD" in
+        */.claude/worktrees/*) actor_hint="claude" ;;
+        */.codex/worktrees/*)  actor_hint="codex" ;;
+        "$root") actor_hint="master-checkout" ;;
+    esac
+
+    # RFC-0159 B. CLAUDE.md already mandates a Co-Authored-By trailer naming the
+    # model; it appeared on 1.75% of commits. Warn and measure rather than
+    # reject: refusing would be a protocol change for a convention nobody
+    # follows yet, and the adoption number is what should decide whether it ever
+    # becomes a refusal.
+    local trailer_present="false"
+    if [ -n "$tip_sha" ] && [ -n "$submit_base" ]; then
+        if git -C "$root" log --format=%B "$submit_base..$tip_sha" 2>/dev/null \
+            | grep -qi '^Co-Authored-By:'; then
+            trailer_present="true"
+        fi
+    fi
+    [ "$trailer_present" = "true" ] || \
+        note "note: no Co-Authored-By trailer on this branch's commits (CLAUDE.md asks for one)"
+
+    # RFC-0159 C. Change shape.
+    local files_changed=0 insertions=0 deletions=0 touches=""
+    if [ -n "$submit_base" ] && [ -n "$tip_sha" ]; then
+        files_changed="$(printf '%s\n' "$submit_changed" | grep -c . || true)"
+        local numstat
+        numstat="$(git -C "$root" diff --numstat "$submit_base" "$tip_sha" 2>/dev/null || true)"
+        insertions="$(printf '%s\n' "$numstat" | awk '$1 ~ /^[0-9]+$/ {n += $1} END {print n + 0}')"
+        deletions="$(printf '%s\n' "$numstat" | awk '$2 ~ /^[0-9]+$/ {n += $2} END {print n + 0}')"
+        touches="$(classify_touches "$submit_changed")"
+    fi
+
     if [ -n "$tip_sha" ] && [ "$presubmit_sha_match" = "false" ] \
         && [ "$submit_docs_safe" -eq 0 ]; then
         note "WARNING: no green shard recorded for $branch@${tip_sha:0:9}."
@@ -1329,7 +1451,10 @@ cmd_submit() {
         record resubmitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
             presubmit_sha_match "$presubmit_sha_match" \
-            presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at"
+            presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at" \
+            actor "$actor" actor_hint "$actor_hint" session "$session" \
+            trailer_present "$trailer_present" files_changed "$files_changed" \
+            insertions "$insertions" deletions "$deletions" touches "$touches"
         if [ "$front" -eq 1 ]; then
             front_qf="$queue_dir/$(front_stamp)-$(branch_key "$branch").json"
             mv "$existing_qf" "$front_qf"
@@ -1350,7 +1475,10 @@ cmd_submit() {
         record submitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
             presubmit_sha_match "$presubmit_sha_match" \
-            presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at"
+            presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at" \
+            actor "$actor" actor_hint "$actor_hint" session "$session" \
+            trailer_present "$trailer_present" files_changed "$files_changed" \
+            insertions "$insertions" deletions "$deletions" touches "$touches"
         note "queued $branch as $change_id ($fname)"
     fi
     release_change_lock
@@ -2797,7 +2925,20 @@ cmd_run() {
     fi
     # Consecutive dirty-checkout deferrals, driving the backoff below.
     local deferrals=0
+    # RFC-0159 F. Coordinator uptime is the largest single latency contributor
+    # and it is currently invisible, because NOTHING IS WRITTEN WHEN NOTHING IS
+    # HAPPENING -- uptime has to be inferred from gaps between merges, which
+    # cannot distinguish "no coordinator" from "no queue". A heartbeat makes it
+    # directly computable.
+    local heartbeat_interval="${MERGE_QUEUE_HEARTBEAT_INTERVAL:-300}"
+    local last_heartbeat=0
     while :; do
+        local heartbeat_now; heartbeat_now="$(date +%s)"
+        if [ "$((heartbeat_now - last_heartbeat))" -ge "$heartbeat_interval" ]; then
+            last_heartbeat="$heartbeat_now"
+            record heartbeat "" pid "$$" \
+                queued "$(find "$queue_dir" -maxdepth 1 -name '*.json' -print 2>/dev/null | grep -c . || echo 0)"
+        fi
         if ! coordinator_lock_owned; then
             note "lost coordinator singleton ownership; exiting instead of becoming an unnamed sibling"
             return 1
@@ -2938,28 +3079,26 @@ cmd_wait() {
 
 # Journal analytics: outcome counts, gate-time trend, suspected-flaky tests
 # (failed in one gate, passed in a later one), repeat-red branches.
+# RFC-0159 G. Windowed reporting has exactly one implementation, and it is
+# `gate-report.sh` -- which already takes --since/--json and buckets by load per
+# core. This used to print lifetime-cumulative counts from a second, unwindowed
+# code path; two reporters meant two schemas and two definitions of a window,
+# which is the drift this RFC exists to prevent. Per house style the cumulative
+# implementation is deleted in one cut and the name survives as a forwarder, so
+# `merge-queue.sh stats` keeps working without being a second implementation.
 cmd_stats() {
-    [ -f "$journal" ] || { note "no journal yet"; exit 0; }
-    echo "== outcomes:"
-    jq -r '.event' "$journal" | sort | uniq -c | sort -rn
-    echo
-    echo "== gate seconds (last 10 merged):"
-    jq -r 'select(.event=="merged" and .elapsed_s != null) | "\(.ts)  \(.elapsed_s)s  \(.branch)\(if .batch and (.batch != "1") then "  [batch \(.batch)]" else "" end)"' "$journal" | tail -10
-    echo
-    echo "== repeat offenders (red/timeout more than once):"
-    jq -r 'select(.event=="red" or .event=="timeout") | .branch' "$journal" | sort | uniq -c | sort -rn | awk '$1 > 1'
-    echo
-    echo "== suspected flaky tests (FAILED in a red gate, then absent from later failures):"
-    # Pull per-test FAIL/TIMEOUT lines out of red-gate logs; a test that fails in
-    # exactly one log but ran in several is flake-shaped. Cheap heuristic, not proof.
-    local names
-    names="$(jq -r 'select(.event=="red" or .event=="timeout" or .event=="batch_red") | .log // empty' "$journal" \
-        | while IFS= read -r lg; do
-            [ -f "$lg" ] || continue
-            sed "s/$(printf '\033')\[[0-9;]*m//g" "$lg" | grep -E '^[[:space:]]*(FAIL|TIMEOUT) \[' \
-                | sed -E 's/^[[:space:]]*(FAIL|TIMEOUT) \[[^]]*\] \([^)]*\) //'
-          done | sort | uniq -c | sort -rn)"
-    if [ -n "$names" ]; then echo "$names" | head -15; else echo "  (none recorded)"; fi
+    local report="$root/scripts/gate-report.sh"
+    if [ ! -x "$report" ]; then
+        note "gate-report.sh is missing; nothing to report"
+        exit 1
+    fi
+    local args=("--state-dir" "$qdir")
+    if [ "$#" -eq 0 ]; then
+        args+=("--since" "7d")
+    else
+        args+=("$@")
+    fi
+    exec "$report" "${args[@]}"
 }
 
 # Retire a superseded pending submission without deleting or rewriting its
@@ -3233,7 +3372,7 @@ case "${1:-}" in
     daemon)    cmd_daemon ;;
     migrate-state) cmd_migrate_state ;;
     wait)      shift; cmd_wait "$@" ;;
-    stats)     cmd_stats ;;
+    stats)     shift; cmd_stats "$@" ;;
     drop)      shift; cmd_drop "$@" ;;
     resolve)   shift; cmd_resolve "$@" ;;
     sweep)     shift; cmd_sweep "$@" ;;
