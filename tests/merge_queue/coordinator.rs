@@ -1585,3 +1585,34 @@ fn a_code_submission_without_a_receipt_still_warns() {
         "code submission lost its missing-shard warning:\n{stderr}"
     );
 }
+
+/// `status` has always carried per-change `readiness`, but `doctor` -- the view
+/// an operator reads -- printed queue FILENAMES. A change stuck behind a failed
+/// parent therefore looked identical to one about to gate, and sat at the HEAD
+/// of the listing where it read as "next up". That cost two hours of waiting on
+/// a change that was never going to be picked.
+#[test]
+fn doctor_names_the_branch_and_says_when_one_is_blocked() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(&["submit", "--after", "a", "b"], "true");
+
+    let doctor = fixture.mq_ok(&["doctor"], "true");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    // Branch names, not queue filenames.
+    assert!(out.contains(" a"), "doctor did not name branch a:\n{out}");
+    assert!(out.contains(" b"), "doctor did not name branch b:\n{out}");
+    // And the dependent must be visibly not-ready rather than silently listed.
+    assert!(
+        out.contains("waiting") || out.contains("BLOCKED"),
+        "doctor did not report the dependent as waiting/blocked:\n{out}"
+    );
+    assert!(
+        !out.contains(".json"),
+        "doctor still prints raw queue filenames:\n{out}"
+    );
+}

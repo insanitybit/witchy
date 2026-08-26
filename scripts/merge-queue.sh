@@ -1601,7 +1601,23 @@ cmd_doctor() {
     done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -type f -print | sort)
     local n="${#queue_files[@]}"
     if [ "$n" -gt 0 ]; then
-        echo "queue       : $n pending — ${queue_files[*]}"
+        # Branch + readiness, not raw filenames. `status` has carried
+        # per-change `readiness`/`blocked_by` all along, but `doctor` -- the
+        # view an operator actually reads -- printed queue FILENAMES, so a
+        # change stuck behind a failed parent was indistinguishable from one
+        # about to gate. That costs real time: a dependency-blocked change sits
+        # at the HEAD of the listing, which reads as "next up" rather than
+        # "going nowhere until its parent lands".
+        echo "queue       : $n pending"
+        queue_entries_with_status 2>/dev/null | jq -r '
+            (.branch // "?") as $b
+            | (.readiness // "?") as $r
+            | (if $r == "blocked"
+               then "  BLOCKED  \($b) — blocked by \([.blocked_by[]? | "\(.branch // .change_id) (\(.state))"] | join(", "))"
+               elif $r == "waiting"
+               then "  waiting  \($b) — after \([.waiting_on[]? | (.branch // .change_id)] | join(", "))"
+               else "  ready    \($b)" end)' \
+            || printf '  %s\n' "${queue_files[@]}"
     else
         echo "queue       : empty"
     fi
