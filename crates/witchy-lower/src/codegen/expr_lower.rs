@@ -1360,13 +1360,24 @@ impl<'types> Codegen<'types> {
                 let saved = self.next_label;
                 let id = self.next_label;
                 self.next_label += 1;
-                let mut elide_pairs = self.while_bounds_elide_pairs(cond, body);
-                if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
-                    if let Some((_, pairs)) = self.guarded_range_pairs.iter().find(|(source, _)| source == e) {
-                        elide_pairs.extend(pairs.iter().cloned());
-                        elide_pairs.sort();
-                        elide_pairs.dedup();
-                    }
+                let guarded_pairs = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
+                    .then(|| self.guarded_range_pairs.iter().find(|(source, _)| source == e))
+                    .flatten();
+                // A guarded-range completion proof owns its paired cursor plan.
+                // Do not let a weaker scalar value fact displace that plan.
+                let range_value_bound = matches!(cond.as_ref(),
+                    Expr::Binary { op: BinOp::Lt, rhs, .. }
+                        if matches!(rhs.as_ref(), Expr::Var(bound)
+                            if self.range_value_vars.contains_key(bound)));
+                let mut elide_pairs = if guarded_pairs.is_some() && range_value_bound {
+                    Vec::new()
+                } else {
+                    self.while_bounds_elide_pairs(cond, body)
+                };
+                if let Some((_, pairs)) = guarded_pairs {
+                    elide_pairs.extend(pairs.iter().cloned());
+                    elide_pairs.sort();
+                    elide_pairs.dedup();
                 }
                 let byte_elide_pairs = self.while_bytes_bounds_elide_pairs(cond, body);
                 // Sequence cursors are initialized once before the loop. Only

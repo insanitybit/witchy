@@ -284,6 +284,8 @@ impl<'types> Codegen<'types> {
             .collect();
         for bound in &invalidated {
             self.range_built_lists.remove(bound);
+            self.range_value_lists.remove(bound);
+            self.range_value_vars.retain(|_, (domain, _)| domain != bound);
         }
         for bound in scan
             .let_bind
@@ -292,12 +294,18 @@ impl<'types> Codegen<'types> {
             .chain(&scan.reassigned)
         {
             self.range_built_lists.remove(bound);
+            self.range_value_lists.remove(bound);
+            self.range_value_vars.retain(|_, (domain, _)| domain != bound);
         }
         if !invalidated.is_empty() {
             for lists in self.range_built_lists.values_mut() {
                 lists.retain(|list| !invalidated.contains(list));
             }
             self.range_built_lists.retain(|_, lists| !lists.is_empty());
+            for lists in self.range_value_lists.values_mut() {
+                lists.retain(|list| !invalidated.contains(list));
+            }
+            self.range_value_lists.retain(|_, lists| !lists.is_empty());
         }
     }
 
@@ -308,7 +316,7 @@ impl<'types> Codegen<'types> {
         if !items.is_empty() || !self.inplace_push.contains(list) {
             return;
         }
-        let Stmt::Expr(Expr::For { iter, body, .. }) = current else { return };
+        let Stmt::Expr(Expr::For { var, iter, body }) = current else { return };
         let Expr::Range { lo, hi, inclusive: false } = iter.as_ref() else { return };
         let (Expr::Int(0), Expr::Var(bound)) = (lo.as_ref(), hi.as_ref()) else { return };
         let push = match body.stmts.as_slice() {
@@ -332,6 +340,120 @@ impl<'types> Codegen<'types> {
             .entry(bound.clone())
             .or_default()
             .insert(list.clone());
+        if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
+            && matches!(element, Expr::Var(name) if name == var)
+        {
+            self.range_value_lists
+                .entry(bound.clone())
+                .or_default()
+                .insert(list.clone());
+        }
+    }
+
+    fn range_value_bound_for_list(&self, list: &str) -> Option<String> {
+        let mut bounds = self.range_value_lists.iter().filter_map(|(bound, lists)| {
+            lists.contains(list).then(|| bound.clone())
+        });
+        let bound = bounds.next()?;
+        bounds.next().is_none().then_some(bound)
+    }
+
+    fn range_value_bound_for_expr(&self, value: &Expr) -> Option<String> {
+        match value {
+            Expr::Var(name) => self.range_value_vars.get(name).map(|(bound, _)| bound.clone()),
+            Expr::Call { name, args }
+                if witchy_syntax::cap_ops::surface_name(name) == intrinsics::LIST_AT && args.len() == 2 =>
+            {
+                let Expr::Var(list) = &args[0] else { return None };
+                self.range_value_bound_for_list(list)
+            }
+            _ => None,
+        }
+    }
+
+    fn clear_range_value_list(&mut self, list: &str) {
+        for lists in self.range_value_lists.values_mut() {
+            lists.remove(list);
+        }
+        self.range_value_lists.retain(|_, lists| !lists.is_empty());
+    }
+
+    /// Retain an exact value-domain fact only through writes that themselves
+    /// read from the same domain. Any other rebinding or mutation invalidates it.
+    pub(super) fn update_range_value_binding(&mut self, name: &str, value: &Expr) {
+        if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
+            return;
+        }
+        let copied_scalar_domain = match value {
+            Expr::Var(source) => self.range_value_vars.get(source).cloned(),
+            _ => None,
+        };
+        self.range_value_vars.remove(name);
+        if let Some(analysis::InPlaceOp::SetAt(_, element)) = analysis::self_inplace_op(name, value) {
+            if let Some(bound) = self.range_value_bound_for_list(name)
+                && self.range_value_bound_for_expr(element).as_deref() != Some(bound.as_str())
+            {
+                self.clear_range_value_list(name);
+            }
+            return;
+        }
+        self.clear_range_value_list(name);
+        if let Expr::Var(source) = value
+            && let Some(bound) = self.range_value_bound_for_list(source)
+        {
+            self.range_value_lists.entry(bound).or_default().insert(name.to_string());
+        }
+        if let Some(domain) = copied_scalar_domain {
+            self.range_value_vars.insert(name.to_string(), domain);
+        }
+        if let Expr::Call { name: at, args } = value
+            && witchy_syntax::cap_ops::surface_name(at) == intrinsics::LIST_AT
+            && let Some(Expr::Var(source)) = args.first()
+            && let Some(bound) = self.range_value_bound_for_list(source)
+            && self.range_built_lists.get(&bound).is_some_and(|lists| lists.contains(source))
+        {
+            self.range_value_vars.insert(name.to_string(), (bound, source.clone()));
+        }
+    }
+
+    pub(super) fn update_range_value_expression(&mut self, value: &Expr) {
+        if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
+            return;
+        }
+        let Some(root) = analysis::direct_inplace_root(value) else { return };
+        let Some(analysis::InPlaceOp::SetAt(_, element)) = analysis::self_inplace_op(root, value)
+        else {
+            self.clear_range_value_list(root);
+            return;
+        };
+        if let Some(bound) = self.range_value_bound_for_list(root)
+            && self.range_value_bound_for_expr(element).as_deref() != Some(bound.as_str())
+        {
+            self.clear_range_value_list(root);
+        }
+    }
+
+    pub(super) fn note_completed_range_value_copy(&mut self, current: &Stmt) {
+        if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
+            return;
+        }
+        let Stmt::Expr(Expr::For { var, iter, body }) = current else { return };
+        let Expr::Range { lo, hi, inclusive: false } = iter.as_ref() else { return };
+        let (Expr::Int(0), Expr::Var(bound)) = (lo.as_ref(), hi.as_ref()) else { return };
+        let [Stmt::Assign { name: dst, value }] = body.stmts.as_slice() else { return };
+        let Some(analysis::InPlaceOp::SetAt(index, element)) = analysis::self_inplace_op(dst, value)
+        else { return };
+        let Expr::Call { name: at, args } = element else { return };
+        let Some(Expr::Var(src)) = args.first() else { return };
+        if !matches!(index, Expr::Var(index) if index == var)
+            || at != intrinsics::LIST_AT
+            || !matches!(args.get(1), Some(Expr::Var(index)) if index == var)
+            || !self.range_built_lists.get(bound).is_some_and(|lists| lists.contains(dst))
+            || !self.range_value_lists.get(bound).is_some_and(|lists| lists.contains(src))
+        {
+            return;
+        }
+        self.range_value_lists.entry(bound.clone()).or_default().insert(dst.clone());
     }
 
     pub(super) fn counted_range_built_pairs(
@@ -505,7 +627,9 @@ impl<'types> Codegen<'types> {
         let Expr::Var(index) = lhs.as_ref() else {
             return Vec::new();
         };
-        if !self.known_non_negative_vars.contains(index) {
+        if !self.known_non_negative_vars.contains(index)
+            && !self.range_value_vars.contains_key(index)
+        {
             return Vec::new();
         }
         let is_length_call = |name: &str| {
@@ -521,15 +645,17 @@ impl<'types> Codegen<'types> {
                 let Expr::Var(list) = &args[0] else { unreachable!() };
                 vec![list.clone()]
             }
-            Expr::Var(bound) => known_length_vars
-                .get(bound)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
+            Expr::Var(bound) => {
+                let mut roots = known_length_vars.get(bound).cloned().unwrap_or_default();
+                if let Some((domain, root)) = self.range_value_vars.get(bound)
+                    && self.range_built_lists.get(domain).is_some_and(|built| built.contains(root))
+                {
+                    roots.insert(root.clone());
+                }
+                roots.into_iter().collect()
+            }
             _ => Vec::new(),
         };
-
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
         let mut pairs = Vec::new();

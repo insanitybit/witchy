@@ -177,6 +177,7 @@ impl<'types> Codegen<'types> {
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
                 Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
+                    self.update_range_value_binding(name, value);
                     let preserves_static_length = matches!(stmt,
                         Stmt::Assign { .. }
                             if matches!(analysis::self_inplace_op(name, value),
@@ -248,6 +249,7 @@ impl<'types> Codegen<'types> {
                     }
                 }
                 Stmt::Expr(value) => {
+                    self.update_range_value_expression(value);
                     if let Some(root) = analysis::direct_inplace_root(value)
                         && !matches!(analysis::self_inplace_op(root, value),
                             Some(analysis::InPlaceOp::SetAt(_, _)))
@@ -2411,6 +2413,7 @@ impl<'types> Codegen<'types> {
             if i > 0 {
                 self.note_completed_range_builder(&block.stmts[i - 1], stmt);
             }
+            self.note_completed_range_value_copy(stmt);
         }
         // A fallthrough block always leaves one value: the tail expression, or
         // `i32.const 0`. A terminal `return` needs no synthetic value; adding an

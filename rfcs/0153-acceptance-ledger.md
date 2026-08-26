@@ -132,6 +132,42 @@ has 10,000,000 cursorized accesses. This repair/attribution checkpoint does
 not close the complete deoptimization census, the promotion matrix, or the
 Go-parity criteria.
 
+### Range-value regression recovery checkpoint (2026-08-26)
+
+`c2f993655` correctly removed an unsound proof that treated an arbitrary
+`list.at` result as the source list's length; it consequently removed the
+second inward cursor in fannkuch. The replacement records a strictly separate
+value-domain fact only for a list built by exact `0..<n` pushes, preserves it
+only through same-domain writes and a whole exact-range copy, and carries a
+loaded scalar domain through a plain alias. Unknown writes, arithmetic
+rebinding, and root/bound invalidation all drop the fact.
+
+The local mechanism artifact
+`benchmarks/.build/rfc0153-fannkuch-range-domain-20260826-221911` compares
+master binary `bd8c6b55d383ac0d30281119cea7a7a30c6dab77d3162fcbe5859c5218f0faa4`
+to candidate `03bc2f251ba7e5cac931f080127cf4141e86892420374a39afdfff13baef9f17`.
+It has two warmups, twelve counterbalanced pairs, three byte-identical counter
+payloads, and matching output hashes for both workloads. This is retained
+mechanism evidence, not the required all-workload promotion artifact.
+
+| Workload | Control median | Candidate median | Ratio | Deterministic counter result |
+|---|---:|---:|---:|---|
+| `fannkuch` | 1428.300 ms | 1036.105 ms | 0.7254x | checked loads and stores each fall by 57,996,463; cursorized accesses rise by 115,992,926 |
+| `list_index` | 7.036 ms | 6.998 ms | 0.9946x | all seven recorded sequence counters are unchanged |
+
+The focused codegen fixture executes optimized and fully deoptimized forms of
+the copied-domain paired cursor and asserts four fewer `list_at` calls. The
+existing `[99]` arbitrary-element fixture continues to take the observable
+`list_at` trap in both modes. Queue and broad-gate evidence remain pending.
+
+The first queue attempt also exposed a deoptimization-performance regression:
+the candidate's async differential fuzz timed out at 83.48 seconds while an
+exact parent control passed in 48.41 seconds. The cause was value-domain
+bookkeeping running even with `OptSet::none()`. The repaired implementation
+makes those fact producers a no-op unless `bounds-elide` is enabled; the exact
+candidate rerun then passed in 52.34 seconds. This establishes the repair's
+fully-deoptimized behavior, but does not replace required queue evidence.
+
 The current local fast artifact is
 `benchmarks/.build/results-fast.json`
 (`sha256:044023a887764d65c6cbc261432dc61ca896f03a92538b7330337ffef8214ae9`).

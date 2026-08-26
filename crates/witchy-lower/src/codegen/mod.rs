@@ -858,6 +858,8 @@ struct SavedScope {
     linear_build_plans: HashMap<String, LinearBuildPlan>,
     linear_build_epoch: u32,
     range_built_lists: HashMap<String, HashSet<String>>,
+    range_value_lists: HashMap<String, HashSet<String>>,
+    range_value_vars: HashMap<String, (String, String)>,
     /// Path-sensitive facts for guarded loops. The expression is retained as
     /// the key because lowering clones AST nodes before consuming it; structural
     /// equality survives that boundary whereas pointer identity does not.
@@ -1021,6 +1023,12 @@ struct Codegen<'types> {
     /// length is `max(bound, 0)`, which is sufficient to prove a later
     /// exclusive `0..<bound` indexed loop without claiming `bound >= 0`.
     range_built_lists: HashMap<String, HashSet<String>>,
+    /// Lists whose elements are proven to be from an exact `0..<bound` range.
+    /// This is deliberately distinct from the list-length fact.
+    range_value_lists: HashMap<String, HashSet<String>>,
+    /// Scalar values loaded from an exact range-value list, keyed by the
+    /// scalar and retaining both its bound and source root.
+    range_value_vars: HashMap<String, (String, String)>,
     guarded_range_pairs: Vec<(Expr, Vec<(String, String)>)>,
     /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
@@ -1691,6 +1699,8 @@ impl<'types> Codegen<'types> {
             known_length_vars: HashMap::new(),
             known_static_list_lengths: HashMap::new(),
             range_built_lists: HashMap::new(),
+            range_value_lists: HashMap::new(),
+            range_value_vars: HashMap::new(),
             guarded_range_pairs: Vec::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
@@ -5089,6 +5099,8 @@ impl<'types> Codegen<'types> {
     /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
         self.range_built_lists.clear();
+        self.range_value_lists.clear();
+        self.range_value_vars.clear();
         self.guarded_range_pairs = indexed_kernels::guarded_range_built_loop_pairs(body);
         // Literal-size facts are local-variable facts, never module facts.
         // A code generator is reused across functions (and generated async
@@ -10065,6 +10077,8 @@ impl<'types> Codegen<'types> {
             linear_build_plans: std::mem::take(&mut self.linear_build_plans),
             linear_build_epoch: self.linear_build_epoch,
             range_built_lists: std::mem::take(&mut self.range_built_lists),
+            range_value_lists: std::mem::take(&mut self.range_value_lists),
+            range_value_vars: std::mem::take(&mut self.range_value_vars),
             guarded_range_pairs: std::mem::take(&mut self.guarded_range_pairs),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
@@ -10128,6 +10142,8 @@ impl<'types> Codegen<'types> {
         self.linear_build_plans = s.linear_build_plans;
         self.linear_build_epoch = s.linear_build_epoch;
         self.range_built_lists = s.range_built_lists;
+        self.range_value_lists = s.range_value_lists;
+        self.range_value_vars = s.range_value_vars;
         self.guarded_range_pairs = s.guarded_range_pairs;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;

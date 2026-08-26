@@ -4494,6 +4494,84 @@ fn main() -> Int:
     }
 
     #[test]
+    fn exact_range_value_domain_elides_paired_data_derived_cursors() {
+        // This is the sound form of the formerly-unsound `xs[0]` shortcut:
+        // `source` is exactly 0..<n, copied into an equally long destination,
+        // and all later writes are swaps within that same domain. Thus `hi`
+        // is nonnegative and strictly below `n`; together with `lo < hi`, both
+        // accesses are in bounds. The poison test above remains the non-domain
+        // counterexample and must retain its checked helper.
+        let src = r#"
+mode opt
+import list
+
+fn range_value(let n: Int) -> Int:
+    var source = []
+    for i in 0..n:
+        list.push(source, i)
+    var copied = []
+    for i in 0..n:
+        list.push(copied, 0)
+    for i in 0..n:
+        copied[i] = source[i]
+    var lo = 0
+    let k = copied[7]
+    var hi = k
+    while lo < hi:
+        let a = copied[lo]
+        let b = copied[hi]
+        copied[lo] = b
+        copied[hi] = a
+        lo = lo + 1
+        hi = hi - 1
+    copied[0] + copied[7]
+
+fn main() -> Int:
+    range_value(8)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let none = witchy_syntax::opt::OptSet::none();
+        let module = link_list_app(src);
+        assert_eq!(run_int_module_with_opt(&module, default), 7, "optimized result");
+        assert_eq!(run_int_module_with_opt(&module, none), 7, "deoptimized result");
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let on = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower exact value-domain pair"));
+        witchy_syntax::opt::set_for_tests(Some(none));
+        let off = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower exact value-domain pair deopt"));
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(
+            on.matches("call $list_at").count() + 4 <= off.matches("call $list_at").count(),
+            "the paired proof removes both cursor loads and stores:\non={on}\noff={off}",
+        );
+    }
+
+    #[test]
+    fn out_of_domain_write_drops_exact_range_value_proof() {
+        let src = r#"
+mode opt
+import list
+
+fn poisoned(let n: Int) -> Int:
+    var xs = []
+    for i in 0..n:
+        list.push(xs, i)
+    xs[0] = 99
+    let upper = xs[0]
+    var i = 0
+    while i < upper:
+        xs[i] = 0
+        i = i + 1
+    0
+
+fn main() -> Int:
+    poisoned(8)
+"#;
+        let module = link_list_app(src);
+        let trap = compiled_module_trap_with_opt(&module, witchy_syntax::opt::OptSet::default_set());
+        assert!(trap.contains("list_at"), "poisoned range domain retains its bounds trap: {trap}");
+    }
+
+    #[test]
     fn list_capacity_is_not_a_sequence_length_fact() {
         // Capacity reserves storage, but it does not create elements.  A loop
         // bounded by that reservation must retain the same out-of-bounds trap
