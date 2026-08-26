@@ -386,6 +386,16 @@ mod tests {
         result
     }
 
+    fn run_int_module_with_opt(
+        module: &witchy_syntax::ast::Module,
+        opt: witchy_syntax::opt::OptSet,
+    ) -> i64 {
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let result = run_int_module(module);
+        witchy_syntax::opt::set_for_tests(None);
+        result
+    }
+
     fn run_int_module(module: &witchy_syntax::ast::Module) -> i64 {
         let bytes = compile_module_binary(module)
             .expect_lowered("the binary path lowers this program");
@@ -4905,6 +4915,149 @@ fn main() -> Int:
     }
 
     #[test]
+    fn rfc0153_full_deoptimization_matrix_preserves_results_and_traps() {
+        // Criterion 9 is intentionally a whole-pipeline check.  The family
+        // tests above isolate bounds-elision; this matrix also disables every
+        // other optimizer so no RFC-0153 proof leaks into the semantic oracle.
+        let optimized = witchy_syntax::opt::OptSet::default_set();
+        let deoptimized = witchy_syntax::opt::OptSet::none();
+        let result_cases = [
+            ("paired binary cursors", r#"
+fn main() -> Int:
+    var xs = [2, 3, 5, 7, 11]
+    var lo = 0
+    var hi = list.length(xs) - 1
+    while lo < hi:
+        let left = xs[lo]
+        xs[lo] = xs[hi]
+        xs[hi] = left
+        lo = lo + 1
+        hi = hi - 1
+    xs[0] * 100 + xs[4]
+"#, 1102),
+            ("nested matrix cursor", r#"
+fn main() -> Int:
+    let row = [2, 3, 5]
+    var total = 0
+    for row_index in 0..2:
+        for column in 0..list.length(row):
+            total = total + row[column] + row_index
+    total
+"#, 23),
+            ("masked histogram", r#"
+fn main() -> Int:
+    var bins = [0, 0, 0, 0]
+    let raw = -5
+    bins[raw & 3] = 7
+    bins[raw & 3]
+"#, 7),
+            ("bounded serializer", r#"
+fn main() -> Int:
+    var output = [0, 0, 0, 0]
+    var checksum = 0
+    for cursor in 0..list.length(output):
+        output[cursor] = 65 + cursor
+        checksum = checksum + output[cursor]
+    checksum
+"#, 266),
+            ("numeric wrap and early break", r#"
+fn main() -> Int:
+    var parity = 0
+    for i in 0..8:
+        parity = parity + i % 2
+    var steps = 0
+    var cursor = 0
+    while cursor < 8:
+        if cursor == 3:
+            break
+        steps = steps + 1
+        cursor = cursor + 1
+    let wrapped = 9223372036854775807 + 1
+    if wrapped < 0: parity + steps else: 0
+"#, 7),
+            ("same-address forwarding", r#"
+fn main() -> Int:
+    var values = [3, 2]
+    var i = 0
+    var total = 0
+    while i < 2:
+        values[i] = values[i] - 1
+        total = total + values[i]
+        i = i + 1
+    total
+"#, 3),
+        ];
+        for (label, source, expected) in result_cases {
+            assert_eq!(run_int_with_opt(source, optimized), expected, "optimized {label}");
+            assert_eq!(run_int_with_opt(source, deoptimized), expected, "fully deoptimized {label}");
+        }
+
+        let byte_result = link_bytes_app(r#"
+import bytes
+fn main() -> Int:
+    let input = bytes.from_string("ABC")
+    var total = 0
+    for i in 0..bytes.length(input):
+        total = total + bytes.at(input, i)
+    total
+"#);
+        assert_eq!(run_int_module_with_opt(&byte_result, optimized), 198, "optimized byte parser");
+        assert_eq!(run_int_module_with_opt(&byte_result, deoptimized), 198, "fully deoptimized byte parser");
+
+        let trap_cases = [
+            ("paired binary cursor", r#"
+fn main() -> Int:
+    let xs = [2, 3]
+    let hi = list.length(xs)
+    xs[hi]
+"#),
+            ("matrix width", r#"
+fn main() -> Int:
+    let row = [7]
+    var total = 0
+    for column in 0..2:
+        total = total + row[column]
+    total
+"#),
+            ("raw histogram index", r#"
+fn main() -> Int:
+    let bins = [0, 0, 0, 0]
+    bins[-1]
+"#),
+            ("undersized serializer", r#"
+fn main() -> Int:
+    var output = [0]
+    for cursor in 0..2:
+        output[cursor] = cursor
+    0
+"#),
+            ("forwarding store", r#"
+fn main() -> Int:
+    var values = [3]
+    values[1] = 0
+    values[0]
+"#),
+        ];
+        for (label, source) in trap_cases {
+            for (mode, opt) in [("optimized", optimized), ("fully deoptimized", deoptimized)] {
+                let trap = compiled_trap(source, opt);
+                assert!(trap.contains("list_at"), "{mode} {label} retains its list trap: {trap}");
+            }
+        }
+
+        let byte_trap = link_bytes_app(r#"
+import bytes
+fn main() -> Int:
+    let input = bytes.from_string("A")
+    bytes.at(input, 1)
+"#);
+        for (mode, opt) in [("optimized", optimized), ("fully deoptimized", deoptimized)] {
+            let trap = compiled_module_trap_with_opt(&byte_trap, opt);
+            assert!(trap.contains("!main"), "{mode} byte parser retains its trap: {trap}");
+        }
+    }
+
+    #[test]
     fn brainfuck_dynamic_tape_pointer_retains_byte_bounds_guard() {
         // The repository's Brainfuck interpreter is a real byte consumer, but
         // its tape pointer is controlled by the program being interpreted. It
@@ -5018,6 +5171,16 @@ fn main() -> Int:
             .call(&mut store, ())
             .expect_err("fixture must trap")
             .to_string()
+    }
+
+    fn compiled_module_trap_with_opt(
+        module: &witchy_syntax::ast::Module,
+        opt: witchy_syntax::opt::OptSet,
+    ) -> String {
+        witchy_syntax::opt::set_for_tests(Some(opt));
+        let result = compiled_module_trap(module);
+        witchy_syntax::opt::set_for_tests(None);
+        result
     }
 
     #[test]
