@@ -4786,11 +4786,17 @@ impl<'types> Codegen<'types> {
         }
         // Shadow `${v}__cap` ownership-token slots for the in-place accumulators.
         // The own-ABI parameter's token is a param (above), not a local.
-        let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
-        cap_vars.sort();
+        // A lowered structural update can still carry a zero-capacity fallback
+        // after `inplace` is disabled.  Declare cap slots for every function
+        // binding, not just the currently proven accumulators: the WIR local
+        // pruner removes unused slots, and a surviving forced-copy slot starts
+        // at Wasm's required zero token.
+        let mut cap_vars: std::collections::BTreeSet<String> =
+            self.inplace_push.iter().cloned().collect();
+        cap_vars.extend(lets.iter().cloned());
         for v in cap_vars {
             if Some(v.as_str()) != self.cur_fn_own_param.as_deref()
-                && !self.cur_fn_var_cap_params.contains(v)
+                && !self.cur_fn_var_cap_params.contains(&v)
             {
                 locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
             }

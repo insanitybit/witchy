@@ -5403,6 +5403,23 @@ fn main() -> Int:
     }
 
     #[test]
+    fn forced_copy_dict_update_does_not_reference_an_ownership_token() {
+        let default = witchy_syntax::opt::OptSet::default_set();
+        witchy_syntax::opt::set_for_tests(Some(default.without(witchy_syntax::opt::Opt::InPlace)));
+        let app = parse_module(include_str!("../../../benchmarks/knucleotide.witchy"))
+            .expect("parse forced-copy knucleotide fixture");
+        let checked = witchy_types::pipeline::link_checked(
+            vec![("app".to_string(), app)],
+            "app",
+            no_comptime_expansion,
+        )
+        .expect("link forced-copy knucleotide fixture");
+        let result = compile_checked_module_binary(&checked);
+        witchy_syntax::opt::set_for_tests(None);
+        result.expect_lowered("forced-copy knucleotide lowers without a missing cap local");
+    }
+
+    #[test]
     fn sequence_plan_stores_proven_scalars_without_shared_scratch() {
         let source = r#"
 fn main() -> Int:
