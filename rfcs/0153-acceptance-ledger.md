@@ -66,6 +66,26 @@ and list_index medians of 5.24 ms and 2.69 ms, respectively. This proves the
 two retained rows are materially RFC-0153-owned; it does not establish their
 remaining Go-parity requirement.
 
+### Post-forward mechanism checkpoint (2026-08-25)
+
+`/tmp/rfc0153-forward-refresh-fd542b3e6` is a two-warmup, twelve-pair
+counterbalanced matrix between the pre-forward control binary
+(`sha256:92fc3e7481b3c23f2f62b3bcef812bf7645143afe796c0ba01edf052f45b3e41`)
+and current master `fd542b3e6` (`sha256:d45a956c2953aa87fa7ac1e0734c699ce0e6905df7ca18eb54ee510c0fb66947`).
+The artifact records identical output hashes and three exact counter payloads
+for both retained workloads.  The current binary reports 6,235,300
+`sequence_forwarded_loads` in `fannkuch`; the control reports zero.
+
+| Workload | Control median | Forwarding median | Ratio | Interpretation |
+|---|---:|---:|---:|---|
+| `fannkuch` | 160.199 ms | 158.053 ms | 0.9866x | 1.34% improvement; retained mechanism evidence only |
+| `list_index` | 2.664 ms | 2.642 ms | 0.9916x | 0.84% improvement; no promotion credit |
+
+This confirms that immediate checked-store forwarding is live in the current
+binary and preserves results. It does **not** meet the 10% real-workload row
+threshold or the target Go-parity requirement, so it cannot close Track 6C or
+6E.
+
 The current local fast artifact is
 `benchmarks/.build/results-fast.json`
 (`sha256:044023a887764d65c6cbc261432dc61ca896f03a92538b7330337ffef8214ae9`).
