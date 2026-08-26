@@ -15,7 +15,9 @@ pub(crate) fn arm(
         return Ok(());
     }
     materialize_write_targets(caps)?;
-    let report = witchy_confinement::apply(&caps.confinement_policy(), mode)
+    let mut policy = caps.confinement_policy();
+    add_runtime_cache_rule(&mut policy);
+    let report = witchy_confinement::apply(&policy, mode)
         .map_err(|error| error.to_string())?;
     for layer in report.layers {
         let status = match layer.status {
@@ -30,6 +32,45 @@ pub(crate) fn arm(
         );
     }
     Ok(())
+}
+
+/// The runtime's own compilation cache is written AFTER the fence goes up:
+/// `arm` runs before `Runtime::batch`, and Wasmtime populates
+/// `$XDG_CACHE_HOME/witchy` while compiling the guest. That directory is host
+/// infrastructure rather than guest authority, so it is added here instead of
+/// in `confinement_policy()` — the same separation `linux.rs` uses for the
+/// dynamic loader's library roots, and for the same reason: the derived policy
+/// stays a deterministic function of the grants.
+///
+/// This is a real widening, and it is bounded deliberately: read+write on one
+/// cache directory, no execute. The cache is not a security boundary — every
+/// hit re-enters Wasmtime through `Module::new` validation — so a payload that
+/// can write there can waste work, not gain authority.
+///
+/// Found on macOS, the first platform whose provider actually enforces this
+/// path. Landlock reports unavailable in the containerized CI that otherwise
+/// covers it, so the gap was invisible on Linux rather than absent there.
+fn add_runtime_cache_rule(policy: &mut witchy_confinement::Policy) {
+    let Some(base) = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+    else {
+        return;
+    };
+    let dir = base.join("witchy");
+    // The rule must anchor on an existing path for the Landlock provider, and
+    // creating it here is what the runtime would have done a moment later.
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    policy.add_fs_rule(
+        dir,
+        witchy_confinement::FsScope::Tree,
+        witchy_confinement::FsAccess::new(true, true, false),
+    );
 }
 
 /// A `File[Write]` grant may name a file that does not exist yet — the program
