@@ -6353,7 +6353,8 @@ fn assemble_wir_module_with_structs_mode(
             // Keeping this extraction adjacent to the completed WIR module is
             // the future ready executor's only source for exact ordinary state
             // prefixes; it does not alter function selection or runtime calls.
-            let _ready_state_wir = super::ready_executor::extract(&suspension_carrier, &wir_module);
+            let ready_state_wir = super::ready_executor::extract(&suspension_carrier, &wir_module);
+            let _typed_storage_domains = super::ready_executor::storage_domains(&ready_state_wir);
             if let Ok(plan) = suspension_carrier.scalar_executor_plan() {
                 super::scalar_executor::synthesize(&plan, &mut wir_module);
             }

@@ -56,6 +56,20 @@ pub(super) struct ReadyStorageEndpoint {
     pub ownership: ChannelOwnershipEnvelope,
 }
 
+/// One compiler-owned typed-ring allocation edge. The key is a lowered
+/// suspension boundary, never a source name: an emitter creates storage when
+/// this exact open transition runs, then uses the runtime channel id carried by
+/// the ordinary `(Sender, Receiver)` result to address that domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReadyTypedStorageDomain {
+    pub opening_state: usize,
+    pub opening_path_ordinal: usize,
+    pub opening_transition_ordinal: usize,
+    pub resume_state: usize,
+    pub payload_layout: ChannelPayloadLayout,
+    pub ownership: ChannelOwnershipEnvelope,
+}
+
 /// Extract WIR bodies only for individually formed, unguarded ready regions.
 ///
 /// Formation has already rejected boxed state, dynamic endpoint/payload, and
@@ -89,6 +103,43 @@ pub(super) fn extract(
             })
         })
         .collect()
+}
+
+/// Freeze typed channel allocation edges after WIR capture. The later
+/// scheduler-context emitter consumes this descriptor alongside the captured
+/// terminal, so it can install typed storage and still execute that terminal
+/// exactly once on the first blocking operation.
+pub(super) fn storage_domains(states: &[ReadyStateWir]) -> Vec<ReadyTypedStorageDomain> {
+    let mut domains = states
+        .iter()
+        .flat_map(|state| {
+            state.operations.iter().filter_map(move |operation| {
+                let ReadyChannelOperationKind::Open {
+                    resume_target,
+                    payload_layout,
+                    ownership,
+                } = &operation.kind else {
+                    return None;
+                };
+                Some(ReadyTypedStorageDomain {
+                    opening_state: state.state,
+                    opening_path_ordinal: state.path_ordinal,
+                    opening_transition_ordinal: operation.transition_ordinal,
+                    resume_state: *resume_target,
+                    payload_layout: payload_layout.clone(),
+                    ownership: *ownership,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    domains.sort_by_key(|domain| {
+        (
+            domain.opening_state,
+            domain.opening_path_ordinal,
+            domain.opening_transition_ordinal,
+        )
+    });
+    domains
 }
 
 /// Bind source-level operation descriptions to their physical carrier slots
@@ -339,5 +390,42 @@ mod tests {
             &[operation(0, ReadyChannelOperationKind::Receive(receive))],
         )
         .is_none());
+    }
+
+    #[test]
+    fn storage_domains_keep_open_identity_and_typed_layout() {
+        let states = vec![ReadyStateWir {
+            state: 4,
+            path_ordinal: 2,
+            function: "open".into(),
+            prefix: Vec::new(),
+            terminal: WirNode::Push(WirExpr::ConstI32(0)),
+            operations: vec![operation(
+                3,
+                ReadyChannelOperationKind::Open {
+                    resume_target: 7,
+                    payload_layout: ChannelPayloadLayout::Packed(vec![
+                        CarrierLane::I64,
+                        CarrierLane::I64,
+                    ]),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                },
+            )],
+            storage_uses: Some(Vec::new()),
+        }];
+        assert_eq!(
+            storage_domains(&states),
+            vec![ReadyTypedStorageDomain {
+                opening_state: 4,
+                opening_path_ordinal: 2,
+                opening_transition_ordinal: 3,
+                resume_state: 7,
+                payload_layout: ChannelPayloadLayout::Packed(vec![
+                    CarrierLane::I64,
+                    CarrierLane::I64,
+                ]),
+                ownership: ChannelOwnershipEnvelope::InlineValue,
+            }],
+        );
     }
 }
