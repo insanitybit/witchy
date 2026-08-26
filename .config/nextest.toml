@@ -29,6 +29,22 @@ platform = "cfg(target_os = \"macos\")"
 list-wrapper = "bounded-list"
 
 [profile.default]
+# One retry, profile-wide. Restored after the workspace-test budget was raised
+# to 1800s: the first attempt at this was backed out because retries lengthen
+# the stage and the old 600s budget -- which already sat below the stage's own
+# p90 -- turned red gates into timed-out ones. With the budget above the
+# distribution it bounds, retries can do their job.
+#
+# Why profile-wide rather than per-test: every gate today died on a DIFFERENT
+# test sitting at 40-80% of its budget. Naming them one at a time is losing --
+# four consecutive RFC-0158 gates, four different unrelated flakes. A retry
+# absorbs the whole class. `--max-fail=1:immediate` bounds the added cost to a
+# single extra execution of the first failing test.
+#
+# A test that fails then passes is reported FLAKY and journaled by the
+# coordinator (flaky_count/flaky), so this cannot silently hide a rotting
+# test -- it makes flakiness countable rather than absorbing it.
+retries = 1
 # Surface every failure in one run rather than stopping at the first.
 fail-fast = false
 # Show a failing test's output as it fails, then recap all failures at the end.

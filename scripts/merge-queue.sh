@@ -35,11 +35,15 @@
 # progress for MERGE_QUEUE_BUSY_SILENCE_MAX, the process group is killed. An
 # optional MERGE_QUEUE_GATE_TIMEOUT adds an emergency whole-gate ceiling; it is
 # disabled by default because a progressing cold gate is not a semantic red.
-# Separately, MERGE_QUEUE_WORKSPACE_TEST_BUDGET (default 600s) is a hard
+# Separately, MERGE_QUEUE_WORKSPACE_TEST_BUDGET (default 1800s) is a hard
 # wall-clock on the workspace-test stage starting at `==> [N] tests`. PASS
 # lines and heartbeat pulses do not reset it: a starved-but-chatty nextest
 # that would otherwise crawl for an hour is a timeout, not a green. 0 disables
-# the budget. Timed-out candidates are journaled, the lock is released, and
+# the budget. Raised 600s -> 1800s on 2026-08-26: the tests stage measures
+# p50 226s / p90 694s over 1,051 gates, so a 600s ceiling sat BELOW the p90 of
+# the very thing it bounds and killed roughly a tenth of legitimate gates --
+# four branches hit it in one six-hour window. 1800s still catches the
+# hour-long crawl this exists for. Timed-out candidates are journaled, the lock is released, and
 # the queue moves on. Logs are always preserved under state/merge-queue/logs/.
 # The bounded nextest list wrapper also records genuine discovery-wave progress
 # in a coordinator-owned sidecar; synthetic human heartbeats do not count as
@@ -133,7 +137,7 @@ gate_cmd_is_default=1
 coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-0}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
-workspace_test_budget="${MERGE_QUEUE_WORKSPACE_TEST_BUDGET:-600}"
+workspace_test_budget="${MERGE_QUEUE_WORKSPACE_TEST_BUDGET:-1800}"
 monitor_interval="${MERGE_QUEUE_MONITOR_INTERVAL:-10}"
 retry_interval="${MERGE_QUEUE_RETRY_INTERVAL:-5}"
 poll_interval="${MERGE_QUEUE_POLL_INTERVAL:-15}"

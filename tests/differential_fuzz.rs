@@ -818,7 +818,14 @@ fn run_sanitizer_corpus(config: SanitizerCorpus) {
 /// The per-program wall-clock budget (RFC-0058 §3). A generated program that runs longer
 /// than this is a hang (or a pathological blow-up) — a bug, never silently "agree".
 fn fuzz_timeout() -> std::time::Duration {
-    std::time::Duration::from_secs(env_usize("WITCHY_FUZZ_TIMEOUT_SECS", 60) as u64)
+    // 180s, not 60s. This budget exists to catch a generated program that HANGS
+    // -- and a hang is infinite, so the exact ceiling does not weaken the check.
+    // What 60s did do was make the bound load-sensitive: measured across 2,014
+    // gate logs, differential_fuzz_async_state_machines runs p50 37s / max 117s
+    // and passes alone in 70s on an idle box, so a contended gate blows a 60s
+    // per-seed budget on a program that is merely slow. It red RFC-0158's gate
+    // at 4.8 load per core.
+    std::time::Duration::from_secs(env_usize("WITCHY_FUZZ_TIMEOUT_SECS", 180) as u64)
 }
 
 /// Shrink probes inherit a SMALLER budget (RFC-0058 §3) — the minimizer runs many probes
