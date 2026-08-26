@@ -70,6 +70,29 @@ fn selected(paths: &[&str]) -> Vec<String> {
         .collect()
 }
 
+fn route_focused(paths: &[&str]) -> String {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("--focused")
+        .args(paths)
+        .output()
+        .expect("run test-for-paths.sh --focused");
+    assert!(
+        output.status.success(),
+        "focused test router failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("router output is UTF-8")
+}
+
+fn selected_focused(paths: &[&str]) -> Vec<String> {
+    route_focused(paths)
+        .lines()
+        .filter_map(|line| line.strip_prefix("  ").map(str::to_owned))
+        .collect()
+}
+
 fn gate_nextest(paths: &[&str]) -> String {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
     let output = Command::new("bash")
@@ -564,4 +587,16 @@ fn unwrapped_browser_module_still_gets_javascript_syntax_checks() {
     let output = route(&["web/witchy-runtime/hex-strict.test.mjs"]);
     assert!(output.contains("node --check"), "{output}");
     assert!(!output.contains("prose-only"), "{output}");
+}
+
+#[test]
+fn focused_mode_retains_crate_nextest_checks() {
+    let commands = selected_focused(&["crates/witchy-syntax/src/parser.rs"]);
+    assert_eq!(
+        commands,
+        [
+            "cargo nextest run -p witchy-syntax",
+            "cargo nextest run -E 'test(/^example_tests::/)'",
+        ]
+    );
 }

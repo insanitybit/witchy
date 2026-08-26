@@ -5,6 +5,8 @@
 #   ./scripts/test-for-paths.sh                    # diff of HEAD vs master
 #   ./scripts/test-for-paths.sh <file>...          # explicit paths
 #   ./scripts/test-for-paths.sh --run              # print AND run the commands
+#   ./scripts/test-for-paths.sh --focused          # focused crate-only checks (no check.sh --fast fallback)
+#   ./scripts/test-for-paths.sh --focused --run    # run focused crate-only checks
 #   ./scripts/test-for-paths.sh --gate-nextest     # serialized-gate selection:
 #                                                 # print WORKSPACE, or a -p/--test
 #                                                 # line plus an optional inclusion
@@ -17,13 +19,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 run=0
+focused=0
 gate_nextest=0
 paths=()
 for arg in "$@"; do
     case "$arg" in
         --run) run=1 ;;
+        --focused) focused=1 ;;
         --gate-nextest) gate_nextest=1 ;;
-        -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) paths+=("$arg") ;;
     esac
 done
@@ -442,7 +446,7 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$any_rust" -eq 1 ]; then
+if [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
     remaining=()
     for c in ${cmds[0]+"${cmds[@]}"}; do
         case "$c" in

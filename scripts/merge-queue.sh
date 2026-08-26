@@ -891,7 +891,7 @@ ensure_gate_worktree() {
     if [ ! -d "$gate_wt" ]; then
         note "creating gate worktree at $gate_wt"
         git -C "$root" worktree add --detach "$gate_wt" master 1>&2
-        "$root/scripts/worktree-warm.sh" "$gate_wt" 1>&2 || true
+        [ -f "$root/scripts/worktree-warm.sh" ] && "$root/scripts/worktree-warm.sh" "$gate_wt" 1>&2 || true
     fi
     # Recover from a previous run that died mid-rebase.
     git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
