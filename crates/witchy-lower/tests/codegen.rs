@@ -262,6 +262,16 @@ mod tests {
         )
     }
 
+    fn link_bundled_app(source: &str) -> witchy_syntax::ast::Module {
+        let app = parse_module(source).expect("parse bundled consumer app");
+        witchy_syntax::linker::link(
+            vec![("app".to_string(), app)],
+            "app",
+            no_comptime_expansion,
+        )
+        .expect("link bundled consumer app")
+    }
+
     #[test]
     fn public_lowering_outcome_distinguishes_success_and_rejection() {
         let lowered = parse_module("fn main() -> Int:\n    1\n").expect("parse lowered module");
@@ -5339,6 +5349,77 @@ fn main() -> Int:
             run.contains("call $__witchy_abort"),
             "the dynamic tape pointer keeps its byte bounds guard:\n{run}",
         );
+    }
+
+    #[test]
+    fn cbor_fixed_width_reader_retains_caller_dependent_byte_guard() {
+        let default = witchy_syntax::opt::OptSet::default_set();
+
+        // CBOR calls `need` before its private fixed-width reader, but that
+        // result is not an interprocedural length proof. Its `start + k`
+        // accesses must therefore retain their byte trap rather than borrowing
+        // a proof from the caller.
+        let cbor = link_bundled_app(r#"
+import bytes
+import cbor
+
+fn main() -> Int:
+    let input = bytes.from_string("A")
+    match cbor.decode(input):
+        Ok(_) -> 1
+        Err(_) -> 0
+"#);
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let cbor_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&cbor).expect_lowered("lower bundled CBOR consumer"),
+        );
+        let read_uint = cbor_wat
+            .split("(func $cbor.read_uint")
+            .nth(1)
+            .expect("CBOR fixed-width reader WAT");
+        let read_uint = read_uint.split("(func $").next().expect("CBOR reader body");
+        assert!(
+            read_uint.contains("call $__witchy_abort"),
+            "CBOR's caller-dependent byte range must remain checked:\n{read_uint}",
+        );
+
+        witchy_syntax::opt::set_for_tests(None);
+    }
+
+    #[test]
+    fn regex_span_decoder_uses_a_stable_byte_sequence_plan() {
+        let default = witchy_syntax::opt::OptSet::default_set();
+
+        // `find_all` decodes the native span stream with a local `i < len`
+        // induction loop. Unlike the Brainfuck program counter, this cursor is
+        // never rebound by a call, so the byte read is eligible for the
+        // sequence plan.
+        let regex = link_bundled_app(r#"
+import list
+import regex
+
+fn main() -> Int:
+    list.length(regex.find_all("a", "banana"))
+"#);
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let regex_wat = witchy_wir::wir::to_wat(
+            &assemble_wir_module(&regex).expect_lowered("lower bundled regex consumer"),
+        );
+        let find_all = regex_wat
+            .split("(func $regex.find_all")
+            .nth(1)
+            .expect("regex span decoder WAT");
+        let find_all = find_all.split("(func $").next().expect("regex decoder body");
+        assert!(
+            find_all.contains("i32.load8_u"),
+            "stable regex byte cursor should emit a direct byte load:\n{find_all}",
+        );
+        assert!(
+            !find_all.contains("call $__witchy_abort"),
+            "stable regex byte cursor should not retain a per-access trap:\n{find_all}",
+        );
+
+        witchy_syntax::opt::set_for_tests(None);
     }
 
     fn optimizer_policy_payloads(source: &str) -> Vec<Vec<u8>> {

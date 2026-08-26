@@ -37,7 +37,7 @@ Every artifact must carry the schema 1 build identity emitted by `bench.sh`.
 | 6A current-master attribution refresh | merged | full artifact `/tmp/rfc0153-promotion-87ccb7e/results-full.json` at `87ccb7e9c` | three identical counter payloads; macOS `samply` emitted zero samples and is unusable for function attribution | all 21 Witchy/Go output hashes match | `collatz`, `fannkuch`, `nsieve`, `list_index` | `perf/rfc0153-attribution-refresh` | `merged` @ `b248c60528a20a4331e137b61d162e39e57a539f` |
 | 6B scalar range/arithmetic closure | transferred | full 12-pair artifact shows `collatz` 1.666x Go | `all` and `none` emit identical collatz WAT; all sequence counters are zero | focused WIR effect-safety and arithmetic tests | `collatz` transfers to RFC-0146 Track 5 (small-leaf inlining/register SROA) | `perf/rfc0153-scalar-close` | no code change required; transfer evidence recorded below |
 | 6C sequence-plan closure | merged, residual open | full artifact plus `/tmp/rfc0153-bounds-lever-87ccb7e` lever bisection | exact counters: bounds-elide reduces fannkuch 254.2 ms to 165.9 ms and list_index 5.24 ms to 2.69 ms | byte range/while, list cursor, and Brainfuck fallback codegen tests | `fannkuch`, `list_index` remain owned; nsieve residual transfers to RFC-0146 Track 6 | `perf/rfc0153-sequence-close` | `merged` @ `4f3e516f349bc600fc6dd07befd0eee8d8d71130`, `baa611383`, `d94431080` |
-| 6D generalization and adversarial matrix | in progress | byte, paired binary, histogram, matrix, and fixed-output positive/near-miss fixtures | three identical byte/list stats payloads; WAT assertions cover byte, list, and Brainfuck fallback slices | fixture outputs/traps plus Glamour markdown and `std/cbor` WebAuthn backend parity; full `OptSet::none()` result/trap matrix | numeric boundary matrix and real-consumer mechanism attribution remain open; the full deoptimization census is covered by `rfc0153_full_deoptimization_matrix_preserves_results_and_traps` | `test/rfc0153-generalization-matrix` | partial checks merged @ `a4562063e`, `87ccb7e9c`; matrix/serializer extension merged @ `cd02dfd6919272d999852d564bebd45bf1100541` (gate 60s); this deoptimization extension is pending queue evidence |
+| 6D generalization and adversarial matrix | in progress | byte, paired binary, histogram, matrix, and fixed-output positive/near-miss fixtures | three identical byte/list stats payloads; WAT assertions cover byte, list, and real-consumer positive/fallback slices | fixture outputs/traps plus Glamour markdown and `std/cbor` WebAuthn backend parity; full `OptSet::none()` result/trap matrix | numeric boundary and real-consumer attribution extensions are pending queue evidence; the full deoptimization census is covered by `rfc0153_full_deoptimization_matrix_preserves_results_and_traps` | `test/rfc0153-generalization-matrix` | partial checks merged @ `a4562063e`, `87ccb7e9c`; matrix/serializer extension merged @ `cd02dfd6919272d999852d564bebd45bf1100541` (gate 60s); boundary and consumer extensions are pending queue evidence |
 | 6E integration and promotion closeout | blocked on 6A-6D | two warmups and twelve paired interleaved samples | Full stats, code-size, compiler-time, profile, and deoptimization matrix | Focused shards and serialized merge-queue gate | Every retained target <= 1.00x Go; protected rows within 5 percent | `integration/rfc0153-complete` | pending |
 
 ## Preparation checkpoint (2026-08-25)
@@ -261,6 +261,26 @@ indexed here, and `collatz` plus `nsieve` missed the required 1.00x threshold.
 1. **`examples/brainfuck/src/brainfuck.witchy`**: Loop tape traversal, jump matching, and bounds checking.
 2. **`projects/glamour/src/highlight.witchy`**: Character index scanning, token bounds, and slice construction.
 3. **`std/cbor.witchy`**: CBOR byte sequence decoding, strided offsets, and item extraction.
+
+### Real-consumer mechanism checkpoint (2026-08-26)
+
+Focused emitted-WAT attribution now exercises three unchanged repository
+consumers without treating semantic parity as a promotion claim:
+
+- `std/regex.witchy` `find_all` has a locally monotonic `i < len` byte cursor.
+  Its generated function contains a direct `i32.load8_u` and no
+  `__witchy_abort` call for that access.
+- `std/cbor.witchy` `read_uint` keeps `__witchy_abort`: callers establish a
+  range with `need`, but that result is not an interprocedural length proof for
+  the private reader's `start + k` accesses.
+- `examples/brainfuck/src/brainfuck.witchy` keeps the byte bounds abort for its
+  dynamic tape pointer. Its program counter is deliberately not classified as
+  canonical induction because bracket matching can rebind it through a call.
+
+`regex_span_decoder_uses_a_stable_byte_sequence_plan`,
+`cbor_fixed_width_reader_retains_caller_dependent_byte_guard`, and
+`brainfuck_dynamic_tape_pointer_retains_byte_bounds_guard` each pass. This is
+mechanism and safety evidence only; it records no timing promotion row.
 
 ## Workload Generalization Matrix (Required Families)
 
