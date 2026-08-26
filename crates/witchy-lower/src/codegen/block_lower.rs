@@ -282,7 +282,8 @@ impl<'types> Codegen<'types> {
             let forward_sequence_store = if let Stmt::Assign { name, value } = analyzed_stmt {
                 match crate::analysis::self_inplace_op(name, value) {
                     Some(crate::analysis::InPlaceOp::SetAt(index, _))
-                        if self.next_statement_reads_sequence_value(
+                        if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::InPlace)
+                            && self.next_statement_reads_sequence_value(
                             block.stmts.get(i + 1),
                             name,
                             index,

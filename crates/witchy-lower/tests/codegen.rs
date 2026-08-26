@@ -5365,7 +5365,13 @@ fn main() -> Int:
     update(0)
 "#;
         assert_eq!(run_int(source), 2, "forwarded checked store preserves its result");
-        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let default = witchy_syntax::opt::OptSet::default_set();
+        assert_eq!(
+            run_int_with_opt(source, default.without(witchy_syntax::opt::Opt::InPlace)),
+            2,
+            "forced-copy stores retain their ordinary rebind semantics",
+        );
+        let wat = optimized_wir_wat(source, default);
         let update = wat.split("(func $update").nth(1).expect("update WAT");
         let update = update.split("(func $").next().expect("update body");
         assert!(
@@ -5390,7 +5396,6 @@ fn update(index: Int) -> Int:
 fn main() -> Int:
     update(1)
 "#;
-        let default = witchy_syntax::opt::OptSet::default_set();
         let optimized_trap = compiled_trap(out_of_bounds, default);
         let deoptimized_trap = compiled_trap(out_of_bounds, default.without(witchy_syntax::opt::Opt::BoundsElide));
         assert!(optimized_trap.contains("list_at"), "optimized invalid store traps: {optimized_trap}");
