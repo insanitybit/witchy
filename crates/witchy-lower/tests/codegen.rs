@@ -2773,6 +2773,8 @@ fn main() -> Int:
     errors = errors + count_inclusive(3, 2) * count_inclusive(3, 2)
     errors = errors + (count_inclusive(3, 3) - 1) * (count_inclusive(3, 3) - 1)
     errors = errors + (count_inclusive(3, 6) - 4) * (count_inclusive(3, 6) - 4)
+    let minimum = -9223372036854775807 - 1
+    errors = errors + (count_inclusive(minimum, minimum + 2) - 3) * (count_inclusive(minimum, minimum + 2) - 3)
     errors = errors + (count_inclusive(9223372036854775805, 9223372036854775807) - 3) * (count_inclusive(9223372036854775805, 9223372036854775807) - 3)
     errors
 "#;
@@ -2867,6 +2869,28 @@ fn main() -> Int:
             1,
             "source-level loop control retains the scalar lowering: {main}"
         );
+    }
+
+    #[test]
+    fn zero_step_while_declines_sequence_cursorization() {
+        // A loop with no monotonic induction update cannot satisfy RFC-0153's
+        // no-wrap/trip-count proof. It must retain the checked indexed path;
+        // executing it would intentionally not terminate, so this is a WAT
+        // negative fixture rather than a runtime result test.
+        let source = r#"
+fn main() -> Int:
+    let values = [7]
+    var i = 0
+    while i < list.length(values):
+        let value = values[i]
+        i = i + 0
+    0
+"#;
+        let wat = optimized_wir_wat(source, witchy_syntax::opt::OptSet::default_set());
+        let main = wat.split("(func $main").nth(1).expect("main WAT");
+        let main = main.split("(func $").next().expect("main body");
+        assert!(main.contains("i64.ge_s"), "zero step retains its checked upper bound:\n{main}");
+        assert!(!main.contains("__seq_base_"), "zero step cannot install a cursor plan:\n{main}");
     }
 
     #[test]
