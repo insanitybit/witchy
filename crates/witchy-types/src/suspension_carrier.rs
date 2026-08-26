@@ -628,22 +628,50 @@ impl SuspensionCarrierCatalog {
             .flat_map(|state| {
                 let state_is_direct = state.direct && state.slots.iter().all(|slot| slot.lanes.is_some());
                 let mut next_lane = 0usize;
-                state.slots.iter().enumerate().filter_map(move |(endpoint_slot, slot)| {
-                    let endpoint_lane = state_is_direct.then_some(next_lane);
+                let mut endpoints = Vec::new();
+                for (endpoint_slot, slot) in state.slots.iter().enumerate() {
+                    let slot_lane = next_lane;
                     next_lane += slot.lanes.as_ref().map_or(0, Vec::len);
-                    let (direction, message) = channel_endpoint_type(&slot.ty)?;
-                    let payload_layout = channel_payload_layout(message, definitions_ref);
-                    Some(TypedChannelPlan {
-                        state: state.id,
-                        endpoint_slot,
-                        endpoint_lane,
-                        endpoint_place: slot.name.clone(),
-                        direction,
-                        message_type: witchy_syntax::format::type_str(message),
-                        ownership: channel_ownership_envelope(&payload_layout),
-                        payload_layout,
-                    })
-                })
+                    if let Some((direction, message)) = channel_endpoint_type(&slot.ty) {
+                        let payload_layout = channel_payload_layout(message, definitions_ref);
+                        endpoints.push(TypedChannelPlan {
+                            state: state.id,
+                            endpoint_slot,
+                            endpoint_lane: state_is_direct.then_some(slot_lane),
+                            endpoint_place: slot.name.clone(),
+                            direction,
+                            message_type: witchy_syntax::format::type_str(message),
+                            ownership: channel_ownership_envelope(&payload_layout),
+                            payload_layout,
+                        });
+                    }
+                    // Async lowering commonly carries a newly-opened pair in
+                    // one direct frame parameter, then destructures it in the
+                    // next state. Preserve both endpoints' physical lanes so
+                    // a later ready emitter can bind that projection without
+                    // recovering a channel from erased scheduler storage.
+                    if let Type::Tuple(fields) = slot.ty.unqualified() {
+                        let mut field_lane = 0usize;
+                        for field in fields {
+                            if let Some((direction, message)) = channel_endpoint_type(field) {
+                                let payload_layout = channel_payload_layout(message, definitions_ref);
+                                endpoints.push(TypedChannelPlan {
+                                    state: state.id,
+                                    endpoint_slot,
+                                    endpoint_lane: state_is_direct.then_some(slot_lane + field_lane),
+                                    endpoint_place: slot.name.clone(),
+                                    direction,
+                                    message_type: witchy_syntax::format::type_str(message),
+                                    ownership: channel_ownership_envelope(&payload_layout),
+                                    payload_layout,
+                                });
+                            }
+                            field_lane += direct_lanes(field, definitions_ref, &HashMap::new(), &mut HashSet::new())
+                                .map_or(0, |lanes| lanes.len());
+                        }
+                    }
+                }
+                endpoints
             })
             .collect();
         let state_ids: HashMap<String, usize> = states
@@ -3104,6 +3132,49 @@ mod tests {
                         CarrierLane::I64,
                         CarrierLane::I64,
                     ]),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn typed_channel_plans_preserve_tuple_carrier_endpoint_lanes() {
+        let mut module = witchy_syntax::parser::parse_module(
+            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\nfn state(pair: (Sender(Int), Receiver(Int))) -> Nil:\n    ()\n",
+        )
+        .expect("tuple channel plan fixture parses");
+        let Item::Function(state) = &mut module.items[2] else {
+            panic!("state")
+        };
+        state.attributes.push(FRAME_FUNCTION_ATTRIBUTE.into());
+        state
+            .attributes
+            .push(witchy_syntax::suspension::frame_state_attribute(0));
+
+        let typed = crate::typeck::annotate_checked(module).expect("tuple channel plan fixture checks");
+        let catalog = SuspensionCarrierCatalog::from_typed(&typed).expect("carrier catalog");
+        assert_eq!(
+            catalog.typed_channel_plans(),
+            &[
+                TypedChannelPlan {
+                    state: 0,
+                    endpoint_slot: 0,
+                    endpoint_lane: Some(0),
+                    endpoint_place: "pair".into(),
+                    direction: ChannelEndpointDirection::Send,
+                    message_type: "Int".into(),
+                    payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
+                    ownership: ChannelOwnershipEnvelope::InlineValue,
+                },
+                TypedChannelPlan {
+                    state: 0,
+                    endpoint_slot: 0,
+                    endpoint_lane: Some(1),
+                    endpoint_place: "pair".into(),
+                    direction: ChannelEndpointDirection::Receive,
+                    message_type: "Int".into(),
+                    payload_layout: ChannelPayloadLayout::Scalar(CarrierLane::I64),
                     ownership: ChannelOwnershipEnvelope::InlineValue,
                 },
             ],

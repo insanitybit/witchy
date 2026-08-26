@@ -137,14 +137,15 @@ pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
 // Compiler-private exact-Int bridges. The lowerer selects these only from a
 // proved RFC-0152 ready region; public generic channel APIs and all unproved
 // operations continue to use the erased scheduler bridge above.
-fn __rfc0152_channel_i64(capacity: Int) -> Task((Sender(Int), Receiver(Int))):
-    task.and_then(task.__channel_open_i64(capacity), fn(own id): task.done((Sender(id), Receiver(id))))
+pub fn __rfc0152_channel_i64(capacity: Int) -> Task((Sender(Int), Receiver(Int))):
+    let cap = if capacity < 0: 0 else: capacity
+    task.and_then(task.__channel_open_i64(cap), fn(own id): task.done((Sender(id), Receiver(id))))
 
-fn __rfc0152_send_i64(tx: Sender(Int), msg: Int) -> Task(Nil):
+pub fn __rfc0152_send_i64(tx: Sender(Int), msg: Int) -> Task(Nil):
     match tx:
         Sender(id) -> task.__channel_send_i64(id, msg)
 
-fn __rfc0152_recv_i64(rx: Receiver(Int)) -> Task(Option(Int)):
+pub fn __rfc0152_recv_i64(rx: Receiver(Int)) -> Task(Option(Int)):
     match rx:
         Receiver(id) -> task.__channel_recv_i64(id)
 

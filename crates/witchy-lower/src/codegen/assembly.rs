@@ -3606,6 +3606,18 @@ fn assemble_wir_module_with_structs_mode(
         extra_roots.extend([codec.encoder.clone(), codec.decoder.clone()]);
         extra_roots.extend(codec.migrations.iter().map(|migration| migration.decoder.clone()));
     }
+    // The ready executor may rewrite an already-linked ordinary channel call
+    // to one of these compiler-private Int bridges. Retain them before the
+    // reachability walk; adding a call after WIR assembly cannot resurrect a
+    // dead-stripped stdlib function. Regions remain the guard, so programs
+    // without a proved ready channel pay no code-size cost.
+    if !suspension_carrier.ready_channel_regions().regions.is_empty() {
+        extra_roots.extend([
+            "chan.__rfc0152_channel_i64".into(),
+            "chan.__rfc0152_send_i64".into(),
+            "chan.__rfc0152_recv_i64".into(),
+        ]);
+    }
     let reachable = reachable_functions_with(&module, &extra_roots);
     let mut cg = Codegen::new(&module, &type_table, loan_facts, access_facts);
     cg.collect_wir = true;
@@ -6349,12 +6361,12 @@ fn assemble_wir_module_with_structs_mode(
                     exports
                 },
             };
-            // RFC-0152 body capture is intentionally metadata-only for now.
-            // Keeping this extraction adjacent to the completed WIR module is
-            // the future ready executor's only source for exact ordinary state
-            // prefixes; it does not alter function selection or runtime calls.
+            // RFC-0152 selects only terminal calls that the carrier proves are
+            // exact Int channel boundaries. The scheduler remains the fallback:
+            // an ordinary operation materializes a typed ring before it runs.
             let ready_state_wir = super::ready_executor::extract(&suspension_carrier, &wir_module);
             let _typed_storage_domains = super::ready_executor::storage_domains(&ready_state_wir);
+            super::ready_executor::rewrite_i64_ready_calls(&ready_state_wir, &mut wir_module);
             if let Ok(plan) = suspension_carrier.scalar_executor_plan() {
                 super::scalar_executor::synthesize(&plan, &mut wir_module);
             }
@@ -7167,6 +7179,68 @@ mod checked_codegen_boundary_tests {
             .collect::<Vec<_>>();
         assert!(!guarded_ids.is_empty(), "fixture must form a guarded fallback");
         assert!(guarded_capture.iter().all(|state| !guarded_ids.contains(&(state.state, state.path_ordinal))));
+    }
+
+    #[test]
+    fn ready_int_channel_boundaries_select_the_typed_scheduler_bridges() {
+        let checked = authenticated_checked(
+            "async fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    let payload = 7\n    chan.send(tx, payload).await\n    let value = chan.recv(rx).await\n    match value:\n        Some(n) -> console.print(\"${n}\")\n        None -> console.print(\"closed\")\n",
+        );
+        let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
+            checked.module(), false, None, None, false,
+        )
+        .expect("assemble typed ready bridge fixture");
+        let mut calls = HashSet::new();
+        for function in &wir.funcs {
+            collect_called_funcs(&function.body, &mut calls);
+        }
+        for bridge in [
+            "chan.__rfc0152_channel_i64",
+            "chan.__rfc0152_send_i64",
+            "chan.__rfc0152_recv_i64",
+        ] {
+            assert!(
+                calls.contains(bridge),
+                "proved Int boundary must select {bridge}: {calls:?}"
+            );
+        }
+        let bytes = compile_checked_module_binary(&checked)
+            .expect_lowered("encode typed ready bridge fixture");
+        assert_eq!(&bytes[..4], b"\0asm", "the selected bridge artifact is valid Wasm");
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        let engine = wasmtime::Engine::new(&config).expect("Wasm GC engine");
+        let compiled = wasmtime::Module::new(&engine, &bytes).expect("valid typed ready bridge Wasm");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&output);
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker.func_wrap(
+            "witchy",
+            "print",
+            move |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+                let data = memory.data(&caller);
+                sink.lock().unwrap().push(
+                    String::from_utf8_lossy(&data[ptr as usize..(ptr + len) as usize]).into_owned(),
+                );
+            },
+        ).expect("print host");
+        linker.func_wrap(
+            "witchy",
+            "__witchy_abort",
+            |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                wasmtime::bail!("unexpected typed ready bridge abort")
+            },
+        ).expect("abort host");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &compiled).expect("instantiate typed ready bridge");
+        instance.get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run typed ready bridge");
+        assert_eq!(*output.lock().unwrap(), ["7"]);
     }
 
     #[test]
