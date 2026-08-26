@@ -65,6 +65,11 @@ deterministic_stats() {
         awk -v wanted=" ${COUNTERS[*]} " '$1 != "" && index(wanted, " " $1 " ") { print $1 "\t" $2 }'
 }
 
+emit_wat() {
+    local binary=$1 opt=$2 source=$3
+    WITCHY_OPT="$opt" "$binary" emit-wat "$source" 2>/dev/null
+}
+
 printf '%s\n' \
     "rfc=0152" \
     "label=$LABEL" \
@@ -82,6 +87,7 @@ printf '%s\n' \
 printf 'workload,mode,sample,kernel_ns\n' >"$OUT_DIR/timing.csv"
 printf 'workload,mode,run,counter,value\n' >"$OUT_DIR/counters.csv"
 printf 'workload,source_sha256,control_output_sha256,candidate_output_sha256\n' >"$OUT_DIR/correctness.csv"
+printf 'path,sha256\n' >"$OUT_DIR/artifacts.csv"
 
 for workload in $WORKLOADS; do
     source="benchmarks/${workload}.witchy"
@@ -98,6 +104,12 @@ for workload in $WORKLOADS; do
         "$(printf '%s' "$control_output" | sha256)" \
         "$(printf '%s' "$candidate_output" | sha256)" \
         >>"$OUT_DIR/correctness.csv"
+
+    # WAT is a structural proof artifact, distinct from runtime counters.  Keep
+    # both controls so later review can verify that a claimed direct lane is in
+    # the candidate rather than merely absent from a stale baseline binary.
+    emit_wat "$CONTROL_WITCHY" "$CONTROL_OPT" "$source" >"$OUT_DIR/${workload}.control.wat"
+    emit_wat "$CANDIDATE_WITCHY" "$CANDIDATE_OPT" "$source" >"$OUT_DIR/${workload}.candidate.wat"
 
     for mode in control candidate; do
         if [[ $mode == control ]]; then
@@ -151,5 +163,13 @@ for workload in $WORKLOADS; do
         done
     done
 done
+
+# Hash every produced file after all rows complete.  This makes an ignored raw
+# matrix transferable into the RFC ledger without hand-copying unchecked paths.
+while IFS= read -r artifact; do
+    relative=${artifact#"$OUT_DIR/"}
+    printf '%s,%s\n' "$relative" "$(shasum -a 256 "$artifact" | awk '{print $1}')" \
+        >>"$OUT_DIR/artifacts.csv"
+done < <(find "$OUT_DIR" -type f ! -name artifacts.csv | sort)
 
 echo "wrote RFC-0152 matrix artifact: $OUT_DIR" >&2
