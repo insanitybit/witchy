@@ -616,6 +616,35 @@ consume_queue_entry() { # consume_queue_entry <queue-file> <change-id> <sha> <at
     release_change_lock
 }
 
+# `--front` expedites ONE urgent change; it must not become a standing claim on
+# the batch-leader slot. A batch red deliberately RETAINS every member's queue
+# file (a red batch indicts no single member), so without this a front-stamped
+# member re-leads the next cycle, and the one after that, and every ready
+# candidate behind it starves. Observed 2026-08-27: 3h41m with zero merges, 21
+# queued, 14 of them ready, while one front-pinned change gated four times and
+# redded four times (BUG-633).
+#
+# Demotion is not a punishment and not an eviction: the change stays queued at
+# an ordinary FIFO stamp, and `submit --front` can deliberately re-prioritize it
+# when someone decides it really is the urgent one again.
+demote_front_entry() { # demote_front_entry <queue-file>
+    local qf="$1" base branch new sidecar
+    [ -f "$qf" ] || return 0
+    base="$(basename "$qf")"
+    case "$base" in 00front-* | 0front-*) ;; *) return 0 ;; esac
+    branch="$(jq -r '.branch // empty' "$qf" 2>/dev/null || true)"
+    [ -n "$branch" ] || return 0
+    new="$queue_dir/$(date +%s)-$(branch_key "$branch").json"
+    [ "$new" = "$qf" ] && return 0
+    mv "$qf" "$new" || return 1
+    for sidecar in nobatch batch-limit; do
+        if [ -f "$qf.$sidecar" ]; then mv "$qf.$sidecar" "$new.$sidecar" || true; fi
+    done
+    note "  demoted $branch from the queue head after a red (--front does not survive a failure)"
+    record demoted "$branch" reason "red while holding the queue head" entry "$(basename "$new")"
+    return 0
+}
+
 mark_queue_entry() { # mark_queue_entry <queue-file> <change-id> <sha> <attempt-id> <suffix>
     local qf="$1" id="$2" sha="$3" attempt="$4" suffix="$5"
     acquire_change_lock
@@ -2724,6 +2753,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                             "${batch_submitted_shas[$bi]}" "${batch_attempt_ids[$bi]}" nobatch || true
                     done
                 fi
+                # Retaining the queue files is right; retaining the HEAD slot is
+                # not. Do this last so the marker moves with the renamed entry.
+                for bi in "${!batch_files[@]}"; do
+                    demote_front_entry "${batch_files[$bi]}" || true
+                done
                 return 1
             fi
             [ "$why" = "red" ] && extra="$(failure_summary "$log")"

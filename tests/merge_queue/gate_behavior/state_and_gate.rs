@@ -941,6 +941,78 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
 /// the remaining members as one green batch — two follow-up gates instead of
 /// one per member.
 #[test]
+fn a_red_costs_the_front_entry_its_queue_head() {
+    // `--front` expedites ONE urgent change. A batch red deliberately RETAINS
+    // every member's queue file, so without demotion a front-stamped member
+    // re-leads the next cycle and every cycle after it, starving every ready
+    // candidate behind it (BUG-633: 3h41m, zero merges, 14 ready).
+    let fixture = QueueFixture::stack(&[]);
+    let root = fixture.root.clone();
+    for (branch, file) in [
+        ("urgent", "urgent.txt"),
+        ("notes-a", "notes-a.txt"),
+        ("notes-b", "notes-b.txt"),
+    ] {
+        run_git(&root, &["switch", "-c", branch, "master"]);
+        fs::write(root.join(file), format!("{branch}\n")).expect("write branch file");
+        run_git(&root, &["add", file]);
+        run_git(&root, &["commit", "-m", &format!("add {file}")]);
+        run_git(&root, &["switch", "master"]);
+    }
+    fixture.mq_ok(&["submit", "--front", "urgent"], "true");
+    fixture.mq_ok(&["submit", "notes-a"], "true");
+    fixture.mq_ok(&["submit", "notes-b"], "true");
+
+    let queued_head = |fixture: &QueueFixture| -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(fixture.state.join("queue"))
+            .expect("read queue dir")
+            .map(|entry| entry.expect("queue entry").file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".json"))
+            .collect();
+        names.sort();
+        names
+    };
+    assert!(
+        queued_head(&fixture)[0].starts_with("00front-"),
+        "--front must place the change at the queue head: {:?}",
+        queued_head(&fixture),
+    );
+
+    // A red that indicts no single member: the batch is retained wholesale.
+    fixture.mq_ok(&["run", "--once"], "exit 1");
+
+    // The harness gate reds unconditionally and `run --once` keeps draining, so
+    // every member is re-gated individually and consumed by the end of the run.
+    // The durable evidence of demotion is therefore the journal, not the final
+    // directory listing: the batch red must be followed by a `demoted` event
+    // whose new queue entry no longer carries the front prefix.
+    let journal = fixture.journal();
+    let trace: Vec<&str> = journal
+        .iter()
+        .map(|event| event["event"].as_str().unwrap_or("?"))
+        .collect();
+    let batch_red_at = trace
+        .iter()
+        .position(|event| *event == "batch_red")
+        .unwrap_or_else(|| panic!("expected a red batch: {trace:?}"));
+    let demoted_at = trace
+        .iter()
+        .position(|event| *event == "demoted")
+        .unwrap_or_else(|| panic!("a red must cost the front slot, but nothing was demoted: {trace:?}"));
+    assert!(
+        demoted_at > batch_red_at,
+        "demotion must be a consequence of the red, not precede it: {trace:?}",
+    );
+    let demoted = &journal[demoted_at];
+    assert_eq!(demoted["branch"], "urgent", "the front-stamped member is the one demoted");
+    let entry = demoted["entry"].as_str().expect("demotion records its new queue entry");
+    assert!(
+        !entry.starts_with("00front-") && entry.contains("urgent"),
+        "demotion must move the change to an ordinary FIFO stamp, not evict it: {entry}",
+    );
+}
+
+#[test]
 fn unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest() {
     let fixture = QueueFixture::stack(&[]);
     let root = fixture.root.clone();
