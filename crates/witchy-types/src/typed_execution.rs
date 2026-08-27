@@ -14,6 +14,8 @@ pub struct ExecutionStateId(pub u32);
 pub struct FrameLaneId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OperationSiteId(pub u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct QueueShapeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneOwnership {
@@ -42,6 +44,18 @@ pub enum ExecutionOperation {
     Cancellation,
 }
 
+/// The outcome edge selected by a state is a semantic part of the program,
+/// rather than an incidental position in a transition vector.  The compiler
+/// computes these tests from typed values; the runtime only observes frame
+/// lanes and never re-evaluates source expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionEdgeCondition {
+    Always,
+    Boolean { lane: FrameLaneId, when: bool },
+    Variant { lane: FrameLaneId, tag: u32 },
+    SelectArm { operation: OperationSiteId, arm: u32 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneAction {
     Copy { from: FrameLaneId, to: FrameLaneId },
@@ -63,6 +77,7 @@ pub enum ExecutionOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionTransition {
+    pub condition: ExecutionEdgeCondition,
     pub actions: Vec<LaneAction>,
     pub outcome: ExecutionOutcome,
 }
@@ -77,7 +92,54 @@ pub struct ExecutionState {
 pub struct OperationSite {
     pub id: OperationSiteId,
     pub kind: ExecutionOperation,
+    /// Input lanes are ordered operands, never a source-name lookup.
+    pub input_lanes: Vec<FrameLaneId>,
+    /// Result lanes receive a committed operation result before its outcome
+    /// edge runs.  A send has no result lane; a receive and select normally do.
+    pub result_lanes: Vec<FrameLaneId>,
     pub pending_move_lanes: Vec<FrameLaneId>,
+    /// Failed probe/registration restores pending moves at this state before
+    /// source execution can continue.
+    pub fallback_state: Option<ExecutionStateId>,
+    pub queue: Option<QueueShapeId>,
+    /// Select arms retain source priority and endpoint/payload bindings.  An
+    /// empty list means this is not a select operation.
+    pub arms: Vec<OperationArm>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueCapacity {
+    Rendezvous,
+    Fixed(u32),
+    Dynamic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadOwnership {
+    Inline,
+    BufferRoot,
+    Boxed,
+}
+
+/// A queue shape is a typed runtime object. `payload_layout_fingerprint` is
+/// generated after final layout, so source spelling cannot choose a queue ABI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueShape {
+    pub id: QueueShapeId,
+    pub capacity: QueueCapacity,
+    pub payload_layout_fingerprint: [u8; 32],
+    pub ownership: PayloadOwnership,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationArm {
+    pub ordinal: u32,
+    pub operation: ExecutionOperation,
+    pub endpoint_lane: FrameLaneId,
+    pub input_lanes: Vec<FrameLaneId>,
+    pub result_lanes: Vec<FrameLaneId>,
+    pub queue: Option<QueueShapeId>,
+    pub ownership: PayloadOwnership,
 }
 
 /// Cooperative cancellation enters an ordinary typed cleanup state. The state
@@ -95,6 +157,7 @@ pub struct TypedExecutionShape {
     pub frame: Vec<FrameLane>,
     pub states: Vec<ExecutionState>,
     pub operations: Vec<OperationSite>,
+    pub queues: Vec<QueueShape>,
     pub cancellation: Option<CancellationTransition>,
 }
 
@@ -107,6 +170,7 @@ impl TypedExecutionShape {
         dense("frame lane", self.frame.iter().map(|lane| lane.id.0))?;
         dense("execution state", self.states.iter().map(|state| state.id.0))?;
         dense("operation site", self.operations.iter().map(|site| site.id.0))?;
+        dense("queue shape", self.queues.iter().map(|queue| queue.id.0))?;
         if self.states.get(self.entry.0 as usize).is_none() {
             return Err("execution entry state is absent".to_string());
         }
@@ -121,6 +185,7 @@ impl TypedExecutionShape {
                 for action in &transition.actions {
                     validate_action(*action, lane_count)?;
                 }
+                validate_condition(transition.condition, lane_count, operation_count)?;
                 match transition.outcome {
                     ExecutionOutcome::Continue(next) | ExecutionOutcome::Ready(next)
                         if next.0 >= state_count => return Err("execution transition has absent successor".to_string()),
@@ -131,8 +196,25 @@ impl TypedExecutionShape {
             }
         }
         for operation in &self.operations {
-            for lane in &operation.pending_move_lanes {
-                if lane.0 >= lane_count { return Err("operation references absent pending-move lane".to_string()); }
+            for lane in operation.input_lanes.iter().chain(operation.result_lanes.iter()).chain(operation.pending_move_lanes.iter()) {
+                if lane.0 >= lane_count { return Err("operation references absent frame lane".to_string()); }
+            }
+            if operation.fallback_state.is_some_and(|state| state.0 >= state_count) {
+                return Err("operation fallback references absent state".to_string());
+            }
+            if operation.queue.is_some_and(|queue| queue.0 as usize >= self.queues.len()) {
+                return Err("operation references absent queue shape".to_string());
+            }
+            let mut expected_arm = 0_u32;
+            for arm in &operation.arms {
+                if arm.ordinal != expected_arm { return Err("operation arm IDs must be dense and ordered".to_string()); }
+                expected_arm += 1;
+                if arm.endpoint_lane.0 >= lane_count || arm.input_lanes.iter().chain(arm.result_lanes.iter()).any(|lane| lane.0 >= lane_count) {
+                    return Err("operation arm references absent frame lane".to_string());
+                }
+                if arm.queue.is_some_and(|queue| queue.0 as usize >= self.queues.len()) {
+                    return Err("operation arm references absent queue shape".to_string());
+                }
             }
         }
         if let Some(cancellation) = self.cancellation {
@@ -163,6 +245,17 @@ fn validate_action(action: LaneAction, lane_count: u32) -> Result<(), String> {
     }
 }
 
+fn validate_condition(condition: ExecutionEdgeCondition, lane_count: u32, operation_count: u32) -> Result<(), String> {
+    match condition {
+        ExecutionEdgeCondition::Always => Ok(()),
+        ExecutionEdgeCondition::Boolean { lane, .. } | ExecutionEdgeCondition::Variant { lane, .. }
+            if lane.0 < lane_count => Ok(()),
+        ExecutionEdgeCondition::SelectArm { operation, .. } if operation.0 < operation_count => Ok(()),
+        ExecutionEdgeCondition::Boolean { .. } | ExecutionEdgeCondition::Variant { .. } => Err("execution edge condition references absent frame lane".to_string()),
+        ExecutionEdgeCondition::SelectArm { .. } => Err("execution edge condition references absent operation".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +273,7 @@ mod tests {
             states: vec![ExecutionState {
                 id: ExecutionStateId(0),
                 transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
                     actions: vec![LaneAction::Move { from: FrameLaneId(0), to: FrameLaneId(0) }],
                     outcome: ExecutionOutcome::Blocked {
                         operation: OperationSiteId(0),
@@ -190,8 +284,14 @@ mod tests {
             operations: vec![OperationSite {
                 id: OperationSiteId(0),
                 kind: ExecutionOperation::ChannelReceive,
+                input_lanes: vec![],
+                result_lanes: vec![],
                 pending_move_lanes: vec![FrameLaneId(0)],
+                fallback_state: Some(ExecutionStateId(0)),
+                queue: None,
+                arms: vec![],
             }],
+            queues: vec![],
             cancellation: None,
         }
     }

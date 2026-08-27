@@ -5,7 +5,7 @@
 //! the kernel already establishes the one execution/wait ownership rule.
 
 use witchy_types::typed_execution::{
-    ExecutionOutcome, ExecutionShapeId, ExecutionStateId, FrameLaneId, LaneAction,
+    ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId, ExecutionStateId, FrameLaneId, LaneAction,
     OperationSiteId, TypedExecutionShape,
 };
 use witchy_types::async_program::{AsyncExecutionShape, AsyncProgramStateId};
@@ -60,16 +60,27 @@ impl TypedExecution {
     pub fn state(&self) -> ExecutionStateId { self.state }
     pub fn status(&self) -> KernelStatus { self.status }
 
-    /// Execute one deterministic state turn. The typed lowering must provide
-    /// exactly one selected transition for a state before calling this kernel;
-    /// the current first-transition policy is therefore a deliberate temporary
-    /// binding seam, not source-order guessing.
+    /// Execute a deterministic state turn only when its edge is statically
+    /// unambiguous. Branching states must use `turn_selected`; silently taking
+    /// vector element zero would destroy source control-flow semantics.
     pub fn turn(&mut self) -> Result<KernelTurn, String> {
+        let state = self.shape.states.get(self.state.0 as usize)
+            .ok_or_else(|| "execution state vanished after validation".to_string())?;
+        if state.transitions.len() != 1 || state.transitions[0].condition != ExecutionEdgeCondition::Always {
+            return Err("execution state requires an explicit selected edge".to_string());
+        }
+        self.turn_selected(0)
+    }
+
+    /// The typed scheduler selects a ready branch/arm and supplies its dense
+    /// transition index. This preserves arm priority and guards from the
+    /// canonical program; a later executor evaluates the condition itself.
+    pub fn turn_selected(&mut self, transition_index: usize) -> Result<KernelTurn, String> {
         if self.status != KernelStatus::Ready { return Err("execution is not ready".to_string()); }
         let state = self.shape.states.get(self.state.0 as usize)
             .ok_or_else(|| "execution state vanished after validation".to_string())?;
-        let transition = state.transitions.first()
-            .ok_or_else(|| "execution state has no selected transition".to_string())?
+        let transition = state.transitions.get(transition_index)
+            .ok_or_else(|| "execution selected absent transition".to_string())?
             .clone();
         for action in &transition.actions { self.apply(*action)?; }
         match transition.outcome {
@@ -139,13 +150,14 @@ mod tests {
             entry: ExecutionStateId(0),
             frame: vec![FrameLane { id: FrameLaneId(0), ty: Type::Named("Int".into(), Vec::new()), ownership: LaneOwnership::Move, initially_initialized: true }],
             states: vec![
-                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { actions: vec![], outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
-                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { actions: vec![LaneAction::Discharge { lane: FrameLaneId(0) }], outcome: ExecutionOutcome::Complete }] },
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
+                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![LaneAction::Discharge { lane: FrameLaneId(0) }], outcome: ExecutionOutcome::Complete }] },
             ],
             operations: vec![
-                OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelReceive, pending_move_lanes: vec![] },
-                OperationSite { id: OperationSiteId(1), kind: ExecutionOperation::Cancellation, pending_move_lanes: vec![] },
+                OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelReceive, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: Some(ExecutionStateId(0)), queue: None, arms: vec![] },
+                OperationSite { id: OperationSiteId(1), kind: ExecutionOperation::Cancellation, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: None, queue: None, arms: vec![] },
             ],
+            queues: vec![],
             cancellation: Some(CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(1) }),
         }
     }
@@ -170,5 +182,25 @@ mod tests {
         assert_eq!(execution.status(), KernelStatus::Ready);
         assert_eq!(execution.turn(), Ok(KernelTurn::Complete));
         assert!(!execution.request_cancellation().expect("completed request is idempotent"));
+    }
+
+    #[test]
+    fn branching_state_requires_scheduler_selected_edge() {
+        let mut branching = shape();
+        branching.states[0].transitions = vec![
+            ExecutionTransition {
+                condition: ExecutionEdgeCondition::Boolean { lane: FrameLaneId(0), when: true },
+                actions: vec![],
+                outcome: ExecutionOutcome::Complete,
+            },
+            ExecutionTransition {
+                condition: ExecutionEdgeCondition::Boolean { lane: FrameLaneId(0), when: false },
+                actions: vec![],
+                outcome: ExecutionOutcome::PropagateError,
+            },
+        ];
+        let mut execution = TypedExecution::new(branching).expect("branching shape is valid");
+        assert!(execution.turn().expect_err("kernel cannot guess branch").contains("explicit selected edge"));
+        assert_eq!(execution.turn_selected(1), Ok(KernelTurn::PropagatedError));
     }
 }
