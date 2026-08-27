@@ -19,6 +19,7 @@ pub mod comptime;
 pub mod interpreter;
 pub mod pipeline;
 pub mod typed_async;
+pub mod typed_host;
 pub mod typed_queue;
 pub(crate) mod reachability;
 pub(crate) mod tagged;

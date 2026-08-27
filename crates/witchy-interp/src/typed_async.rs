@@ -70,20 +70,32 @@ impl TypedExecution {
     pub fn status(&self) -> KernelStatus { self.status }
     pub fn has_cancellation_transition(&self) -> bool { self.cancellation.is_some() }
 
+    /// Recover the one semantic operation currently owned by this execution's
+    /// wait record. Queue, host, child, and cancellation adapters all start
+    /// from this common binding; no adapter infers an operation from a source
+    /// callable or a runtime callback name.
+    pub fn waiting_operation(&self) -> Result<(OperationSiteId, ExecutionOperation), String> {
+        let operation = match self.status {
+            KernelStatus::Waiting(operation) => operation,
+            _ => return Err("execution has no installed operation wait record".into()),
+        };
+        let site = self.shape.operations.get(operation.0 as usize)
+            .ok_or_else(|| "operation vanished after validation".to_string())?;
+        Ok((operation, site.kind))
+    }
+
     /// Recover the one queue operation currently owned by this execution's
     /// wait record. Queue runtimes use this typed binding instead of accepting
     /// a source name or a caller-provided queue ID.
     pub fn waiting_queue_operation(
         &self,
     ) -> Result<(OperationSiteId, QueueShapeId, ExecutionOperation), String> {
-        let operation = match self.status {
-            KernelStatus::Waiting(operation) => operation,
-            _ => return Err("execution has no installed queue wait record".into()),
-        };
+        let (operation, kind) = self.waiting_operation()
+            .map_err(|_| "execution has no installed queue wait record".to_string())?;
         let site = self.shape.operations.get(operation.0 as usize)
             .ok_or_else(|| "operation vanished after validation".to_string())?;
         let queue = site.queue.ok_or_else(|| "waiting operation has no typed queue binding".to_string())?;
-        Ok((operation, queue, site.kind))
+        Ok((operation, queue, kind))
     }
 
     /// Return the exact source-ordered arm table for the waiting select. This
