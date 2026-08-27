@@ -108,6 +108,12 @@ impl Projection {
         result.0.push(step);
         result
     }
+
+    pub fn projected(&self, projection: &Projection) -> Self {
+        let mut result = self.clone();
+        result.0.extend(projection.0.iter().cloned());
+        result
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -353,6 +359,12 @@ impl ContractProjection {
 
     pub fn steps(&self) -> &[ContractProjectionStep] {
         &self.0
+    }
+
+    pub fn projected(&self, steps: &ContractProjection) -> Self {
+        let mut result = self.clone();
+        result.0.extend(steps.0.iter().cloned());
+        result
     }
 }
 

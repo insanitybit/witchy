@@ -21,6 +21,7 @@ pub mod layout;
 pub mod optimizer_policy;
 pub mod safewir;
 pub mod safewir_adapter;
+mod safewir_call;
 pub mod safewir_surface;
 pub mod safewir_validate;
 pub mod wir_opt;
@@ -28,3 +29,5 @@ pub mod wir_prelude;
 
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod safewir_call_tests;

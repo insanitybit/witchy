@@ -5,17 +5,17 @@
 //! separate integration boundaries; accepting a [`CandidateModule`] here does
 //! not authorize encoding an ordinary `WirModule`.
 //!
-//! This first report-mode slice is deliberately closed-world and
-//! intraprocedural. Candidate source-entry, raw-memory, import-contract, and
+//! This report-mode slice is deliberately closed-world. Candidate source-entry, raw-memory, and
 //! post-validation flags are attestations until the production WIR adapter is
 //! implemented, so this module does not discharge SWIR-MOD-001,
 //! SWIR-KERN-001, or SWIR-ENC-001. Canonical decoding proves that the supplied
 //! layout bundle is internally well formed, not that it came from the checked
 //! source signature. Structured branch joins and conservative loop fixpoints
-//! are checked here. Recursive call graphs, symbolic parameter extents,
-//! proven-index facts, shared result sets, non-root alias results, owned
-//! parameter transfers, and branch-local object returns fail as explicitly
-//! unsupported rather than masquerading as a rule violation.
+//! are checked here. The report validator's fixed primitive/host catalog
+//! authenticates names and contract shapes; binding those entries to final
+//! production kernel and host definitions remains an adapter integration gate.
+//! Symbolic parameter extents, proven-index facts, and typed fills remain
+//! explicit unsupported forms rather than masquerading as rule violations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -25,9 +25,11 @@ use crate::layout::{
     FieldKind, HeaderLayout, LayoutBundle, LayoutId, LayoutInterner, LayoutKind, LayoutSize,
     ScalarKind,
 };
+use crate::safewir_call::{check_callable_contracts, CheckedCallableContracts};
 use crate::safewir::{
     AccessMode, ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent,
-    ContractSizeExpr, DefinitionId, Extent, ObjectIdentity, ObjectRef, Ownership,
+    ContractProjection, ContractProjectionStep, ContractSizeExpr, DefinitionId, Extent,
+    ObjectIdentity, ObjectRef, Ownership,
     ParameterMemoryEffect, ParameterMemoryEntry, Place, ProjectionStep, Provenance, RuleId,
     SizeExpr,
 };
@@ -203,6 +205,35 @@ pub enum Operation {
         arguments: Vec<CallArgument>,
         result: Option<ObjectRef>,
     },
+    /// A closed-world function-value call. The validator derives the complete
+    /// compatible target set from checked final bodies; the candidate supplies
+    /// no target-set or result-shape authority.
+    IndirectCall {
+        arguments: Vec<CallArgument>,
+        result: Option<ObjectRef>,
+    },
+    /// A closure call whose captures are prepended to the ordinary arguments.
+    /// The named body must exist, while authority comes from the conservative
+    /// join of every closed-world callable with the combined arity.
+    ClosureCall {
+        callable: String,
+        captures: Vec<CallArgument>,
+        arguments: Vec<CallArgument>,
+        result: Option<ObjectRef>,
+    },
+    /// Mint an alias value for a descriptor-derived projection. This never
+    /// mints storage or unique authority.
+    ProjectObject {
+        source: ObjectIdentity,
+        projection: ContractProjection,
+        result: ObjectRef,
+    },
+    /// Materialize a conservative value that may alias any named source.
+    /// Every source must have one compatible descriptor shape.
+    MergeObjectAliases {
+        sources: Vec<ObjectIdentity>,
+        result: ObjectRef,
+    },
     HostCall {
         import: String,
         arguments: Vec<HostArgument>,
@@ -235,12 +266,8 @@ pub enum Operation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnsupportedForm {
     ControlFlowJoin,
-    RecursiveCallGraph,
     ProvenIndex,
     SymbolicParameterExtent,
-    NonRootAliasResult,
-    SharedResult,
-    OwnedParameterTransfer,
     TypedFill,
 }
 
@@ -356,6 +383,7 @@ struct Validator<'a> {
     budget: ValidationBudget,
     operations: usize,
     peak_facts: usize,
+    checked_callables: Option<CheckedCallableContracts>,
 }
 
 pub fn validate_candidate(
@@ -377,6 +405,7 @@ pub fn validate_candidate(
         budget,
         operations: 0,
         peak_facts: 0,
+        checked_callables: None,
     };
     validator.validate_module()?;
     Ok(ValidationReport {
@@ -390,6 +419,12 @@ pub fn validate_candidate(
 }
 
 impl Validator<'_> {
+    fn checked_callables(&self) -> &CheckedCallableContracts {
+        self.checked_callables
+            .as_ref()
+            .expect("call contracts are checked before function validation")
+    }
+
     fn validate_module(&mut self) -> Result<(), ValidationError> {
         if self.module.checked_source_entries != 1 {
             return Err(self.module_error(
@@ -464,86 +499,32 @@ impl Validator<'_> {
                 "local, imported, and host-imported callable namespaces must be disjoint",
             ));
         }
-        if self.has_recursive_call_graph() {
-            return Err(self.module_unsupported(
-                UnsupportedForm::RecursiveCallGraph,
-                "recursive callable components require the deferred contract fixpoint",
-            ));
+        // Preserve explicit report-mode deferrals ahead of body-summary
+        // comparison. A branch-local object return has no closed summary until
+        // exit accumulators are represented in the candidate schema, so its
+        // attached result cannot be meaningfully checked yet.
+        for function in &self.module.functions {
+            if has_branch_local_object_return(&function.operations) {
+                return Err(self.function_unsupported(
+                    UnsupportedForm::ControlFlowJoin,
+                    function,
+                    None,
+                    "object-returning branch joins require explicit exit accumulators",
+                ));
+            }
         }
+        self.checked_callables = Some(check_callable_contracts(
+            self.module,
+            &self.layouts,
+            self.budget,
+        )?);
         for function in &self.module.functions {
             self.validate_function(function)?;
         }
         Ok(())
     }
 
-    fn has_recursive_call_graph(&self) -> bool {
-        let names: BTreeSet<_> = self.module.functions.iter().map(|f| f.name.as_str()).collect();
-        let mut edges = BTreeMap::<&str, BTreeSet<&str>>::new();
-        let mut incoming = names
-            .iter()
-            .copied()
-            .map(|name| (name, 0_usize))
-            .collect::<BTreeMap<_, _>>();
-        for function in &self.module.functions {
-            let callees = edges.entry(function.name.as_str()).or_default();
-            for operation in operations(&function.operations) {
-                let Operation::Call { callable, .. } = operation else { continue };
-                if names.contains(callable.as_str()) && callees.insert(callable) {
-                    *incoming.get_mut(callable.as_str()).expect("local name is indexed") += 1;
-                }
-            }
-        }
-        let mut ready = incoming
-            .iter()
-            .filter_map(|(name, count)| (*count == 0).then_some(*name))
-            .collect::<Vec<_>>();
-        let mut visited = 0_usize;
-        while let Some(name) = ready.pop() {
-            visited += 1;
-            if let Some(callees) = edges.get(name) {
-                for callee in callees {
-                    let count = incoming.get_mut(callee).expect("local name is indexed");
-                    *count -= 1;
-                    if *count == 0 {
-                        ready.push(callee);
-                    }
-                }
-            }
-        }
-        visited != names.len()
-    }
-
     fn validate_function(&mut self, function: &CandidateFunction) -> Result<(), ValidationError> {
-        match &function.contract.result {
-            CallableMemoryResult::Aliases { projection, .. } if !projection.steps().is_empty() => {
-                return Err(self.function_unsupported(
-                    UnsupportedForm::NonRootAliasResult,
-                    function,
-                    None,
-                    "non-root callable aliases require descriptor-derived result shapes",
-                ));
-            }
-            CallableMemoryResult::Shared(_) => {
-                return Err(self.function_unsupported(
-                    UnsupportedForm::SharedResult,
-                    function,
-                    None,
-                    "shared result sets require a private may-alias value state",
-                ));
-            }
-            _ => {}
-        }
-        if function.contract.parameters.iter().any(|parameter| {
-            parameter.effects.contains(ParameterMemoryEffect::Consume)
-                && !parameter.effects.is_unknown()
-        }) {
-            return Err(self.function_unsupported(
-                UnsupportedForm::OwnedParameterTransfer,
-                function,
-                None,
-                "owned parameter transfer requires private transferred provenance state",
-            ));
-        }
         if function.parameters.len() != function.contract.parameters.len()
             || !function.contract.result_effects_are_consistent()
         {
@@ -596,7 +577,7 @@ impl Validator<'_> {
                     self.validate_object_claim(object, function, None)?;
                     if object.identity.root != binding.definition
                         || object.layout != layout
-                        || !contract_extent_matches(extent, &object.extent, &arguments)
+                        || !contract_extent_matches(extent, &object.extent, &arguments, &state)
                     {
                         return Err(self.function_error(
                             RuleId::CheckedCallableContract,
@@ -625,7 +606,11 @@ impl Validator<'_> {
                         }
                     };
                     let mut derived = object.clone();
-                    derived.provenance = Provenance::Unknown;
+                    derived.provenance = if entry == ParameterMemoryEntry::Unique {
+                        Provenance::Fresh
+                    } else {
+                        Provenance::Unknown
+                    };
                     if state
                         .objects
                         .insert(
@@ -981,22 +966,60 @@ impl Validator<'_> {
                 if returned.object.layout == *layout
                     && returned.ownership == Ownership::Unique
                     && state.minted.contains(&returned.object.identity)
-                    && contract_extent_matches(extent, &returned.object.extent, &arguments) =>
+                    && contract_extent_matches(extent, &returned.object.extent, &arguments, state) =>
             {}
-            (CallableMemoryResult::Aliases { parameter, projection }, Some(returned))
+            (CallableMemoryResult::Aliases { parameter, projection }, Some(returned)) => {
+                let Some(CallArgument::Object(source)) = arguments.get(*parameter) else {
+                    return Err(self.function_error(
+                        RuleId::CheckedCallableContract,
+                        function,
+                        None,
+                        "function alias result names a non-object parameter",
+                    ));
+                };
+                let source_object = state.objects.get(source).ok_or_else(|| {
+                    self.function_error(
+                        RuleId::CheckedCallableContract,
+                        function,
+                        None,
+                        "function alias result source is not live at exit",
+                    )
+                })?;
                 if projection.steps().is_empty()
-                    && matches!(
-                        arguments.get(*parameter),
-                        Some(CallArgument::Object(identity)) if *identity == returned.object.identity
-                    ) =>
-            {}
-            (CallableMemoryResult::Aliases { .. }, Some(_)) => {
-                return Err(self.function_error(
-                    RuleId::CheckedCallableContract,
+                    && returned.object.identity == *source
+                    && returned.object.layout == source_object.object.layout
+                    && returned.object.extent == source_object.object.extent
+                {
+                    return Ok(());
+                }
+                let (layout, extent, actual_projection) = self.derive_contract_projection(
+                    &source_object.object,
+                    projection,
+                    state,
                     function,
                     None,
-                    "function return does not alias the declared parameter",
-                ));
+                )?;
+                let (resolved_source, resolved_projection) = self.resolve_alias_projection(
+                    state,
+                    returned.object.identity,
+                    function,
+                )?;
+                if returned.object.layout != layout
+                    || returned.object.extent != extent
+                    || resolved_source != *source
+                    || !self.projections_match_by_value(
+                        &resolved_projection,
+                        &actual_projection,
+                        state,
+                    )
+                {
+                    return Err(self.function_error(
+                        RuleId::CheckedCallableContract,
+                        function,
+                        None,
+                        "function return does not match its descriptor-derived alias contract",
+                    ));
+                }
             }
             (CallableMemoryResult::Shared(parameters), Some(returned))
                 if matches!(
@@ -1010,8 +1033,7 @@ impl Validator<'_> {
                         _ => None,
                     })
                     .collect();
-                if !expected.contains(&returned.object.identity)
-                    || !matches!(&returned.object.provenance, Provenance::MayAlias(actual) if actual == &expected)
+                if !matches!(&returned.object.provenance, Provenance::MayAlias(actual) if actual == &expected)
                 {
                     return Err(self.function_error(
                         RuleId::CheckedCallableContract,
@@ -1031,6 +1053,38 @@ impl Validator<'_> {
             }
         }
         Ok(())
+    }
+
+    fn resolve_alias_projection(
+        &self,
+        state: &State,
+        mut identity: ObjectIdentity,
+        function: &CandidateFunction,
+    ) -> Result<(ObjectIdentity, crate::safewir::Projection), ValidationError> {
+        let mut projection = crate::safewir::Projection::root();
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(identity) {
+                return Err(self.function_error(
+                    RuleId::CheckedCallableContract,
+                    function,
+                    None,
+                    "callable alias provenance contains a cycle",
+                ));
+            }
+            let Some(object) = state.objects.get(&identity) else {
+                return Ok((identity, projection));
+            };
+            let Provenance::Aliases {
+                object: source,
+                projection: step,
+            } = &object.object.provenance
+            else {
+                return Ok((identity, projection));
+            };
+            projection = step.projected(&projection);
+            identity = *source;
+        }
     }
 
     fn observed_effects(
@@ -1089,13 +1143,7 @@ impl Validator<'_> {
                     add!(ParameterMemoryEffect::Escape);
                 }
                 Operation::Call { callable, arguments, .. } => {
-                    let contract = self
-                        .module
-                        .functions
-                        .iter()
-                        .find(|candidate| candidate.name == *callable)
-                        .map(|candidate| &candidate.contract)
-                        .or_else(|| self.module.imports.get(callable));
+                    let contract = self.checked_callables().ordinary(callable);
                     if let Some(contract) = contract {
                         for (argument, parameter) in arguments.iter().zip(&contract.parameters) {
                             if matches!(argument, CallArgument::Object(actual) if identities_may_alias(state, *actual, identity))
@@ -1105,8 +1153,37 @@ impl Validator<'_> {
                         }
                     }
                 }
+                Operation::ClosureCall { callable, captures, arguments, .. } => {
+                    let arity = captures.len() + arguments.len();
+                    let contract = if self
+                        .checked_callables()
+                        .ordinary(callable)
+                        .is_some_and(|contract| contract.parameters.len() == arity)
+                    {
+                        self.checked_callables().indirect(arity)
+                    } else {
+                        CallableMemoryContract::unknown(arity)
+                    };
+                    for (argument, parameter) in
+                        captures.iter().chain(arguments).zip(&contract.parameters)
+                    {
+                        if matches!(argument, CallArgument::Object(actual) if identities_may_alias(state, *actual, identity))
+                        {
+                            observed = observed.join(parameter.effects);
+                        }
+                    }
+                }
+                Operation::IndirectCall { arguments, .. } => {
+                    let contract = self.checked_callables().indirect(arguments.len());
+                    for (argument, parameter) in arguments.iter().zip(&contract.parameters) {
+                        if matches!(argument, CallArgument::Object(actual) if identities_may_alias(state, *actual, identity))
+                        {
+                            observed = observed.join(parameter.effects);
+                        }
+                    }
+                }
                 Operation::HostCall { import, arguments, .. } => {
-                    if let Some(contract) = self.module.host_imports.get(import) {
+                    if let Some(contract) = self.checked_callables().host(import) {
                         for (argument, parameter) in arguments.iter().zip(&contract.parameters) {
                             if matches!(argument, HostArgument::Buffer(place) if identities_may_alias(state, place.object.identity, identity))
                             {
@@ -1376,16 +1453,17 @@ impl Validator<'_> {
                         "reuse result must be one new fresh generation",
                     ));
                 }
+                // Generation changes do not sever parameter-effect ancestry.
+                // The old generation remains consumed; this edge exists only
+                // so summary recomputation attributes later escape/retain to
+                // the transferred input authority.
+                self.link_alias_group(state, *old, new.identity);
                 state.minted.insert(new.identity);
             }
             Operation::Call { callable, arguments, result } => {
                 let contract = self
-                    .module
-                    .functions
-                    .iter()
-                    .find(|candidate| candidate.name == *callable)
-                    .map(|candidate| &candidate.contract)
-                    .or_else(|| self.module.imports.get(callable))
+                    .checked_callables()
+                    .ordinary(callable)
                     .ok_or_else(|| {
                         self.function_error(
                             RuleId::CheckedCallableContract,
@@ -1404,8 +1482,69 @@ impl Validator<'_> {
                     state,
                 )?;
             }
+            Operation::IndirectCall { arguments, result } => {
+                let contract = self.checked_callables().indirect(arguments.len());
+                self.validate_call(
+                    function,
+                    at,
+                    "<indirect>",
+                    &contract,
+                    arguments,
+                    result.as_ref(),
+                    state,
+                )?;
+            }
+            Operation::ClosureCall { callable, captures, arguments, result } => {
+                let combined = captures.iter().chain(arguments).copied().collect::<Vec<_>>();
+                let named = self
+                    .checked_callables()
+                    .ordinary(callable)
+                    .ok_or_else(|| {
+                        self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            format!("closure `{callable}` has no checked final body"),
+                        )
+                    })?;
+                if named.parameters.len() != combined.len() {
+                    return Err(self.function_error(
+                        RuleId::CheckedCallableContract,
+                        function,
+                        at,
+                        format!(
+                            "closure `{callable}` has arity {}, but captures and arguments supply {}",
+                            named.parameters.len(),
+                            combined.len(),
+                        ),
+                    ));
+                }
+                let contract = self.checked_callables().indirect(combined.len());
+                self.validate_call(
+                    function,
+                    at,
+                    callable,
+                    &contract,
+                    &combined,
+                    result.as_ref(),
+                    state,
+                )?;
+            }
+            Operation::ProjectObject { source, projection, result } => {
+                self.materialize_projection(
+                    function,
+                    at,
+                    *source,
+                    projection,
+                    result,
+                    state,
+                )?;
+            }
+            Operation::MergeObjectAliases { sources, result } => {
+                self.materialize_shared_aliases(function, at, sources, result, state)?;
+            }
             Operation::HostCall { import, arguments, result } => {
-                let Some(contract) = self.module.host_imports.get(import) else {
+                let Some(contract) = self.checked_callables().host(import) else {
                     return Err(self.function_error(
                         RuleId::HostBufferAbi,
                         function,
@@ -1771,25 +1910,6 @@ impl Validator<'_> {
                 format!("call `{callable}` arguments contradict its contract"),
             ));
         }
-        match &contract.result {
-            CallableMemoryResult::Aliases { projection, .. } if !projection.steps().is_empty() => {
-                return Err(self.function_unsupported(
-                    UnsupportedForm::NonRootAliasResult,
-                    function,
-                    at,
-                    format!("call `{callable}` has a non-root alias result"),
-                ));
-            }
-            CallableMemoryResult::Shared(_) => {
-                return Err(self.function_unsupported(
-                    UnsupportedForm::SharedResult,
-                    function,
-                    at,
-                    format!("call `{callable}` has a shared result set"),
-                ));
-            }
-            _ => {}
-        }
         let mut occurrences = BTreeMap::<ObjectIdentity, Vec<usize>>::new();
         for (index, argument) in arguments.iter().enumerate() {
             if let CallArgument::Object(identity) = argument {
@@ -1841,13 +1961,15 @@ impl Validator<'_> {
                 (CallArgument::Object(identity), entry) => {
                     let consumes = parameter.effects.contains(ParameterMemoryEffect::Consume);
                     {
-                        let object = self.require_live_mut(state, *identity, function, at)?;
+                        let object = self.require_live(state, *identity, function, at)?;
+                        let ownership = object.ownership;
                         if parameter.layout != Some(object.object.layout)
                             || parameter.extent.as_ref().is_none_or(|extent| {
                                 !contract_extent_matches(
                                     extent,
                                     &object.object.extent,
                                     arguments,
+                                    state,
                                 )
                             })
                         {
@@ -1862,17 +1984,17 @@ impl Validator<'_> {
                         }
                         let entry_ok = match entry {
                             ParameterMemoryEntry::BorrowedRead => {
-                                object.ownership != Ownership::Consumed
+                                ownership != Ownership::Consumed
                             }
                             ParameterMemoryEntry::BorrowedWrite => matches!(
-                                object.ownership,
+                                ownership,
                                 Ownership::Unique | Ownership::BorrowedWrite
                             ),
                             ParameterMemoryEntry::Shared => {
-                                object.ownership != Ownership::Consumed
+                                ownership != Ownership::Consumed
                             }
                             ParameterMemoryEntry::Unique => {
-                                object.ownership == Ownership::Unique
+                                ownership == Ownership::Unique
                             }
                             ParameterMemoryEntry::NoMemory | ParameterMemoryEntry::Unknown => {
                                 unreachable!()
@@ -1881,10 +2003,10 @@ impl Validator<'_> {
                         if !entry_ok
                             || (parameter.effects.contains(ParameterMemoryEffect::Write)
                                 && !matches!(
-                                    object.ownership,
+                                    ownership,
                                     Ownership::Unique | Ownership::BorrowedWrite
                                 ))
-                            || (consumes && object.ownership != Ownership::Unique)
+                            || (consumes && ownership != Ownership::Unique)
                         {
                             return Err(self.function_error(
                                 RuleId::CheckedCallableContract,
@@ -1899,7 +2021,8 @@ impl Validator<'_> {
                             && (parameter.effects.contains(ParameterMemoryEffect::Retain)
                                 || parameter.effects.contains(ParameterMemoryEffect::Escape))
                         {
-                            object.ownership = Ownership::Shared;
+                            self.require_live_mut(state, *identity, function, at)?.ownership =
+                                Ownership::Shared;
                         }
                     }
                     if consumes {
@@ -1924,7 +2047,7 @@ impl Validator<'_> {
             }
             (CallableMemoryResult::Fresh { layout, extent }, Some(result)) => {
                 if result.layout != *layout
-                    || !contract_extent_matches(extent, &result.extent, arguments)
+                    || !contract_extent_matches(extent, &result.extent, arguments, state)
                 {
                     return Err(self.function_error(
                         RuleId::CheckedCallableContract,
@@ -1962,70 +2085,37 @@ impl Validator<'_> {
                         format!("alias result of `{callable}` has no source parameter"),
                     ));
                 };
-                if !projection.steps().is_empty() {
-                    return Err(self.function_unsupported(
-                        UnsupportedForm::NonRootAliasResult,
-                        function,
-                        at,
-                        format!("alias result of `{callable}` is not a root alias"),
-                    ));
-                }
-                let source_state = self.require_live(state, *source, function, at)?;
-                if !matches!(
-                    &result.provenance,
-                    Provenance::Aliases { object, projection: actual }
-                        if object == source
-                            && actual.steps().is_empty()
-                ) || result.identity.root == source.root
-                    || result.identity.generation != source.generation
-                    || source_state.object.layout != result.layout
-                    || source_state.object.extent != result.extent
-                {
-                    return Err(self.function_error(
-                        RuleId::CheckedCallableContract,
-                        function,
-                        at,
-                        format!("alias result of `{callable}` contradicts provenance"),
-                    ));
-                }
-                self.define(state, result.identity.root, function, at)?;
-                if state.objects.contains_key(&result.identity) {
-                    return Err(self.function_error(
-                        RuleId::CheckedCallableContract,
-                        function,
-                        at,
-                        format!("alias result of `{callable}` reuses a value definition"),
-                    ));
-                }
-                self.require_live_mut(state, *source, function, at)?.ownership = Ownership::Shared;
-                self.link_alias_group(state, *source, result.identity);
-                state.objects.insert(
-                    result.identity,
-                    ObjectState { object: result.clone(), ownership: Ownership::Shared },
-                );
+                self.materialize_projection(
+                    function,
+                    at,
+                    *source,
+                    projection,
+                    result,
+                    state,
+                )?;
             }
             (CallableMemoryResult::Shared(parameters), Some(result)) => {
-                let expected: BTreeSet<_> = parameters
-                    .iter()
-                    .filter_map(|parameter| match arguments.get(*parameter) {
-                        Some(CallArgument::Object(identity)) => Some(*identity),
-                        _ => None,
-                    })
-                    .collect();
-                if !matches!(&result.provenance, Provenance::MayAlias(actual) if actual == &expected)
-                    || !expected.contains(&result.identity)
-                {
-                    return Err(self.function_error(
-                        RuleId::CheckedCallableContract,
-                        function,
-                        at,
-                        format!("shared result of `{callable}` contradicts alias set"),
-                    ));
+                let mut sources = BTreeSet::new();
+                for parameter in parameters {
+                    match arguments.get(*parameter) {
+                        Some(CallArgument::Object(identity)) => {
+                            sources.insert(*identity);
+                        }
+                        _ => return Err(self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            format!("shared result of `{callable}` has a non-object source"),
+                        )),
+                    }
                 }
-                for identity in expected {
-                    self.require_live_mut(state, identity, function, at)?.ownership =
-                        Ownership::Shared;
-                }
+                self.materialize_shared_aliases(
+                    function,
+                    at,
+                    &sources.into_iter().collect::<Vec<_>>(),
+                    result,
+                    state,
+                )?;
             }
             _ => {
                 return Err(self.function_error(
@@ -2039,15 +2129,421 @@ impl Validator<'_> {
         Ok(())
     }
 
+    fn materialize_projection(
+        &self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        source: ObjectIdentity,
+        projection: &ContractProjection,
+        result: &ObjectRef,
+        state: &mut State,
+    ) -> Result<(), ValidationError> {
+        let source_state = self.require_live(state, source, function, at)?;
+        let source_object = source_state.object.clone();
+        let alias_ownership = match source_state.ownership {
+            Ownership::Unique | Ownership::Shared => Ownership::Shared,
+            Ownership::BorrowedRead | Ownership::BorrowedWrite => Ownership::BorrowedRead,
+            Ownership::Consumed => unreachable!(),
+        };
+        let (layout, extent, actual_projection) =
+            self.derive_contract_projection(&source_object, projection, state, function, at)?;
+        if result.identity.root == source.root
+            || result.identity.generation != source.generation
+            || result.layout != layout
+            || result.extent != extent
+            || !matches!(
+                &result.provenance,
+                Provenance::Aliases { object, projection }
+                    if *object == source
+                        && self.projections_match_by_value(
+                            projection,
+                            &actual_projection,
+                            state,
+                        )
+            )
+        {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "projected alias result contradicts descriptor-derived identity",
+            ));
+        }
+        self.validate_object_claim(result, function, at)?;
+        self.define(state, result.identity.root, function, at)?;
+        if state.objects.contains_key(&result.identity) {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "projected alias reuses an existing value definition",
+            ));
+        }
+        self.require_live_mut(state, source, function, at)?.ownership = alias_ownership;
+        self.link_alias_group(state, source, result.identity);
+        state.objects.insert(
+            result.identity,
+            ObjectState { object: result.clone(), ownership: alias_ownership },
+        );
+        Ok(())
+    }
+
+    fn materialize_shared_aliases(
+        &self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        sources: &[ObjectIdentity],
+        result: &ObjectRef,
+        state: &mut State,
+    ) -> Result<(), ValidationError> {
+        let expected = sources.iter().copied().collect::<BTreeSet<_>>();
+        if expected.is_empty() || expected.len() != sources.len() {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "shared result requires a nonempty set of distinct source aliases",
+            ));
+        }
+        let mut shape = None;
+        for source in &expected {
+            let object = self.require_live(state, *source, function, at)?;
+            let current = (object.object.layout, object.object.extent.clone());
+            if shape.as_ref().is_some_and(|shape| shape != &current) {
+                return Err(self.function_error(
+                    RuleId::CheckedCallableContract,
+                    function,
+                    at,
+                    "shared result sources have incompatible descriptor identities",
+                ));
+            }
+            shape = Some(current);
+        }
+        let (layout, extent) = shape.expect("nonempty source set has one shape");
+        if expected.contains(&result.identity)
+            || result.layout != layout
+            || result.extent != extent
+            || !matches!(&result.provenance, Provenance::MayAlias(actual) if actual == &expected)
+        {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "shared result contradicts its checked alias set or descriptor shape",
+            ));
+        }
+        self.validate_object_claim(result, function, at)?;
+        self.define(state, result.identity.root, function, at)?;
+        if state.objects.contains_key(&result.identity) {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "shared result reuses an existing value definition",
+            ));
+        }
+        state.objects.insert(
+            result.identity,
+            ObjectState { object: result.clone(), ownership: Ownership::Shared },
+        );
+        for source in expected {
+            self.require_live_mut(state, source, function, at)?.ownership = Ownership::Shared;
+            self.link_alias_group(state, source, result.identity);
+        }
+        Ok(())
+    }
+
+    fn derive_contract_projection(
+        &self,
+        source: &ObjectRef,
+        projection: &ContractProjection,
+        state: &State,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<(LayoutId, Extent, crate::safewir::Projection), ValidationError> {
+        let mut layout = source.layout;
+        let mut extent = source.extent.clone();
+        let mut actual = crate::safewir::Projection::root();
+        for (step_index, step) in projection.steps().iter().enumerate() {
+            let descriptor = self.layouts.get(layout).ok_or_else(|| {
+                self.function_error(
+                    RuleId::CanonicalLayout,
+                    function,
+                    at,
+                    "call projection references an unknown descriptor",
+                )
+            })?;
+            match step {
+                ContractProjectionStep::Header { component } => {
+                    let HeaderLayout::PackedList { length_offset: _, capacity_offset: _, .. } =
+                        descriptor.header()
+                    else {
+                        return Err(self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            "header result projection requires a packed-list descriptor",
+                        ));
+                    };
+                    if *component > 1 {
+                        return Err(self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            "header result projection names an unknown component",
+                        ));
+                    }
+                    if step_index + 1 != projection.steps().len() {
+                        return Err(self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            "a scalar header result cannot be projected further",
+                        ));
+                    }
+                    layout = self.scalar_layout(ScalarKind::U32, function, at)?;
+                    extent = Extent::Exact(SizeExpr::Constant(4));
+                    actual = actual.project(ProjectionStep::Header { component: *component });
+                }
+                ContractProjectionStep::Field { index } => {
+                    let field = descriptor.fields().get(*index as usize).ok_or_else(|| {
+                        self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            "field result projection is outside the descriptor",
+                        )
+                    })?;
+                    actual = actual.project(ProjectionStep::Field { index: *index });
+                    match field.kind() {
+                        FieldKind::Scalar(kind) => {
+                            if step_index + 1 != projection.steps().len() {
+                                return Err(self.function_error(
+                                    RuleId::CheckedCallableContract,
+                                    function,
+                                    at,
+                                    "a scalar field result cannot be projected further",
+                                ));
+                            }
+                            layout = self.scalar_layout(kind, function, at)?;
+                            extent = Extent::Exact(SizeExpr::Constant(u64::from(kind.size())));
+                        }
+                        FieldKind::Inline(child) => {
+                            layout = child;
+                            extent = match self.layouts.get(child).map(|descriptor| descriptor.size()) {
+                                Some(LayoutSize::Fixed(size)) => {
+                                    Extent::Exact(SizeExpr::Constant(u64::from(size)))
+                                }
+                                _ => Extent::Unknown,
+                            };
+                        }
+                    }
+                }
+                ContractProjectionStep::Element { index } => {
+                    let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
+                        return Err(self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            "element result projection requires a packed-list descriptor",
+                        ));
+                    };
+                    let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+                        unreachable!("packed lists have dynamic descriptors")
+                    };
+                    let Extent::Counted { count, .. } = &extent else {
+                        return Err(self.function_error(
+                            RuleId::ExactRangeSource,
+                            function,
+                            at,
+                            "element result projection requires an exact source element count",
+                        ));
+                    };
+                    let source_count =
+                        self.require_nonnegative_scalar(state, *count, function, at)?;
+                    if u128::from(*index) >= source_count {
+                        return Err(self.function_error(
+                            RuleId::ExactRangeSource,
+                            function,
+                            at,
+                            "element result projection is outside the source list",
+                        ));
+                    }
+                    let definition = self.constant_definition(state, u64::from(*index), function, at)?;
+                    actual = actual.project(ProjectionStep::Element { index: definition });
+                    layout = *element;
+                    extent = Extent::Exact(SizeExpr::Constant(u64::from(stride)));
+                }
+                ContractProjectionStep::Slice { start, length } => {
+                    let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
+                        return Err(self.function_error(
+                            RuleId::CheckedCallableContract,
+                            function,
+                            at,
+                            "slice result projection requires a packed-list descriptor",
+                        ));
+                    };
+                    let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+                        unreachable!("packed lists have dynamic descriptors")
+                    };
+                    let Extent::Counted { count, .. } = &extent else {
+                        return Err(self.function_error(
+                            RuleId::ExactRangeSource,
+                            function,
+                            at,
+                            "slice result projection requires an exact source element count",
+                        ));
+                    };
+                    let source_count =
+                        self.require_nonnegative_scalar(state, *count, function, at)?;
+                    let end = u128::from(*start)
+                        .checked_add(u128::from(*length))
+                        .ok_or_else(|| {
+                            self.function_error(
+                                RuleId::NonWrappingSize,
+                                function,
+                                at,
+                                "slice result bounds overflowed",
+                            )
+                        })?;
+                    if end > source_count {
+                        return Err(self.function_error(
+                            RuleId::ExactRangeSource,
+                            function,
+                            at,
+                            "slice result projection is outside the source list",
+                        ));
+                    }
+                    let start_definition =
+                        self.constant_definition(state, u64::from(*start), function, at)?;
+                    let length_definition =
+                        self.constant_definition(state, u64::from(*length), function, at)?;
+                    actual = actual.project(ProjectionStep::Slice {
+                        start: start_definition,
+                        length: length_definition,
+                    });
+                    layout = *element;
+                    extent = Extent::Exact(SizeExpr::Constant(
+                        u64::from(stride)
+                            .checked_mul(u64::from(*length))
+                            .ok_or_else(|| {
+                                self.function_error(
+                                    RuleId::NonWrappingSize,
+                                    function,
+                                    at,
+                                    "slice result extent overflowed",
+                                )
+                            })?,
+                    ));
+                }
+            }
+        }
+        Ok((layout, extent, actual))
+    }
+
+    fn projections_match_by_value(
+        &self,
+        left: &crate::safewir::Projection,
+        right: &crate::safewir::Projection,
+        state: &State,
+    ) -> bool {
+        left.steps().len() == right.steps().len()
+            && left.steps().iter().zip(right.steps()).all(|(left, right)| {
+                match (left, right) {
+                    (
+                        ProjectionStep::Header { component: left },
+                        ProjectionStep::Header { component: right },
+                    )
+                    | (
+                        ProjectionStep::Field { index: left },
+                        ProjectionStep::Field { index: right },
+                    ) => left == right,
+                    (
+                        ProjectionStep::Element { index: left },
+                        ProjectionStep::Element { index: right },
+                    ) => matches!(
+                        (state.scalars.get(left), state.scalars.get(right)),
+                        (Some(left), Some(right)) if left == right
+                    ),
+                    (
+                        ProjectionStep::Slice {
+                            start: left_start,
+                            length: left_length,
+                        },
+                        ProjectionStep::Slice {
+                            start: right_start,
+                            length: right_length,
+                        },
+                    ) => matches!(
+                        (
+                            state.scalars.get(left_start),
+                            state.scalars.get(right_start),
+                            state.scalars.get(left_length),
+                            state.scalars.get(right_length),
+                        ),
+                        (
+                            Some(left_start),
+                            Some(right_start),
+                            Some(left_length),
+                            Some(right_length),
+                        ) if left_start == right_start && left_length == right_length
+                    ),
+                    _ => false,
+                }
+            })
+    }
+
+    fn scalar_layout(
+        &self,
+        kind: ScalarKind,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<LayoutId, ValidationError> {
+        self.layouts
+            .iter()
+            .find_map(|(layout, descriptor)| {
+                matches!(descriptor.kind(), LayoutKind::Scalar(actual) if *actual == kind)
+                    .then_some(layout)
+            })
+            .ok_or_else(|| {
+                self.function_error(
+                    RuleId::CanonicalLayout,
+                    function,
+                    at,
+                    format!("projection requires canonical {kind:?} layout identity"),
+                )
+            })
+    }
+
+    fn constant_definition(
+        &self,
+        state: &State,
+        value: u64,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<DefinitionId, ValidationError> {
+        let value = i128::from(value);
+        state
+            .scalars
+            .iter()
+            .find_map(|(definition, actual)| (*actual == value).then_some(*definition))
+            .ok_or_else(|| {
+                self.function_error(
+                    RuleId::CheckedCallableContract,
+                    function,
+                    at,
+                    "constant projection has no checked scalar definition",
+                )
+            })
+    }
+
     fn validate_object_claim(
         &self,
         object: &ObjectRef,
         function: &CandidateFunction,
         at: Option<usize>,
     ) -> Result<(), ValidationError> {
-        if !self.module.layouts.roots().contains(&object.layout)
-            || self.layouts.get(object.layout).is_none()
-        {
+        if self.layouts.get(object.layout).is_none() {
             return Err(self.function_error(
                 RuleId::CanonicalLayout,
                 function,
@@ -2753,19 +3249,6 @@ impl Validator<'_> {
         }
     }
 
-    fn module_unsupported(
-        &self,
-        form: UnsupportedForm,
-        message: impl Into<String>,
-    ) -> ValidationError {
-        ValidationError {
-            diagnostic: ValidationDiagnostic::Unsupported(form),
-            function: None,
-            operation: None,
-            message: message.into(),
-        }
-    }
-
     fn function_error(
         &self,
         rule: RuleId,
@@ -2831,10 +3314,11 @@ fn contract_extent_matches(
     contract: &ContractExtent,
     actual: &Extent,
     arguments: &[CallArgument],
+    state: &State,
 ) -> bool {
     match (contract, actual) {
         (ContractExtent::Exact(contract), Extent::Exact(actual)) => {
-            contract_size_matches(contract, actual, arguments)
+            contract_size_matches(contract, actual, arguments, state)
         }
         (
             ContractExtent::Counted { header, count, stride },
@@ -2844,13 +3328,14 @@ fn contract_extent_matches(
                 stride: actual_stride,
             },
         ) => {
-            contract_size_matches(header, actual_header, arguments)
+            contract_size_matches(header, actual_header, arguments, state)
                 && contract_size_matches(
                     count,
                     &SizeExpr::Definition(*actual_count),
                     arguments,
+                    state,
                 )
-                && contract_size_matches(stride, actual_stride, arguments)
+                && contract_size_matches(stride, actual_stride, arguments, state)
         }
         _ => false,
     }
@@ -2860,16 +3345,22 @@ fn contract_size_matches(
     contract: &ContractSizeExpr,
     actual: &SizeExpr,
     arguments: &[CallArgument],
+    state: &State,
 ) -> bool {
     match (contract, actual) {
         (ContractSizeExpr::Constant(expected), SizeExpr::Constant(actual)) => expected == actual,
+        (ContractSizeExpr::Constant(expected), SizeExpr::Definition(actual)) => state
+            .scalars
+            .get(actual)
+            .and_then(|actual| u64::try_from(*actual).ok())
+            == Some(*expected),
         (ContractSizeExpr::Parameter(parameter), SizeExpr::Definition(actual)) => {
             matches!(arguments.get(*parameter), Some(CallArgument::Scalar(expected)) if expected == actual)
         }
         (ContractSizeExpr::Add(a, b), SizeExpr::Add(x, y))
         | (ContractSizeExpr::Multiply(a, b), SizeExpr::Multiply(x, y)) => {
-            contract_size_matches(a, x, arguments)
-                && contract_size_matches(b, y, arguments)
+            contract_size_matches(a, x, arguments, state)
+                && contract_size_matches(b, y, arguments, state)
         }
         _ => false,
     }
@@ -2945,15 +3436,41 @@ fn operations(input: &[Operation]) -> Vec<&Operation> {
     output
 }
 
+fn has_branch_local_object_return(input: &[Operation]) -> bool {
+    fn contains_object_return(input: &[Operation]) -> bool {
+        operations(input)
+            .into_iter()
+            .any(|operation| matches!(operation, Operation::ReturnObject { .. }))
+    }
+
+    input.iter().any(|operation| match operation {
+        Operation::If { then_operations, else_operations, .. } => {
+            contains_object_return(then_operations)
+                || contains_object_return(else_operations)
+                || has_branch_local_object_return(then_operations)
+                || has_branch_local_object_return(else_operations)
+        }
+        Operation::Block { body, .. } | Operation::Loop { body, .. } => {
+            has_branch_local_object_return(body)
+        }
+        _ => false,
+    })
+}
+
 fn definition_sites(input: &[Operation]) -> Vec<DefinitionId> {
     let mut definitions = Vec::new();
     for operation in operations(input) {
         let definition = match operation {
             Operation::DefineScalar { definition, .. } => Some(*definition),
             Operation::Alloc { result } => Some(result.identity.root),
-            Operation::Call { result, .. } | Operation::HostCall { result, .. } => {
+            Operation::Call { result, .. }
+            | Operation::IndirectCall { result, .. }
+            | Operation::ClosureCall { result, .. }
+            | Operation::HostCall { result, .. } => {
                 result.as_ref().map(|result| result.identity.root)
             }
+            Operation::ProjectObject { result, .. }
+            | Operation::MergeObjectAliases { result, .. } => Some(result.identity.root),
             _ => None,
         };
         definitions.extend(definition);
@@ -2967,9 +3484,14 @@ fn identity_sites(input: &[Operation]) -> Vec<ObjectIdentity> {
         let identity = match operation {
             Operation::Alloc { result }
             | Operation::Reuse { new: result, .. } => Some(result.identity),
-            Operation::Call { result, .. } | Operation::HostCall { result, .. } => {
+            Operation::Call { result, .. }
+            | Operation::IndirectCall { result, .. }
+            | Operation::ClosureCall { result, .. }
+            | Operation::HostCall { result, .. } => {
                 result.as_ref().map(|result| result.identity)
             }
+            Operation::ProjectObject { result, .. }
+            | Operation::MergeObjectAliases { result, .. } => Some(result.identity),
             _ => None,
         };
         identities.extend(identity);
@@ -3895,7 +4417,7 @@ mod tests {
             }],
             operations: vec![Operation::ReturnObject { object: parameter.identity }],
         });
-        assert_rule(module, RuleId::UniqueAllocation);
+        assert_rule(module, RuleId::CheckedCallableContract);
     }
 
     #[test]
@@ -4158,7 +4680,7 @@ mod tests {
     }
 
     #[test]
-    fn non_root_alias_results_are_explicitly_unsupported() {
+    fn non_root_alias_summary_is_checked_against_the_final_body() {
         use crate::safewir::{ContractProjection, ContractProjectionStep};
 
         let mut module = base_module();
@@ -4179,11 +4701,11 @@ mod tests {
             parameters: Vec::new(),
             operations: Vec::new(),
         });
-        assert_unsupported(module, UnsupportedForm::NonRootAliasResult);
+        assert_rule(module, RuleId::CheckedCallableContract);
     }
 
     #[test]
-    fn shared_result_sets_are_explicitly_unsupported() {
+    fn shared_result_summary_is_checked_against_the_final_body() {
         let mut module = base_module();
         module.functions.push(CandidateFunction {
             name: "share".into(),
@@ -4197,7 +4719,7 @@ mod tests {
             parameters: Vec::new(),
             operations: Vec::new(),
         });
-        assert_unsupported(module, UnsupportedForm::SharedResult);
+        assert_rule(module, RuleId::CheckedCallableContract);
     }
 
     #[test]
@@ -4304,21 +4826,10 @@ mod tests {
         assert_rule(module, RuleId::CanonicalLayout);
 
         let mut module = base_module();
-        let borrowed = object(8, 1, Provenance::Unknown);
-        module.functions[0].contract = CallableMemoryContract {
-            parameters: vec![ParameterMemoryContract {
-                entry: ParameterMemoryEntry::Unique,
-                layout: Some(layout()),
-                extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
-                effects: ParameterMemoryEffects::none(),
-            }],
-            result: CallableMemoryResult::NoMemory,
-        };
-        module.functions[0].parameters = vec![ParameterBinding {
-            definition: borrowed.identity.root,
-            object: Some(borrowed.clone()),
-        }];
-        module.functions[0].operations = vec![Operation::Release { object: borrowed.identity }];
+        let alias = add_identity_alias(&mut module);
+        module.functions[0]
+            .operations
+            .push(Operation::Release { object: alias.identity });
         assert_rule(module, RuleId::DestructiveProvenance);
 
         let mut module = base_module();
@@ -4481,13 +4992,17 @@ mod tests {
         };
         assert_unsupported(proven, UnsupportedForm::ProvenIndex);
 
+    }
+
+    #[test]
+    fn recursive_no_memory_component_and_owned_parameter_transfer_are_checked() {
         let mut recursive = base_module();
         recursive.functions[0].operations.push(Operation::Call {
             callable: "main".into(),
             arguments: Vec::new(),
             result: None,
         });
-        assert_unsupported(recursive, UnsupportedForm::RecursiveCallGraph);
+        validate_candidate(&recursive, ValidationBudget::default()).unwrap();
 
         let mut owned = base_module();
         let parameter = object(20, 1, Provenance::Unknown);
@@ -4502,11 +5017,11 @@ mod tests {
             },
             parameters: vec![ParameterBinding {
                 definition: parameter.identity.root,
-                object: Some(parameter),
+                object: Some(parameter.clone()),
             }],
-            operations: Vec::new(),
+            operations: vec![Operation::Release { object: parameter.identity }],
         });
-        assert_unsupported(owned, UnsupportedForm::OwnedParameterTransfer);
+        validate_candidate(&owned, ValidationBudget::default()).unwrap();
     }
 
     #[test]
