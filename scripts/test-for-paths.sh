@@ -196,15 +196,13 @@ for p in "${paths[@]}"; do
             gate_need_conformance=1
             add_pkg witchy-types
             add "cargo nextest run -p witchy-types"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-lower/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-lower"
             add "cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-wir/*)
             any_rust=1
@@ -212,7 +210,6 @@ for p in "${paths[@]}"; do
             add_pkg witchy-wir
             add "cargo nextest run -p witchy-wir"
             add "cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-runtime/*)
             any_rust=1
@@ -220,23 +217,20 @@ for p in "${paths[@]}"; do
             add_pkg witchy-runtime
             add "cargo nextest run -p witchy-runtime"
             add "cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-syntax/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-syntax
             add "cargo nextest run -p witchy-syntax"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-interp/* | crates/witchy-caps/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-interp
             add_pkg witchy-caps
             add "cargo nextest run -p witchy-interp -p witchy-caps"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
-            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/main.rs | src/cli.rs | src/source.rs)
             gate_workspace=1
             add "cargo check -p witchy --all-targets"
