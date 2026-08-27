@@ -92,7 +92,9 @@ pub struct FinalTypedAsyncExecution {
     pub execution: TypedExecutionShape,
     pub closure_layout_fingerprint: [u8; 32],
     pub state_bindings: Vec<FinalTypedAsyncStateBinding>,
-    pub result_lanes: Vec<FrameLaneId>,
+    /// Closed typed dynamic cases that share the execution ABI but need a
+    /// backend call/host adapter rather than a statically direct transition.
+    pub dynamic_boundaries: Vec<DynamicAsyncBoundary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,7 +331,7 @@ impl FinalTypedAsyncExecution {
             execution,
             closure_layout_fingerprint,
             state_bindings,
-            result_lanes,
+            dynamic_boundaries,
         } = self;
         execution.validate()?;
         if state_bindings.len() != execution.states.len() {
@@ -345,10 +347,16 @@ impl FinalTypedAsyncExecution {
                 return Err("final async capture binding references absent frame lane".into());
             }
         }
-        if result_lanes.iter().any(|lane| lane.0 as usize >= execution.frame.len()) {
-            return Err("final async result binding references absent frame lane".into());
-        }
-        let TypedExecutionShape { id, entry, frame, states, operations, queues, cancellation } = execution;
+        let TypedExecutionShape {
+            id,
+            entry,
+            frame,
+            result_lanes,
+            states,
+            operations,
+            queues,
+            cancellation,
+        } = execution;
         let states = states.into_iter().zip(bindings).map(|(state, binding)| {
             FinalStateBinding {
                 state: AsyncProgramStateId(state.id.0),
@@ -392,7 +400,7 @@ impl FinalTypedAsyncExecution {
                 operation: AsyncProgramOperationId(cancellation.operation.0),
                 state: AsyncProgramStateId(cancellation.state.0),
             }),
-            dynamic_boundaries: Vec::new(),
+            dynamic_boundaries,
         })
     }
 }
@@ -486,6 +494,7 @@ impl AsyncExecutionShape {
             id: self.id,
             entry: ExecutionStateId(entry.0),
             frame: self.frame,
+            result_lanes: self.result_lanes.into_iter().map(FrameLaneId).collect(),
             states: self.states.into_iter().map(|state| ExecutionState {
                 id: ExecutionStateId(state.state.0),
                 transitions: state.edges.into_iter().map(|edge| ExecutionTransition {
@@ -599,6 +608,7 @@ mod tests {
         let binding = binding(&shape);
         let execution = shape.into_typed_execution(&binding).expect("canonical shape binds");
         let operation = &execution.operations[0];
+        assert_eq!(execution.result_lanes, vec![FrameLaneId(0)]);
         assert_eq!(operation.fallback_state, Some(ExecutionStateId(0)));
         assert_eq!(operation.arms.len(), 2);
         assert_eq!(operation.arms[0].operation, ExecutionOperation::ChannelReceive);
@@ -657,7 +667,8 @@ mod tests {
 
     #[test]
     fn final_typed_execution_producer_preserves_the_complete_operation_contract() {
-        let shape = shape();
+        let mut shape = shape();
+        shape.dynamic_boundaries = vec![DynamicAsyncBoundary::DynamicAsyncCall];
         let backend = binding(&shape);
         let execution = shape.clone().into_typed_execution(&backend).expect("typed execution");
         let produced = AsyncProgram::from_final_typed_executions(vec![FinalTypedAsyncExecution {
@@ -668,12 +679,14 @@ mod tests {
                 callable: state.callable,
                 capture_to_lane: state.capture_to_lane.iter().copied().map(FrameLaneId).collect(),
             }).collect(),
-            result_lanes: shape.result_lanes.iter().copied().map(FrameLaneId).collect(),
+            dynamic_boundaries: shape.dynamic_boundaries.clone(),
         }]).expect("canonical producer");
         let expected = AsyncProgram::new(vec![shape]).expect("expected program");
         assert_eq!(produced.semantic_fingerprint, expected.semantic_fingerprint);
         assert_eq!(produced.execution_shapes[0].operations[0].arms.len(), 2);
         assert_eq!(produced.execution_shapes[0].states[0].edges[0].condition,
             ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: 1 });
+        assert_eq!(produced.execution_shapes[0].dynamic_boundaries,
+            vec![DynamicAsyncBoundary::DynamicAsyncCall]);
     }
 }

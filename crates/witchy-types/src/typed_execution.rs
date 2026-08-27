@@ -155,6 +155,9 @@ pub struct TypedExecutionShape {
     pub id: ExecutionShapeId,
     pub entry: ExecutionStateId,
     pub frame: Vec<FrameLane>,
+    /// Ordered completed-value ABI. Runtime bindings may use a direct scalar
+    /// return physically, but cannot erase this semantic lane mapping.
+    pub result_lanes: Vec<FrameLaneId>,
     pub states: Vec<ExecutionState>,
     pub operations: Vec<OperationSite>,
     pub queues: Vec<QueueShape>,
@@ -177,6 +180,9 @@ impl TypedExecutionShape {
         let lane_count = self.frame.len() as u32;
         let state_count = self.states.len() as u32;
         let operation_count = self.operations.len() as u32;
+        if self.result_lanes.iter().any(|lane| lane.0 >= lane_count) {
+            return Err("execution result binding references absent frame lane".to_string());
+        }
         for state in &self.states {
             if state.transitions.is_empty() {
                 return Err(format!("execution state {} has no transition", state.id.0));
@@ -270,6 +276,7 @@ mod tests {
                 ownership: LaneOwnership::Move,
                 initially_initialized: true,
             }],
+            result_lanes: vec![FrameLaneId(0)],
             states: vec![ExecutionState {
                 id: ExecutionStateId(0),
                 transitions: vec![ExecutionTransition {
@@ -306,5 +313,12 @@ mod tests {
         let mut invalid = shape();
         invalid.states[0].transitions[0].actions = vec![LaneAction::Clear { lane: FrameLaneId(1) }];
         assert!(invalid.validate().expect_err("dangling lane must fail").contains("absent frame lane"));
+    }
+
+    #[test]
+    fn rejects_a_result_lane_outside_the_execution_frame() {
+        let mut invalid = shape();
+        invalid.result_lanes = vec![FrameLaneId(1)];
+        assert!(invalid.validate().expect_err("result lane must exist").contains("result binding references absent"));
     }
 }
