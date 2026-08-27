@@ -190,6 +190,43 @@ emit_gate_nextest() {
             *) args="${args:+$args }-p witchy" ;;
         esac
     fi
+    # `-p witchy` makes cargo BUILD all 24 of the package's test binaries even
+    # when the expression runs tests from ONE of them. Measured 2026-08-27: a
+    # docs gate spent 7m14s compiling to reach "Starting 1 test across 24
+    # binaries", while holding the serialized gate lock against 21 queued
+    # branches.
+    #
+    # `example_tests` (and `stdlib_docs_are_current` inside it) are declared by
+    # `mod example_tests;` in src/main.rs, which IS the bin target -- so they
+    # live in `witchy::bin/witchy` structurally, not by coincidence. Adding
+    # `--bin witchy` builds that one binary instead of 24.
+    #
+    # Narrow ONLY when `-p witchy` stands alone. `--bin`/`--test` AND with `-p`
+    # rather than unioning (see the note at the top of this file): measured on
+    # one tree, `-p witchy-lower -p witchy` lists 2174 tests while adding
+    # `--test rfc0101` lists 2. A crate package or the rfc0* conformance
+    # binaries name targets outside the bin, so either disables the narrowing.
+    #
+    # `add_witchy_test` also takes free-form names (including from stdin), and
+    # those may live in any binary -- so require every one of them to be an
+    # `example_tests` name, which main.rs's `mod example_tests;` pins to the bin.
+    local witchy_tests_all_bin=1 gwt
+    for gwt in ${gate_witchy_tests[0]+"${gate_witchy_tests[@]}"}; do
+        case "$gwt" in
+            example_tests*) ;;
+            *) witchy_tests_all_bin=0 ;;
+        esac
+    done
+    if [ "$need_witchy" -eq 1 ] \
+        && [ "${#gate_pkgs[@]}" -eq 0 ] \
+        && [ "$gate_need_conformance" -eq 0 ] \
+        && [ "$witchy_tests_all_bin" -eq 1 ] \
+        && { [ "$gate_need_examples" -eq 1 ] \
+             || [ "${#gate_example_mods[@]}" -gt 0 ] \
+             || [ "$gate_need_stdlib_docs" -eq 1 ] \
+             || [ "${#gate_witchy_tests[@]}" -gt 0 ]; }; then
+        args="$args --bin witchy"
+    fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
     [ -n "$expr" ] && printf '%s\n' "$expr"

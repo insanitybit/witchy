@@ -126,6 +126,58 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
     );
 }
 
+/// `-p witchy` makes cargo BUILD all 24 of the package's test binaries even
+/// when the run is one test from one of them. Measured 2026-08-27: a docs gate
+/// spent 7m14s compiling to reach "Starting 1 test across 24 binaries" while
+/// holding the serialized gate lock; `--bin witchy` builds that binary alone
+/// (41s -> 12s warm). Safe only because `mod example_tests;` lives in
+/// src/main.rs, which IS the bin target.
+#[test]
+fn gate_nextest_docs_only_builds_the_bin_target() {
+    for path in ["book/src/ch01.md", "std/list.witchy", "README.md"] {
+        let output = gate_nextest(&[path]);
+        assert!(
+            output.contains("--bin witchy"),
+            "{path} did not narrow the build to the bin target: {output}",
+        );
+    }
+}
+
+/// The narrowing must stay off wherever the selection can name a target outside
+/// the bin. `--bin` ANDs with `-p` instead of unioning, so a wrong narrowing
+/// does not error -- it silently runs a subset and reports green.
+#[test]
+fn gate_nextest_does_not_narrow_past_the_bin_target() {
+    // A crate package plus the rfc0* conformance binaries.
+    let compiler = gate_nextest(&["crates/witchy-lower/src/codegen/mod.rs"]);
+    assert!(
+        !compiler.contains("--bin witchy"),
+        "a compiler-stage change narrowed away its crate and conformance tests: {compiler}",
+    );
+    // A free-form witchy test filter that is not an `example_tests` name.
+    let lsp = gate_nextest(&["src/lsp.rs"]);
+    assert!(
+        !lsp.contains("--bin witchy"),
+        "a non-example_tests filter narrowed to the bin target: {lsp}",
+    );
+}
+
+/// The narrowing above is only sound while `example_tests` is compiled into the
+/// bin target. That is a structural fact, so assert it structurally rather than
+/// trusting it to stay true.
+#[test]
+fn example_tests_is_declared_in_the_bin_target() {
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read src/main.rs");
+    assert!(
+        main.contains("mod example_tests;"),
+        "example_tests is no longer declared in the bin target; \
+         scripts/test-for-paths.sh narrows docs gates to `--bin witchy` on that basis",
+    );
+}
+
 #[test]
 fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
     let output = gate_nextest(&[
