@@ -97,7 +97,7 @@ impl SourceValidationError {
 /// identities, and method owners were resolved while all source-only nodes were
 /// still present. Its fields are private so destructive lowering can require the
 /// proof instead of accepting an arbitrary module vector.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolvedSource {
     modules: Vec<(String, Module)>,
     declarations: crate::type_resolve::ResolvedDeclarations,
@@ -225,6 +225,109 @@ impl ResolvedSource {
             &self.user_modules,
             self.mode,
         )
+    }
+
+    /// Build the compiler-only linked projection that preserves `async` source
+    /// syntax. It shares expansion, name resolution, method resolution, labels,
+    /// folding, and record normalization with the runtime link, but deliberately
+    /// stops before CPS lowering. Consumers must keep its type table with this
+    /// exact AST; it is not an executable module.
+    pub fn typed_async_projection(&self) -> Result<crate::linker::LinkedModule, crate::linker::LinkError> {
+        fn no_expand(
+            _: &str,
+            _: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn restore_local_name(name: &mut String, prefix: &str) {
+            if let Some(local) = name.strip_prefix(prefix).map(str::to_string) {
+                *name = local;
+            }
+        }
+
+        fn restore_local_type_names(ty: &mut crate::ast::Type, prefix: &str) {
+            match ty {
+                crate::ast::Type::Named(name, arguments)
+                | crate::ast::Type::Dyn(name, arguments) => {
+                    restore_local_name(name, prefix);
+                    for argument in arguments {
+                        restore_local_type_names(argument, prefix);
+                    }
+                }
+                crate::ast::Type::Tuple(items) => {
+                    for item in items {
+                        restore_local_type_names(item, prefix);
+                    }
+                }
+                crate::ast::Type::RecordCompose { base, fields } => {
+                    restore_local_type_names(base, prefix);
+                    for (_, field) in fields {
+                        restore_local_type_names(field, prefix);
+                    }
+                }
+                crate::ast::Type::Fn(inputs, output, _, _) => {
+                    for input in inputs {
+                        restore_local_type_names(input, prefix);
+                    }
+                    restore_local_type_names(output, prefix);
+                }
+                crate::ast::Type::Qualified(_, inner) | crate::ast::Type::Slice(inner) => {
+                    restore_local_type_names(inner, prefix);
+                }
+            }
+        }
+
+        let mut modules = self.modules.clone();
+        for (name, module) in &mut modules {
+            if !module.imports.contains(name) {
+                module.imports.push(name.clone());
+                module.import_lines.push(0);
+            }
+            let prefix = format!("{name}.");
+            for item in &mut module.items {
+                match item {
+                    crate::ast::Item::Type(definition) => {
+                        restore_local_name(&mut definition.name, &prefix);
+                        for variant in &mut definition.variants {
+                            restore_local_name(&mut variant.name, &prefix);
+                        }
+                    }
+                    crate::ast::Item::Trait(definition) => {
+                        restore_local_name(&mut definition.name, &prefix);
+                    }
+                    crate::ast::Item::TypeAlias { name, ty, .. } => {
+                        restore_local_name(name, &prefix);
+                        restore_local_type_names(ty, &prefix);
+                    }
+                    crate::ast::Item::Impl(definition) => {
+                        restore_local_name(&mut definition.type_name, &prefix);
+                        if let Some(trait_name) = &mut definition.trait_name {
+                            restore_local_name(trait_name, &prefix);
+                        }
+                    }
+                    crate::ast::Item::Function(_) | crate::ast::Item::Const { .. }
+                    | crate::ast::Item::Comptime(_) => {}
+                }
+            }
+        }
+        crate::linker::link_with_user_modules_with_mode_and_origins_and_source_check_stage(
+            modules,
+            &self.entry,
+            no_expand,
+            &self.user_modules,
+            self.mode,
+            |_| Ok(()),
+            crate::linker::AsyncLoweringStage::TypedSource,
+        )
+        .map_err(|error| match error {
+            crate::linker::SourceLinkError::Link(error) => error,
+            crate::linker::SourceLinkError::Source(error) => crate::linker::LinkError {
+                location: error.link_location(),
+                message: error.message,
+            },
+        })
     }
 
     pub(crate) fn after_semantic_check(self) -> SemanticallyCheckedSource {
@@ -658,5 +761,42 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
             error.message.contains("unknown declaration attribute"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn typed_async_projection_keeps_linked_async_callable_identity() {
+        fn no_expand(
+            _: &str,
+            _: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn project(source: &ResolvedSource) -> Result<(), crate::linker::SourceLinkError> {
+            let projection = source
+                .typed_async_projection()
+                .map_err(crate::linker::SourceLinkError::Link)?;
+            let function = projection.module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == "main.work" => Some(function),
+                _ => None,
+            }).expect("linked async function");
+            assert!(function.is_async, "typed projection must stop before CPS lowering");
+            assert_eq!(crate::suspension::async_surface(function), Some((0, None)));
+            assert_eq!(crate::suspension::async_surface_module(function), Some("main"));
+            Ok(())
+        }
+
+        let module = parse(
+            "import task\n\nasync fn work() -> Int:\n    task.done(1).await\n\nfn main() -> Int:\n    0\n",
+        );
+        crate::linker::link_with_mode_and_origins_and_source_check(
+            vec![("main".into(), module)],
+            "main",
+            no_expand,
+            crate::linker::LinkMode::Production,
+            project,
+        )
+        .expect("typed async projection links");
     }
 }

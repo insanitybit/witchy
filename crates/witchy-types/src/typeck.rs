@@ -9567,7 +9567,7 @@ impl Checker {
                     ),
                     UnOp::Await => match self.resolve(&t) {
                         Ty::Named(name, mut arguments)
-                            if name == "Task" && arguments.len() == 1 =>
+                            if (name == "Task" || name == "task.Task") && arguments.len() == 1 =>
                         {
                             if let Some((root, projected)) = self.affine_place(expr) {
                                 if projected {
@@ -11545,7 +11545,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
 /// This table is deliberately not produced independently of its AST. Raw node
 /// addresses are valid identities only while that exact module allocation is
 /// alive, so [`annotate`] returns both values in one ownership unit.
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
     /// Complete callable identity for each concrete named declaration.
@@ -11606,6 +11606,7 @@ impl TypeTable {
 /// Keeping the table under the same owner as the module prevents callers from
 /// moving the table away, dropping the annotated nodes, and accidentally
 /// consulting it for freshly allocated nodes that reuse an old address.
+#[derive(Debug, PartialEq)]
 pub struct TypedModule {
     module: Module,
     table: TypeTable,
@@ -11855,6 +11856,17 @@ pub fn annotate_checked_source(module: Module) -> Result<TypedModule, TypeError>
         .map_err(|message| TypeError { message })?
         .into_module();
     let mut lowered = crate::traits::lower_checked(records)
+        .map_err(|message| TypeError { message })?;
+    witchy_syntax::parser::lower_sugar_module(&mut lowered);
+    annotate_checked(lowered)
+}
+
+/// Annotate the compiler-only linked source projection retained for RFC-0161.
+/// The linker has already applied ordinary name/method/label resolution and
+/// record normalization, but deliberately left `async` and `await` intact so
+/// expression identities remain valid for typed resumable lowering.
+pub fn annotate_typed_async_projection(module: Module) -> Result<TypedModule, TypeError> {
+    let mut lowered = crate::traits::lower_checked(module)
         .map_err(|message| TypeError { message })?;
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     annotate_checked(lowered)

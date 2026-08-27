@@ -5,6 +5,7 @@
 //! authoritative expanded source remains intact. Only that proof can enter
 //! destructive source lowering.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use std::fmt;
@@ -30,6 +31,7 @@ use crate::typeck::{self, TypeError};
 pub struct CheckedModule {
     linked: LinkedModule,
     module_owners: Option<AuthenticatedModuleOwners>,
+    typed_async_source: Option<typeck::TypedModule>,
 }
 
 /// A type-checked compiler rewrite that may be evaluated with the declaration
@@ -109,6 +111,14 @@ impl CheckedModule {
         crate::async_control_flow::SourceAsyncControlFlowInventory::from_surface(
             self.async_surface(),
         )
+    }
+
+    /// Borrow the fully linked, pre-CPS typed source projection for RFC-0161.
+    /// Its type table belongs to this exact AST allocation; it is compiler-only
+    /// evidence and cannot be evaluated or lowered as an executable module.
+    #[doc(hidden)]
+    pub fn typed_async_source(&self) -> Option<&typeck::TypedModule> {
+        self.typed_async_source.as_ref()
     }
 
     /// Build a catalog from the loader ownership retained during checked link.
@@ -324,6 +334,24 @@ fn link_checked_with(
     user_modules: Option<&HashSet<String>>,
     module_owners: Option<AuthenticatedModuleOwners>,
 ) -> Result<CheckedModule, PipelineError> {
+    let typed_async_source = RefCell::new(None);
+    let check_source = |source: &witchy_syntax::source_check::ResolvedSource| {
+        typeck::check_linked_source_semantics(source)?;
+        let has_async = source.modules().iter().any(|(_, module)| module.items.iter().any(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => function.is_async,
+            witchy_syntax::ast::Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
+            witchy_syntax::ast::Item::Type(_) | witchy_syntax::ast::Item::Trait(_)
+            | witchy_syntax::ast::Item::Const { .. } | witchy_syntax::ast::Item::TypeAlias { .. }
+            | witchy_syntax::ast::Item::Comptime(_) => false,
+        }));
+        if has_async {
+            let projection = source.typed_async_projection().map_err(SourceLinkError::Link)?;
+            let typed = typeck::annotate_typed_async_projection(projection.module)
+                .map_err(|error| SourceLinkError::Source(SourceCheckError::new(error.message)))?;
+            *typed_async_source.borrow_mut() = Some(typed);
+        }
+        Ok(())
+    };
     let linked = match user_modules {
         Some(user_modules) => {
             linker::link_with_user_modules_with_mode_and_origins_and_source_check(
@@ -332,7 +360,7 @@ fn link_checked_with(
                 expand,
                 user_modules,
                 mode,
-                typeck::check_linked_source_semantics,
+                check_source,
             )
         }
         None => linker::link_with_mode_and_origins_and_source_check(
@@ -340,13 +368,17 @@ fn link_checked_with(
             entry,
             expand,
             mode,
-            typeck::check_linked_source_semantics,
+            check_source,
         ),
     }?;
     if let Some(module_owners) = &module_owners {
         module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     }
-    Ok(CheckedModule { linked, module_owners })
+    Ok(CheckedModule {
+        linked,
+        module_owners,
+        typed_async_source: typed_async_source.into_inner(),
+    })
 }
 
 /// Link with the injected compile-time expander, then type-check the result.

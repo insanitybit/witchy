@@ -79,6 +79,16 @@ impl std::error::Error for SourceLinkError {
 pub type SourceChecker =
     fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>;
 
+/// Whether the linked artifact is the ordinary runtime CPS projection or the
+/// compiler-only typed-source projection retained by RFC-0161.  Both paths run
+/// the same source resolution and linking pipeline; the latter stops before
+/// destructive async lowering so a type table can still name source operands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AsyncLoweringStage {
+    Runtime,
+    TypedSource,
+}
+
 fn accept_resolved_source(
     _: &crate::source_check::ResolvedSource,
 ) -> Result<(), SourceLinkError> {
@@ -1220,6 +1230,7 @@ fn prepare_source_for_expansion(
 fn lower_expanded_source(
     checked: crate::source_check::SemanticallyCheckedSource,
     origin_tables: &mut HashMap<String, crate::origin::OriginTable>,
+    async_stage: AsyncLoweringStage,
 ) -> Result<
     (
         Vec<(String, Module)>,
@@ -1238,7 +1249,9 @@ fn lower_expanded_source(
     let mut async_surface = crate::async_surface::LinkedAsyncSurface::default();
     for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
         let cache_key = lowered_source_cache_key(&module_name, checked.module(), &view_fns);
-        if let Some(cached) = lowered_source_cache().lock().unwrap().get(&cache_key).cloned() {
+        if async_stage == AsyncLoweringStage::Runtime
+            && let Some(cached) = lowered_source_cache().lock().unwrap().get(&cache_key).cloned()
+        {
             origin_tables.insert(module_name.clone(), cached.origin_table);
             lowered_modules.push((module_name, cached.module));
             async_surface.push_module(cached.async_surface);
@@ -1255,34 +1268,48 @@ fn lower_expanded_source(
             &module_name,
             checked.module(),
         );
-        let (checked, async_mapping) =
-            crate::async_lower::lower_with_view_fns_and_item_mapping(checked, &view_fns)
-                .map_err(|message| LinkError {
-                message: format!("module `{module_name}`: expanded source: {message}"),
-                location: None,
-            })?;
-        let mut final_mapping = Vec::with_capacity(generator_mapping.len());
-        for generator_targets in &generator_mapping {
-            let mut targets = Vec::new();
-            for intermediate in generator_targets {
-                let Some(async_targets) = async_mapping.get(*intermediate) else {
-                    return Err(LinkError {
-                        message: format!(
-                            "module `{module_name}`: expanded source origins: generator mapping targets missing async input {intermediate}"
-                        ),
+        let (lowered, final_mapping) = match async_stage {
+            AsyncLoweringStage::Runtime => {
+                let (checked, async_mapping) =
+                    crate::async_lower::lower_with_view_fns_and_item_mapping(checked, &view_fns)
+                        .map_err(|message| LinkError {
+                        message: format!("module `{module_name}`: expanded source: {message}"),
                         location: None,
-                    });
-                };
-                targets.extend(async_targets.iter().copied());
+                    })?;
+                let mut final_mapping = Vec::with_capacity(generator_mapping.len());
+                for generator_targets in &generator_mapping {
+                    let mut targets = Vec::new();
+                    for intermediate in generator_targets {
+                        let Some(async_targets) = async_mapping.get(*intermediate) else {
+                            return Err(LinkError {
+                                message: format!(
+                                    "module `{module_name}`: expanded source origins: generator mapping targets missing async input {intermediate}"
+                                ),
+                                location: None,
+                            });
+                        };
+                        targets.extend(async_targets.iter().copied());
+                    }
+                    final_mapping.push(targets);
+                }
+                let lowered = crate::records::lower_lenient(checked)
+                    .map(|module| module.into_module())
+                    .map_err(|message| LinkError {
+                    message: format!("module `{module_name}`: expanded source: {message}"),
+                    location: None,
+                })?;
+                (lowered, final_mapping)
             }
-            final_mapping.push(targets);
-        }
-        let lowered = crate::records::lower_lenient(checked)
-            .map(|module| module.into_module())
-            .map_err(|message| LinkError {
-                message: format!("module `{module_name}`: expanded source: {message}"),
-                location: None,
-            })?;
+            AsyncLoweringStage::TypedSource => {
+                let mut module = checked.into_module();
+                mark_async_source_identities(&mut module);
+                let lowered = crate::records::lower_for_async_typeck(module).map_err(|message| LinkError {
+                    message: format!("module `{module_name}`: expanded source: {message}"),
+                    location: None,
+                })?;
+                (lowered, generator_mapping)
+            }
+        };
         let origin_table = origin_tables
             .entry(module_name.clone())
             .or_default();
@@ -1294,18 +1321,20 @@ fn lower_expanded_source(
                 ),
                 location: None,
             })?;
-        let mut cache = lowered_source_cache().lock().unwrap();
-        if cache.len() >= 64 {
-            cache.clear();
+        if async_stage == AsyncLoweringStage::Runtime {
+            let mut cache = lowered_source_cache().lock().unwrap();
+            if cache.len() >= 64 {
+                cache.clear();
+            }
+            cache.insert(
+                cache_key,
+                CachedLoweredSource {
+                    module: lowered.clone(),
+                    origin_table: origin_table.clone(),
+                    async_surface: module_async_surface.clone(),
+                },
+            );
         }
-        cache.insert(
-            cache_key,
-            CachedLoweredSource {
-                module: lowered.clone(),
-                origin_table: origin_table.clone(),
-                async_surface: module_async_surface.clone(),
-            },
-        );
         lowered_modules.push((module_name, lowered));
         async_surface.push_module(module_async_surface);
     }
@@ -1331,6 +1360,30 @@ fn lowered_source_cache_key(
     view_fns: &HashSet<String>,
 ) -> String {
     format!("{module_name}\n{module:?}\n{view_fns:?}")
+}
+
+/// Preserve a direct source callable identity on the still-async projection.
+/// Runtime lowering attaches the same identity to generated frame states; this
+/// variant instead attaches it to the original callable so the type table and
+/// source-expression coordinates refer to one AST allocation.
+fn mark_async_source_identities(module: &mut Module) {
+    for (item, source) in module.items.iter_mut().enumerate() {
+        let item = usize::try_from(item).expect("source item count exceeds usize");
+        match source {
+            Item::Function(function) if function.is_async => {
+                function.attributes.push(crate::suspension::async_surface_attribute(item, None));
+            }
+            Item::Impl(definition) => {
+                for (method, function) in definition.methods.iter_mut().enumerate() {
+                    if function.is_async {
+                        function.attributes.push(crate::suspension::async_surface_attribute(item, Some(method)));
+                    }
+                }
+            }
+            Item::Function(_) | Item::Type(_) | Item::Trait(_) | Item::Const { .. }
+            | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+        }
+    }
 }
 
 fn lower_generators_with_canonical_impls(
@@ -1842,6 +1895,29 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check<F>(
 where
     F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
 {
+    link_with_user_modules_with_mode_and_origins_and_source_check_stage(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        mode,
+        check_source,
+        AsyncLoweringStage::Runtime,
+    )
+}
+
+pub(crate) fn link_with_user_modules_with_mode_and_origins_and_source_check_stage<F>(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
+    check_source: F,
+    async_stage: AsyncLoweringStage,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
     let mut origin_tables: HashMap<String, crate::origin::OriginTable> = HashMap::new();
     check_reserved_source_names(&modules)?;
     if let Some(name) = user_modules
@@ -2040,7 +2116,7 @@ where
     check_source(&resolved)?;
     let checked = resolved.after_semantic_check();
     let (mut modules, declarations, mut async_surface) =
-        lower_expanded_source(checked, &mut origin_tables)?;
+        lower_expanded_source(checked, &mut origin_tables, async_stage)?;
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
     // (impl/trait/static) during trait lowering, not to arbitrary free
@@ -2231,11 +2307,13 @@ where
                     )?;
                     let linked_item = u32::try_from(items.len())
                         .expect("linked item count exceeds async-surface location range");
+                    if crate::suspension::async_surface(&f2).is_some() {
+                        f2.attributes.push(crate::suspension::async_surface_module_attribute(mname));
+                    }
                     if let (Some((surface_item, surface_method)), Some(local_state)) = (
                         crate::suspension::async_surface(&f2),
                         crate::suspension::frame_state(&f2),
                     ) {
-                        f2.attributes.push(crate::suspension::async_surface_module_attribute(mname));
                         async_surface.push_binding(
                             crate::async_surface::LinkedAsyncCallableBinding {
                                 module: mname.clone(),
@@ -2334,11 +2412,13 @@ where
                     let linked_item = u32::try_from(items.len())
                         .expect("linked item count exceeds async-surface location range");
                     for (method_index, method) in im2.methods.iter_mut().enumerate() {
+                        if crate::suspension::async_surface(method).is_some() {
+                            method.attributes.push(crate::suspension::async_surface_module_attribute(mname));
+                        }
                         if let (Some((surface_item, surface_method)), Some(local_state)) = (
                             crate::suspension::async_surface(method),
                             crate::suspension::frame_state(method),
                         ) {
-                            method.attributes.push(crate::suspension::async_surface_module_attribute(mname));
                             let Some(surface_method) = surface_method else {
                                 return source_lerr(format!(
                                     "async surface function marker on linked method `{}`",
@@ -2481,11 +2561,17 @@ where
     })?;
     let checked = crate::generators::lower(checked)
         .map_err(|message| LinkError { message, location: None })?;
-    let checked = crate::async_lower::lower(checked)
-        .map_err(|message| LinkError { message, location: None })?;
-    let module = crate::records::lower(checked)
-        .map_err(|message| LinkError { message, location: None })?
-        .into_module();
+    let module = match async_stage {
+        AsyncLoweringStage::Runtime => {
+            let checked = crate::async_lower::lower(checked)
+                .map_err(|message| LinkError { message, location: None })?;
+            crate::records::lower(checked)
+                .map_err(|message| LinkError { message, location: None })?
+                .into_module()
+        }
+        AsyncLoweringStage::TypedSource => crate::records::lower_for_async_typeck(checked.into_module())
+            .map_err(|message| LinkError { message, location: None })?,
+    };
     Ok(LinkedModule {
         module,
         origins,
