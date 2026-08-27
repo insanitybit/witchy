@@ -815,6 +815,183 @@ fn main(console: Console, root: Dir[Read]):
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// SEC-080: a capability-free dependency must not corrupt a path retained
+    /// by its caller and thereby steer the caller's `Dir[Read]` authority. The
+    /// vulnerable optimizer removed the `scratch[i]` check after `i` changed
+    /// inside the loop, so the `-5` store rewrote `publisher_path` in `main`.
+    #[test]
+    fn capability_free_dependency_cannot_rewrite_caller_path_via_bounds_elision_sec_080() {
+        use crate::runtime::{Capabilities, Runtime};
+
+        let attacker_src = r#"pub fn slice(text: String) -> String:
+    let padding = [0]
+    var scratch = [text]
+    var i = 0
+    while i < scratch.length():
+        match i:
+            0 -> i = 0 - 5
+            _ -> Nil
+        scratch[i] = "evil.json"
+        i = i + 7
+    if padding.length() == 0:
+        return "unreachable"
+    text
+"#;
+        let app_src = r#"import attacker
+
+fn main(console: Console, root: Dir[Read]):
+    let publisher_path = ["safe.json"]
+    let _ignored = attacker.slice("input")
+    console.print(root.read(publisher_path[0]))
+"#;
+        let attacker = parser::parse_module(attacker_src).expect("attacker parse");
+        let footprint = crate::capabilities::analyze(&attacker);
+        let slice = footprint
+            .entries
+            .iter()
+            .find(|entry| entry.name == "slice")
+            .expect("slice footprint");
+        assert!(slice.capabilities.is_empty(), "slice must receive no host authority");
+
+        let app = parser::parse_module(app_src).expect("app parse");
+        let linked = crate::pipeline::link(
+            vec![("attacker".to_string(), attacker), ("app".to_string(), app)],
+            "app",
+        )
+        .expect("link");
+        typeck::check(&linked).expect("typecheck");
+
+        let root = std::env::temp_dir().join(format!(
+            "witchy-sec-080-no-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("safe.json"), "{\"source\":\"safe\"}").expect("seed safe");
+        std::fs::write(root.join("evil.json"), "{\"source\":\"evil\",\"secret\":\"escaped\"}")
+            .expect("seed evil");
+        let root_text = root.to_str().expect("utf8 root");
+
+        assert!(
+            interpreter::run_module(linked.clone(), root_text, Vec::new()).is_err(),
+            "the source semantics must reject the negative list index"
+        );
+
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the optimized binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(actor.run().is_err(), "optimized WASM must trap before the caller's read");
+        assert!(actor.output().is_empty(), "the dependency redirected the caller's Dir authority");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SEC-080: a dependency given only a benign `File[Read]` must not be able
+    /// to manufacture some other authority. The vulnerable optimizer removed
+    /// the `scratch[i]` check after `i` changed inside the loop, so the `-2`
+    /// store overwrote the adjacent empty `List(Console)` length. Indexing that
+    /// list then produced a scalar Console token and let the dependency print,
+    /// even though Console was retained by `main` and absent from `read_file`'s
+    /// capability footprint.
+    #[test]
+    fn file_only_dependency_cannot_forge_console_via_bounds_elision_sec_080() {
+        use crate::runtime::{Capabilities, FsRights, Runtime};
+
+        let attacker_src = r#"pub fn read_file(file: File[Read]) -> String:
+    let consoles: List(Console) = []
+    var scratch = ["seed"]
+    var i = 0
+    while i < scratch.length():
+        match i:
+            0 -> i = 0 - 2
+            _ -> Nil
+        scratch[i] = "forged"
+        i = i + 4
+    let fake = list.at(consoles, 0)
+    fake.print("FILE-ONLY-CAPABILITY-ESCAPE")
+    file.read()
+"#;
+        let app_src = r#"import attacker
+
+fn main(console: Console, config: File[Read]):
+    let _ignored = attacker.read_file(config)
+"#;
+        let attacker = parser::parse_module(attacker_src).expect("attacker parse");
+        let footprint = crate::capabilities::analyze(&attacker);
+        let read_file = footprint
+            .entries
+            .iter()
+            .find(|entry| entry.name == "read_file")
+            .expect("read_file footprint");
+        assert_eq!(
+            crate::capabilities::show_caps(&read_file.capabilities),
+            "File[Read]",
+            "the dependency must receive no Console authority"
+        );
+
+        let app = parser::parse_module(app_src).expect("app parse");
+        let linked = crate::pipeline::link(
+            vec![("attacker".to_string(), attacker), ("app".to_string(), app)],
+            "app",
+        )
+        .expect("link");
+        typeck::check(&linked).expect("typecheck");
+
+        let root = std::env::temp_dir().join(format!(
+            "witchy-sec-080-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let benign = root.join("config.json");
+        std::fs::write(&benign, "{\"mode\":\"safe\"}").expect("seed file");
+
+        assert!(
+            interpreter::run_module_files(linked.clone(), &root, vec![benign.clone()]).is_err(),
+            "the source semantics must reject the negative list index"
+        );
+
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the optimized binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    file_grants: vec![benign],
+                    file_rights: vec![FsRights::new(true, false)],
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(actor.run().is_err(), "optimized WASM must trap before forging Console");
+        assert!(actor.output().is_empty(), "the dependency printed through forged authority");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The `Exec` capability compiles to a capability-gated host import and
     /// agrees with the interpreter: a confined subprocess runs identically on
     /// both backends, returning the `"<code>\n<output>"` payload, and an
