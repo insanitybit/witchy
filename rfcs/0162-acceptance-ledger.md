@@ -257,8 +257,8 @@ queue item has a terminal `merged` event.
   passed 130 WIR tests, 332 lowerer tests, seven RFC-0110 tests, serialized
   timeout reproductions, the Wasm shard, bug-tier clippy, and two Fable reviews.
   Queue item `mq-e2a54035340a435eae5926bbfaf1b3d913ec3902`
-  terminally merged as master `19427b3c5`. Fixed templates, region-watermark
-  census resolution, migration, and production authority remain pending.
+  terminally merged as master `19427b3c5`. Fixed templates, migration, and
+  production authority remain pending.
 - Commit `bfeb20c13` on `impl/rfc0162-kernel-templates`, stacked on the opaque
   kernel operations, adds the fixed encoder-owned templates for allocation,
   retain, release, destructive reuse, and reclaim. Ordinary WIR still cannot
@@ -271,6 +271,16 @@ queue item has a terminal `merged` event.
   branch. Its first attempt conflicted after that dependency landed and must be
   rebased and resubmitted. Production `ValidatedWirModule` authority,
   ordinary-operation migration, and terminal queue evidence remain pending.
+- Commit `3c080c4c9` on `impl/rfc0162-region-kernel` adds the one opaque
+  `RegionMark` expression and the three fixed iteration, lexical, and copy-out
+  rewind shapes. It preserves the existing operand, checked-heap hook,
+  overlap-safe copy, frontier, free-list, poisoning, and reuse order; adds
+  missing-global, out-of-bounds, and unsafe iteration/free-list negatives; and
+  leaves telemetry outside the opaque operation. Fable's final verdict is
+  ACCEPT. `SWIR-KERN-002` now specifies the exact LIFO watermark and rewind
+  judgment. The candidate is statically clean but deliberately has no credited
+  build result while host load is saturated; focused WIR/lowerer, template,
+  Wasm, examples, and terminal queue evidence remain pending.
 - Commits `8cad4c2e2` and `bd640656f` on
   `impl/rfc0162-validated-encoder-authority` add a private, non-Clone
   `ValidatedWirModule`, fail-closed final validation, mechanical fixed-template
@@ -328,7 +338,7 @@ encoder escape hatch, or runtime safety metadata.
 | T2 callable and range binding | landed SEC/callable slices; final range candidate awaiting shards | SEC-078 master `da098299a`; callable master batch `4c25e171e`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | SEC-078 and callable matrix landed; final squashed range identity, evaluation-order, wrap, kernel traversal, and invalidation repairs are green at `9ac93aaf4` with 167 WIR tests and final Opus/Fable ACCEPT; examples/Wasm, terminal merge, and production catalog binding remain incomplete |
 | T3 final validator | landed report slices | master batch `154ea94be` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, joins/loops through `d6825e3da`, and real WIR exits at `d88854a19` terminally merged; 107/107 WIR library tests and bug-tier clippy green; final Fable/Opus verdicts ACCEPT; mutable-local conditions, symbolic facts, recursive components, and production authority remain incomplete |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
-| T5 kernel and encoder | landed opaque ops; conflicted template candidate | master `19427b3c5`; `impl/rfc0162-kernel-templates` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations terminally merged at `19427b3c5`; fixed templates and native boundary/poison/reuse evidence at `bfeb20c13` must be rebased after a queue conflict; region-watermark census, production authority, migration, and template terminal pending |
+| T5 kernel and encoder | landed opaque ops; template and region candidates | master `19427b3c5`; `impl/rfc0162-kernel-templates`; `impl/rfc0162-region-kernel` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations terminally merged at `19427b3c5`; rebased fixed-template candidate `c176a5c42` plus uncommitted profile/fingerprint hardening and region candidate `3c080c4c9` have static Fable ACCEPT verdicts; build validation, production authority, migration, and terminal queue evidence remain pending |
 | T6 mandatory production gate | reviewed authority candidate awaiting integration | master batch `4c25e171e`; `impl/rfc0162-source-layout`; `impl/rfc0162-validated-encoder-authority` | private `ValidatedWirModule`; no unchecked production encode/raw-body path | checked source entry landed; exact source-layout candidate rebased through `922330df3`; private authority plus exact GC declarations is green through `bd640656f` with 113 WIR tests, API proofs, and Fable ACCEPT; source/templates/region integration, raw bridge removal, and queue terminal remain pending |
 | T7 external TCB and evidence | Binaryen and report mutation evidence landed; SEC rebased | master batches `32a0cd108` and `11b90fef1`; `impl/rfc0162-sec-corpus` | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | Binaryen terminally merged; 20 modeled mutations are caught with 15 report kills credited and five production sentinels deferred; SEC corpus is rebased at `217a5bd65` with exact production comparison green, but load-contaminated examples reruns and resubmission remain pending; release CI, forged-WIR SEC negatives, fuzz, and zero-cost evidence pending |
 | T8 review and closeout | pending | integration | Fable review, Opus adjudication if rejected, resolved findings, terminal merge audit | pending |
@@ -348,7 +358,7 @@ code. `candidate` means reusable work exists but is not landed proof.
 | 6 | Final optimized WIR checked once and fail closed | pending | Private authority and API-negative proofs exist through `bd640656f`, but are unintegrated; master encoding remains directly callable | Integrate the private authority after source/templates/region contracts and remove every production raw encoder entry |
 | 7 | Optimizer combinations cannot retain stale facts | candidate | `9ac93aaf4` binds facts to exact identities and rejects reassignment, nested evaluation effects, condition effects, joins, loops, kernel operands, wrong object/generation/length source, and wrap-unsound arithmetic; whole-pipeline inline/specialize/recursion combinations and terminal merge remain incomplete | Inline, specialize, recursion, and complete pass-combination rejection fixtures through the production gate |
 | 8 | Raw memory is sealed | pending | All-crates structural parser confirms 584 sites in 25 files; no-growth ceiling is locally green but migration remains zero of 584 | Current census reaches zero outside the named kernel-template module; structural test blocks regressions |
-| 9 | Kernel is small and directly tested | candidate | Six opaque operation shapes at `9058e272f` cannot carry ordinary WIR bodies; `bfeb20c13` supplies fixed templates plus exact structural and native boundary/poison/reuse tests; production helpers and mutation evidence remain incomplete | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
+| 9 | Kernel is small and directly tested | candidate | The six landed allocation/RC shapes and the four-shape region candidate cannot carry ordinary WIR bodies; `c176a5c42` plus pending profile/fingerprint hardening supplies fixed templates, and `3c080c4c9` supplies region boundary/free-list/copy-out negatives with Fable ACCEPT; current-load build validation, production helper migration, mutation evidence, and terminal queue landing remain incomplete | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
 | 10 | Encoder mechanically erases facts | candidate | `bfeb20c13` mechanically encodes opaque kernel operations through fixed templates, but the encoder still accepts arbitrary WIR and supports production raw bodies | Exact template tests, mandatory Wasm validation, and no production raw-body route |
 | 11 | Applicable SEC corpus is permanent | candidate | Identically rebased `217a5bd65` restores distinct SEC-036 and pins SEC-037/038/039 source plus exact 15-case production-Binaryen evidence; SEC-078 is landed on master; quiet examples, terminal merge, forged-WIR, and encoder-template negatives remain pending | Source regression plus forged-WIR rejection for SEC-036/037/038/039/078; encoder test where applicable |
 | 12 | Validator mutations are killed | candidate | `11b90fef1` terminally lands 20 caught and zero surviving/timed-out/unviable mutations; 15 report rules are credited, while five production sentinels remain uncredited because the production gate does not yet exist | Bind and kill the five production sentinels through the real final validator/encoder path |
