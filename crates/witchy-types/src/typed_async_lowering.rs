@@ -221,6 +221,25 @@ impl TypedAsyncLoweringInput {
                 ));
             }
         }
+        // This is a total source-to-final binding, not best-effort metadata.
+        // A source await without its continuation would force a later program
+        // producer either to rediscover CPS structure or to invent a resume
+        // target. Both would lose the final-layout contract.
+        for flow in &source {
+            for operation in flow.operations.iter().filter(|operation| {
+                operation.kind == SourceAsyncOperationKind::Await
+            }) {
+                if !suspensions.iter().any(|binding| {
+                    binding.callable == flow.callable
+                        && binding.source_operation == operation.ordinal
+                }) {
+                    return Err(format!(
+                        "source async await operation {} has no final continuation-state binding",
+                        operation.ordinal,
+                    ));
+                }
+            }
+        }
         Ok(Self { source, states, suspensions })
     }
 }
@@ -274,5 +293,13 @@ mod tests {
         assert_eq!(input.suspensions.len(), 2);
         assert!(input.suspensions[0].source_operation < input.suspensions[1].source_operation);
         assert!(input.suspensions[0].final_state > input.suspensions[1].final_state);
+        let source_awaits = input.source[0].operations.iter()
+            .filter(|operation| operation.kind == SourceAsyncOperationKind::Await)
+            .map(|operation| operation.ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            input.suspensions.iter().map(|binding| binding.source_operation).collect::<Vec<_>>(),
+            source_awaits,
+        );
     }
 }
