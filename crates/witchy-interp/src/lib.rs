@@ -18,5 +18,6 @@ pub mod compiler_natives;
 pub mod comptime;
 pub mod interpreter;
 pub mod pipeline;
+pub mod typed_async;
 pub(crate) mod reachability;
 pub(crate) mod tagged;
