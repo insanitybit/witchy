@@ -16,7 +16,7 @@ use witchy_syntax::suspension::{
 
 use crate::async_control_flow::{
     AsyncCallableId, ControlPathStep, SourceAsyncControlFlow, SourceAsyncControlFlowInventory,
-    SourceAsyncOperationKind, SourceExpressionId, source_expression,
+    SourceAsyncOperationKind, SourceBindingId, SourceExpressionId, source_expression,
 };
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
@@ -109,6 +109,10 @@ pub struct TypedAsyncSourceOperationBinding {
     /// it to obtain operands from the retained source item, never from a
     /// generated closure name or scalar transition recognizer.
     pub expression: Option<SourceExpressionId>,
+    /// Ordered lexical bindings read by this operation expression. The IDs are
+    /// source facts, not variable spellings, so shadowed locals remain distinct
+    /// when final closure layout later assigns frame lanes.
+    pub operand_bindings: Vec<SourceBindingId>,
     /// The finalized operand type captured from the linked pre-CPS typed
     /// projection. A bare `return` has no operand; every other operation must
     /// carry a concrete type before executable frame/lane formation begins.
@@ -325,6 +329,18 @@ impl TypedAsyncLoweringInput {
                         operation.ordinal,
                     ));
                 }
+                let mut operand_bindings = Vec::new();
+                if let Some(expression) = operation.expression
+                    && let Some(span) = flow.expression_spans.iter().find(|span| span.root == expression)
+                {
+                    for use_site in flow.binding_uses.iter().filter(|use_site| {
+                        use_site.expression.0 >= span.root.0 && use_site.expression.0 < span.end.0
+                    }) {
+                        if !operand_bindings.contains(&use_site.binding) {
+                            operand_bindings.push(use_site.binding);
+                        }
+                    }
+                }
                 operations.push(TypedAsyncSourceOperationBinding {
                     callable: flow.callable.clone(),
                     source_operation: operation.ordinal,
@@ -332,6 +348,7 @@ impl TypedAsyncLoweringInput {
                     runtime_kind: source_operation_kind(operation.kind),
                     path: operation.path.clone(),
                     expression: operation.expression,
+                    operand_bindings,
                     operand_type: None,
                     continuation,
                     terminal: operation.kind == SourceAsyncOperationKind::Await && continuation.is_none()
@@ -614,6 +631,7 @@ mod tests {
             operation.kind == SourceAsyncOperationKind::Await
                 && operation.runtime_kind == TypedAsyncOperationKind::ChannelSend
                 && operation.terminal
+                && operation.operand_bindings == vec![SourceBindingId(0)]
         }));
         assert!(input.operations.iter().any(|operation| {
             operation.kind == SourceAsyncOperationKind::StaticCall

@@ -67,6 +67,16 @@ pub struct SourceAsyncBindingUse {
     pub binding: SourceBindingId,
 }
 
+/// Preorder interval for one expression. Descendants occupy the half-open
+/// interval `[root, end)`, making it possible to associate an operation's
+/// exact operand reads with lexical binding IDs without walking generated
+/// continuations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceExpressionSpan {
+    pub root: SourceExpressionId,
+    pub end: SourceExpressionId,
+}
+
 /// A nesting step that distinguishes sequential and mutually-exclusive paths.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlPathStep {
@@ -131,6 +141,7 @@ pub struct SourceAsyncControlFlow {
     pub controls: Vec<SourceAsyncControl>,
     pub bindings: Vec<SourceAsyncBinding>,
     pub binding_uses: Vec<SourceAsyncBindingUse>,
+    pub expression_spans: Vec<SourceExpressionSpan>,
     pub operations: Vec<SourceAsyncOperation>,
 }
 
@@ -152,12 +163,13 @@ impl SourceAsyncControlFlowInventory {
                 };
                 let Some(function) = function else { continue };
                 let (controls, operations) = collect_function(function);
-                let (bindings, binding_uses) = collect_bindings(function);
+                let (bindings, binding_uses, expression_spans) = collect_bindings(function);
                 callables.push(SourceAsyncControlFlow {
                     callable: AsyncCallableId { module: module.module.clone(), surface: item.id.clone() },
                     controls,
                     bindings,
                     binding_uses,
+                    expression_spans,
                     operations,
                 });
             }
@@ -167,11 +179,12 @@ impl SourceAsyncControlFlowInventory {
     }
 }
 
-fn collect_bindings(function: &Function) -> (Vec<SourceAsyncBinding>, Vec<SourceAsyncBindingUse>) {
+fn collect_bindings(function: &Function) -> (Vec<SourceAsyncBinding>, Vec<SourceAsyncBindingUse>, Vec<SourceExpressionSpan>) {
     struct Collector {
         next_expression: u32,
         bindings: Vec<SourceAsyncBinding>,
         uses: Vec<SourceAsyncBindingUse>,
+        spans: Vec<SourceExpressionSpan>,
         scopes: Vec<HashMap<String, SourceBindingId>>,
     }
 
@@ -258,6 +271,10 @@ fn collect_bindings(function: &Function) -> (Vec<SourceAsyncBinding>, Vec<Source
                 Expr::Lambda { .. } | Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_)
                 | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
             }
+            self.spans.push(SourceExpressionSpan {
+                root: id,
+                end: SourceExpressionId(self.next_expression),
+            });
         }
 
         fn block(&mut self, block: &Block) {
@@ -284,13 +301,15 @@ fn collect_bindings(function: &Function) -> (Vec<SourceAsyncBinding>, Vec<Source
         next_expression: 0,
         bindings: Vec::new(),
         uses: Vec::new(),
+        spans: Vec::new(),
         scopes: vec![HashMap::new()],
     };
     for parameter in &function.params {
         collector.bind(parameter.name.clone(), SourceBindingKind::Parameter);
     }
     collector.block(&function.body);
-    (collector.bindings, collector.uses)
+    collector.spans.sort_by_key(|span| span.root);
+    (collector.bindings, collector.uses, collector.spans)
 }
 
 fn collect_function(function: &Function) -> (Vec<SourceAsyncControl>, Vec<SourceAsyncOperation>) {
@@ -647,7 +666,7 @@ mod tests {
         let Item::Function(function) = &module.items[0] else {
             panic!("source function")
         };
-        let (bindings, uses) = collect_bindings(function);
+        let (bindings, uses, _) = collect_bindings(function);
         let kept = bindings.iter().filter(|binding| binding.name == "kept").collect::<Vec<_>>();
         assert_eq!(kept.len(), 2);
         assert_ne!(kept[0].id, kept[1].id);
