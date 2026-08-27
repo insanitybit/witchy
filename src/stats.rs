@@ -398,9 +398,8 @@ mod tests {
     fn deterministic_counters_repeat_exactly() {
         const SOURCE: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 64:\n        xs.push(i)\n        i = i + 1\n    console.print(\"${xs.length()}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
-        let first = compute(SOURCE).expect("first deterministic counter run");
-        let second = compute(SOURCE).expect("second deterministic counter run");
-        let third = compute(SOURCE).expect("third deterministic counter run");
+        let runs = repeat_runs(SOURCE, 3).expect("three deterministic counter runs");
+        let (first, second, third) = (&runs[0], &runs[1], &runs[2]);
         opt::set_for_tests(None);
         assert_eq!(first.output, ["64"]);
         assert_eq!(first, second, "counter run one and two must agree exactly");
@@ -415,8 +414,8 @@ mod tests {
         // second send must install a WaitSend slot before the close pass wakes
         // it.  This is a scheduler-representation test, not a timing claim.
         const SOURCE: &str = "from chan import Sender\n\nasync fn producer(tx: Sender(String)):\n    chan.send(tx, \"one\").await\n    chan.send(tx, \"two\").await\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(1).await\n    let worker = chan.spawn(producer(tx)).await\n    chan.join(worker).await\n    console.print(\"done\")\n";
-        let first = compute(SOURCE).expect("run blocking String scheduler fixture");
-        let second = compute(SOURCE).expect("repeat blocking String scheduler fixture");
+        let runs = repeat_runs(SOURCE, 2).expect("run blocking String scheduler fixture");
+        let (first, second) = (&runs[0], &runs[1]);
         assert_eq!(first.output, ["done"]);
         assert!(
             first.scheduler_slot_transitions > 0,
@@ -466,8 +465,8 @@ mod tests {
         // installed scheduler representation rather than an inferred select
         // operation count.
         const SOURCE: &str = "from chan import Sender\n\nasync fn producer(tx: Sender(String)):\n    chan.yield_now().await\n    chan.send(tx, \"ready\").await\n\nasync fn main(console: Console):\n    let (tx, a) = chan.channel(1).await\n    let (_b_tx, b) = chan.channel(1).await\n    let (_c_tx, c) = chan.channel(1).await\n    let worker = chan.spawn(producer(tx)).await\n    let selected = chan.select3(a, b, c).await\n    match selected:\n        First3(value) -> console.print(value)\n        Second3(_value) -> console.print(\"wrong second\")\n        Third3(_value) -> console.print(\"wrong third\")\n        Closed3 -> console.print(\"closed\")\n    chan.join(worker).await\n";
-        let first = compute(SOURCE).expect("run blocking fixed select scheduler fixture");
-        let second = compute(SOURCE).expect("repeat blocking fixed select scheduler fixture");
+        let runs = repeat_runs(SOURCE, 2).expect("run blocking fixed select scheduler fixture");
+        let (first, second) = (&runs[0], &runs[1]);
         assert_eq!(first.output, ["ready"]);
         assert!(
             first.scheduler_wait_installs > 0,
@@ -483,8 +482,8 @@ mod tests {
         // consume the ready run without interleaving another task, but it must
         // retain first-arm priority and the same observable result.
         const SOURCE: &str = "async fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(2).await\n    let (b_tx, b_rx) = chan.channel(2).await\n    chan.send(a_tx, 1).await\n    chan.send(a_tx, 2).await\n    chan.send(b_tx, 10).await\n    chan.send(b_tx, 20).await\n    var seen = 0\n    var sum = 0\n    while seen < 4:\n        let selected = chan.select(a_rx, b_rx).await\n        match selected:\n            First(value) ->\n                sum = sum * 10 + value\n                seen = seen + 1\n            Second(value) ->\n                sum = sum * 10 + value\n                seen = seen + 1\n            Closed -> fail(\"select closed before buffered values\")\n    console.print(\"seen=${seen} sum=${sum}\")\n";
-        let first = compute(SOURCE).expect("run sole-live buffered select frame");
-        let second = compute(SOURCE).expect("repeat sole-live buffered select frame");
+        let runs = repeat_runs(SOURCE, 2).expect("run sole-live buffered select frame");
+        let (first, second) = (&runs[0], &runs[1]);
         assert_eq!(first.output, ["seen=4 sum=1320"]);
         assert_eq!(first.scheduler_wait_installs, 1,
             "the reusable frame installs once, then drains its already-ready messages: {first:?}");
@@ -514,8 +513,9 @@ mod tests {
             ("select3", SELECT3, "seen=7 sum=333"),
             ("select4", SELECT4, "seen=9 sum=3333"),
         ] {
-            let first = compute(source).unwrap_or_else(|error| panic!("run sole-live {label} frame: {error}"));
-            let second = compute(source).unwrap_or_else(|error| panic!("repeat sole-live {label} frame: {error}"));
+            let runs = repeat_runs(source, 2)
+                .unwrap_or_else(|error| panic!("run sole-live {label} frame: {error}"));
+            let (first, second) = (&runs[0], &runs[1]);
             assert_eq!(first.output, [expected], "{label} must retain source-order output");
             assert_eq!(first.output, interp(source), "{label} frame counters must preserve parity");
             assert_eq!(first.scheduler_reusable_wait_installs, 1,
@@ -535,8 +535,8 @@ mod tests {
         // the ready FIFO run directly, but must still install one reusable
         // wait when it reaches the open, empty ring.
         const SOURCE: &str = "mode opt\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(4).await\n    chan.send(tx, 3).await\n    chan.send(tx, 5).await\n    chan.send(tx, 7).await\n    chan.send(tx, 11).await\n    var seen = 0\n    for await _value in rx:\n        seen = seen + 1\n    console.print(\"seen=${seen}\")\n";
-        let first = compute(SOURCE).expect("run sole-live buffered receive frame");
-        let second = compute(SOURCE).expect("repeat sole-live buffered receive frame");
+        let runs = repeat_runs(SOURCE, 2).expect("run sole-live buffered receive frame");
+        let (first, second) = (&runs[0], &runs[1]);
         assert_eq!(first.output, ["seen=4"]);
         assert_eq!(first.scheduler_reusable_wait_installs, 1,
             "the receive frame must install only after draining the buffered run: {first:?}");
@@ -558,8 +558,8 @@ mod tests {
         // after consuming the buffered value; it must retain the same slot
         // identity and never create a second live frame registration.
         const SOURCE: &str = "mode opt\n\nfrom chan import Sender\n\nasync fn producer(tx: Sender(Int)):\n    chan.send(tx, 7).await\n    chan.yield_now().await\n    chan.send(tx, 9).await\n\nasync fn main(console: Console):\n    let (tx, a) = chan.channel(1).await\n    let (_unused, b) = chan.channel(1).await\n    let worker = chan.spawn(producer(tx)).await\n    chan.yield_now().await\n    chan.cancel(worker).await\n\n    var seen = 0\n    var sum = 0\n    var closed = false\n    while !closed:\n        let selected = chan.select(a, b).await\n        match selected:\n            First(value) ->\n                seen = seen + 1\n                sum = sum + value\n            Second(_value) -> fail(\"unexpected second receiver\")\n            Closed -> closed = true\n    console.print(\"seen=${seen} sum=${sum} closed=${closed}\")\n";
-        let first = compute(SOURCE).expect("run cancel/close frame registration fixture");
-        let second = compute(SOURCE).expect("repeat cancel/close frame registration fixture");
+        let runs = repeat_runs(SOURCE, 2).expect("run cancel/close frame registration fixture");
+        let (first, second) = (&runs[0], &runs[1]);
         assert_eq!(first.output, ["seen=1 sum=7 closed=true"]);
         assert_eq!(first.output, interp(SOURCE), "counter instrumentation must preserve parity");
         assert_eq!(first.scheduler_frame_live_wait_registrations, 0, "completed frame must unregister");
@@ -588,8 +588,8 @@ mod tests {
         // value. A later direct local-result lane must keep the same output but
         // drive this counter to zero instead of merely hiding an allocation.
         const SOURCE: &str = "async fn main(console: Console):\n    let (left_tx, left_rx) = chan.channel(1).await\n    let (_right_tx, right_rx) = chan.channel(1).await\n    chan.send(left_tx, 7).await\n    let selected = chan.select(left_rx, right_rx).await\n    match selected:\n        First(value) -> console.print(\"first=${value}\")\n        Second(value) -> console.print(\"second=${value}\")\n        Closed -> console.print(\"closed\")\n";
-        let first = compute(SOURCE).expect("run nominal select adapter fixture");
-        let second = compute(SOURCE).expect("repeat nominal select adapter fixture");
+        let runs = repeat_runs(SOURCE, 2).expect("run nominal select adapter fixture");
+        let (first, second) = (&runs[0], &runs[1]);
         assert_eq!(first.output, ["first=7"]);
         assert_eq!(first.scheduler_wake_claims, 0, "already-ready select does not park");
         assert!(
@@ -1485,6 +1485,39 @@ fn main(console: Console):
                 h.join().unwrap();
             }
         });
+    }
+
+    /// Compile `src` ONCE, then run it `runs` times and return each run's counters.
+    ///
+    /// The repeat fixtures below assert that the counter *instrumentation* is
+    /// deterministic: the same program must report the same counters on every
+    /// run. That is a claim about the runtime, so recompiling per run measured
+    /// nothing extra -- and it never covered codegen determinism either, because
+    /// `Stats` compares counters rather than module bytes, so two differing
+    /// modules with equal counters would have passed just the same.
+    /// `codegen_is_byte_deterministic` pins that property directly, once,
+    /// instead of charging every fixture a second full compile for it.
+    fn repeat_runs(src: &str, runs: usize) -> Result<Vec<Stats>, String> {
+        let prepared = prepare(src)?;
+        (0..runs)
+            .map(|_| run_prepared(&prepared).map(|timed| timed.stats))
+            .collect()
+    }
+
+    /// The property the repeat fixtures used to imply and never actually tested:
+    /// the whole resolve/check/lower pipeline is a deterministic function of its
+    /// source, down to the emitted module bytes.
+    #[test]
+    fn codegen_is_byte_deterministic() {
+        const SOURCE: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 64:\n        xs.push(i)\n        i = i + 1\n    console.print(\"${xs.length()}\")\n";
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let first = prepare(SOURCE).expect("first lowering");
+        let second = prepare(SOURCE).expect("second lowering");
+        opt::set_for_tests(None);
+        assert_eq!(
+            first.bytes, second.bytes,
+            "lowering the same source twice must emit identical module bytes"
+        );
     }
 
     fn interp(src: &str) -> Vec<String> {
