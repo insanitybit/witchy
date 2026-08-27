@@ -823,11 +823,12 @@ The migration is incremental but the security claim is not:
 
 1. Inventory every production raw memory constructor, heap-global write,
    callable memory summary, specialized layout boundary, and raw-body path. The
-   2026-08-26 baseline is 478 raw memory-operation construction sites across 25
-   non-test files when alias forms such as `E::Load` are counted: roughly 400
-   are under `wir_helpers` (`dict.rs` 112, `strings/transform.rs` 44,
-   `bytes.rs` 37), roughly 78 are under lowering/codegen, and optimizer files
-   contain two actual construction sites rather than merely match arms.
+   initial 2026-08-26 lexical estimate of 478 raw memory-operation sites was
+   incomplete. The reviewed all-crates structural parser freezes 584 privileged
+   candidate-WIR constructors across 25 non-test files, including alias forms,
+   constructors nested in expression-list macros, and heap-global writes. The
+   baseline is a shrink-only per-file and per-constructor-kind ratchet; its
+   total must reach zero outside the encoder kernel-template module.
 2. Add ghost object, layout, provenance, range, and generation identities
    alongside existing WIR without changing encoded bytes.
 3. Implement the validator in report mode and freeze its diagnostic census.
@@ -858,7 +859,7 @@ agreement alone, or a subset of optimizer configurations.
 | Call results default to possible aliasing | pending | SEC-078 plus direct, indirect, recursive, closure, projection, and imported-call matrices |
 | Final optimized WIR is checked once, fail closed | pending | Private `ValidatedWirModule` constructor and production encoder API test |
 | Optimizer combinations cannot retain stale facts | pending | Reassignment, join, loop, inlining, specialization, and pass-combination negative tests |
-| Raw memory is sealed | pending | The 478-site baseline reaches zero constructors outside the encoder kernel-template module; ordinary privileged `WirFunc` helpers cannot exist or inline |
+| Raw memory is sealed | pending | The reviewed 584-site structural baseline reaches zero constructors outside the encoder kernel-template module; ordinary privileged `WirFunc` helpers cannot exist or inline |
 | Kernel is small and directly tested | pending | Published operation census, contracts, poisoning, boundary, reuse, and mutation coverage |
 | Encoder mechanically erases SafeWIR facts | pending | Exact template tests plus standard Wasm validation and no production raw-body path |
 | Every applicable SEC reproducer is permanent | pending | The enumerated SEC table has a landed source regression and forged-WIR rejection for every row; SEC-036 is restored or explicitly deduplicated |
