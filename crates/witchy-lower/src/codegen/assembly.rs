@@ -3252,6 +3252,10 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
 pub fn compile_checked_module_binary(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
+    // Checked source does not necessarily carry loader-authenticated package
+    // ownership. That is valid for programs with no catalog-dependent feature:
+    // Dynamic and Glamour construction reject independently when the catalog
+    // is absent. Do not turn this optional transport into forged authority.
     let runtime_catalog = checked.runtime_declaration_catalog().ok();
     compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref(), None)
 }
@@ -3279,25 +3283,27 @@ pub fn compile_checked_test_driver_binary(
     )
 }
 
-/// Compile one compiler-synthesized Glamour island adapter against the exact
-/// linked and authenticated application module that selected it.
-pub fn compile_checked_glamour_island_binary(
-    checked: &witchy_types::pipeline::CheckedModule,
-    generated: &Module,
-) -> LoweringOutcome<Vec<u8>> {
-    compile_checked_glamour_island_execution_binary(checked, checked.module(), generated)
+/// A compiler-rewritten Glamour application and generated adapter that were
+/// checked together against one authenticated source authority.
+///
+/// Fields and construction are private so a raw `Module` cannot reach the
+/// production encoder by impersonating a compiler rewrite.
+#[derive(Debug)]
+pub struct CheckedGlamourExecutable {
+    checked: witchy_types::pipeline::CheckedEvaluationModule,
 }
 
-/// Compile an authenticated compiler-rewritten application clone plus its
-/// generated island adapter. The original CheckedModule remains the provenance
-/// and runtime-declaration authority for every rewritten call.
-pub fn compile_checked_glamour_island_execution_binary(
-    checked: &witchy_types::pipeline::CheckedModule,
-    application: &Module,
+/// Check and bind one compiler-generated adapter to the exact authenticated
+/// application rewrite that selected it.
+pub fn check_glamour_island_executable(
+    application: &super::CheckedGlamourApplication<'_>,
     generated: &Module,
-) -> LoweringOutcome<Vec<u8>> {
-    if !generated.imports.is_empty()
+) -> Result<CheckedGlamourExecutable, CodegenError> {
+    let authority = application.authority();
+    if !generated.modes.is_empty()
+        || !generated.imports.is_empty()
         || !generated.from_imports.is_empty()
+        || !generated.import_lines.is_empty()
         || generated.linked_entry.is_some()
         || !generated.compiler_item_syntax.is_empty()
         || !generated.compiler_expr_syntax.is_empty()
@@ -3306,22 +3312,32 @@ pub fn compile_checked_glamour_island_execution_binary(
         || !generated.compiler_stmt_syntax.is_empty()
         || !generated.compiler_block_syntax.is_empty()
     {
-        return LoweringOutcome::Rejected(CodegenError {
-            message: "compiler-generated Glamour island adapter contains non-item module state"
+        return Err(CodegenError {
+            message: "compiler-generated Glamour island adapter contains unsupported module metadata"
                 .into(),
         });
     }
-    let mut module = application.clone();
+    let mut module = application.module().clone();
     module.items.extend(generated.items.clone());
     module.item_lines.clear();
-    let generated = match CheckedGeneratedModule::new(checked, module) {
-        Ok(generated) => generated,
-        Err(error) => return LoweringOutcome::Rejected(error),
-    };
+    let checked = witchy_types::pipeline::check_compiler_evaluation_module(authority, module)
+        .map_err(|error| CodegenError {
+            message: format!(
+                "compiler-generated executable failed semantic checking before lowering: {error}"
+            ),
+        })?;
+    Ok(CheckedGlamourExecutable { checked })
+}
+
+/// Compile only a compiler-generated Glamour executable that crossed
+/// [`check_glamour_island_executable`].
+pub fn compile_checked_glamour_island_execution_binary(
+    executable: &CheckedGlamourExecutable,
+) -> LoweringOutcome<Vec<u8>> {
     compile_module_binary_mode(
-        &generated.module,
+        executable.checked.module(),
         false,
-        generated.runtime_catalog.as_ref(),
+        Some(executable.checked.runtime_declaration_catalog()),
         None,
     )
 }
@@ -7974,15 +7990,20 @@ mod checked_codegen_boundary_tests {
     #[test]
     fn compiler_generated_executable_is_checked_before_lowering() {
         let checked = authenticated_checked("fn main() -> Int:\n    7\n");
+        let checked_application = witchy_types::pipeline::check_compiler_evaluation_module(
+            &checked,
+            checked.module().clone(),
+        )
+        .expect("check compiler-owned application clone");
+        let application =
+            CheckedGlamourApplication::forged_for_test(&checked, checked_application);
         let empty = witchy_syntax::parser::parse_module("")
             .expect("parse empty generated executable");
+        let executable = check_glamour_island_executable(&application, &empty)
+            .expect("check generated executable");
         assert!(
             matches!(
-                compile_checked_glamour_island_execution_binary(
-                    &checked,
-                    checked.module(),
-                    &empty,
-                ),
+                compile_checked_glamour_island_execution_binary(&executable),
                 LoweringOutcome::Lowered(_)
             ),
             "a semantically valid generated executable must cross the private proof"
@@ -7992,12 +8013,8 @@ mod checked_codegen_boundary_tests {
         )
         .expect("parse invalid generated executable");
 
-        let error = compile_checked_glamour_island_execution_binary(
-            &checked,
-            checked.module(),
-            &generated,
-        )
-        .expect_rejected("generated type errors must stop before backend lowering");
+        let error = check_glamour_island_executable(&application, &generated)
+            .expect_err("generated type errors must stop before backend lowering");
 
         assert!(
             error.message.contains(
@@ -8006,6 +8023,32 @@ mod checked_codegen_boundary_tests {
             "{error}"
         );
         assert!(error.message.contains("expected `Int`"), "{error}");
+    }
+
+    #[test]
+    fn compiler_generated_executable_rejects_non_item_metadata() {
+        let checked = authenticated_checked("fn main() -> Int:\n    7\n");
+        let checked_application = witchy_types::pipeline::check_compiler_evaluation_module(
+            &checked,
+            checked.module().clone(),
+        )
+        .expect("check compiler-owned application clone");
+        let application =
+            CheckedGlamourApplication::forged_for_test(&checked, checked_application);
+        let empty = witchy_syntax::parser::parse_module("")
+            .expect("parse empty generated executable");
+
+        let mut with_mode = empty.clone();
+        with_mode.modes.push("opt".into());
+        let error = check_glamour_island_executable(&application, &with_mode)
+            .expect_err("generated performance modes must not cross the adapter boundary");
+        assert!(error.message.contains("unsupported module metadata"), "{error}");
+
+        let mut with_import_line = empty;
+        with_import_line.import_lines.push(1);
+        let error = check_glamour_island_executable(&application, &with_import_line)
+            .expect_err("orphaned generated import locations must not cross the adapter boundary");
+        assert!(error.message.contains("unsupported module metadata"), "{error}");
     }
 }
 

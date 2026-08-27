@@ -2333,6 +2333,7 @@ pub fn web() -> Site:
         )
         .expect("rewrite descriptor fixture");
         let rewritten = execution
+            .module()
             .items
             .iter()
             .filter_map(|item| match item {
@@ -2374,6 +2375,7 @@ pub fn web() -> Site:
         assert!(!rewritten.contains("glamour.every("));
         assert!(!rewritten.contains("fn("));
         let generated_codecs = execution
+            .module()
             .items
             .iter()
             .filter(|item| {
@@ -3022,6 +3024,7 @@ pub fn web() -> Site:
         )
         .expect("rewrite mapped-work fixture");
         let rewritten = execution
+            .module()
             .items
             .iter()
             .filter_map(|item| match item {

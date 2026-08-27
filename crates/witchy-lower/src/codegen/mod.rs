@@ -56,18 +56,19 @@ pub use glamour_metadata::{
     checked_glamour_island_execution_module, checked_glamour_islands,
     checked_glamour_worker_execution_module,
     checked_glamour_static_evaluation_module,
-    checked_glamour_templates, GlamourBrowserPolicyMetadata, GlamourIslandMetadata, GlamourTemplateAttributeMetadata,
+    checked_glamour_templates, CheckedGlamourApplication, GlamourBrowserPolicyMetadata, GlamourIslandMetadata, GlamourTemplateAttributeMetadata,
     GlamourTemplateMetadata, GlamourTemplateNodeMetadata, GlamourTemplateOriginMetadata,
     GlamourHostPortMetadata, GlamourMappedWorkMetadata, GlamourTemplateSlotMetadata, GlamourWorkerTaskMetadata,
     GlamourWorkMetadata,
 };
 pub use assembly::{
     assemble_checked_optimized_wir_module, compile_checked_build_module,
-    compile_checked_development_module, compile_checked_glamour_island_binary,
+    check_glamour_island_executable, compile_checked_development_module,
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
     compile_checked_module_binary_with_deterministic_counters,
     compile_checked_test_driver_binary,
-    CompiledDevelopmentModule, GlamourDevelopmentField, GlamourDevelopmentMetadata,
+    CheckedGlamourExecutable, CompiledDevelopmentModule, GlamourDevelopmentField,
+    GlamourDevelopmentMetadata,
 };
 
 thread_local! {

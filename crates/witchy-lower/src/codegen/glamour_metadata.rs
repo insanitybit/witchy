@@ -20,6 +20,37 @@ use witchy_types::runtime_type::{
     RuntimeDeclarationCatalog, RuntimeTypeIdentity,
 };
 
+/// A compiler-owned Glamour application rewrite bound to the exact checked
+/// source authority that produced it.
+///
+/// Construction is private to this module. The public producers below clone
+/// and rewrite their own `checked` argument, so a caller cannot pair an
+/// unrelated application body with a convenient declaration catalog.
+#[derive(Debug)]
+pub struct CheckedGlamourApplication<'authority> {
+    authority: &'authority witchy_types::pipeline::CheckedModule,
+    checked: witchy_types::pipeline::CheckedEvaluationModule,
+}
+
+impl<'authority> CheckedGlamourApplication<'authority> {
+    /// Borrow the checked compiler rewrite for diagnostics and generation.
+    pub fn module(&self) -> &Module {
+        self.checked.module()
+    }
+
+    pub(super) fn authority(&self) -> &'authority witchy_types::pipeline::CheckedModule {
+        self.authority
+    }
+
+    #[cfg(test)]
+    pub(super) fn forged_for_test(
+        authority: &'authority witchy_types::pipeline::CheckedModule,
+        checked: witchy_types::pipeline::CheckedEvaluationModule,
+    ) -> Self {
+        Self { authority, checked }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlamourTemplateSlotMetadata {
     pub index: u32,
@@ -420,10 +451,10 @@ pub fn checked_glamour_static_evaluation_module(
 /// Clone one checked application for its island artifact and replace reachable
 /// source-level effect constructors with compiler-authenticated constructors
 /// carrying the exact descriptor and completion identities selected above.
-pub fn checked_glamour_island_execution_module(
-    checked: &witchy_types::pipeline::CheckedModule,
+pub fn checked_glamour_island_execution_module<'authority>(
+    checked: &'authority witchy_types::pipeline::CheckedModule,
     island: &GlamourIslandMetadata,
-) -> Result<Module, CodegenError> {
+) -> Result<CheckedGlamourApplication<'authority>, CodegenError> {
     checked_glamour_execution_module(checked, island, None)
 }
 
@@ -431,19 +462,19 @@ pub fn checked_glamour_island_execution_module(
 /// The selected descriptor authenticates the direct task declaration and its
 /// exact request/result codecs; the generated public export accepts and returns
 /// only the closed `IslandCapture` wire.
-pub fn checked_glamour_worker_execution_module(
-    checked: &witchy_types::pipeline::CheckedModule,
+pub fn checked_glamour_worker_execution_module<'authority>(
+    checked: &'authority witchy_types::pipeline::CheckedModule,
     island: &GlamourIslandMetadata,
     descriptor_id: u32,
-) -> Result<Module, CodegenError> {
+) -> Result<CheckedGlamourApplication<'authority>, CodegenError> {
     checked_glamour_execution_module(checked, island, Some(descriptor_id))
 }
 
-fn checked_glamour_execution_module(
-    checked: &witchy_types::pipeline::CheckedModule,
+fn checked_glamour_execution_module<'authority>(
+    checked: &'authority witchy_types::pipeline::CheckedModule,
     island: &GlamourIslandMetadata,
     worker_descriptor: Option<u32>,
-) -> Result<Module, CodegenError> {
+) -> Result<CheckedGlamourApplication<'authority>, CodegenError> {
     let mut by_owner = BTreeMap::<String, BTreeMap<u32, &GlamourWorkMetadata>>::new();
     for work in &island.work {
         if by_owner
@@ -641,7 +672,9 @@ fn checked_glamour_execution_module(
     }
     capture_codecs.install_callback_support(island);
     module.items.extend(capture_codecs.finish()?);
-    Ok(module)
+    let checked_rewrite = witchy_types::pipeline::check_compiler_evaluation_module(checked, module)
+        .map_err(|error| island_metadata_error(error.to_string()))?;
+    Ok(CheckedGlamourApplication { authority: checked, checked: checked_rewrite })
 }
 
 fn glamour_completion_capture_dispatch(

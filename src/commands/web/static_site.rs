@@ -1467,14 +1467,23 @@ fn compile_static_worker_artifact(
         metadata,
         descriptor_id,
     )
-    .map_err(|error| WebCommandError::failure(error.to_string()))?;
+    .map_err(|error| {
+        WebCommandError::failure(format!(
+            "cannot build Glamour worker descriptor {descriptor_id}: {error}"
+        ))
+    })?;
     let generated = witchy_syntax::parser::parse_module("")
         .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    match witchy_lower::codegen::compile_checked_glamour_island_execution_binary(
-        checked,
+    let executable = witchy_lower::codegen::check_glamour_island_executable(
         &execution,
         &generated,
-    ) {
+    )
+    .map_err(|error| {
+        WebCommandError::failure(format!(
+            "cannot compile Glamour worker descriptor {descriptor_id}: {error}"
+        ))
+    })?;
+    match witchy_lower::codegen::compile_checked_glamour_island_execution_binary(&executable) {
         witchy_lower::codegen::LoweringOutcome::Lowered(wasm) => Ok(wasm),
         witchy_lower::codegen::LoweringOutcome::Unsupported(reason) => Err(
             WebCommandError::failure(format!(
@@ -2358,12 +2367,23 @@ pub fn glamour_release(own state: {state_name}):
         checked,
         metadata,
     )
-    .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    match witchy_lower::codegen::compile_checked_glamour_island_execution_binary(
-        checked,
+    .map_err(|error| {
+        WebCommandError::failure(format!(
+            "cannot build Glamour island `{}` adapter: {error}",
+            plan.key
+        ))
+    })?;
+    let executable = witchy_lower::codegen::check_glamour_island_executable(
         &execution,
         &generated,
-    ) {
+    )
+    .map_err(|error| {
+        WebCommandError::failure(format!(
+            "cannot compile Glamour island `{}` adapter: {error}",
+            plan.key
+        ))
+    })?;
+    match witchy_lower::codegen::compile_checked_glamour_island_execution_binary(&executable) {
         witchy_lower::codegen::LoweringOutcome::Lowered(wasm) => Ok(wasm),
         witchy_lower::codegen::LoweringOutcome::Unsupported(reason) => Err(WebCommandError::failure(
             format!("cannot lower Glamour island `{}` adapter: {reason}", plan.key),
