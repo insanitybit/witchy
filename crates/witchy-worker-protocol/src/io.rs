@@ -1,6 +1,6 @@
 use crate::ProtocolError;
 
-pub(crate) const HEADER_BYTES: usize = 16;
+pub const FRAME_HEADER_BYTES: usize = 16;
 
 pub(crate) struct Input<'a> {
     bytes: &'a [u8],
@@ -81,7 +81,7 @@ pub(crate) fn frame(
 ) -> Result<Vec<u8>, ProtocolError> {
     let payload_length =
         u32::try_from(payload.len()).map_err(|_| ProtocolError::LengthOverflow("frame payload"))?;
-    let mut output = Vec::with_capacity(HEADER_BYTES + payload.len());
+    let mut output = Vec::with_capacity(FRAME_HEADER_BYTES + payload.len());
     output.extend_from_slice(magic);
     put_u16(&mut output, schema);
     put_u8(&mut output, kind);

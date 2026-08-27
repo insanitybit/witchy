@@ -1,0 +1,39 @@
+[package]
+name = "witchy-compiler-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Confined RFC-0163 adversarial-source compiler worker boundary"
+
+[features]
+test-fixtures = []
+
+[dependencies]
+rustix = { version = "1.1.4", features = ["process"] }
+witchy-confinement = { path = "../witchy-confinement" }
+witchy-worker-protocol = { path = "../witchy-worker-protocol" }
+
+[[bin]]
+name = "witchy-compiler-worker"
+path = "src/main.rs"
+
+[[bin]]
+name = "witchy-worker-fixture-candidate"
+path = "tests/fixtures/candidate.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
+name = "witchy-worker-fixture-confined-probe"
+path = "tests/fixtures/confined_probe.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
+name = "witchy-worker-fixture-oversized"
+path = "tests/fixtures/oversized.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
+name = "witchy-worker-fixture-stall"
+path = "tests/fixtures/stall.rs"
+required-features = ["test-fixtures"]

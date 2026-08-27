@@ -2937,6 +2937,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-compiler-worker"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "witchy-confinement",
+ "witchy-worker-protocol",
+]
+
+[[package]]
 name = "witchy-confinement"
 version = "0.1.0"
 dependencies = [

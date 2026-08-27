@@ -1,6 +1,7 @@
 use witchy_worker_protocol::{
-    AdmissionSchemaId, ProtocolError, ResponseStatus, WorkerLimits, WorkerRequest, WorkerResponse,
-    WorkerTarget, blob_sha256, decode_request, decode_response,
+    AdmissionSchemaId, ProtocolError, REQUEST_PRELUDE_BYTES, ResponseStatus, WorkerLimits,
+    WorkerRequest, WorkerResponse, WorkerTarget, blob_sha256, decode_request,
+    decode_request_prelude, decode_response,
 };
 
 const SOURCE: &[u8] = b"WASRC004\x02\0canonical source fixture";
@@ -61,6 +62,10 @@ fn stable_schema_v2_fixtures_and_round_trips() {
     );
     assert_eq!(request.source_bundle(), SOURCE);
     assert_eq!(request.source_bundle_sha256(), blob_sha256(SOURCE));
+    let prelude = decode_request_prelude(&request_bytes[..REQUEST_PRELUDE_BYTES]).unwrap();
+    assert_eq!(prelude.target(), WorkerTarget::NativeRuntime);
+    assert_eq!(prelude.limits(), limits());
+    assert_eq!(prelude.frame_bytes(), request_bytes.len());
     assert_eq!(decode_request(&request_bytes).unwrap(), request);
     assert_eq!(
         hex(blob_sha256(&request_bytes)),
@@ -82,6 +87,29 @@ fn stable_schema_v2_fixtures_and_round_trips() {
     assert_eq!(response.candidate_wir(), b"candidate-wir-v2");
     assert_eq!(response.authority_wir(), b"authority-wir-v2");
     assert_eq!(response.final_byte_plan(), b"final-byte-plan-v2");
+}
+
+#[test]
+fn request_prelude_is_fixed_bounded_and_v2_only() {
+    let canonical = request().encode().unwrap();
+    let prelude = &canonical[..REQUEST_PRELUDE_BYTES];
+    for end in 0..REQUEST_PRELUDE_BYTES {
+        assert!(decode_request_prelude(&prelude[..end]).is_err());
+    }
+
+    let mut wrong_payload = prelude.to_vec();
+    wrong_payload[12..16].copy_from_slice(&164_u32.to_le_bytes());
+    assert_eq!(
+        decode_request_prelude(&wrong_payload),
+        Err(ProtocolError::NonCanonical)
+    );
+
+    let mut oversized_source = prelude.to_vec();
+    oversized_source[176..180].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(
+        decode_request_prelude(&oversized_source),
+        Err(ProtocolError::BudgetExceeded("source bundle bytes"))
+    );
 }
 
 #[test]

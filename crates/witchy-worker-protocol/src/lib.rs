@@ -17,12 +17,14 @@ mod request;
 mod response;
 
 pub use error::ProtocolError;
+pub use io::FRAME_HEADER_BYTES;
 pub use limits::{
     MAX_AUTHORITY_WIR_BYTES, MAX_CANDIDATE_WIR_BYTES, MAX_DIAGNOSTIC_BYTES,
     MAX_FINAL_BYTE_PLAN_BYTES, MAX_RESPONSE_BYTES, MAX_SOURCE_BUNDLE_BYTES, WorkerLimits,
 };
 pub use request::{
-    ADMISSION_SCHEMA_V2, AdmissionSchemaId, WORKER_PROTOCOL_SCHEMA_V2, WorkerRequest, WorkerTarget,
-    decode_request,
+    ADMISSION_SCHEMA_V2, AdmissionSchemaId, MAX_REQUEST_FRAME_BYTES, REQUEST_PRELUDE_BYTES,
+    RequestPrelude, WORKER_PROTOCOL_SCHEMA_V2, WorkerRequest, WorkerTarget, decode_request,
+    decode_request_prelude,
 };
 pub use response::{ResponseStatus, WorkerResponse, blob_sha256, decode_response};

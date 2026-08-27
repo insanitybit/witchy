@@ -1,0 +1,5 @@
+#![deny(unsafe_code)]
+
+fn main() {
+    std::thread::sleep(std::time::Duration::from_secs(10));
+}

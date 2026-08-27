@@ -6,10 +6,12 @@ use crate::{ProtocolError, WorkerLimits};
 
 pub const WORKER_PROTOCOL_SCHEMA_V2: u16 = 2;
 pub const ADMISSION_SCHEMA_V2: u16 = 2;
+pub const REQUEST_PRELUDE_BYTES: usize = 180;
 
 pub(crate) const REQUEST_MAGIC: &[u8; 8] = b"WCHREQ02";
 pub(crate) const REQUEST_KIND: u8 = 1;
-const MAX_REQUEST_FRAME_BYTES: usize = MAX_SOURCE_BUNDLE_BYTES as usize + 256;
+pub const MAX_REQUEST_FRAME_BYTES: usize = MAX_SOURCE_BUNDLE_BYTES as usize + 256;
+const REQUEST_FIXED_PAYLOAD_BYTES: usize = REQUEST_PRELUDE_BYTES - crate::io::FRAME_HEADER_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdmissionSchemaId {
@@ -74,6 +76,30 @@ pub struct WorkerRequest {
     limits: WorkerLimits,
     source_bundle_sha256: [u8; 32],
     source_bundle: Vec<u8>,
+}
+
+/// Validated fixed-width request fields used only to apply resource and OS
+/// confinement before reading adversarial source bytes.  This is not a checked
+/// request and carries no source-authority fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestPrelude {
+    target: WorkerTarget,
+    limits: WorkerLimits,
+    frame_bytes: usize,
+}
+
+impl RequestPrelude {
+    pub const fn target(self) -> WorkerTarget {
+        self.target
+    }
+
+    pub const fn limits(self) -> WorkerLimits {
+        self.limits
+    }
+
+    pub const fn frame_bytes(self) -> usize {
+        self.frame_bytes
+    }
 }
 
 impl WorkerRequest {
@@ -187,6 +213,69 @@ pub fn decode_request(bytes: &[u8]) -> Result<WorkerRequest, ProtocolError> {
         return Err(ProtocolError::NonCanonical);
     }
     Ok(request)
+}
+
+pub fn decode_request_prelude(bytes: &[u8]) -> Result<RequestPrelude, ProtocolError> {
+    if bytes.len() != REQUEST_PRELUDE_BYTES {
+        return Err(ProtocolError::Truncated);
+    }
+    let mut input = Input::new(bytes);
+    if input.take(REQUEST_MAGIC.len())? != REQUEST_MAGIC {
+        return Err(ProtocolError::InvalidMagic);
+    }
+    let schema = input.u16()?;
+    if schema != WORKER_PROTOCOL_SCHEMA_V2 {
+        return Err(ProtocolError::UnsupportedProtocolSchema(schema));
+    }
+    let kind = input.u8()?;
+    if kind != REQUEST_KIND {
+        return Err(ProtocolError::UnknownMessageKind(kind));
+    }
+    if input.u8()? != 0 {
+        return Err(ProtocolError::NonZeroReserved);
+    }
+    let payload_bytes = input.u32()? as usize;
+    let admission_version = input.u16()?;
+    if admission_version != ADMISSION_SCHEMA_V2 {
+        return Err(ProtocolError::UnsupportedAdmissionSchema(admission_version));
+    }
+    if input.u16()? != 0 {
+        return Err(ProtocolError::NonZeroReserved);
+    }
+    AdmissionSchemaId::v2(input.array_32()?)?;
+    let target = WorkerTarget::decode(input.u16()?)?;
+    if input.u16()? != 0 {
+        return Err(ProtocolError::NonZeroReserved);
+    }
+    input.array_32()?;
+    let limits = WorkerLimits::decode(&mut input)?;
+    let source_bytes = input.u32()? as usize;
+    input.finish()?;
+    if source_bytes == 0 {
+        return Err(ProtocolError::EmptyField("source bundle"));
+    }
+    if source_bytes as u64 > limits.max_source_bytes
+        || source_bytes as u64 > MAX_SOURCE_BUNDLE_BYTES
+    {
+        return Err(ProtocolError::BudgetExceeded("source bundle bytes"));
+    }
+    let expected_payload_bytes = REQUEST_FIXED_PAYLOAD_BYTES
+        .checked_add(source_bytes)
+        .ok_or(ProtocolError::LengthOverflow("request frame"))?;
+    if payload_bytes != expected_payload_bytes {
+        return Err(ProtocolError::NonCanonical);
+    }
+    let frame_bytes = crate::io::FRAME_HEADER_BYTES
+        .checked_add(payload_bytes)
+        .ok_or(ProtocolError::LengthOverflow("request frame"))?;
+    if frame_bytes > MAX_REQUEST_FRAME_BYTES {
+        return Err(ProtocolError::BudgetExceeded("request frame bytes"));
+    }
+    Ok(RequestPrelude {
+        target,
+        limits,
+        frame_bytes,
+    })
 }
 
 pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
