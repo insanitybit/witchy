@@ -1800,11 +1800,21 @@ stack_candidate_ready() { # stack_candidate_ready <queue-file> <batch-change-ids
     cid="$(jq -r '.change_id // empty' "$qf")"
     [ -n "$cid" ] || return 1
     list_contains "$cid" "${batch_ids[@]}" && return 1
-    # A root submission cannot be an explicit child of the current batch.
-    # Avoid loading the entire historical change graph for this common
-    # unrelated-root case; only entries with declared parents can participate
-    # in dependency-stack reachability.
-    jq -e '(.after // []) | length > 0' "$qf" >/dev/null 2>&1 || return 1
+    # A root submission cannot be an explicit child of the current batch, but
+    # it may itself be a parent of a queued tip. Avoid loading the entire
+    # historical change graph for an unrelated root while retaining roots that
+    # are referenced by another queued entry in the prospective stack.
+    if ! jq -e '(.after // []) | length > 0' "$qf" >/dev/null 2>&1; then
+        local referenced=0 child_qf
+        while IFS= read -r child_qf; do
+            [ "$child_qf" = "$qf" ] && continue
+            if jq -e --arg parent "$cid" '(.after // []) | index($parent) != null' "$child_qf" >/dev/null 2>&1; then
+                referenced=1
+                break
+            fi
+        done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print 2>/dev/null)
+        [ "$referenced" -eq 1 ] || return 1
+    fi
     while IFS= read -r dep; do
         [ -n "$dep" ] || continue
         list_contains "$dep" "${batch_ids[@]}" && continue
