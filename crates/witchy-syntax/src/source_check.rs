@@ -280,7 +280,30 @@ impl ResolvedSource {
         }
 
         let mut modules = self.modules.clone();
+        // The parser represents `for await value in receiver` with this
+        // compiler-private marker until async lowering consumes it. The typed
+        // projection intentionally stops before that lowering, so give its
+        // otherwise-unexecutable marker an identity-only declaration. It exists
+        // solely in this projection to let ordinary name/type resolution retain
+        // the source loop and its receiver type; it is never emitted into the
+        // runtime module and cannot make the marker valid in non-async source.
+        let mut recv_stream = crate::parser::parse_module(
+            "fn __recv_stream(receiver: Receiver(value)) -> List(value):\n    []\n",
+        )
+        .expect("compiler-owned receive-stream projection helper parses")
+        .items
+        .remove(0);
+        if let crate::ast::Item::Function(function) = &mut recv_stream {
+            function.public = true;
+            function.attributes.push(GENERATED_ITEM_ATTRIBUTE.into());
+        }
         for (name, module) in &mut modules {
+            if name == "chan" && !module.items.iter().any(|item| {
+                matches!(item, crate::ast::Item::Function(function) if function.name == "__recv_stream")
+            }) {
+                module.items.push(recv_stream.clone());
+                module.item_lines.push(0);
+            }
             if !module.imports.contains(name) {
                 module.imports.push(name.clone());
                 module.import_lines.push(0);

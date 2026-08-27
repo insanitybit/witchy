@@ -12344,6 +12344,16 @@ fn run_check_selected(
             _ => None,
         })
         .collect();
+    // Linking qualifies stdlib nominals (`task.Task`), while a standalone
+    // source-check fixture can still carry the prelude spelling (`Task`). An
+    // async callable's public result must use the declaration identity present
+    // in this checked module; hard-coding either spelling makes the retained
+    // pre-CPS projection disagree with ordinary linked calls.
+    let async_task_type = if type_defs.contains_key("task.Task") {
+        "task.Task"
+    } else {
+        "Task"
+    };
     for item in &module.items {
         match item {
             Item::Function(f) => {
@@ -12362,7 +12372,7 @@ fn run_check_selected(
                 };
                 let ret = if f.is_async {
                     c.async_body_returns.insert(f.name.clone(), body_ret.clone());
-                    Ty::Named("Task".into(), vec![body_ret])
+                    Ty::Named(async_task_type.into(), vec![body_ret])
                 } else {
                     body_ret
                 };
