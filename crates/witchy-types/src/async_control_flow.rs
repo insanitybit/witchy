@@ -72,6 +72,12 @@ pub struct SourceAsyncControl {
     pub id: SourceControlId,
     pub path: Vec<ControlPathStep>,
     pub kind: SourceControlKind,
+    /// The exact source expression whose checked value chooses this control's
+    /// successor. For `if`/`while` it is the predicate; for `match` and
+    /// `while let` it is the discriminant; for `for` it is the iterator
+    /// source. A later CFG builder resolves this coordinate through the typed
+    /// pre-CPS projection instead of reconstructing it from generated states.
+    pub selector: SourceExpressionId,
 }
 
 /// One operation in lexical source order, qualified by its structured path.
@@ -211,8 +217,10 @@ fn collect_expr(
         }
         Expr::If { cond, then_block, else_block } => {
             let control = fresh_control(controls);
-            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::If });
-            collect_expr(cond, path, control_nodes, operations, controls, expressions);
+            let node = control_nodes.len();
+            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::If, selector: SourceExpressionId(0) });
+            let selector = collect_expr(cond, path, control_nodes, operations, controls, expressions);
+            control_nodes[node].selector = selector;
             path.push(ControlPathStep::IfThen(control));
             collect_block(then_block, path, control_nodes, operations, controls, expressions);
             path.pop();
@@ -224,8 +232,10 @@ fn collect_expr(
         }
         Expr::Match { scrutinee, arms } => {
             let control = fresh_control(controls);
-            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::Match { arms: u32::try_from(arms.len()).expect("match arm count exceeds u32") } });
-            collect_expr(scrutinee, path, control_nodes, operations, controls, expressions);
+            let node = control_nodes.len();
+            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::Match { arms: u32::try_from(arms.len()).expect("match arm count exceeds u32") }, selector: SourceExpressionId(0) });
+            let selector = collect_expr(scrutinee, path, control_nodes, operations, controls, expressions);
+            control_nodes[node].selector = selector;
             for (arm, branch) in arms.iter().enumerate() {
                 path.push(ControlPathStep::MatchArm { control, arm: u32::try_from(arm).expect("match arm count exceeds u32") });
                 if let Some(guard) = &branch.guard { collect_expr(guard, path, control_nodes, operations, controls, expressions); }
@@ -235,16 +245,20 @@ fn collect_expr(
         }
         Expr::While { cond, body } => {
             let control = fresh_control(controls);
-            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::While });
-            collect_expr(cond, path, control_nodes, operations, controls, expressions);
+            let node = control_nodes.len();
+            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::While, selector: SourceExpressionId(0) });
+            let selector = collect_expr(cond, path, control_nodes, operations, controls, expressions);
+            control_nodes[node].selector = selector;
             path.push(ControlPathStep::LoopBody(control));
             collect_block(body, path, control_nodes, operations, controls, expressions);
             path.pop();
         }
         Expr::For { iter, body, .. } => {
             let control = fresh_control(controls);
-            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::For });
-            collect_expr(iter, path, control_nodes, operations, controls, expressions);
+            let node = control_nodes.len();
+            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::For, selector: SourceExpressionId(0) });
+            let selector = collect_expr(iter, path, control_nodes, operations, controls, expressions);
+            control_nodes[node].selector = selector;
             path.push(ControlPathStep::LoopBody(control));
             collect_block(body, path, control_nodes, operations, controls, expressions);
             path.pop();
@@ -283,8 +297,10 @@ fn collect_expr(
         Expr::Index { base, index } => { collect_expr(base, path, control_nodes, operations, controls, expressions); collect_expr(index, path, control_nodes, operations, controls, expressions); }
         Expr::WhileLet { scrutinee, body, .. } => {
             let control = fresh_control(controls);
-            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::WhileLet });
-            collect_expr(scrutinee, path, control_nodes, operations, controls, expressions);
+            let node = control_nodes.len();
+            control_nodes.push(SourceAsyncControl { id: control, path: path.clone(), kind: SourceControlKind::WhileLet, selector: SourceExpressionId(0) });
+            let selector = collect_expr(scrutinee, path, control_nodes, operations, controls, expressions);
+            control_nodes[node].selector = selector;
             path.push(ControlPathStep::LoopBody(control));
             collect_block(body, path, control_nodes, operations, controls, expressions);
             path.pop();
@@ -392,6 +408,8 @@ mod tests {
         assert_eq!(controls.len(), 2);
         assert_eq!(controls[0].kind, SourceControlKind::If);
         assert_eq!(controls[1].kind, SourceControlKind::If);
+        assert!(matches!(source_expression(function, controls[0].selector), Some(Expr::Var(name)) if name == "first"));
+        assert!(matches!(source_expression(function, controls[1].selector), Some(Expr::Var(name)) if name == "second"));
         let awaits = operations
             .iter()
             .filter(|operation| operation.kind == SourceAsyncOperationKind::Await)
