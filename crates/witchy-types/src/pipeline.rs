@@ -522,11 +522,15 @@ mod tests {
         assert_eq!(awaits.len(), 2);
         assert_eq!(
             awaits[0].path,
-            vec![crate::async_control_flow::ControlPathStep::Then],
+            vec![crate::async_control_flow::ControlPathStep::IfThen(
+                crate::async_control_flow::SourceControlId(0),
+            )],
         );
         assert_eq!(
             awaits[1].path,
-            vec![crate::async_control_flow::ControlPathStep::Else],
+            vec![crate::async_control_flow::ControlPathStep::IfElse(
+                crate::async_control_flow::SourceControlId(0),
+            )],
         );
     }
 
