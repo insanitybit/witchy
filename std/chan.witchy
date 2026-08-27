@@ -116,6 +116,13 @@ pub fn channel(capacity: Int) -> Task((Sender(m), Receiver(m))):
 pub fn unbounded() -> Task((Sender(m), Receiver(m))):
     channel(0)
 
+// Compiler marker for `for await x in rx:`. The async lowering pass unwraps
+// this declaration before execution; it exists only so source type checking
+// can resolve the parser's lossless receive-stream marker. It must never be
+// called as a runtime channel operation.
+pub fn __recv_stream(rx: Receiver(m)) -> List(m):
+    []
+
 // Send `msg`; on a bounded channel this blocks until there is room while some
 // task can make progress. If the whole executor reaches quiescence with this
 // send parked, the close pass releases it and stores the message, even if that
