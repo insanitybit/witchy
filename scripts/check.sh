@@ -469,7 +469,18 @@ if cargo nextest --version >/dev/null 2>&1; then
     # preflight alone and the merge guarantee is unchanged.
     preflight_cmd=()
     if [ -n "${WITCHY_GATE_PREFLIGHT_EXPR:-}" ]; then
-        preflight_cmd=(cargo nextest run --max-fail=1:immediate \
+        # --no-tests=warn: the replay expression names tests that red the LAST
+        # attempt, but this attempt's selection is derived fresh from the diff,
+        # so those tests may not be in scope at all (the branch moved, the test
+        # was renamed, or the mapper picked different packages). nextest's
+        # default is to FAIL on an empty selection, which marked the branch red
+        # for a reason that has nothing to do with the branch: observed
+        # 2026-08-27 on impl/rfc0161-typed-queue, where the replay matched 0 of
+        # 2032 tests and red the gate after a 3m28s build. Preflight is an
+        # optimization -- when it has nothing to replay the correct outcome is
+        # to fall through to the full run. `warn` over `pass` so the empty
+        # replay still shows up in the log.
+        preflight_cmd=(cargo nextest run --max-fail=1:immediate --no-tests=warn \
             "${nextest_sel[@]}" -E "${WITCHY_GATE_PREFLIGHT_EXPR}")
     fi
 
