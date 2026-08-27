@@ -127,6 +127,13 @@ change_lock="$qdir/change.lock"
 journal="$qdir/journal.jsonl"
 logs="$qdir/logs"
 lock="$qdir/gate.lock"
+# Written by the coordinator while it WAITS for the gate lock, so ad-hoc
+# `with-lock` callers queue behind it instead of barging. Measured 2026-08-27:
+# coordinator lock wait went p50 0s -> 75s and p90 221s -> 763s once several
+# agents began running benchmark/e2e suites under with-lock, and the queue
+# stopped draining. One agent's ad-hoc suite blocks that agent; the coordinator
+# blocks EVERY queued branch.
+lock_intent="$qdir/gate.lock.intent"
 coordinator_lock="$qdir/coordinator.lock"
 gate_target_file="$qdir/gate-target"
 prewarm_incomplete="$qdir/prewarm-incomplete"
@@ -933,6 +940,9 @@ reap_orphan_coordinators() {
 
 acquire_lock() { # acquire_lock <description> [branch] [log]
     local waited=0
+    if [ "${lock_priority:-0}" = "1" ]; then
+        printf '%s\n' "$$" >"$lock_intent" 2>/dev/null || true
+    fi
     while ! mkdir "$lock" 2>/dev/null; do
         reap_stale_gate_lock && continue
         local pid; pid="$(cat "$lock/pid" 2>/dev/null || true)"
@@ -946,6 +956,7 @@ acquire_lock() { # acquire_lock <description> [branch] [log]
         waited=1
         sleep "$monitor_interval"
     done
+    [ "${lock_priority:-0}" = "1" ] && rm -f "$lock_intent" 2>/dev/null
     echo "$$" >"$lock/pid"
     echo "$1" >"$lock/what"
     echo "${2:-}" >"$lock/branch"
@@ -2486,7 +2497,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         note "docs-safe $branch: landing without the full-gate lock"
         lock_acquired="$(date +%s)"
     else
-        acquire_lock "$lock_what" "$branch" "$log"
+        lock_priority=1 acquire_lock "$lock_what" "$branch" "$log"
         lock_acquired="$(date +%s)"
     fi
 
@@ -3491,6 +3502,19 @@ cmd_migrate_state() {
 cmd_with_lock() {
     [ "${1:-}" = "--" ] && shift
     [ "$#" -ge 1 ] || { note "usage: merge-queue.sh with-lock -- <cmd...>"; exit 2; }
+    # Yield to a coordinator that is already waiting. Fail OPEN on every doubt --
+    # a dead holder, an unreadable marker, or a wait past the cap all proceed --
+    # so this can never wedge with-lock.
+    local intent_wait=0 intent_cap="${MERGE_QUEUE_INTENT_MAX_WAIT:-900}" ipid
+    while [ -f "$lock_intent" ]; do
+        ipid="$(cat "$lock_intent" 2>/dev/null || true)"
+        case "$ipid" in ''|*[!0-9]*) rm -f "$lock_intent" 2>/dev/null; break ;; esac
+        kill -0 "$ipid" 2>/dev/null || { rm -f "$lock_intent" 2>/dev/null; break; }
+        [ "$intent_wait" -ge "$intent_cap" ] && { note "with-lock: coordinator intent held past ${intent_cap}s; proceeding"; break; }
+        [ "$intent_wait" -eq 0 ] && note "with-lock: yielding to the waiting coordinator (pid $ipid)"
+        sleep 5
+        intent_wait=$((intent_wait + 5))
+    done
     acquire_lock "with-lock: $*"
     local rc=0
     "$@" || rc=$?

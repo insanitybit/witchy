@@ -1688,3 +1688,31 @@ fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
         "preflight is not a nextest filter expression: {recorded}"
     );
 }
+
+/// One agent's ad-hoc `with-lock` suite blocks that agent; the coordinator
+/// blocks EVERY queued branch. The gate lock had no fairness, so measured
+/// 2026-08-27 the coordinator's lock wait went p50 0s -> 75s and p90 221s ->
+/// 763s once several agents ran benchmarks under with-lock, and the queue
+/// stopped draining. with-lock now yields to a waiting coordinator -- but must
+/// fail OPEN, or a dead coordinator would wedge every agent.
+#[test]
+fn with_lock_fails_open_when_the_coordinator_intent_is_stale() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    // The state dir is created lazily on first use.
+    fixture.mq_ok(&["status"], "true");
+    let intent = fixture.state.join("gate.lock.intent");
+    // A pid that cannot be alive.
+    fs::write(&intent, "999999\n").expect("write stale intent");
+
+    let out = fixture.mq(&["with-lock", "--", "true"], "true");
+    assert!(
+        out.status.success(),
+        "with-lock wedged on a stale coordinator intent:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !intent.exists(),
+        "a stale intent marker was left behind to block the next caller"
+    );
+}
