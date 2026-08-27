@@ -85,6 +85,28 @@ impl TypedExecution {
         Ok((operation, queue, site.kind))
     }
 
+    /// Return the exact source-ordered arm table for the waiting select. This
+    /// is the only authority a queue coordinator uses for arm direction and
+    /// endpoint queue identity.
+    pub fn waiting_select_arms(
+        &self,
+    ) -> Result<(OperationSiteId, Vec<(u32, ExecutionOperation, QueueShapeId)>), String> {
+        let operation = match self.status {
+            KernelStatus::Waiting(operation) => operation,
+            _ => return Err("execution has no installed select wait record".into()),
+        };
+        let site = self.shape.operations.get(operation.0 as usize)
+            .ok_or_else(|| "operation vanished after validation".to_string())?;
+        if site.kind != ExecutionOperation::Select {
+            return Err("execution wait is not a typed select operation".into());
+        }
+        let arms = site.arms.iter().map(|arm| {
+            let queue = arm.queue.ok_or_else(|| "typed select arm has no queue binding".to_string())?;
+            Ok((arm.ordinal, arm.operation, queue))
+        }).collect::<Result<Vec<_>, String>>()?;
+        Ok((operation, arms))
+    }
+
     /// Execute a deterministic state turn only when its edge is statically
     /// unambiguous. Branching states must use `turn_selected`; silently taking
     /// vector element zero would destroy source control-flow semantics.
@@ -374,5 +396,12 @@ mod tests {
             execution.commit_operation(OperationCommit::SelectArm { operation: OperationSiteId(0), arm: 0 }),
             Ok(KernelTurn::Complete),
         );
+    }
+
+    #[test]
+    fn queue_wait_cannot_be_reinterpreted_as_a_select_arm_table() {
+        let mut execution = TypedExecution::new(shape()).expect("valid execution shape");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        assert!(execution.waiting_select_arms().expect_err("ordinary receive is not select").contains("not a typed select"));
     }
 }
