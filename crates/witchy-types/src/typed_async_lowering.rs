@@ -15,7 +15,7 @@ use witchy_syntax::suspension::{
 };
 
 use crate::async_control_flow::{
-    AsyncCallableId, SourceAsyncControlFlow, SourceAsyncControlFlowInventory,
+    AsyncCallableId, ControlPathStep, SourceAsyncControlFlow, SourceAsyncControlFlowInventory,
     SourceAsyncOperationKind,
 };
 use crate::pipeline::CheckedModule;
@@ -66,6 +66,21 @@ pub struct TypedAsyncSuspensionBinding {
     pub final_state: FinalCallableIndex,
 }
 
+/// One source operation retained in the final typed-lowering input.  This is
+/// deliberately complete, not merely a list of suspension sites: a producer
+/// must account for calls and terminal source edges as well as awaits.  Only
+/// an await has a continuation state at this stage; the later executable
+/// lowering supplies its resolved operands, queue/host binding, and state
+/// body without rediscovering source order from CPS expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedAsyncSourceOperationBinding {
+    pub callable: AsyncCallableId,
+    pub source_operation: u32,
+    pub kind: SourceAsyncOperationKind,
+    pub path: Vec<ControlPathStep>,
+    pub continuation: Option<FinalCallableIndex>,
+}
+
 /// The complete bridge between source control flow and final typed state
 /// layouts. It is not executable and has no legacy scalar transitions.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +88,7 @@ pub struct TypedAsyncLoweringInput {
     pub source: Vec<SourceAsyncControlFlow>,
     pub states: Vec<TypedAsyncStateInput>,
     pub suspensions: Vec<TypedAsyncSuspensionBinding>,
+    pub operations: Vec<TypedAsyncSourceOperationBinding>,
 }
 
 impl TypedAsyncLoweringInput {
@@ -240,7 +256,49 @@ impl TypedAsyncLoweringInput {
                 }
             }
         }
-        Ok(Self { source, states, suspensions })
+        let mut operations = Vec::new();
+        for flow in &source {
+            for operation in &flow.operations {
+                let continuation = suspensions.iter().find(|binding| {
+                    binding.callable == flow.callable
+                        && binding.source_operation == operation.ordinal
+                }).map(|binding| binding.final_state);
+                if operation.kind == SourceAsyncOperationKind::Await && continuation.is_none() {
+                    return Err(format!(
+                        "source async await operation {} has no final continuation-state binding",
+                        operation.ordinal,
+                    ));
+                }
+                if operation.kind != SourceAsyncOperationKind::Await && continuation.is_some() {
+                    return Err(format!(
+                        "source async non-await operation {} has a continuation-state binding",
+                        operation.ordinal,
+                    ));
+                }
+                operations.push(TypedAsyncSourceOperationBinding {
+                    callable: flow.callable.clone(),
+                    source_operation: operation.ordinal,
+                    kind: operation.kind,
+                    path: operation.path.clone(),
+                    continuation,
+                });
+            }
+        }
+        operations.sort_by(|left, right| {
+            (&left.callable, left.source_operation)
+                .cmp(&(&right.callable, right.source_operation))
+        });
+        for pair in operations.windows(2) {
+            if pair[0].callable == pair[1].callable
+                && pair[0].source_operation == pair[1].source_operation
+            {
+                return Err(format!(
+                    "source async operation {} has multiple typed operation bindings",
+                    pair[0].source_operation,
+                ));
+            }
+        }
+        Ok(Self { source, states, suspensions, operations })
     }
 }
 
@@ -266,6 +324,14 @@ mod tests {
         assert!(input.states.iter().all(|state| state.callable.surface.method == Some(0)));
         assert!(input.states.iter().all(|state| !state.frame.is_empty()));
         assert_eq!(input.suspensions.len(), 1);
+        assert_eq!(input.operations.len(), input.source[0].operations.len());
+        assert_eq!(
+            input.operations.iter().filter(|operation| operation.kind == SourceAsyncOperationKind::Await).count(),
+            1,
+        );
+        assert!(input.operations.iter().all(|operation| {
+            (operation.kind == SourceAsyncOperationKind::Await) == operation.continuation.is_some()
+        }));
         assert_eq!(
             input.states.iter().filter_map(|state| state.source_suspension).collect::<Vec<_>>(),
             vec![0],
@@ -301,5 +367,15 @@ mod tests {
             input.suspensions.iter().map(|binding| binding.source_operation).collect::<Vec<_>>(),
             source_awaits,
         );
+        let source_operations = input.source[0].operations.iter()
+            .map(|operation| operation.ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            input.operations.iter().map(|operation| operation.source_operation).collect::<Vec<_>>(),
+            source_operations,
+        );
+        assert!(input.operations.iter().all(|operation| {
+            (operation.kind == SourceAsyncOperationKind::Await) == operation.continuation.is_some()
+        }));
     }
 }
