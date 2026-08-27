@@ -4423,6 +4423,20 @@ mod tests {
             item.id == crate::async_surface::AsyncSurfaceId { item: 2, method: None }
                 && matches!(&item.item, Item::Function(function) if function.is_async)
         }));
+        assert!(matches!(
+            linked.async_surface.function(
+                "main",
+                &crate::async_surface::AsyncSurfaceId { item: 1, method: Some(0) },
+            ),
+            Some(function) if function.name == "next" && function.is_async
+        ));
+        assert!(matches!(
+            linked.async_surface.function(
+                "main",
+                &crate::async_surface::AsyncSurfaceId { item: 2, method: None },
+            ),
+            Some(function) if function.name == "increment" && function.is_async
+        ));
 
         let bindings = &linked.async_surface.bindings;
         assert_eq!(bindings.len(), 4, "entry and continuation per callable");

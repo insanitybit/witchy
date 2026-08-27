@@ -6,7 +6,7 @@
 //! enough for a later typed control-flow pass to build those facts without
 //! reverse-engineering generated `task.lazy` / `task.and_then` closures.
 
-use crate::ast::{Item, Module};
+use crate::ast::{Function, Item, Module};
 
 /// Stable coordinate of an async source declaration after generator lowering.
 /// It is diagnostic/source identity only; final execution and operation IDs
@@ -78,6 +78,21 @@ impl AsyncSurfaceModule {
             .collect();
         Self { module: module_name.to_string(), items }
     }
+
+    /// Recover an async callable from the preserved pre-CPS item. Consumers
+    /// pair this with a source-expression coordinate; they must not search the
+    /// lowered module for a generated continuation or compiler name.
+    pub fn function(&self, id: &AsyncSurfaceId) -> Option<&Function> {
+        let item = self.items.iter().find(|item| item.id == *id)?;
+        match (&item.item, id.method) {
+            (Item::Function(function), None) if function.is_async => Some(function),
+            (Item::Impl(definition), Some(method)) => definition
+                .methods
+                .get(method as usize)
+                .filter(|method| method.is_async),
+            _ => None,
+        }
+    }
 }
 
 /// Final linked location of one lowered source async callable.
@@ -112,5 +127,14 @@ impl LinkedAsyncSurface {
 
     pub fn push_binding(&mut self, binding: LinkedAsyncCallableBinding) {
         self.bindings.push(binding);
+    }
+
+    /// Recover the exact retained source callable identified by a linked
+    /// module key and source surface coordinate.
+    pub fn function(&self, module: &str, id: &AsyncSurfaceId) -> Option<&Function> {
+        self.modules
+            .iter()
+            .find(|surface| surface.module == module)?
+            .function(id)
     }
 }
