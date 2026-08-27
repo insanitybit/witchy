@@ -547,6 +547,11 @@ impl TypedQueueRuntime {
         if !cancellable.has_cancellation_transition() {
             return Err("execution shape has no cancellation transition".into());
         }
+        if !matches!(cancellable.status(), crate::typed_async::KernelStatus::Waiting(_)) {
+            return self.executions.get_mut(&execution)
+                .expect("execution was checked above")
+                .request_cancellation();
+        }
         let select = cancellable.waiting_select_arms();
         let claimed = match select {
             Ok((operation, arms)) => {
@@ -1134,5 +1139,26 @@ mod tests {
         assert_eq!(runtime.execution(1).expect("execution").status(), crate::typed_async::KernelStatus::Ready);
         assert_eq!(runtime.execution(1).expect("execution").state(), ExecutionStateId(1));
         assert_eq!(runtime.close_queue(QueueShapeId(0)), Ok(QueueRuntimeResult::Committed { turns: vec![], deliveries: vec![] }));
+    }
+
+    #[test]
+    fn cancellation_after_close_completion_is_idempotently_false() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, execution(ExecutionOperation::ChannelReceive)).expect("receiver");
+        assert_eq!(runtime.submit_receive(1, 2), Ok(QueueRuntimeResult::Blocked));
+        assert_eq!(
+            runtime.close_queue(QueueShapeId(0)),
+            Ok(QueueRuntimeResult::Committed {
+                turns: vec![(1, KernelTurn::Complete)],
+                deliveries: vec![QueueDelivery {
+                    execution: 1,
+                    operation: OperationSiteId(0),
+                    arm: None,
+                    completion: QueueCompletion::ReceiveClosed,
+                }],
+            }),
+        );
+        assert!(!runtime.request_cancellation(1, 2).expect("completed cancellation is idempotent"));
     }
 }
