@@ -657,6 +657,7 @@ mod tests {
     fn semantic_fingerprint_covers_entry_result_and_cancellation_bindings() {
         let mut shape = shape();
         shape.operations[0].kind = ExecutionOperation::Cancellation;
+        shape.states[0].edges[0].condition = ExecutionEdgeCondition::Always;
         shape.cancellation = Some(AsyncCancellationTransition {
             operation: AsyncProgramOperationId(0),
             state: AsyncProgramStateId(0),

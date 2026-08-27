@@ -193,7 +193,7 @@ impl TypedExecutionShape {
                 for action in &transition.actions {
                     validate_action(*action, lane_count)?;
                 }
-                validate_condition(transition.condition, lane_count, operation_count)?;
+                validate_condition(transition.condition, lane_count, &self.operations)?;
                 match transition.outcome {
                     ExecutionOutcome::Continue(next) | ExecutionOutcome::Ready(next)
                         if next.0 >= state_count => return Err("execution transition has absent successor".to_string()),
@@ -355,14 +355,27 @@ fn validate_action(action: LaneAction, lane_count: u32) -> Result<(), String> {
     }
 }
 
-fn validate_condition(condition: ExecutionEdgeCondition, lane_count: u32, operation_count: u32) -> Result<(), String> {
+fn validate_condition(
+    condition: ExecutionEdgeCondition,
+    lane_count: u32,
+    operations: &[OperationSite],
+) -> Result<(), String> {
     match condition {
         ExecutionEdgeCondition::Always => Ok(()),
         ExecutionEdgeCondition::Boolean { lane, .. } | ExecutionEdgeCondition::Variant { lane, .. }
             if lane.0 < lane_count => Ok(()),
-        ExecutionEdgeCondition::SelectArm { operation, .. } if operation.0 < operation_count => Ok(()),
+        ExecutionEdgeCondition::SelectArm { operation, arm } => {
+            let operation = operations.get(operation.0 as usize)
+                .ok_or_else(|| "execution edge condition references absent operation".to_string())?;
+            if operation.kind != ExecutionOperation::Select {
+                return Err("execution select-arm condition names a non-select operation".to_string());
+            }
+            if arm as usize >= operation.arms.len() {
+                return Err("execution select-arm condition references absent select arm".to_string());
+            }
+            Ok(())
+        }
         ExecutionEdgeCondition::Boolean { .. } | ExecutionEdgeCondition::Variant { .. } => Err("execution edge condition references absent frame lane".to_string()),
-        ExecutionEdgeCondition::SelectArm { .. } => Err("execution edge condition references absent operation".to_string()),
     }
 }
 
@@ -448,5 +461,20 @@ mod tests {
             to: FrameLaneId(0),
         }];
         assert!(invalid.validate().expect_err("must values are affine").contains("copies a must-consume"));
+    }
+
+    #[test]
+    fn rejects_a_select_edge_that_does_not_name_a_select_operation_or_arm() {
+        let mut invalid = shape();
+        invalid.states[0].transitions[0].condition = ExecutionEdgeCondition::SelectArm {
+            operation: OperationSiteId(0),
+            arm: 0,
+        };
+        assert!(invalid.validate().expect_err("operation kind is semantic")
+            .contains("non-select operation"));
+
+        invalid.operations[0].kind = ExecutionOperation::Select;
+        assert!(invalid.validate().expect_err("select arm must exist")
+            .contains("absent select arm"));
     }
 }
