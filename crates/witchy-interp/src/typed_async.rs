@@ -34,13 +34,15 @@ pub struct TypedExecution {
     state: ExecutionStateId,
     initialized: Vec<bool>,
     status: KernelStatus,
+    cancellation: Option<(OperationSiteId, ExecutionStateId)>,
 }
 
 impl TypedExecution {
     pub fn new(shape: TypedExecutionShape) -> Result<Self, String> {
         shape.validate()?;
         let initialized = shape.frame.iter().map(|lane| lane.initially_initialized).collect();
-        Ok(Self { state: shape.entry, shape, initialized, status: KernelStatus::Ready })
+        let cancellation = shape.cancellation.map(|transition| (transition.operation, transition.state));
+        Ok(Self { state: shape.entry, shape, initialized, status: KernelStatus::Ready, cancellation })
     }
 
     pub fn shape_id(&self) -> ExecutionShapeId { self.shape.id }
@@ -83,6 +85,21 @@ impl TypedExecution {
         }
     }
 
+    /// Request cooperative cancellation. A valid request selects the declared
+    /// cancellation operation and cleanup state; it never clears frame lanes.
+    pub fn request_cancellation(&mut self) -> Result<bool, String> {
+        let Some((_operation, cleanup)) = self.cancellation else {
+            return Err("execution shape has no cancellation transition".to_string());
+        };
+        if self.status == KernelStatus::Complete || self.status == KernelStatus::PropagatedError || self.status == KernelStatus::Trapped {
+            return Ok(false);
+        }
+        if self.state == cleanup && self.status == KernelStatus::Ready { return Ok(false); }
+        self.state = cleanup;
+        self.status = KernelStatus::Ready;
+        Ok(true)
+    }
+
     fn apply(&mut self, action: LaneAction) -> Result<(), String> {
         let lane = |id: FrameLaneId, lanes: &Vec<bool>| lanes.get(id.0 as usize).copied().ok_or_else(|| "execution lane vanished after validation".to_string());
         match action {
@@ -100,6 +117,7 @@ mod tests {
     use super::*;
     use witchy_syntax::ast::Type;
     use witchy_types::typed_execution::{
+        CancellationTransition,
         ExecutionOperation, ExecutionState, ExecutionTransition, FrameLane,
         LaneOwnership, OperationSite,
     };
@@ -113,7 +131,11 @@ mod tests {
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { actions: vec![], outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
                 ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { actions: vec![LaneAction::Discharge { lane: FrameLaneId(0) }], outcome: ExecutionOutcome::Complete }] },
             ],
-            operations: vec![OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelReceive, pending_move_lanes: vec![] }],
+            operations: vec![
+                OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelReceive, pending_move_lanes: vec![] },
+                OperationSite { id: OperationSiteId(1), kind: ExecutionOperation::Cancellation, pending_move_lanes: vec![] },
+            ],
+            cancellation: Some(CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(1) }),
         }
     }
 
@@ -126,5 +148,16 @@ mod tests {
         execution.wake(OperationSiteId(0)).expect("matching wake claims wait record");
         assert_eq!(execution.turn(), Ok(KernelTurn::Complete));
         assert!(execution.wake(OperationSiteId(0)).is_err(), "completed execution owns no wait record");
+    }
+
+    #[test]
+    fn cancellation_wakes_into_declared_cleanup_state_without_dropping_lanes() {
+        let mut execution = TypedExecution::new(shape()).expect("valid cancellable execution shape");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        assert!(execution.request_cancellation().expect("cancellation is declared"));
+        assert_eq!(execution.state(), ExecutionStateId(1));
+        assert_eq!(execution.status(), KernelStatus::Ready);
+        assert_eq!(execution.turn(), Ok(KernelTurn::Complete));
+        assert!(!execution.request_cancellation().expect("completed request is idempotent"));
     }
 }

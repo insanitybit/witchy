@@ -80,6 +80,14 @@ pub struct OperationSite {
     pub pending_move_lanes: Vec<FrameLaneId>,
 }
 
+/// Cooperative cancellation enters an ordinary typed cleanup state. The state
+/// owns its normal lane transitions; cancellation never means dropping a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancellationTransition {
+    pub operation: OperationSiteId,
+    pub state: ExecutionStateId,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedExecutionShape {
     pub id: ExecutionShapeId,
@@ -87,6 +95,7 @@ pub struct TypedExecutionShape {
     pub frame: Vec<FrameLane>,
     pub states: Vec<ExecutionState>,
     pub operations: Vec<OperationSite>,
+    pub cancellation: Option<CancellationTransition>,
 }
 
 impl TypedExecutionShape {
@@ -124,6 +133,14 @@ impl TypedExecutionShape {
         for operation in &self.operations {
             for lane in &operation.pending_move_lanes {
                 if lane.0 >= lane_count { return Err("operation references absent pending-move lane".to_string()); }
+            }
+        }
+        if let Some(cancellation) = self.cancellation {
+            if cancellation.operation.0 >= operation_count || cancellation.state.0 >= state_count {
+                return Err("cancellation transition has absent operation or cleanup state".to_string());
+            }
+            if self.operations[cancellation.operation.0 as usize].kind != ExecutionOperation::Cancellation {
+                return Err("cancellation transition must name a cancellation operation".to_string());
             }
         }
         Ok(())
@@ -175,6 +192,7 @@ mod tests {
                 kind: ExecutionOperation::ChannelReceive,
                 pending_move_lanes: vec![FrameLaneId(0)],
             }],
+            cancellation: None,
         }
     }
 
