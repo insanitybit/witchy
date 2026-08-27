@@ -1,0 +1,214 @@
+//! Type-resolved RFC-0161 concurrency migration census for the repository corpus.
+
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    path::{Path, PathBuf},
+};
+
+use witchy::{ast, parser, pipeline};
+use witchy_syntax::linker;
+use witchy_types::async_migration::{Category, Census};
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("rfc0161-census: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let root = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    let root = Path::new(&root);
+    let mut files = Vec::new();
+    for directory in ["std", "examples", "projects", "benchmarks", "tests"] {
+        collect_witchy_files(&root.join(directory), &mut files)?;
+    }
+    files.sort();
+    let source_index = source_index(&files);
+    let mut totals = BTreeMap::new();
+    let mut checked = 0usize;
+    let mut rejected = Vec::new();
+
+    println!("path\tline\tcategory\tcallee");
+    for path in &files {
+        record_report(
+            display_from(root, path),
+            link_file(path, &source_index)?,
+            &mut checked,
+            &mut rejected,
+            &mut totals,
+        );
+    }
+    for path in markdown_files(root)? {
+        let source = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+        for (index, snippet) in extract_witchy_blocks(&source).into_iter().enumerate() {
+            let label = format!("{}#block-{}", display_from(root, &path), index + 1);
+            let module = parser::parse_module(&snippet).map_err(|error| format!("{label}: {error}"))?;
+            let report = pipeline::async_migration_census(
+                vec![("main".to_string(), module)],
+                "main",
+                &HashSet::new(),
+            ).map_err(|error| format!("{label}: {error}"))?;
+            record_report(label, report, &mut checked, &mut rejected, &mut totals);
+        }
+    }
+
+    println!();
+    println!("witchy-files\t{}", files.len());
+    println!("checked\t{checked}");
+    println!("rejected\t{}", rejected.len());
+    for category in categories() {
+        println!("{}\t{}", category.as_str(), totals.get(category.as_str()).copied().unwrap_or(0));
+    }
+    if !rejected.is_empty() {
+        println!();
+        println!("compiler-rejections");
+        for rejection in rejected { println!("{rejection}"); }
+        return Err("one or more corpus sources failed checking; migration findings remain above".to_string());
+    }
+    Ok(())
+}
+
+fn categories() -> [Category; 10] {
+    [
+        Category::AsyncCallable,
+        Category::TaskConstruction,
+        Category::TaskConsumption,
+        Category::LegacyHandle,
+        Category::LegacyCancellation,
+        Category::LegacySelect,
+        Category::LegacyChannelUnbounded,
+        Category::LegacyChannelBounded,
+        Category::LegacyChannelDynamicCapacity,
+        Category::LegacyReceiveQuiescence,
+    ]
+}
+
+fn record_report(
+    label: String,
+    report: Census,
+    checked: &mut usize,
+    rejected: &mut Vec<String>,
+    totals: &mut BTreeMap<&'static str, usize>,
+) {
+    if report.checked {
+        *checked += 1;
+    } else {
+        rejected.push(format!("{label}: {}", report.check_error.as_deref().unwrap_or("unknown check failure")));
+    }
+    for (category, count) in report.counts() {
+        *totals.entry(category).or_default() += count;
+    }
+    for finding in report.findings {
+        println!("{label}\t{}\t{}\t{}", finding.line, finding.category.as_str(), finding.callee);
+    }
+}
+
+fn collect_witchy_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !directory.exists() { return Ok(()); }
+    for entry in std::fs::read_dir(directory)
+        .map_err(|error| format!("cannot read `{}`: {error}", directory.display()))?
+    {
+        let path = entry.map_err(|error| format!("cannot read entry in `{}`: {error}", directory.display()))?.path();
+        if path.is_dir() {
+            collect_witchy_files(&path, files)?;
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("witchy") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn markdown_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = vec![root.join("README.md"), root.join("CONTRIBUTING.md"), root.join("examples/README.md")];
+    for directory in ["spec", "book/src"] {
+        let path = root.join(directory);
+        if !path.exists() { continue; }
+        for entry in std::fs::read_dir(&path)
+            .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?
+        {
+            let path = entry.map_err(|error| format!("cannot read entry in `{}`: {error}", directory))?.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("md") { files.push(path); }
+        }
+    }
+    files.retain(|path| path.is_file());
+    files.sort();
+    Ok(files)
+}
+
+fn extract_witchy_blocks(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current = None;
+    for line in markdown.lines() {
+        match &mut current {
+            None if line.trim_end() == "```witchy" => current = Some(String::new()),
+            Some(_) if line.trim_end() == "```" => blocks.push(current.take().expect("open block")),
+            Some(body) => { body.push_str(line); body.push('\n'); }
+            None => {}
+        }
+    }
+    blocks
+}
+
+fn source_index(files: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
+    let mut index = BTreeMap::new();
+    for path in files {
+        if let Some(stem) = path.file_stem().and_then(|name| name.to_str()) {
+            index.entry(stem.to_string()).or_insert_with(Vec::new).push(path.clone());
+        }
+    }
+    index
+}
+
+fn link_file(path: &Path, source_index: &BTreeMap<String, Vec<PathBuf>>) -> Result<Census, String> {
+    let stem = path.file_stem().and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid source path `{}`", path.display()))?.to_string();
+    let mut modules = Vec::new();
+    let mut loaded = HashSet::new();
+    let mut user_modules = HashSet::new();
+    let mut pending = VecDeque::from([(stem.clone(), path.to_path_buf())]);
+    while let Some((name, source_path)) = pending.pop_front() {
+        if !loaded.insert(name.clone()) { continue; }
+        let source = match std::fs::read_to_string(&source_path) {
+            Ok(source) => {
+                if linker::std_source(&name) != Some(source.as_str()) { user_modules.insert(name.clone()); }
+                source
+            }
+            Err(error) => linker::std_source(&name).map(str::to_string)
+                .ok_or_else(|| format!("cannot read `{}`: {error}", source_path.display()))?,
+        };
+        let module: ast::Module = parser::parse_module(&source)
+            .map_err(|error| format!("{}: {error}", source_path.display()))?;
+        for import in &module.imports {
+            if loaded.contains(import) { continue; }
+            let sibling = source_path.parent().unwrap_or_else(|| Path::new(".")).join(format!("{import}.witchy"));
+            let import_path = if sibling.exists() || linker::std_source(import).is_some() {
+                sibling
+            } else {
+                source_index.get(import).and_then(|candidates| match candidates.as_slice() {
+                    [only] => Some(only.clone()),
+                    _ => None,
+                }).unwrap_or(sibling)
+            };
+            pending.push_back((import.clone(), import_path));
+        }
+        modules.push((name, module));
+    }
+    pipeline::async_migration_census(modules, &stem, &user_modules)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn display_from(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_witchy_blocks;
+
+    #[test]
+    fn extracts_only_complete_witchy_fences() {
+        assert_eq!(extract_witchy_blocks("```witchy\nfn main():\n    1\n```\n```text\nignored\n```"), vec!["fn main():\n    1\n"]);
+    }
+}
