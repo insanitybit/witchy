@@ -29,7 +29,11 @@ printf 'rfc=0153\nrevision=%s\nhost=%s\nsource=%s\nsource_sha256=%s\ncontrol_sha
 run() {
     local binary=$1 opt=$2 output root
     root=$(mktemp -d /tmp/rfc0153-coven-root.XXXXXX)
-    output=$(WITCHY_OPT="$opt" "$binary" sandbox --dir "$root" "$SOURCE" 2>/dev/null)
+    if ! output=$(WITCHY_OPT="$opt" "$binary" sandbox --dir "$root" "$SOURCE" 2>/dev/null); then
+        rm -rf "$root"
+        return 1
+    fi
+    rm -rf "$root"
     printf '%s\n' "$output"
 }
 
