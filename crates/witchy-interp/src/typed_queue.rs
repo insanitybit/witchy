@@ -784,6 +784,7 @@ mod tests {
                 ownership: LaneOwnership::Move,
                 initially_initialized: true,
             }],
+            result_lanes: vec![],
             states: vec![
                 ExecutionState {
                     id: ExecutionStateId(0),
