@@ -44,6 +44,27 @@ pub const FRAME_STATE_ATTRIBUTE_PREFIX: &str = "__compiler_suspension_state=";
 /// before or after its task expression in source order.
 pub const ASYNC_REGION_ATTRIBUTE_PREFIX: &str = "__compiler_async_region=";
 
+/// Source-item identity retained across async CPS lowering. This is compiler
+/// metadata only; final execution IDs are assigned after typed layout.
+pub const ASYNC_SURFACE_ATTRIBUTE_PREFIX: &str = "__compiler_async_surface=";
+
+pub fn async_surface_attribute(item: usize, method: Option<usize>) -> String {
+    match method {
+        Some(method) => format!("{ASYNC_SURFACE_ATTRIBUTE_PREFIX}{item}:{method}"),
+        None => format!("{ASYNC_SURFACE_ATTRIBUTE_PREFIX}{item}:_"),
+    }
+}
+
+pub fn async_surface(function: &Function) -> Option<(usize, Option<usize>)> {
+    function.attributes.iter().find_map(|attribute| {
+        let encoded = attribute.strip_prefix(ASYNC_SURFACE_ATTRIBUTE_PREFIX)?;
+        let (item, method) = encoded.split_once(':')?;
+        let item = item.parse().ok()?;
+        let method = (method != "_").then(|| method.parse().ok()).flatten();
+        Some((item, method))
+    })
+}
+
 pub fn frame_state_attribute(state: usize) -> String {
     format!("{FRAME_STATE_ATTRIBUTE_PREFIX}{state}")
 }

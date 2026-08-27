@@ -238,8 +238,12 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
     for (source_index, item) in std::mem::take(&mut module.items).into_iter().enumerate() {
         mapping[source_index].push(items.len());
         match item {
-            Item::Function(f) if f.is_async => {
+            Item::Function(mut f) if f.is_async => {
                 let is_entry = f.name == "main";
+                f.attributes.push(crate::suspension::async_surface_attribute(
+                    source_index,
+                    None,
+                ));
                 let (entry, mut segs) = lower_async_fn(
                     f,
                     is_entry,
@@ -261,8 +265,15 @@ pub(crate) fn lower_with_view_fns_and_item_mapping(
                 // carried `self` (a segment parameter) still resolves `self.field`.
                 let self_ty = Type::Named(im.type_name.clone(), im.target_args.clone());
                 let mut methods = Vec::with_capacity(im.methods.len());
-                for method in std::mem::take(&mut im.methods) {
+                for (method_index, mut method) in std::mem::take(&mut im.methods)
+                    .into_iter()
+                    .enumerate()
+                {
                     if method.is_async {
+                        method.attributes.push(crate::suspension::async_surface_attribute(
+                            source_index,
+                            Some(method_index),
+                        ));
                         let (entry, mut segs) = lower_async_fn_with(
                             method,
                             false,

@@ -14,6 +14,7 @@
 pub mod aliases;
 pub mod ast;
 pub mod async_lower;
+pub(crate) mod async_surface;
 pub mod build_entry;
 pub mod cap_ops;
 pub mod consts;

@@ -821,6 +821,7 @@ pub type ComptimeExpander = fn(
 pub struct LinkedModule {
     pub module: Module,
     pub origins: crate::origin::OriginTable,
+    pub(crate) async_surface: crate::async_surface::LinkedAsyncSurface,
     /// Complete linker module-key set, including compiler-pulled modules that
     /// contribute functions but no nominal declarations. Authenticated loaders
     /// validate ownership against this set rather than inferring it from names.
@@ -1208,7 +1209,11 @@ fn lower_expanded_source(
     checked: crate::source_check::SemanticallyCheckedSource,
     origin_tables: &mut HashMap<String, crate::origin::OriginTable>,
 ) -> Result<
-    (Vec<(String, Module)>, crate::type_resolve::ResolvedDeclarations),
+    (
+        Vec<(String, Module)>,
+        crate::type_resolve::ResolvedDeclarations,
+        crate::async_surface::LinkedAsyncSurface,
+    ),
     LinkError,
 > {
     let view_fns = checked
@@ -1218,11 +1223,13 @@ fn lower_expanded_source(
         .collect::<Vec<_>>();
     let (checked_modules, declarations) = checked.into_checked_modules();
     let mut lowered_modules = Vec::with_capacity(checked_modules.len());
+    let mut async_surface = crate::async_surface::LinkedAsyncSurface::default();
     for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
         let cache_key = lowered_source_cache_key(&module_name, checked.module(), &view_fns);
         if let Some(cached) = lowered_source_cache().lock().unwrap().get(&cache_key).cloned() {
             origin_tables.insert(module_name.clone(), cached.origin_table);
             lowered_modules.push((module_name, cached.module));
+            async_surface.push_module(cached.async_surface);
             continue;
         }
         let generator_mapping = crate::generators::lowered_item_mapping(checked.module());
@@ -1232,6 +1239,10 @@ fn lower_expanded_source(
                 location: None,
             },
         )?;
+        let module_async_surface = crate::async_surface::AsyncSurfaceModule::from_module(
+            &module_name,
+            checked.module(),
+        );
         let (checked, async_mapping) =
             crate::async_lower::lower_with_view_fns_and_item_mapping(checked, &view_fns)
                 .map_err(|message| LinkError {
@@ -1280,17 +1291,20 @@ fn lower_expanded_source(
             CachedLoweredSource {
                 module: lowered.clone(),
                 origin_table: origin_table.clone(),
+                async_surface: module_async_surface.clone(),
             },
         );
         lowered_modules.push((module_name, lowered));
+        async_surface.push_module(module_async_surface);
     }
-    Ok((lowered_modules, declarations))
+    Ok((lowered_modules, declarations, async_surface))
 }
 
 #[derive(Clone)]
 struct CachedLoweredSource {
     module: Module,
     origin_table: crate::origin::OriginTable,
+    async_surface: crate::async_surface::AsyncSurfaceModule,
 }
 
 fn lowered_source_cache() -> &'static Mutex<std::collections::HashMap<String, CachedLoweredSource>> {
@@ -2007,7 +2021,8 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     let resolved = crate::source_check::resolve_linked_source(modules, user_modules, entry, mode)?;
     check_source(&resolved)?;
     let checked = resolved.after_semantic_check();
-    let (mut modules, declarations) = lower_expanded_source(checked, &mut origin_tables)?;
+    let (mut modules, declarations, mut async_surface) =
+        lower_expanded_source(checked, &mut origin_tables)?;
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
     // (impl/trait/static) during trait lowering, not to arbitrary free
@@ -2196,6 +2211,34 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                         entry,
                         is_opt(m),
                     )?;
+                    let linked_item = u32::try_from(items.len())
+                        .expect("linked item count exceeds async-surface location range");
+                    if let (Some((surface_item, surface_method)), Some(local_state)) = (
+                        crate::suspension::async_surface(&f2),
+                        crate::suspension::frame_state(&f2),
+                    ) {
+                        async_surface.push_binding(
+                            crate::async_surface::LinkedAsyncCallableBinding {
+                                module: mname.clone(),
+                                surface: crate::async_surface::AsyncSurfaceId {
+                                    item: u32::try_from(surface_item).expect(
+                                        "source item count exceeds async-surface identity range",
+                                    ),
+                                    method: surface_method.map(|method| {
+                                        u32::try_from(method).expect(
+                                            "method count exceeds async-surface identity range",
+                                        )
+                                    }),
+                                },
+                                local_state: u32::try_from(local_state).expect(
+                                    "async state count exceeds async-surface state range",
+                                ),
+                                location: crate::async_surface::LinkedAsyncCallableLocation::Function {
+                                    item: linked_item,
+                                },
+                            },
+                        );
+                    }
                     item_map[source_index].push(items.len());
                     items.push(Item::Function(f2));
                 }
@@ -2268,6 +2311,43 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                         entry,
                         is_opt(m),
                         )?;
+                    }
+                    let linked_item = u32::try_from(items.len())
+                        .expect("linked item count exceeds async-surface location range");
+                    for (method_index, method) in im2.methods.iter().enumerate() {
+                        if let (Some((surface_item, surface_method)), Some(local_state)) = (
+                            crate::suspension::async_surface(method),
+                            crate::suspension::frame_state(method),
+                        ) {
+                            let Some(surface_method) = surface_method else {
+                                return source_lerr(format!(
+                                    "async surface function marker on linked method `{}`",
+                                    method.name,
+                                ));
+                            };
+                            async_surface.push_binding(
+                                crate::async_surface::LinkedAsyncCallableBinding {
+                                    module: mname.clone(),
+                                    surface: crate::async_surface::AsyncSurfaceId {
+                                        item: u32::try_from(surface_item).expect(
+                                            "source item count exceeds async-surface identity range",
+                                        ),
+                                        method: Some(u32::try_from(surface_method).expect(
+                                            "method count exceeds async-surface identity range",
+                                        )),
+                                    },
+                                    local_state: u32::try_from(local_state).expect(
+                                        "async state count exceeds async-surface state range",
+                                    ),
+                                    location: crate::async_surface::LinkedAsyncCallableLocation::InherentMethod {
+                                        item: linked_item,
+                                        method: u32::try_from(method_index).expect(
+                                            "linked method count exceeds async-surface location range",
+                                        ),
+                                    },
+                                },
+                            );
+                        }
                     }
                     item_map[source_index].push(items.len());
                     items.push(Item::Impl(im2));
@@ -2389,6 +2469,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     Ok(LinkedModule {
         module,
         origins,
+        async_surface,
         module_names,
         declarations,
     })
@@ -4299,6 +4380,106 @@ fn private_intrinsic_friend_call(provider: &str, name: &str, caller: &str) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn async_surface_preserves_source_identity_and_binds_linked_states() {
+        let source = "type Counter:\n    value: Int\n\n\
+                      impl Counter:\n    async fn next(self) -> Int:\n        let value = task.done(self.value).await\n        value + 1\n\n\
+                      async fn increment(value: Int) -> Int:\n    let value = task.done(value).await\n    value + 1\n\n\
+                      fn main(console: Console):\n    console.print(\"ready\")\n";
+        let linked = link_with_origins(
+            vec![("main".to_string(), crate::parser::parse_module(source).expect("parses"))],
+            "main",
+            noop_expand,
+        )
+        .expect("async source links");
+
+        let main_surface = linked
+            .async_surface
+            .modules
+            .iter()
+            .find(|module| module.module == "main")
+            .expect("main source surface is retained");
+        assert_eq!(main_surface.items.len(), 2);
+        assert!(main_surface.items.iter().any(|item| {
+            item.id == crate::async_surface::AsyncSurfaceId { item: 1, method: Some(0) }
+                && matches!(&item.item, Item::Impl(_))
+        }));
+        assert!(main_surface.items.iter().any(|item| {
+            item.id == crate::async_surface::AsyncSurfaceId { item: 2, method: None }
+                && matches!(&item.item, Item::Function(function) if function.is_async)
+        }));
+
+        let bindings = &linked.async_surface.bindings;
+        assert_eq!(bindings.len(), 4, "entry and continuation per callable");
+        assert!(bindings.iter().any(|binding| matches!(
+            binding,
+            crate::async_surface::LinkedAsyncCallableBinding {
+                module,
+                surface: crate::async_surface::AsyncSurfaceId { item: 1, method: Some(0) },
+                location: crate::async_surface::LinkedAsyncCallableLocation::InherentMethod { .. },
+                ..
+            } if module == "main"
+        )));
+        assert!(bindings.iter().any(|binding| matches!(
+            binding,
+            crate::async_surface::LinkedAsyncCallableBinding {
+                module,
+                surface: crate::async_surface::AsyncSurfaceId { item: 2, method: None },
+                location: crate::async_surface::LinkedAsyncCallableLocation::Function { .. },
+                ..
+            } if module == "main"
+        )));
+        for binding in bindings {
+            match binding.location {
+                crate::async_surface::LinkedAsyncCallableLocation::Function { item } => {
+                    assert!(matches!(linked.module.items[item as usize], Item::Function(_)));
+                }
+                crate::async_surface::LinkedAsyncCallableLocation::InherentMethod { item, method } => {
+                    assert!(matches!(
+                        linked.module.items[item as usize],
+                        Item::Impl(ref definition) if definition.methods.get(method as usize).is_some()
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn async_surface_is_preserved_on_cold_and_warm_imported_module_lowering() {
+        let worker = crate::parser::parse_module(
+            "pub async fn double(value: Int) -> Int:\n    let value = task.done(value).await\n    value + value\n",
+        )
+        .expect("worker parses");
+        let main = crate::parser::parse_module(
+            "import worker\n\nfn main(console: Console):\n    console.print(\"ready\")\n",
+        )
+        .expect("main parses");
+        let modules = vec![("worker".to_string(), worker), ("main".to_string(), main)];
+
+        let cold = link_with_origins(modules.clone(), "main", noop_expand)
+            .expect("cold async import links");
+        let warm = link_with_origins(modules, "main", noop_expand)
+            .expect("warm async import links");
+
+        assert_eq!(cold.async_surface, warm.async_surface);
+        let worker_surface = warm
+            .async_surface
+            .modules
+            .iter()
+            .find(|module| module.module == "worker")
+            .expect("imported async source is retained");
+        assert_eq!(worker_surface.items.len(), 1);
+        assert_eq!(
+            worker_surface.items[0].id,
+            crate::async_surface::AsyncSurfaceId { item: 0, method: None },
+        );
+        assert!(warm.async_surface.bindings.iter().any(|binding| {
+            binding.module == "worker"
+                && binding.surface
+                    == crate::async_surface::AsyncSurfaceId { item: 0, method: None }
+        }));
+    }
 
     #[test]
     fn call_site_source_projection_never_exposes_compiler_markers() {
