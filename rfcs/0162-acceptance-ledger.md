@@ -95,6 +95,20 @@ queue item has a terminal `merged` event.
   review ACCEPTS. Queue item
   `mq-09b6bfac40beab6a9977a3e209caf70844c963ff` is ready; terminal merge and
   four-target CI release evidence remain pending.
+- Commit `ac4932bda` on `impl/rfc0162-sec-corpus`, stacked after the pinned
+  Binaryen track, makes the applicable source and production-pipeline corpus
+  permanent. SEC-036 is restored as the distinct alias-initialized
+  free-at-overwrite class across variable, field, index, list, and historical
+  TOML/`rfind` paths; SEC-037 remains the retained `contents.lines()` minigrep
+  trigger; SEC-038 covers positive and negative byte bounds; SEC-039 covers
+  non-object literal overwrite; and landed SEC-078 remains the call-result
+  alias case. Four RC source tests, one exact SEC-038 test, the 15-case manifest,
+  and the exact pinned-Binaryen pre/post production corpus are green. Fable's
+  initial rejection and Opus's hardening findings were resolved; final Opus
+  verdict is ACCEPT. Queue item
+  `mq-0c523f31f4476622cbbcb3a1ba96738cb1317f82` depends on the Binaryen pin.
+  Forged-WIR rejections and encoder-template evidence remain separate and row
+  11 is not complete.
 - Commit `cfab0454b` on `impl/rfc0162-wir-surface` introduces untrusted
   executable-side SafeWIR object, projection, provenance, extent, range, and
   access claims plus semantic load/store/copy/fill variants. Every optimizer,
@@ -225,7 +239,7 @@ encoder escape hatch, or runtime safety metadata.
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
 | T5 kernel and encoder | candidate interface | `impl/rfc0162-kernel-ops`, `impl/rfc0162-kernel-templates` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations at `9058e272f`; visitor/opacity/rejection tests green and final Opus ACCEPT; fixed templates and authority wiring active, queue terminal pending |
 | T6 mandatory production gate | pending with source-authority candidate | integration; `impl/rfc0162-checked-entry` | private `ValidatedWirModule`; no unchecked production encode/raw-body path | Glamour rewrite and adapter inputs are opaque and rechecked at `d799089dc`; final optimized WIR gate, layout contradiction proof, and raw encoder removal remain pending |
-| T7 external TCB and evidence | candidate | `impl/rfc0162-binaryen-pin`; other evidence active | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | pin plus release integration and 13-case exact production corpus through `43720e967`; runtime/release/package/performance smokes green and final Fable ACCEPT; terminal merge, release-matrix CI, and non-Binaryen evidence pending |
+| T7 external TCB and evidence | queued Binaryen and SEC candidates; mutation active | `impl/rfc0162-binaryen-pin`; `impl/rfc0162-sec-corpus`; `impl/rfc0162-mutation-evidence` | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | pin/release integration through `43720e967`; 15-case permanent source and exact production corpus at `ac4932bda`; final Fable/Opus verdicts ACCEPT; terminal merge, release-matrix CI, forged-WIR SEC negatives, mutation, fuzz, and zero-cost evidence pending |
 | T8 review and closeout | pending | integration | Fable review, Opus adjudication if rejected, resolved findings, terminal merge audit | pending |
 
 ## Acceptance ledger
@@ -245,7 +259,7 @@ code. `candidate` means reusable work exists but is not landed proof.
 | 8 | Raw memory is sealed | pending | All-crates structural parser confirms 584 sites in 25 files; no-growth ceiling is locally green but migration remains zero of 584 | Current census reaches zero outside the named kernel-template module; structural test blocks regressions |
 | 9 | Kernel is small and directly tested | candidate | Six opaque operation shapes at `9058e272f` cannot carry ordinary WIR bodies and ordinary encoding rejects them; production helpers remain unmigrated and fixed templates are not yet integrated | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
 | 10 | Encoder mechanically erases facts | pending | Encoder accepts arbitrary WIR and supports raw bodies | Exact template tests, mandatory Wasm validation, and no production raw-body route |
-| 11 | Applicable SEC corpus is permanent | candidate | SEC-038/039 tests exist; SEC-078 candidate exists; SEC-036 identity unresolved | Source regression plus forged-WIR rejection for SEC-036/037/038/039/078; encoder test where applicable |
+| 11 | Applicable SEC corpus is permanent | candidate | `ac4932bda` restores distinct SEC-036 and pins SEC-037/038/039 source plus exact 15-case production-Binaryen evidence; SEC-078 is landed on master; forged-WIR and encoder-template negatives remain pending | Source regression plus forged-WIR rejection for SEC-036/037/038/039/078; encoder test where applicable |
 | 12 | Validator mutations are killed | pending | Validator absent | Mutation matrix kills every rule deletion, inversion, or weakening |
 | 13 | Binaryen trust is explicit and reproducible | candidate | `43720e967` supplies the PATH-free digest-pinned version-131 implementation, release bundle installation, exact recipe/cache identity and fallback tests, `PreserveRaw` exclusion, authenticated official/package/install smokes, reviewed-production performance lane, and a 13-case exact pre/post production corpus; terminal merge and release-matrix CI evidence are pending | Pinned executable identity/recipe/cache key, explicit fallback, `PreserveRaw` exclusion, pre/post differential corpus |
 | 14 | Generated execution adds zero safety overhead | pending | No matched before/after artifact exists | Exact WAT and calls/loads/stores/branches/accesses/allocations/imports/globals/functions/fields/code-size/dynamic-count/benchmark evidence |
