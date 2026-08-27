@@ -55,12 +55,24 @@ pub struct TypedAsyncStateInput {
     pub frame: Vec<TypedAsyncFrameInput>,
 }
 
+/// A lossless link from one source `await` operation to the compiler-generated
+/// continuation state entered after that operation completes. The source
+/// operation ordinal is diagnostic/source identity; `final_state` is the typed
+/// backend binding. Neither is a generated function name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedAsyncSuspensionBinding {
+    pub callable: AsyncCallableId,
+    pub source_operation: u32,
+    pub final_state: FinalCallableIndex,
+}
+
 /// The complete bridge between source control flow and final typed state
 /// layouts. It is not executable and has no legacy scalar transitions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedAsyncLoweringInput {
     pub source: Vec<SourceAsyncControlFlow>,
     pub states: Vec<TypedAsyncStateInput>,
+    pub suspensions: Vec<TypedAsyncSuspensionBinding>,
 }
 
 impl TypedAsyncLoweringInput {
@@ -178,7 +190,38 @@ impl TypedAsyncLoweringInput {
                 ));
             }
         }
-        Ok(Self { source, states })
+        let mut suspensions = Vec::new();
+        for flow in &source {
+            let source_awaits = flow.operations.iter().filter(|operation| {
+                operation.kind == SourceAsyncOperationKind::Await
+            }).collect::<Vec<_>>();
+            for state in states.iter().filter(|state| state.callable == flow.callable) {
+                let Some(source_suspension) = state.source_suspension else { continue };
+                let source_operation = source_awaits
+                    .get(usize::try_from(source_suspension).map_err(|_| "source suspension exceeds usize")?)
+                    .ok_or_else(|| format!("async state {:?} refers to missing source suspension {source_suspension}", state.final_callable))?;
+                suspensions.push(TypedAsyncSuspensionBinding {
+                    callable: flow.callable.clone(),
+                    source_operation: source_operation.ordinal,
+                    final_state: state.final_callable,
+                });
+            }
+        }
+        suspensions.sort_by(|left, right| {
+            (&left.callable, left.source_operation, left.final_state)
+                .cmp(&(&right.callable, right.source_operation, right.final_state))
+        });
+        for pair in suspensions.windows(2) {
+            if pair[0].callable == pair[1].callable
+                && pair[0].source_operation == pair[1].source_operation
+            {
+                return Err(format!(
+                    "source async operation {} has multiple continuation-state bindings",
+                    pair[0].source_operation,
+                ));
+            }
+        }
+        Ok(Self { source, states, suspensions })
     }
 }
 
@@ -203,6 +246,7 @@ mod tests {
         assert!(input.states.iter().all(|state| state.callable.module == "main"));
         assert!(input.states.iter().all(|state| state.callable.surface.method == Some(0)));
         assert!(input.states.iter().all(|state| !state.frame.is_empty()));
+        assert_eq!(input.suspensions.len(), 1);
         assert_eq!(
             input.states.iter().filter_map(|state| state.source_suspension).collect::<Vec<_>>(),
             vec![0],
@@ -227,5 +271,8 @@ mod tests {
         // second continuation first. The retained IDs nevertheless identify
         // their lexical source order without consulting generated names.
         assert_eq!(source_suspensions, vec![1, 0]);
+        assert_eq!(input.suspensions.len(), 2);
+        assert!(input.suspensions[0].source_operation < input.suspensions[1].source_operation);
+        assert!(input.suspensions[0].final_state > input.suspensions[1].final_state);
     }
 }
