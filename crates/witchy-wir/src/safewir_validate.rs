@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::layout::{
     FieldKind, HeaderLayout, LayoutBundle, LayoutId, LayoutInterner, LayoutKind, LayoutSize,
+    ScalarKind,
 };
 use crate::safewir::{
     AccessMode, ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent,
@@ -88,6 +89,36 @@ pub enum CopyKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryWidth {
+    I8,
+    I32,
+    I64,
+    F64,
+    V128,
+}
+
+impl MemoryWidth {
+    const fn bytes(self) -> u128 {
+        match self {
+            Self::I8 => 1,
+            Self::I32 => 4,
+            Self::I64 | Self::F64 => 8,
+            Self::V128 => 16,
+        }
+    }
+
+    const fn matches_scalar(self, scalar: ScalarKind) -> bool {
+        matches!(
+            (self, scalar),
+            (Self::I8, ScalarKind::Bool | ScalarKind::Tag8)
+                | (Self::I32, ScalarKind::U32 | ScalarKind::Tag32)
+                | (Self::I64, ScalarKind::Int | ScalarKind::Duration)
+                | (Self::F64, ScalarKind::Float)
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallArgument {
     Scalar(DefinitionId),
     Object(ObjectIdentity),
@@ -126,9 +157,11 @@ pub enum Operation {
     },
     Load {
         place: Place,
+        width: MemoryWidth,
     },
     Store {
         place: Place,
+        width: MemoryWidth,
     },
     Copy {
         source: Place,
@@ -185,6 +218,7 @@ pub enum UnsupportedForm {
     NonRootAliasResult,
     SharedResult,
     OwnedParameterTransfer,
+    TypedFill,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -759,12 +793,12 @@ impl Validator<'_> {
                 };
             }
             match operation {
-                Operation::Load { place }
+                Operation::Load { place, .. }
                     if identities_may_alias(state, place.object.identity, identity) =>
                 {
                     add!(ParameterMemoryEffect::Read);
                 }
-                Operation::Store { place }
+                Operation::Store { place, .. }
                     if identities_may_alias(state, place.object.identity, identity) =>
                 {
                     add!(ParameterMemoryEffect::Write);
@@ -913,7 +947,7 @@ impl Validator<'_> {
                     "unchecked ProvenIndex is unsupported until final CFG dominance facts exist",
                 ));
             }
-            Operation::Load { place } => {
+            Operation::Load { place, width } => {
                 if place.access != AccessMode::Read {
                     return Err(self.function_error(
                         RuleId::ObjectRange,
@@ -923,8 +957,9 @@ impl Validator<'_> {
                     ));
                 }
                 self.validate_place(place, state, function, at)?;
+                self.validate_memory_width(place, *width, state, function, at)?;
             }
-            Operation::Store { place } => {
+            Operation::Store { place, width } => {
                 if place.access != AccessMode::Write {
                     return Err(self.function_error(
                         RuleId::ObjectRange,
@@ -934,6 +969,7 @@ impl Validator<'_> {
                     ));
                 }
                 let object = self.validate_place(place, state, function, at)?;
+                self.validate_memory_width(place, *width, state, function, at)?;
                 if !matches!(object.ownership, Ownership::Unique | Ownership::BorrowedWrite) {
                     return Err(self.function_error(
                         RuleId::ConsumeOnce,
@@ -961,6 +997,21 @@ impl Validator<'_> {
                         function,
                         at,
                         "copy destination lacks exclusive write authority",
+                    ));
+                }
+                let (_, source_length, source_scalar) =
+                    self.derive_projection(source, state, function, at)?;
+                let (_, destination_length, destination_scalar) =
+                    self.derive_projection(destination, state, function, at)?;
+                if source_length != destination_length
+                    || source_scalar.is_none()
+                    || source_scalar != destination_scalar
+                {
+                    return Err(self.function_error(
+                        RuleId::ProjectedLayout,
+                        function,
+                        at,
+                        "bulk copy requires identical scalar projection representations",
                     ));
                 }
                 if *kind == CopyKind::Disjoint
@@ -991,6 +1042,12 @@ impl Validator<'_> {
                         "fill requires an exclusively writable destination",
                     ));
                 }
+                return Err(self.function_unsupported(
+                    UnsupportedForm::TypedFill,
+                    function,
+                    at,
+                    "typed fill requires a descriptor-level valid-byte-pattern contract",
+                ));
             }
             Operation::Retain { object } => {
                 let object_state = self.require_live_mut(state, *object, function, at)?;
@@ -1541,7 +1598,7 @@ impl Validator<'_> {
             ));
         }
         self.validate_extent_against_layout(&place.object, state, function, at)?;
-        let (derived_start, derived_length) =
+        let (derived_start, derived_length, _) =
             self.derive_projection(place, state, function, at)?;
         let claimed_start = self.evaluate_size(&place.range.start, state, function, at, 0)?;
         let claimed_length = self.evaluate_size(&place.range.length, state, function, at, 0)?;
@@ -1565,10 +1622,11 @@ impl Validator<'_> {
         state: &State,
         function: &CandidateFunction,
         at: Option<usize>,
-    ) -> Result<(u128, u128), ValidationError> {
+    ) -> Result<(u128, u128, Option<ScalarKind>), ValidationError> {
         let mut layout = place.object.layout;
         let mut offset = 0_u128;
         let mut length = self.layout_extent(layout, &place.object.extent, state, function, at)?;
+        let mut scalar = self.scalar_layout_kind(layout);
         for (step_index, step) in place.projection.steps().iter().enumerate() {
             let descriptor = self.layouts.get(layout).ok_or_else(|| {
                 self.function_error(
@@ -1613,6 +1671,7 @@ impl Validator<'_> {
                             "a scalar header component cannot be projected further",
                         ));
                     }
+                    scalar = Some(ScalarKind::U32);
                     offset = offset.checked_add(u128::from(component_offset)).ok_or_else(|| {
                         self.function_error(
                             RuleId::NonWrappingSize,
@@ -1650,10 +1709,12 @@ impl Validator<'_> {
                                     "a scalar field cannot be projected further",
                                 ));
                             }
+                            scalar = Some(kind);
                             length = u128::from(kind.size());
                         }
                         FieldKind::Inline(child) => {
                             layout = child;
+                            scalar = self.scalar_layout_kind(child);
                             length = self.layout_extent(
                                 child,
                                 &Extent::Exact(SizeExpr::Constant(u64::MAX)),
@@ -1689,6 +1750,7 @@ impl Validator<'_> {
                             )
                         })?;
                     layout = *element;
+                    scalar = self.scalar_layout_kind(*element);
                     length = u128::from(stride);
                 }
                 ProjectionStep::Slice {
@@ -1729,11 +1791,42 @@ impl Validator<'_> {
                         )
                     })?;
                     layout = *element;
+                    scalar = (count == 1)
+                        .then(|| self.scalar_layout_kind(*element))
+                        .flatten();
                 }
             }
         }
-        let _ = layout;
-        Ok((offset, length))
+        Ok((offset, length, scalar))
+    }
+
+    fn scalar_layout_kind(&self, layout: LayoutId) -> Option<ScalarKind> {
+        match self.layouts.get(layout)?.kind() {
+            LayoutKind::Scalar(kind) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    fn validate_memory_width(
+        &self,
+        place: &Place,
+        width: MemoryWidth,
+        state: &State,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        let (_, length, scalar) = self.derive_projection(place, state, function, at)?;
+        if length != width.bytes() || scalar.is_none_or(|kind| !width.matches_scalar(kind)) {
+            return Err(self.function_error(
+                RuleId::ProjectedLayout,
+                function,
+                at,
+                format!(
+                    "memory access {width:?} contradicts projected scalar {scalar:?} with {length} bytes"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn layout_extent(
@@ -2341,6 +2434,7 @@ mod tests {
         ) -> Option<ResolvedNamed<'a>> {
             Some(match name {
                 "Int" => ResolvedNamed::Scalar(ScalarKind::Int),
+                "Float" => ResolvedNamed::Scalar(ScalarKind::Float),
                 "List" => ResolvedNamed::PackedList { rc: RcHeader::Required },
                 "String" => ResolvedNamed::Reference(ReferenceKind::Owning),
                 _ => return None,
@@ -2371,6 +2465,21 @@ mod tests {
             panic!("list layout is dynamic")
         };
         (LayoutBundle::from_interner(&interner, [id]).unwrap(), id, base, stride)
+    }
+
+    fn scalar_pair_layouts() -> (LayoutBundle, LayoutId, LayoutId) {
+        let mut interner = LayoutInterner::new();
+        let int = interner
+            .intern_type(&Type::Named("Int".into(), Vec::new()), &Resolver)
+            .unwrap();
+        let float = interner
+            .intern_type(&Type::Named("Float".into(), Vec::new()), &Resolver)
+            .unwrap();
+        (
+            LayoutBundle::from_interner(&interner, [int, float]).unwrap(),
+            int,
+            float,
+        )
     }
 
     fn tuple_layouts() -> (LayoutBundle, LayoutId) {
@@ -2489,7 +2598,10 @@ mod tests {
                     Operation::DefineScalar { definition: DefinitionId::new(1), value: 0 },
                     Operation::DefineScalar { definition: DefinitionId::new(2), value: 8 },
                     Operation::Alloc { result: allocated.clone() },
-                    Operation::Load { place: place(allocated, AccessMode::Read, 0, 8) },
+                    Operation::Load {
+                        place: place(allocated, AccessMode::Read, 0, 8),
+                        width: MemoryWidth::I64,
+                    },
                 ],
             }],
             contains_raw_memory: false,
@@ -2531,7 +2643,7 @@ mod tests {
                     Operation::DefineScalar { definition: DefinitionId::new(1), value: 2 },
                     Operation::DefineScalar { definition: DefinitionId::new(2), value: 1 },
                     Operation::Alloc { result: object },
-                    Operation::Load { place: access },
+                    Operation::Load { place: access, width: MemoryWidth::I64 },
                 ],
             }],
             contains_raw_memory: false,
@@ -2561,7 +2673,7 @@ mod tests {
                 parameters: Vec::new(),
                 operations: vec![
                     Operation::Alloc { result: object },
-                    Operation::Load { place: access },
+                    Operation::Load { place: access, width: MemoryWidth::I64 },
                 ],
             }],
             contains_raw_memory: false,
@@ -2602,11 +2714,78 @@ mod tests {
     fn canonical_descriptor_derives_field_offset_and_width() {
         validate_candidate(&projected_field_module(), ValidationBudget::default()).unwrap();
         let mut forged = projected_field_module();
-        let Operation::Load { place } = &mut forged.functions[0].operations[1] else {
+        let Operation::Load { place, .. } = &mut forged.functions[0].operations[1] else {
             unreachable!()
         };
         place.range.start = SizeExpr::Constant(0);
         assert_rule(forged, RuleId::ProjectedLayout);
+    }
+
+    #[test]
+    fn scalar_memory_width_and_representation_are_not_interchangeable() {
+        let mut narrowed = base_module();
+        let Operation::Load { width, .. } = &mut narrowed.functions[0].operations[3] else {
+            unreachable!()
+        };
+        *width = MemoryWidth::I32;
+        assert_rule(narrowed, RuleId::ProjectedLayout);
+
+        let mut reinterpreted = base_module();
+        let Operation::Load { width, .. } = &mut reinterpreted.functions[0].operations[3] else {
+            unreachable!()
+        };
+        *width = MemoryWidth::F64;
+        assert_rule(reinterpreted, RuleId::ProjectedLayout);
+    }
+
+    #[test]
+    fn bulk_copy_cannot_reinterpret_same_width_scalar_layouts() {
+        let (layouts, int_layout, float_layout) = scalar_pair_layouts();
+        let source = ObjectRef {
+            identity: identity(1, 1),
+            layout: int_layout,
+            extent: Extent::Exact(SizeExpr::Constant(8)),
+            provenance: Provenance::Fresh,
+        };
+        let destination = ObjectRef {
+            identity: identity(2, 1),
+            layout: float_layout,
+            extent: Extent::Exact(SizeExpr::Constant(8)),
+            provenance: Provenance::Fresh,
+        };
+        let module = CandidateModule {
+            checked_source_entries: 1,
+            layouts,
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+            functions: vec![CandidateFunction {
+                name: "copy".into(),
+                contract: no_memory_contract(),
+                parameters: Vec::new(),
+                operations: vec![
+                    Operation::Alloc { result: source.clone() },
+                    Operation::Alloc { result: destination.clone() },
+                    Operation::Copy {
+                        source: place(source, AccessMode::Read, 0, 8),
+                        destination: place(destination, AccessMode::Write, 0, 8),
+                        kind: CopyKind::MayOverlap,
+                    },
+                ],
+            }],
+            contains_raw_memory: false,
+            contains_raw_body: false,
+            post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
+        };
+        assert_rule(module, RuleId::ProjectedLayout);
+    }
+
+    #[test]
+    fn typed_fill_is_deferred_until_valid_byte_patterns_are_described() {
+        let mut module = base_module();
+        let allocated = object(3, 1, Provenance::Fresh);
+        module.functions[0].operations[3] =
+            Operation::Fill { destination: place(allocated, AccessMode::Write, 0, 8) };
+        assert_unsupported(module, UnsupportedForm::TypedFill);
     }
 
     #[test]
@@ -2636,6 +2815,7 @@ mod tests {
         });
         module.functions[0].operations.push(Operation::Load {
             place: place(call_result, AccessMode::Read, 0, 8),
+            width: MemoryWidth::I64,
         });
         validate_candidate(&module, ValidationBudget::default()).unwrap();
     }
@@ -2682,6 +2862,7 @@ mod tests {
         let result = add_identity_alias(&mut module);
         module.functions[0].operations.push(Operation::Load {
             place: place(result, AccessMode::Read, 0, 8),
+            width: MemoryWidth::I64,
         });
         module.functions.swap(0, 1);
         validate_candidate(&module, ValidationBudget::default()).unwrap();
@@ -2701,6 +2882,7 @@ mod tests {
         });
         module.functions[0].operations.push(Operation::Load {
             place: place(result, AccessMode::Read, 0, 8),
+            width: MemoryWidth::I64,
         });
         module.functions.swap(0, 1);
         assert_rule(module, RuleId::ConsumeOnce);
@@ -2786,7 +2968,7 @@ mod tests {
             unreachable!()
         };
         *index = 0;
-        let Operation::Load { place } = &mut element.functions[0].operations[3] else {
+        let Operation::Load { place, .. } = &mut element.functions[0].operations[3] else {
             unreachable!()
         };
         let Extent::Counted { header, .. } = &place.object.extent else {
@@ -2796,7 +2978,7 @@ mod tests {
         validate_candidate(&element, ValidationBudget::default()).unwrap();
 
         let mut slice = element;
-        let Operation::Load { place } = &mut slice.functions[0].operations[3] else {
+        let Operation::Load { place, .. } = &mut slice.functions[0].operations[3] else {
             unreachable!()
         };
         place.projection = Projection::root().project(ProjectionStep::Slice {
@@ -2858,7 +3040,7 @@ mod tests {
 
         let mut out_of_bounds = out_of_bounds_list_module();
         let (base, stride, list_layout) = {
-            let Operation::Load { place } =
+            let Operation::Load { place, .. } =
                 out_of_bounds.functions[0].operations.pop().unwrap()
             else {
                 unreachable!()
@@ -3004,6 +3186,7 @@ mod tests {
             }],
             operations: vec![Operation::Store {
                 place: place(parameter, AccessMode::Write, 0, 8),
+                width: MemoryWidth::I64,
             }],
         });
         assert_rule(module, RuleId::CheckedCallableContract);
@@ -3099,7 +3282,10 @@ mod tests {
         let mut module = base_module();
         let stale = object(3, 2, Provenance::Fresh);
         module.functions[0].operations[3] =
-            Operation::Load { place: place(stale, AccessMode::Read, 0, 8) };
+            Operation::Load {
+                place: place(stale, AccessMode::Read, 0, 8),
+                width: MemoryWidth::I64,
+            };
         assert_rule(module, RuleId::LiveGeneration);
 
         let mut module = base_module();
@@ -3148,7 +3334,8 @@ mod tests {
         let allocated = object(3, 1, Provenance::Fresh);
         let mut forged = place(allocated, AccessMode::Read, 0, 8);
         forged.projection = Projection::root().project(ProjectionStep::Field { index: 0 });
-        module.functions[0].operations[3] = Operation::Load { place: forged };
+        module.functions[0].operations[3] =
+            Operation::Load { place: forged, width: MemoryWidth::I64 };
         assert_rule(module, RuleId::ProjectedLayout);
 
         let mut module = base_module();
