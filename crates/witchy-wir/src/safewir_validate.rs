@@ -11,10 +11,11 @@
 //! implemented, so this module does not discharge SWIR-MOD-001,
 //! SWIR-KERN-001, or SWIR-ENC-001. Canonical decoding proves that the supplied
 //! layout bundle is internally well formed, not that it came from the checked
-//! source signature. CFG joins, loops, recursive call graphs, symbolic
-//! parameter extents, proven-index facts, shared result sets, non-root alias
-//! results, and owned parameter transfers fail as explicitly unsupported rather
-//! than masquerading as a rule violation.
+//! source signature. Structured branch joins and conservative loop fixpoints
+//! are checked here. Recursive call graphs, symbolic parameter extents,
+//! proven-index facts, shared result sets, non-root alias results, owned
+//! parameter transfers, and branch-local object returns fail as explicitly
+//! unsupported rather than masquerading as a rule violation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -199,13 +200,8 @@ pub enum Operation {
         then_operations: Vec<Operation>,
         else_operations: Vec<Operation>,
     },
-    Join {
-        result: ObjectRef,
-        incoming: Vec<ObjectIdentity>,
-    },
     Loop {
-        entry: Vec<ObjectIdentity>,
-        back_edges: Vec<Vec<ObjectIdentity>>,
+        body: Vec<Operation>,
     },
     ReturnObject {
         object: ObjectIdentity,
@@ -216,7 +212,6 @@ pub enum Operation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnsupportedForm {
     ControlFlowJoin,
-    Loop,
     RecursiveCallGraph,
     ProvenIndex,
     SymbolicParameterExtent,
@@ -283,19 +278,19 @@ impl ValidationReport {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ObjectState {
     object: ObjectRef,
     ownership: Ownership,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ReturnedObject {
     object: ObjectRef,
     ownership: Ownership,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct State {
     scalars: BTreeMap<DefinitionId, i128>,
     objects: BTreeMap<ObjectIdentity, ObjectState>,
@@ -641,7 +636,7 @@ impl Validator<'_> {
         }
         self.observe_facts(&state, function, None)?;
 
-        self.validate_operations(function, &function.operations, &mut state)?;
+        self.validate_operations(function, &function.operations, &mut state, 0)?;
         self.validate_function_exit(function, &state)?;
         Ok(())
     }
@@ -697,7 +692,16 @@ impl Validator<'_> {
         function: &CandidateFunction,
         operations: &[Operation],
         state: &mut State,
+        control_depth: usize,
     ) -> Result<(), ValidationError> {
+        if control_depth > self.budget.expression_depth {
+            return Err(self.function_error(
+                RuleId::BudgetExhaustionFailsClosed,
+                function,
+                None,
+                "structured control depth exhausted",
+            ));
+        }
         for operation in operations {
             self.operations = self.operations.checked_add(1).ok_or_else(|| {
                 self.function_error(
@@ -716,7 +720,13 @@ impl Validator<'_> {
                     "operation budget exhausted",
                 ));
             }
-            self.validate_operation(function, operation_index, operation, state)?;
+            self.validate_operation(
+                function,
+                operation_index,
+                operation,
+                state,
+                control_depth,
+            )?;
             self.observe_facts(&state, function, Some(operation_index))?;
         }
         Ok(())
@@ -935,6 +945,7 @@ impl Validator<'_> {
         operation_index: usize,
         operation: &Operation,
         state: &mut State,
+        control_depth: usize,
     ) -> Result<(), ValidationError> {
         let at = Some(operation_index);
         match operation {
@@ -1266,29 +1277,45 @@ impl Validator<'_> {
             }
             Operation::If { condition, then_operations, else_operations } => {
                 self.require_scalar(state, *condition, function, at)?;
+                let nested_depth =
+                    self.nested_control_depth(function, at, control_depth)?;
                 let mut then_state = state.clone();
-                self.validate_operations(function, then_operations, &mut then_state)?;
+                self.validate_operations(
+                    function,
+                    then_operations,
+                    &mut then_state,
+                    nested_depth,
+                )?;
                 let mut else_state = state.clone();
-                self.validate_operations(function, else_operations, &mut else_state)?;
+                self.validate_operations(
+                    function,
+                    else_operations,
+                    &mut else_state,
+                    nested_depth,
+                )?;
                 *state = self.join_states(function, at, then_state, else_state)?;
             }
-            Operation::Join { result, incoming } => {
-                let _ = (result, incoming);
-                return Err(self.function_unsupported(
-                    UnsupportedForm::ControlFlowJoin,
-                    function,
-                    at,
-                    "control-flow joins are unsupported until the final CFG fact graph exists",
-                ));
-            }
-            Operation::Loop { entry, back_edges } => {
-                let _ = (entry, back_edges);
-                return Err(self.function_unsupported(
-                    UnsupportedForm::Loop,
-                    function,
-                    at,
-                    "loop fixpoints are unsupported until the final CFG fact graph exists",
-                ));
+            Operation::Loop { body } => {
+                let nested_depth =
+                    self.nested_control_depth(function, at, control_depth)?;
+                let entry = state.clone();
+                let mut header = entry.clone();
+                loop {
+                    let mut back_edge = header.clone();
+                    self.validate_operations(
+                        function,
+                        body,
+                        &mut back_edge,
+                        nested_depth,
+                    )?;
+                    let next =
+                        self.join_states(function, at, entry.clone(), back_edge)?;
+                    if next == header {
+                        *state = next;
+                        break;
+                    }
+                    header = next;
+                }
             }
             Operation::ReturnObject { object } => {
                 if state.returned.is_some() {
@@ -1326,6 +1353,31 @@ impl Validator<'_> {
             }
         }
         Ok(())
+    }
+
+    fn nested_control_depth(
+        &self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        control_depth: usize,
+    ) -> Result<usize, ValidationError> {
+        let nested = control_depth.checked_add(1).ok_or_else(|| {
+            self.function_error(
+                RuleId::BudgetExhaustionFailsClosed,
+                function,
+                at,
+                "structured control depth overflowed",
+            )
+        })?;
+        if nested > self.budget.expression_depth {
+            return Err(self.function_error(
+                RuleId::BudgetExhaustionFailsClosed,
+                function,
+                at,
+                "structured control depth exhausted",
+            ));
+        }
+        Ok(nested)
     }
 
     fn join_states(
@@ -2549,31 +2601,36 @@ fn ranges_overlap(
 }
 
 fn operation_count(operations: &[Operation]) -> Option<usize> {
-    operations.iter().try_fold(0_usize, |total, operation| {
-        let nested = match operation {
-            Operation::If { then_operations, else_operations, .. } => operation_count(
-                then_operations,
-            )?
-            .checked_add(operation_count(else_operations)?)?,
-            _ => 0,
-        };
-        total.checked_add(1)?.checked_add(nested)
-    })
+    let mut total = 0_usize;
+    let mut pending = operations.iter().rev().collect::<Vec<_>>();
+    while let Some(operation) = pending.pop() {
+        total = total.checked_add(1)?;
+        match operation {
+            Operation::If { then_operations, else_operations, .. } => {
+                pending.extend(else_operations.iter().rev());
+                pending.extend(then_operations.iter().rev());
+            }
+            Operation::Loop { body } => pending.extend(body.iter().rev()),
+            _ => {}
+        }
+    }
+    Some(total)
 }
 
 fn operations(input: &[Operation]) -> Vec<&Operation> {
-    fn collect<'a>(input: &'a [Operation], output: &mut Vec<&'a Operation>) {
-        for operation in input {
-            output.push(operation);
-            if let Operation::If { then_operations, else_operations, .. } = operation {
-                collect(then_operations, output);
-                collect(else_operations, output);
+    let mut output = Vec::new();
+    let mut pending = input.iter().rev().collect::<Vec<_>>();
+    while let Some(operation) = pending.pop() {
+        output.push(operation);
+        match operation {
+            Operation::If { then_operations, else_operations, .. } => {
+                pending.extend(else_operations.iter().rev());
+                pending.extend(then_operations.iter().rev());
             }
+            Operation::Loop { body } => pending.extend(body.iter().rev()),
+            _ => {}
         }
     }
-
-    let mut output = Vec::new();
-    collect(input, &mut output);
     output
 }
 
@@ -2582,9 +2639,7 @@ fn definition_sites(input: &[Operation]) -> Vec<DefinitionId> {
     for operation in operations(input) {
         let definition = match operation {
             Operation::DefineScalar { definition, .. } => Some(*definition),
-            Operation::Alloc { result } | Operation::Join { result, .. } => {
-                Some(result.identity.root)
-            }
+            Operation::Alloc { result } => Some(result.identity.root),
             Operation::Call { result, .. } | Operation::HostCall { result, .. } => {
                 result.as_ref().map(|result| result.identity.root)
             }
@@ -2600,8 +2655,7 @@ fn identity_sites(input: &[Operation]) -> Vec<ObjectIdentity> {
     for operation in operations(input) {
         let identity = match operation {
             Operation::Alloc { result }
-            | Operation::Reuse { new: result, .. }
-            | Operation::Join { result, .. } => Some(result.identity),
+            | Operation::Reuse { new: result, .. } => Some(result.identity),
             Operation::Call { result, .. } | Operation::HostCall { result, .. } => {
                 result.as_ref().map(|result| result.identity)
             }
@@ -3054,6 +3108,152 @@ mod tests {
             ],
         }];
         assert_rule(module, RuleId::CheckedCallableContract);
+    }
+
+    #[test]
+    fn loop_fixpoint_accepts_stable_facts_and_rejects_consumed_back_edges() {
+        let mut stable = base_module();
+        let repeated_load = stable.functions[0].operations[3].clone();
+        stable.functions[0]
+            .operations
+            .push(Operation::Loop { body: vec![repeated_load] });
+        let report = validate_candidate(&stable, ValidationBudget::default()).unwrap();
+        assert_eq!(report.metrics().operations, 6);
+
+        let mut consumed = base_module();
+        consumed.functions[0].operations.push(Operation::Loop {
+            body: vec![Operation::Release { object: identity(3, 1) }],
+        });
+        assert_rule(consumed, RuleId::ConsumeOnce);
+
+        let mut reused = base_module();
+        reused.functions[0].operations.push(Operation::Loop {
+            body: vec![Operation::Reuse {
+                old: identity(3, 1),
+                new: object(3, 2, Provenance::Fresh),
+            }],
+        });
+        assert_rule(reused, RuleId::ConsumeOnce);
+    }
+
+    #[test]
+    fn loop_body_mints_do_not_escape_but_complete_lifetimes_are_accepted() {
+        let temporary = object(4, 1, Provenance::Fresh);
+        let temporary_place = place(temporary.clone(), AccessMode::Write, 0, 8);
+
+        let mut complete = base_module();
+        complete.functions[0].operations.push(Operation::Loop {
+            body: vec![
+                Operation::Alloc { result: temporary.clone() },
+                Operation::Store {
+                    place: temporary_place.clone(),
+                    width: MemoryWidth::I64,
+                },
+                Operation::Release { object: temporary.identity },
+            ],
+        });
+        validate_candidate(&complete, ValidationBudget::default()).unwrap();
+
+        let mut escaped = base_module();
+        escaped.functions[0].operations.extend([
+            Operation::Loop {
+                body: vec![Operation::Alloc { result: temporary.clone() }],
+            },
+            Operation::Load {
+                place: place(temporary, AccessMode::Read, 0, 8),
+                width: MemoryWidth::I64,
+            },
+        ]);
+        assert_rule(escaped, RuleId::LiveGeneration);
+    }
+
+    #[test]
+    fn loop_escape_effect_removes_post_loop_write_authority() {
+        let mut module = base_module();
+        module.imports.insert(
+            "escape".into(),
+            CallableMemoryContract {
+                parameters: vec![object_parameter(
+                    ParameterMemoryEntry::Shared,
+                    ParameterMemoryEffects::only(ParameterMemoryEffect::Escape),
+                )],
+                result: CallableMemoryResult::NoMemory,
+            },
+        );
+        let allocated = object(3, 1, Provenance::Fresh);
+        module.functions[0].operations.extend([
+            Operation::Loop {
+                body: vec![Operation::Call {
+                    callable: "escape".into(),
+                    arguments: vec![CallArgument::Object(allocated.identity)],
+                    result: None,
+                }],
+            },
+            Operation::Store {
+                place: place(allocated, AccessMode::Write, 0, 8),
+                width: MemoryWidth::I64,
+            },
+        ]);
+        assert_rule(module, RuleId::ConsumeOnce);
+    }
+
+    #[test]
+    fn loop_fixpoint_iterations_consume_the_operation_budget() {
+        let mut module = base_module();
+        module.functions[0].operations.push(Operation::Loop {
+            body: vec![Operation::Retain { object: identity(3, 1) }],
+        });
+        let error = validate_candidate(
+            &module,
+            ValidationBudget { operations: 6, ..ValidationBudget::default() },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.diagnostic,
+            ValidationDiagnostic::Rule(RuleId::BudgetExhaustionFailsClosed)
+        );
+    }
+
+    #[test]
+    fn structured_control_depth_fails_closed_before_recursive_descent() {
+        let mut module = base_module();
+        module.functions[0].operations.push(Operation::If {
+            condition: DefinitionId::new(1),
+            then_operations: vec![Operation::If {
+                condition: DefinitionId::new(1),
+                then_operations: Vec::new(),
+                else_operations: Vec::new(),
+            }],
+            else_operations: Vec::new(),
+        });
+        let error = validate_candidate(
+            &module,
+            ValidationBudget { expression_depth: 1, ..ValidationBudget::default() },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.diagnostic,
+            ValidationDiagnostic::Rule(RuleId::BudgetExhaustionFailsClosed)
+        );
+    }
+
+    #[test]
+    fn default_control_depth_fits_a_two_megabyte_validator_stack() {
+        let budget = ValidationBudget::default();
+        let mut body = Vec::new();
+        for _ in 0..budget.expression_depth {
+            body = vec![Operation::Loop { body }];
+        }
+        let mut module = base_module();
+        module.functions[0].operations.extend(body);
+        std::thread::Builder::new()
+            .name("safewir-depth-budget".into())
+            .stack_size(2 << 20)
+            .spawn(move || validate_candidate(&module, budget))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
@@ -3700,6 +3900,8 @@ mod tests {
             RuleId::ConsumeOnce,
             RuleId::LiveGeneration,
             RuleId::NonWrappingSize,
+            RuleId::ConservativeJoin,
+            RuleId::LoopFixpoint,
             RuleId::CheckedCallableContract,
             RuleId::UnknownResultIsNotFresh,
             RuleId::ObjectRange,
@@ -3711,8 +3913,6 @@ mod tests {
         const DEFERRED_FULL_RULES: &[RuleId] = &[
             RuleId::CheckedSourceEntry,
             RuleId::ExactRangeSource,
-            RuleId::ConservativeJoin,
-            RuleId::LoopFixpoint,
             RuleId::HostBufferAbi,
             RuleId::SealedRawMemory,
             RuleId::ValidatedEncoderAuthority,
@@ -3729,18 +3929,12 @@ mod tests {
     #[test]
     fn deferred_forms_report_unsupported_not_a_rule_violation() {
         let mut join = base_module();
-        join.functions[0].operations.push(Operation::Join {
-            result: object(4, 1, Provenance::Fresh),
-            incoming: vec![identity(3, 1)],
+        join.functions[0].operations.push(Operation::If {
+            condition: DefinitionId::new(1),
+            then_operations: vec![Operation::ReturnObject { object: identity(3, 1) }],
+            else_operations: Vec::new(),
         });
         assert_unsupported(join, UnsupportedForm::ControlFlowJoin);
-
-        let mut loop_module = base_module();
-        loop_module.functions[0].operations.push(Operation::Loop {
-            entry: vec![identity(3, 1)],
-            back_edges: vec![vec![identity(3, 1)]],
-        });
-        assert_unsupported(loop_module, UnsupportedForm::Loop);
 
         let mut proven = base_module();
         let allocated = object(3, 1, Provenance::Fresh);
