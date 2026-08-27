@@ -157,11 +157,19 @@ struct FunctionAdapter<'a> {
     function: &'a WirFunc,
     contract: CallableMemoryContract,
     next_definition: u32,
-    locals: BTreeMap<String, DefinitionId>,
-    declared_locals: BTreeSet<String>,
-    memory_roots: BTreeSet<String>,
+    local_names: BTreeMap<String, LocalId>,
+    locals: Vec<LocalBinding>,
     parameters: Vec<ParameterBinding>,
     operations: Vec<Operation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LocalId(u32);
+
+#[derive(Debug, Clone, Copy)]
+struct LocalBinding {
+    definition: DefinitionId,
+    memory_root: bool,
 }
 
 impl<'a> FunctionAdapter<'a> {
@@ -193,21 +201,14 @@ impl<'a> FunctionAdapter<'a> {
             function,
             contract,
             next_definition: 1,
-            locals: BTreeMap::new(),
-            declared_locals: BTreeSet::new(),
-            memory_roots: BTreeSet::new(),
+            local_names: BTreeMap::new(),
+            locals: Vec::new(),
             parameters: Vec::new(),
             operations: Vec::new(),
         };
         let parameter_contracts = adapter.contract.parameters.clone();
         for (parameter, memory) in function.params.iter().zip(&parameter_contracts) {
-            if !adapter.declared_locals.insert(parameter.name.clone()) {
-                return Err(adapter.error("duplicate parameter name"));
-            }
             let definition = adapter.fresh_definition()?;
-            if adapter.locals.insert(parameter.name.clone(), definition).is_some() {
-                return Err(adapter.error("duplicate parameter name"));
-            }
             let object = match memory.entry {
                 ParameterMemoryEntry::NoMemory => None,
                 ParameterMemoryEntry::Unknown => {
@@ -241,15 +242,12 @@ impl<'a> FunctionAdapter<'a> {
                     })
                 }
             };
-            if object.is_some() {
-                adapter.memory_roots.insert(parameter.name.clone());
-            }
+            adapter.declare_local(&parameter.name, definition, object.is_some())?;
             adapter.parameters.push(ParameterBinding { definition, object });
         }
         for local in &function.locals {
-            if !adapter.declared_locals.insert(local.name.clone()) {
-                return Err(adapter.error("parameter and local names must be unique"));
-            }
+            let definition = adapter.fresh_definition()?;
+            adapter.declare_local(&local.name, definition, false)?;
         }
         Ok(adapter)
     }
@@ -274,6 +272,33 @@ impl<'a> FunctionAdapter<'a> {
         Ok(definition)
     }
 
+    fn declare_local(
+        &mut self,
+        name: &str,
+        definition: DefinitionId,
+        memory_root: bool,
+    ) -> Result<(), FinalWirValidationError> {
+        let index = u32::try_from(self.locals.len())
+            .map_err(|_| self.error("local index space exhausted"))?;
+        let local = LocalId(index);
+        if self.local_names.insert(name.into(), local).is_some() {
+            return Err(self.error("parameter and local names must be unique"));
+        }
+        self.locals.push(LocalBinding { definition, memory_root });
+        Ok(())
+    }
+
+    fn local(&self, name: &str) -> Result<LocalBinding, FinalWirValidationError> {
+        let local = self
+            .local_names
+            .get(name)
+            .ok_or_else(|| self.error(format!("use of undeclared local `{name}`")))?;
+        self.locals
+            .get(local.0 as usize)
+            .copied()
+            .ok_or_else(|| self.error("resolved local index is outside the local table"))
+    }
+
     fn error(&self, message: impl Into<String>) -> FinalWirValidationError {
         FinalWirValidationError::function(&self.function.name, message)
     }
@@ -283,6 +308,47 @@ impl<'a> FunctionAdapter<'a> {
             self.node(node)?;
         }
         Ok(())
+    }
+
+    fn nested_seq(&mut self, sequence: &WirSeq) -> Result<Vec<Operation>, FinalWirValidationError> {
+        let outer = std::mem::take(&mut self.operations);
+        self.seq(sequence)?;
+        let nested = std::mem::replace(&mut self.operations, outer);
+        Ok(nested)
+    }
+
+    fn scalar_definition(
+        &mut self,
+        expression: &WirExpr,
+    ) -> Result<DefinitionId, FinalWirValidationError> {
+        match expression {
+            WirExpr::GetLocal(name) => {
+                let local = self.local(name)?;
+                if local.memory_root {
+                    return Err(self.error("branch conditions require scalar definitions"));
+                }
+                Ok(local.definition)
+            }
+            WirExpr::ConstI32(value) => {
+                let definition = self.fresh_definition()?;
+                self.operations.push(Operation::DefineScalar {
+                    definition,
+                    value: i128::from(*value),
+                });
+                Ok(definition)
+            }
+            WirExpr::ConstI64(value) => {
+                let definition = self.fresh_definition()?;
+                self.operations.push(Operation::DefineScalar {
+                    definition,
+                    value: i128::from(*value),
+                });
+                Ok(definition)
+            }
+            _ => Err(self.error(
+                "branch conditions require one exact reaching scalar definition",
+            )),
+        }
     }
 
     fn node(&mut self, node: &WirNode) -> Result<(), FinalWirValidationError> {
@@ -335,8 +401,21 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::SetGlobal { .. } => Err(self.error(
                 "global writes require the sealed kernel/global contract boundary",
             )),
-            WirNode::If { .. }
-            | WirNode::Block { .. }
+            WirNode::If { cond, then_, els, result: None } => {
+                let condition = self.scalar_definition(cond)?;
+                let then_operations = self.nested_seq(then_)?;
+                let else_operations = self.nested_seq(els)?;
+                self.operations.push(Operation::If {
+                    condition,
+                    then_operations,
+                    else_operations,
+                });
+                Ok(())
+            }
+            WirNode::If { result: Some(_), .. } => Err(self.error(
+                "value-producing branches require stack-result join definitions",
+            )),
+            WirNode::Block { .. }
             | WirNode::Loop { .. }
             | WirNode::Br { .. } => Err(self.error(
                 "control flow requires the deferred join, dominance, and fixpoint graph",
@@ -345,7 +424,10 @@ impl<'a> FunctionAdapter<'a> {
                 "value returns require the deferred return-value def-use adapter",
             )),
             WirNode::Drop(expression) | WirNode::Do(expression) => self.expr(expression),
-            WirNode::Return(None) | WirNode::Unreachable => Ok(()),
+            WirNode::Return(None) => Err(self.error(
+                "branching returns require the deferred exit-state accumulator",
+            )),
+            WirNode::Unreachable => Ok(()),
             WirNode::StructSet { base, value, .. } => {
                 self.expr(base)?;
                 self.expr(value)
@@ -438,10 +520,7 @@ impl<'a> FunctionAdapter<'a> {
             }
             WirExpr::StructGet { base, .. } => self.expr(base),
             WirExpr::GetLocal(name) => {
-                if !self.declared_locals.contains(name) {
-                    return Err(self.error(format!("use of undeclared local `{name}`")));
-                }
-                if self.memory_roots.contains(name) {
+                if self.local(name)?.memory_root {
                     return Err(self.error(
                         "memory-parameter pointers may appear only as checked SafeWIR place roots",
                     ));
@@ -460,8 +539,8 @@ impl<'a> FunctionAdapter<'a> {
     }
 
     fn place(&self, place: &SafePlaceExpr) -> Result<Place, FinalWirValidationError> {
-        if scalar_key(&place.object.root)? != scalar_key(&place.range.object_root)?
-            || scalar_key(&place.object.root)? != scalar_key(&place.encoded_base)?
+        if self.scalar_key(&place.object.root)? != self.scalar_key(&place.range.object_root)?
+            || self.scalar_key(&place.object.root)? != self.scalar_key(&place.encoded_base)?
         {
             return Err(self.error(
                 "object root, range root, and executable base are not the same final value",
@@ -475,17 +554,22 @@ impl<'a> FunctionAdapter<'a> {
                 ));
             }
         };
-        let root = *self
-            .locals
-            .get(root_name)
-            .ok_or_else(|| self.error(format!("object root uses unknown local `{root_name}`")))?;
+        let root = self.local(root_name)?;
+        if !root.memory_root {
+            return Err(self.error(
+                "object roots require a checked memory-bearing parameter binding",
+            ));
+        }
         let start = size(&place.range.start)?;
         if start != SizeExpr::Constant(u64::from(place.encoded_offset)) {
             return Err(self.error(
                 "executable immediate offset contradicts the claimed byte-range start",
             ));
         }
-        let identity = ObjectIdentity { root, generation: GenerationId::new(1) };
+        let identity = ObjectIdentity {
+            root: root.definition,
+            generation: GenerationId::new(1),
+        };
         let provenance = match &place.object.provenance {
             SafeProvenanceExpr::Unknown => Provenance::Unknown,
             _ => {
@@ -528,26 +612,26 @@ impl<'a> FunctionAdapter<'a> {
         }
         Ok(())
     }
+
+    fn scalar_key(&self, expression: &WirExpr) -> Result<ScalarKey, FinalWirValidationError> {
+        match expression {
+            WirExpr::GetLocal(name) => Ok(ScalarKey::Definition(self.local(name)?.definition)),
+            WirExpr::ConstI32(value) => Ok(ScalarKey::I32(*value)),
+            WirExpr::ConstI64(value) => Ok(ScalarKey::I64(*value)),
+            WirExpr::StrPtr(value) => Ok(ScalarKey::Static(*value)),
+            _ => Err(self.error(
+                "claim expressions must be pure scalar leaves in the current adapter subset",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScalarKey {
-    Local(String),
+    Definition(DefinitionId),
     I32(i32),
     I64(i64),
     Static(u32),
-}
-
-fn scalar_key(expression: &WirExpr) -> Result<ScalarKey, FinalWirValidationError> {
-    match expression {
-        WirExpr::GetLocal(name) => Ok(ScalarKey::Local(name.clone())),
-        WirExpr::ConstI32(value) => Ok(ScalarKey::I32(*value)),
-        WirExpr::ConstI64(value) => Ok(ScalarKey::I64(*value)),
-        WirExpr::StrPtr(value) => Ok(ScalarKey::Static(*value)),
-        _ => Err(FinalWirValidationError::module(
-            "claim expressions must be pure scalar leaves in the current adapter subset",
-        )),
-    }
 }
 
 fn constant_u64(expression: &WirExpr) -> Option<u64> {
@@ -843,6 +927,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("i32 object-root representation"), "{error}");
+    }
+
+    #[test]
+    fn final_wir_report_preserves_void_branch_structure_and_effects() {
+        let (layouts, layout) = layouts();
+        let mut conditional = module(WirExpr::ConstI32(0));
+        conditional.funcs[0].body = vec![WirNode::If {
+            cond: WirExpr::ConstI32(1),
+            then_: vec![WirNode::Drop(WirExpr::SafeLoad {
+                place: semantic_place(layout),
+                kind: Kind::I64,
+            })],
+            els: Vec::new(),
+            result: None,
+        }];
+        let report = validate_final_wir_report(
+            &conditional,
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(report.metrics().operations, 3);
     }
 
     #[test]

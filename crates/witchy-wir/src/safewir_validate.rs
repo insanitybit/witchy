@@ -194,6 +194,11 @@ pub enum Operation {
         arguments: Vec<HostArgument>,
         result: Option<ObjectRef>,
     },
+    If {
+        condition: DefinitionId,
+        then_operations: Vec<Operation>,
+        else_operations: Vec<Operation>,
+    },
     Join {
         result: ObjectRef,
         incoming: Vec<ObjectIdentity>,
@@ -290,7 +295,7 @@ struct ReturnedObject {
     ownership: Ownership,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct State {
     scalars: BTreeMap<DefinitionId, i128>,
     objects: BTreeMap<ObjectIdentity, ObjectState>,
@@ -383,7 +388,7 @@ impl Validator<'_> {
             .functions
             .iter()
             .try_fold(0_usize, |total, function| {
-                total.checked_add(function.operations.len())
+                total.checked_add(operation_count(&function.operations)?)
             })
             .ok_or_else(|| {
                 self.module_error(
@@ -447,7 +452,7 @@ impl Validator<'_> {
             .collect::<BTreeMap<_, _>>();
         for function in &self.module.functions {
             let callees = edges.entry(function.name.as_str()).or_default();
-            for operation in &function.operations {
+            for operation in operations(&function.operations) {
                 let Operation::Call { callable, .. } = operation else { continue };
                 if names.contains(callable.as_str()) && callees.insert(callable) {
                     *incoming.get_mut(callable.as_str()).expect("local name is indexed") += 1;
@@ -515,6 +520,7 @@ impl Validator<'_> {
                 "parameter bindings or result effects contradict the callable contract",
             ));
         }
+        self.validate_definition_census(function)?;
 
         let mut state = State::default();
         let arguments = function
@@ -635,15 +641,73 @@ impl Validator<'_> {
         }
         self.observe_facts(&state, function, None)?;
 
-        for (operation_index, operation) in function.operations.iter().enumerate() {
+        self.validate_operations(function, &function.operations, &mut state)?;
+        self.validate_function_exit(function, &state)?;
+        Ok(())
+    }
+
+    fn validate_definition_census(
+        &self,
+        function: &CandidateFunction,
+    ) -> Result<(), ValidationError> {
+        let mut definitions = BTreeSet::new();
+        for definition in function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.definition)
+            .chain(definition_sites(&function.operations))
+        {
+            if !definitions.insert(definition) {
+                return Err(self.function_error(
+                    RuleId::CheckedCallableContract,
+                    function,
+                    None,
+                    format!(
+                        "DefinitionId {} is minted by more than one structural definition site",
+                        definition.get()
+                    ),
+                ));
+            }
+        }
+        let mut identities = BTreeSet::new();
+        for identity in function
+            .parameters
+            .iter()
+            .filter_map(|parameter| parameter.object.as_ref().map(|object| object.identity))
+            .chain(identity_sites(&function.operations))
+        {
+            if !identities.insert(identity) {
+                return Err(self.function_error(
+                    RuleId::UniqueAllocation,
+                    function,
+                    None,
+                    format!(
+                        "object identity {}:{} is minted by more than one structural site",
+                        identity.root.get(),
+                        identity.generation.get()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_operations(
+        &mut self,
+        function: &CandidateFunction,
+        operations: &[Operation],
+        state: &mut State,
+    ) -> Result<(), ValidationError> {
+        for operation in operations {
             self.operations = self.operations.checked_add(1).ok_or_else(|| {
                 self.function_error(
                     RuleId::BudgetExhaustionFailsClosed,
                     function,
-                    Some(operation_index),
+                    None,
                     "operation counter overflowed",
                 )
             })?;
+            let operation_index = self.operations - 1;
             if self.operations > self.budget.operations {
                 return Err(self.function_error(
                     RuleId::BudgetExhaustionFailsClosed,
@@ -652,10 +716,9 @@ impl Validator<'_> {
                     "operation budget exhausted",
                 ));
             }
-            self.validate_operation(function, operation_index, operation, &mut state)?;
+            self.validate_operation(function, operation_index, operation, state)?;
             self.observe_facts(&state, function, Some(operation_index))?;
         }
-        self.validate_function_exit(function, &state)?;
         Ok(())
     }
 
@@ -786,7 +849,7 @@ impl Validator<'_> {
     ) -> crate::safewir::ParameterMemoryEffects {
         use crate::safewir::ParameterMemoryEffects;
         let mut observed = ParameterMemoryEffects::none();
-        for operation in &function.operations {
+        for operation in operations(&function.operations) {
             macro_rules! add {
                 ($effect:expr) => {
                     observed = observed.with($effect)
@@ -1201,6 +1264,14 @@ impl Validator<'_> {
                     state,
                 )?;
             }
+            Operation::If { condition, then_operations, else_operations } => {
+                self.require_scalar(state, *condition, function, at)?;
+                let mut then_state = state.clone();
+                self.validate_operations(function, then_operations, &mut then_state)?;
+                let mut else_state = state.clone();
+                self.validate_operations(function, else_operations, &mut else_state)?;
+                *state = self.join_states(function, at, then_state, else_state)?;
+            }
             Operation::Join { result, incoming } => {
                 let _ = (result, incoming);
                 return Err(self.function_unsupported(
@@ -1255,6 +1326,70 @@ impl Validator<'_> {
             }
         }
         Ok(())
+    }
+
+    fn join_states(
+        &self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        left: State,
+        right: State,
+    ) -> Result<State, ValidationError> {
+        if left.returned.is_some() || right.returned.is_some() {
+            return Err(self.function_unsupported(
+                UnsupportedForm::ControlFlowJoin,
+                function,
+                at,
+                "object-returning branch joins require explicit exit accumulators",
+            ));
+        }
+
+        let definitions = left
+            .definitions
+            .intersection(&right.definitions)
+            .copied()
+            .collect();
+        let scalars = left
+            .scalars
+            .iter()
+            .filter_map(|(definition, value)| {
+                (right.scalars.get(definition) == Some(value)).then_some((*definition, *value))
+            })
+            .collect();
+        let mut objects = BTreeMap::new();
+        for (identity, left_object) in &left.objects {
+            let Some(right_object) = right.objects.get(identity) else { continue };
+            if left_object.object.layout != right_object.object.layout
+                || left_object.object.extent != right_object.object.extent
+            {
+                continue;
+            }
+            let mut object = left_object.object.clone();
+            if object.provenance != right_object.object.provenance {
+                object.provenance = Provenance::Unknown;
+            }
+            objects.insert(
+                *identity,
+                ObjectState {
+                    object,
+                    ownership: join_ownership(left_object.ownership, right_object.ownership),
+                },
+            );
+        }
+
+        let mut aliases = left.aliases;
+        for (identity, right_group) in right.aliases {
+            aliases.entry(identity).or_default().extend(right_group);
+        }
+
+        Ok(State {
+            scalars,
+            objects,
+            aliases,
+            definitions,
+            minted: left.minted.intersection(&right.minted).copied().collect(),
+            returned: None,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2413,6 +2548,82 @@ fn ranges_overlap(
     Some(left_start < right_end && right_start < left_end)
 }
 
+fn operation_count(operations: &[Operation]) -> Option<usize> {
+    operations.iter().try_fold(0_usize, |total, operation| {
+        let nested = match operation {
+            Operation::If { then_operations, else_operations, .. } => operation_count(
+                then_operations,
+            )?
+            .checked_add(operation_count(else_operations)?)?,
+            _ => 0,
+        };
+        total.checked_add(1)?.checked_add(nested)
+    })
+}
+
+fn operations(input: &[Operation]) -> Vec<&Operation> {
+    fn collect<'a>(input: &'a [Operation], output: &mut Vec<&'a Operation>) {
+        for operation in input {
+            output.push(operation);
+            if let Operation::If { then_operations, else_operations, .. } = operation {
+                collect(then_operations, output);
+                collect(else_operations, output);
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    collect(input, &mut output);
+    output
+}
+
+fn definition_sites(input: &[Operation]) -> Vec<DefinitionId> {
+    let mut definitions = Vec::new();
+    for operation in operations(input) {
+        let definition = match operation {
+            Operation::DefineScalar { definition, .. } => Some(*definition),
+            Operation::Alloc { result } | Operation::Join { result, .. } => {
+                Some(result.identity.root)
+            }
+            Operation::Call { result, .. } | Operation::HostCall { result, .. } => {
+                result.as_ref().map(|result| result.identity.root)
+            }
+            _ => None,
+        };
+        definitions.extend(definition);
+    }
+    definitions
+}
+
+fn identity_sites(input: &[Operation]) -> Vec<ObjectIdentity> {
+    let mut identities = Vec::new();
+    for operation in operations(input) {
+        let identity = match operation {
+            Operation::Alloc { result }
+            | Operation::Reuse { new: result, .. }
+            | Operation::Join { result, .. } => Some(result.identity),
+            Operation::Call { result, .. } | Operation::HostCall { result, .. } => {
+                result.as_ref().map(|result| result.identity)
+            }
+            _ => None,
+        };
+        identities.extend(identity);
+    }
+    identities
+}
+
+fn join_ownership(left: Ownership, right: Ownership) -> Ownership {
+    use Ownership::{BorrowedRead, BorrowedWrite, Consumed, Shared, Unique};
+    match (left, right) {
+        (Consumed, _) | (_, Consumed) => Consumed,
+        (Unique, Unique) => Unique,
+        (BorrowedWrite, BorrowedWrite | Unique) | (Unique, BorrowedWrite) => BorrowedWrite,
+        (BorrowedRead, _) | (_, BorrowedRead) => BorrowedRead,
+        (Shared, Shared | Unique) | (Unique, Shared) => Shared,
+        (BorrowedWrite, Shared) | (Shared, BorrowedWrite) => BorrowedRead,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2420,7 +2631,8 @@ mod tests {
         ClosedTypeResolver, RcHeader, ReferenceKind, ResolvedNamed, ScalarKind,
     };
     use crate::safewir::{
-        GenerationId, ParameterMemoryContract, ParameterMemoryEffects, Projection,
+        ContractProjection, GenerationId, ParameterMemoryContract, ParameterMemoryEffects,
+        Projection,
     };
     use witchy_syntax::ast::Type;
 
@@ -2736,6 +2948,112 @@ mod tests {
         };
         *width = MemoryWidth::F64;
         assert_rule(reinterpreted, RuleId::ProjectedLayout);
+    }
+
+    #[test]
+    fn branch_join_never_resurrects_conditionally_consumed_authority() {
+        let mut accepted = base_module();
+        accepted.functions[0].operations.insert(
+            3,
+            Operation::If {
+                condition: DefinitionId::new(1),
+                then_operations: Vec::new(),
+                else_operations: Vec::new(),
+            },
+        );
+        validate_candidate(&accepted, ValidationBudget::default()).unwrap();
+
+        let mut rejected = base_module();
+        rejected.functions[0].operations.insert(
+            3,
+            Operation::If {
+                condition: DefinitionId::new(1),
+                then_operations: vec![Operation::Release {
+                    object: identity(3, 1),
+                }],
+                else_operations: Vec::new(),
+            },
+        );
+        assert_rule(rejected, RuleId::ConsumeOnce);
+
+        let mut duplicated = base_module();
+        let branch_allocation = object(4, 1, Provenance::Fresh);
+        duplicated.functions[0].operations.insert(
+            3,
+            Operation::If {
+                condition: DefinitionId::new(1),
+                then_operations: vec![Operation::Alloc {
+                    result: branch_allocation.clone(),
+                }],
+                else_operations: vec![Operation::Alloc {
+                    result: branch_allocation,
+                }],
+            },
+        );
+        assert_rule(duplicated, RuleId::CheckedCallableContract);
+    }
+
+    #[test]
+    fn branch_local_alias_effects_survive_the_join() {
+        let mut module = base_module();
+        module.imports.insert(
+            "alias".into(),
+            CallableMemoryContract {
+                parameters: vec![object_parameter(
+                    ParameterMemoryEntry::Shared,
+                    ParameterMemoryEffects::only(ParameterMemoryEffect::Escape),
+                )],
+                result: CallableMemoryResult::Aliases {
+                    parameter: 0,
+                    projection: ContractProjection::from_steps([]),
+                },
+            },
+        );
+        let parameter = object(20, 1, Provenance::Unknown);
+        let alias = ObjectRef {
+            identity: identity(21, 1),
+            layout: parameter.layout,
+            extent: parameter.extent.clone(),
+            provenance: Provenance::Aliases {
+                object: parameter.identity,
+                projection: Projection::root(),
+            },
+        };
+        module.functions = vec![CandidateFunction {
+            name: "conditional_alias".into(),
+            contract: CallableMemoryContract {
+                parameters: vec![object_parameter(
+                    ParameterMemoryEntry::Shared,
+                    ParameterMemoryEffects::only(ParameterMemoryEffect::Escape),
+                )],
+                result: CallableMemoryResult::NoMemory,
+            },
+            parameters: vec![ParameterBinding {
+                definition: parameter.identity.root,
+                object: Some(parameter.clone()),
+            }],
+            operations: vec![
+                Operation::DefineScalar {
+                    definition: DefinitionId::new(1),
+                    value: 1,
+                },
+                Operation::If {
+                    condition: DefinitionId::new(1),
+                    then_operations: vec![
+                        Operation::Call {
+                            callable: "alias".into(),
+                            arguments: vec![CallArgument::Object(parameter.identity)],
+                            result: Some(alias.clone()),
+                        },
+                        Operation::Retain {
+                            object: alias.identity,
+                        },
+                    ],
+                    else_operations: Vec::new(),
+                },
+            ],
+        }];
+        assert_rule(module, RuleId::CheckedCallableContract);
     }
 
     #[test]
@@ -3412,7 +3730,7 @@ mod tests {
     fn deferred_forms_report_unsupported_not_a_rule_violation() {
         let mut join = base_module();
         join.functions[0].operations.push(Operation::Join {
-            result: object(3, 1, Provenance::Fresh),
+            result: object(4, 1, Provenance::Fresh),
             incoming: vec![identity(3, 1)],
         });
         assert_unsupported(join, UnsupportedForm::ControlFlowJoin);
