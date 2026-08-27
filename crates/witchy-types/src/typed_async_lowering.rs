@@ -72,7 +72,7 @@ pub struct TypedAsyncSuspensionBinding {
 /// an await has a continuation state at this stage; the later executable
 /// lowering supplies its resolved operands, queue/host binding, and state
 /// body without rediscovering source order from CPS expressions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypedAsyncSourceOperationBinding {
     pub callable: AsyncCallableId,
     pub source_operation: u32,
@@ -83,6 +83,10 @@ pub struct TypedAsyncSourceOperationBinding {
     /// it to obtain operands from the retained source item, never from a
     /// generated closure name or scalar transition recognizer.
     pub expression: Option<SourceExpressionId>,
+    /// The finalized operand type captured from the linked pre-CPS typed
+    /// projection. A bare `return` has no operand; every other operation must
+    /// carry a concrete type before executable frame/lane formation begins.
+    pub operand_type: Option<Type>,
     pub continuation: Option<FinalCallableIndex>,
 }
 
@@ -102,7 +106,17 @@ impl TypedAsyncLoweringInput {
     pub fn from_checked(checked: &CheckedModule) -> Result<Self, String> {
         let typed = typeck::annotate_checked_source(checked.module().clone())
             .map_err(|error| error.message)?;
-        Self::from_typed(&typed, checked.source_async_control_flow())
+        let mut input = Self::from_typed(&typed, checked.source_async_control_flow())?;
+        for operation in &mut input.operations {
+            let Some(_) = operation.expression else { continue };
+            let (_, ty) = Self::typed_source_operation(checked, operation)?;
+            operation.operand_type = Some(typeck::ty_to_ast(ty).ok_or_else(|| format!(
+                "source async {:?} operation {} has a non-concrete operand type `{ty}`",
+                operation.callable,
+                operation.source_operation,
+            ))?);
+        }
+        Ok(input)
     }
 
     pub fn from_typed(
@@ -286,6 +300,7 @@ impl TypedAsyncLoweringInput {
                     kind: operation.kind,
                     path: operation.path.clone(),
                     expression: operation.expression,
+                    operand_type: None,
                     continuation,
                 });
             }
@@ -425,6 +440,10 @@ mod tests {
         let await_operation = input.operations.iter().find(|operation| {
             operation.kind == SourceAsyncOperationKind::Await
         }).expect("typed await operation");
+        assert_eq!(
+            await_operation.operand_type,
+            Some(witchy_syntax::ast::Type::Named("Int".into(), Vec::new())),
+        );
         assert!(matches!(
             TypedAsyncLoweringInput::source_operation_expression(&checked, await_operation),
             Ok(witchy_syntax::ast::Expr::Unary {
