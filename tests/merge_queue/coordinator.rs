@@ -1716,3 +1716,47 @@ fn with_lock_fails_open_when_the_coordinator_intent_is_stale() {
         "a stale intent marker was left behind to block the next caller"
     );
 }
+
+/// BUG-632. The fail-open above was bounded by a per-CALLER deadline
+/// (`MERGE_QUEUE_INTENT_MAX_WAIT`, 900s) while the intent's lifetime is the
+/// coordinator's ENTIRE wait. So each arriving with-lock caller waited its own
+/// cap, failed open, and took the lock, putting the coordinator behind a fresh
+/// holder every time -- one caller per cap starved it forever. Observed
+/// 2026-08-27: 100 minutes with zero merges while the queue grew 10 -> 18.
+///
+/// The bound is now LIVENESS, not a deadline: an intent whose owner is alive but
+/// has stopped refreshing it is abandoned, and only THAT fails open. A pid that
+/// is alive is not sufficient -- this test would pass under the old code for the
+/// wrong reason if it only checked liveness, so it backdates a LIVE pid's
+/// marker, which the old code would have waited 900s on.
+#[test]
+fn with_lock_fails_open_on_a_live_pid_whose_intent_stopped_refreshing() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["status"], "true");
+    let intent = fixture.state.join("gate.lock.intent");
+
+    // OUR pid: unambiguously alive for the whole test.
+    fs::write(&intent, format!("{}\n", std::process::id())).expect("write intent");
+    // Backdate it well past the staleness horizon. `touch -A` adjusts the
+    // existing timestamp, which avoids formatting an absolute stamp here.
+    let touched = std::process::Command::new("touch")
+        .args(["-A", "-001000", intent.to_str().expect("intent path")])
+        .status()
+        .expect("run touch");
+    assert!(touched.success(), "could not backdate the intent marker");
+
+    let started = std::time::Instant::now();
+    let out = fixture.mq(&["with-lock", "--", "true"], "true");
+    assert!(
+        out.status.success(),
+        "with-lock wedged on an abandoned intent:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The point of the fix: it must not serve a per-caller sentence first.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "with-lock waited {:?} on an abandoned intent; it must fail open promptly",
+        started.elapsed()
+    );
+}

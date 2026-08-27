@@ -778,7 +778,39 @@ release_migration_marker() {
     fi
     migration_marker_active=0
 }
-release_lock() { if [ "$holding_lock" -eq 1 ]; then rm -rf "$lock"; fi; holding_lock=0; }
+# A priority intent counts as LIVE only while the coordinator keeps REFRESHING
+# it. BUG-632: the old test was "the file exists", but its lifetime is the
+# coordinator's entire wait, so no per-caller timeout could ever bound it.
+# Refresh-based liveness separates "actively waiting" from "abandoned", which is
+# what lets with-lock yield indefinitely to the former and still fail open on
+# the latter.
+intent_is_live() {
+    local ipid mtime now
+    [ -f "$lock_intent" ] || return 1
+    ipid="$(cat "$lock_intent" 2>/dev/null || true)"
+    case "$ipid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$ipid" 2>/dev/null || return 1
+    mtime="$(stat -f %m "$lock_intent" 2>/dev/null || true)"
+    [ -n "$mtime" ] || return 1
+    now="$(date +%s)"
+    [ "$((now - mtime))" -le "${MERGE_QUEUE_INTENT_STALE:-60}" ]
+}
+
+# Hand the lock OVER instead of racing for it. BUG-632: the releasing caller and
+# the waiting coordinator both raced `mkdir`, and a with-lock caller polling at
+# 5s routinely beat a coordinator polling at monitor_interval. Pausing past one
+# coordinator poll makes the handoff deterministic. This only fires when someone
+# ELSE releases while the coordinator waits -- the coordinator clears its own
+# intent on acquire, so it never pauses itself.
+release_lock() {
+    if [ "$holding_lock" -eq 1 ]; then
+        rm -rf "$lock"
+        if [ "${lock_priority:-0}" != "1" ] && intent_is_live; then
+            sleep "${MERGE_QUEUE_INTENT_HANDOFF:-5}"
+        fi
+    fi
+    holding_lock=0
+}
 change_lock_owned() {
     [ "$holding_change_lock" -eq 1 ] \
         && [ "${BASHPID:-$$}" = "$change_owner_shell_pid" ] \
@@ -954,7 +986,17 @@ acquire_lock() { # acquire_lock <description> [branch] [log]
             fi
         fi
         waited=1
-        sleep "$monitor_interval"
+        # Keep the intent FRESH while genuinely waiting (BUG-632). with-lock
+        # yields to a refreshed intent and fails open on a stale one, so this
+        # pulse is the whole signal that separates a waiting coordinator from a
+        # dead one. Rewriting the pid (rather than touch) also restores the file
+        # if a failing-open caller removed it.
+        if [ "${lock_priority:-0}" = "1" ]; then
+            printf '%s\n' "$$" >"$lock_intent" 2>/dev/null || true
+            sleep "${MERGE_QUEUE_INTENT_POLL:-2}"
+        else
+            sleep "$monitor_interval"
+        fi
     done
     [ "${lock_priority:-0}" = "1" ] && rm -f "$lock_intent" 2>/dev/null
     echo "$$" >"$lock/pid"
@@ -3505,16 +3547,32 @@ cmd_with_lock() {
     # Yield to a coordinator that is already waiting. Fail OPEN on every doubt --
     # a dead holder, an unreadable marker, or a wait past the cap all proceed --
     # so this can never wedge with-lock.
-    local intent_wait=0 intent_cap="${MERGE_QUEUE_INTENT_MAX_WAIT:-900}" ipid
-    while [ -f "$lock_intent" ]; do
-        ipid="$(cat "$lock_intent" 2>/dev/null || true)"
-        case "$ipid" in ''|*[!0-9]*) rm -f "$lock_intent" 2>/dev/null; break ;; esac
-        kill -0 "$ipid" 2>/dev/null || { rm -f "$lock_intent" 2>/dev/null; break; }
-        [ "$intent_wait" -ge "$intent_cap" ] && { note "with-lock: coordinator intent held past ${intent_cap}s; proceeding"; break; }
-        [ "$intent_wait" -eq 0 ] && note "with-lock: yielding to the waiting coordinator (pid $ipid)"
+    # BUG-632: yield on LIVENESS, never on a per-caller deadline. The cap used to
+    # be measured per caller while the intent's lifetime was the coordinator's
+    # whole wait, so each arriving caller waited its own 900s, failed open, and
+    # took the lock -- leaving the coordinator behind a fresh holder every time.
+    # One caller per cap starved it forever (observed 2026-08-27: 100 minutes,
+    # zero merges, queue 10 -> 18). Waiting while the coordinator keeps proving
+    # it is alive cannot cascade, because acquiring clears the intent.
+    local yielded=0 ipid
+    while intent_is_live; do
+        if [ "$yielded" -eq 0 ]; then
+            ipid="$(cat "$lock_intent" 2>/dev/null || true)"
+            note "with-lock: yielding to the waiting coordinator (pid $ipid)"
+            yielded=1
+        fi
         sleep 5
-        intent_wait=$((intent_wait + 5))
     done
+    # Fail OPEN on a dead or unreadable marker, and clear it so it stops costing
+    # every future caller a liveness probe. A merely STALE intent is left alone:
+    # its owner may still be alive and about to refresh it.
+    if [ -f "$lock_intent" ]; then
+        ipid="$(cat "$lock_intent" 2>/dev/null || true)"
+        case "$ipid" in
+            ''|*[!0-9]*) rm -f "$lock_intent" 2>/dev/null || true ;;
+            *) kill -0 "$ipid" 2>/dev/null || rm -f "$lock_intent" 2>/dev/null || true ;;
+        esac
+    fi
     acquire_lock "with-lock: $*"
     local rc=0
     "$@" || rc=$?
