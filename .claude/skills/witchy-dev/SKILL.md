@@ -166,8 +166,10 @@ untrusted code means running it as its own sandboxed program, not as a task.
   (`let top: Entry = heaviest(xs) ? "picking top"`). The type error tells you.
 - ` ```witchy ` blocks in `book/`, `README`, and `spec/` are **executed tests** —
   each must be a complete, correct program. Use an untagged or ` ```sh ` fence
-  for partial snippets. And don't document an API that doesn't exist; the build
-  catches wrong code but not wrong prose.
+  for partial snippets. ` ```witchy-static ` is **not** executed, so those blocks
+  rot silently — hand-check them. And don't document an API that doesn't exist;
+  the build catches wrong code but not wrong prose. Writing or auditing user
+  docs is **`/witchy-docs`**.
 - `spec/stdlib.md` is **generated** from `std/*.witchy` doc-comments and a test
   fails if it drifts. Edit the doc-comment, then
   `witchy doc std/*.witchy > spec/stdlib.md`. Never hand-edit it.
@@ -396,6 +398,9 @@ Only when this page is genuinely insufficient:
   (`spec/language.md`) often lags behind newly implemented RFCs (e.g., RFC-0122 
   introducing explicit `&'a T` references).
 - `book/src/` — narrative tour, ordered by `book/src/SUMMARY.md`.
+  **`/witchy-docs`** is the skill for writing and reviewing it (and `spec/`):
+  what may never appear in user docs, the executed-vs-static block trap, and the
+  house voice.
 - Source of truth when docs disagree:
   `spec/` + `std/*.witchy` + independent expected results
   (`src/example_tests/`, `tests/misc/semantic_conformance.rs`). The
