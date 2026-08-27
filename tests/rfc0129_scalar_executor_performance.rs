@@ -115,17 +115,26 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     let expected = (MESSAGES * (MESSAGES - 1) / 2).to_string();
     let baseline_expected =
         (BASELINE_MESSAGES * (BASELINE_MESSAGES - 1) / 2).to_string();
+    // Compilation is deterministic in the source, so both programs are lowered
+    // ONCE here instead of inside the sampling loop. The loop repeats to get a
+    // stable EXECUTION measurement; recompiling per repetition measured nothing
+    // (`execution_time_us` is timed around `vm.run()` alone) and made this the
+    // second-costliest test in the suite. Each sample still gets a fresh VM.
+    let baseline_program = witchy::stats::prepare(&baseline_source)
+        .expect("compile scalar baseline");
+    let measured_program = witchy::stats::prepare(&source)
+        .expect("compile scalar benchmark");
     let mut execution_times_us = Vec::with_capacity(repetitions);
     let mut allocation_counts = Vec::with_capacity(repetitions);
     for repetition in 1..=repetitions {
-        let baseline = witchy::stats::compute_timed(&baseline_source)
+        let baseline = witchy::stats::run_prepared(&baseline_program)
             .unwrap_or_else(|error| panic!("execute scalar baseline {repetition}: {error}"));
         assert_eq!(
             baseline.stats.output,
             [baseline_expected.as_str()],
             "baseline fold checksum"
         );
-        let measured = witchy::stats::compute_timed(&source)
+        let measured = witchy::stats::run_prepared(&measured_program)
             .unwrap_or_else(|error| panic!("execute scalar repetition {repetition}: {error}"));
         assert_eq!(measured.stats.output, [expected.as_str()], "observable fold checksum");
         assert_eq!(

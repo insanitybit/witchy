@@ -178,10 +178,23 @@ pub fn compute(src: &str) -> Result<Stats, String> {
     compute_timed(src).map(|timed| timed.stats)
 }
 
-/// Compile and run a stats corpus while retaining measured checker and
-/// execution durations for performance reports. The returned counters remain
-/// deterministic; callers must treat the two duration fields as measurements.
-pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
+/// A compiled program plus the checker facts gathered while producing it.
+///
+/// Compilation is deterministic in the source, so a caller that samples the
+/// same program repeatedly (a timing loop) should build this ONCE and hand it
+/// to `run_prepared` per sample. Repeating the resolve/check/lower work per
+/// sample measures nothing extra -- `execution_time_us` is timed around
+/// `vm.run()` alone -- and it dominated the cost of the RFC-0129 acceptance
+/// tests, which recompiled two whole programs on every repetition.
+pub struct PreparedProgram {
+    bytes: Vec<u8>,
+    checker_time_us: u128,
+    loan_telemetry: witchy_types::loans::LoanFactTelemetry,
+}
+
+/// Resolve `src` against the bundled std, publish its loan facts, and lower it
+/// to Wasm. See `PreparedProgram` for why this is separable from running.
+pub fn prepare(src: &str) -> Result<PreparedProgram, String> {
     let checker_started = Instant::now();
     let checked = crate::resolve_std_only_checked(src).map_err(|error| error.to_string())?;
     let loan_telemetry = witchy_types::loans::facts(checked.module())
@@ -193,6 +206,15 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
     };
+    Ok(PreparedProgram { bytes, checker_time_us, loan_telemetry })
+}
+
+/// Run an already-compiled program and collect its deterministic counters.
+///
+/// Each call spawns a FRESH VM, so the allocation counters describe this run
+/// alone -- that isolation is what the RFC-0129 gates assert on, and it is
+/// preserved exactly when a caller reuses one `PreparedProgram`.
+pub fn run_prepared(prepared: &PreparedProgram) -> Result<TimedStats, String> {
     let caps = Capabilities {
         print: true,
         print_int: true,
@@ -202,7 +224,7 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
     };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn(&bytes, caps, STATS_MEMORY_PAGES)
+        .spawn(&prepared.bytes, caps, STATS_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     let execution_started = Instant::now();
     vm.run().map_err(|e| e.root_cause().to_string())?;
@@ -267,22 +289,29 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
         dict_grows: vm.dict_grows().unwrap_or(0),
         dict_order_bytes_moved: vm.dict_order_bytes_moved().unwrap_or(0),
         dict_index_bytes: vm.dict_index_bytes().unwrap_or(0),
-        loan_active_points: loan_telemetry.active_points,
-        loan_active_events: loan_telemetry.active_events,
-        loan_opens: loan_telemetry.opens,
-        loan_closes: loan_telemetry.closes,
-        loan_return_transfers: loan_telemetry.return_transfers,
-        loan_shell_mutations: loan_telemetry.shell_mutations,
-        loan_control_flow_edges: loan_telemetry.control_flow_edges,
-        loan_subset_edges: loan_telemetry.subset_edges,
+        loan_active_points: prepared.loan_telemetry.active_points,
+        loan_active_events: prepared.loan_telemetry.active_events,
+        loan_opens: prepared.loan_telemetry.opens,
+        loan_closes: prepared.loan_telemetry.closes,
+        loan_return_transfers: prepared.loan_telemetry.return_transfers,
+        loan_shell_mutations: prepared.loan_telemetry.shell_mutations,
+        loan_control_flow_edges: prepared.loan_telemetry.control_flow_edges,
+        loan_subset_edges: prepared.loan_telemetry.subset_edges,
     };
     Ok(TimedStats {
         stats,
         gc_heap_capacity_bytes,
-        checker_time_us,
+        checker_time_us: prepared.checker_time_us,
         execution_time_us,
         execution_throughput_batches_per_s,
     })
+}
+
+/// Compile and run a stats corpus while retaining measured checker and
+/// execution durations for performance reports. The returned counters remain
+/// deterministic; callers must treat the two duration fields as measurements.
+pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
+    run_prepared(&prepare(src)?)
 }
 
 #[cfg(test)]
