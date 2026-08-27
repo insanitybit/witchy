@@ -1,11 +1,18 @@
 ---
 rfc: 0152
 title: "RFC-0152 acceptance ledger"
-status: active
+status: superseded
 created: 2026-08-24
+superseded-by: "0161 (typed resumable runtime)"
 ---
 
 # RFC-0152 acceptance ledger
+
+> **Superseded (2026-08-26).** RFC-0161 replaces RFC-0152's incremental
+> ready-path program. The landed increments, counters, fixtures, and raw
+> attribution referenced below are retained as RFC-0161 inputs. Every pending
+> RFC-0152 acceptance row remains unproven; this ledger is historical rather
+> than an active implementation queue.
 
 This ledger records implementation and measurement evidence for
 RFC-0152.  A row is complete only when its linked source, tests, artifacts,

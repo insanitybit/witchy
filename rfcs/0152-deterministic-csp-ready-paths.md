@@ -1,19 +1,25 @@
 ---
 rfc: 0152
 title: "Deterministic CSP Ready Paths: Typed Channels, Fixed-Arity Select, and Bounded Suspension"
-status: proposed
+status: superseded
 created: 2026-08-24
-superseded-by:
+superseded-by: "0161 (typed resumable runtime)"
 related:
   - "0055 (typed channel messages)"
   - "0129 (concurrency, tasks, and channels)"
   - "0137 (compiler-derived CSP)"
   - "0139 (high-ROI channel optimization)"
   - "0146 (post-hybrid performance program)"
-tracking: "Proposes general ready-path and suspension-path specialization for deterministic typed CSP; implementation evidence will live in an RFC-0152 acceptance ledger."
+tracking: "Superseded by accepted RFC-0161. Its typed-channel facts, semantic fixtures, counters, and bounded-frame experiments remain inputs to RFC-0161; its pending acceptance rows are not evidence of implementation."
 ---
 
 # RFC-0152: Deterministic CSP Ready Paths
+
+> **Superseded (2026-08-26).** Accepted RFC-0161 replaces this incremental
+> ready-path specialization program with one typed resumable runtime. The
+> landed facts and fixtures recorded here remain useful inputs, but no pending
+> RFC-0152 acceptance row is proven and new implementation work belongs to
+> RFC-0161.
 
 ## Summary
 
