@@ -16,6 +16,8 @@
 
 use std::fmt::Write;
 
+use crate::safewir_surface::{SafeCopyKind, SafePlaceExpr};
+
 /// The maximum closure arity the static prelude pre-declares (`$clos0..$clos4`).
 /// The binary encoder reserves type indices `0..=MAX_CLOS` for these signatures
 /// BEFORE any import/func type, because spliced prelude raw bodies bake those
@@ -545,6 +547,12 @@ pub enum WirExpr {
         kind: Kind,
         offset: u32,
     },
+    /// RFC-0162 semantic load. The final validator proves `place` before the
+    /// encoder erases its ghost claims to the same load shape.
+    SafeLoad {
+        place: Box<SafePlaceExpr>,
+        kind: Kind,
+    },
     /// `memory.size` — current linear-memory size in 64KiB pages (i32).
     MemorySize,
     /// `memory.grow` — grow memory by `pages` (i32), pushing the PREVIOUS size in
@@ -553,6 +561,8 @@ pub enum WirExpr {
     /// `i32.load8_u offset=<offset>` — read one byte from `ptr`, zero-extended to
     /// i32. The byte-level read used by string helpers (`$str_eq`, `$find_byte`).
     Load8U { ptr: Box<WirExpr>, offset: u32 },
+    /// RFC-0162 semantic byte load.
+    SafeLoad8U { place: Box<SafePlaceExpr> },
 
     /// A direct call to a module function by name.
     Call {
@@ -671,6 +681,12 @@ pub enum WirNode {
         kind: Kind,
         offset: u32,
     },
+    /// RFC-0162 semantic store.
+    SafeStore {
+        place: Box<SafePlaceExpr>,
+        value: WirExpr,
+        kind: Kind,
+    },
     /// Call a MULTI-result function and store each result into a local. Evaluate
     /// `args`, `call $func` (which leaves `dests.len()` values on the stack), then
     /// `local.set` each `dest` — popped in REVERSE, matching wasm stack order
@@ -696,9 +712,23 @@ pub enum WirNode {
         src: WirExpr,
         len: WirExpr,
     },
+    /// RFC-0162 semantic bulk copy. `len` remains executable state and must
+    /// agree with both checked range claims.
+    SafeMemoryCopy {
+        destination: Box<SafePlaceExpr>,
+        source: Box<SafePlaceExpr>,
+        len: WirExpr,
+        kind: SafeCopyKind,
+    },
     /// `memory.fill` — set `len` bytes at `dest` to the low byte of `value`.
     MemoryFill {
         dest: WirExpr,
+        value: WirExpr,
+        len: WirExpr,
+    },
+    /// RFC-0162 semantic bulk fill.
+    SafeMemoryFill {
+        destination: Box<SafePlaceExpr>,
         value: WirExpr,
         len: WirExpr,
     },
@@ -708,6 +738,11 @@ pub enum WirNode {
         ptr: WirExpr,
         value: WirExpr,
         offset: u32,
+    },
+    /// RFC-0162 semantic byte store.
+    SafeStore8 {
+        place: Box<SafePlaceExpr>,
+        value: WirExpr,
     },
     /// `if (cond) then else els`. `result` is the value type (None = statement if).
     If {
@@ -1059,6 +1094,16 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
                 let _ = writeln!(s, "{}.store offset={offset}", kind.wat());
             }
         }
+        WirNode::SafeStore { place, value, kind } => {
+            print_expr(s, &place.encoded_base, depth);
+            print_expr(s, value, depth);
+            indent(s, depth);
+            if place.encoded_offset == 0 {
+                let _ = writeln!(s, "{}.store", kind.wat());
+            } else {
+                let _ = writeln!(s, "{}.store offset={}", kind.wat(), place.encoded_offset);
+            }
+        }
         WirNode::CallStoreMulti { func, args, dests } => {
             for a in args {
                 print_expr(s, a, depth);
@@ -1098,8 +1143,22 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             indent(s, depth);
             s.push_str("memory.copy\n");
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            print_expr(s, &destination.encoded_base, depth);
+            print_expr(s, &source.encoded_base, depth);
+            print_expr(s, len, depth);
+            indent(s, depth);
+            s.push_str("memory.copy\n");
+        }
         WirNode::MemoryFill { dest, value, len } => {
             print_expr(s, dest, depth);
+            print_expr(s, value, depth);
+            print_expr(s, len, depth);
+            indent(s, depth);
+            s.push_str("memory.fill\n");
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            print_expr(s, &destination.encoded_base, depth);
             print_expr(s, value, depth);
             print_expr(s, len, depth);
             indent(s, depth);
@@ -1113,6 +1172,16 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
                 let _ = writeln!(s, "i32.store8");
             } else {
                 let _ = writeln!(s, "i32.store8 offset={offset}");
+            }
+        }
+        WirNode::SafeStore8 { place, value } => {
+            print_expr(s, &place.encoded_base, depth);
+            print_expr(s, value, depth);
+            indent(s, depth);
+            if place.encoded_offset == 0 {
+                let _ = writeln!(s, "i32.store8");
+            } else {
+                let _ = writeln!(s, "i32.store8 offset={}", place.encoded_offset);
             }
         }
         WirNode::If {
@@ -1322,6 +1391,18 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                 emit(s, depth, &format!("{}.load offset={offset}", kind.wat()));
             }
         }
+        WirExpr::SafeLoad { place, kind } => {
+            print_expr(s, &place.encoded_base, depth);
+            if place.encoded_offset == 0 {
+                emit(s, depth, &format!("{}.load", kind.wat()));
+            } else {
+                emit(
+                    s,
+                    depth,
+                    &format!("{}.load offset={}", kind.wat(), place.encoded_offset),
+                );
+            }
+        }
         WirExpr::MemorySize => emit(s, depth, "memory.size"),
         WirExpr::MemoryGrow(pages) => {
             print_expr(s, pages, depth);
@@ -1333,6 +1414,18 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                 emit(s, depth, "i32.load8_u");
             } else {
                 emit(s, depth, &format!("i32.load8_u offset={offset}"));
+            }
+        }
+        WirExpr::SafeLoad8U { place } => {
+            print_expr(s, &place.encoded_base, depth);
+            if place.encoded_offset == 0 {
+                emit(s, depth, "i32.load8_u");
+            } else {
+                emit(
+                    s,
+                    depth,
+                    &format!("i32.load8_u offset={}", place.encoded_offset),
+                );
             }
         }
         WirExpr::Call { func, args } => {
@@ -1526,6 +1619,9 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
                 walk_expr(rhs, out);
             }
             WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+                place.for_each_wir_expr(|expr| walk_expr(expr, out));
+            }
             WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
@@ -1592,6 +1688,11 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
                 walk_expr(ptr, out);
                 walk_expr(value, out);
             }
+            WirNode::SafeStore { place, value, .. }
+            | WirNode::SafeStore8 { place, value } => {
+                place.for_each_wir_expr(|expr| walk_expr(expr, out));
+                walk_expr(value, out);
+            }
             WirNode::CallStoreMulti { args, .. } => {
                 for a in args {
                     walk_expr(a, out);
@@ -1614,8 +1715,18 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
                 walk_expr(src, out);
                 walk_expr(len, out);
             }
+            WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+                destination.for_each_wir_expr(|expr| walk_expr(expr, out));
+                source.for_each_wir_expr(|expr| walk_expr(expr, out));
+                walk_expr(len, out);
+            }
             WirNode::MemoryFill { dest, value, len } => {
                 walk_expr(dest, out);
+                walk_expr(value, out);
+                walk_expr(len, out);
+            }
+            WirNode::SafeMemoryFill { destination, value, len } => {
+                destination.for_each_wir_expr(|expr| walk_expr(expr, out));
                 walk_expr(value, out);
                 walk_expr(len, out);
             }
@@ -1655,6 +1766,9 @@ pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::
                 walk_expr(rhs, out);
             }
             WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+                place.for_each_wir_expr(|expr| walk_expr(expr, out));
+            }
             WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
@@ -1730,6 +1844,11 @@ pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::
                 walk_expr(ptr, out);
                 walk_expr(value, out);
             }
+            WirNode::SafeStore { place, value, .. }
+            | WirNode::SafeStore8 { place, value } => {
+                place.for_each_wir_expr(|expr| walk_expr(expr, out));
+                walk_expr(value, out);
+            }
             WirNode::CallStoreMulti { args, dests, .. } => {
                 for a in args {
                     walk_expr(a, out);
@@ -1757,8 +1876,18 @@ pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::
                 walk_expr(src, out);
                 walk_expr(len, out);
             }
+            WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+                destination.for_each_wir_expr(|expr| walk_expr(expr, out));
+                source.for_each_wir_expr(|expr| walk_expr(expr, out));
+                walk_expr(len, out);
+            }
             WirNode::MemoryFill { dest, value, len } => {
                 walk_expr(dest, out);
+                walk_expr(value, out);
+                walk_expr(len, out);
+            }
+            WirNode::SafeMemoryFill { destination, value, len } => {
+                destination.for_each_wir_expr(|expr| walk_expr(expr, out));
                 walk_expr(value, out);
                 walk_expr(len, out);
             }
@@ -1839,6 +1968,11 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                 expr_violates(ptr, hits);
                 expr_violates(value, hits);
             }
+            WirNode::SafeStore { place, value, .. }
+            | WirNode::SafeStore8 { place, value } => {
+                place.for_each_wir_expr(|expr| expr_violates(expr, hits));
+                expr_violates(value, hits);
+            }
             WirNode::CallStoreMulti { args, .. } => {
                 for a in args {
                     expr_violates(a, hits);
@@ -1855,8 +1989,18 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                 expr_violates(src, hits);
                 expr_violates(len, hits);
             }
+            WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+                destination.for_each_wir_expr(|expr| expr_violates(expr, hits));
+                source.for_each_wir_expr(|expr| expr_violates(expr, hits));
+                expr_violates(len, hits);
+            }
             WirNode::MemoryFill { dest, value, len } => {
                 expr_violates(dest, hits);
+                expr_violates(value, hits);
+                expr_violates(len, hits);
+            }
+            WirNode::SafeMemoryFill { destination, value, len } => {
+                destination.for_each_wir_expr(|expr| expr_violates(expr, hits));
                 expr_violates(value, hits);
                 expr_violates(len, hits);
             }
@@ -1891,6 +2035,9 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
             | WirExpr::Load { ptr: i, .. }
             | WirExpr::Load8U { ptr: i, .. }
             | WirExpr::MemoryGrow(i) => expr_violates(i, hits),
+            WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+                place.for_each_wir_expr(|expr| expr_violates(expr, hits));
+            }
             WirExpr::Binary { lhs, rhs, .. } => {
                 expr_violates(lhs, hits);
                 expr_violates(rhs, hits);

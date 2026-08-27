@@ -108,7 +108,9 @@ pub fn infer_expr_kind(expr: &WirExpr) -> Kind {
         | WirExpr::Binary { kind, .. }
         | WirExpr::Unary { kind, .. }
         | WirExpr::Convert { to: kind, .. }
-        | WirExpr::Load { kind, .. } => *kind,
+        | WirExpr::Load { kind, .. }
+        | WirExpr::SafeLoad { kind, .. } => *kind,
+        WirExpr::Load8U { .. } | WirExpr::SafeLoad8U { .. } => Kind::I32,
         WirExpr::RefNull(kind) => *kind,
         WirExpr::RefIsNull(_) => Kind::I32,
         WirExpr::StructNew { struct_id, .. }
@@ -429,6 +431,11 @@ fn collect_summaries_node(
             collect_summaries_expr(func, ptr, loop_depth, out);
             collect_summaries_expr(func, value, loop_depth, out);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
+            collect_summaries_expr(func, value, loop_depth, out);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_summaries_expr(func, array, loop_depth, out);
             collect_summaries_expr(func, index, loop_depth, out);
@@ -439,8 +446,20 @@ fn collect_summaries_node(
             collect_summaries_expr(func, src, loop_depth, out);
             collect_summaries_expr(func, len, loop_depth, out);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination
+                .for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
+            source.for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
+            collect_summaries_expr(func, len, loop_depth, out);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             collect_summaries_expr(func, dest, loop_depth, out);
+            collect_summaries_expr(func, value, loop_depth, out);
+            collect_summaries_expr(func, len, loop_depth, out);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination
+                .for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
             collect_summaries_expr(func, value, loop_depth, out);
             collect_summaries_expr(func, len, loop_depth, out);
         }
@@ -476,6 +495,9 @@ fn collect_summaries_expr(
         | WirExpr::RefCastNullable { value: arg, .. }
         | WirExpr::RefIsNull(arg) => {
             collect_summaries_expr(func, arg, loop_depth, out);
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
         }
         WirExpr::ArrayGet { array, index, .. } => {
             collect_summaries_expr(func, array, loop_depth, out);

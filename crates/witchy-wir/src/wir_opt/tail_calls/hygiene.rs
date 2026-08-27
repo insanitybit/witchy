@@ -79,6 +79,11 @@ fn adapt_explicit_returns_node(node: &mut WirNode, kind: Kind) {
             adapt_explicit_returns_expr(ptr, kind);
             adapt_explicit_returns_expr(value, kind);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| adapt_explicit_returns_expr(expr, kind));
+            adapt_explicit_returns_expr(value, kind);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             adapt_explicit_returns_expr(array, kind);
             adapt_explicit_returns_expr(index, kind);
@@ -100,8 +105,18 @@ fn adapt_explicit_returns_node(node: &mut WirNode, kind: Kind) {
             adapt_explicit_returns_expr(src, kind);
             adapt_explicit_returns_expr(len, kind);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| adapt_explicit_returns_expr(expr, kind));
+            source.for_each_wir_expr_mut(|expr| adapt_explicit_returns_expr(expr, kind));
+            adapt_explicit_returns_expr(len, kind);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             adapt_explicit_returns_expr(dest, kind);
+            adapt_explicit_returns_expr(value, kind);
+            adapt_explicit_returns_expr(len, kind);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| adapt_explicit_returns_expr(expr, kind));
             adapt_explicit_returns_expr(value, kind);
             adapt_explicit_returns_expr(len, kind);
         }
@@ -126,6 +141,9 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => adapt_explicit_returns_expr(inner, kind),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| adapt_explicit_returns_expr(inner, kind));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             adapt_explicit_returns_expr(lhs, kind);
             adapt_explicit_returns_expr(rhs, kind);
@@ -210,6 +228,11 @@ pub(in crate::wir_opt) fn rename_node_locals(
             rename_expr_locals(ptr, renames);
             rename_expr_locals(value, renames);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| rename_expr_locals(expr, renames));
+            rename_expr_locals(value, renames);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             rename_expr_locals(array, renames);
             rename_expr_locals(index, renames);
@@ -241,8 +264,18 @@ pub(in crate::wir_opt) fn rename_node_locals(
             rename_expr_locals(src, renames);
             rename_expr_locals(len, renames);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| rename_expr_locals(expr, renames));
+            source.for_each_wir_expr_mut(|expr| rename_expr_locals(expr, renames));
+            rename_expr_locals(len, renames);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             rename_expr_locals(dest, renames);
+            rename_expr_locals(value, renames);
+            rename_expr_locals(len, renames);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| rename_expr_locals(expr, renames));
             rename_expr_locals(value, renames);
             rename_expr_locals(len, renames);
         }
@@ -269,6 +302,9 @@ pub(in crate::wir_opt) fn rename_expr_locals(
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => rename_expr_locals(inner, renames),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| rename_expr_locals(inner, renames));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             rename_expr_locals(lhs, renames);
             rename_expr_locals(rhs, renames);

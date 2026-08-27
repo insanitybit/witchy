@@ -6428,6 +6428,9 @@ fn collect_called_funcs(
             | E::Load { ptr: i, .. }
             | E::Load8U { ptr: i, .. }
             | E::MemoryGrow(i) => expr(i, out, uses_table),
+            E::SafeLoad { place, .. } | E::SafeLoad8U { place } => {
+                place.for_each_wir_expr(|inner| expr(inner, out, uses_table));
+            }
             E::Binary { lhs, rhs, .. } => {
                 expr(lhs, out, uses_table);
                 expr(rhs, out, uses_table);
@@ -6480,6 +6483,10 @@ fn collect_called_funcs(
                 expr(ptr, out, uses_table);
                 expr(value, out, uses_table);
             }
+            N::SafeStore { place, value, .. } | N::SafeStore8 { place, value } => {
+                place.for_each_wir_expr(|inner| expr(inner, out, uses_table));
+                expr(value, out, uses_table);
+            }
             N::CallStoreMulti { func, args, .. } => {
                 out.insert(func.clone());
                 for a in args {
@@ -6498,8 +6505,18 @@ fn collect_called_funcs(
                 expr(src, out, uses_table);
                 expr(len, out, uses_table);
             }
+            N::SafeMemoryCopy { destination, source, len, .. } => {
+                destination.for_each_wir_expr(|inner| expr(inner, out, uses_table));
+                source.for_each_wir_expr(|inner| expr(inner, out, uses_table));
+                expr(len, out, uses_table);
+            }
             N::MemoryFill { dest, value, len } => {
                 expr(dest, out, uses_table);
+                expr(value, out, uses_table);
+                expr(len, out, uses_table);
+            }
+            N::SafeMemoryFill { destination, value, len } => {
+                destination.for_each_wir_expr(|inner| expr(inner, out, uses_table));
                 expr(value, out, uses_table);
                 expr(len, out, uses_table);
             }
@@ -6610,6 +6627,9 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
             | E::Load { ptr: i, .. }
             | E::Load8U { ptr: i, .. }
             | E::MemoryGrow(i) => expr(i, out),
+            E::SafeLoad { place, .. } | E::SafeLoad8U { place } => {
+                place.for_each_wir_expr(|inner| expr(inner, out));
+            }
             E::Binary { lhs, rhs, .. } => {
                 expr(lhs, out);
                 expr(rhs, out);
@@ -6656,6 +6676,10 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
                 expr(ptr, out);
                 expr(value, out);
             }
+            N::SafeStore { place, value, .. } | N::SafeStore8 { place, value } => {
+                place.for_each_wir_expr(|inner| expr(inner, out));
+                expr(value, out);
+            }
             N::CallStoreMulti { args, .. } => {
                 for a in args {
                     expr(a, out);
@@ -6672,8 +6696,18 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
                 expr(src, out);
                 expr(len, out);
             }
+            N::SafeMemoryCopy { destination, source, len, .. } => {
+                destination.for_each_wir_expr(|inner| expr(inner, out));
+                source.for_each_wir_expr(|inner| expr(inner, out));
+                expr(len, out);
+            }
             N::MemoryFill { dest, value, len } => {
                 expr(dest, out);
+                expr(value, out);
+                expr(len, out);
+            }
+            N::SafeMemoryFill { destination, value, len } => {
+                destination.for_each_wir_expr(|inner| expr(inner, out));
                 expr(value, out);
                 expr(len, out);
             }
@@ -6796,6 +6830,9 @@ fn attach_diagnostic_site_expr(
             | E::Load { ptr: inner, .. }
             | E::Load8U { ptr: inner, .. }
             | E::MemoryGrow(inner) => reaches_host |= expr(inner, site),
+            E::SafeLoad { place, .. } | E::SafeLoad8U { place } => {
+                place.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
+            }
             E::Binary { lhs, rhs, .. } => {
                 reaches_host |= expr(lhs, site);
                 reaches_host |= expr(rhs, site);
@@ -6856,6 +6893,10 @@ fn attach_diagnostic_site_expr(
                 reaches_host |= expr(ptr, site);
                 reaches_host |= expr(value, site);
             }
+            N::SafeStore { place, value, .. } | N::SafeStore8 { place, value } => {
+                place.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
+                reaches_host |= expr(value, site);
+            }
             N::CallStoreMulti { func, args, .. } => {
                 for arg in args.iter_mut() {
                     reaches_host |= expr(arg, site);
@@ -6873,8 +6914,20 @@ fn attach_diagnostic_site_expr(
                 reaches_host |= expr(src, site);
                 reaches_host |= expr(len, site);
             }
+            N::SafeMemoryCopy { destination, source, len, .. } => {
+                destination
+                    .for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
+                source.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
+                reaches_host |= expr(len, site);
+            }
             N::MemoryFill { dest, value, len } => {
                 reaches_host |= expr(dest, site);
+                reaches_host |= expr(value, site);
+                reaches_host |= expr(len, site);
+            }
+            N::SafeMemoryFill { destination, value, len } => {
+                destination
+                    .for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
                 reaches_host |= expr(value, site);
                 reaches_host |= expr(len, site);
             }

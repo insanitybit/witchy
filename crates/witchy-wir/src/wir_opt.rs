@@ -122,6 +122,11 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
             simplify_expr(ptr, changed);
             simplify_expr(value, changed);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
+            simplify_expr(value, changed);
+        }
         WirNode::CallStoreMulti { args, .. } => {
             for a in args.iter_mut() {
                 simplify_expr(a, changed);
@@ -138,8 +143,18 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
             simplify_expr(src, changed);
             simplify_expr(len, changed);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
+            source.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
+            simplify_expr(len, changed);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             simplify_expr(dest, changed);
+            simplify_expr(value, changed);
+            simplify_expr(len, changed);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
             simplify_expr(value, changed);
             simplify_expr(len, changed);
         }
@@ -197,6 +212,9 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
         | WirExpr::Convert { arg: inner, .. }
         | WirExpr::Load { ptr: inner, .. }
         | WirExpr::Load8U { ptr: inner, .. } => simplify_expr(inner, changed),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_expr(lhs, changed);
             simplify_expr(rhs, changed);
@@ -321,6 +339,8 @@ pub(crate) fn node_size(node: &WirNode) -> usize {
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
             expr_size(ptr) + expr_size(value)
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => safe_place_expr_size(place) + expr_size(value),
         WirNode::CallStoreMulti { args, .. } => args.iter().map(expr_size).sum(),
         WirNode::CallIndirectStoreMulti { args, index, .. } => {
             args.iter().map(expr_size).sum::<usize>() + expr_size(index)
@@ -328,8 +348,14 @@ pub(crate) fn node_size(node: &WirNode) -> usize {
         WirNode::MemoryCopy { dest, src, len } => {
             expr_size(dest) + expr_size(src) + expr_size(len)
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            safe_place_expr_size(destination) + safe_place_expr_size(source) + expr_size(len)
+        }
         WirNode::MemoryFill { dest, value, len } => {
             expr_size(dest) + expr_size(value) + expr_size(len)
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            safe_place_expr_size(destination) + expr_size(value) + expr_size(len)
         }
         WirNode::If { cond, then_, els, .. } => {
             expr_size(cond) + seq_size(then_) + seq_size(els)
@@ -355,6 +381,9 @@ pub(crate) fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::Convert { arg: inner, .. }
         | WirExpr::Load { ptr: inner, .. }
         | WirExpr::Load8U { ptr: inner, .. } => expr_size(inner),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            safe_place_expr_size(place)
+        }
         WirExpr::Binary { lhs, rhs, .. } => expr_size(lhs) + expr_size(rhs),
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
             args.iter().map(expr_size).sum()
@@ -385,6 +414,12 @@ pub(crate) fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::GetGlobal(_)
         | WirExpr::RefNull(_) => 0,
     }
+}
+
+fn safe_place_expr_size(place: &crate::safewir_surface::SafePlaceExpr) -> usize {
+    let mut size = 0;
+    place.for_each_wir_expr(|expr| size += expr_size(expr));
+    size
 }
 
 #[cfg(test)]

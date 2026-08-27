@@ -185,6 +185,11 @@ fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<TailCall
             collect_explicit_return_calls_expr(ptr, out);
             collect_explicit_return_calls_expr(value, out);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr(|expr| collect_explicit_return_calls_expr(expr, out));
+            collect_explicit_return_calls_expr(value, out);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_explicit_return_calls_expr(array, out);
             collect_explicit_return_calls_expr(index, out);
@@ -206,8 +211,20 @@ fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<TailCall
             collect_explicit_return_calls_expr(src, out);
             collect_explicit_return_calls_expr(len, out);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination
+                .for_each_wir_expr(|expr| collect_explicit_return_calls_expr(expr, out));
+            source.for_each_wir_expr(|expr| collect_explicit_return_calls_expr(expr, out));
+            collect_explicit_return_calls_expr(len, out);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             collect_explicit_return_calls_expr(dest, out);
+            collect_explicit_return_calls_expr(value, out);
+            collect_explicit_return_calls_expr(len, out);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination
+                .for_each_wir_expr(|expr| collect_explicit_return_calls_expr(expr, out));
             collect_explicit_return_calls_expr(value, out);
             collect_explicit_return_calls_expr(len, out);
         }
@@ -226,6 +243,9 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCall
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => collect_explicit_return_calls_expr(inner, out),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr(|inner| collect_explicit_return_calls_expr(inner, out));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_explicit_return_calls_expr(lhs, out);
             collect_explicit_return_calls_expr(rhs, out);

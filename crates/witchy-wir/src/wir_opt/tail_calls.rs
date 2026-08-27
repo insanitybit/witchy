@@ -1596,6 +1596,14 @@ fn rewrite_explicit_returns_node(node: &mut WirNode, ctx: &TailCtx) -> usize {
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
             rewrite_explicit_returns_expr(ptr, ctx) + rewrite_explicit_returns_expr(value, ctx)
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            let mut count = 0;
+            place.for_each_wir_expr_mut(|expr| {
+                count += rewrite_explicit_returns_expr(expr, ctx);
+            });
+            count + rewrite_explicit_returns_expr(value, ctx)
+        }
         WirNode::CallStoreMulti { args, .. } => {
             args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
         }
@@ -1610,8 +1618,27 @@ fn rewrite_explicit_returns_node(node: &mut WirNode, ctx: &TailCtx) -> usize {
                 + rewrite_explicit_returns_expr(src, ctx)
                 + rewrite_explicit_returns_expr(len, ctx)
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            let mut count = 0;
+            destination.for_each_wir_expr_mut(|expr| {
+                count += rewrite_explicit_returns_expr(expr, ctx);
+            });
+            source.for_each_wir_expr_mut(|expr| {
+                count += rewrite_explicit_returns_expr(expr, ctx);
+            });
+            count + rewrite_explicit_returns_expr(len, ctx)
+        }
         WirNode::MemoryFill { dest, value, len } => {
             rewrite_explicit_returns_expr(dest, ctx)
+                + rewrite_explicit_returns_expr(value, ctx)
+                + rewrite_explicit_returns_expr(len, ctx)
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            let mut count = 0;
+            destination.for_each_wir_expr_mut(|expr| {
+                count += rewrite_explicit_returns_expr(expr, ctx);
+            });
+            count
                 + rewrite_explicit_returns_expr(value, ctx)
                 + rewrite_explicit_returns_expr(len, ctx)
         }
@@ -1645,6 +1672,13 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => rewrite_explicit_returns_expr(inner, ctx),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            let mut count = 0;
+            place.for_each_wir_expr_mut(|inner| {
+                count += rewrite_explicit_returns_expr(inner, ctx);
+            });
+            count
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             rewrite_explicit_returns_expr(lhs, ctx) + rewrite_explicit_returns_expr(rhs, ctx)
         }

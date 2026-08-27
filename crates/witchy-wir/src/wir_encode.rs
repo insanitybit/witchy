@@ -165,6 +165,11 @@ impl Preflight<'_> {
                 }
                 self.expr(ptr, locals, labels)?;
             }
+            WirExpr::SafeLoad { .. } | WirExpr::SafeLoad8U { .. } => {
+                return Self::reject(
+                    "semantic SafeWIR memory operations require validated encoder authority",
+                );
+            }
             WirExpr::Load8U { ptr, .. } => self.expr(ptr, locals, labels)?,
             WirExpr::Call { func, args } => {
                 if !self.funcs.contains(func.as_str()) {
@@ -274,6 +279,14 @@ impl Preflight<'_> {
                 }
                 self.expr(ptr, locals, labels)?;
                 self.expr(value, locals, labels)?;
+            }
+            WirNode::SafeStore { .. }
+            | WirNode::SafeMemoryCopy { .. }
+            | WirNode::SafeMemoryFill { .. }
+            | WirNode::SafeStore8 { .. } => {
+                return Self::reject(
+                    "semantic SafeWIR memory operations require validated encoder authority",
+                );
             }
             WirNode::CallStoreMulti { func, args, dests } => {
                 if !self.funcs.contains(func.as_str()) {
@@ -1055,6 +1068,12 @@ impl EncodeCtx<'_> {
                 };
                 func.instruction(&instr);
             }
+            WirNode::SafeStore { .. }
+            | WirNode::SafeMemoryCopy { .. }
+            | WirNode::SafeMemoryFill { .. }
+            | WirNode::SafeStore8 { .. } => {
+                unreachable!("SafeWIR must be erased by the validated encoder boundary")
+            }
             WirNode::CallStoreMulti { func: name, args, dests } => {
                 for a in args {
                     self.encode_expr(func, a);
@@ -1381,6 +1400,9 @@ impl EncodeCtx<'_> {
                     }
                 };
                 func.instruction(&instr);
+            }
+            WirExpr::SafeLoad { .. } | WirExpr::SafeLoad8U { .. } => {
+                unreachable!("SafeWIR must be erased by the validated encoder boundary")
             }
             WirExpr::MemorySize => {
                 func.instruction(&Instruction::MemorySize(0));

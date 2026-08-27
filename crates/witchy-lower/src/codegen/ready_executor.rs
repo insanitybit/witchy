@@ -255,6 +255,9 @@ fn collect_closure_codes_expr(expression: &WirExpr, out: &mut Vec<i32>) {
         | WirExpr::RefIsNull(value) | WirExpr::Load { ptr: value, .. } | WirExpr::Load8U { ptr: value, .. }
         | WirExpr::StructGet { base: value, .. } | WirExpr::RefCast { value, .. }
         | WirExpr::RefCastNullable { value, .. } => collect_closure_codes_expr(value, out),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr(|value| collect_closure_codes_expr(value, out));
+        }
         WirExpr::Binary { lhs, rhs, .. } | WirExpr::ArrayNew { value: lhs, len: rhs, .. }
         | WirExpr::ArrayGet { array: lhs, index: rhs, .. } => {
             collect_closure_codes_expr(lhs, out);
@@ -326,8 +329,34 @@ fn rewrite_call_node(node: &mut WirNode, family: &str, replacement: &str) -> usi
         | WirNode::Br { cond: Some(value), .. } => rewrite_call_expr(value, family, replacement),
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. }
         | WirNode::StructSet { base: ptr, value, .. } => rewrite_call_expr(ptr, family, replacement) + rewrite_call_expr(value, family, replacement),
+        WirNode::SafeStore { place, value, .. } | WirNode::SafeStore8 { place, value } => {
+            let mut rewritten = 0;
+            place.for_each_wir_expr_mut(|expr| {
+                rewritten += rewrite_call_expr(expr, family, replacement);
+            });
+            rewritten + rewrite_call_expr(value, family, replacement)
+        }
         WirNode::MemoryCopy { dest, src, len } | WirNode::MemoryFill { dest, value: src, len }
         | WirNode::ArraySet { array: dest, index: src, value: len, .. } => rewrite_call_expr(dest, family, replacement) + rewrite_call_expr(src, family, replacement) + rewrite_call_expr(len, family, replacement),
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            let mut rewritten = 0;
+            destination.for_each_wir_expr_mut(|expr| {
+                rewritten += rewrite_call_expr(expr, family, replacement);
+            });
+            source.for_each_wir_expr_mut(|expr| {
+                rewritten += rewrite_call_expr(expr, family, replacement);
+            });
+            rewritten + rewrite_call_expr(len, family, replacement)
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            let mut rewritten = 0;
+            destination.for_each_wir_expr_mut(|expr| {
+                rewritten += rewrite_call_expr(expr, family, replacement);
+            });
+            rewritten
+                + rewrite_call_expr(value, family, replacement)
+                + rewrite_call_expr(len, family, replacement)
+        }
         WirNode::CallStoreMulti { args, .. } => args.iter_mut().map(|arg| rewrite_call_expr(arg, family, replacement)).sum(),
         WirNode::CallIndirectStoreMulti { args, index, .. } => args.iter_mut().map(|arg| rewrite_call_expr(arg, family, replacement)).sum::<usize>() + rewrite_call_expr(index, family, replacement),
         _ => 0,
@@ -348,6 +377,13 @@ fn rewrite_call_expr(expression: &mut WirExpr, family: &str, replacement: &str) 
         | WirExpr::RefIsNull(value) | WirExpr::Load { ptr: value, .. } | WirExpr::Load8U { ptr: value, .. }
         | WirExpr::StructGet { base: value, .. } | WirExpr::RefCast { value, .. }
         | WirExpr::RefCastNullable { value, .. } => rewrite_call_expr(value, family, replacement),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            let mut rewritten = 0;
+            place.for_each_wir_expr_mut(|value| {
+                rewritten += rewrite_call_expr(value, family, replacement);
+            });
+            rewritten
+        }
         WirExpr::Binary { lhs, rhs, .. } => rewrite_call_expr(lhs, family, replacement) + rewrite_call_expr(rhs, family, replacement),
         WirExpr::CallHost { args, .. } | WirExpr::StructNew { args, .. } | WirExpr::ArrayNewFixed { items: args, .. }
         | WirExpr::Vector { args, .. } => args.iter_mut().map(|arg| rewrite_call_expr(arg, family, replacement)).sum(),

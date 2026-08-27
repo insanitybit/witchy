@@ -212,6 +212,11 @@ fn simplify_node(node: &mut WirNode, env: &mut HashMap<String, RangeFact>) {
             simplify_expr(ptr, env);
             simplify_expr(value, env);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| simplify_expr(expr, env));
+            simplify_expr(value, env);
+        }
         WirNode::CallStoreMulti { args, .. } => {
             for a in args.iter_mut() {
                 simplify_expr(a, env);
@@ -228,8 +233,18 @@ fn simplify_node(node: &mut WirNode, env: &mut HashMap<String, RangeFact>) {
             simplify_expr(src, env);
             simplify_expr(len, env);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| simplify_expr(expr, env));
+            source.for_each_wir_expr_mut(|expr| simplify_expr(expr, env));
+            simplify_expr(len, env);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             simplify_expr(dest, env);
+            simplify_expr(value, env);
+            simplify_expr(len, env);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| simplify_expr(expr, env));
             simplify_expr(value, env);
             simplify_expr(len, env);
         }
@@ -316,6 +331,9 @@ fn simplify_expr(expr: &mut WirExpr, env: &HashMap<String, RangeFact>) {
         | WirExpr::RefIsNull(inner)
         | WirExpr::RefCast { value: inner, .. }
         | WirExpr::RefCastNullable { value: inner, .. } => simplify_expr(inner, env),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| simplify_expr(inner, env));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_expr(lhs, env);
             simplify_expr(rhs, env);

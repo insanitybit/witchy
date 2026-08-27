@@ -95,6 +95,11 @@ fn collect_assigned_locals_node(node: &WirNode, assigned: &mut HashSet<String>) 
             collect_assigned_locals_expr(ptr, assigned);
             collect_assigned_locals_expr(value, assigned);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr(|expr| collect_assigned_locals_expr(expr, assigned));
+            collect_assigned_locals_expr(value, assigned);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_assigned_locals_expr(array, assigned);
             collect_assigned_locals_expr(index, assigned);
@@ -111,8 +116,18 @@ fn collect_assigned_locals_node(node: &WirNode, assigned: &mut HashSet<String>) 
             collect_assigned_locals_expr(src, assigned);
             collect_assigned_locals_expr(len, assigned);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr(|expr| collect_assigned_locals_expr(expr, assigned));
+            source.for_each_wir_expr(|expr| collect_assigned_locals_expr(expr, assigned));
+            collect_assigned_locals_expr(len, assigned);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             collect_assigned_locals_expr(dest, assigned);
+            collect_assigned_locals_expr(value, assigned);
+            collect_assigned_locals_expr(len, assigned);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr(|expr| collect_assigned_locals_expr(expr, assigned));
             collect_assigned_locals_expr(value, assigned);
             collect_assigned_locals_expr(len, assigned);
         }
@@ -136,6 +151,9 @@ fn collect_assigned_locals_expr(expr: &WirExpr, assigned: &mut HashSet<String>) 
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => collect_assigned_locals_expr(inner, assigned),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr(|inner| collect_assigned_locals_expr(inner, assigned));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_assigned_locals_expr(lhs, assigned);
             collect_assigned_locals_expr(rhs, assigned);
@@ -230,6 +248,11 @@ fn devirt_node(
             devirt_expr(ptr, funcs, closures, changed);
             devirt_expr(value, funcs, closures, changed);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| devirt_expr(expr, funcs, closures, changed));
+            devirt_expr(value, funcs, closures, changed);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             devirt_expr(array, funcs, closures, changed);
             devirt_expr(index, funcs, closures, changed);
@@ -265,8 +288,20 @@ fn devirt_node(
             devirt_expr(src, funcs, closures, changed);
             devirt_expr(len, funcs, closures, changed);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination
+                .for_each_wir_expr_mut(|expr| devirt_expr(expr, funcs, closures, changed));
+            source.for_each_wir_expr_mut(|expr| devirt_expr(expr, funcs, closures, changed));
+            devirt_expr(len, funcs, closures, changed);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             devirt_expr(dest, funcs, closures, changed);
+            devirt_expr(value, funcs, closures, changed);
+            devirt_expr(len, funcs, closures, changed);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination
+                .for_each_wir_expr_mut(|expr| devirt_expr(expr, funcs, closures, changed));
             devirt_expr(value, funcs, closures, changed);
             devirt_expr(len, funcs, closures, changed);
         }
@@ -294,6 +329,9 @@ fn devirt_expr(
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => {
             devirt_expr(inner, funcs, closures, changed);
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| devirt_expr(inner, funcs, closures, changed));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             devirt_expr(lhs, funcs, closures, changed);
@@ -409,6 +447,13 @@ fn inline_in_node(
             inline_in_expr(ptr, inlineable, caller_name, new_locals, changed);
             inline_in_expr(value, inlineable, caller_name, new_locals, changed);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| {
+                inline_in_expr(expr, inlineable, caller_name, new_locals, changed);
+            });
+            inline_in_expr(value, inlineable, caller_name, new_locals, changed);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             inline_in_expr(array, inlineable, caller_name, new_locals, changed);
             inline_in_expr(index, inlineable, caller_name, new_locals, changed);
@@ -419,8 +464,24 @@ fn inline_in_node(
             inline_in_expr(src, inlineable, caller_name, new_locals, changed);
             inline_in_expr(len, inlineable, caller_name, new_locals, changed);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| {
+                inline_in_expr(expr, inlineable, caller_name, new_locals, changed);
+            });
+            source.for_each_wir_expr_mut(|expr| {
+                inline_in_expr(expr, inlineable, caller_name, new_locals, changed);
+            });
+            inline_in_expr(len, inlineable, caller_name, new_locals, changed);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             inline_in_expr(dest, inlineable, caller_name, new_locals, changed);
+            inline_in_expr(value, inlineable, caller_name, new_locals, changed);
+            inline_in_expr(len, inlineable, caller_name, new_locals, changed);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| {
+                inline_in_expr(expr, inlineable, caller_name, new_locals, changed);
+            });
             inline_in_expr(value, inlineable, caller_name, new_locals, changed);
             inline_in_expr(len, inlineable, caller_name, new_locals, changed);
         }
@@ -472,6 +533,12 @@ fn inline_in_expr(
         | WirExpr::RefIsNull(inner) => {
             inline_in_expr(inner, inlineable, caller_name, new_locals, changed);
             simplify_struct_ops(expr);
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| {
+                inline_in_expr(inner, inlineable, caller_name, new_locals, changed);
+                simplify_struct_ops(inner);
+            });
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             inline_in_expr(lhs, inlineable, caller_name, new_locals, changed);
@@ -541,6 +608,9 @@ fn replace_get_locals_expr(expr: &mut WirExpr, args_map: &HashMap<String, WirExp
         | WirExpr::RefIsNull(inner) => {
             replace_get_locals_expr(inner, args_map);
         }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| replace_get_locals_expr(inner, args_map));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             replace_get_locals_expr(lhs, args_map);
             replace_get_locals_expr(rhs, args_map);
@@ -605,10 +675,46 @@ fn replace_get_locals_node(node: &mut WirNode, args_map: &HashMap<String, WirExp
             replace_get_locals_expr(ptr, args_map);
             replace_get_locals_expr(value, args_map);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
+            replace_get_locals_expr(value, args_map);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             replace_get_locals_expr(array, args_map);
             replace_get_locals_expr(index, args_map);
             replace_get_locals_expr(value, args_map);
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            replace_get_locals_expr(dest, args_map);
+            replace_get_locals_expr(src, args_map);
+            replace_get_locals_expr(len, args_map);
+        }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
+            source.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
+            replace_get_locals_expr(len, args_map);
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            replace_get_locals_expr(dest, args_map);
+            replace_get_locals_expr(value, args_map);
+            replace_get_locals_expr(len, args_map);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
+            replace_get_locals_expr(value, args_map);
+            replace_get_locals_expr(len, args_map);
+        }
+        WirNode::CallStoreMulti { args, .. } => {
+            for arg in args {
+                replace_get_locals_expr(arg, args_map);
+            }
+        }
+        WirNode::CallIndirectStoreMulti { args, index, .. } => {
+            for arg in args {
+                replace_get_locals_expr(arg, args_map);
+            }
+            replace_get_locals_expr(index, args_map);
         }
         _ => {}
     }
@@ -649,6 +755,9 @@ pub fn simplify_struct_ops(expr: &mut WirExpr) {
         | WirExpr::Load8U { ptr: arg, .. } => {
             simplify_struct_ops(arg);
         }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(simplify_struct_ops);
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_struct_ops(lhs);
             simplify_struct_ops(rhs);
@@ -678,6 +787,12 @@ fn has_call_seq(seq: &WirSeq) -> bool {
     seq.iter().any(has_call_node)
 }
 
+fn safe_place_has_call(place: &crate::safewir_surface::SafePlaceExpr) -> bool {
+    let mut found = false;
+    place.for_each_wir_expr(|expr| found |= has_call_expr(expr));
+    found
+}
+
 fn has_call_node(node: &WirNode) -> bool {
     match node {
         WirNode::CallStoreMulti { .. } | WirNode::CallIndirectStoreMulti { .. } => true,
@@ -699,14 +814,26 @@ fn has_call_node(node: &WirNode) -> bool {
         | WirNode::StructSet { base: ptr, value, .. } => {
             has_call_expr(ptr) || has_call_expr(value)
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            safe_place_has_call(place) || has_call_expr(value)
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             has_call_expr(array) || has_call_expr(index) || has_call_expr(value)
         }
         WirNode::MemoryCopy { dest, src, len } => {
             has_call_expr(dest) || has_call_expr(src) || has_call_expr(len)
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            safe_place_has_call(destination)
+                || safe_place_has_call(source)
+                || has_call_expr(len)
+        }
         WirNode::MemoryFill { dest, value, len } => {
             has_call_expr(dest) || has_call_expr(value) || has_call_expr(len)
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            safe_place_has_call(destination) || has_call_expr(value) || has_call_expr(len)
         }
         _ => false,
     }
@@ -727,6 +854,9 @@ fn has_call_expr(expr: &WirExpr) -> bool {
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => has_call_expr(inner),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            safe_place_has_call(place)
+        }
         WirExpr::Binary { lhs, rhs, .. } => has_call_expr(lhs) || has_call_expr(rhs),
         WirExpr::ArrayNew { value, len, .. } => has_call_expr(value) || has_call_expr(len),
         WirExpr::ArrayGet { array, index, .. } => has_call_expr(array) || has_call_expr(index),
@@ -750,6 +880,8 @@ fn node_size(node: &WirNode) -> usize {
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
             expr_size(ptr) + expr_size(value)
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => safe_place_size(place) + expr_size(value),
         WirNode::CallStoreMulti { args, .. } => args.iter().map(expr_size).sum(),
         WirNode::CallIndirectStoreMulti { args, index, .. } => {
             args.iter().map(expr_size).sum::<usize>() + expr_size(index)
@@ -757,8 +889,14 @@ fn node_size(node: &WirNode) -> usize {
         WirNode::MemoryCopy { dest, src, len } => {
             expr_size(dest) + expr_size(src) + expr_size(len)
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            safe_place_size(destination) + safe_place_size(source) + expr_size(len)
+        }
         WirNode::MemoryFill { dest, value, len } => {
             expr_size(dest) + expr_size(value) + expr_size(len)
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            safe_place_size(destination) + expr_size(value) + expr_size(len)
         }
         WirNode::If { cond, then_, els, .. } => {
             expr_size(cond) + seq_size(then_) + seq_size(els)
@@ -784,6 +922,7 @@ fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::Convert { arg: inner, .. }
         | WirExpr::Load { ptr: inner, .. }
         | WirExpr::Load8U { ptr: inner, .. } => expr_size(inner),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => safe_place_size(place),
         WirExpr::Binary { lhs, rhs, .. } => expr_size(lhs) + expr_size(rhs),
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
             args.iter().map(expr_size).sum()
@@ -806,6 +945,12 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::Vector { args, .. } => args.iter().map(expr_size).sum(),
         _ => 0,
     }
+}
+
+fn safe_place_size(place: &crate::safewir_surface::SafePlaceExpr) -> usize {
+    let mut size = 0;
+    place.for_each_wir_expr(|expr| size += expr_size(expr));
+    size
 }
 
 fn prune_unused_functions(module: &mut WirModule, changed: &mut bool) {
@@ -867,6 +1012,11 @@ fn collect_calls_node(node: &WirNode, called: &mut HashSet<String>) {
             collect_calls_expr(ptr, called);
             collect_calls_expr(value, called);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr(|expr| collect_calls_expr(expr, called));
+            collect_calls_expr(value, called);
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_calls_expr(array, called);
             collect_calls_expr(index, called);
@@ -877,8 +1027,18 @@ fn collect_calls_node(node: &WirNode, called: &mut HashSet<String>) {
             collect_calls_expr(src, called);
             collect_calls_expr(len, called);
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr(|expr| collect_calls_expr(expr, called));
+            source.for_each_wir_expr(|expr| collect_calls_expr(expr, called));
+            collect_calls_expr(len, called);
+        }
         WirNode::MemoryFill { dest, value, len } => {
             collect_calls_expr(dest, called);
+            collect_calls_expr(value, called);
+            collect_calls_expr(len, called);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr(|expr| collect_calls_expr(expr, called));
             collect_calls_expr(value, called);
             collect_calls_expr(len, called);
         }
@@ -912,6 +1072,9 @@ fn collect_calls_expr(expr: &WirExpr, called: &mut HashSet<String>) {
         | WirExpr::RefCastNullable { value: inner, .. }
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => collect_calls_expr(inner, called),
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr(|inner| collect_calls_expr(inner, called));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_calls_expr(lhs, called);
             collect_calls_expr(rhs, called);

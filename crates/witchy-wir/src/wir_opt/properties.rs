@@ -250,6 +250,14 @@ impl EvaluationProperties {
 }
 
 /// Derive evaluation properties for any WIR expression.
+fn evaluate_safe_place(place: &crate::safewir_surface::SafePlaceExpr) -> EvaluationProperties {
+    let mut properties = EvaluationProperties::pure_total();
+    place.for_each_wir_expr(|expr| {
+        properties = properties.combine(&evaluate_expr(expr));
+    });
+    properties
+}
+
 pub fn evaluate_expr(expr: &WirExpr) -> EvaluationProperties {
     match expr {
         WirExpr::ConstI64(_)
@@ -321,6 +329,16 @@ pub fn evaluate_expr(expr: &WirExpr) -> EvaluationProperties {
         WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => {
             let p = evaluate_expr(ptr);
             p.combine(&EvaluationProperties {
+                host_effect: HostEffect::None,
+                suspension: Suspension::None,
+                memory: MemoryAccess::Read(BTreeSet::from(["$memory".to_string()])),
+                may_trap: true,
+                allocation: AllocationKind::None,
+                total: false,
+            })
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            evaluate_safe_place(place).combine(&EvaluationProperties {
                 host_effect: HostEffect::None,
                 suspension: Suspension::None,
                 memory: MemoryAccess::Read(BTreeSet::from(["$memory".to_string()])),
@@ -525,6 +543,17 @@ pub fn evaluate_node(node: &WirNode) -> EvaluationProperties {
                 total: false,
             })
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => evaluate_safe_place(place)
+            .combine(&evaluate_expr(value))
+            .combine(&EvaluationProperties {
+                host_effect: HostEffect::None,
+                suspension: Suspension::None,
+                memory: MemoryAccess::Write(BTreeSet::from(["$memory".to_string()])),
+                may_trap: true,
+                allocation: AllocationKind::None,
+                total: false,
+            }),
 
         WirNode::CallStoreMulti { args, .. } => {
             let mut prop = EvaluationProperties::pure_total();
@@ -570,6 +599,17 @@ pub fn evaluate_node(node: &WirNode) -> EvaluationProperties {
                 total: false,
             })
         }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => evaluate_safe_place(destination)
+            .combine(&evaluate_safe_place(source))
+            .combine(&evaluate_expr(len))
+            .combine(&EvaluationProperties {
+                host_effect: HostEffect::None,
+                suspension: Suspension::None,
+                memory: MemoryAccess::Write(BTreeSet::from(["$memory".to_string()])),
+                may_trap: true,
+                allocation: AllocationKind::None,
+                total: false,
+            }),
 
         WirNode::MemoryFill { dest, value, len } => {
             let p1 = evaluate_expr(dest);
@@ -584,6 +624,17 @@ pub fn evaluate_node(node: &WirNode) -> EvaluationProperties {
                 total: false,
             })
         }
+        WirNode::SafeMemoryFill { destination, value, len } => evaluate_safe_place(destination)
+            .combine(&evaluate_expr(value))
+            .combine(&evaluate_expr(len))
+            .combine(&EvaluationProperties {
+                host_effect: HostEffect::None,
+                suspension: Suspension::None,
+                memory: MemoryAccess::Write(BTreeSet::from(["$memory".to_string()])),
+                may_trap: true,
+                allocation: AllocationKind::None,
+                total: false,
+            }),
 
         WirNode::If { cond, then_, els, .. } => {
             let p_cond = evaluate_expr(cond);

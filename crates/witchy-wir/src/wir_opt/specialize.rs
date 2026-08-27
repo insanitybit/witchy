@@ -117,9 +117,25 @@ fn specialize_node(
             specialize_expr(ptr, func_map, spec_cache, new_clones, spec_counter);
             specialize_expr(value, func_map, spec_cache, new_clones, spec_counter);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| {
+                specialize_expr(expr, func_map, spec_cache, new_clones, spec_counter);
+            });
+            specialize_expr(value, func_map, spec_cache, new_clones, spec_counter);
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             specialize_expr(dest, func_map, spec_cache, new_clones, spec_counter);
             specialize_expr(src, func_map, spec_cache, new_clones, spec_counter);
+            specialize_expr(len, func_map, spec_cache, new_clones, spec_counter);
+        }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| {
+                specialize_expr(expr, func_map, spec_cache, new_clones, spec_counter);
+            });
+            source.for_each_wir_expr_mut(|expr| {
+                specialize_expr(expr, func_map, spec_cache, new_clones, spec_counter);
+            });
             specialize_expr(len, func_map, spec_cache, new_clones, spec_counter);
         }
         WirNode::MemoryFill { dest, value, len }
@@ -130,6 +146,13 @@ fn specialize_node(
             ..
         } => {
             specialize_expr(dest, func_map, spec_cache, new_clones, spec_counter);
+            specialize_expr(value, func_map, spec_cache, new_clones, spec_counter);
+            specialize_expr(len, func_map, spec_cache, new_clones, spec_counter);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| {
+                specialize_expr(expr, func_map, spec_cache, new_clones, spec_counter);
+            });
             specialize_expr(value, func_map, spec_cache, new_clones, spec_counter);
             specialize_expr(len, func_map, spec_cache, new_clones, spec_counter);
         }
@@ -169,6 +192,11 @@ fn specialize_expr(
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => {
             specialize_expr(inner, func_map, spec_cache, new_clones, spec_counter);
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| {
+                specialize_expr(inner, func_map, spec_cache, new_clones, spec_counter);
+            });
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             specialize_expr(lhs, func_map, spec_cache, new_clones, spec_counter);
@@ -283,9 +311,19 @@ fn replace_params_node(node: &mut WirNode, subst: &HashMap<String, WirExpr>) {
             replace_params_expr(ptr, subst);
             replace_params_expr(value, subst);
         }
+        WirNode::SafeStore { place, value, .. }
+        | WirNode::SafeStore8 { place, value } => {
+            place.for_each_wir_expr_mut(|expr| replace_params_expr(expr, subst));
+            replace_params_expr(value, subst);
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             replace_params_expr(dest, subst);
             replace_params_expr(src, subst);
+            replace_params_expr(len, subst);
+        }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            destination.for_each_wir_expr_mut(|expr| replace_params_expr(expr, subst));
+            source.for_each_wir_expr_mut(|expr| replace_params_expr(expr, subst));
             replace_params_expr(len, subst);
         }
         WirNode::MemoryFill { dest, value, len }
@@ -296,6 +334,11 @@ fn replace_params_node(node: &mut WirNode, subst: &HashMap<String, WirExpr>) {
             ..
         } => {
             replace_params_expr(dest, subst);
+            replace_params_expr(value, subst);
+            replace_params_expr(len, subst);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            destination.for_each_wir_expr_mut(|expr| replace_params_expr(expr, subst));
             replace_params_expr(value, subst);
             replace_params_expr(len, subst);
         }
@@ -334,6 +377,9 @@ fn replace_params_expr(expr: &mut WirExpr, subst: &HashMap<String, WirExpr>) {
         | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => {
             replace_params_expr(inner, subst);
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr_mut(|inner| replace_params_expr(inner, subst));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             replace_params_expr(lhs, subst);
