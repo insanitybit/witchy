@@ -2628,7 +2628,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
 
     # Replay whatever red the previous attempt for this change, first.
-    gate_preflight_expr="$(preflight_expr_for "$change_id" || true)"
+    # Queue-infrastructure tests assert the gate's own stage ordering. Replaying
+    # a stale product-test preflight into that focused shard changes the thing
+    # those fixtures measure; product gates retain the normal failure-first
+    # preflight optimization.
+    if [ "$queue_infra_only" -eq 1 ]; then
+        gate_preflight_expr=""
+    else
+        gate_preflight_expr="$(preflight_expr_for "$change_id" || true)"
+    fi
     [ -n "$gate_preflight_expr" ] && note "preflight: replaying last attempt's failures first"
     note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]); log: $log"
     local gate_started; gate_started="$(date +%s)"
