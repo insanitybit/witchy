@@ -1,0 +1,10 @@
+[package]
+name = "witchy-worker-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Canonical bounded wire protocol for the RFC-0163 compiler worker"
+
+[dependencies]
+sha2 = "0.11.0"
