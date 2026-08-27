@@ -32,3 +32,5 @@ pub mod wir_prelude;
 mod layout_tests;
 #[cfg(test)]
 mod safewir_call_tests;
+#[cfg(test)]
+mod rfc0162_mutation_evidence_tests;
