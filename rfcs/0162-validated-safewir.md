@@ -71,6 +71,50 @@ decides whether its particular output satisfies the required safety policy.
 RFC-0160 is marked `superseded` by this proposal rather than remaining a second
 live proposal for the same decision.
 
+## Relationship to RichWasm
+
+[RichWasm](https://arxiv.org/abs/2401.08287) is the closest prior design, not
+merely an example in the prior-art list. It is a typed compilation target for
+garbage-collected and manually managed languages. Its linear capabilities
+represent unique ownership, unrestricted capabilities represent shared or GC
+ownership, its types constrain allocation size and representation, and its
+ownership facts are erased when compiling to ordinary Wasm. Its core type
+safety is mechanized in Coq.
+
+This RFC adopts a **documented correspondence**, not the RichWasm IR or
+compiler unchanged:
+
+| Concern | RichWasm basis reused by SafeWIR | Witchy-specific extension |
+|---|---|---|
+| Owned and shared storage | Linear versus unrestricted capabilities | RC transitions, borrows, `Consumed`, and conservative retention |
+| Allocation shape | Typed locations, sizes, and capabilities | Canonical `LayoutId`, specialized layouts, and exact `Extent` |
+| Temporal validity | Ownership of allocated locations | `GenerationId` for address reuse and explicit destructive `Reuse` |
+| Access bounds | Typed references and allocation size | RFC-0153 range facts, `CheckedIndex`/`ProvenIndex`, non-wrap, and dominance |
+| Interprocedural use | Typed functions and modules | Checked alias/freshness/consume summaries and host ABI contracts |
+| Assurance point | Type checking a typed target | Independent validation of the final optimizer-produced mutable WIR |
+| Erasure | Rich ownership types lower to core Wasm | Fixed encoder and kernel templates, followed by the explicit Binaryen TCB |
+
+Before the SafeWIR fact model is frozen, implementation must publish a mapping
+from each core ownership, layout, and access judgment to either a RichWasm
+judgment or a named Witchy extension. An unmapped rule is a design gap, not an
+implicit invention. This lets Witchy reuse a proved conceptual foundation
+without pretending that RichWasm already models Witchy's mutable WIR,
+range-fact invalidation, RC reuse, or final-output validation.
+
+The RichWasm theorem also must not be overstated. RichWasm is compiled to core
+Wasm, but its language type-safety proof does not by itself prove Witchy's
+encoder or Binaryen pipeline. The follow-up
+[realizability model for RichWasm ABIs](https://ari.foo/pubs/richwasm-prisc26.pdf)
+is the right model for eventually connecting erased types to Wasm computations,
+but its RichWasm 2.0 compiler-compliance proof is explicitly work in progress.
+It is a strengthening path, not evidence that this RFC's final-Wasm gap is
+already closed.
+
+This RFC makes no research-novelty claim. Its scoped engineering delta is the
+combination of RichWasm-like erased capabilities, mandatory validation of the
+final optimized candidate, and Witchy-specific generation, range, callable,
+layout, and kernel rules.
+
 ## Motivation
 
 ### The source is adversarial compiler input
@@ -279,6 +323,12 @@ BorrowedRead
 BorrowedWrite
 Consumed
 ```
+
+`Unique` corresponds to a linear capability and `Shared` to an unrestricted
+capability in the RichWasm model. `BorrowedRead`, `BorrowedWrite`, `Consumed`,
+and the generation transition on reuse are explicit Witchy extensions. They
+must refine, rather than silently weaken, the corresponding core ownership
+rule.
 
 The minimum provenance lattice is:
 
@@ -525,6 +575,26 @@ fails closed on exhaustion. It produces diagnostics naming the function,
 operation, missing judgment, and responsible optimization when development
 attribution is available. Diagnostic attribution is not trusted for safety.
 
+#### Declarative judgment and checker assurance
+
+The Rust validator is not the sole specification of what it accepts. SafeWIR
+has a normative declarative judgment, versioned with the dialect, that defines
+the local operation obligations, dataflow transfer functions, join rules, and
+fixpoint acceptance condition independently of validator control flow. Every
+implemented check cites a stable rule identifier, and every rule identifier has
+accepted, rejected, and mutation-killing fixtures.
+
+The judgment is deliberately factored into a finite local rule layer and a
+generic dataflow/fixpoint layer so the local core can later be encoded in an
+SMT-checkable form and the implementation proved to refine it. Automated
+verification of the LFI SFI verifier demonstrates the value of this direction,
+but LFI's stateless instruction whitelist is materially smaller than SafeWIR's
+interprocedural ownership and generation analysis. An SMT or proof-assistant
+proof of the validator is therefore a named strengthening milestone, not an
+unpriced acceptance requirement. Mutation testing remains required even after
+such a proof because templates, integration, and the formalization boundary can
+still be wrong.
+
 The validator accepts or rejects; it does not repair candidate WIR. Repairing
 or silently deoptimizing after validation would create a second transformation
 that itself needed validation. A pass that cannot preserve evidence must emit a
@@ -619,6 +689,16 @@ For opaque kernel operations, the comparison includes exact WAT and dynamic
 instruction evidence that encoder expansion preserved the present inlined hot
 paths. Equal call count alone is insufficient: extra loads, stores, branches,
 or lost constant folding fail the gate even when no helper call survives.
+
+Cranelift's symbolic register-allocation checker is a concrete precedent for
+checking the output of a complex producer. Cranelift supports checking every
+allocation but does not enable it by default because of compile-time cost,
+preferring it as a fuzzing oracle. Witchy makes the opposite product decision
+for this narrower security judgment: final SafeWIR validation is mandatory,
+and its wall time, peak memory, fact count, and fallback rate are release
+metrics. If those costs exceed their budget, the remedy is checker engineering
+or independently validating the retained semantic candidate, never skipping
+the check.
 
 ## Testing and adversarial evidence
 
@@ -773,6 +853,8 @@ agreement alone, or a subset of optimizer configurations.
 |---|---|---|
 | Production codegen has one checked source entry | pending | Raw entrypoints are test-only; missing or contradictory source types and layouts reject |
 | SafeWIR represents object identity, layout, extent, provenance, ownership, and generation | pending | Accepted and forged fixtures for every judgment family |
+| RichWasm correspondence is explicit | pending | Every core rule maps to a RichWasm judgment or a reviewed Witchy extension; no implicit semantic delta |
+| The validator has an independent normative judgment | pending | Stable rule IDs cover local, transfer, join, and fixpoint rules; implementation, fixtures, and mutations trace to them |
 | Call results default to possible aliasing | pending | SEC-078 plus direct, indirect, recursive, closure, projection, and imported-call matrices |
 | Final optimized WIR is checked once, fail closed | pending | Private `ValidatedWirModule` constructor and production encoder API test |
 | Optimizer combinations cannot retain stale facts | pending | Reassignment, join, loop, inlining, specialization, and pass-combination negative tests |
@@ -791,6 +873,17 @@ partial implementation.
 
 ## Alternatives
 
+### Use RichWasm unchanged
+
+Rejected. Its linear and unrestricted capabilities are the selected conceptual
+basis for SafeWIR ownership, but adopting the IR unchanged would not validate
+the final output of Witchy's existing mutable optimizer, bind RFC-0153 range
+facts to exact definitions, model generation changes on RC storage reuse, or
+check Witchy's callable and host contracts. RichWasm also identifies borrowing
+as future work. Reusing and documenting its judgments is substantially smaller
+than replacing Witchy's compiler pipeline while preserving the missing
+obligations.
+
 ### Prove every pass correct
 
 Deferred. CompCert and CakeML show that this can provide very strong guarantees,
@@ -803,7 +896,11 @@ replaceable optimization algorithms.
 Deferred. Alive2-style equivalence checking is valuable for semantic
 miscompilation but is bounded, incomplete, and substantially broader than the
 object-memory-safety property. SafeWIR validation checks a smaller closed
-judgment; differential tests remain the semantic oracle.
+judgment; differential tests remain the semantic oracle. Recent end-to-end
+translation validation handles dynamic local allocation, loops, and vectorized
+code, but its reported experiments remain procedure-scale (100+ source lines
+and 200+ assembly instructions). That is evidence that the broader direction is
+feasible, not that it is the minimal foundation Witchy should require now.
 
 ### Validate every optimization pass in production
 
@@ -842,6 +939,12 @@ and explicit Binaryen TCB are the selected minimum.
 Rejected for this RFC. MSWasm-style runtime enforcement, shadow memory,
 fat pointers, generation tags, and dynamic ownership checks would strengthen
 the executed representation but violate the zero-runtime-cost requirement.
+The measured design space is wide: AEGIS reports 67% runtime overhead versus
+native on PolyBenchC for its MSWasm-to-Checked-C pipeline, while hardware-bound
+Cage reports less than 5.8% using Arm MTE and PAC with 64-bit Wasm. Neither is a
+Witchy cost estimate, but both confirm that runtime enforcement is a different
+contract. Cage is a plausible hardware-specific fallback if static assurance
+later proves insufficient; it is not the selected portable, zero-cost design.
 
 ### Move every object to Wasm GC
 
@@ -876,6 +979,17 @@ forms rather than trade away Witchy's performance model.
 
 ## Prior art
 
+- **RichWasm:** the closest typed-target foundation. Linear and unrestricted
+  capabilities support manually managed and GC storage; types constrain
+  representation and ownership; the facts erase when compiling to core Wasm;
+  and the RichWasm language type-safety theorem is mechanized in Coq. The
+  relationship section states exactly what Witchy reuses and extends.
+  <https://arxiv.org/abs/2401.08287>
+- **RichWasm ABIs via realizability:** a realizability interpretation indexed
+  by RichWasm types and inhabited by Wasm computations is the most direct path
+  toward closing the erased-type/encoder gap. Its compiler-compliance proof is
+  still in progress, so this RFC treats it as a strengthening path.
+  <https://ari.foo/pubs/richwasm-prisc26.pdf>
 - **PNaCl and Native Client:** a restricted portable IR was checked by an ABI
   verifier described as the source of truth, and final native code was checked
   against an SFI policy before execution. The transferable lesson is to validate
@@ -887,18 +1001,58 @@ forms rather than trade away Witchy's performance model.
 - **CompCert validation a posteriori:** complicated allocation algorithms may
   remain unverified while a smaller checker validates each produced result.
   <https://radar.inria.fr/report/2013/gallium/uid33.html>
+- **Cranelift register-allocation checking:** an independent symbolic checker
+  validates the output of a complex allocator with dataflow reasoning. The
+  supported check-every-compilation mode is not default because of compile-time
+  overhead; fuzzing with the checker is the usual deployment. SafeWIR adopts
+  the checker pattern but mandates it for the narrower security property.
+  <https://cfallin.org/blog/2021/03/15/cranelift-isel-3/>
 - **RockSalt:** a small, declaratively generated, mechanically justified NaCl
   checker reduced the validator trusted computing base and demonstrated that
   apparently simple safety validators still deserve exceptional scrutiny.
   <https://www.cs.cmu.edu/~15811/papers/rocksalt.pdf>
+- **Automated verification of LFI:** an SMT-backed proof checks that accepted
+  machine programs remain inside the SFI region, showing that the verifier
+  itself need not remain permanently trusted only by testing. SafeWIR keeps an
+  SMT-checkable/refinement proof as a strengthening milestone while recognizing
+  that its stateful interprocedural judgment is larger.
+  <https://arxiv.org/abs/2508.15898>
 - **MSWasm:** object provenance, spatial bounds, and temporal identity can form
   a low-level robust memory-safety type system. SafeWIR borrows the static
   abstraction but erases it rather than adding runtime enforcement.
   <https://www.microsoft.com/en-us/research/publication/mswasm-soundly-enforcing-memory-safe-execution-of-unsafe-code/>
+- **AEGIS and Cage:** modern runtime-enforcement implementations quantify the
+  alternative this RFC rejects: 67% overhead versus native for AEGIS's
+  software pipeline and less than 5.8% for Cage with Arm memory tagging and
+  pointer authentication.
+  <https://arxiv.org/abs/2503.03698>
+  <https://arxiv.org/abs/2408.11456>
+- **Place Capability Graphs:** ownership facts extracted from a type checker
+  can become a reusable downstream-analysis model rather than remaining
+  implicit compiler state. SafeWIR's callable and provenance facts serve the
+  analogous role for final WIR, without adopting Rust's borrow model wholesale.
+  <https://arxiv.org/abs/2503.21691>
+- **Tree Borrows:** provenance-as-permission needs an explicit model when
+  optimizations rely on aliasing, and such a model can be evaluated against
+  real programs and mechanically checked against optimization rules. SafeWIR
+  uses a smaller object/generation judgment rather than importing Rust's unsafe
+  code semantics.
+  <https://iris-project.org/pdfs/2025-pldi-treeborrows.pdf>
+- **Frame-limited reuse:** Perceus/Koka work formalizes sound drop-guided
+  in-place reuse under reference-counted semantics. It supports treating reuse
+  as an explicit ownership transition; SafeWIR additionally validates temporal
+  generations after optimizer composition.
+  <https://www.microsoft.com/en-us/research/wp-content/uploads/2023/07/flreuse.pdf>
 - **Alive2:** bounded translation validation demonstrates the value of checking
   optimization results independently, while its broader equivalence goal is
   intentionally outside this RFC's minimum.
   <https://web.ist.utl.pt/nuno.lopes/pubs.php?id=alive2-pldi21>
+- **Dynamic-allocation translation validation:** soundly reduces refinement
+  with address-observable local allocation to solver queries and demonstrates
+  the approach on optimized, procedure-scale C-to-assembly examples. It
+  supports the feasibility of a future broader validator without making that
+  work a prerequisite here.
+  <https://arxiv.org/abs/2403.05302>
 - **Csmith and Binaryen fuzzing:** randomized, differential execution finds
   optimizer bugs missed by conventional suites and remains necessary evidence
   around a typed foundation.
