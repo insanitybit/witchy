@@ -1616,3 +1616,33 @@ fn doctor_names_the_branch_and_says_when_one_is_blocked() {
         "doctor still prints raw queue filenames:\n{out}"
     );
 }
+
+/// The sweep is otherwise opportunistic -- it runs after a merge -- so a
+/// worktree whose coordinator died before sweeping, or whose merge predates the
+/// current coordinator, is orphaned forever. Measured 2026-08-27:
+/// .claude/worktrees had reached 518 GB on a volume 88% full, with 18
+/// landed+clean worktrees idle for 2-9 days. A full disk fails builds in ways
+/// indistinguishable from a flaky gate, so catch-up is a reliability fix.
+#[test]
+fn the_coordinator_sweeps_landed_worktrees_at_startup() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(&["run", "--once"], "true");
+    assert!(
+        fixture.journal().iter().any(|e| e["event"] == "merged"),
+        "fixture branch should have merged"
+    );
+
+    // A second coordinator start must sweep even with nothing newly merged:
+    // the catch-up pass is what reclaims history.
+    let out = fixture.mq(&["run", "--once"], "true");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("sweep:"),
+        "coordinator startup did not run a catch-up sweep:\n{combined}"
+    );
+}

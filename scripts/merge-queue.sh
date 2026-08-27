@@ -2981,6 +2981,24 @@ cmd_run() {
         eval "exec ${ready_fd}>&-"
         unset MERGE_QUEUE_DAEMON_READY_FD
     fi
+    # Disk: reclaim worktrees this queue landed but never swept.
+    #
+    # The sweep is otherwise OPPORTUNISTIC -- it runs after a merge -- so any
+    # worktree whose coordinator died before sweeping, or whose merge predates
+    # this coordinator, is orphaned forever. Nothing ever catches up. Measured
+    # 2026-08-27: .claude/worktrees had grown to 518 GB on a volume that was
+    # 88% full, and 18 landed+clean worktrees had been sitting for 2-9 days. A
+    # full disk fails builds in ways that look exactly like a flaky gate, so
+    # this is a gate-reliability fix as much as a housekeeping one.
+    #
+    # cmd_sweep is already conservative -- journal-confirmed merged, clean tree,
+    # nothing beyond master by patch id, and `git worktree remove` without
+    # --force so git refuses anything surprising -- so running it on a timer
+    # adds no new risk, only coverage.
+    cmd_sweep || true
+    local sweep_interval="${MERGE_QUEUE_SWEEP_INTERVAL:-1800}"
+    local last_sweep; last_sweep="$(date +%s)"
+
     # Consecutive dirty-checkout deferrals, driving the backoff below.
     local deferrals=0
     # RFC-0159 F. Coordinator uptime is the largest single latency contributor
@@ -2991,6 +3009,11 @@ cmd_run() {
     local heartbeat_interval="${MERGE_QUEUE_HEARTBEAT_INTERVAL:-300}"
     local last_heartbeat=0
     while :; do
+        local sweep_now; sweep_now="$(date +%s)"
+        if [ "$((sweep_now - last_sweep))" -ge "$sweep_interval" ]; then
+            last_sweep="$sweep_now"
+            cmd_sweep || true
+        fi
         local heartbeat_now; heartbeat_now="$(date +%s)"
         if [ "$((heartbeat_now - last_heartbeat))" -ge "$heartbeat_interval" ]; then
             last_heartbeat="$heartbeat_now"
