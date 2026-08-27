@@ -1635,6 +1635,8 @@ fn the_coordinator_sweeps_landed_worktrees_at_startup() {
 
     // A second coordinator start must sweep even with nothing newly merged:
     // the catch-up pass is what reclaims history.
+    // A second coordinator start must sweep even with nothing newly merged:
+    // the catch-up pass is what reclaims history.
     let out = fixture.mq(&["run", "--once"], "true");
     let combined = format!(
         "{}{}",
@@ -1644,5 +1646,45 @@ fn the_coordinator_sweeps_landed_worktrees_at_startup() {
     assert!(
         combined.contains("sweep:"),
         "coordinator startup did not run a catch-up sweep:\n{combined}"
+    );
+}
+
+/// A branch that keeps failing the same test used to pay full test-execution
+/// cost on every attempt to rediscover it -- RFC-0158 did that eight times,
+/// with the whole serialized queue stuck behind it. Retries do not get cheaper
+/// either: measured over 173 paired attempts, TRY2/TRY1 duration is p50 1.00.
+///
+/// So a red must leave behind the tests that failed, and the next attempt must
+/// replay them first.
+#[test]
+fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    // A gate that emits a nextest-shaped FAIL line and fails.
+    let gate = "printf '   FAIL [   1.0s] ( 1/10) witchy::misc some_module::the_broken_test\\n'; exit 1";
+    fixture.mq_ok(&["submit", "a"], gate);
+    let out = fixture.mq(&["run", "--once"], gate);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        fixture.journal().iter().any(|e| e["event"] == "red"),
+        "expected a red:\n{combined}"
+    );
+
+    let recorded = fs::read_dir(fixture.state.join("changes"))
+        .expect("read changes")
+        .filter_map(Result::ok)
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .find(|s| s.contains("preflight"))
+        .expect("a change recorded a preflight expression");
+    assert!(
+        recorded.contains("the_broken_test"),
+        "preflight did not name the failing test: {recorded}"
+    );
+    assert!(
+        recorded.contains("test(/^"),
+        "preflight is not a nextest filter expression: {recorded}"
     );
 }

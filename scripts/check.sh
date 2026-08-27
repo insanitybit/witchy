@@ -455,11 +455,30 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}")
     fi
+    # RFC-0159 follow-up: replay the tests that red the PREVIOUS attempt for this
+    # change, before the full suite.
+    #
+    # The coordinator re-runs the whole suite on every retry, so a branch that
+    # keeps failing the same test pays full test-execution cost to rediscover
+    # it -- RFC-0158 did that eight times. Retries do not get cheaper either:
+    # measured over 173 paired attempts, TRY2/TRY1 duration is p50 1.00.
+    #
+    # This runs INSIDE the tests stage, after the build, so it costs only the
+    # named tests rather than a second compile. It can only FAIL a gate early;
+    # passing it proceeds to the full suite, so nothing is adjudicated by the
+    # preflight alone and the merge guarantee is unchanged.
+    preflight_cmd=()
+    if [ -n "${WITCHY_GATE_PREFLIGHT_EXPR:-}" ]; then
+        preflight_cmd=(cargo nextest run --max-fail=1:immediate \
+            "${nextest_sel[@]}" -E "${WITCHY_GATE_PREFLIGHT_EXPR}")
+    fi
+
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
     # retaining an operator override for repeated reliability measurements.
     queue_infra_cmd=(cargo nextest run --test merge_queue -j "$queue_infra_jobs")
 else
+    preflight_cmd=()
     # Plain cargo test runs integration binaries sequentially, so the queue
     # fixture is already isolated from other binaries in this fallback mode.
     test_cmd=(cargo test --workspace)
@@ -1015,6 +1034,9 @@ if [ "$fast" -eq 1 ]; then
     if git diff --name-only HEAD 2>/dev/null | grep -qE '\.(md|witchy)$'; then
         run "prose style (no em dashes)" prose_em_dash_check
     fi
+    if [ "${#preflight_cmd[@]}" -gt 0 ]; then
+        run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
+    fi
     run_watched "tests (workspace, minus e2e)" "${test_cmd[@]}"
     collect_bg "clippy (bug lints)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
@@ -1067,6 +1089,9 @@ else
     wasm_pid=$!
 fi
 
+if [ "${#preflight_cmd[@]}" -gt 0 ]; then
+    run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
+fi
 run_watched "tests (workspace)"        "${test_cmd[@]}"
 if [ "$gate_skip_fmt" -eq 1 ]; then
     printf 'check.sh: skipping witchy fmt (WITCHY_GATE_SKIP_FMT=1; --full/CI still run it)\n'

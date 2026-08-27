@@ -148,6 +148,7 @@ mkdir -p "$queue_dir" "$changes_dir" "$logs"
 # integration tip lands. Coalesce their worktree reclamation into one sweep.
 deferred_sweep=0
 active_gate_pgid=""
+gate_preflight_expr=""
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
@@ -305,6 +306,51 @@ flaky_tests() { # flaky_tests <log> -- the names, for triage
     local log="$1" plain
     plain="$(strip_ansi <"$log" 2>/dev/null)" || return 0
     echo "$plain" | grep -E '^ *FLAKY \[' | sed 's/^ *//' | cut -c1-300 | tr '\n' ';'
+}
+
+# The tests that failed or were killed in a gate log, as a nextest filter
+# expression. Bounded to 8 so a broadly-broken branch cannot build a filter
+# longer than the suite it replaces.
+failing_test_expr() { # failing_test_expr <log>
+    local log="$1" names
+    names="$(strip_ansi <"$log" 2>/dev/null \
+        | grep -aE '^\s*(TRY [0-9]+ )?(FAIL|TIMEOUT|TMT) \[' \
+        | sed -E 's/.*\) +[^ ]+ +([A-Za-z0-9_:]+).*/\1/' \
+        | grep -aE '^[A-Za-z0-9_:]+$' | sort -u | head -8)"
+    [ -n "$names" ] || return 0
+    local expr="" n
+    while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        expr="${expr:+$expr or }test(/^${n}$/)"
+    done <<EOF
+$names
+EOF
+    printf '%s' "$expr"
+}
+
+# Remember them on the change so the NEXT attempt replays them first.
+remember_preflight() { # remember_preflight <change-id> <expr>
+    local id="$1" expr="$2" cf tmp
+    [ -n "$id" ] && [ -n "$expr" ] || return 0
+    acquire_change_lock
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        jq -e --arg id "$id" 'select(.change_id==$id)' "$cf" >/dev/null 2>&1 || continue
+        tmp="$cf.tmp.$$"
+        jq --arg e "$expr" '.preflight=$e' "$cf" >"$tmp" && mv "$tmp" "$cf"
+        break
+    done
+    release_change_lock
+}
+
+preflight_expr_for() { # preflight_expr_for <change-id>
+    local id="$1" cf
+    [ -n "$id" ] || return 0
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        jq -er --arg id "$id" 'select(.change_id==$id) | .preflight // empty' "$cf" 2>/dev/null && return 0
+    done
+    return 0
 }
 
 record() { # record <event> <branch> [key value]...
@@ -1115,7 +1161,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1970,6 +2016,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
     gate_load_start=""
     gate_load_end=""
+    gate_preflight_expr=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
     change_id="$(jq -r '.change_id // empty' "$f")"
@@ -2504,6 +2551,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
+    # Replay whatever red the previous attempt for this change, first.
+    gate_preflight_expr="$(preflight_expr_for "$change_id" || true)"
+    [ -n "$gate_preflight_expr" ] && note "preflight: replaying last attempt's failures first"
     note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]); log: $log"
     local gate_started; gate_started="$(date +%s)"
     gate_load_start="$(load1)"
@@ -2524,6 +2574,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             release_lock
             local why="red" extra=""
             [ "$gate_result" != "red" ] && { why="timeout"; extra="${gate_result#timeout: }"; }
+            # So the next attempt for this change does not pay full test
+            # execution to rediscover the same failures.
+            remember_preflight "$change_id" "$(failing_test_expr "$log" || true)"
             if [ "${#batch_branches[@]}" -gt 1 ]; then
                 # A red batch indicts no one member. Keep every queue file;
                 # ordered dependency stacks bisect by prefix, while unrelated
