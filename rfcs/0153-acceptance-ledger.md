@@ -168,6 +168,42 @@ makes those fact producers a no-op unless `bounds-elide` is enabled; the exact
 candidate rerun then passed in 52.34 seconds. This establishes the repair's
 fully-deoptimized behavior, but does not replace required queue evidence.
 
+### Fresh paired-cursor promotion checkpoint (2026-08-27)
+
+`f399047d53c20c0fae1bdd62a874df8599b242b9` landed the sound fresh-sequence
+recovery through `mq-d0193312895175585a2b509c7050b9047e51a791` (terminal
+`merged`, gate 132 seconds). It restores only independently stable paired
+cursors; the previously merged boundary and real-consumer proof rows remain
+its dependencies.
+
+The matched mechanism artifact `/tmp/rfc0153-fannkuch-f399047d5` compares the
+exact `90725c953` control binary
+(`sha256:bd8c6b55d383ac0d30281119cea7a7a30c6dab77d3162fcbe5859c5218f0faa4`)
+with f399's release binary
+(`sha256:7f30a143a7d79c79e9484f3dc7daadab5ce433692a2a15e607d8a3ba618c02e2`).
+It has two warmups, twelve counterbalanced pairs, matching result hashes, and
+three byte-identical counter payloads. Fannkuch's kernel median falls from
+402.203 ms to 273.728 ms (0.6806x): checked indexed loads fall from
+57,996,463 to zero and cursorized accesses rise from 222,351,907 to
+338,344,833. This is a material RFC-0153-owned recovery.
+
+The complete promotion artifact `/tmp/rfc0153-f399-full/results-full.json`
+(`sha256:07ed799b709f7e989590989ba650f446aad21d2785511cc812edad65a8e5eb7a`)
+contains matching output hashes for all 21 workloads, two warmups, and twelve
+counterbalanced Witchy/Go kernel pairs plus wall samples. Its kernel medians
+are:
+
+| Target | Witchy | Go | Ratio to Go | 95% paired interval | Status |
+|---|---:|---:|---:|---:|---|
+| `collatz` | 263.685 ms | 173.791 ms | 1.517x | 1.414x..1.609x | transferred to RFC-0146 Track 5 |
+| `nsieve` | 4.977 ms | 3.748 ms | 1.328x | 1.266x..1.603x | transferred to RFC-0146 Track 6 |
+| `fannkuch` | 190.506 ms | 166.345 ms | 1.145x | 1.118x..1.220x | retained; criterion 5 remains open |
+| `list_index` | 2.757 ms | 2.767 ms | 0.996x | 0.911x..1.046x | meets the point-estimate Go target |
+
+This checkpoint replaces neither the required four non-benchmark 10-percent
+promotion rows nor the remaining fannkuch Go-parity requirement. Track 6E is
+therefore still open.
+
 The current local fast artifact is
 `benchmarks/.build/results-fast.json`
 (`sha256:044023a887764d65c6cbc261432dc61ca896f03a92538b7330337ffef8214ae9`).
