@@ -145,6 +145,25 @@ pub struct SourceAsyncControlFlow {
     pub operations: Vec<SourceAsyncOperation>,
 }
 
+impl SourceAsyncControlFlow {
+    /// Return the distinct lexical bindings read by `expression`, in source
+    /// evaluation order. This is the sole source-side operation-to-binding
+    /// query; consumers never reconstruct the relation from variable names.
+    pub fn bindings_read_by(&self, expression: SourceExpressionId) -> Result<Vec<SourceBindingId>, String> {
+        let span = self.expression_spans.iter().find(|span| span.root == expression)
+            .ok_or_else(|| format!("source expression {:?} has no lexical span", expression))?;
+        let mut bindings = Vec::new();
+        for use_site in self.binding_uses.iter().filter(|use_site| {
+            use_site.expression.0 >= span.root.0 && use_site.expression.0 < span.end.0
+        }) {
+            if !bindings.contains(&use_site.binding) {
+                bindings.push(use_site.binding);
+            }
+        }
+        Ok(bindings)
+    }
+}
+
 /// Complete source control-flow inventory retained at the checked boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceAsyncControlFlowInventory {

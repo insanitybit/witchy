@@ -356,18 +356,10 @@ impl TypedAsyncLoweringInput {
                         operation.ordinal,
                     ));
                 }
-                let mut operand_bindings = Vec::new();
-                if let Some(expression) = operation.expression
-                    && let Some(span) = flow.expression_spans.iter().find(|span| span.root == expression)
-                {
-                    for use_site in flow.binding_uses.iter().filter(|use_site| {
-                        use_site.expression.0 >= span.root.0 && use_site.expression.0 < span.end.0
-                    }) {
-                        if !operand_bindings.contains(&use_site.binding) {
-                            operand_bindings.push(use_site.binding);
-                        }
-                    }
-                }
+                let operand_bindings = operation.expression
+                    .map(|expression| flow.bindings_read_by(expression))
+                    .transpose()?
+                    .unwrap_or_default();
                 operations.push(TypedAsyncSourceOperationBinding {
                     callable: flow.callable.clone(),
                     source_operation: operation.ordinal,
