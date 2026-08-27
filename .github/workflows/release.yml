@@ -322,7 +322,7 @@ jobs:
       - name: Differentially execute the row-13 production Binaryen corpus
         env:
           WITCHY_REQUIRE_PINNED_BINARYEN: "1"
-        run: cargo test --locked --test binaryen_production_differential -- --ignored --nocapture
+        run: cargo test --locked --test misc binaryen_production_differential::exact_pre_post_production_pipeline_corpus -- --exact --nocapture
       - name: Build exact release binary
         run: |
           env -u WITCHY_PINNED_WASM_OPT_PATH \

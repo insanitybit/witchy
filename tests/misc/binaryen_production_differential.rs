@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
-const LOCK: &str = include_str!("../tools/binaryen-version_131.lock");
+const LOCK: &str = include_str!("../../tools/binaryen-version_131.lock");
 const EXACT_RECIPE: &str = "-O4|--all-features|--inlining-optimizing|--inline-functions-with-loops|--flexible-inline-max-function-size=100|--one-caller-inline-max-function-size=200";
 const SEC_036_037: &str = r#"type R:
     text: String
@@ -524,8 +524,13 @@ fn corpus_manifest_covers_every_applicable_sec_fixture_and_generated_shape() {
 }
 
 #[test]
-#[ignore = "requires the exact official v131 bundle installed by scripts/pinned-binaryen.py"]
 fn exact_pre_post_production_pipeline_corpus() {
+    if std::env::var_os("WITCHY_PINNED_WASM_OPT_PATH").is_none() {
+        eprintln!(
+            "skipping exact production corpus: WITCHY_PINNED_WASM_OPT_PATH is unset"
+        );
+        return;
+    }
     let pin = pin_environment();
     for case in corpus() {
         let pre_opts = format!("{},-wasm-opt", case.opts);

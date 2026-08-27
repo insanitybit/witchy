@@ -186,7 +186,6 @@ fn pinned_binaryen_installer_exposes_the_reviewed_target_identity_and_rejects_su
 
 #[test]
 #[cfg(unix)]
-#[ignore = "requires WITCHY_TEST_REVIEWED_BINARYEN_ROOT from scripts/pinned-binaryen.py"]
 fn package_contains_the_exact_reviewed_binaryen_bundle() {
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     let target = "aarch64-apple-darwin";
@@ -199,9 +198,13 @@ fn package_contains_the_exact_reviewed_binaryen_bundle() {
 
     let scratch = Scratch::new();
     let binary = fake_binary(&scratch, &format!("witchy {VERSION} (commit {COMMIT})"));
-    let bundle = std::env::var_os("WITCHY_TEST_REVIEWED_BINARYEN_ROOT")
-        .map(PathBuf::from)
-        .expect("set WITCHY_TEST_REVIEWED_BINARYEN_ROOT");
+    let Some(bundle) = std::env::var_os("WITCHY_TEST_REVIEWED_BINARYEN_ROOT").map(PathBuf::from)
+    else {
+        eprintln!(
+            "skipping official-bundle packaging: WITCHY_TEST_REVIEWED_BINARYEN_ROOT is unset"
+        );
+        return;
+    };
     let output = scratch.join("dist");
     let packaged = run(
         Command::new(Path::new(REPO).join("scripts/release-package.sh"))

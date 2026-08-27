@@ -19,6 +19,8 @@ mod http_url_fallible;
 mod list_filter_method;
 #[path = "misc/region_copyout.rs"]
 mod region_copyout;
+#[path = "misc/binaryen_production_differential.rs"]
+mod binaryen_production_differential;
 #[path = "misc/release_packaging.rs"]
 mod release_packaging;
 #[path = "misc/rendering_protocol.rs"]
