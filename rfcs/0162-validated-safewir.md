@@ -1,5 +1,5 @@
 ---
-rfc: 0161
+rfc: 0162
 title: "Validated SafeWIR for zero-cost object-memory safety"
 status: proposed
 created: 2026-08-26
@@ -13,7 +13,7 @@ related:
 tracking: "Proposal. If accepted, this RFC supersedes RFC-0160's broader proof-producing encoder and final-byte witness design."
 ---
 
-# RFC-0161: Validated SafeWIR for zero-cost object-memory safety
+# RFC-0162: Validated SafeWIR for zero-cost object-memory safety
 
 ## Summary
 
