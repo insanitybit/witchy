@@ -3108,7 +3108,11 @@ cmd_run() {
     # nothing beyond master by patch id, and `git worktree remove` without
     # --force so git refuses anything surprising -- so running it on a timer
     # adds no new risk, only coverage.
-    cmd_sweep || true
+    if [ "${MERGE_QUEUE_SKIP_STARTUP_SWEEP:-0}" != "1" ]; then
+        cmd_sweep || true
+    else
+        note "startup sweep deferred by MERGE_QUEUE_SKIP_STARTUP_SWEEP=1"
+    fi
     local sweep_interval="${MERGE_QUEUE_SWEEP_INTERVAL:-1800}"
     local last_sweep; last_sweep="$(date +%s)"
 
