@@ -44,6 +44,12 @@ pub const FRAME_STATE_ATTRIBUTE_PREFIX: &str = "__compiler_suspension_state=";
 /// before or after its task expression in source order.
 pub const ASYNC_REGION_ATTRIBUTE_PREFIX: &str = "__compiler_async_region=";
 
+/// Identity of the source suspension whose successful completion enters a
+/// generated continuation state. It is per source callable and assigned in
+/// lexical order before continuation lowering recurses, so it remains stable
+/// even when the CPS transform emits later continuations first.
+pub const SOURCE_SUSPENSION_ATTRIBUTE_PREFIX: &str = "__compiler_source_suspension=";
+
 /// Source-item identity retained across async CPS lowering. This is compiler
 /// metadata only; final execution IDs are assigned after typed layout.
 pub const ASYNC_SURFACE_ATTRIBUTE_PREFIX: &str = "__compiler_async_surface=";
@@ -104,6 +110,20 @@ pub fn async_region(function: &Function) -> Option<usize> {
         attribute
             .strip_prefix(ASYNC_REGION_ATTRIBUTE_PREFIX)
             .and_then(|region| region.parse().ok())
+    })
+}
+
+pub fn source_suspension_attribute(suspension: u32) -> String {
+    format!("{SOURCE_SUSPENSION_ATTRIBUTE_PREFIX}{suspension}")
+}
+
+/// Recover the source suspension that enters this continuation. Entries and
+/// compiler-formed loop joins intentionally have no such identity.
+pub fn source_suspension(function: &Function) -> Option<u32> {
+    function.attributes.iter().find_map(|attribute| {
+        attribute
+            .strip_prefix(SOURCE_SUSPENSION_ATTRIBUTE_PREFIX)
+            .and_then(|suspension| suspension.parse().ok())
     })
 }
 

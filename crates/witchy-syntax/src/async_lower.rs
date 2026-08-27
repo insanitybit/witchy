@@ -599,6 +599,7 @@ struct Ctx<'a> {
     fname: String,
     counter: &'a mut usize,
     state_counter: &'a mut usize,
+    source_suspension_counter: u32,
     segments: Vec<Function>,
     view_fns: &'a HashSet<String>,
     borrowed_shells: &'a BorrowedShellCatalog,
@@ -625,6 +626,18 @@ impl<'a> Ctx<'a> {
         let n = *self.counter;
         *self.counter += 1;
         format!("__await{n}")
+    }
+
+    /// Reserve this identity before lowering the continuation. `go` recursively
+    /// forms later segments first, so assigning it in `lift_suspend` would make
+    /// final-state metadata run in reverse source order.
+    fn fresh_source_suspension(&mut self) -> Result<u32, String> {
+        let suspension = self.source_suspension_counter;
+        self.source_suspension_counter = self
+            .source_suspension_counter
+            .checked_add(1)
+            .ok_or_else(|| self.err("source suspension count exceeds u32"))?;
+        Ok(suspension)
     }
 
     fn frame_attributes(&mut self) -> Vec<String> {
@@ -932,6 +945,7 @@ impl<'a> Ctx<'a> {
             cont_block,
             cont.scope,
             cont.line,
+            None,
         )
     }
 
@@ -1056,6 +1070,7 @@ impl<'a> Ctx<'a> {
         bind: Option<Local>,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
+        let source_suspension = self.fresh_source_suspension()?;
         // Even a source-level discarded await needs a frame input. If its
         // produced type is must-consume, the generated segment's affine slot
         // must reject dropping it instead of losing the obligation in the
@@ -1084,6 +1099,7 @@ impl<'a> Ctx<'a> {
             cont_expr,
             cont.scope,
             next_line(cont.rest_lines, cont.line),
+            Some(source_suspension),
         )
     }
 
@@ -1097,6 +1113,7 @@ impl<'a> Ctx<'a> {
         cont_expr: Expr,
         scope: &[Local],
         line: u32,
+        source_suspension: Option<u32>,
     ) -> Result<Expr, String> {
         // Carried = live locals of `cont_expr` that are in `scope` (excluding the
         // resume bind, which is passed separately).
@@ -1122,7 +1139,10 @@ impl<'a> Ctx<'a> {
                 default: None,
             });
         }
-        let attributes = self.frame_attributes();
+        let mut attributes = self.frame_attributes();
+        if let Some(source_suspension) = source_suspension {
+            attributes.push(crate::suspension::source_suspension_attribute(source_suspension));
+        }
         self.segments.push(Function {
             line,
             public: false,
@@ -2040,6 +2060,7 @@ fn lower_async_fn_with(
         fname: f.name.clone(),
         counter,
         state_counter,
+        source_suspension_counter: 0,
         segments: Vec::new(),
         view_fns,
         borrowed_shells,

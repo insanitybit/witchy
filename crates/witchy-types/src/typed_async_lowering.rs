@@ -10,11 +10,14 @@
 use witchy_syntax::ast::{Convention, Item, Type};
 use witchy_syntax::async_surface::AsyncSurfaceId;
 use witchy_syntax::suspension::{
-    async_surface, async_surface_module, frame_state, FRAME_ENTRY_ATTRIBUTE,
+    async_surface, async_surface_module, frame_state, source_suspension, FRAME_ENTRY_ATTRIBUTE,
     FRAME_FUNCTION_ATTRIBUTE,
 };
 
-use crate::async_control_flow::{AsyncCallableId, SourceAsyncControlFlow, SourceAsyncControlFlowInventory};
+use crate::async_control_flow::{
+    AsyncCallableId, SourceAsyncControlFlow, SourceAsyncControlFlowInventory,
+    SourceAsyncOperationKind,
+};
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
 
@@ -45,6 +48,9 @@ pub struct TypedAsyncStateInput {
     pub callable: AsyncCallableId,
     pub local_state: u32,
     pub kind: TypedAsyncStateKind,
+    /// The lexical source suspension that resumes into this state. Entry states
+    /// and compiler-formed joins have no source suspension identity.
+    pub source_suspension: Option<u32>,
     pub final_callable: FinalCallableIndex,
     pub frame: Vec<TypedAsyncFrameInput>,
 }
@@ -73,6 +79,16 @@ impl TypedAsyncLoweringInput {
         let mut source = source_inventory.callables;
         source.sort_by(|left, right| left.callable.cmp(&right.callable));
         let source_ids = source.iter().map(|flow| flow.callable.clone()).collect::<std::collections::BTreeSet<_>>();
+        let source_suspension_counts = source.iter().map(|flow| {
+            let count = flow.operations.iter().filter(|operation| {
+                operation.kind == SourceAsyncOperationKind::Await
+            }).count();
+            Ok((
+                flow.callable.clone(),
+                u32::try_from(count).map_err(|_| "source suspension count exceeds u32")?,
+            ))
+        }).collect::<Result<std::collections::BTreeMap<_, _>, String>>()?;
+        let mut source_suspension_bindings = std::collections::BTreeSet::new();
         let mut states = Vec::new();
 
         for (function_index, item) in typed.module().items.iter().enumerate() {
@@ -101,6 +117,19 @@ impl TypedAsyncLoweringInput {
             if !source_ids.contains(&callable) {
                 return Err(format!("final async state at callable index {function_index} has no retained source control-flow record"));
             }
+            let source_suspension = source_suspension(function);
+            if let Some(source_suspension) = source_suspension {
+                if kind != TypedAsyncStateKind::Segment {
+                    return Err(format!("entry async state at callable index {function_index} has a source suspension identity"));
+                }
+                let source_suspension_count = source_suspension_counts[&callable];
+                if source_suspension >= source_suspension_count {
+                    return Err(format!("async state at callable index {function_index} refers to source suspension {source_suspension}, but `{}` has only {source_suspension_count}", function.name));
+                }
+                if !source_suspension_bindings.insert((callable.clone(), source_suspension)) {
+                    return Err(format!("duplicate final async state binding for source suspension {source_suspension}"));
+                }
+            }
             // Segment captures are synthesized after source annotations and may
             // intentionally omit an AST annotation. Recover their exact type
             // from the checked declaration signature; the callable *identity*
@@ -121,6 +150,7 @@ impl TypedAsyncLoweringInput {
                 callable,
                 local_state: u32::try_from(local_state).map_err(|_| "async local state exceeds u32")?,
                 kind,
+                source_suspension,
                 final_callable: FinalCallableIndex(u32::try_from(function_index).map_err(|_| "final callable count exceeds u32")?),
                 frame,
             });
@@ -173,5 +203,29 @@ mod tests {
         assert!(input.states.iter().all(|state| state.callable.module == "main"));
         assert!(input.states.iter().all(|state| state.callable.surface.method == Some(0)));
         assert!(input.states.iter().all(|state| !state.frame.is_empty()));
+        assert_eq!(
+            input.states.iter().filter_map(|state| state.source_suspension).collect::<Vec<_>>(),
+            vec![0],
+        );
+    }
+
+    #[test]
+    fn continuation_source_ids_stay_in_lexical_order_when_segments_emit_in_reverse() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn pipeline() -> Int:\n    let first = task.done(1).await\n    let second = task.done(first + 1).await\n    second + 1\n\nfn main(console: Console):\n    console.print(\"ready\")\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
+        let source_suspensions = input.states.iter()
+            .filter_map(|state| state.source_suspension)
+            .collect::<Vec<_>>();
+        // States are sorted by physical state ID; the CPS transform forms the
+        // second continuation first. The retained IDs nevertheless identify
+        // their lexical source order without consulting generated names.
+        assert_eq!(source_suspensions, vec![1, 0]);
     }
 }
