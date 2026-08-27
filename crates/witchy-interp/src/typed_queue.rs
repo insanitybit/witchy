@@ -22,6 +22,9 @@ pub struct QueueWait {
     pub execution: u64,
     pub operation: OperationSiteId,
     pub generation: u64,
+    /// A select arm shares the execution's one wait record but remains a
+    /// distinct registration, including when two arms name the same endpoint.
+    pub arm: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +227,7 @@ impl TypedQueueRuntime {
 
     pub fn submit_send(&mut self, execution: u64, generation: u64, payload: QueuePayload) -> Result<QueueRuntimeResult, String> {
         let (operation, queue) = self.waiting_operation(execution, ExecutionOperation::ChannelSend)?;
-        let wait = QueueWait { execution, operation, generation };
+        let wait = QueueWait { execution, operation, generation, arm: None };
         let result = self.queue_mut(queue)?.register_send(wait, payload)?;
         match result {
             QueueSend::Blocked => Ok(QueueRuntimeResult::Blocked),
@@ -244,7 +247,7 @@ impl TypedQueueRuntime {
 
     pub fn submit_receive(&mut self, execution: u64, generation: u64) -> Result<QueueRuntimeResult, String> {
         let (operation, queue) = self.waiting_operation(execution, ExecutionOperation::ChannelReceive)?;
-        let wait = QueueWait { execution, operation, generation };
+        let wait = QueueWait { execution, operation, generation, arm: None };
         let result = self.queue_mut(queue)?.register_receive(wait)?;
         match result {
             QueueReceive::Blocked => Ok(QueueRuntimeResult::Blocked),
@@ -263,7 +266,7 @@ impl TypedQueueRuntime {
 
     pub fn cancel(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
         let (operation, queue, _) = self.waiting_operation_any(execution)?;
-        let wait = QueueWait { execution, operation, generation };
+        let wait = QueueWait { execution, operation, generation, arm: None };
         if !self.queue_mut(queue)?.cancel(wait) { return Ok(false); }
         self.executions.get_mut(&execution)
             .expect("execution was checked above")
@@ -322,7 +325,7 @@ mod tests {
     }
 
     fn wait(execution: u64, generation: u64) -> QueueWait {
-        QueueWait { execution, operation: OperationSiteId(0), generation }
+        QueueWait { execution, operation: OperationSiteId(0), generation, arm: None }
     }
 
     fn execution(kind: ExecutionOperation) -> TypedExecution {
@@ -457,6 +460,16 @@ mod tests {
         assert!(queue.register_receive(receiver).expect_err("duplicate wait").contains("already has"));
         assert!(queue.cancel(receiver));
         assert_eq!(queue.register_receive(receiver), Ok(QueueReceive::Blocked));
+    }
+
+    #[test]
+    fn distinct_select_arms_may_register_the_same_execution_wait_on_one_queue() {
+        let mut queue = queue(QueueCapacity::Rendezvous);
+        let first = QueueWait { execution: 1, operation: OperationSiteId(0), generation: 3, arm: Some(0) };
+        let second = QueueWait { arm: Some(1), ..first };
+        assert_eq!(queue.register_receive(first), Ok(QueueReceive::Blocked));
+        assert_eq!(queue.register_receive(second), Ok(QueueReceive::Blocked));
+        assert_eq!(queue.close(), vec![QueueCloseWake::Receive(first), QueueCloseWake::Receive(second)]);
     }
 
     #[test]
