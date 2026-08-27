@@ -14,7 +14,7 @@ queue item has a terminal `merged` event.
 - Master observed before implementation: `a787a671e`; refreshed during the
   first implementation checkpoint to `416aa0e86` after the RFC-0161 integration
   batch landed. Current integration rebase: `01130ba7a`; latest observed
-  shared master is `416befef8`, so another integration rebase is owed.
+  shared master is `1300c4508`, so another integration rebase is owed.
 - Integration branch: `impl/rfc0162-integration` in
   `.claude/worktrees/rfc0162-validated-safewir`.
 - Current encoder authority contradicts the target contract:
@@ -149,6 +149,30 @@ queue item has a terminal `merged` event.
   `mq-94ebb9ae02192c6c42a01f39feb9a6beedc2de98` depends on the loop validator.
   Data-dependent mutable-local conditions and value-return exits remain in
   their owning def-use/callable tracks.
+- Commit `030af4e6b` on `impl/rfc0162-range-binding`, stacked on the semantic
+  surface, replaces mutable-name-only range authorization in the optimized
+  indexed-kernel path with validator-owned definition, object, generation,
+  index, and exact-length-source bindings. Reassignment, wrong-object,
+  wrong-generation, wrong-length-source, join, and loop invalidations reject;
+  the final focused evidence is 101 WIR tests, 10 range tests, 17 strength
+  reduction tests, 17 native range tests, and bug-tier clippy. Fable rejected
+  the initial evidence; the repaired implementation received final Opus ACCEPT.
+  Queue item `mq-2ea83326def32f306739e25483bf80822bef7859`
+  depends on the semantic surface. Whole-pipeline pass combinations and final
+  production authority remain pending.
+- Commit `d799089dc` on `impl/rfc0162-checked-entry`, stacked on the CFG adapter,
+  closes a raw-module substitution seam in compiler-generated Glamour
+  execution. The application rewrite is now an opaque value whose sole
+  production constructor clones and semantically checks its exact
+  `CheckedModule`; the generated adapter is metadata-restricted, rechecked with
+  that authority, and compiled only through a second opaque checked value. The
+  deleted three-argument encoder can no longer pair arbitrary application WIR
+  with a convenient source catalog. Two boundary tests, two real static-site
+  producer tests, both bug-tier clippy shards, and final Opus review are green.
+  Queue item `mq-8e1842aadbae666467868359f787351ae8253599`
+  depends on the CFG adapter. This is a narrow source-authority slice: ordinary
+  codegen still lacks one final `ValidatedWirModule` gate, and exact
+  source-layout contradiction checking remains pending.
 - Commit `9058e272f` on `impl/rfc0162-kernel-ops`, stacked on the semantic
   surface, adds opaque bump/RC allocation, retain, release, destructive reuse,
   and reclaim operations. They cannot carry a `WirFunc`, raw body, or ordinary
@@ -196,11 +220,11 @@ encoder escape hatch, or runtime safety metadata.
 |---|---|---|---|---|
 | T0 census, rule map, ledger | queued candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test, ignored-test policy, and 44-test shard green at `40be21d4a`; queue terminal pending |
 | T1 SafeWIR fact model | queued candidate | `impl/rfc0162-safewir-core` | object, place, range, layout, provenance, ownership, definition, and generation identities | 9 schema tests, 51-test crate shard, and Wasm shard green at `3189cb910`; revised Fable verdict ACCEPT; queue terminal pending |
-| T2 callable and range binding | landed SEC slice; active remainder | SEC-078 master `da098299a`; `impl/rfc0162-call-contracts`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 42 escape tests, RC-floor regression, three SEC-078 differential fixtures, detached pre-fix-red proof, isolated full gate, and final Opus ACCEPT; remaining call matrix and range binding active |
+| T2 callable and range binding | landed SEC slice; queued range candidate; active callable remainder | SEC-078 master `da098299a`; `impl/rfc0162-call-contracts`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | SEC-078 source and differential evidence landed; range identity/invalidation evidence is green at `030af4e6b` with final Opus ACCEPT and queue terminal pending; call matrix remains active |
 | T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter`, `impl/rfc0162-cfg-validator`, `impl/rfc0162-cfg-adapter` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, joins/loops through `d6825e3da`, and real WIR exits at `d88854a19`; 107/107 WIR library tests and bug-tier clippy green; final Fable/Opus verdicts ACCEPT; queue terminal pending; mutable-local conditions, symbolic facts, recursive components, and production authority remain incomplete |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
 | T5 kernel and encoder | candidate interface | `impl/rfc0162-kernel-ops`, `impl/rfc0162-kernel-templates` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations at `9058e272f`; visitor/opacity/rejection tests green and final Opus ACCEPT; fixed templates and authority wiring active, queue terminal pending |
-| T6 mandatory production gate | pending | integration | private `ValidatedWirModule`; no unchecked production encode/raw-body path | pending |
+| T6 mandatory production gate | pending with source-authority candidate | integration; `impl/rfc0162-checked-entry` | private `ValidatedWirModule`; no unchecked production encode/raw-body path | Glamour rewrite and adapter inputs are opaque and rechecked at `d799089dc`; final optimized WIR gate, layout contradiction proof, and raw encoder removal remain pending |
 | T7 external TCB and evidence | candidate | `impl/rfc0162-binaryen-pin`; other evidence active | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | pin plus release integration and 13-case exact production corpus through `43720e967`; runtime/release/package/performance smokes green and final Fable ACCEPT; terminal merge, release-matrix CI, and non-Binaryen evidence pending |
 | T8 review and closeout | pending | integration | Fable review, Opus adjudication if rejected, resolved findings, terminal merge audit | pending |
 
@@ -211,13 +235,13 @@ code. `candidate` means reusable work exists but is not landed proof.
 
 | # | Contract | State | Current evidence / contradiction | Evidence required to close |
 |---:|---|---|---|---|
-| 1 | Production codegen has one checked source entry | pending | Public encoders accept ordinary `WirModule` | Test-only raw entrypoints; contradictory or missing source layouts reject |
+| 1 | Production codegen has one checked source entry | pending | `d799089dc` binds the compiler-generated Glamour rewrite to its exact checked source, but public encoders still accept ordinary `WirModule` and exact source-layout contradictions are not checked | Test-only raw entrypoints; contradictory or missing source layouts reject |
 | 2 | SafeWIR carries object, layout, extent, provenance, ownership, and generation | pending | No complete fact carrier exists | Accepted and forged fixtures for every fact family |
 | 3 | RichWasm correspondence is explicit | candidate | `0162-safewir-judgment.md` names the RichWasm sections and Witchy extensions; terminal review/merge pending | Every core rule maps to RichWasm or a reviewed named Witchy extension |
 | 4 | Independent normative judgment | candidate | Schema-1 judgment and 20 stable IDs exist on queued `3189cb910`; the rewritten report validator partitions enforced and explicitly deferred rules, but has no complete mutation assurance and does not implement joins/fixpoints | Stable local, transfer, join, and fixpoint rule IDs; accepted/rejected/mutation fixtures per rule |
 | 5 | Call results default to possible aliasing | candidate | SEC-078 landed as `da098299a` with source, pre-fix-red, differential, RC-floor, isolated-gate, and Opus evidence | Cover direct, indirect, recursive, closure, projection, imported-call, and validator matrices |
 | 6 | Final optimized WIR checked once and fail closed | pending | No `ValidatedWirModule`; encoding is directly callable | Private validated constructor and production encoder API negative tests |
-| 7 | Optimizer combinations cannot retain stale facts | pending | RFC-0153 facts are local-name keyed | Reassignment, join, loop, inline, specialize, recursion, and pass-combination rejection fixtures |
+| 7 | Optimizer combinations cannot retain stale facts | candidate | `030af4e6b` binds indexed-kernel range facts to definition, object, generation, index, and exact length source, with reassignment/join/loop invalidation negatives; whole-pipeline combinations remain incomplete | Reassignment, join, loop, inline, specialize, recursion, and pass-combination rejection fixtures |
 | 8 | Raw memory is sealed | pending | All-crates structural parser confirms 584 sites in 25 files; no-growth ceiling is locally green but migration remains zero of 584 | Current census reaches zero outside the named kernel-template module; structural test blocks regressions |
 | 9 | Kernel is small and directly tested | candidate | Six opaque operation shapes at `9058e272f` cannot carry ordinary WIR bodies and ordinary encoding rejects them; production helpers remain unmigrated and fixed templates are not yet integrated | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
 | 10 | Encoder mechanically erases facts | pending | Encoder accepts arbitrary WIR and supports raw bodies | Exact template tests, mandatory Wasm validation, and no production raw-body route |
