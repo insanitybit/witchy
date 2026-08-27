@@ -320,6 +320,22 @@ impl AsyncProgram {
                     return Err("async cancellation must name a cancellation operation".into());
                 }
             }
+            // The canonical bytes must never bless a shape that the shared
+            // execution kernel would reject. In particular, ID/reference
+            // checks above are insufficient for ownership-sensitive terminal
+            // paths: a `must` lane can be well-addressed yet abandoned. Build
+            // the exact final-layout binding from this semantic shape and run
+            // the common typed execution validator before fingerprinting.
+            let binding = AsyncBackendBinding {
+                shape: shape.id,
+                closure_layout_fingerprint: shape.closure_layout_fingerprint,
+                states: shape.states.iter().map(|state| AsyncBackendStateBinding {
+                    state: state.state,
+                    callable: state.callable,
+                    capture_to_lane: state.capture_to_lane.clone(),
+                }).collect(),
+            };
+            shape.clone().into_typed_execution(&binding)?;
         }
         Ok(())
     }
@@ -652,6 +668,15 @@ mod tests {
         let mut changed = program;
         changed.execution_shapes[0].entry = AsyncProgramStateId(1);
         assert!(changed.validate().expect_err("entry changed").contains("absent state"));
+    }
+
+    #[test]
+    fn canonical_program_rejects_an_undischarged_must_lane() {
+        let mut shape = shape();
+        shape.frame[0].ownership = LaneOwnership::MustConsume;
+        shape.result_lanes.clear();
+        let error = AsyncProgram::new(vec![shape]).expect_err("must lane cannot reach completion");
+        assert!(error.contains("must-consume"));
     }
 
     #[test]
