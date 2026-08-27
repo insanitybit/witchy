@@ -3108,10 +3108,18 @@ cmd_run() {
     # nothing beyond master by patch id, and `git worktree remove` without
     # --force so git refuses anything surprising -- so running it on a timer
     # adds no new risk, only coverage.
-    if [ "${MERGE_QUEUE_SKIP_STARTUP_SWEEP:-0}" != "1" ]; then
+    # Do not make a live queue wait behind a potentially large historical
+    # cleanup.  An empty queue still gets the catch-up sweep (and therefore
+    # preserves the startup-sweep contract); queued work defers cleanup to the
+    # normal post-merge/timer path.
+    local startup_queue=0 startup_qf
+    for startup_qf in "$queue_dir"/*.json; do
+        if [ -f "$startup_qf" ]; then startup_queue=1; break; fi
+    done
+    if [ "$startup_queue" -eq 0 ]; then
         cmd_sweep || true
     else
-        note "startup sweep deferred by MERGE_QUEUE_SKIP_STARTUP_SWEEP=1"
+        note "startup sweep deferred while queue has pending changes"
     fi
     local sweep_interval="${MERGE_QUEUE_SWEEP_INTERVAL:-1800}"
     local last_sweep; last_sweep="$(date +%s)"
