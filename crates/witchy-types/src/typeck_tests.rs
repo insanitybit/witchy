@@ -1309,6 +1309,32 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
     }
 
     #[test]
+    fn source_tasks_are_affine_and_await_consumes_their_obligation() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn value() -> Int:\n    41\n\nfn drops() -> Int:\n    value()\n    1\n",
+        )
+        .expect("source parses");
+        let error = check_source_async_contracts(&module)
+            .expect_err("a cold task cannot be discarded");
+        assert!(error.message.contains("must-consume expression result cannot be discarded"), "{error:?}");
+
+        let module = witchy_syntax::parser::parse_module(
+            "async fn value() -> Int:\n    41\n\nasync fn starts_twice() -> Int:\n    let task = value()\n    let first = task.await\n    task.await\n",
+        )
+        .expect("source parses");
+        let error = check_source_async_contracts(&module)
+            .expect_err("a task starts at most once");
+        assert!(error.message.contains("after it was moved"), "{error:?}");
+
+        let module = witchy_syntax::parser::parse_module(
+            "async fn value() -> Int:\n    41\n\nasync fn starts_once() -> Int:\n    let task = value()\n    task.await\n",
+        )
+        .expect("source parses");
+        check_source_async_contracts(&module)
+            .expect("await consumes the task obligation");
+    }
+
+    #[test]
     fn source_await_rejects_non_task_operands() {
         let module = witchy_syntax::parser::parse_module(
             "async fn wrong() -> Int:\n    1.await\n",

@@ -9569,6 +9569,21 @@ impl Checker {
                         Ty::Named(name, mut arguments)
                             if name == "Task" && arguments.len() == 1 =>
                         {
+                            if let Some((root, projected)) = self.affine_place(expr) {
+                                if projected {
+                                    return terr(format!(
+                                        "cannot await a projected task from `{root}`; transfer the whole Task value before starting it"
+                                    ));
+                                }
+                                self.reject_own_of_borrowed_must(&root, "`await`")?;
+                                if self.is_consumed_binding(&root) {
+                                    return terr(format!(
+                                        "cannot await task `{root}` after it was already started or transferred"
+                                    ));
+                                }
+                                self.mark_consumed_binding(&root);
+                                self.consume_must_binding(&root);
+                            }
                             Ok(arguments.remove(0))
                         }
                         actual => terr(format!(
@@ -12076,6 +12091,9 @@ fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
             )
         })
         .collect::<HashMap<_, _>>();
+    // A cold task owns its execution/captures, not a completed `T`; awaiting
+    // it transfers the task obligation and only then yields `T`.
+    positions.entry("Task".to_string()).or_insert_with(|| vec![false]);
     loop {
         let before = positions.clone();
         for definition in &definitions {
@@ -12100,6 +12118,12 @@ fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
         .filter(|definition| definition.must_consume)
         .map(|definition| definition.name.clone())
         .collect::<HashSet<_>>();
+    // `Task(T)` is the compiler-provided cold async value. Its obligation is
+    // semantic rather than a property of the legacy CPS representation: every
+    // source task must be started exactly once by `await`, `spawn`, or `run`.
+    // Treating it as a must nominal here applies the ordinary generic,
+    // aggregate, branch, and scope machinery without a scheduler-side rule.
+    names.insert("Task".to_string());
     loop {
         let before = names.len();
         for definition in &definitions {
