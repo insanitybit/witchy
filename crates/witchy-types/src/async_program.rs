@@ -4,7 +4,7 @@
 //! has no generated callable names and no legacy scalar-transition fallback.
 
 use crate::typed_async_lowering::FinalCallableIndex;
-use crate::typed_execution::{ExecutionOperation, ExecutionShapeId, ExecutionOutcome, FrameLane, LaneAction};
+use crate::typed_execution::{ExecutionOperation, ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, LaneAction, OperationSite, OperationSiteId, TypedExecutionShape};
 
 pub const ASYNC_PROGRAM_SCHEMA_VERSION: u32 = 1;
 
@@ -83,5 +83,34 @@ impl AsyncProgram {
             }
         }
         Ok(())
+    }
+}
+
+impl AsyncExecutionShape {
+    /// Bind a canonical shape into the shared interpreter/Wasm execution
+    /// contract. The caller supplies the checked entry state; no backend may
+    /// infer one from a generated callable name.
+    pub fn into_typed_execution(self, entry: AsyncProgramStateId) -> Result<TypedExecutionShape, String> {
+        if entry.0 as usize >= self.states.len() { return Err("async execution entry references absent state".into()); }
+        let shape = TypedExecutionShape {
+            id: self.id,
+            entry: ExecutionStateId(entry.0),
+            frame: self.frame,
+            states: self.states.into_iter().map(|state| ExecutionState {
+                id: ExecutionStateId(state.state.0),
+                transitions: state.edges.into_iter().map(|edge| ExecutionTransition {
+                    actions: edge.actions,
+                    outcome: edge.outcome,
+                }).collect(),
+            }).collect(),
+            operations: self.operations.into_iter().map(|operation| OperationSite {
+                id: OperationSiteId(operation.id.0),
+                kind: operation.kind,
+                pending_move_lanes: operation.pending_move_lanes.into_iter().map(crate::typed_execution::FrameLaneId).collect(),
+            }).collect(),
+            cancellation: None,
+        };
+        shape.validate()?;
+        Ok(shape)
     }
 }
