@@ -9567,7 +9567,7 @@ impl Checker {
                     ),
                     UnOp::Await => match self.resolve(&t) {
                         Ty::Named(name, mut arguments)
-                            if (name == "Task" || name == "task.Task") && arguments.len() == 1 =>
+                            if name == "Task" && arguments.len() == 1 =>
                         {
                             if let Some((root, projected)) = self.affine_place(expr) {
                                 if projected {
