@@ -13,19 +13,19 @@ queue item has a terminal `merged` event.
   terminally merged by the queue in master batch `29bd6c660`.
 - Master observed before implementation: `a787a671e`; refreshed during the
   first implementation checkpoint to `416aa0e86` after the RFC-0161 integration
-  batch landed. Current integration rebase: `01130ba7a`; latest observed
-  shared master was most recently observed at `19427b3c5`, so another
-  integration rebase is owed.
+  batch landed. The integration branch was most recently rebased onto shared
+  master `965176971`.
 - Integration branch: `impl/rfc0162-integration` in
   `.claude/worktrees/rfc0162-validated-safewir`.
 - Current encoder authority still contradicts the target contract:
   `wir_encode::encode` and `try_encode_with_gc*` accept `&WirModule` directly.
-- Current RFC-0153 range environments are keyed by mutable local names. They do
-  not yet bind facts to `DefinitionId`, `GenerationId`, or an exact length
-  source.
-- The queued integration base originally resolved `wasm-opt` from `PATH`.
-  Branch `impl/rfc0162-binaryen-pin` now carries a digest-pinned version-131
-  bundle and production-pipeline evidence; terminal merge evidence is pending.
+- Landed RFC-0153 range environments still use mutable names, but reviewed
+  branch `impl/rfc0162-range-binding` replaces name authority with exact
+  `DefinitionId`, `GenerationId`, object, index, and length-source bindings.
+  That branch is not yet terminally merged or consumed by the production gate.
+- The original integration base resolved `wasm-opt` from `PATH`. Digest-pinned
+  version-131 resolution and production-pipeline evidence terminally merged in
+  master batch `32a0cd108`; four-target release CI remains pending.
 - The RFC's 478-site raw-memory baseline was stale. The corrected structural
   parser on `impl/rfc0162-structural-census` finds 584 candidate-WIR constructor
   sites in 25 production files, excluding the encoder's own
@@ -103,7 +103,8 @@ queue item has a terminal `merged` event.
   assertion. Queue item `mq-09b6bfac40beab6a9977a3e209caf70844c963ff`
   terminally merged in master batch `32a0cd108`; four-target CI release evidence
   remains pending.
-- Commit `ac4932bda` on `impl/rfc0162-sec-corpus`, stacked after the pinned
+- Original commit `ac4932bda`, now rebased as `217a5bd65` on
+  `impl/rfc0162-sec-corpus`, stacks after the pinned
   Binaryen track, makes the applicable source and production-pipeline corpus
   permanent. SEC-036 is restored as the distinct alias-initialized
   free-at-overwrite class across variable, field, index, list, and historical
@@ -115,9 +116,12 @@ queue item has a terminal `merged` event.
   initial rejection and Opus's hardening findings were resolved; final Opus
   verdict is ACCEPT. Queue item
   `mq-0c523f31f4476622cbbcb3a1ba96738cb1317f82` depends on the Binaryen pin.
-  Its first attempt conflicted after that dependency landed and must be rebased
-  and resubmitted. Forged-WIR rejections and encoder-template evidence remain
-  separate and row 11 is not complete.
+  Its first attempt conflicted after that dependency landed; the patch is now
+  identically rebased and the exact production differential selection is 2/2.
+  Two broad examples attempts were invalidated by severe concurrent host load,
+  including timeouts at their configured 480- and 1200-second limits. A quiet
+  rerun and resubmission remain pending. Forged-WIR rejections and
+  encoder-template evidence remain separate and row 11 is not complete.
 - Commit `cfab0454b` on `impl/rfc0162-wir-surface` introduces untrusted
   executable-side SafeWIR object, projection, provenance, extent, range, and
   access claims plus semantic load/store/copy/fill variants. Every optimizer,
@@ -172,25 +176,23 @@ queue item has a terminal `merged` event.
   `mq-94ebb9ae02192c6c42a01f39feb9a6beedc2de98` terminally merged in master
   batch `154ea94be`. Data-dependent mutable-local conditions and value-return
   exits remain in their owning def-use/callable tracks.
-- Commit `030af4e6b` on `impl/rfc0162-range-binding`, stacked on the semantic
-  surface, replaces mutable-name-only range authorization in the optimized
+- Final squashed commit `9ac93aaf4` on `impl/rfc0162-range-binding`, rebased on
+  current master, replaces mutable-name-only range authorization in the optimized
   indexed-kernel path with validator-owned definition, object, generation,
   index, and exact-length-source bindings. Reassignment, wrong-object,
   wrong-generation, wrong-length-source, join, and loop invalidations reject;
-  the final focused evidence is 101 WIR tests, 10 range tests, 17 strength
-  reduction tests, 17 native range tests, and bug-tier clippy. Fable rejected
-  the initial evidence; the repaired implementation received final Opus ACCEPT.
-  Its first queue attempt red twice on
+  its first queue attempt red twice on
   `redundant_comparison_simplification`: `RangeFact::from_bounds(11, MAX)`
   incorrectly collapsed to a `Positive` representation whose lower bound was
-  only 1. The rebased repair at `0e93c2258` preserves exact positive lower
-  bounds and, after Fable review, also rejects stale edge refinement when
-  evaluating either an `If` or conditional `Br` rebinds a definition. Four
-  exact regressions, the 248-test native WIR shard, and bug-tier clippy are
-  green; final Fable verdict is ACCEPT. Queue item
-  `mq-2ea83326def32f306739e25483bf80822bef7859` was resubmitted. Whole-pipeline
-  pass combinations, examples/Wasm reruns, terminal merge, and final production
-  authority remain pending.
+  only 1. Later cross-track review found stale post-evaluation `SetLocal` facts,
+  condition effects entering branches with live object authority, missed
+  `Control`-wrapped writes, kernel visitor gaps, and wrap-unsound unbounded
+  Add/Mul facts. The final one-commit tree rejects every case, uses the single
+  canonical refinement implementation, emits i32 comparison results, and has
+  167 WIR tests green. Fable rejected the intermediate repair; final Opus and
+  Fable verdicts are both ACCEPT. Required examples/Wasm reruns, queue
+  resubmission, whole-pipeline pass combinations, terminal merge, and final
+  production authority remain pending.
 - Commit `fd8a01d62` on `impl/rfc0162-call-contracts`, stacked on the CFG
   adapter, validates direct, indirect, recursive, closure, projection, imported,
   stale-summary, and malformed callable contracts against the final candidate
@@ -227,7 +229,7 @@ queue item has a terminal `merged` event.
   incomplete binding. Queue item
   `mq-9d744b5a94e641be7f7891babbd449b1152c07f3` terminally merged in master
   batch `32a0cd108`; final encoder consumption remains pending.
-- Commits through `256f36b29` on `impl/rfc0162-source-layout` stack an opaque source
+- Commits through rebased `922330df3` on `impl/rfc0162-source-layout` stack an opaque source
   layout contract on the checked and generic authorities. It derives exact
   logical shapes from the linked, resolved source graph, rejects compiler
   evaluation type-graph changes, compares every selected `(Type, LayoutId)`
@@ -237,7 +239,8 @@ queue item has a terminal `merged` event.
   compilation proves that path is non-vacuous. Focused type, lowerer, WIR,
   specialization, source-authority, compiler-evaluation, combined 843-test,
   bug-tier clippy, and Wasm shards are green. The final commit also makes the
-  RFC-0110 visitor traverse every SafeWIR claim; its exact seven-test shard is
+  RFC-0110 visitor traverse every SafeWIR claim; that identical patch is now
+  upstream through the mutation-evidence merge. Its exact seven-test shard is
   green and final Fable review ACCEPTS. A concurrent broad examples run passed
   925 of 928 tests but left three load-sensitive timeouts, so a quiet rerun plus
   the web-focused shard and queue submission remain pending. This is not
@@ -268,6 +271,24 @@ queue item has a terminal `merged` event.
   branch. Its first attempt conflicted after that dependency landed and must be
   rebased and resubmitted. Production `ValidatedWirModule` authority,
   ordinary-operation migration, and terminal queue evidence remain pending.
+- Commits `8cad4c2e2` and `bd640656f` on
+  `impl/rfc0162-validated-encoder-authority` add a private, non-Clone
+  `ValidatedWirModule`, fail-closed final validation, mechanical fixed-template
+  encoding, mandatory wasmparser validation, and `SWIR-GC-001` binding of the
+  exact recursive struct/array declarations and every GC-sensitive use. Raw
+  operation, raw body, memory grow/size, declaration substitution, index-band
+  confusion, field mutability, cast, constructor-arity, and budget negatives
+  reject. The 113-test WIR shard, three compile-fail API proofs, feature checks,
+  bug-tier clippy, and final Fable review are green. This branch is deliberately
+  unsubmitted: source authority, landed templates, region contracts, and the
+  lowerer's transitional raw source-map bridge still require integration.
+- Commit `11b90fef1` on `impl/rfc0162-mutation-evidence` terminally merged as
+  master under queue item `mq-4fef5e9b08e7b7d2ab7a6329ab90e90c54c34fff`.
+  Its deterministic schema records 20 caught, zero surviving, zero timed-out,
+  and zero unviable mutations. Fifteen report-mode kills are credited; five
+  production sentinels (`SWIR-MOD-001`, `SWIR-RNG-002`, `SWIR-HOST-001`,
+  `SWIR-KERN-001`, and `SWIR-ENC-001`) remain deliberately uncredited until the
+  final production gate exists. Final Fable verdict is ACCEPT.
 
 ## Dependency graph and tracks
 
@@ -303,13 +324,13 @@ encoder escape hatch, or runtime safety metadata.
 | Track | State | Branch / owner | Required output | Verification / terminal evidence |
 |---|---|---|---|---|
 | T0 census, rule map, ledger | red census candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test, ignored-test policy, and 44-test shard green at `40be21d4a`; queue red requires diagnosis and resubmission |
-| T1 SafeWIR fact model | landed core/generic plus stacked source candidate | master; `impl/rfc0162-source-layout` | object, place, range, layout, provenance, ownership, definition, generation, and exact checked-source layout identities | core and generic binding terminally merged through batch `32a0cd108`; exact source-layout authority through `256f36b29` has 843 combined tests plus Wasm and final Opus/Fable ACCEPT; two focused source shards and queue terminal pending |
-| T2 callable and range binding | landed SEC/callable slices; repaired range candidate queued | SEC-078 master `da098299a`; callable master batch `4c25e171e`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | SEC-078 and callable matrix landed; range identity/invalidation plus lower-bound and stale-definition repairs are green at `0e93c2258` with 248 native WIR tests and final Fable ACCEPT; range terminal and production catalog binding remain incomplete |
+| T1 SafeWIR fact model | landed core/generic plus stacked source candidate | master; `impl/rfc0162-source-layout` | object, place, range, layout, provenance, ownership, definition, generation, and exact checked-source layout identities | core and generic binding terminally merged through batch `32a0cd108`; exact source-layout authority is identically rebased through `922330df3` with 843 combined tests plus Wasm and final Opus/Fable ACCEPT; quiet examples rerun and queue terminal pending |
+| T2 callable and range binding | landed SEC/callable slices; final range candidate awaiting shards | SEC-078 master `da098299a`; callable master batch `4c25e171e`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | SEC-078 and callable matrix landed; final squashed range identity, evaluation-order, wrap, kernel traversal, and invalidation repairs are green at `9ac93aaf4` with 167 WIR tests and final Opus/Fable ACCEPT; examples/Wasm, terminal merge, and production catalog binding remain incomplete |
 | T3 final validator | landed report slices | master batch `154ea94be` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, joins/loops through `d6825e3da`, and real WIR exits at `d88854a19` terminally merged; 107/107 WIR library tests and bug-tier clippy green; final Fable/Opus verdicts ACCEPT; mutable-local conditions, symbolic facts, recursive components, and production authority remain incomplete |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
 | T5 kernel and encoder | landed opaque ops; conflicted template candidate | master `19427b3c5`; `impl/rfc0162-kernel-templates` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations terminally merged at `19427b3c5`; fixed templates and native boundary/poison/reuse evidence at `bfeb20c13` must be rebased after a queue conflict; region-watermark census, production authority, migration, and template terminal pending |
-| T6 mandatory production gate | pending with landed checked-entry and source candidate | integration; master batch `4c25e171e`; `impl/rfc0162-source-layout` | private `ValidatedWirModule`; no unchecked production encode/raw-body path | Glamour rewrite and adapter inputs are opaque and rechecked at landed `d799089dc`; `939629ba2` binds selected and generic layouts to the exact checked source graph; final optimized WIR gate and raw encoder removal remain pending |
-| T7 external TCB and evidence | Binaryen landed; SEC conflicted; mutation active | master batch `32a0cd108`; `impl/rfc0162-sec-corpus`; `impl/rfc0162-mutation-evidence` | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | pin/release integration through `8871d3f47` terminally merged; 15-case permanent source and exact production corpus at `ac4932bda` must be rebased after conflict; final Fable/Opus verdicts ACCEPT; release-matrix CI, forged-WIR SEC negatives, mutation, fuzz, and zero-cost evidence pending |
+| T6 mandatory production gate | reviewed authority candidate awaiting integration | master batch `4c25e171e`; `impl/rfc0162-source-layout`; `impl/rfc0162-validated-encoder-authority` | private `ValidatedWirModule`; no unchecked production encode/raw-body path | checked source entry landed; exact source-layout candidate rebased through `922330df3`; private authority plus exact GC declarations is green through `bd640656f` with 113 WIR tests, API proofs, and Fable ACCEPT; source/templates/region integration, raw bridge removal, and queue terminal remain pending |
+| T7 external TCB and evidence | Binaryen and report mutation evidence landed; SEC rebased | master batches `32a0cd108` and `11b90fef1`; `impl/rfc0162-sec-corpus` | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | Binaryen terminally merged; 20 modeled mutations are caught with 15 report kills credited and five production sentinels deferred; SEC corpus is rebased at `217a5bd65` with exact production comparison green, but load-contaminated examples reruns and resubmission remain pending; release CI, forged-WIR SEC negatives, fuzz, and zero-cost evidence pending |
 | T8 review and closeout | pending | integration | Fable review, Opus adjudication if rejected, resolved findings, terminal merge audit | pending |
 
 ## Acceptance ledger
@@ -319,21 +340,21 @@ code. `candidate` means reusable work exists but is not landed proof.
 
 | # | Contract | State | Current evidence / contradiction | Evidence required to close |
 |---:|---|---|---|---|
-| 1 | Production codegen has one checked source entry | candidate | `d799089dc` binds the compiler-generated Glamour rewrite to its exact checked source; `939629ba2` rejects missing or contradictory selected/generic layouts against that source graph. Public encoders still accept ordinary `WirModule`, the last two focused shards and queue terminal are pending | Test-only raw entrypoints; contradictory or missing source layouts reject through the final production boundary |
+| 1 | Production codegen has one checked source entry | candidate | `d799089dc` binds the compiler-generated Glamour rewrite to its exact checked source; rebased source authority through `922330df3` rejects missing or contradictory selected/generic layouts against that graph. Public encoders still accept ordinary `WirModule`, quiet examples and queue terminal are pending | Test-only raw entrypoints; contradictory or missing source layouts reject through the final production boundary |
 | 2 | SafeWIR carries object, layout, extent, provenance, ownership, and generation | candidate | Core fact schema and exact specialization identity terminally merged in `a110a53b0` and `32a0cd108`; reviewed source-layout binding remains unsubmitted and no final encoder consumes all identities | Accepted and forged fixtures for every fact family through final optimized WIR |
 | 3 | RichWasm correspondence is explicit | candidate | `0162-safewir-judgment.md` and its named RichWasm/Witchy-extension mapping terminally merged in `a110a53b0`; complete production enforcement and final review remain pending | Every core rule enforced through the production validator or explicitly rejected as unsupported |
 | 4 | Independent normative judgment | candidate | Schema-1 judgment and 20 stable IDs plus the bounded report validator, CFG joins, loop fixpoints, and real WIR exits terminally merged through `154ea94be`; complete mutation assurance and final production enforcement remain pending | Stable local, transfer, join, and fixpoint rule IDs; accepted/rejected/mutation fixtures per rule |
 | 5 | Call results default to possible aliasing | candidate | SEC-078 landed as `da098299a`; the 16-case direct, indirect, recursive, closure, projection, imported, stale-summary, and malformed callable matrix terminally merged in batch `4c25e171e` with final Opus ACCEPT; final production catalog binding remains pending | Bind every authenticated host/kernel contract to the final production definition |
-| 6 | Final optimized WIR checked once and fail closed | pending | No `ValidatedWirModule`; encoding is directly callable | Private validated constructor and production encoder API negative tests |
-| 7 | Optimizer combinations cannot retain stale facts | candidate | `030af4e6b` binds indexed-kernel range facts to definition, object, generation, index, and exact length source, with reassignment/join/loop invalidation negatives; whole-pipeline combinations remain incomplete | Reassignment, join, loop, inline, specialize, recursion, and pass-combination rejection fixtures |
+| 6 | Final optimized WIR checked once and fail closed | pending | Private authority and API-negative proofs exist through `bd640656f`, but are unintegrated; master encoding remains directly callable | Integrate the private authority after source/templates/region contracts and remove every production raw encoder entry |
+| 7 | Optimizer combinations cannot retain stale facts | candidate | `9ac93aaf4` binds facts to exact identities and rejects reassignment, nested evaluation effects, condition effects, joins, loops, kernel operands, wrong object/generation/length source, and wrap-unsound arithmetic; whole-pipeline inline/specialize/recursion combinations and terminal merge remain incomplete | Inline, specialize, recursion, and complete pass-combination rejection fixtures through the production gate |
 | 8 | Raw memory is sealed | pending | All-crates structural parser confirms 584 sites in 25 files; no-growth ceiling is locally green but migration remains zero of 584 | Current census reaches zero outside the named kernel-template module; structural test blocks regressions |
 | 9 | Kernel is small and directly tested | candidate | Six opaque operation shapes at `9058e272f` cannot carry ordinary WIR bodies; `bfeb20c13` supplies fixed templates plus exact structural and native boundary/poison/reuse tests; production helpers and mutation evidence remain incomplete | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
 | 10 | Encoder mechanically erases facts | candidate | `bfeb20c13` mechanically encodes opaque kernel operations through fixed templates, but the encoder still accepts arbitrary WIR and supports production raw bodies | Exact template tests, mandatory Wasm validation, and no production raw-body route |
-| 11 | Applicable SEC corpus is permanent | candidate | `ac4932bda` restores distinct SEC-036 and pins SEC-037/038/039 source plus exact 15-case production-Binaryen evidence; SEC-078 is landed on master; forged-WIR and encoder-template negatives remain pending | Source regression plus forged-WIR rejection for SEC-036/037/038/039/078; encoder test where applicable |
-| 12 | Validator mutations are killed | pending | Bounded report/CFG validators are landed, but the mutation campaign has not yet produced a complete killed-survivor matrix | Mutation matrix kills every rule deletion, inversion, or weakening |
+| 11 | Applicable SEC corpus is permanent | candidate | Identically rebased `217a5bd65` restores distinct SEC-036 and pins SEC-037/038/039 source plus exact 15-case production-Binaryen evidence; SEC-078 is landed on master; quiet examples, terminal merge, forged-WIR, and encoder-template negatives remain pending | Source regression plus forged-WIR rejection for SEC-036/037/038/039/078; encoder test where applicable |
+| 12 | Validator mutations are killed | candidate | `11b90fef1` terminally lands 20 caught and zero surviving/timed-out/unviable mutations; 15 report rules are credited, while five production sentinels remain uncredited because the production gate does not yet exist | Bind and kill the five production sentinels through the real final validator/encoder path |
 | 13 | Binaryen trust is explicit and reproducible | candidate | PATH-free digest-pinned version-131 resolution, release bundle installation, exact recipe/cache identity and fallback tests, `PreserveRaw` exclusion, authenticated official/package/install smokes, reviewed-production performance lane, and a 13-case exact pre/post corpus terminally merged in `32a0cd108`; release-matrix CI evidence remains pending | Four-target release CI proves installation and exact required-pinned execution |
 | 14 | Generated execution adds zero safety overhead | pending | No matched before/after artifact exists | Exact WAT and calls/loads/stores/branches/accesses/allocations/imports/globals/functions/fields/code-size/dynamic-count/benchmark evidence |
-| 15 | Release claim is fail closed | pending | Unchecked production encoders exist | Deliberately invalid final WIR cannot encode through any production path |
+| 15 | Release claim is fail closed | pending | Unchecked production encoders still exist on master; `bd640656f` proves construction, post-validation mutation, and declaration substitution fail through the candidate API only | Deliberately invalid final WIR cannot encode through any production path |
 
 ## Evidence rules
 
