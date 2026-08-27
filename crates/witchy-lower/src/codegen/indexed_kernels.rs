@@ -13,6 +13,18 @@ use witchy_wir::wir::{BinOp as WirBinOp, Kind as WirKind, WirExpr as W, WirNode 
 const SEQUENCE_POLICY_EXACT: u8 = 1;
 const SEQUENCE_POLICY_GENERALIZED: u8 = 2;
 
+/// Split only short-circuit conjunctions. Callers validate every leaf before
+/// consuming it as a proof; this helper never treats `||` or an arbitrary
+/// boolean expression as an interchangeable range guard.
+fn collect_conjunctive_guards<'a>(condition: &'a Expr, guards: &mut Vec<&'a Expr>) {
+    if let Expr::Binary { op: BinOp::And, lhs, rhs } = condition {
+        collect_conjunctive_guards(lhs, guards);
+        collect_conjunctive_guards(rhs, guards);
+    } else {
+        guards.push(condition);
+    }
+}
+
 /// Return checked-index pairs that are safe after a normal-completing
 /// range-initialized countdown and an upper-bound return gate.
 ///
@@ -621,12 +633,23 @@ impl<'types> Codegen<'types> {
         if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
             return Vec::new();
         }
-        let Expr::Binary { op: BinOp::Lt, lhs, rhs } = cond else {
+        let mut guards = Vec::new();
+        collect_conjunctive_guards(cond, &mut guards);
+        let Some(Expr::Binary { op: BinOp::Lt, lhs, .. }) = guards.first().copied() else {
             return Vec::new();
         };
         let Expr::Var(index) = lhs.as_ref() else {
             return Vec::new();
         };
+        // A body can run only after every `&&` term succeeds. Accept precisely
+        // same-induction-variable upper bounds; other control shapes retain
+        // the scalar checked path.
+        if guards.iter().any(|guard| !matches!(guard,
+            Expr::Binary { op: BinOp::Lt, lhs, .. }
+                if matches!(lhs.as_ref(), Expr::Var(candidate) if candidate == index)))
+        {
+            return Vec::new();
+        }
         if !self.known_non_negative_vars.contains(index)
             && !self.range_value_vars.contains_key(index)
         {
@@ -637,43 +660,47 @@ impl<'types> Codegen<'types> {
                 || witchy_syntax::intrinsics::lookup(length_intrinsic)
                     .is_some_and(|spec| name == spec.diagnostic_name)
         };
-        let candidate_roots: Vec<String> = match rhs.as_ref() {
-            Expr::Call { name, args }
-                if is_length_call(name)
-                    && matches!(args.as_slice(), [Expr::Var(_)]) =>
-            {
-                let Expr::Var(list) = &args[0] else { unreachable!() };
-                vec![list.clone()]
-            }
-            Expr::Var(bound) => {
-                let mut roots = known_length_vars.get(bound).cloned().unwrap_or_default();
-                if let Some((domain, root)) = self.range_value_vars.get(bound)
-                    && self.range_built_lists.get(domain).is_some_and(|built| built.contains(root))
-                {
-                    roots.insert(root.clone());
-                }
-                roots.into_iter().collect()
-            }
-            _ => Vec::new(),
-        };
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
+        let mut assignments = 0;
+        if !increasing_induction(
+            body,
+            index,
+            &mut assignments,
+            &self.known_non_negative_vars,
+        ) || assignments == 0
+        {
+            return Vec::new();
+        }
         let mut pairs = Vec::new();
-        for root in candidate_roots {
-            let root_length_stable = !scan.let_bind.contains_key(&root)
-                && !scan.other_bind.contains(&root)
-                && !scan.length_changing_reassigned.contains(&root);
-            if !root_length_stable {
-                continue;
-            }
-            let mut assignments = 0;
-            if increasing_induction(
-                body,
-                index,
-                &mut assignments,
-                &self.known_non_negative_vars,
-            ) && assignments > 0
-            {
+        for guard in guards {
+            let Expr::Binary { rhs, .. } = guard else { unreachable!() };
+            let candidate_roots: Vec<String> = match rhs.as_ref() {
+                Expr::Call { name, args }
+                    if is_length_call(name)
+                        && matches!(args.as_slice(), [Expr::Var(_)]) =>
+                {
+                    let Expr::Var(list) = &args[0] else { unreachable!() };
+                    vec![list.clone()]
+                }
+                Expr::Var(bound) => {
+                    let mut roots = known_length_vars.get(bound).cloned().unwrap_or_default();
+                    if let Some((domain, root)) = self.range_value_vars.get(bound)
+                        && self.range_built_lists.get(domain).is_some_and(|built| built.contains(root))
+                    {
+                        roots.insert(root.clone());
+                    }
+                    roots.into_iter().collect()
+                }
+                _ => Vec::new(),
+            };
+            for root in candidate_roots {
+                let root_length_stable = !scan.let_bind.contains_key(&root)
+                    && !scan.other_bind.contains(&root)
+                    && !scan.length_changing_reassigned.contains(&root);
+                if !root_length_stable {
+                    continue;
+                }
                 pairs.push((index.clone(), root.clone()));
                 if let Expr::Var(upper) = rhs.as_ref() {
                     let mut upper_assignments = 0;
@@ -685,6 +712,8 @@ impl<'types> Codegen<'types> {
                 }
             }
         }
+        pairs.sort();
+        pairs.dedup();
         pairs
     }
 
@@ -862,13 +891,22 @@ impl<'types> Codegen<'types> {
         cond: &Expr,
         body: &Block,
     ) -> Option<CanonicalInductionPlan> {
-        let (local, comp, bound_expr) = match cond {
+        let mut guards = Vec::new();
+        collect_conjunctive_guards(cond, &mut guards);
+        let condition = guards.first().copied()?;
+        let (local, comp, bound_expr) = match condition {
             Expr::Binary { op, lhs, rhs } => match (lhs.as_ref(), rhs.as_ref()) {
                 (Expr::Var(v), expr) => (v.clone(), *op, expr),
                 _ => return None,
             },
             _ => return None,
         };
+        if guards.len() > 1 && guards.iter().any(|guard| !matches!(guard,
+            Expr::Binary { op: BinOp::Lt, lhs, .. }
+                if matches!(lhs.as_ref(), Expr::Var(candidate) if candidate == &local)))
+        {
+            return None;
+        }
 
         let mut scan = DevirtScan::default();
         scan.walk_block(body);

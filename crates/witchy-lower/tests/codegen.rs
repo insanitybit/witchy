@@ -5151,6 +5151,66 @@ fn main() -> Int:
     }
 
     #[test]
+    fn conjunctive_list_length_guards_plan_each_stable_root() {
+        // RFC-0153: the body enters only after both same-index length guards
+        // succeed. The paired cursors therefore preserve the ordinary
+        // short-circuit exit behavior while removing only each redundant body
+        // access check.
+        let source = r#"
+fn sum_pairs(left: List(Int), right: List(Int)) -> Int:
+    var i = 0
+    var total = 0
+    while i < list.length(left) && i < list.length(right):
+        total = total + left[i] + right[i]
+        i = i + 1
+    total
+
+fn main() -> Int:
+    sum_pairs([1, 2, 3], [10, 20])
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let none = witchy_syntax::opt::OptSet::none();
+        assert_eq!(run_int_with_opt(source, default), 33,
+            "the shorter root still controls optimized loop completion");
+        assert_eq!(run_int_with_opt(source, none), 33,
+            "the fully deoptimized path preserves the same completion result");
+        let wat = optimized_wir_wat(source, default);
+        let sum_pairs = wat.split("(func $sum_pairs").nth(1).expect("sum_pairs WAT");
+        let sum_pairs = sum_pairs.split("(func $").next().expect("sum_pairs body");
+        assert!(sum_pairs.matches("local.set $__seq_base_").count() >= 2,
+            "both stable roots receive one entry cursor: {sum_pairs}");
+        assert_eq!(sum_pairs.matches("call $list_at").count(), 0,
+            "both guarded accesses become direct cursor loads: {sum_pairs}");
+
+        let off = default.without(witchy_syntax::opt::Opt::BoundsElide);
+        let deopt = optimized_wir_wat(source, off);
+        let deopt = deopt.split("(func $sum_pairs").nth(1).expect("deopt sum_pairs WAT");
+        let deopt = deopt.split("(func $").next().expect("deopt sum_pairs body");
+        assert!(deopt.matches("call $list_at").count() >= 2,
+            "-bounds-elide retains both checked accesses: {deopt}");
+
+        let mutating_root = r#"
+fn broken(left: List(Int)) -> Int:
+    var right = [10, 20]
+    var i = 0
+    var total = 0
+    while i < list.length(left) && i < list.length(right):
+        if i == 0:
+            right = []
+        total = total + left[i] + right[i]
+        i = i + 1
+    total
+
+fn main() -> Int:
+    broken([1, 2])
+"#;
+        let on = compiled_trap(mutating_root, default);
+        let off = compiled_trap(mutating_root, off);
+        assert!(on.contains("list_at"), "a root mutation retains its trap: {on}");
+        assert!(off.contains("list_at"), "the deoptimized root mutation traps identically: {off}");
+    }
+
+    #[test]
     fn rfc0153_full_deoptimization_matrix_preserves_results_and_traps() {
         // Criterion 9 is intentionally a whole-pipeline check.  The family
         // tests above isolate bounds-elision; this matrix also disables every
