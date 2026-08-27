@@ -22,6 +22,7 @@ pub mod optimizer_policy;
 pub mod safewir;
 pub mod safewir_adapter;
 mod safewir_call;
+pub mod safewir_kernel;
 pub mod safewir_surface;
 pub mod safewir_validate;
 pub mod wir_opt;

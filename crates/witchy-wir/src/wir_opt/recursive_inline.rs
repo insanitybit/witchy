@@ -38,7 +38,7 @@ fn safe_place_has_forbidden(place: &crate::safewir_surface::SafePlaceExpr) -> bo
 fn node_has_forbidden(node: &WirNode) -> bool {
     match node {
         WirNode::Loop { .. } | WirNode::CallStoreMulti { .. } | WirNode::CallIndirectStoreMulti { .. } |
-        WirNode::StructSet { .. } | WirNode::ArraySet { .. } => true,
+        WirNode::StructSet { .. } | WirNode::ArraySet { .. } | WirNode::SafeKernel(_) => true,
         WirNode::Source { body, .. } | WirNode::Block { body, .. } => has_forbidden_nodes(body),
         WirNode::If { cond, then_, els, .. } => expr_has_forbidden(cond) || has_forbidden_nodes(then_) || has_forbidden_nodes(els),
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => expr_has_forbidden(value),
@@ -56,7 +56,8 @@ fn expr_has_forbidden(expr: &WirExpr) -> bool {
     match expr {
         WirExpr::CallHost { .. } | WirExpr::CallIndirect { .. } | WirExpr::StructNew { .. } |
         WirExpr::ArrayNewFixed { .. } | WirExpr::ArrayNew { .. } | WirExpr::RefCast { .. } |
-        WirExpr::RefCastNullable { .. } | WirExpr::RefIsNull { .. } | WirExpr::RefNull(_) => true,
+        WirExpr::RefCastNullable { .. } | WirExpr::RefIsNull { .. } | WirExpr::RefNull(_) |
+        WirExpr::SafeKernel(_) => true,
         WirExpr::Control(node) => node_has_forbidden(node),
         WirExpr::Seq(seq) => has_forbidden_nodes(seq),
         WirExpr::Unary { arg, .. } | WirExpr::ToSlot(arg, _) | WirExpr::FromSlot(arg, _) |
@@ -81,6 +82,11 @@ fn node_size(node: &WirNode) -> usize {
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => expr_size(value),
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => expr_size(ptr) + expr_size(value),
         WirNode::SafeStore { place, value, .. } | WirNode::SafeStore8 { place, value } => safe_place_size(place) + expr_size(value),
+        WirNode::SafeKernel(operation) => {
+            let mut size = 0;
+            operation.for_each_wir_expr(|expr| size += expr_size(expr));
+            size
+        }
         WirNode::CallStoreMulti { args, .. } => args.iter().map(expr_size).sum(),
         WirNode::CallIndirectStoreMulti { args, index, .. } => args.iter().map(expr_size).sum::<usize>() + expr_size(index),
         WirNode::MemoryCopy { dest, src, len } => expr_size(dest) + expr_size(src) + expr_size(len),
@@ -101,6 +107,11 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::ToSlot(inner, _) | WirExpr::FromSlot(inner, _) | WirExpr::Unary { arg: inner, .. } |
         WirExpr::Convert { arg: inner, .. } | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. } => expr_size(inner),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => safe_place_size(place),
+        WirExpr::SafeKernel(operation) => {
+            let mut size = 0;
+            operation.for_each_wir_expr(|expr| size += expr_size(expr));
+            size
+        }
         WirExpr::Binary { lhs, rhs, .. } => expr_size(lhs) + expr_size(rhs),
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => args.iter().map(expr_size).sum(),
         WirExpr::CallIndirect { args, index, .. } => args.iter().map(expr_size).sum::<usize>() + expr_size(index),
@@ -139,6 +150,9 @@ fn inline_node(node: &mut WirNode, target: &WirFunc, parent_name: &str, parent_p
         WirNode::SafeStore { place, value, .. } | WirNode::SafeStore8 { place, value } => {
             place.for_each_wir_expr_mut(|expr| inline_expr(expr, target, parent_name, parent_params, parent_locals, new_locals, changed));
             inline_expr(value, target, parent_name, parent_params, parent_locals, new_locals, changed);
+        }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| inline_expr(expr, target, parent_name, parent_params, parent_locals, new_locals, changed));
         }
         WirNode::MemoryCopy { dest, src, len } => {
             inline_expr(dest, target, parent_name, parent_params, parent_locals, new_locals, changed);
@@ -185,6 +199,9 @@ fn replace_get_locals_expr(expr: &mut WirExpr, args_map: &HashMap<String, WirExp
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| replace_get_locals_expr(inner, args_map));
         }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| replace_get_locals_expr(inner, args_map));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             replace_get_locals_expr(lhs, args_map);
             replace_get_locals_expr(rhs, args_map);
@@ -224,6 +241,9 @@ fn replace_get_locals_node(node: &mut WirNode, args_map: &HashMap<String, WirExp
         WirNode::SafeStore { place, value, .. } | WirNode::SafeStore8 { place, value } => {
             place.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
             replace_get_locals_expr(value, args_map);
+        }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
         }
         WirNode::MemoryCopy { dest, src, len } => {
             replace_get_locals_expr(dest, args_map);
@@ -302,6 +322,9 @@ fn inline_expr(expr: &mut WirExpr, target: &WirFunc, parent_name: &str, parent_p
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| inline_expr(inner, target, parent_name, parent_params, parent_locals, new_locals, changed));
         }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| inline_expr(inner, target, parent_name, parent_params, parent_locals, new_locals, changed));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             inline_expr(lhs, target, parent_name, parent_params, parent_locals, new_locals, changed);
             inline_expr(rhs, target, parent_name, parent_params, parent_locals, new_locals, changed);
@@ -353,6 +376,11 @@ fn node_contains_call_to_func(seq: &WirSeq, target: &str) -> bool {
         WirNode::Push(value) | WirNode::Return(Some(value)) | WirNode::Br { cond: Some(value), .. } => expr_contains_call_to_func(value, target),
         WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } | WirNode::StructSet { base: ptr, value, .. } => expr_contains_call_to_func(ptr, target) || expr_contains_call_to_func(value, target),
         WirNode::SafeStore { place, value, .. } | WirNode::SafeStore8 { place, value } => safe_place_contains_call_to_func(place, target) || expr_contains_call_to_func(value, target),
+        WirNode::SafeKernel(operation) => {
+            let mut contains = false;
+            operation.for_each_wir_expr(|expr| contains |= expr_contains_call_to_func(expr, target));
+            contains
+        }
         WirNode::MemoryCopy { dest, src, len } | WirNode::MemoryFill { dest, value: src, len } | WirNode::ArraySet { array: dest, index: src, value: len, .. } => expr_contains_call_to_func(dest, target) || expr_contains_call_to_func(src, target) || expr_contains_call_to_func(len, target),
         WirNode::SafeMemoryCopy { destination, source, len, .. } => safe_place_contains_call_to_func(destination, target) || safe_place_contains_call_to_func(source, target) || expr_contains_call_to_func(len, target),
         WirNode::SafeMemoryFill { destination, value, len } => safe_place_contains_call_to_func(destination, target) || expr_contains_call_to_func(value, target) || expr_contains_call_to_func(len, target),
@@ -379,6 +407,11 @@ fn expr_contains_call_to_func(expr: &WirExpr, target: &str) -> bool {
         WirExpr::ArrayLen(arg) | WirExpr::RefIsNull(arg) => expr_contains_call_to_func(arg, target),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             safe_place_contains_call_to_func(place, target)
+        }
+        WirExpr::SafeKernel(operation) => {
+            let mut contains = false;
+            operation.for_each_wir_expr(|expr| contains |= expr_contains_call_to_func(expr, target));
+            contains
         }
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } | WirExpr::StructNew { args, .. } | WirExpr::ArrayNewFixed { items: args, .. } | WirExpr::Vector { args, .. } => args.iter().any(|a| expr_contains_call_to_func(a, target)),
         WirExpr::ArrayNew { value, len, .. } | WirExpr::ArrayGet { array: value, index: len, .. } => expr_contains_call_to_func(value, target) || expr_contains_call_to_func(len, target),

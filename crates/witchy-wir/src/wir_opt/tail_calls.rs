@@ -1604,6 +1604,13 @@ fn rewrite_explicit_returns_node(node: &mut WirNode, ctx: &TailCtx) -> usize {
             });
             count + rewrite_explicit_returns_expr(value, ctx)
         }
+        WirNode::SafeKernel(operation) => {
+            let mut count = 0;
+            operation.for_each_wir_expr_mut(|expr| {
+                count += rewrite_explicit_returns_expr(expr, ctx);
+            });
+            count
+        }
         WirNode::CallStoreMulti { args, .. } => {
             args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
         }
@@ -1675,6 +1682,13 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             let mut count = 0;
             place.for_each_wir_expr_mut(|inner| {
+                count += rewrite_explicit_returns_expr(inner, ctx);
+            });
+            count
+        }
+        WirExpr::SafeKernel(operation) => {
+            let mut count = 0;
+            operation.for_each_wir_expr_mut(|inner| {
                 count += rewrite_explicit_returns_expr(inner, ctx);
             });
             count

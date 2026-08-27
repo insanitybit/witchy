@@ -597,6 +597,9 @@ fn visit_wir_nodes(nodes: &[WirNode], visit: &mut impl FnMut(&WirNode)) {
                 place.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
                 visit_wir_expr(value, visit);
             }
+            WirNode::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
+            }
             WirNode::CallStoreMulti { args, .. } => {
                 for argument in args {
                     visit_wir_expr(argument, visit);
@@ -681,6 +684,9 @@ fn visit_wir_expr(expression: &WirExpr, visit: &mut impl FnMut(&WirNode)) {
         }
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
         }
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
             for argument in args {

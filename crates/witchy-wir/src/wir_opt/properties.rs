@@ -258,6 +258,45 @@ fn evaluate_safe_place(place: &crate::safewir_surface::SafePlaceExpr) -> Evaluat
     properties
 }
 
+fn evaluate_safe_kernel_expr(
+    operation: &crate::safewir_kernel::SafeKernelExpr,
+) -> EvaluationProperties {
+    let mut properties = EvaluationProperties::pure_total();
+    operation.for_each_wir_expr(|expr| {
+        properties = properties.combine(&evaluate_expr(expr));
+    });
+    let allocation = match operation {
+        crate::safewir_kernel::SafeKernelExpr::Allocate { .. }
+        | crate::safewir_kernel::SafeKernelExpr::Reuse { .. } => AllocationKind::Present,
+        crate::safewir_kernel::SafeKernelExpr::Retain { .. } => AllocationKind::None,
+    };
+    properties.combine(&EvaluationProperties {
+        host_effect: HostEffect::None,
+        suspension: Suspension::None,
+        memory: MemoryAccess::Unknown,
+        may_trap: true,
+        allocation,
+        total: false,
+    })
+}
+
+fn evaluate_safe_kernel_node(
+    operation: &crate::safewir_kernel::SafeKernelNode,
+) -> EvaluationProperties {
+    let mut properties = EvaluationProperties::pure_total();
+    operation.for_each_wir_expr(|expr| {
+        properties = properties.combine(&evaluate_expr(expr));
+    });
+    properties.combine(&EvaluationProperties {
+        host_effect: HostEffect::None,
+        suspension: Suspension::None,
+        memory: MemoryAccess::Unknown,
+        may_trap: true,
+        allocation: AllocationKind::None,
+        total: false,
+    })
+}
+
 pub fn evaluate_expr(expr: &WirExpr) -> EvaluationProperties {
     match expr {
         WirExpr::ConstI64(_)
@@ -347,6 +386,7 @@ pub fn evaluate_expr(expr: &WirExpr) -> EvaluationProperties {
                 total: false,
             })
         }
+        WirExpr::SafeKernel(operation) => evaluate_safe_kernel_expr(operation),
 
         WirExpr::MemorySize => EvaluationProperties {
             host_effect: HostEffect::None,
@@ -554,6 +594,7 @@ pub fn evaluate_node(node: &WirNode) -> EvaluationProperties {
                 allocation: AllocationKind::None,
                 total: false,
             }),
+        WirNode::SafeKernel(operation) => evaluate_safe_kernel_node(operation),
 
         WirNode::CallStoreMulti { args, .. } => {
             let mut prop = EvaluationProperties::pure_total();

@@ -6447,6 +6447,9 @@ fn collect_called_funcs(
             E::SafeLoad { place, .. } | E::SafeLoad8U { place } => {
                 place.for_each_wir_expr(|inner| expr(inner, out, uses_table));
             }
+            E::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|inner| expr(inner, out, uses_table));
+            }
             E::Binary { lhs, rhs, .. } => {
                 expr(lhs, out, uses_table);
                 expr(rhs, out, uses_table);
@@ -6502,6 +6505,9 @@ fn collect_called_funcs(
             N::SafeStore { place, value, .. } | N::SafeStore8 { place, value } => {
                 place.for_each_wir_expr(|inner| expr(inner, out, uses_table));
                 expr(value, out, uses_table);
+            }
+            N::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|inner| expr(inner, out, uses_table));
             }
             N::CallStoreMulti { func, args, .. } => {
                 out.insert(func.clone());
@@ -6646,6 +6652,9 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
             E::SafeLoad { place, .. } | E::SafeLoad8U { place } => {
                 place.for_each_wir_expr(|inner| expr(inner, out));
             }
+            E::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|inner| expr(inner, out));
+            }
             E::Binary { lhs, rhs, .. } => {
                 expr(lhs, out);
                 expr(rhs, out);
@@ -6695,6 +6704,9 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
             N::SafeStore { place, value, .. } | N::SafeStore8 { place, value } => {
                 place.for_each_wir_expr(|inner| expr(inner, out));
                 expr(value, out);
+            }
+            N::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|inner| expr(inner, out));
             }
             N::CallStoreMulti { args, .. } => {
                 for a in args {
@@ -6849,6 +6861,9 @@ fn attach_diagnostic_site_expr(
             E::SafeLoad { place, .. } | E::SafeLoad8U { place } => {
                 place.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
             }
+            E::SafeKernel(operation) => {
+                operation.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
+            }
             E::Binary { lhs, rhs, .. } => {
                 reaches_host |= expr(lhs, site);
                 reaches_host |= expr(rhs, site);
@@ -6912,6 +6927,9 @@ fn attach_diagnostic_site_expr(
             N::SafeStore { place, value, .. } | N::SafeStore8 { place, value } => {
                 place.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
                 reaches_host |= expr(value, site);
+            }
+            N::SafeKernel(operation) => {
+                operation.for_each_wir_expr_mut(|inner| reaches_host |= expr(inner, site));
             }
             N::CallStoreMulti { func, args, .. } => {
                 for arg in args.iter_mut() {

@@ -124,6 +124,11 @@ fn specialize_node(
             });
             specialize_expr(value, func_map, spec_cache, new_clones, spec_counter);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| {
+                specialize_expr(expr, func_map, spec_cache, new_clones, spec_counter);
+            });
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             specialize_expr(dest, func_map, spec_cache, new_clones, spec_counter);
             specialize_expr(src, func_map, spec_cache, new_clones, spec_counter);
@@ -195,6 +200,11 @@ fn specialize_expr(
         }
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| {
+                specialize_expr(inner, func_map, spec_cache, new_clones, spec_counter);
+            });
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| {
                 specialize_expr(inner, func_map, spec_cache, new_clones, spec_counter);
             });
         }
@@ -316,6 +326,9 @@ fn replace_params_node(node: &mut WirNode, subst: &HashMap<String, WirExpr>) {
             place.for_each_wir_expr_mut(|expr| replace_params_expr(expr, subst));
             replace_params_expr(value, subst);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| replace_params_expr(expr, subst));
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             replace_params_expr(dest, subst);
             replace_params_expr(src, subst);
@@ -380,6 +393,9 @@ fn replace_params_expr(expr: &mut WirExpr, subst: &HashMap<String, WirExpr>) {
         }
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| replace_params_expr(inner, subst));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| replace_params_expr(inner, subst));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             replace_params_expr(lhs, subst);

@@ -236,6 +236,9 @@ fn collect_closure_codes_node(node: &WirNode, out: &mut Vec<i32>) {
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } | WirNode::Drop(value)
         | WirNode::Do(value) | WirNode::Push(value) | WirNode::Return(Some(value))
         | WirNode::Br { cond: Some(value), .. } => collect_closure_codes_expr(value, out),
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|value| collect_closure_codes_expr(value, out));
+        }
         _ => {}
     }
 }
@@ -257,6 +260,9 @@ fn collect_closure_codes_expr(expression: &WirExpr, out: &mut Vec<i32>) {
         | WirExpr::RefCastNullable { value, .. } => collect_closure_codes_expr(value, out),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr(|value| collect_closure_codes_expr(value, out));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|value| collect_closure_codes_expr(value, out));
         }
         WirExpr::Binary { lhs, rhs, .. } | WirExpr::ArrayNew { value: lhs, len: rhs, .. }
         | WirExpr::ArrayGet { array: lhs, index: rhs, .. } => {
@@ -336,6 +342,13 @@ fn rewrite_call_node(node: &mut WirNode, family: &str, replacement: &str) -> usi
             });
             rewritten + rewrite_call_expr(value, family, replacement)
         }
+        WirNode::SafeKernel(operation) => {
+            let mut rewritten = 0;
+            operation.for_each_wir_expr_mut(|expr| {
+                rewritten += rewrite_call_expr(expr, family, replacement);
+            });
+            rewritten
+        }
         WirNode::MemoryCopy { dest, src, len } | WirNode::MemoryFill { dest, value: src, len }
         | WirNode::ArraySet { array: dest, index: src, value: len, .. } => rewrite_call_expr(dest, family, replacement) + rewrite_call_expr(src, family, replacement) + rewrite_call_expr(len, family, replacement),
         WirNode::SafeMemoryCopy { destination, source, len, .. } => {
@@ -380,6 +393,13 @@ fn rewrite_call_expr(expression: &mut WirExpr, family: &str, replacement: &str) 
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             let mut rewritten = 0;
             place.for_each_wir_expr_mut(|value| {
+                rewritten += rewrite_call_expr(value, family, replacement);
+            });
+            rewritten
+        }
+        WirExpr::SafeKernel(operation) => {
+            let mut rewritten = 0;
+            operation.for_each_wir_expr_mut(|value| {
                 rewritten += rewrite_call_expr(value, family, replacement);
             });
             rewritten
@@ -535,6 +555,11 @@ mod tests {
         AwaitChannelOperationPlan, CarrierLane, ChannelMessageOperand,
     };
     use witchy_wir::wir::{WirExpr, WirNode};
+    use witchy_wir::layout::LayoutId;
+    use witchy_wir::safewir_kernel::{
+        SafeAllocationClass, SafeKernelExpr, SafeKernelNode, SafeKernelResultClaim,
+    };
+    use witchy_wir::safewir_surface::{SafeExtentExpr, SafeObjectExpr, SafeProvenanceExpr, SafeSizeExpr};
 
     fn endpoint(
         place: &str,
@@ -563,6 +588,74 @@ mod tests {
             transition_ordinal: ordinal,
             kind,
         }
+    }
+
+    #[test]
+    fn ready_executor_visitors_reach_opaque_kernel_operands_and_claims() {
+        let layout = LayoutId::from_bytes([9; 32]);
+        let mut body = vec![
+            WirNode::Drop(WirExpr::SafeKernel(SafeKernelExpr::Allocate {
+                class: SafeAllocationClass::ReferenceCounted,
+                result: SafeKernelResultClaim {
+                    layout,
+                    extent: SafeExtentExpr::Exact(SafeSizeExpr::Value(Box::new(
+                        WirExpr::StructNew {
+                            struct_id: 0,
+                            args: vec![WirExpr::ConstI32(7)],
+                        },
+                    ))),
+                },
+                encoded_size: Box::new(WirExpr::Call {
+                    func: "ready".into(),
+                    args: vec![],
+                }),
+            })),
+            WirNode::SafeKernel(SafeKernelNode::Reclaim {
+                object: SafeObjectExpr {
+                    root: Box::new(WirExpr::Call {
+                        func: "ready".into(),
+                        args: vec![],
+                    }),
+                    layout,
+                    extent: SafeExtentExpr::Exact(SafeSizeExpr::Value(Box::new(
+                        WirExpr::StructNew {
+                            struct_id: 0,
+                            args: vec![WirExpr::ConstI32(11)],
+                        },
+                    ))),
+                    provenance: SafeProvenanceExpr::Unknown,
+                },
+            }),
+        ];
+
+        let mut closure_codes = Vec::new();
+        for node in &body {
+            collect_closure_codes_node(node, &mut closure_codes);
+        }
+        assert_eq!(closure_codes, [7, 11]);
+        assert_eq!(rewrite_call_seq(&mut body, "ready", "ready_i64"), 2);
+
+        let mut called = Vec::new();
+        for node in &body {
+            match node {
+                WirNode::Drop(WirExpr::SafeKernel(operation)) => {
+                    operation.for_each_wir_expr(|expr| {
+                        if let WirExpr::Call { func, .. } = expr {
+                            called.push(func.clone());
+                        }
+                    });
+                }
+                WirNode::SafeKernel(operation) => {
+                    operation.for_each_wir_expr(|expr| {
+                        if let WirExpr::Call { func, .. } = expr {
+                            called.push(func.clone());
+                        }
+                    });
+                }
+                _ => panic!("unexpected visitor fixture shape"),
+            }
+        }
+        assert_eq!(called, ["ready_i64", "ready_i64"]);
     }
 
     #[test]

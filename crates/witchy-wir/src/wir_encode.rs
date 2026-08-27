@@ -165,7 +165,9 @@ impl Preflight<'_> {
                 }
                 self.expr(ptr, locals, labels)?;
             }
-            WirExpr::SafeLoad { .. } | WirExpr::SafeLoad8U { .. } => {
+            WirExpr::SafeLoad { .. }
+            | WirExpr::SafeLoad8U { .. }
+            | WirExpr::SafeKernel(_) => {
                 return Self::reject(
                     "semantic SafeWIR memory operations require validated encoder authority",
                 );
@@ -283,7 +285,8 @@ impl Preflight<'_> {
             WirNode::SafeStore { .. }
             | WirNode::SafeMemoryCopy { .. }
             | WirNode::SafeMemoryFill { .. }
-            | WirNode::SafeStore8 { .. } => {
+            | WirNode::SafeStore8 { .. }
+            | WirNode::SafeKernel(_) => {
                 return Self::reject(
                     "semantic SafeWIR memory operations require validated encoder authority",
                 );
@@ -1071,7 +1074,8 @@ impl EncodeCtx<'_> {
             WirNode::SafeStore { .. }
             | WirNode::SafeMemoryCopy { .. }
             | WirNode::SafeMemoryFill { .. }
-            | WirNode::SafeStore8 { .. } => {
+            | WirNode::SafeStore8 { .. }
+            | WirNode::SafeKernel(_) => {
                 unreachable!("SafeWIR must be erased by the validated encoder boundary")
             }
             WirNode::CallStoreMulti { func: name, args, dests } => {
@@ -1401,7 +1405,9 @@ impl EncodeCtx<'_> {
                 };
                 func.instruction(&instr);
             }
-            WirExpr::SafeLoad { .. } | WirExpr::SafeLoad8U { .. } => {
+            WirExpr::SafeLoad { .. }
+            | WirExpr::SafeLoad8U { .. }
+            | WirExpr::SafeKernel(_) => {
                 unreachable!("SafeWIR must be erased by the validated encoder boundary")
             }
             WirExpr::MemorySize => {

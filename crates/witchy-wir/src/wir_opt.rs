@@ -127,6 +127,9 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
             place.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
             simplify_expr(value, changed);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
+        }
         WirNode::CallStoreMulti { args, .. } => {
             for a in args.iter_mut() {
                 simplify_expr(a, changed);
@@ -214,6 +217,9 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
         | WirExpr::Load8U { ptr: inner, .. } => simplify_expr(inner, changed),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| simplify_expr(expr, changed));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_expr(lhs, changed);
@@ -341,6 +347,11 @@ pub(crate) fn node_size(node: &WirNode) -> usize {
         }
         WirNode::SafeStore { place, value, .. }
         | WirNode::SafeStore8 { place, value } => safe_place_expr_size(place) + expr_size(value),
+        WirNode::SafeKernel(operation) => {
+            let mut size = 0;
+            operation.for_each_wir_expr(|expr| size += expr_size(expr));
+            size
+        }
         WirNode::CallStoreMulti { args, .. } => args.iter().map(expr_size).sum(),
         WirNode::CallIndirectStoreMulti { args, index, .. } => {
             args.iter().map(expr_size).sum::<usize>() + expr_size(index)
@@ -383,6 +394,11 @@ pub(crate) fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::Load8U { ptr: inner, .. } => expr_size(inner),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             safe_place_expr_size(place)
+        }
+        WirExpr::SafeKernel(operation) => {
+            let mut size = 0;
+            operation.for_each_wir_expr(|expr| size += expr_size(expr));
+            size
         }
         WirExpr::Binary { lhs, rhs, .. } => expr_size(lhs) + expr_size(rhs),
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {

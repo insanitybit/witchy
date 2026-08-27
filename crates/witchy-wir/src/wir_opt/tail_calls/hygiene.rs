@@ -84,6 +84,9 @@ fn adapt_explicit_returns_node(node: &mut WirNode, kind: Kind) {
             place.for_each_wir_expr_mut(|expr| adapt_explicit_returns_expr(expr, kind));
             adapt_explicit_returns_expr(value, kind);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| adapt_explicit_returns_expr(expr, kind));
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             adapt_explicit_returns_expr(array, kind);
             adapt_explicit_returns_expr(index, kind);
@@ -143,6 +146,9 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
         | WirExpr::RefIsNull(inner) => adapt_explicit_returns_expr(inner, kind),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| adapt_explicit_returns_expr(inner, kind));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| adapt_explicit_returns_expr(inner, kind));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             adapt_explicit_returns_expr(lhs, kind);
@@ -233,6 +239,9 @@ pub(in crate::wir_opt) fn rename_node_locals(
             place.for_each_wir_expr_mut(|expr| rename_expr_locals(expr, renames));
             rename_expr_locals(value, renames);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| rename_expr_locals(expr, renames));
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             rename_expr_locals(array, renames);
             rename_expr_locals(index, renames);
@@ -304,6 +313,9 @@ pub(in crate::wir_opt) fn rename_expr_locals(
         | WirExpr::RefIsNull(inner) => rename_expr_locals(inner, renames),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| rename_expr_locals(inner, renames));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| rename_expr_locals(inner, renames));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             rename_expr_locals(lhs, renames);

@@ -17,6 +17,7 @@
 use std::fmt::Write;
 
 use crate::safewir_surface::{SafeCopyKind, SafePlaceExpr};
+use crate::safewir_kernel::{SafeKernelExpr, SafeKernelNode};
 
 /// The maximum closure arity the static prelude pre-declares (`$clos0..$clos4`).
 /// The binary encoder reserves type indices `0..=MAX_CLOS` for these signatures
@@ -564,6 +565,10 @@ pub enum WirExpr {
     /// RFC-0162 semantic byte load.
     SafeLoad8U { place: Box<SafePlaceExpr> },
 
+    /// RFC-0162 opaque value-producing memory-kernel operation. Candidate
+    /// construction carries no validation or encoder authority.
+    SafeKernel(SafeKernelExpr),
+
     /// A direct call to a module function by name.
     Call {
         func: String,
@@ -744,6 +749,8 @@ pub enum WirNode {
         place: Box<SafePlaceExpr>,
         value: WirExpr,
     },
+    /// RFC-0162 opaque effect-only memory-kernel operation.
+    SafeKernel(SafeKernelNode),
     /// `if (cond) then else els`. `result` is the value type (None = statement if).
     If {
         cond: WirExpr,
@@ -1184,6 +1191,18 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
                 let _ = writeln!(s, "i32.store8 offset={}", place.encoded_offset);
             }
         }
+        WirNode::SafeKernel(operation) => {
+            match operation {
+                SafeKernelNode::Release { object } => {
+                    print_expr(s, &object.root, depth);
+                    emit(s, depth, "safewir.kernel.release");
+                }
+                SafeKernelNode::Reclaim { object } => {
+                    print_expr(s, &object.root, depth);
+                    emit(s, depth, "safewir.kernel.reclaim");
+                }
+            }
+        }
         WirNode::If {
             cond,
             then_,
@@ -1428,6 +1447,31 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                 );
             }
         }
+        WirExpr::SafeKernel(operation) => {
+            match operation {
+                SafeKernelExpr::Allocate { class, encoded_size, .. } => {
+                    print_expr(s, encoded_size, depth);
+                    let operation = match class {
+                        crate::safewir_kernel::SafeAllocationClass::Bump => {
+                            "safewir.kernel.allocate.bump"
+                        }
+                        crate::safewir_kernel::SafeAllocationClass::ReferenceCounted => {
+                            "safewir.kernel.allocate.rc"
+                        }
+                    };
+                    emit(s, depth, operation);
+                }
+                SafeKernelExpr::Retain { object } => {
+                    print_expr(s, &object.root, depth);
+                    emit(s, depth, "safewir.kernel.retain");
+                }
+                SafeKernelExpr::Reuse { object, encoded_size, .. } => {
+                    print_expr(s, &object.root, depth);
+                    print_expr(s, encoded_size, depth);
+                    emit(s, depth, "safewir.kernel.reuse");
+                }
+            }
+        }
         WirExpr::Call { func, args } => {
             for a in args {
                 print_expr(s, a, depth);
@@ -1622,6 +1666,9 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
             WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
                 place.for_each_wir_expr(|expr| walk_expr(expr, out));
             }
+            WirExpr::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expr| walk_expr(expr, out));
+            }
             WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
@@ -1692,6 +1739,9 @@ pub(crate) fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSig
             | WirNode::SafeStore8 { place, value } => {
                 place.for_each_wir_expr(|expr| walk_expr(expr, out));
                 walk_expr(value, out);
+            }
+            WirNode::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expr| walk_expr(expr, out));
             }
             WirNode::CallStoreMulti { args, .. } => {
                 for a in args {
@@ -1768,6 +1818,9 @@ pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::
             WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => walk_expr(ptr, out),
             WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
                 place.for_each_wir_expr(|expr| walk_expr(expr, out));
+            }
+            WirExpr::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expr| walk_expr(expr, out));
             }
             WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
@@ -1848,6 +1901,9 @@ pub(crate) fn collect_used_locals_seq(seq: &WirSeq, out: &mut std::collections::
             | WirNode::SafeStore8 { place, value } => {
                 place.for_each_wir_expr(|expr| walk_expr(expr, out));
                 walk_expr(value, out);
+            }
+            WirNode::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expr| walk_expr(expr, out));
             }
             WirNode::CallStoreMulti { args, dests, .. } => {
                 for a in args {
@@ -1973,6 +2029,9 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                 place.for_each_wir_expr(|expr| expr_violates(expr, hits));
                 expr_violates(value, hits);
             }
+            WirNode::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expr| expr_violates(expr, hits));
+            }
             WirNode::CallStoreMulti { args, .. } => {
                 for a in args {
                     expr_violates(a, hits);
@@ -2037,6 +2096,9 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
             | WirExpr::MemoryGrow(i) => expr_violates(i, hits),
             WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
                 place.for_each_wir_expr(|expr| expr_violates(expr, hits));
+            }
+            WirExpr::SafeKernel(operation) => {
+                operation.for_each_wir_expr(|expr| expr_violates(expr, hits));
             }
             WirExpr::Binary { lhs, rhs, .. } => {
                 expr_violates(lhs, hits);

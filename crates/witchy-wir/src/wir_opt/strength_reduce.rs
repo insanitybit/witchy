@@ -217,6 +217,9 @@ fn simplify_node(node: &mut WirNode, env: &mut HashMap<String, RangeFact>) {
             place.for_each_wir_expr_mut(|expr| simplify_expr(expr, env));
             simplify_expr(value, env);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| simplify_expr(expr, env));
+        }
         WirNode::CallStoreMulti { args, .. } => {
             for a in args.iter_mut() {
                 simplify_expr(a, env);
@@ -333,6 +336,9 @@ fn simplify_expr(expr: &mut WirExpr, env: &HashMap<String, RangeFact>) {
         | WirExpr::RefCastNullable { value: inner, .. } => simplify_expr(inner, env),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| simplify_expr(inner, env));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| simplify_expr(inner, env));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_expr(lhs, env);

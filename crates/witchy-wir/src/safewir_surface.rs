@@ -58,7 +58,7 @@ pub enum SafeExtentExpr {
 }
 
 impl SafeExtentExpr {
-    fn for_each_wir_expr(&self, visit: &mut impl FnMut(&WirExpr)) {
+    pub(crate) fn for_each_wir_expr(&self, visit: &mut impl FnMut(&WirExpr)) {
         match self {
             Self::Unknown => {}
             Self::Exact(size) => size.for_each_wir_expr(visit),
@@ -70,7 +70,7 @@ impl SafeExtentExpr {
         }
     }
 
-    fn for_each_wir_expr_mut(&mut self, visit: &mut impl FnMut(&mut WirExpr)) {
+    pub(crate) fn for_each_wir_expr_mut(&mut self, visit: &mut impl FnMut(&mut WirExpr)) {
         match self {
             Self::Unknown => {}
             Self::Exact(size) => size.for_each_wir_expr_mut(visit),
@@ -190,6 +190,20 @@ pub struct SafeObjectExpr {
     pub layout: LayoutId,
     pub extent: SafeExtentExpr,
     pub provenance: SafeProvenanceExpr,
+}
+
+impl SafeObjectExpr {
+    pub fn for_each_wir_expr(&self, mut visit: impl FnMut(&WirExpr)) {
+        visit(&self.root);
+        self.extent.for_each_wir_expr(&mut visit);
+        self.provenance.for_each_wir_expr(&mut visit);
+    }
+
+    pub fn for_each_wir_expr_mut(&mut self, mut visit: impl FnMut(&mut WirExpr)) {
+        visit(&mut self.root);
+        self.extent.for_each_wir_expr_mut(&mut visit);
+        self.provenance.for_each_wir_expr_mut(&mut visit);
+    }
 }
 
 #[derive(Debug, Clone)]

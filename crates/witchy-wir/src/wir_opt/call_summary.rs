@@ -110,7 +110,9 @@ pub fn infer_expr_kind(expr: &WirExpr) -> Kind {
         | WirExpr::Convert { to: kind, .. }
         | WirExpr::Load { kind, .. }
         | WirExpr::SafeLoad { kind, .. } => *kind,
-        WirExpr::Load8U { .. } | WirExpr::SafeLoad8U { .. } => Kind::I32,
+        WirExpr::Load8U { .. }
+        | WirExpr::SafeLoad8U { .. }
+        | WirExpr::SafeKernel(_) => Kind::I32,
         WirExpr::RefNull(kind) => *kind,
         WirExpr::RefIsNull(_) => Kind::I32,
         WirExpr::StructNew { struct_id, .. }
@@ -436,6 +438,11 @@ fn collect_summaries_node(
             place.for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
             collect_summaries_expr(func, value, loop_depth, out);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expr| {
+                collect_summaries_expr(func, expr, loop_depth, out)
+            });
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_summaries_expr(func, array, loop_depth, out);
             collect_summaries_expr(func, index, loop_depth, out);
@@ -498,6 +505,11 @@ fn collect_summaries_expr(
         }
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr(|expr| collect_summaries_expr(func, expr, loop_depth, out));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expr| {
+                collect_summaries_expr(func, expr, loop_depth, out)
+            });
         }
         WirExpr::ArrayGet { array, index, .. } => {
             collect_summaries_expr(func, array, loop_depth, out);

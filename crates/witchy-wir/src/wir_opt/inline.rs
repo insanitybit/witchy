@@ -100,6 +100,9 @@ fn collect_assigned_locals_node(node: &WirNode, assigned: &mut HashSet<String>) 
             place.for_each_wir_expr(|expr| collect_assigned_locals_expr(expr, assigned));
             collect_assigned_locals_expr(value, assigned);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expr| collect_assigned_locals_expr(expr, assigned));
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_assigned_locals_expr(array, assigned);
             collect_assigned_locals_expr(index, assigned);
@@ -153,6 +156,9 @@ fn collect_assigned_locals_expr(expr: &WirExpr, assigned: &mut HashSet<String>) 
         | WirExpr::RefIsNull(inner) => collect_assigned_locals_expr(inner, assigned),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr(|inner| collect_assigned_locals_expr(inner, assigned));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|inner| collect_assigned_locals_expr(inner, assigned));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_assigned_locals_expr(lhs, assigned);
@@ -248,6 +254,9 @@ fn devirt_node(
             devirt_expr(ptr, funcs, closures, changed);
             devirt_expr(value, funcs, closures, changed);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| devirt_expr(expr, funcs, closures, changed));
+        }
         WirNode::SafeStore { place, value, .. }
         | WirNode::SafeStore8 { place, value } => {
             place.for_each_wir_expr_mut(|expr| devirt_expr(expr, funcs, closures, changed));
@@ -332,6 +341,9 @@ fn devirt_expr(
         }
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| devirt_expr(inner, funcs, closures, changed));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| devirt_expr(inner, funcs, closures, changed));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             devirt_expr(lhs, funcs, closures, changed);
@@ -454,6 +466,11 @@ fn inline_in_node(
             });
             inline_in_expr(value, inlineable, caller_name, new_locals, changed);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| {
+                inline_in_expr(expr, inlineable, caller_name, new_locals, changed);
+            });
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             inline_in_expr(array, inlineable, caller_name, new_locals, changed);
             inline_in_expr(index, inlineable, caller_name, new_locals, changed);
@@ -540,6 +557,12 @@ fn inline_in_expr(
                 simplify_struct_ops(inner);
             });
         }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| {
+                inline_in_expr(inner, inlineable, caller_name, new_locals, changed);
+                simplify_struct_ops(inner);
+            });
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             inline_in_expr(lhs, inlineable, caller_name, new_locals, changed);
             inline_in_expr(rhs, inlineable, caller_name, new_locals, changed);
@@ -611,6 +634,9 @@ fn replace_get_locals_expr(expr: &mut WirExpr, args_map: &HashMap<String, WirExp
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(|inner| replace_get_locals_expr(inner, args_map));
         }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|inner| replace_get_locals_expr(inner, args_map));
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             replace_get_locals_expr(lhs, args_map);
             replace_get_locals_expr(rhs, args_map);
@@ -679,6 +705,9 @@ fn replace_get_locals_node(node: &mut WirNode, args_map: &HashMap<String, WirExp
         | WirNode::SafeStore8 { place, value } => {
             place.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
             replace_get_locals_expr(value, args_map);
+        }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(|expr| replace_get_locals_expr(expr, args_map));
         }
         WirNode::ArraySet { array, index, value, .. } => {
             replace_get_locals_expr(array, args_map);
@@ -758,6 +787,9 @@ pub fn simplify_struct_ops(expr: &mut WirExpr) {
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr_mut(simplify_struct_ops);
         }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr_mut(simplify_struct_ops);
+        }
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_struct_ops(lhs);
             simplify_struct_ops(rhs);
@@ -818,6 +850,11 @@ fn has_call_node(node: &WirNode) -> bool {
         | WirNode::SafeStore8 { place, value } => {
             safe_place_has_call(place) || has_call_expr(value)
         }
+        WirNode::SafeKernel(operation) => {
+            let mut has_call = false;
+            operation.for_each_wir_expr(|expr| has_call |= has_call_expr(expr));
+            has_call
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             has_call_expr(array) || has_call_expr(index) || has_call_expr(value)
         }
@@ -857,6 +894,11 @@ fn has_call_expr(expr: &WirExpr) -> bool {
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             safe_place_has_call(place)
         }
+        WirExpr::SafeKernel(operation) => {
+            let mut has_call = false;
+            operation.for_each_wir_expr(|expr| has_call |= has_call_expr(expr));
+            has_call
+        }
         WirExpr::Binary { lhs, rhs, .. } => has_call_expr(lhs) || has_call_expr(rhs),
         WirExpr::ArrayNew { value, len, .. } => has_call_expr(value) || has_call_expr(len),
         WirExpr::ArrayGet { array, index, .. } => has_call_expr(array) || has_call_expr(index),
@@ -882,6 +924,11 @@ fn node_size(node: &WirNode) -> usize {
         }
         WirNode::SafeStore { place, value, .. }
         | WirNode::SafeStore8 { place, value } => safe_place_size(place) + expr_size(value),
+        WirNode::SafeKernel(operation) => {
+            let mut size = 0;
+            operation.for_each_wir_expr(|expr| size += expr_size(expr));
+            size
+        }
         WirNode::CallStoreMulti { args, .. } => args.iter().map(expr_size).sum(),
         WirNode::CallIndirectStoreMulti { args, index, .. } => {
             args.iter().map(expr_size).sum::<usize>() + expr_size(index)
@@ -923,6 +970,11 @@ fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::Load { ptr: inner, .. }
         | WirExpr::Load8U { ptr: inner, .. } => expr_size(inner),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => safe_place_size(place),
+        WirExpr::SafeKernel(operation) => {
+            let mut size = 0;
+            operation.for_each_wir_expr(|expr| size += expr_size(expr));
+            size
+        }
         WirExpr::Binary { lhs, rhs, .. } => expr_size(lhs) + expr_size(rhs),
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
             args.iter().map(expr_size).sum()
@@ -1017,6 +1069,9 @@ fn collect_calls_node(node: &WirNode, called: &mut HashSet<String>) {
             place.for_each_wir_expr(|expr| collect_calls_expr(expr, called));
             collect_calls_expr(value, called);
         }
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expr| collect_calls_expr(expr, called));
+        }
         WirNode::ArraySet { array, index, value, .. } => {
             collect_calls_expr(array, called);
             collect_calls_expr(index, called);
@@ -1074,6 +1129,9 @@ fn collect_calls_expr(expr: &WirExpr, called: &mut HashSet<String>) {
         | WirExpr::RefIsNull(inner) => collect_calls_expr(inner, called),
         WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
             place.for_each_wir_expr(|inner| collect_calls_expr(inner, called));
+        }
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|inner| collect_calls_expr(inner, called));
         }
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_calls_expr(lhs, called);
