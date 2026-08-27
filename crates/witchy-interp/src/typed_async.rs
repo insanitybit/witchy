@@ -29,6 +29,15 @@ pub enum KernelTurn {
     Trapped,
 }
 
+/// A scheduler/host admission result for one operation. The typed frame owns
+/// actual values; the kernel records only which result lanes became initialized
+/// and which source-ordered select arm committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationCommit {
+    Ready { operation: OperationSiteId },
+    SelectArm { operation: OperationSiteId, arm: u32 },
+}
+
 #[derive(Debug, Clone)]
 pub struct TypedExecution {
     shape: TypedExecutionShape,
@@ -107,6 +116,65 @@ impl TypedExecution {
         }
     }
 
+    /// Commit a ready operation and immediately take its semantically matching
+    /// retry transition. A select is selected by its declared arm ordinal, not
+    /// a raw transition-vector index. Ordinary operations may resume only on
+    /// one unconditional edge; branch conditions still require the compiler's
+    /// typed condition evaluator.
+    pub fn commit_operation(&mut self, commit: OperationCommit) -> Result<KernelTurn, String> {
+        let (operation, selected_arm) = match commit {
+            OperationCommit::Ready { operation } => (operation, None),
+            OperationCommit::SelectArm { operation, arm } => (operation, Some(arm)),
+        };
+        let waiting = match self.status {
+            KernelStatus::Waiting(waiting) => waiting,
+            _ => return Err("commit for execution without an installed wait record".to_string()),
+        };
+        if waiting != operation {
+            return Err("commit operation does not own this execution wait record".to_string());
+        }
+        let operation_site = self.shape.operations.get(operation.0 as usize)
+            .ok_or_else(|| "operation vanished after validation".to_string())?;
+        let result_lanes = match selected_arm {
+            None => {
+                if operation_site.kind == witchy_types::typed_execution::ExecutionOperation::Select {
+                    return Err("select commit requires a source-ordered arm".to_string());
+                }
+                operation_site.result_lanes.clone()
+            }
+            Some(arm) => operation_site.arms.iter().find(|candidate| candidate.ordinal == arm)
+                .ok_or_else(|| "commit selected absent operation arm".to_string())?
+                .result_lanes.clone(),
+        };
+        let transition_index = self.matching_commit_transition(operation, selected_arm)?;
+        for lane in result_lanes {
+            self.initialized[lane.0 as usize] = true;
+        }
+        self.status = KernelStatus::Ready;
+        self.turn_selected(transition_index)
+    }
+
+    /// Abort a probe or registration before it commits. Pending moved payloads
+    /// are restored at the operation's declared fallback state, so retrying or
+    /// taking another source edge cannot observe an emptied frame lane.
+    pub fn abort_operation(&mut self, operation: OperationSiteId) -> Result<(), String> {
+        match self.status {
+            KernelStatus::Waiting(waiting) if waiting == operation => {}
+            KernelStatus::Waiting(_) => return Err("abort operation does not own this execution wait record".to_string()),
+            _ => return Err("abort for execution without an installed wait record".to_string()),
+        }
+        let operation_site = self.shape.operations.get(operation.0 as usize)
+            .ok_or_else(|| "operation vanished after validation".to_string())?;
+        let fallback = operation_site.fallback_state
+            .ok_or_else(|| "operation has no fallback state for aborted registration".to_string())?;
+        for lane in &operation_site.pending_move_lanes {
+            self.initialized[lane.0 as usize] = true;
+        }
+        self.state = fallback;
+        self.status = KernelStatus::Ready;
+        Ok(())
+    }
+
     /// Request cooperative cancellation. A valid request selects the declared
     /// cancellation operation and cleanup state; it never clears frame lanes.
     pub fn request_cancellation(&mut self) -> Result<bool, String> {
@@ -131,6 +199,28 @@ impl TypedExecution {
             LaneAction::Clear { lane: id } | LaneAction::Discharge { lane: id } => self.initialized[id.0 as usize] = false,
         }
         Ok(())
+    }
+
+    fn matching_commit_transition(
+        &self,
+        operation: OperationSiteId,
+        selected_arm: Option<u32>,
+    ) -> Result<usize, String> {
+        let state = self.shape.states.get(self.state.0 as usize)
+            .ok_or_else(|| "execution state vanished after validation".to_string())?;
+        let matching = state.transitions.iter().enumerate().filter_map(|(index, transition)| {
+            match (transition.condition, selected_arm) {
+                (ExecutionEdgeCondition::Always, None) => Some(index),
+                (ExecutionEdgeCondition::SelectArm { operation: edge_operation, arm }, Some(selected_arm))
+                    if edge_operation == operation && arm == selected_arm => Some(index),
+                _ => None,
+            }
+        }).collect::<Vec<_>>();
+        match matching.as_slice() {
+            [index] => Ok(*index),
+            [] => Err("operation commit has no matching retry transition".to_string()),
+            _ => Err("operation commit has ambiguous retry transitions".to_string()),
+        }
     }
 }
 
@@ -202,5 +292,70 @@ mod tests {
         let mut execution = TypedExecution::new(branching).expect("branching shape is valid");
         assert!(execution.turn().expect_err("kernel cannot guess branch").contains("explicit selected edge"));
         assert_eq!(execution.turn_selected(1), Ok(KernelTurn::PropagatedError));
+    }
+
+    #[test]
+    fn aborted_operation_restores_pending_moves_at_its_fallback_state() {
+        let mut execution = TypedExecution::new(shape()).expect("valid execution shape");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        execution.abort_operation(OperationSiteId(0)).expect("abort restores pending move");
+        assert_eq!(execution.state(), ExecutionStateId(0));
+        assert_eq!(execution.status(), KernelStatus::Ready);
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+    }
+
+    #[test]
+    fn commit_resumes_only_through_the_matching_operation_edge() {
+        let mut execution = TypedExecution::new(shape()).expect("valid execution shape");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        assert_eq!(
+            execution.commit_operation(OperationCommit::Ready { operation: OperationSiteId(0) }),
+            Ok(KernelTurn::Complete),
+        );
+        assert_eq!(execution.status(), KernelStatus::Complete);
+    }
+
+    #[test]
+    fn select_commit_uses_source_arm_identity_not_transition_position() {
+        let mut selecting = shape();
+        selecting.operations[0].kind = ExecutionOperation::Select;
+        selecting.operations[0].arms = vec![
+            witchy_types::typed_execution::OperationArm {
+                ordinal: 0,
+                operation: ExecutionOperation::ChannelReceive,
+                endpoint_lane: FrameLaneId(0),
+                input_lanes: vec![],
+                result_lanes: vec![FrameLaneId(0)],
+                queue: None,
+                ownership: witchy_types::typed_execution::PayloadOwnership::Inline,
+            },
+            witchy_types::typed_execution::OperationArm {
+                ordinal: 1,
+                operation: ExecutionOperation::ChannelReceive,
+                endpoint_lane: FrameLaneId(0),
+                input_lanes: vec![],
+                result_lanes: vec![FrameLaneId(0)],
+                queue: None,
+                ownership: witchy_types::typed_execution::PayloadOwnership::Inline,
+            },
+        ];
+        selecting.states[1].transitions = vec![
+            ExecutionTransition {
+                condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: 1 },
+                actions: vec![],
+                outcome: ExecutionOutcome::PropagateError,
+            },
+            ExecutionTransition {
+                condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: 0 },
+                actions: vec![],
+                outcome: ExecutionOutcome::Complete,
+            },
+        ];
+        let mut execution = TypedExecution::new(selecting).expect("valid select shape");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        assert_eq!(
+            execution.commit_operation(OperationCommit::SelectArm { operation: OperationSiteId(0), arm: 0 }),
+            Ok(KernelTurn::Complete),
+        );
     }
 }
