@@ -204,6 +204,19 @@ slow-timeout = { period = "240s", terminate-after = 2 }
 retries = 1
 priority = 85
 
+# The fuzz binary's own per-seed budget (WITCHY_FUZZ_TIMEOUT_SECS, 180s) must
+# sit BELOW nextest's kill threshold, or the internal timeout can never fire --
+# nextest SIGKILLs first and the careful "TIMED OUT on seed N" diagnostic is
+# lost. That inversion was introduced on 2026-08-26 by raising the internal
+# budget 60s -> 180s while the binary still ran on the profile default of
+# 45s x 3 = 135s: the test stopped failing fast at 60s and started being killed
+# at 135s instead, which moved the failure rather than removing it.
+# 240s x 2 = 480s leaves the 180s internal budget room to fire and report.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::differential_fuzz)'
+slow-timeout = { period = "240s", terminate-after = 2 }
+priority = 80
+
 # RFC-0129's million-message measurements create a Wasmtime instance per
 # sample and therefore peak far above ordinary unit-test memory.  They are
 # correctness and allocation guards, not throughput that benefits from
@@ -281,7 +294,11 @@ priority = 90
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::bin/witchy) & test(/^example_tests::example_sweeps::(documentation_examples_are_valid|all_examples_validate_via_cli)$/)'
 test-group = 'wasm-heavy'
-slow-timeout = { period = "240s", terminate-after = 2 }
+# Raised 240s -> 360s (2026-08-26): TRY 1 hit the full 480s ceiling at 0.6
+# load per core, an IDLE box, where this test's own p50 is 49.7s. A 10x
+# outlier on an idle machine is the cold first run in a freshly rebased gate
+# worktree, not contention -- so the ceiling, not the machine, was the bug.
+slow-timeout = { period = "360s", terminate-after = 2 }
 priority = 90
 
 [[profile.ci.overrides]]
