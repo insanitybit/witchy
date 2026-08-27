@@ -33,7 +33,7 @@ the least authority that does the job. A `Dir` navigates down to a single file w
 `read_file`, and a `File` op takes no path (it *is* the file):
 
 ```witchy
-// `load` provably touches one file — `witchy caps` reports it as `File[Read]`,
+// `load` provably touches one file - `witchy caps` reports it as `File[Read]`,
 // never `Dir`, so it cannot see anything else in the tree.
 fn load(cfg: File[Read]) -> String:
     cfg.read()
@@ -171,13 +171,13 @@ import string
 
 fn main(console: Console, secrets: SecretStore):
     // A required signing key: sign a message with it. The key's bytes never
-    // enter the program — the host signs on its behalf and returns the signature.
+    // enter the program - the host signs on its behalf and returns the signature.
     let signing = secrets.require("signing")
     let sig = crypto.sign(signing, "release v1.2.3")
     console.print("signature length ${sig.length()}")
 
     // An optional, revealable value secret. `reveal` works here because this is
-    // an ordinary named secret — it would error on the signing key above.
+    // an ordinary named secret - it would error on the signing key above.
     match secrets.get("api-token"):
         Some(tok) -> console.print("token: ${crypto.reveal(tok)}")
         None -> console.print("no api-token granted")
@@ -227,8 +227,8 @@ counter
 
 For everything else - string manipulation, lists, dicts, sorting, JSON, time -
 see the [standard library reference](appendix-stdlib.md) and the `examples/`
-directory in the repository, which carries a runnable program for nearly every
-feature in this book.
+directory, which carries a runnable program for nearly every feature in this
+book.
 
 When you're ready to build something larger, `examples/projects/` has complete
 multi-rune applications - a todo app, a ledger, a sales report, a dashboard, and

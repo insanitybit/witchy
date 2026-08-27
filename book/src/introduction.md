@@ -13,7 +13,7 @@ parameter list:
 
 ```witchy
 // This function can read a file. You can see that. It cannot write, connect to
-// the network, or read the clock — there is no parameter that would let it.
+// the network, or read the clock - there is no parameter that would let it.
 fn first_line(dir: Dir[Read], name: String) -> String:
     let contents = dir.read(name)
     contents.split_once("\n").0

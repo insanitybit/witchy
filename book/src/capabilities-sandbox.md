@@ -131,7 +131,7 @@ Each strict launch prints the provider and enforcement status on stderr. Ordinar
 development runs and reusable embedded runtimes don't arm irreversible
 process-wide policy, because their process may need to host more than one guest.
 Use `--confine=required` when deployment must fail before `main` unless every
-currently implemented outer layer is fully enforced. That mode is satisfied on
+outer layer the host provides is fully enforced. That mode is satisfied on
 Linux; on macOS it refuses, naming the syscall layer that cannot enforce, since
 the platform has no equivalent of seccomp:
 

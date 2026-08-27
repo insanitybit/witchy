@@ -210,9 +210,9 @@ witchy test --integration --dir ./fixtures suite.witchy
 `--dir` may be repeated for multiple `Dir` parameters. `--net <addr>` builds the
 allowlist for a `Net` parameter. Omitting `--integration` or a required grant is
 a failure with a diagnostic naming the missing flag; capability-parameterized
-tests are never silently skipped. Currently the real-capability tier accepts
-`Console`, `Dir`, and `Net`; other capability kinds remain unsupported until
-they have an explicit CLI grant surface.
+tests are never silently skipped. The real-capability tier accepts `Console`,
+`Dir`, and `Net`; a capability kind is available here once it has an explicit
+CLI grant surface.
 
 Authority follows the test entrypoint, not everything linked beside it. A
 nullary test remains zero-grant even during an integration run, and an imported

@@ -148,7 +148,7 @@ The loud boundaries are part of the current language state:
   an indirect witness-table call. `mode opt` promises the same values and traps,
   not allocation removal or devirtualization. Borrowed existential values,
   implicit downcasts, runtime witness registration, and stable plugin ABIs are
-  intentionally outside RFC-0081.
+  intentionally outside the model.
 - Capability-bearing values work directly and in closed tuples, nominal types,
   closures, `Option`, `Result`, and typed lists. Capability-bearing `Dict`
   entries, open generic call boundaries, `region:` copy-out, and isolated-worker
@@ -156,16 +156,16 @@ The loud boundaries are part of the current language state:
 - `await` works in loop bodies and may carry mutable locals, but not in branch or
   loop conditions or in match scrutinees. Spawned tasks return `()`; structured
   combinators and channels carry results.
-- The current compiled async executor is intended for bounded task graphs and
-  streams. Long-lived producer/consumer loops eventually exhaust the linear
-  arena; the [async chapter](tour-async.md) gives the operational ceiling.
+- The compiled async executor is intended for bounded task graphs and streams.
+  Long-lived producer/consumer loops eventually exhaust the linear arena; the
+  [async chapter](tour-async.md) gives the operational ceiling.
 - Browser hosts grant only the capability families they implement. The default
   book host has a root footprint of `Console`; native `Exec`, secrets, and raw
   sockets are unavailable there.
 
-These are checked boundaries, not alternate semantics. The implementation's
-current list is maintained in
-[`spec/architecture.md`](https://github.com/insanitybit/witchy/blob/master/spec/architecture.md).
+These are checked boundaries, not alternate semantics.
+[`spec/architecture.md`](https://github.com/insanitybit/witchy/blob/master/spec/architecture.md)
+maintains the full list.
 
 ## A note on memory
 
@@ -181,7 +181,6 @@ avoid allocating at all: an ownership analysis proves where accumulation
 happen, never the whole loop - and dicts carry a hidden hash index. The result
 runs at native-class throughput: a string builder stays linear instead of
 O(n²), and list/dict/compute loops carry no per-iteration allocation overhead -
-all inside the sandbox ([`bench/BASELINE.md`](https://github.com/insanitybit/witchy/blob/master/bench/BASELINE.md)
-has the numbers). The repository's
-`spec/architecture.md` has the full
-memory-model story and the honest list of current limitations.
+all inside the sandbox.
+[`spec/architecture.md`](https://github.com/insanitybit/witchy/blob/master/spec/architecture.md)
+has the full memory-model story and the boundaries that come with it.

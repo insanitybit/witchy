@@ -38,9 +38,9 @@ is the same operation under the same rule.
 fn main(console: Console):
     var out = []
     for n in 1..4:
-        out.push(n * n)        // idiomatic — not: out = list.push(out, n * n)
+        out.push(n * n)        // idiomatic - not: out = list.push(out, n * n)
     var ages = dict.new()
-    ages.insert("ada", 36)     // idiomatic — not: ages = dict.insert(ages, ...)
+    ages.insert("ada", 36)     // idiomatic - not: ages = dict.insert(ages, ...)
     ages["bob"] = 41           // index sugar over insert
     console.print("${out} ${ages.length()}")
 ```
@@ -116,7 +116,7 @@ import json
 
 fn main(console: Console):
     let doc = json.decode("{\"name\": \"ada\", \"level\": 3}") ?? json.object_sorted([])
-    // Idiomatic: the accessor family — not a hand-rolled match ladder.
+    // Idiomatic: the accessor family - not a hand-rolled match ladder.
     console.print(json.get_string(doc, "name") ?? "anonymous")
     console.print("${json.get_int(doc, "level") ?? 0}")
 ```
@@ -128,10 +128,9 @@ ada
 
 ## Methods on capabilities, like any other value
 
-Capability operations are spelled as methods on the capability
-([RFC-0076](https://github.com/insanitybit/witchy/blob/master/rfcs/0076-capability-ops-are-methods.md)): `console.print(s)`,
-`dir.read(path)`, `net.connect(addr)`. The receiver *is* the authority - the
-spelling keeps that visible.
+Capability operations are spelled as methods on the capability:
+`console.print(s)`, `dir.read(path)`, `net.connect(addr)`. The receiver *is*
+the authority - the spelling keeps that visible.
 
 ## Sealed types for invariants; sealed capabilities for policy
 

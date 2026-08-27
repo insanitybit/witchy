@@ -1,13 +1,13 @@
 # Appendix: Performance overview
 
-Witchy performance is primarily expressed in the program's syntax, not in an
-environment variable. The syntax tells the compiler what the program promises:
-whether a call only reads, consumes, writes back, owns unique storage, chooses a
-flat layout, or enters the explicit reference model. The compiler turns those
-facts into reuse, fewer copies, smaller representations, and shorter-lived
-allocations while preserving value semantics.
+In Witchy you tune performance by changing what your code says, not by setting
+an environment variable. The syntax is where you tell the compiler what a call
+promises: that it only reads, that it consumes its argument, that it writes back,
+that it owns its storage outright, that a type should be laid out flat. The
+compiler turns those promises into reuse, fewer copies, smaller representations,
+and shorter-lived allocations, and value semantics hold throughout.
 
-This appendix is organized around that source-level question:
+This appendix is organized around what you write:
 
 | Write this... | To unlock this... | Read... |
 |---|---|---|
@@ -18,16 +18,16 @@ This appendix is organized around that source-level question:
 | `mode opt`, `&'a T`, `&'a mut T` | Explicit lifetimes, loans, and reference carriers | [Opt-mode References and Lifetimes](opt-mode-references.md) |
 | A measured source shape | Evidence for a real workload improvement | [Measuring and diagnosing](appendix-performance-measurement.md) |
 
-The [`WITCHY_OPT` switches](appendix-performance-knobs.md) are still useful,
-but mainly for compiler investigation: they isolate a backend pass after a
-source-level shape has been chosen. They are not the language's performance
-model and normally do not belong in application source or deployment config.
+The [`WITCHY_OPT` switches](appendix-performance-knobs.md) are still useful, but
+mostly for looking into the compiler: they isolate one backend pass once you have
+already settled the shape of your source. They are not the performance model, and
+they don't belong in application source or deployment config.
 
 ## Start with the default
 
 Write ordinary value-oriented Witchy first. The compiler already analyzes
-unannotated functions and applies any proof that does not require a source
-contract. Add an ownership convention when it states something true about the
+functions you haven't annotated and applies whatever it can prove on its own.
+Add an ownership convention when it states something true about the
 boundary, not merely because a benchmark is slow.
 
 ```text

@@ -3,8 +3,8 @@
 ## The zero-install option: the playground
 
 The witchy compiler runs in WebAssembly, so the playground needs no server-side
-compiler and nothing you type leaves your machine. If the repository ships a built playground, open `web/index.html`
-(served over HTTP); otherwise build it once:
+compiler and nothing you type leaves your machine. If you have a built
+playground, open `web/index.html` (served over HTTP); otherwise build it once:
 
 ```sh
 git clone https://github.com/insanitybit/witchy

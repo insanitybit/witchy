@@ -24,7 +24,7 @@ fn show(xs: List(Int)) -> String:
     parts.join(", ")
 
 fn main(console: Console):
-    // "the even numbers in [1, 20), each doubled" — built lazily, then realized.
+    // "the even numbers in [1, 20), each doubled" - built lazily, then realized.
     let evens = iter.range(1, 20).filter(fn(n: Int): n % 2 == 0)
     let doubled = evens.map(fn(n: Int): n * 2)
     let firsts: List(Int) = iter.collect(doubled.take(5))
@@ -49,7 +49,7 @@ each value; calling it returns an `Iter(a)` that runs only as far as it's asked.
 ```witchy
 import iter
 
-// Infinite — and that's fine, because the caller bounds it with `take`.
+// Infinite - and that's fine, because the caller bounds it with `take`.
 gen fn fibs() -> Iter(Int):
     var a = 0
     var b = 1

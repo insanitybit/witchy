@@ -73,7 +73,7 @@ fn main(console: Console):
     // map_ok transforms the Ok payload; and_then chains a second fallible step.
     let doubled = checked_div(20, 4).map_ok(fn(n: Int): n * 2)
     console.print("doubled: ${doubled.unwrap_or(0)}")
-    // result.all collects a list of Results into a Result of a list — first Err wins.
+    // result.all collects a list of Results into a Result of a list - first Err wins.
     let parts = [checked_div(8, 2), checked_div(9, 3), checked_div(5, 0)]
     match result.all(parts):
         Ok(xs) -> console.print("all ok: ${list.sum(xs)}")

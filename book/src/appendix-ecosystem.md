@@ -3,7 +3,7 @@
 The applications under [`projects/`](https://github.com/insanitybit/witchy/tree/master/projects)
 use the language and toolchain to share code, build user interfaces, and run a
 registry. [`projects/README.md`](https://github.com/insanitybit/witchy/blob/master/projects/README.md)
-maps the repository.
+maps them out.
 
 ## The pieces
 
@@ -14,8 +14,8 @@ maps the repository.
   rule that a dependency can't quietly gain authority. (Chapter:
   [Sharing Code: Runes and the Registry](packages.md).)
 
-- **pm** - the package-manager **client** ("cargo for witchy"): resolve, fetch,
-  verify, add, build, run. It talks to coven over a small HTTP contract.
+- **grimoire** - the package-manager **client** ("cargo for witchy"): resolve,
+  fetch, verify, add, build, run. It talks to coven over a small HTTP contract.
 
 - **glamour** - an empty-root-footprint **frontend framework** (Model-View-Update).
   Your app computes a `VNode` tree from state, and it emits effects

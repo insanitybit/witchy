@@ -140,7 +140,7 @@ fn test_atomic_create_replace_rename(dir: Dir):
     testing.assert(!dir.exists("doc"), "doc gone after rename")
 
 fn test_binary_round_trip(dir: Dir):
-    // read_bytes/write_bytes carry RAW bytes — a binary artifact, not UTF-8 text.
+    // read_bytes/write_bytes carry RAW bytes - a binary artifact, not UTF-8 text.
     let raw = bytes.from_list([0, 255, 16, 200, 3]) ?? bytes.from_string("")
     dir.write_bytes("blob.bin", raw)
     let back = dir.read_bytes("blob.bin")
@@ -160,7 +160,7 @@ fn test_streamed_binary(dir: Dir):
     testing.assert_eq(crypto.sha256_bytes(dir.read_bytes("stream.bin")), crypto.sha256_bytes(whole))
 
 fn test_set_executable(dir: Dir):
-    // set_executable adds the +x bit to a file you wrote — how an installer makes a
+    // set_executable adds the +x bit to a file you wrote - how an installer makes a
     // downloaded binary runnable. It needs Write and leaves the contents untouched.
     dir.write_bytes("tool", bytes.from_string("#!/bin/sh\necho hi\n"))
     dir.set_executable("tool")

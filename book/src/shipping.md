@@ -143,8 +143,8 @@ fails before application execution.
 
 ### Example: minigrep
 
-The repository's `examples/minigrep` binds its read-only `root` to the launch
-directory and grants only the `IGNORE_CASE` environment name:
+`examples/minigrep` binds its read-only `root` to the launch directory and
+grants only the `IGNORE_CASE` environment name:
 
 ```toml
 [targets.trusted-publisher.dirs]
@@ -168,8 +168,7 @@ directory, and remains confined to that opened subtree.
 
 ## Static browser bundles
 
-The repository can build this book and its Glamour docs application as static
-files:
+This book and the Glamour docs application build as static files:
 
 ```sh
 ./scripts/build-docs.sh dist
@@ -190,13 +189,6 @@ part of the API, or expose host-specific entrypoints with distinct footprints.
 ## What isn't a shipping promise
 
 The package manager, Coven registry, trusted publishing, and hosted browser
-deployment are substantial dogfood, but they aren't a supported public
-distribution service. witchy 0.1.0 is still a private release candidate until
-the exact queue-settled commit passes the release workflow and native platform
-matrix and receives explicit publication approval.
-
-Use the repository's
-[product-status ledger](https://github.com/insanitybit/witchy/blob/master/PRODUCT-STATUS.md)
-for supported-preview versus experimental surfaces, and
-[release-readiness ledger](https://github.com/insanitybit/witchy/blob/master/RELEASE-READINESS.md)
-for candidate evidence. RFC status alone isn't release evidence.
+deployment are substantial dogfood, but they are not a supported public
+distribution service. Run your own registry for anything you depend on, and
+treat the hosted instances as demonstrations rather than infrastructure.

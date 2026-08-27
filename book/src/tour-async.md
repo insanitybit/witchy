@@ -362,12 +362,11 @@ memory.
 For a qualifying scalar producer/consumer loop, the compiled optimizer
 synthesizes an owning state machine with fixed task, channel, and message slots.
 Resuming the loop retags those slots in place instead of allocating a new
-continuation. The acceptance gate executes one million messages, checks the
-result, rejects per-resume linear allocation, and enforces the documented
-latency ceiling.
+continuation. That path is held to one million messages with no per-resume
+linear allocation and a fixed latency ceiling.
 
 The general scheduler uses the same typed message envelope for nominal
-aggregates and lists. Its sustained aggregate gate compares 100 with 10,000
+aggregates and lists. Sustained aggregate throughput compares 100 with 10,000
 messages and requires Wasmtime's GC backing capacity to remain exactly one
 65,536-byte page. Task slots and eligible direct list cells are reused rather
 than growing a continuation chain with every send.

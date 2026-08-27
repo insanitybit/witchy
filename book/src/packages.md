@@ -171,18 +171,16 @@ flow with real tool output.
 
 ## Try the whole thing locally
 
-The repository includes a scripted tour that starts a
-registry, publishes through trusted publishing, promotes with a second factor,
-consumes the rune from a separate project, and demonstrates the widening gate
-rejecting an over-reaching upgrade:
+A scripted tour starts a registry, publishes through trusted publishing,
+promotes with a second factor, consumes the rune from a separate project, and
+demonstrates the widening gate rejecting an over-reaching upgrade:
 
 ```sh
 ./scripts/local-registry-demo.sh
 ```
 
-The repository's [`spec/local-registry.md`](https://github.com/insanitybit/witchy/blob/master/spec/local-registry.md)
-walks through it step by step, and [`rfcs/package-manager.md`](https://github.com/insanitybit/witchy/blob/master/rfcs/package-manager.md)
-is the full design and threat model. The package manager and the registry are
+[`spec/local-registry.md`](https://github.com/insanitybit/witchy/blob/master/spec/local-registry.md)
+walks through it step by step. The package manager and the registry are
 themselves written in witchy ([`projects/grimoire`](https://github.com/insanitybit/witchy/tree/master/projects/grimoire)
 and [`projects/coven`](https://github.com/insanitybit/witchy/tree/master/projects/coven)) -
 the language eats its own dog food, sandboxable footprint and all.

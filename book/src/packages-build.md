@@ -56,7 +56,7 @@ it wants to run code at all:
 
 ```text
 error: `genlib` ships a build step, and build-time code execution is denied by default.
-  Add a [build.grants."genlib"] section to accept it — an empty section permits only
+  Add a [build.grants."genlib"] section to accept it - an empty section permits only
   the confined output sandbox (BuildOut); name read/exec/net/env kinds to grant more.
 ```
 
@@ -102,7 +102,7 @@ BLOCKED: this change would widen your dependency tree's capability footprint.
   + BuildNet  (build) introduced by: genlib
   (upgrade) genlib would additionally demand build[BuildNet]
 
-No authority is granted yet — this is a conscious choice you must make.
+No authority is granted yet - this is a conscious choice you must make.
 To accept, re-run:  witchy update --allow-build-cap BuildNet
 ```
 
@@ -129,7 +129,7 @@ capability-hungry code is rejected:
 
 ```text
 error: `genlib`'s build step generated source that WIDENS its footprint (+ Net)
-beyond the locked baseline — refusing. Generated code is still code; it cannot
+beyond the locked baseline - refusing. Generated code is still code; it cannot
 smuggle in authority the version was not accepted with.
 ```
 

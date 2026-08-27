@@ -51,7 +51,7 @@ fn main(console: Console):
     // fold reduces a stream to one value.
     let product = iter.range(1, 6).fold(1, fn(acc: Int, n: Int): acc * n)
     console.print("5! = ${product}")
-    // scan is fold that emits each intermediate — a running total.
+    // scan is fold that emits each intermediate - a running total.
     let running: List(Int) = iter.collect(
         iter.from_list([1, 2, 3, 4]).scan(0, fn(s: Int, x: Int): (s + x, s + x)))
     console.print("running sums: ${running.length()} -> last ${list.last(running) ?? 0}")

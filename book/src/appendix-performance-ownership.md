@@ -180,9 +180,8 @@ fn first(let text: &'a String) -> &'a String:
     text
 ```
 
-`let` qualifies the reference handle in the current executable opt-mode
-surface; it does not change `&'a String` into the retired `let('a) String`
-syntax. The full lifetime and escape model is documented in [Opt-mode
+`let` qualifies the reference handle; it does not change what `&'a String`
+means. The full lifetime and escape model is documented in [Opt-mode
 References and Lifetimes](opt-mode-references.md).
 
 Here is the smallest complete borrowed-view program. The dereference at the

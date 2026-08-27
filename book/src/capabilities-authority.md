@@ -41,16 +41,16 @@ to put there; the program can't ask for more.
 
 ## Authority flows through values
 
-A capability is an ordinary value once you've it, and code passes it as an
+Once you hold a capability it is an ordinary value, and you pass it as an
 argument. There are no globals to stash it in and no ambient registry to fetch
-it from. Capability-typed parameters make directly possessed authority visible
-and local. Ordinary callbacks are values too: passing one delegates the right
-to invoke its interface, while the capabilities captured by its creator remain
-opaque to the receiver.
+it from, so a capability parameter tells you exactly where authority went.
+Callbacks are values too. When you pass one, you hand over the right to call it
+without handing over whatever capabilities its author captured - and the
+receiver cannot reach those either.
 
 ```witchy
 // `log` can print, because it was given a Console. `compute` cannot, because it
-// wasn't — and there's nowhere for it to get one.
+// wasn't - and there's nowhere for it to get one.
 fn compute(x: Int) -> Int:
     x * x + 1
 
@@ -66,14 +66,13 @@ fn main(console: Console):
 compute(6): 37
 ```
 
-`compute` is effect-free as written: it receives ordinary data and performs
-arithmetic. Its signature proves that it possesses no direct host capability,
-but lack of a capability parameter is not a general purity contract. A function
-that accepts an ordinary callback may invoke effectful behavior deliberately
-delegated by its caller, without learning or possessing the callback's captured
-capabilities. The `pure fn` qualifier makes effect-free invocation an explicit
-checked API promise; ordinary `fn` remains opaque and potentially
-effectful.
+`compute` is effect-free as written: it takes ordinary data and does
+arithmetic. Its signature proves it holds no capability of its own - but read
+that narrowly. "No capability parameter" is not the same as "no effects": a
+function that takes a callback can call it, and that callback may do whatever
+its author's captured capabilities allow, without this function ever seeing
+them. When you want an effect-free promise you can rely on, write `pure fn`,
+which the compiler checks. A plain `fn` makes no such promise.
 
 ## Inspecting authority with `witchy caps`
 
@@ -85,18 +84,17 @@ witchy caps program.witchy
 ```
 
 For a program whose `main` takes `Console` and `Dir[Read]`, it prints which
-functions demand which capabilities, and the total. This is computed
-*from the source*: the tool re-derives what each function requires. The package
-manager checks that computed footprint for dependencies.
+functions need which capabilities, plus the total. It works this out *from the
+source* rather than from anything you declare, and the package manager runs the
+same computation over your dependencies.
 
 ## Effects are explicit inputs
 
-Reading the clock needs a `Clock`: current time is an input from outside the
-program. The same applies to environment variables (`Env`) and randomness. A
-function that reads one of these inputs directly lists the corresponding
-capability in its signature. It may instead receive a narrower operation as an
-ordinary callback; invoking that operation exercises delegated behavior, not a
-new or ambient root grant.
+Reading the clock needs a `Clock`, because the current time comes from outside
+the program. Environment variables (`Env`) and randomness work the same way. If
+a function reads one of these directly, the capability is in its signature.
+It can also take a narrower operation as a callback instead - calling that
+exercises authority someone already delegated, not a new grant.
 
-You can't conjure a `Clock` from an integer, and there's no global to reach
-for. If a function has authority, someone handed it over.
+You can't conjure a `Clock` from an integer, and there's no global to reach for.
+If a function has authority, someone handed it over.

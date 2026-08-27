@@ -1,19 +1,17 @@
 # Opt-mode References and Lifetimes
 
-RFC-0122 adds a lower-level ownership model without changing ordinary Witchy.
-Normal files remain reference-free: they use owned values and the conventional
-`let`, `var`, `own`, and `move` call vocabulary. A file opts into explicit
-references with a leading directive:
+Most of the time you write Witchy with owned values and the ordinary `let`,
+`var`, `own`, and `move` vocabulary, and you never think about lifetimes. When
+you need to hand out access to a value without copying it, you can opt a single
+file into explicit references with a leading directive:
 
 ```witchy-static
 mode opt
 ```
 
-This chapter is the user-facing guide to the complete RFC-0122 feature set. The
-[performance appendix](appendix-performance.md) explains the optimization
-passes and counters. The [RFC-0122 acceptance
-ledger](https://github.com/insanitybit/witchy/blob/master/rfcs/0122-acceptance-ledger.md)
-records the executable evidence for each criterion.
+Nothing outside that file changes. This chapter covers what you can write once
+you have opted in; the [performance appendix](appendix-performance.md) covers
+the optimization passes and counters that go with it.
 
 A complete program that returns a shared reference through a named lifetime:
 
@@ -32,29 +30,21 @@ fn main(console: Console):
 hello
 ```
 
-The repository's `scratch/learn-witchy-2026-08-18/` learning corpus is useful
-for trying these forms, but the acceptance ledger remains the implementation
-authority. It highlights three practical distinctions:
+Two practical points before the details:
 
-- The reference type is still `&'a T` or `&'a mut T`. The current executable
-  `mode opt` validation also requires an explicit `let`, `var`, or `own`
-  convention on ownership-relevant reference parameters. For example,
-  `let text: &'a String` qualifies the reference handle; it does not turn the
-  type back into the retired `let('a) String` form.
-- Legacy `let('a) T` and `View(T, 'a)` inputs still run through the migration
-  compatibility path. They are accepted as migration inputs, not current API
-  spellings, and new code should use `&'a T`.
-- Closure capture is conservative in the current implementation. The scratch
-  escape probe is rejected; pass a reference explicitly to a callback or call
-  `.owned()` before capture unless a positive non-escaping closure fixture
-  proves the boundary you need.
+- Reference types are written `&'a T` and `&'a mut T`. Ownership-relevant
+  reference parameters also carry an explicit `let`, `var`, or `own`
+  convention: in `let text: &'a String`, the `let` qualifies the reference
+  handle, and the type itself stays `&'a String`.
+- Closure capture is deliberately conservative. A capture the checker cannot
+  prove non-escaping is rejected rather than silently copied - pass the
+  reference explicitly to a callback, or call `.owned()` before capturing.
 
 ## Two modes, one language
 
-Normal mode has no lifetime burden. It cannot name, infer, accept, return, or
-store a source reference. It also cannot be rejected because an internal
-optimization loan was difficult to prove. A normal call into an opt module uses
-the same value-oriented signature as any other call:
+In normal mode you never name a lifetime, and the compiler never rejects your
+code because an internal optimization was hard to prove. When you call into an
+opt module from normal code, the signature looks like any other call:
 
 ```witchy-static
 fn inspect(let text: String) -> Int
@@ -62,11 +52,11 @@ fn normalize(var text: String) -> Nil
 fn digest(own text: String) -> Digest
 ```
 
-Opt mode keeps those conventions and adds first-class access types when access
-itself must be returned, stored, reborrowed, or passed through a lending API.
-The mode boundary is therefore a performance escape hatch, not a second source
-language. An explicit reference in a normal file receives one concise
-mode-boundary diagnostic before lifetime or loan analysis begins.
+Opt mode keeps all of those conventions and adds reference types for the cases
+where you need to return, store, or lend out access itself. Think of the mode
+boundary as a performance escape hatch rather than a second language. If you
+write a reference in a normal file, you get one short diagnostic about the mode
+boundary - not a cascade of lifetime errors.
 
 ## Reference types
 
@@ -81,10 +71,10 @@ Every lifetime written in an opt-mode declaration is explicit. Borrow
 expressions infer their local lifetime:
 
 ```witchy-static
-fn first(text: &'a String) -> &'a String:
+fn first(let text: &'a String) -> &'a String:
     text
 
-fn normalize(text: &'a mut String) -> &'a String:
+fn normalize(let text: &'a mut String) -> &'a String:
     text.trim_in_place()
     text
 
@@ -118,11 +108,11 @@ Dereference and projection operate on the same logical place. Reading through
 either kind is allowed; assignment through a shared reference is not:
 
 ```witchy-static
-fn clear(text: &'a mut String) -> Nil:
+fn clear(let text: &'a mut String) -> Nil:
     *text = ""
 
-fn rename(account: &'a mut Account) -> Nil:
-    account.name = account.name.trim()
+fn rename(let account: &'a mut Account) -> Nil:
+    account.name = "renamed"
 ```
 
 The second form is projection sugar for `(*account).name`. It does not copy,
@@ -163,10 +153,10 @@ call. The outer reference is suspended only for the returned reborrow's live
 duration:
 
 ```witchy-static
-fn append_mark(text: &'call mut String) -> Nil:
+fn append_mark(let text: &'call mut String) -> Nil:
     text.push("!")
 
-fn twice(text: &'outer mut String) -> Nil:
+fn twice(let text: &'outer mut String) -> Nil:
     append_mark(text)
     append_mark(text)
 ```
@@ -181,11 +171,11 @@ An exclusive reference can be shortened to a shared reference. The exclusive
 capability is not recoverable through that shared result:
 
 ```witchy-static
-fn finish(text: &'a mut String) -> &'a String:
+fn finish(let text: &'a mut String) -> &'a String:
     text.trim_in_place()
     text
 
-fn inspect_then_edit(text: &'outer mut String) -> Nil:
+fn inspect_then_edit(let text: &'outer mut String) -> Nil:
     let view = &*text
     inspect(view)
     text.push("!")
@@ -194,7 +184,7 @@ fn inspect_then_edit(text: &'outer mut String) -> Nil:
 An exclusive projection can also return an exclusive reference to a field:
 
 ```witchy-static
-fn name(account: &'a mut Account) -> &'a mut String:
+fn name(let account: &'a mut Account) -> &'a mut String:
     &mut account.name
 ```
 
@@ -207,7 +197,7 @@ general outlives clause in this model.
 Distinct lifetime names express independent result dependencies:
 
 ```witchy-static
-fn left(left: &'left String, right: &'right String) -> &'left String:
+fn left(let left: &'left String, let right: &'right String) -> &'left String:
     left
 ```
 
@@ -254,10 +244,10 @@ transport preserve the carrier rather than recovering a place from syntax.
 References apply directly to type variables:
 
 ```witchy-static
-fn identity(value: &'a t) -> &'a t:
+fn identity(let value: &'a t) -> &'a t:
     value
 
-fn swap(left: &'a mut t, right: &'b mut t) -> Nil:
+fn swap(let left: &'a mut t, let right: &'b mut t) -> Nil:
     let temporary = (*left).owned()
     *left = (*right).owned()
     *right = temporary
@@ -288,7 +278,7 @@ reference kind, lifetime, affinity, or convention is rejected.
 
 The existing owned qualifiers remain distinct from reference kinds:
 
-| Qualifier | Meaning with RFC-0122 |
+| Qualifier | Meaning |
 | --- | --- |
 | `unique T` | uniquely owned logical storage; it can support in-place mutation |
 | `local unique T` | unique storage confined to one activation; references cannot escape |
@@ -324,33 +314,32 @@ pub fn digest(own text: String) -> Digest:
     digest_string(text)
 ```
 
-The caller uses ordinary `let`, `var`, and `own` syntax. The compiler selects a
-proven access entry when normal ownership facts suffice. Otherwise it selects
-a generated repair adapter that establishes the required ownership through
-copying, re-owning, or copy-in/write-back before entering the same source body.
-There is one source function and one callable identity, not a hand-maintained
-second overload.
+You call these with ordinary `let`, `var`, and `own` syntax. If what you already
+own satisfies the callee, the compiler calls straight through. If it doesn't,
+the compiler generates an adapter that copies, re-owns, or copies in and writes
+back before entering the same function body. Either way there is one function
+and one callable identity - you never maintain a second overload by hand.
 
-An opt caller must satisfy the proven access contract directly. A reference-
-typed item remains visible only to opt callers. Normal imports reject direct
-and alias-hidden reference functions, reference-bearing nominal types, callable
-fields, traits with reference methods, and generated wrappers that expose a
-reference contract.
+An opt caller gets no such adapter; it has to satisfy the contract directly.
+Anything whose type mentions a reference stays visible only to opt callers, and
+a normal import rejects it - whether it reaches you as a function, an alias, a
+nominal type, a callable field, a trait method, or a generated wrapper.
 
-The source firewall is not a representation firewall. A normal result with
-source type `T` may temporarily use an owner-backed representation after an
-opt call. It remains logically owned, survives source drop, and detaches before
-mutation, independent escape, serialization, host return, or another operation
-that could observe aliasing. Normal code never receives a loan or a reference
-diagnostic. Unsupported or uncertain boundaries materialize eagerly.
+That firewall applies to what you can write, not to how values are represented.
+A normal result of type `T` may keep an owner-backed representation after an opt
+call. It is still logically owned, it outlives the source it came from, and it
+detaches before anything could observe the sharing - mutation, escape,
+serialization, or a return to the host. You never see a loan or a reference
+diagnostic in normal code, and any boundary the compiler is unsure about copies
+eagerly.
 
 ## Flow-sensitive checking
 
-The checker separates symbolic origins from concrete loans. A loan records its
-owner root, projection, access kind, introduction point, and lifetime relation.
-The analysis is point-sensitive: a loan is live only while it can reach a live
-origin and has not been killed by final use, overwrite, materialization, move,
-or transfer.
+Every borrow you write creates a *loan*, which records what it borrowed from,
+which projection it reached through, whether it is shared or exclusive, where it
+started, and which lifetime it answers to. A loan stays live only while
+something can still reach it. Using it for the last time, overwriting the owner,
+materializing a copy, moving it, or transferring it all end the loan.
 
 For overlapping places, the conflict rules are:
 
@@ -359,11 +348,12 @@ For overlapping places, the conflict rules are:
 | shared loan | allowed | allowed | rejected | rejected |
 | exclusive loan | through that reference | reborrow only | reborrow only | through that reference |
 
-An exclusive reborrow suspends the parent reference until the child ends. Static
-record fields, tuple fields, and distinct constant indices form the initial
-disjointness proof set. Unknown projection overlap is treated as overlap.
+An exclusive reborrow suspends the parent reference until the child ends. The
+compiler can prove two places are distinct when they are different record
+fields, different tuple fields, or different constant indices; anywhere it
+cannot tell, it assumes they overlap.
 
-The analysis is precise across structured control flow:
+Control flow does not blunt any of this:
 
 - branch joins retain only roots that can reach the selected arm;
 - loop back-edges close body-local loans at checked last uses;
@@ -372,9 +362,10 @@ The analysis is precise across structured control flow:
 - `?` carries success roots and cleans up failure paths; and
 - lending iteration can return a reference tied to a mutable iterator receiver.
 
-For a lending iterator, calling `next` again requires the prior item to be
-dead or materialized. A trait witness or function value must preserve the
-relation between the receiver reborrow and yielded item.
+With a lending iterator, you have to be done with the previous item - or have
+copied it - before you call `next` again. A trait implementation or function
+value has to keep the same relation between the receiver's reborrow and the item
+it yields.
 
 ## Escapes and suspension
 
@@ -390,31 +381,32 @@ Neither kind may be:
 - serialized as an address-bearing value;
 - sent through a channel or isolated worker;
 - captured by an escaping closure or task; or
-- held across `await` or `yield` in the current model.
+- held across `await` or `yield`.
 
-Host capabilities require lease-bearing APIs. A lifetime does not widen a
-grant or keep authority alive on its own. A borrowed capability view is rejected
-unless the capability-specific API transports both data and its lease.
+Capabilities need APIs that carry a lease. A lifetime on its own never widens a
+grant or keeps authority alive, so borrowing a view of a capability is rejected
+unless that capability's API carries both the data and its lease.
 
-Reference capture follows the same proof boundary. A closure that is proven
-not to escape may preserve a reference relation in the RFC model, but an
-uncertain or currently unsupported capture is rejected rather than silently
-materialized. Passing the reference as an explicit callback argument is the
-portable form until a positive closure-carrier fixture covers the exact shape.
+Reference capture follows the same proof boundary. A closure proven not to
+escape may preserve a reference relation, while an uncertain capture is
+rejected rather than silently materialized. Passing the reference as an
+explicit callback argument is the portable form.
 
 These are source-reference restrictions. Lowering may retain an owning root
 behind an ordinary normal `T`, subject to the detachment rules above.
 
 ## Runtime and backend meaning
 
-The runtime value is a checked `PlaceReference`, not metadata attached to a
-local variable. It carries an owner root, projection path, shared or exclusive
-kind, affine state, lifetime positions, and any representation-specific
-retain, repair, write-back, or lease obligations.
+At runtime a reference is a checked `PlaceReference` value, not a note attached
+to some local variable. It carries the owner it came from, the path of
+projections that reached the place, whether it is shared or exclusive, whether
+it has been moved, its lifetime positions, and any retain, repair, write-back,
+or lease obligations its representation implies.
 
-The interpreter realizes a place reference as a mutable owner cell plus
-projections. Compiled Wasm may use a typed carrier, direct place descriptor, or
-forced-copy cell-backed carrier. All carriers have the same meaning:
+The interpreter represents one as a mutable owner cell plus projections.
+Compiled Wasm may pick a typed carrier, a direct place descriptor, or a
+cell-backed carrier that forces a copy. Whichever it picks, the meaning is the
+same:
 
 - reads follow the current logical place;
 - writes update that place;
@@ -422,79 +414,29 @@ forced-copy cell-backed carrier. All carriers have the same meaning:
 - parent exclusive references remain suspended during a child reborrow; and
 - cleanup balances fallthrough, return, `?`, branches, loops, moves, and drops.
 
-The carrier crosses direct calls, function values, closures, trait dispatch,
+The carrier survives direct calls, function values, closures, trait dispatch,
 generated adapters, aggregate construction, returns, and reborrows. Lowering
-never recovers a caller place from the spelling of an argument after a call.
-The access envelope is conceptually:
+never reconstructs a caller's place from how an argument happened to be spelled.
+Conceptually a call takes and returns:
 
 ```witchy-static
 (explicit arguments, value ownership inputs, reference access inputs)
     -> (ordinary result, var write-backs, ownership outputs, result references)
 ```
 
-The interpreter is the semantic oracle. Optimized Wasm and forced-copy Wasm
-must agree with it on values, owner mutations, write-backs, traps, accepted
-programs, and rejection boundaries. `witchy parity` and the RFC-0122 fixtures
-exercise this three-way contract.
+The interpreter, optimized Wasm, and forced-copy Wasm must agree on values,
+owner mutations, write-backs, traps, accepted programs, and rejection
+boundaries. `witchy parity` checks that agreement for a given program.
 
-## Diagnostics and migration
+## Diagnostics
 
-Reference diagnostics identify the owner, projection, borrow kind, live use,
-conflicting operation, and a repair such as shortening the use, reborrowing,
-materializing with `.owned()`, splitting places, or moving mutation after the
-loan closes. Diagnostics expose `&'a T` and `&'a mut T`, not internal roots,
-solver facts, or carrier details.
+When a borrow is rejected, the diagnostic names the owner, the projection, the
+kind of borrow, the use that keeps it alive, and the operation that conflicts
+with it. It then suggests a repair: shorten the use, reborrow, copy with
+`.owned()`, split the places, or move the mutation after the loan closes. You
+see `&'a T` and `&'a mut T` in these messages, never internal roots, solver
+facts, or carrier details.
 
-The settled syntax replaces the retired relation spellings:
-
-| Retired spelling | Current spelling |
-| --- | --- |
-| `let text: let('a) String` | `text: &'a String` |
-| `let('a) text: String` | `text: &'a String` |
-| `var('a) text: String` | `text: &'a mut String` |
-| `View(String, 'a)` | `&'a String` |
-| `String('a)` when `String` has no lifetime parameter | `&'a String` |
-| `List(Token('a))` | `List(&'a Token)` |
-
-Declared nominal forms such as `Parser('input)` remain valid when the lifetime
-is used by a field. A normal file receives the mode-boundary diagnostic before
-any of these migration or loan rules run.
-
-The migration command is AST-based and authenticated by owner provenance. It
-rewrites only proven direct places, reports conflicting overloads instead of
-guessing, supports check-only mode, and never mutates an ambiguous source. The
-repository census and command evidence are recorded in the
-[migration report](https://github.com/insanitybit/witchy/blob/master/rfcs/0122-migration-report.md).
-
-## RFC-0122 feature map
-
-The book coverage maps to the RFC's 22 acceptance criteria as follows:
-
-| Criterion | Feature | Book coverage |
-| ---: | --- | --- |
-| 1 | normal-mode reference exclusion | Two modes, one language; Diagnostics |
-| 2 | conventional normal calls | Normal-to-opt boundaries |
-| 3 | normal interface filtering | Normal-to-opt boundaries |
-| 4 | one opt source identity | Function values and ownership qualifiers; Normal-to-opt boundaries |
-| 5 | proven versus repair parity | Normal-to-opt boundaries; Runtime and backend meaning |
-| 6 | owner-backed normal results | Normal-to-opt boundaries |
-| 7 | opt syntax pipeline | Reference types; Diagnostics and migration |
-| 8 | uniform reference types | Reference types; Nominal types, containers, and generics |
-| 9 | nominal lifetime versus reference | Nominal types, containers, and generics |
-| 10 | migrated fixture parity | Diagnostics and migration; Runtime and backend meaning |
-| 11 | shared loans | Shared and exclusive access; Flow-sensitive checking |
-| 12 | exclusive loans | Shared and exclusive access; Reborrowing and lifetime relations |
-| 13 | mutable-to-shared conversion | Reborrowing and lifetime relations |
-| 14 | owned qualifiers | Function values and ownership qualifiers |
-| 15 | convention/reference orthogonality | Function values and ownership qualifiers |
-| 16 | preservation of the opt graph | Function values and ownership qualifiers; Normal-to-opt boundaries |
-| 17 | CFG precision | Flow-sensitive checking |
-| 18 | aggregate affine roots | Nominal types, containers, and generics |
-| 19 | interpreter/Wasm parity | Runtime and backend meaning |
-| 20 | async and escape boundaries | Escapes and suspension |
-| 21 | migration command | Diagnostics and migration |
-| 22 | performance telemetry | [Performance appendix](appendix-performance.md) and the acceptance ledger |
-
-The implementation status belongs to the acceptance ledger, not to prose in
-this chapter. The ledger currently marks all 22 criteria `PROVEN` on `master`
-with named executable evidence.
+A normal file receives the mode-boundary diagnostic before any lifetime or
+loan rule runs, so a stray `&` in ordinary code reads as one clear message
+rather than a cascade of borrow errors.

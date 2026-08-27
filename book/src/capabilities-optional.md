@@ -35,7 +35,7 @@ The important part: **the auditor sees through `Option`.** `witchy caps` reports
 ```text
 record  Dir[Write]
 ```
- -
+
 because the code *can* write (it matches `Some` and calls `write`). Wrapping a
 capability in `Option` doesn't hide it from the footprint; the analysis is
 static and conservative, counting what the code is able to do regardless of
@@ -70,40 +70,21 @@ fn main(console: Console, dir: Dir):
 `handle` can read or write, so its footprint is the union: `Dir`. The narrower
 helpers still report only what they use (`Dir[Read]` and `Dir[Write]`).
 
-When an **aggregate** carries a capability and its layout is concrete, the
-compiler gives it a typed wasm GC struct. That covers a direct structural tuple
-like `(Dir[Read], String)`, and every closed instance of a `type` - generic or
-not, named fields or positional payloads, one variant or several, sealed
-`capability` declaration or plain `type` alike.
+## Putting capabilities inside other values
 
-One case stays outside it: a transparent single-field capability brand keeps its
-direct externref rather than allocating a wrapper struct.
+You can store a capability wherever its shape is known ahead of time: a tuple
+like `(Dir[Read], String)`, any `type` you declare, `Option`, `Result`, a
+`List`, or a closure's captures. Nest them as deeply as you like. The capability
+stays an unforgeable reference the whole way down, on both backends, and it is
+never quietly copied into an ordinary heap slot where something could forge one.
 
-Concrete tuples and nominal instances can nest, and the capability stays an
-unforgeable reference the whole way down; nominal types can also recurse. Both
-backends use that typed representation for tuple construction, numeric
-projection, parameter and return passing, and `let`/`match` destructuring. The
-compiler expands concrete and generic type aliases before it picks a
-representation, so an alias for one of these tuples gets exactly the same GC
-shape and behavior.
+A few placements are rejected rather than supported, because their layout isn't
+known until run time: capabilities as `Dict` keys or values, capabilities passed
+through an open generic call, capabilities carried out of a `region:` block, and
+capabilities crossing an isolated-worker callback.
 
-Closures may capture capabilities: the compiled backend keeps each boxed
-lambda's captures in a typed GC environment, so the capability remains an
-unforgeable reference through aliases and indirect calls. Function and
-capability values may also live in closed tuples, nominal instances,
-`Option`/`Result`, and nested `List` values. A reference-bearing `List(T)` uses
-a typed GC array and supports literals, persistent updates, indexed access,
-list patterns, `pop`, and iteration. `?` may propagate between `Option` or
-`Result` values whose success payloads have different representations; the
-compiled backend rebuilds the enclosing function's failure value.
-
-`Dict` keys or values that carry references, open generic function calls
-instantiated with capability-bearing values, `region:` copy-out carrying
-capabilities, and isolated-worker callback crossings remain intentionally
-rejected until those boundaries have concrete typed layouts.
-Capability aggregates also can't be rendered or compared for equality:
-authority isn't printable data or identity. No capability is silently boxed
-into an ordinary heap slot.
+You also can't print a capability or compare two for equality. Authority is not
+printable data, and it has no identity you are meant to inspect.
 
 ## At the entry point
 
@@ -135,5 +116,5 @@ fn main(console: Console, dir: Dir[Write], env: Env):
 of the program decides, value by value, whether that authority is actually
 exercised. Everything below `run` that holds `None` provably can't write.
 
-The type checker establishes this condition statically; the sandbox enforces it
-at runtime.
+The type checker settles this before the program runs; the sandbox enforces it
+while it runs.

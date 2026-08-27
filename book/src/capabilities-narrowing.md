@@ -106,7 +106,7 @@ admit matching files - a non-matching name is denied at the access check, and a
 subtree inherits the policy. It's the `Dir` analog of `net.only` below:
 
 ```witchy
-// `read_logs` is handed a Dir that can only touch `.log` files — even though its
+// `read_logs` is handed a Dir that can only touch `.log` files - even though its
 // caller holds the whole directory, it cannot read a `.key` or a `.env`.
 fn read_logs(logs: Dir[Read], name: String) -> String:
     logs.read(name)
@@ -124,7 +124,7 @@ exactly *one* file. A function that only needs to read one config file shouldn't
 handed a whole directory, so a `Dir` navigates down to a single file:
 
 ```witchy
-// `read_config` provably touches one file — `witchy caps` reports it as
+// `read_config` provably touches one file - `witchy caps` reports it as
 // `File[Read]`, never `Dir`. It cannot see any other file in the tree.
 fn read_config(f: File[Read]) -> String:
     f.read()
@@ -246,7 +246,7 @@ No other module can forge an `X` or pull the `U` back out.
 ```witchy
 capability ConfigDir from Dir[Read]
 
-// The ONLY way to get a `ConfigDir` — a checked smart constructor, in the same
+// The ONLY way to get a `ConfigDir` - a checked smart constructor, in the same
 // module. Outside this module nobody can write `ConfigDir(...)`.
 pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
     if root.exists("config.toml"):
@@ -255,7 +255,7 @@ pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
         None
 
 // A consumer that takes `ConfigDir` *statically* demands the brand, not just any
-// `Dir` — and can never reach the raw `Dir` back out.
+// `Dir` - and can never reach the raw `Dir` back out.
 fn load(c: ConfigDir, name: String) -> String:
     match c:
         ConfigDir(dir) -> dir.read(name)
@@ -285,8 +285,8 @@ is a `Net` confined to one server *plus* the table it's scoped to:
 ```witchy
 // A confined `Net` (the hard, audited authority) + a `table` it is scoped to (a
 // soft policy the library enforces). Sealed: only this module can mint, refine, or
-// destructure one, and its fields are private — reached with `match`, never
-// `.field` — so the underlying `Net` can never leak past the policy.
+// destructure one, and its fields are private - reached with `match`, never
+// `.field` - so the underlying `Net` can never leak past the policy.
 capability Table:
     fetch: Fetch
     name: String
@@ -295,7 +295,7 @@ capability Table:
 pub fn open_table(fetch: Fetch, name: String) -> Table:
     Table(fetch, name)
 
-// A query refuses any table but the one the handle carries — the policy lives in
+// A query refuses any table but the one the handle carries - the policy lives in
 // this one reviewable place.
 pub fn count(t: Table, requested: String) -> String:
     match t:
@@ -345,7 +345,7 @@ fn main(console: Console, ui: UiRoot):
 ```
 
 ```
-# app.grants.toml — witchy sandbox --grants app.grants.toml app.witchy
+# app.grants.toml - witchy sandbox --grants app.grants.toml app.witchy
 [user_caps]
 ui = { type = "UiRoot", policy = "coven-web" }
 ```

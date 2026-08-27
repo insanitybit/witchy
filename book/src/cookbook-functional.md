@@ -18,7 +18,7 @@ fn inc(n: Int) -> Int:
     n + 1
 
 fn main(console: Console):
-    // compose(f, g)(x) = f(g(x)) — inc first, then double.
+    // compose(f, g)(x) = f(g(x)) - inc first, then double.
     let inc_then_double = func.compose(double, inc)
     console.print("compose: ${inc_then_double(5)}")
     let always_zero = func.constant(0)

@@ -1,9 +1,8 @@
 # Running witchy Code
 
-Once a program type-checks there are several ways to run it, and the difference
-between them isn't convenience - it's who supplies the authority and how tightly
-the host is wrapped around the guest. All of them honour the same capability
-contract.
+Once a program type-checks you have several ways to run it. What separates them
+is not convenience but who supplies the authority and how tightly the host wraps
+the guest. All of them honour the same capability contract.
 
 witchy's production execution path compiles to WebAssembly. The tree-walking
 interpreter is an independent semantic oracle used by `witchy parity` and the
@@ -86,10 +85,10 @@ Use parity when changing language or standard-library behavior:
 witchy parity hello.witchy
 ```
 
-It runs the same checked program through the interpreter and compiled
-WebAssembly backend and fails if output or error behavior differs. The
-repository's differential suites apply the same oracle to language, standard
-library, capability, and book examples.
+It runs the same checked program through the interpreter and the compiled
+WebAssembly backend and fails if output or error behavior differs. The same
+check covers the language, the standard library, capabilities, and every
+example in this book.
 
 ## Run in the browser
 
