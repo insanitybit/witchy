@@ -335,6 +335,11 @@ mod tests {
                 ownership: LaneOwnership::Move,
                 initially_initialized: true,
             }],
+            result_lanes: if kind == ExecutionOperation::ChannelReceive {
+                vec![FrameLaneId(0)]
+            } else {
+                vec![]
+            },
             states: vec![
                 ExecutionState {
                     id: ExecutionStateId(0),
