@@ -117,6 +117,7 @@ test-group = 'queue-concurrency-serial'
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::glamour) | (binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0081_existential_frontend) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(witchy::test_for_paths) | binary_id(witchy::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'
 test-group = 'gate-cold-heavy'
+retries = 0
 
 # The `commands::web::tests` group compiles a full glamour program per test,
 # each driving the multi-core Wasm compiler. Left at the default group they
@@ -130,6 +131,7 @@ test-group = 'gate-cold-heavy'
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::bin/witchy) & test(/^commands::web::tests::/)'
 test-group = 'gate-cold-heavy'
+retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
 
@@ -148,6 +150,7 @@ priority = 80
 [[profile.default.overrides]]
 filter = 'test(/^dom::(glamour_island_completion_frames_agree_on_both_backends|glamour_island_host_work_frames_agree_on_both_backends|glamour_structural_patch_frames_agree_on_both_backends|glamour_version_and_trust_views_render_security_fields)$|^html_nul::html_rejects_static_nul_without_affecting_real_holes_or_strings$|^example_tests::glamour::glamour_media_policy_css_and_loader_share_one_query_corpus$/)'
 test-group = 'gate-cold-heavy'
+retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
 
@@ -170,6 +173,7 @@ priority = 80
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::cli_subcommands) & test(/web_commands_route_natively_and_complete_clean_clone_flow|static_web_flow_needs_no_client_scaffold_or_browser_runtime|web_doctor_deployment_headers_check_declared_route_policy/)'
 test-group = 'gate-cold-heavy'
+retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 80
 
@@ -179,6 +183,7 @@ priority = 80
 [[profile.default.overrides]]
 filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe/)'
 test-group = 'perf-serial'
+retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
@@ -239,6 +244,7 @@ priority = 80
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::rfc0129_scalar_executor_performance)'
 test-group = 'perf-serial'
+retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
@@ -253,6 +259,7 @@ priority = 90
 [[profile.default.overrides]]
 filter = 'test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)'
 test-group = 'perf-serial'
+retries = 0
 slow-timeout = { period = "600s", terminate-after = 2 }
 priority = 90
 
@@ -300,6 +307,7 @@ priority = 85
 [[profile.default.overrides]]
 filter = 'test(/^example_tests::([a-z0-9_]+::)?wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::([a-z0-9_]+::)?(documentation_examples_are_valid|all_examples_validate_via_cli|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
 test-group = 'wasm-heavy'
+retries = 0
 slow-timeout = { period = "240s", terminate-after = 2 }
 priority = 90
 
