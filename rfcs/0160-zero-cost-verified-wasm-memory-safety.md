@@ -1,18 +1,21 @@
 ---
 rfc: 0160
 title: "Zero-cost verified memory safety for generated Wasm"
-status: proposed
+status: superseded
 created: 2026-08-26
-superseded-by:
+superseded-by: "0162-validated-safewir"
 related:
   - "0051 (memory-safety invariants and the RC floor)"
   - "0127 (ownership, references, layouts, and opt mode)"
   - "0135 (compiled-Wasm correctness and differential evidence)"
   - "0153 (typed optimization facts and conservative fallback)"
-tracking: "Proposal. Implementation requires the acceptance ledger in this RFC to be completed before the verifier becomes a release claim."
+tracking: "Superseded by RFC-0162, which keeps the zero-cost object-memory-safety goal and replaces this broader proof-producing/final-byte design with final SafeWIR validation."
 ---
 
 # RFC-0160: Zero-cost verified memory safety for generated Wasm
+
+> Superseded by RFC-0162. This file remains the record of the broader
+> proof-producing and final-byte-witness proposal.
 
 ## Summary
 

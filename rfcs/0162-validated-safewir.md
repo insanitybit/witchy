@@ -5,12 +5,12 @@ status: proposed
 created: 2026-08-26
 superseded-by:
 related:
-  - "0160 (zero-cost verified Wasm memory safety)"
-  - "0051 (memory-safety invariants and the RC floor)"
-  - "0127 (ownership, references, layouts, and opt mode)"
-  - "0135 (compiled-Wasm correctness and differential evidence)"
-  - "0153 (typed optimization facts and conservative fallback)"
-tracking: "Proposal. If accepted, this RFC supersedes RFC-0160's broader proof-producing encoder and final-byte witness design."
+  - "0160 (Zero-cost verified memory safety for generated Wasm)"
+  - "0051 (Memory safety by construction — rc invariants, one allocator, and deleting the per-method zoo)"
+  - "0127 (Value ownership, mutation, and the opt-mode access contract)"
+  - "0135 (Stable observable semantics converge before support)"
+  - "0153 (Effect-Safe Range and Loop Optimization: Typed Facts, Trap Preservation, and Reusable Sequence Plans)"
+tracking: "Proposal. Supersedes RFC-0160's broader proof-producing encoder and final-byte witness design."
 ---
 
 # RFC-0162: Validated SafeWIR for zero-cost object-memory safety
@@ -60,14 +60,16 @@ optimized-WIR validation, and evidence requirements. It deliberately defers:
 
 - general proof-producing optimization passes;
 - full pass-by-pass semantic equivalence checking;
-- an independent final-byte object-safety checker; and
-- proof-carrying cache or distribution artifacts.
+- an independent final-byte object-safety checker;
+- proof-carrying cache or distribution artifacts; and
+- RFC-0160's compiler-process hardening program, including the transitive
+  unsafe-code census and parser/compiler resource budgets.
 
 The replacement principle is the one used by validation-a-posteriori systems:
 the optimizer may be complicated and unverified, while a much smaller checker
 decides whether its particular output satisfies the required safety policy.
-If this RFC is accepted, RFC-0160 should be marked `superseded` rather than
-edited into this narrower decision.
+RFC-0160 is marked `superseded` by this proposal rather than remaining a second
+live proposal for the same decision.
 
 ## Motivation
 
@@ -240,7 +242,7 @@ SafeWIR retains a compact static description for linear-memory values:
 
 ```text
 ObjectRef {
-    root: ValueId,
+    root: DefinitionId,
     layout: LayoutId,
     extent: Extent,
     provenance: Provenance,
@@ -263,7 +265,7 @@ ByteRange {
 }
 ```
 
-`ValueId`, `GenerationId`, provenance edges, ownership states, layout IDs, and
+`DefinitionId`, `GenerationId`, provenance edges, ownership states, layout IDs, and
 symbolic extents exist only in the compiler. At runtime an `ObjectRef` remains
 the same `i32` pointer used today, and a `Place` remains the same address
 expression.
@@ -291,6 +293,30 @@ Unknown
 `Unknown` is valid for values that are not used destructively. It never
 satisfies uniqueness, freshness, early-release, unchecked projection, or
 destructive-reuse obligations.
+
+#### Mapping facts onto mutable WIR
+
+Executable WIR retains named mutable locals: `GetLocal(String)` and
+`SetLocal`. SafeWIR does not pretend those names are SSA values. The validator
+builds an analysis-only def-use graph without rewriting executable WIR. Every
+parameter and every local write, including each `SetLocal` and multi-result
+call destination, receives a `DefinitionId`; a value-producing SafeWIR
+expression used without a local receives an ID for its expression site. Each
+`GetLocal` resolves to its reaching definition set; control-flow joins receive
+a synthetic `DefinitionId`, and loop headers are solved to a conservative
+fixpoint. A fact survives a join only when it is valid for every reaching
+definition.
+
+`DefinitionId` identifies a WIR value version. `GenerationId` separately
+identifies object storage lifetime and is minted by allocation or destructive
+reuse even when the numeric address is unchanged. Thus `x = f(x)` cannot reuse
+facts attached to the pre-call definition of `x`, and an alias returned by `f`
+cannot become fresh merely because it is assigned to a new local definition.
+
+The numeric component extends RFC-0153's `RangeFact` lattice; it does not create
+a competing range lattice. RFC-0153 facts move from local-name keys to
+`DefinitionId` keys, while SafeWIR augments them with the exact object
+generation and length-source definition to which a bound applies.
 
 ### 3. Semantic object operations
 
@@ -335,8 +361,11 @@ accepts the optimized form already selected or rejects compilation.
 
 ### 4. Function ownership and alias summaries
 
-SEC-078 demonstrates that `result of a call` is not synonymous with `fresh`.
-SafeWIR therefore gives every memory-bearing callable a checked summary:
+SEC-078 demonstrates that `result of a call` is not synonymous with `fresh`;
+its named regression is
+`src/example_tests/region.rs::rc_free_at_overwrite_does_not_free_an_aliased_call_result_sec_078`
+on `security/fix-sec078-call-result-uaf`. SafeWIR therefore gives every
+memory-bearing callable a checked summary:
 
 ```text
 CallableMemoryContract {
@@ -381,7 +410,7 @@ A dynamic range is safe by one of two routes:
 1. the semantic WIR operation retains the required check; or
 2. a dominating branch/range fact proves the optimized unchecked access.
 
-Range facts carry the defining value IDs and object generation. Reassignment,
+Range facts carry the defining `DefinitionId`s and object generation. Reassignment,
 memory growth that changes a length source, object reuse, control-flow merge,
 or replacement of a defining expression invalidates facts that depend on it.
 The validator derives validity from the final control-flow graph; an optimizer
@@ -431,12 +460,24 @@ shape at the validated boundary.
 
 ### 8. The sealed memory kernel
 
-Raw linear-memory constructors become private to two places:
+This RFC chooses an **opaque-operation, inline-encoding boundary**. Allocation,
+retain, release, free-list, region-watermark, and unavoidable byte primitives
+remain first-class SafeWIR operations through optimization and final
+validation. Their implementations are not ordinary `WirFunc` bodies and cannot
+be selected by `wir_opt::inline::do_inlining`.
 
-1. the SafeWIR encoder; and
-2. a small memory kernel implementing allocation headers, allocator growth,
-   free-list linkage, retain/release mechanics, region watermark operations,
-   and unavoidable byte primitives.
+After validation, the trusted encoder expands each operation at its use site
+using a fixed kernel template. The generated Wasm therefore need not contain a
+helper call: the current call-elimination benefit can be preserved. What is
+deliberately lost is optimizer visibility into the raw loads and stores inside
+the template. Encoder expansion is part of the mechanical SafeWIR-to-Wasm
+mapping, not a post-validation optimization, and it cannot inspect surrounding
+user WIR to choose an unchecked variant.
+
+Raw linear-memory constructors consequently become private to the encoder's
+kernel-template implementation. The validator checks each opaque operation's
+typed preconditions; it does not validate the raw template body. Those fixed
+templates and the encoder remain the trusted memory kernel.
 
 String, byte, list, dictionary, record, closure, and numeric helpers are not
 automatically kernel code merely because they currently contain loads and
@@ -445,13 +486,26 @@ code that implements those operations' representation rather than an allowlist
 of existing helper files.
 
 A workspace structural test rejects raw load, store, copy, fill, heap-global
-write, or raw-body construction outside the named encoder and kernel modules.
+write, or raw-body construction outside the named encoder kernel-template
+module. It also rejects ordinary `WirFunc` definitions of privileged kernel
+operations, preventing the general inliner from smuggling raw operations into
+user functions. Existing helpers migrate to opaque operations rather than
+being grandfathered into the kernel.
+
 Adding a new privileged operation requires an explicit kernel contract and
 negative test.
 
-The first implementation keeps this small kernel in the trusted computing
-base, audited directly and exercised with boundary, poisoning, reuse, and
-mutation tests. Mechanically proving its contracts is a possible later
+RFC-0051 established that inlined RC paths are performance-load-bearing. The
+zero-cost gate therefore separately records the emitted calls, loads, stores,
+dynamic instruction count, and protected benchmarks for `rc_dup`, `rc_drop`,
+`rc_free`, leaf retain/release, allocation, and raw-buffer copy before and after
+this boundary change. Any regression blocks acceptance. Permitted remedies are
+more precise typed operations or fixed encoder templates; accepting raw
+kernel-expanded regions in user WIR is not a remedy under this RFC.
+
+The first implementation keeps these templates in the trusted computing base,
+audited directly and exercised with boundary, poisoning, reuse, exact-encoding,
+and mutation tests. Mechanically proving their contracts is a possible later
 strengthening, not an acceptance requirement for this RFC.
 
 ### 9. Validation algorithm and failure policy
@@ -476,12 +530,21 @@ or silently deoptimizing after validation would create a second transformation
 that itself needed validation. A pass that cannot preserve evidence must emit a
 safe semantic form before the final check.
 
+The compiler may retain the pre-optimization semantic-form module as a distinct
+candidate. If optimized validation fails or exhausts an optimizer-complexity
+budget, it may discard that candidate and independently validate the retained
+semantic-form module from its entry point. It may not rewrite the rejected
+module into that form. If the semantic candidate also exhausts a budget,
+compilation fails with the named limit; a user or build operator may retry with
+a larger compile-time validation budget, but no path encodes unchecked WIR.
+
 ### 10. Mechanical encoding and Wasm validation
 
 The encoder accepts only `ValidatedWirModule`. Each SafeWIR operation maps to a
-small fixed encoding template, and ghost facts are ignored rather than encoded.
-The encoder cannot accept arbitrary raw pointer expressions from ordinary
-lowering.
+small fixed encoding template, including the inline kernel templates specified
+in section 8, and ghost facts are ignored rather than encoded. This fixed
+expansion is the only transformation after validation. The encoder cannot
+accept arbitrary raw pointer expressions from ordinary lowering.
 
 After encoding, `wasmparser` validation remains mandatory. It independently
 checks Wasm types, references, structured control flow, imports, tables, GC
@@ -503,15 +566,23 @@ change address arithmetic and memory operations after SafeWIR facts have been
 erased, so pre-Binaryen validation cannot remove it from the trusted computing
 base.
 
+Current code already hashes `BINARYEN_RECIPE_SCHEMA` and the output of
+`wasm-opt --version` with the input Wasm for optimized-cache identity. If the
+tool is unavailable or fails, `binaryen_optimize` already returns the
+unprocessed input. This RFC preserves those properties. The remaining identity
+gap is that both the version probe and optimizer invocation resolve an
+arbitrary `wasm-opt` from `PATH`; the remaining evidence gap is the exact
+pre/post production-pipeline differential corpus.
+
 For the assurance claim in this RFC:
 
 - releases use a pinned Binaryen version and executable identity, not an
   arbitrary `wasm-opt` resolved from `PATH`;
-- the exact production flags and version participate in artifact and cache
-  identity;
-- malformed, unavailable, or unexpected optimizer output fails closed or uses
-  the already-validated unprocessed module according to an explicit launch
-  policy;
+- the existing exact production recipe and reported version continue to
+  participate in artifact and cache identity;
+- malformed, unavailable, or unexpected optimizer output continues to fail
+  closed or use the already-validated unprocessed module according to the
+  explicit launch policy;
 - every SEC fixture and generated adversarial module is differentially executed
   before and after the exact production Binaryen pipeline; and
 - modules marked `PreserveRaw` never pass through Binaryen.
@@ -543,6 +614,11 @@ SafeWIR migration for operations whose optimization decision is unchanged. It
 also records code size, dynamic instruction count, allocations, and protected
 benchmark performance. A safety feature that requires new runtime work needs a
 different RFC and does not satisfy this one.
+
+For opaque kernel operations, the comparison includes exact WAT and dynamic
+instruction evidence that encoder expansion preserved the present inlined hot
+paths. Equal call count alone is insufficient: extra loads, stores, branches,
+or lost constant folding fail the gate even when no helper call survives.
 
 ## Testing and adversarial evidence
 
@@ -577,9 +653,31 @@ Every applicable generated-memory-safety SEC finding becomes:
 3. where the defect touched the kernel or encoder, a focused boundary or byte
    encoding test.
 
-The exact SEC-078 shape is mandatory: a dependency call returning its string
-argument must not authorize freeing or overwriting the caller's retained
-alias.
+SEC identifiers have been reused across evaluation series, so acceptance
+evidence always records an ID, title or class, and path or test name. The
+initial applicable generated-object-memory corpus is:
+
+| Finding | Named evidence and current gap | SafeWIR obligation |
+|---|---|---|
+| SEC-036/SEC-037, RC non-object/interior-pointer use-after-free class | `tests/differential_fuzz.rs::uaf_sanitizer_is_false_positive_free` and `rc_assert_dup_drop_is_false_positive_free`; RFC-0051 records the historical class, but the distinct SEC-036 report/reproducer is not present on current master | Restore a dedicated source reproducer for SEC-036 or record it as the same trigger as SEC-037; reject forged retain/release on an interior or non-owning pointer |
+| SEC-038, unchecked `bytes.at` out-of-object read | `src/example_tests/bytes.rs::bytes_index_out_of_bounds_errors_on_both_backends` | Reject a forged unchecked byte load without an exact object-bound range fact |
+| SEC-039, free-at-overwrite of a non-object literal | `src/example_tests/region.rs::rc_free_at_overwrite_does_not_free_a_literal_sec_039` | Reject release or reuse of static-data/non-owning storage |
+| SEC-078, aliased call result freed at overwrite | Pending regression `src/example_tests/region.rs::rc_free_at_overwrite_does_not_free_an_aliased_call_result_sec_078` on `security/fix-sec078-call-result-uaf` | A call returning its `String` argument cannot authorize freeing or overwriting the caller's retained alias |
+
+The August 23 offensive series `SEC-001..SEC-015` is a separate namespace. Its
+SEC-013 forged `vm.par_map` count is a hostile-precompiled-Wasm host-allocation
+bug, retained as
+`crates/witchy-runtime/src/runtime_tests.rs::forged_par_map_count_is_bounded_before_host_allocation`;
+it is a host ABI/resource boundary rather than generated intra-object memory
+safety. SEC-008 cache substitution is governed by accepted RFC-0157. The other
+items in that series are cache, publication, ambient-authority, network, or
+resource findings and do not enter this corpus.
+
+The `SEC-040..SEC-045` labels likewise cover mixed wrong-answer, parser-process,
+network, and standard-library findings. They remain in their owning suites but
+are not object-memory evidence merely because they were found during compiler
+parity work. In particular, SEC-041 parser depth belongs to the compiler-process
+hardening deferred from RFC-0160.
 
 ### Generative and differential testing
 
@@ -595,9 +693,10 @@ local reasoning:
 - optimization toggles and legal pass combinations.
 
 Each generated program compares the interpreter, safe semantic Wasm, optimized
-Wasm before Binaryen, and production-pipeline Wasm. CI-only heaps use immediate
-same-size reuse, poison fill, redzones, and randomized allocation placement.
-These instruments never enter production artifacts.
+Wasm before Binaryen, and production-pipeline Wasm. The existing RFC-0023 CI
+`heap-check` job and `heap_check_enabled`/`uaf_check_enabled` modes are extended
+with immediate same-size reuse, stronger poison fill, and randomized allocation
+placement. These instruments never enter production artifacts.
 
 ### Calibrated offensive campaigns
 
@@ -643,7 +742,12 @@ canonical LayoutId graph and checked callable types
 The migration is incremental but the security claim is not:
 
 1. Inventory every production raw memory constructor, heap-global write,
-   callable memory summary, specialized layout boundary, and raw-body path.
+   callable memory summary, specialized layout boundary, and raw-body path. The
+   2026-08-26 baseline is 478 raw memory-operation construction sites across 25
+   non-test files when alias forms such as `E::Load` are counted: roughly 400
+   are under `wir_helpers` (`dict.rs` 112, `strings/transform.rs` 44,
+   `bytes.rs` 37), roughly 78 are under lowering/codegen, and optimizer files
+   contain two actual construction sites rather than merely match arms.
 2. Add ghost object, layout, provenance, range, and generation identities
    alongside existing WIR without changing encoded bytes.
 3. Implement the validator in report mode and freeze its diagnostic census.
@@ -672,10 +776,10 @@ agreement alone, or a subset of optimizer configurations.
 | Call results default to possible aliasing | pending | SEC-078 plus direct, indirect, recursive, closure, projection, and imported-call matrices |
 | Final optimized WIR is checked once, fail closed | pending | Private `ValidatedWirModule` constructor and production encoder API test |
 | Optimizer combinations cannot retain stale facts | pending | Reassignment, join, loop, inlining, specialization, and pass-combination negative tests |
-| Raw memory is sealed | pending | Structural census reports zero constructors outside the named kernel and encoder |
+| Raw memory is sealed | pending | The 478-site baseline reaches zero constructors outside the encoder kernel-template module; ordinary privileged `WirFunc` helpers cannot exist or inline |
 | Kernel is small and directly tested | pending | Published operation census, contracts, poisoning, boundary, reuse, and mutation coverage |
 | Encoder mechanically erases SafeWIR facts | pending | Exact template tests plus standard Wasm validation and no production raw-body path |
-| Every applicable SEC reproducer is permanent | pending | Source regression and forged-WIR rejection with named invariant |
+| Every applicable SEC reproducer is permanent | pending | The enumerated SEC table has a landed source regression and forged-WIR rejection for every row; SEC-036 is restored or explicitly deduplicated |
 | Validator rules resist implementation mistakes | pending | Mutation matrix with every rule killed |
 | Binaryen trust is explicit and reproducible | pending | Pinned identity, exact flags, cache identity, pre/post differential corpus, fail-closed fallback |
 | Generated execution has zero added safety overhead | pending | Instruction, branch, access, allocation, import, global, field, code-size, and benchmark comparison |
