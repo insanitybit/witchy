@@ -10,7 +10,7 @@
 use witchy_syntax::ast::{Convention, Expr, Function, Item, Type};
 use witchy_syntax::async_surface::AsyncSurfaceId;
 use witchy_syntax::suspension::{
-    async_surface, async_surface_module, frame_state, source_suspension, FRAME_ENTRY_ATTRIBUTE,
+    async_surface, async_surface_module, frame_bindings, frame_state, source_suspension, FRAME_ENTRY_ATTRIBUTE,
     FRAME_FUNCTION_ATTRIBUTE,
 };
 
@@ -247,11 +247,24 @@ impl TypedAsyncLoweringInput {
                 Some(_) => return Err(format!("async state at final callable index {function_index} has a non-callable checked signature")),
                 None => return Err(format!("async state at final callable index {function_index} has no checked signature")),
             };
+            let mut declared_bindings = std::collections::BTreeMap::new();
+            for (parameter, binding) in frame_bindings(function)? {
+                if parameter >= function.params.len() {
+                    return Err(format!(
+                        "async state at final callable index {function_index} maps absent parameter {parameter} to source binding {binding}"
+                    ));
+                }
+                if declared_bindings.insert(parameter, SourceBindingId(binding)).is_some() {
+                    return Err(format!(
+                        "async state at final callable index {function_index} maps parameter {parameter} more than once"
+                    ));
+                }
+            }
             let frame = function.params.iter().enumerate().map(|(parameter, parameter_info)| {
                 Ok(TypedAsyncFrameInput {
                     parameter: u32::try_from(parameter).map_err(|_| "async parameter count exceeds u32")?,
                     name: parameter_info.name.clone(),
-                    source_binding: None,
+                    source_binding: declared_bindings.get(&parameter).copied(),
                     ty: inferred.get(parameter).cloned().or_else(|| parameter_info.ty.clone()).ok_or_else(|| format!("async state at final callable index {function_index} has untyped parameter `{}`", parameter_info.name))?,
                     convention: parameter_info.convention,
                 })
@@ -292,7 +305,31 @@ impl TypedAsyncLoweringInput {
                 ));
             }
             for (frame, source_parameter) in state.frame.iter_mut().zip(parameters) {
-                frame.source_binding = Some(source_parameter.id);
+                match frame.source_binding {
+                    Some(binding) if binding != source_parameter.id => return Err(format!(
+                        "async entry {:?} parameter {} maps source binding {:?}, expected {:?}",
+                        state.callable, frame.parameter, binding, source_parameter.id,
+                    )),
+                    Some(_) => {}
+                    // Backwards-compatible fallback for manually formed old
+                    // compiler fixtures. Production async lowering stamps the
+                    // mapping, and continuation frames never take this path.
+                    None => frame.source_binding = Some(source_parameter.id),
+                }
+            }
+        }
+        for state in &states {
+            let flow = source.iter().find(|flow| flow.callable == state.callable)
+                .expect("source callable existence was checked while collecting states");
+            for frame in &state.frame {
+                if let Some(binding) = frame.source_binding
+                    && !flow.bindings.iter().any(|candidate| candidate.id == binding)
+                {
+                    return Err(format!(
+                        "async state {:?} parameter {} maps unknown source binding {:?}",
+                        state.final_callable, frame.parameter, binding,
+                    ));
+                }
             }
         }
         // Every source async callable starts exactly one execution. Continuation
@@ -535,7 +572,7 @@ mod tests {
     #[test]
     fn binds_inherent_async_states_to_final_indices_without_generated_names() {
         let module = witchy_syntax::parser::parse_module(
-            "type Counter:\n    value: Int\n\nimpl Counter:\n    async fn next(self) -> Int:\n        let value = task.done(self.value).await\n        value + 1\n\nfn main(console: Console):\n    console.print(\"ready\")\n",
+            "type Counter:\n    value: Int\n\nimpl Counter:\n    async fn next(self) -> Int:\n        let value = task.done(1).await\n        self.value + value\n\nfn main(console: Console):\n    console.print(\"ready\")\n",
         ).expect("parse source");
         let checked = link_checked(
             vec![("main".to_string(), module)],
@@ -554,6 +591,15 @@ mod tests {
         }));
         assert!(input.states.iter().filter(|state| state.kind == TypedAsyncStateKind::Entry).all(|state| {
             state.frame.iter().all(|lane| lane.source_binding.is_some())
+        }));
+        // `self` is carried over the await into a lifted continuation. Its
+        // physical parameter must retain the source declaration coordinate,
+        // rather than being rediscovered from the generated segment spelling.
+        assert!(input.states.iter().any(|state| {
+            state.kind == TypedAsyncStateKind::Segment
+                && state.frame.iter().any(|lane| {
+                    lane.name == "self" && lane.source_binding == Some(SourceBindingId(0))
+                })
         }));
         assert_eq!(input.suspensions.len(), 1);
         assert_eq!(input.operations.len(), input.source[0].operations.len());

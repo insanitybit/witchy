@@ -569,6 +569,11 @@ fn block_tail_expr(block: &Block) -> Option<&Expr> {
 #[derive(Clone)]
 struct Local {
     name: String,
+    /// Canonical lexical source binding coordinate, when this local came
+    /// directly from a source parameter. Source locals acquire the same
+    /// metadata from the shared declaration plan; compiler temporaries never
+    /// receive one.
+    source_binding: Option<u32>,
     ty: Option<Type>,
     mutable: bool,
     /// A direct view or an aggregate/nominal shell carrying a lifetime relation.
@@ -616,6 +621,13 @@ struct Continuation<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    fn frame_binding_attributes(locals: &[Local]) -> Vec<String> {
+        locals.iter().enumerate().filter_map(|(parameter, local)| {
+            local.source_binding.map(|binding| {
+                crate::suspension::frame_binding_attribute(parameter, binding)
+            })
+        }).collect()
+    }
     fn fresh_seg(&mut self) -> String {
         let n = *self.counter;
         *self.counter += 1;
@@ -689,6 +701,7 @@ impl<'a> Ctx<'a> {
                     // `let x = E.await` — suspend, then continue with `x` bound.
                     let bind = Local {
                         name: name.clone(),
+                        source_binding: None,
                         ty: ty.clone(),
                         mutable: *mutable,
                         borrowed_view: ty
@@ -704,6 +717,7 @@ impl<'a> Ctx<'a> {
                     let mut scope2 = scope.to_vec();
                     scope2.push(Local {
                         name: name.clone(),
+                        source_binding: None,
                         ty: ty.clone().or_else(|| derive_type(value)),
                         mutable: *mutable,
                         borrowed_view: ty
@@ -779,6 +793,7 @@ impl<'a> Ctx<'a> {
                 for b in &binds {
                     scope2.push(Local {
                         name: b.clone(),
+                        source_binding: None,
                         ty: None,
                         mutable: false,
                         borrowed_view: binds_borrowed,
@@ -909,6 +924,7 @@ impl<'a> Ctx<'a> {
             // After the loop the accumulator is a fresh (mutable) local.
             cont_scope.push(Local {
                 name: a.name.clone(),
+                source_binding: a.source_binding,
                 ty: a.ty.clone(),
                 mutable: true,
                 borrowed_view: a.borrowed_view,
@@ -934,6 +950,7 @@ impl<'a> Ctx<'a> {
         });
         let bind = Local {
             name: acc_bind,
+            source_binding: None,
             ty: None,
             mutable: false,
             borrowed_view: false,
@@ -1010,6 +1027,7 @@ impl<'a> Ctx<'a> {
                     for b in &binds {
                         scope2.push(Local {
                             name: b.clone(),
+                            source_binding: None,
                             ty: None,
                             mutable: false,
                             borrowed_view: false,
@@ -1078,6 +1096,7 @@ impl<'a> Ctx<'a> {
         let bind = bind.or_else(|| {
             Some(Local {
                 name: self.fresh_tmp(),
+                source_binding: None,
                 ty: None,
                 mutable: false,
                 borrowed_view: false,
@@ -1140,6 +1159,7 @@ impl<'a> Ctx<'a> {
             });
         }
         let mut attributes = self.frame_attributes();
+        attributes.extend(Self::frame_binding_attributes(&carried));
         if let Some(source_suspension) = source_suspension {
             attributes.push(crate::suspension::source_suspension_attribute(source_suspension));
         }
@@ -1210,6 +1230,7 @@ impl<'a> Ctx<'a> {
         let mut scope2 = scope.to_vec();
         scope2.push(Local {
             name: var.to_string(),
+            source_binding: None,
             ty: None,
             mutable: false,
             borrowed_view: false,
@@ -1856,6 +1877,7 @@ impl<'a> Ctx<'a> {
                 let mut body_scope = carried.clone();
                 body_scope.push(Local {
                     name: var.clone(),
+                    source_binding: None,
                     ty: None,
                     mutable: false,
                     borrowed_view: false,
@@ -1896,7 +1918,8 @@ impl<'a> Ctx<'a> {
                     convention: Convention::Own,
                     default: None,
                 });
-                let attributes = self.frame_attributes();
+                let mut attributes = self.frame_attributes();
+                attributes.extend(Self::frame_binding_attributes(&carried));
                 self.segments.push(Function {
                     line: first_line(&body.lines),
                     public: false,
@@ -1933,7 +1956,8 @@ impl<'a> Ctx<'a> {
             }
         };
 
-        let attributes = self.frame_attributes();
+        let mut attributes = self.frame_attributes();
+        attributes.extend(Self::frame_binding_attributes(&carried));
         self.segments.push(Function {
             line: first_line(&body.lines),
             public: false,
@@ -2069,10 +2093,12 @@ fn lower_async_fn_with(
     let scope: Vec<Local> = f
         .params
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(parameter, p)| {
             let ty = resolved_async_parameter_type(p, self_ty.as_ref()).cloned();
             Local {
                 name: p.name.clone(),
+                source_binding: Some(u32::try_from(parameter).expect("async parameter count exceeds u32")),
                 borrowed_view: ty
                     .as_ref()
                     .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)),
@@ -2106,6 +2132,14 @@ fn lower_async_fn_with(
     entry_attributes.push(crate::suspension::FRAME_ENTRY_ATTRIBUTE.to_string());
     entry_attributes.push(crate::suspension::frame_state_attribute(entry_state));
     entry_attributes.push(crate::suspension::async_region_attribute(entry_state));
+    entry_attributes.extend(
+        f.params.iter().enumerate().map(|(parameter, _)| {
+            crate::suspension::frame_binding_attribute(
+                parameter,
+                u32::try_from(parameter).expect("async parameter count exceeds u32"),
+            )
+        }),
+    );
     let entry = Function {
         line: f.line,
         public: f.public,
@@ -2979,6 +3013,7 @@ mod tests {
     fn suspension_slots_keep_only_the_innermost_shadowed_binding() {
         let local = |name: &str, mutable| Local {
             name: name.to_string(),
+            source_binding: None,
             ty: Some(int_type()),
             mutable,
             borrowed_view: false,

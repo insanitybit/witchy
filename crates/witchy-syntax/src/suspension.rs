@@ -50,6 +50,14 @@ pub const ASYNC_REGION_ATTRIBUTE_PREFIX: &str = "__compiler_async_region=";
 /// even when the CPS transform emits later continuations first.
 pub const SOURCE_SUSPENSION_ATTRIBUTE_PREFIX: &str = "__compiler_source_suspension=";
 
+/// Maps one physical parameter of a compiler-generated async frame to the
+/// lexical source binding that supplied it.  Both numbers are local to the
+/// source callable: the parameter is a final callable ABI position, while the
+/// binding is a source declaration coordinate.  It is deliberately metadata
+/// on the generated function rather than a parameter annotation so ordinary
+/// source functions cannot forge it.
+pub const FRAME_BINDING_ATTRIBUTE_PREFIX: &str = "__compiler_frame_binding=";
+
 /// Source-item identity retained across async CPS lowering. This is compiler
 /// metadata only; final execution IDs are assigned after typed layout.
 pub const ASYNC_SURFACE_ATTRIBUTE_PREFIX: &str = "__compiler_async_surface=";
@@ -125,6 +133,30 @@ pub fn source_suspension(function: &Function) -> Option<u32> {
             .strip_prefix(SOURCE_SUSPENSION_ATTRIBUTE_PREFIX)
             .and_then(|suspension| suspension.parse().ok())
     })
+}
+
+pub fn frame_binding_attribute(parameter: usize, source_binding: u32) -> String {
+    format!("{FRAME_BINDING_ATTRIBUTE_PREFIX}{parameter}:{source_binding}")
+}
+
+/// Recover all compiler-stamped frame parameter bindings. Malformed metadata
+/// is not silently ignored: consumers must reject it rather than guessing a
+/// lane association from a generated name.
+pub fn frame_bindings(function: &Function) -> Result<Vec<(usize, u32)>, String> {
+    function.attributes.iter().filter_map(|attribute| {
+        let encoded = attribute.strip_prefix(FRAME_BINDING_ATTRIBUTE_PREFIX)?;
+        Some((|| {
+            let (parameter, binding) = encoded.split_once(':')
+                .ok_or_else(|| format!("malformed frame binding attribute `{attribute}`"))?;
+            let parameter = parameter.parse().map_err(|_| format!(
+                "malformed frame binding parameter in `{attribute}`"
+            ))?;
+            let binding = binding.parse().map_err(|_| format!(
+                "malformed frame binding source coordinate in `{attribute}`"
+            ))?;
+            Ok((parameter, binding))
+        })())
+    }).collect()
 }
 
 pub fn source_callable_attribute(name: &str) -> String {
