@@ -12,7 +12,7 @@ fn add(left: Int, right: Int) -> Int:
 fn main(let console: Console, let clock: Clock):
     var left = []
     var right = []
-    for i in 0..20000:
+    for i in 0..100000:
         list.push(left, i)
         list.push(right, i * 3)
 
@@ -21,5 +21,5 @@ fn main(let console: Console, let clock: Clock):
     let sums = left.zip_with(right, add)
     let bench_t1 = clock.now_monotonic()
 
-    console.print("${list.length(pairs)}:${list.at(sums, 19999)}")
+    console.print("${list.length(pairs)}:${list.at(sums, 99999)}")
     console.print("bench_ns=${bench_t1 - bench_t0}")

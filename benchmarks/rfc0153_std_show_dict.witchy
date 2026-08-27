@@ -1,0 +1,18 @@
+mode opt
+
+// RFC-0153 whole-operation driver for the existing `Show for Dict` path in
+// std/show.witchy. That implementation derives displayed keys and values, then
+// combines them through the unchanged std/list `zip` loop.
+import dict
+
+fn main(let console: Console, let clock: Clock):
+    var values = dict.new()
+    for i in 0..100000:
+        dict.insert(values, "key-${i}", i)
+
+    let bench_t0 = clock.now_monotonic()
+    let rendered = show(values)
+    let bench_t1 = clock.now_monotonic()
+
+    console.print("${rendered.length()}:${rendered.starts_with(\"{key-0: 0\")}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

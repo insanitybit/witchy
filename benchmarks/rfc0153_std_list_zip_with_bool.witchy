@@ -1,0 +1,22 @@
+mode opt
+
+// RFC-0153 whole-operation driver for the packed-Bool specialization of the
+// unchanged std/list `zip_with` loop.
+import list
+
+fn both(left: Bool, right: Bool) -> Bool:
+    left && right
+
+fn main(let console: Console, let clock: Clock):
+    var left = []
+    var right = []
+    for i in 0..100000:
+        list.push(left, i % 2 == 0)
+        list.push(right, i % 3 == 0)
+
+    let bench_t0 = clock.now_monotonic()
+    let values = left.zip_with(right, both)
+    let bench_t1 = clock.now_monotonic()
+
+    console.print("${list.at(values, 0)}:${list.at(values, 99999)}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

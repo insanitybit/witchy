@@ -1,0 +1,21 @@
+mode opt
+
+// RFC-0153 whole-operation driver for the unchanged std/list `zip_with` loop.
+import list
+
+fn add(left: Int, right: Int) -> Int:
+    left + right
+
+fn main(let console: Console, let clock: Clock):
+    var left = []
+    var right = []
+    for i in 0..100000:
+        list.push(left, i)
+        list.push(right, i * 3)
+
+    let bench_t0 = clock.now_monotonic()
+    let sums = left.zip_with(right, add)
+    let bench_t1 = clock.now_monotonic()
+
+    console.print("${list.at(sums, 0)}:${list.at(sums, 99999)}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

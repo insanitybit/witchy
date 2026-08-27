@@ -204,6 +204,37 @@ This checkpoint replaces neither the required four non-benchmark 10-percent
 promotion rows nor the remaining fannkuch Go-parity requirement. Track 6E is
 therefore still open.
 
+### Conjunctive real-consumer checkpoint (2026-08-27)
+
+`5b438661d19c5332e6760e4c34c63b0fbe51ec4b` landed the conjunctive
+stable-length proof through `mq-e66bf344b2445aa99a3dd1787c731720d7b88488`
+(terminal `merged`, gate 80 seconds). It extends the existing generic
+`SequenceAccessPlan` only: every short-circuit conjunct must be a compatible
+canonical `i < stable_length(root)` fact, and mutation or incompatible terms
+fall back to checked access.
+
+The local, matched control/candidate matrices compare the f399 release control
+(`sha256:7f30a143a7d79c79e9484f3dc7daadab5ce433692a2a15e607d8a3ba618c02e2`)
+with the 5b438 candidate
+(`sha256:91be80b283958bd997666540fcb6e2b6f3867ecedc4e5cb94ac33aa4ff389c27`).
+Each artifact has two warmups, twelve counterbalanced kernel pairs, matching
+output hashes, and three byte-identical counter payloads. The measured loops
+are unchanged pre-existing standard-library consumers; the drivers put input
+construction outside the clock.
+
+| Consumer operation | Artifact | Control median | Candidate median | Ratio | Counter evidence | Classification |
+|---|---|---:|---:|---:|---|---|
+| `std/list.witchy` `zip` + `zip_with` on `List(Int)` | `/tmp/rfc0153-std-list-stable-5b438661.Y5S1aJ` | 1.373 ms | 1.203 ms | 0.8765x | 4 stable headers, 400,000 cursorized accesses | qualifying whole-operation candidate |
+| `std/list.witchy` `zip_with` on `List(Int)` | `/tmp/rfc0153-std-list-stable-5b438661.Y5S1aJ` | 0.563 ms | 0.469 ms | 0.8332x | 2 stable headers, 200,000 cursorized accesses | qualifying whole-operation candidate |
+| `std/list.witchy` `zip_with` on packed `List(Bool)` | `/tmp/rfc0153-std-list-bool-5b438661.F6ZG2o` | 0.651 ms | 0.524 ms | 0.8042x | 2 stable headers, 200,000 cursorized accesses | qualifying whole-operation candidate |
+| `std/show.witchy` dictionary rendering (its `list.zip` consumer) | `/tmp/rfc0153-std-show-dict-5b438661.lk5wgn` | 138.201 ms | 142.631 ms | 1.0321x | 2 stable headers, 200,000 cursorized accesses | protected non-regression row |
+
+The three `std/list` rows improve by more than 10 percent, while the independent
+`std/show` consumer regresses only 3.21 percent. This is real-consumer and
+layout coverage, not a criterion-4 closeout: all qualifying rows are currently
+one pre-existing source, a second source has no qualifying improvement, and the
+required fourth qualifying row plus the fannkuch Go-parity target remain open.
+
 The current local fast artifact is
 `benchmarks/.build/results-fast.json`
 (`sha256:044023a887764d65c6cbc261432dc61ca896f03a92538b7330337ffef8214ae9`).
