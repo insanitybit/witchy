@@ -1733,13 +1733,16 @@ pub fn link_with_mode_and_origins(
     }
 }
 
-pub fn link_with_mode_and_origins_and_source_check(
+pub fn link_with_mode_and_origins_and_source_check<F>(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
     mode: LinkMode,
-    check_source: SourceChecker,
-) -> Result<LinkedModule, SourceLinkError> {
+    check_source: F,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
     // Safe by default for in-memory callers that have no source-provenance map:
     // a supplied reserved module is canonical only when its parsed AST matches
     // the compiler-bundled source. Loaders with exact source identity should use
@@ -1828,14 +1831,17 @@ fn link_with_user_modules_with_mode_and_origins(
 /// Link while invoking `check_source` after expansion, transitive module
 /// discovery, and source name resolution, but before any source node is
 /// destructively lowered.
-pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
+pub fn link_with_user_modules_with_mode_and_origins_and_source_check<F>(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
     user_modules: &std::collections::HashSet<String>,
     mode: LinkMode,
-    check_source: SourceChecker,
-) -> Result<LinkedModule, SourceLinkError> {
+    check_source: F,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
     let mut origin_tables: HashMap<String, crate::origin::OriginTable> = HashMap::new();
     check_reserved_source_names(&modules)?;
     if let Some(name) = user_modules
@@ -4644,6 +4650,30 @@ mod tests {
             error,
             SourceLinkError::Source(SourceCheckError::new("stop before lowering"))
         );
+    }
+
+    #[test]
+    fn injected_source_check_can_retain_pre_lowering_facts() {
+        let module = crate::parser::parse_module("async fn work() -> Int:\n    task.done(1).await\n")
+            .expect("parse source fixture");
+        let observed_async = std::cell::Cell::new(false);
+        link_with_user_modules_with_mode_and_origins_and_source_check(
+            vec![("main".into(), module)],
+            "main",
+            noop_expand,
+            &std::collections::HashSet::new(),
+            LinkMode::Production,
+            |source| {
+                observed_async.set(source.modules().iter().any(|(_, module)| {
+                    module.items.iter().any(|item| {
+                        matches!(item, Item::Function(function) if function.is_async)
+                    })
+                }));
+                Ok(())
+            },
+        )
+        .expect("source check permits link");
+        assert!(observed_async.get(), "callback observes source before CPS lowering");
     }
 
     #[test]
