@@ -154,6 +154,51 @@ def profile(run, top, budget):
             print(f"  {duration:7.1f}s  {binary:26} {name[:64]}")
 
 
+def aggregate(runs, top, budget):
+    """Per-test median cost across MANY gate logs.
+
+    A single log is one gate under whatever load the machine happened to be
+    carrying, so its per-test durations are noisy enough to rank the tail wrong.
+    Taking the median of each test across many runs ranks by the cost the test
+    actually carries, and reports how many gates the estimate rests on.
+    """
+    per = collections.defaultdict(list)
+    for run in runs:
+        for duration, binary, name in run["tests"]:
+            per[(binary, name)].append(duration)
+    if not per:
+        print("no gate logs with test results found", file=sys.stderr)
+        return
+    rows = sorted(
+        ((statistics.median(v), len(v), b, n) for (b, n), v in per.items()),
+        reverse=True,
+    )
+    cpu = sum(r[0] for r in rows)
+    budget = budget or 1.0
+    over = [r for r in rows if r[0] > budget]
+    excess = sum(r[0] - budget for r in over)
+    print(f"logs mined  {len(runs)}")
+    print(f"tests seen  {len(rows)} distinct")
+    print(f"median cpu  {cpu:.0f}s per gate across all observed tests")
+    print(f"over {budget:.1f}s    {len(over)} tests, {excess:.0f}s CPU above budget "
+          f"(~{excess / cores():.0f}s of wall at perfect packing)")
+    print()
+    print(f"--- {top} costliest tests (median, n = gates observed) ---")
+    for duration, n, binary, name in rows[:top]:
+        print(f"  {duration:7.1f}s  n={n:3}  {binary:34} {name[:70]}")
+
+    by_binary = collections.Counter()
+    counts = collections.Counter()
+    for duration, _, binary, _ in rows:
+        by_binary[binary] += duration
+        counts[binary] += 1
+    print()
+    print("--- costliest binaries ---")
+    for binary, duration in by_binary.most_common(12):
+        print(f"  {duration:8.1f}s  n={counts[binary]:5}  "
+              f"{duration / counts[binary]:6.2f}s/test  {binary}")
+
+
 def trend(runs):
     if not runs:
         print("no gate logs with test results found", file=sys.stderr)
@@ -210,6 +255,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--top", type=int, default=25, help="how many costliest tests to list")
     ap.add_argument("--trend", action="store_true", help="week-over-week suite cost")
+    ap.add_argument("--aggregate", action="store_true",
+                    help="per-test MEDIAN cost across --runs logs (ranks the tail without "
+                         "one gate's load noise)")
     ap.add_argument("--budget", type=float, default=0.0,
                     help="list every test slower than this many seconds")
     ap.add_argument("--runs", type=int, default=60,
@@ -222,6 +270,10 @@ def main():
 
     if args.trend:
         trend(load(args.runs))
+        return 0
+
+    if args.aggregate:
+        aggregate(load(args.runs), args.top, args.budget)
         return 0
 
     runs = load(1)
