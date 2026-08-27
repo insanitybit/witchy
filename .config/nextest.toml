@@ -276,7 +276,10 @@ priority = 90
 [[profile.default.overrides]]
 filter = 'test(/glamour_docs_bundle_renders_the_real_book/)'
 test-group = 'gate-cold-heavy'
-slow-timeout = { period = "240s", terminate-after = 2 }
+# Killed at its full 480s ceiling in the 2026-08-26 RFC-0158 batch; slow, not
+# flaky, so more ceiling and no retry.
+slow-timeout = { period = "600s", terminate-after = 2 }
+retries = 0
 priority = 85
 
 # Serial-tail elimination: these tests are slow AND sort late by name, so at
@@ -312,7 +315,15 @@ test-group = 'wasm-heavy'
 # load per core, an IDLE box, where this test's own p50 is 49.7s. A 10x
 # outlier on an idle machine is the cold first run in a freshly rebased gate
 # worktree, not contention -- so the ceiling, not the machine, was the bug.
-slow-timeout = { period = "360s", terminate-after = 2 }
+slow-timeout = { period = "600s", terminate-after = 2 }
+# retries = 0 deliberately. These are SLOW, not flaky: they were killed at 480s
+# on BOTH attempts in the 2026-08-26 RFC-0158 batch, so the retry doubled their
+# cost and could not help. Retry the jittery population, never the slow one --
+# applying one profile-wide retry to both failure modes is what made the stage
+# overrun. Aggregate p99 under-provisions these specifically, because the gate
+# always runs a freshly rebased COLD worktree while the aggregate is dominated
+# by warm runs.
+retries = 0
 priority = 90
 
 [[profile.ci.overrides]]
