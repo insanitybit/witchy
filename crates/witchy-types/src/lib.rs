@@ -11,6 +11,7 @@
 
 pub mod access;
 pub mod async_program;
+pub mod async_migration;
 pub mod async_control_flow;
 pub mod loans;
 pub mod existential;

@@ -166,6 +166,23 @@ pub fn migration_census(
     Ok(witchy_types::migration::census_linked(&linked, entry))
 }
 
+/// Link a repository corpus entry and return its RFC-0161 async migration
+/// report. As with the earlier migration census, callers receive findings even
+/// when old source is rejected by the current checker.
+pub fn async_migration_census(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<witchy_types::async_migration::Census, LinkError> {
+    let linked = witchy_syntax::linker::link_with_user_modules(
+        modules,
+        entry,
+        crate::comptime::expand_compile_time,
+        user_modules,
+    )?;
+    Ok(witchy_types::async_migration::census_linked(&linked, entry))
+}
+
 /// Link with exact source provenance and retain authenticated package owners.
 pub fn link_checked_authenticated_with_user_modules(
     modules: Vec<(String, Module)>,
