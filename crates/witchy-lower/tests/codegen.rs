@@ -4718,6 +4718,24 @@ fn main() -> Int:
         ));
         assert!(compiled_module_trap_with_opt(&cleared, on).contains("list_at"));
         assert!(compiled_module_trap_with_opt(&cleared, off).contains("list_at"));
+        let rebound = link_list_app(
+            &src
+                .replace("    var r = n", "    xs = []\n    var r = n")
+                .replace("f(3)", "f(1)"),
+        );
+        assert!(compiled_module_trap_with_opt(&rebound, on).contains("list_at"));
+        assert!(compiled_module_trap_with_opt(&rebound, off).contains("list_at"));
+        let rebound_bound = link_list_app(
+            &src
+                .replace("fn f(let n: Int)", "fn f(var n: Int)")
+                .replace("    var r = n", "    n = 1\n    var r = n")
+                .replace(
+                    "fn main() -> Int:\n    f(3)",
+                    "fn main() -> Int:\n    var initial = 0\n    f(initial)",
+                ),
+        );
+        assert!(compiled_module_trap_with_opt(&rebound_bound, on).contains("list_at"));
+        assert!(compiled_module_trap_with_opt(&rebound_bound, off).contains("list_at"));
     }
 
     #[test]

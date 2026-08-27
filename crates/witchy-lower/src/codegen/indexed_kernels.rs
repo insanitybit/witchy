@@ -249,10 +249,86 @@ pub(super) fn guarded_range_built_nonempty_roots(body: &Block) -> Vec<(Expr, Vec
         }
     }
 
+    fn invalidate_entry_facts(
+        stmt: &Stmt,
+        facts: &mut HashMap<String, HashSet<String>>,
+        aliases: &mut HashMap<String, String>,
+    ) {
+        let mut scan = DevirtScan::default();
+        scan.walk_stmt(stmt);
+        let rebound: HashSet<_> = scan
+            .let_bind
+            .keys()
+            .cloned()
+            .chain(scan.other_bind.iter().cloned())
+            .chain(scan.reassigned.iter().cloned())
+            .chain(scan.opaque_call_roots.iter().cloned())
+            .collect();
+        let root_invalidated: HashSet<_> = scan
+            .let_bind
+            .keys()
+            .cloned()
+            .chain(scan.other_bind.iter().cloned())
+            .chain(scan.length_changing_reassigned.iter().cloned())
+            .chain(scan.opaque_call_roots.iter().cloned())
+            .collect();
+
+        for name in &rebound {
+            aliases.remove(name);
+            aliases.retain(|_, source| source != name);
+            facts.remove(name);
+        }
+        if !root_invalidated.is_empty() {
+            for roots in facts.values_mut() {
+                roots.retain(|root| !root_invalidated.contains(root));
+            }
+            facts.retain(|_, roots| !roots.is_empty());
+        }
+    }
+
+    fn loop_nonempty_roots(
+        stmt: &Stmt,
+        facts: &HashMap<String, HashSet<String>>,
+        aliases: &HashMap<String, String>,
+    ) -> Option<(Expr, Vec<String>)> {
+        let Stmt::Expr(loop_expr @ Expr::While { body: loop_body, .. }) = stmt else { return None };
+        let Some(Stmt::Expr(countdown)) = loop_body.stmts.first() else { return None };
+        let Expr::While { cond: countdown_cond, body: countdown_body } = countdown else { return None };
+        let Expr::Binary { op: BinOp::NotEq, lhs, rhs } = countdown_cond.as_ref() else { return None };
+        let (Expr::Var(index), Expr::Int(1)) = (lhs.as_ref(), rhs.as_ref()) else { return None };
+        let bound = aliases.get(index)?;
+        let built = facts.get(bound)?;
+        let [first, Stmt::Assign { name, value }] = countdown_body.stmts.as_slice() else { return None };
+        if name != index || !matches!(value, Expr::Binary { op: BinOp::Sub, lhs, rhs } if matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))) { return None; }
+        let writes_built = matches!(stmt_value(first), Some(Expr::Call { name, args }) if name == intrinsics::LIST_SET_AT && matches!((&args[0], &args[1]), (Expr::Var(root), Expr::Binary { op: BinOp::Sub, lhs, rhs }) if built.contains(root) && matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))));
+        if !writes_built { return None; }
+        let mut zeros = HashSet::new();
+        zero_access_roots(
+            &Block { stmts: loop_body.stmts[1..].to_vec(), lines: vec![], region: None },
+            &mut zeros,
+        );
+        let mut scan = DevirtScan::default();
+        scan.walk_block(loop_body);
+        let mut roots: Vec<_> = zeros
+            .into_iter()
+            .filter(|root| {
+                built.contains(root)
+                    && !scan.length_changing_reassigned.contains(root)
+                    && !scan.opaque_call_roots.contains(root)
+            })
+            .collect();
+        roots.sort();
+        (!roots.is_empty()).then_some((loop_expr.clone(), roots))
+    }
+
     let mut facts = HashMap::<String, HashSet<String>>::new();
     let mut aliases = HashMap::<String, String>::new();
     let mut out = Vec::new();
     for (position, stmt) in body.stmts.iter().enumerate() {
+        if let Some(proof) = loop_nonempty_roots(stmt, &facts, &aliases) {
+            out.push(proof);
+        }
+        invalidate_entry_facts(stmt, &mut facts, &mut aliases);
         if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt {
             if let Expr::Var(source) = value { aliases.insert(name.clone(), source.clone()); } else { aliases.remove(name); }
         }
@@ -263,21 +339,6 @@ pub(super) fn guarded_range_built_nonempty_roots(body: &Block) -> Vec<(Expr, Vec
             && items.is_empty()
             && matches!(body.stmts.as_slice(), [only] if matches!(only, Stmt::Expr(value) | Stmt::Assign { value, .. } if matches!(analysis::self_inplace_op(list, value), Some(analysis::InPlaceOp::Push(_)))))
         { facts.entry(bound.clone()).or_default().insert(list.clone()); }
-        let Stmt::Expr(loop_expr @ Expr::While { body: loop_body, .. }) = stmt else { continue };
-        let Some(Stmt::Expr(countdown)) = loop_body.stmts.first() else { continue };
-        let Expr::While { cond: countdown_cond, body: countdown_body } = countdown else { continue };
-        let Expr::Binary { op: BinOp::NotEq, lhs, rhs } = countdown_cond.as_ref() else { continue };
-        let (Expr::Var(index), Expr::Int(1)) = (lhs.as_ref(), rhs.as_ref()) else { continue };
-        let Some(bound) = aliases.get(index) else { continue };
-        let Some(built) = facts.get(bound) else { continue };
-        let [first, Stmt::Assign { name, value }] = countdown_body.stmts.as_slice() else { continue };
-        if name != index || !matches!(value, Expr::Binary { op: BinOp::Sub, lhs, rhs } if matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))) { continue; }
-        let writes_built = matches!(stmt_value(first), Some(Expr::Call { name, args }) if name == intrinsics::LIST_SET_AT && matches!((&args[0], &args[1]), (Expr::Var(root), Expr::Binary { op: BinOp::Sub, lhs, rhs }) if built.contains(root) && matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))));
-        if !writes_built { continue; }
-        let mut zeros = HashSet::new(); zero_access_roots(&Block { stmts: loop_body.stmts[1..].to_vec(), lines: vec![], region: None }, &mut zeros);
-        let mut scan = DevirtScan::default(); scan.walk_block(loop_body);
-        let mut roots: Vec<_> = zeros.into_iter().filter(|root| built.contains(root) && !scan.length_changing_reassigned.contains(root) && !scan.opaque_call_roots.contains(root)).collect();
-        roots.sort(); if !roots.is_empty() { out.push((loop_expr.clone(), roots)); }
     }
     out
 }
