@@ -328,7 +328,11 @@ failing_test_expr() { # failing_test_expr <log>
     local expr="" n
     while IFS= read -r n; do
         [ -n "$n" ] || continue
-        expr="${expr:+$expr or }test(/^${n}$/)"
+        # Nextest names tests as `binary::module::test`, while cargo's
+        # single-binary summary reports just `module::test`.  Replay by
+        # suffix so a filter learned from either format selects the same test
+        # instead of silently discovering zero tests.
+        expr="${expr:+$expr or }test(/^(?:.*::)?${n}$/)"
     done <<EOF
 $names
 EOF
