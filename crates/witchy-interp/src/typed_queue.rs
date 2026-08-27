@@ -48,14 +48,40 @@ pub enum QueueReceive {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueCloseWake {
-    Send(QueueWait),
+    Send { wait: QueueWait, payload: QueuePayload },
     Receive(QueueWait),
+}
+
+/// Typed operation completion supplied to the frame adapter before the kernel
+/// follows its already-typed result edge.  `arm` identifies heterogeneous
+/// select result layouts without introducing a selected-result wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueCompletion {
+    SendAccepted,
+    SendClosed { payload: QueuePayload },
+    ReceivePayload { payload: QueuePayload },
+    ReceiveClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueDelivery {
+    pub execution: u64,
+    pub operation: OperationSiteId,
+    pub arm: Option<u32>,
+    pub completion: QueueCompletion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingSend {
     wait: QueueWait,
     payload: QueuePayload,
+    sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingReceive {
+    wait: QueueWait,
+    sequence: u64,
 }
 
 /// One typed queue shape with bounded registrations and deterministic FIFO
@@ -66,7 +92,8 @@ pub struct TypedQueue {
     shape: QueueShape,
     payloads: VecDeque<QueuePayload>,
     send_waiters: VecDeque<PendingSend>,
-    receive_waiters: VecDeque<QueueWait>,
+    receive_waiters: VecDeque<PendingReceive>,
+    next_wait_sequence: u64,
     closed: bool,
 }
 
@@ -82,10 +109,9 @@ pub struct TypedQueueRuntime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueRuntimeResult {
     Blocked,
-    Closed,
     Committed {
         turns: Vec<(u64, KernelTurn)>,
-        deliveries: Vec<(u64, OperationSiteId, QueuePayload)>,
+        deliveries: Vec<QueueDelivery>,
     },
 }
 
@@ -95,15 +121,10 @@ pub enum QueueRuntimeResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueSelectResult {
     Blocked,
-    /// The selected arm observed a closed queue.  RFC-0161's final execution
-    /// edge contract must supply the close outcome before this can commit an
-    /// execution; the coordinator therefore tears down registrations and
-    /// restores the operation fallback rather than inventing a ready edge.
-    Closed { arm: u32 },
     Committed {
         arm: u32,
         turns: Vec<(u64, KernelTurn)>,
-        deliveries: Vec<(u64, OperationSiteId, QueuePayload)>,
+        deliveries: Vec<QueueDelivery>,
     },
 }
 
@@ -114,6 +135,7 @@ impl TypedQueue {
             payloads: VecDeque::new(),
             send_waiters: VecDeque::new(),
             receive_waiters: VecDeque::new(),
+            next_wait_sequence: 0,
             closed: false,
         }
     }
@@ -128,7 +150,7 @@ impl TypedQueue {
     pub fn send(&mut self, payload: QueuePayload) -> QueueSend {
         if self.closed { return QueueSend::Closed; }
         if let Some(receiver) = self.receive_waiters.pop_front() {
-            return QueueSend::Committed { receiver: Some(receiver) };
+            return QueueSend::Committed { receiver: Some(receiver.wait) };
         }
         if self.has_buffer_capacity() {
             self.payloads.push_back(payload);
@@ -143,7 +165,8 @@ impl TypedQueue {
         self.reject_duplicate(wait)?;
         let result = self.send(payload);
         if result == QueueSend::Blocked {
-            self.send_waiters.push_back(PendingSend { wait, payload });
+            let sequence = self.reserve_wait_sequence()?;
+            self.send_waiters.push_back(PendingSend { wait, payload, sequence });
         }
         Ok(result)
     }
@@ -166,7 +189,8 @@ impl TypedQueue {
         self.reject_duplicate(wait)?;
         let result = self.receive();
         if result == QueueReceive::Blocked {
-            self.receive_waiters.push_back(wait);
+            let sequence = self.reserve_wait_sequence()?;
+            self.receive_waiters.push_back(PendingReceive { wait, sequence });
         }
         Ok(result)
     }
@@ -178,26 +202,27 @@ impl TypedQueue {
             self.send_waiters.remove(index);
             return true;
         }
-        if let Some(index) = self.receive_waiters.iter().position(|pending| *pending == wait) {
+        if let Some(index) = self.receive_waiters.iter().position(|pending| pending.wait == wait) {
             self.receive_waiters.remove(index);
             return true;
         }
         false
     }
 
-    /// Close rejects new sends, wakes every installed waiter in FIFO order, and
+    /// Close rejects new sends, wakes every installed waiter in global FIFO order, and
     /// leaves buffered payloads available for ordinary receive/drain.
     pub fn close(&mut self) -> Vec<QueueCloseWake> {
         if self.closed { return Vec::new(); }
         self.closed = true;
         let mut wakes = Vec::with_capacity(self.send_waiters.len() + self.receive_waiters.len());
         while let Some(sender) = self.send_waiters.pop_front() {
-            wakes.push(QueueCloseWake::Send(sender.wait));
+            wakes.push((sender.sequence, QueueCloseWake::Send { wait: sender.wait, payload: sender.payload }));
         }
         while let Some(receiver) = self.receive_waiters.pop_front() {
-            wakes.push(QueueCloseWake::Receive(receiver));
+            wakes.push((receiver.sequence, QueueCloseWake::Receive(receiver.wait)));
         }
-        wakes
+        wakes.sort_by_key(|(sequence, _)| *sequence);
+        wakes.into_iter().map(|(_, wake)| wake).collect()
     }
 
     fn has_buffer_capacity(&self) -> bool {
@@ -217,11 +242,18 @@ impl TypedQueue {
 
     fn reject_duplicate(&self, wait: QueueWait) -> Result<(), String> {
         if self.send_waiters.iter().any(|pending| pending.wait == wait)
-            || self.receive_waiters.iter().any(|pending| *pending == wait)
+            || self.receive_waiters.iter().any(|pending| pending.wait == wait)
         {
             return Err("execution already has this queue wait registration".into());
         }
         Ok(())
+    }
+
+    fn reserve_wait_sequence(&mut self) -> Result<u64, String> {
+        let sequence = self.next_wait_sequence;
+        self.next_wait_sequence = self.next_wait_sequence.checked_add(1)
+            .ok_or_else(|| "typed queue wait sequence overflow".to_string())?;
+        Ok(sequence)
     }
 }
 
@@ -249,14 +281,32 @@ impl TypedQueueRuntime {
         let result = self.queue_mut(queue)?.register_send(wait, payload)?;
         match result {
             QueueSend::Blocked => Ok(QueueRuntimeResult::Blocked),
-            QueueSend::Closed => Ok(QueueRuntimeResult::Closed),
+            QueueSend::Closed => Ok(QueueRuntimeResult::Committed {
+                turns: vec![(execution, self.commit_wait(wait, queue, ExecutionOperation::ChannelSend)?)],
+                deliveries: vec![QueueDelivery {
+                    execution,
+                    operation,
+                    arm: None,
+                    completion: QueueCompletion::SendClosed { payload },
+                }],
+            }),
             QueueSend::Committed { receiver } => {
                 let mut turns = vec![(execution, self.commit(execution, operation)?)];
-                let mut deliveries = Vec::new();
+                let mut deliveries = vec![QueueDelivery {
+                    execution,
+                    operation,
+                    arm: None,
+                    completion: QueueCompletion::SendAccepted,
+                }];
                 if let Some(receiver) = receiver {
                     self.ensure_wait(receiver, queue, ExecutionOperation::ChannelReceive)?;
                     turns.push((receiver.execution, self.commit(receiver.execution, receiver.operation)?));
-                    deliveries.push((receiver.execution, receiver.operation, payload));
+                    deliveries.push(QueueDelivery {
+                        execution: receiver.execution,
+                        operation: receiver.operation,
+                        arm: None,
+                        completion: QueueCompletion::ReceivePayload { payload },
+                    });
                 }
                 Ok(QueueRuntimeResult::Committed { turns, deliveries })
             }
@@ -269,17 +319,87 @@ impl TypedQueueRuntime {
         let result = self.queue_mut(queue)?.register_receive(wait)?;
         match result {
             QueueReceive::Blocked => Ok(QueueRuntimeResult::Blocked),
-            QueueReceive::Closed => Ok(QueueRuntimeResult::Closed),
+            QueueReceive::Closed => Ok(QueueRuntimeResult::Committed {
+                turns: vec![(execution, self.commit_wait(wait, queue, ExecutionOperation::ChannelReceive)?)],
+                deliveries: vec![QueueDelivery {
+                    execution,
+                    operation,
+                    arm: None,
+                    completion: QueueCompletion::ReceiveClosed,
+                }],
+            }),
             QueueReceive::Payload { payload, sender } => {
                 let mut turns = vec![(execution, self.commit(execution, operation)?)];
-                let deliveries = vec![(execution, operation, payload)];
+                let mut deliveries = vec![QueueDelivery {
+                    execution,
+                    operation,
+                    arm: None,
+                    completion: QueueCompletion::ReceivePayload { payload },
+                }];
                 if let Some(sender) = sender {
                     self.ensure_wait(sender, queue, ExecutionOperation::ChannelSend)?;
                     turns.push((sender.execution, self.commit(sender.execution, sender.operation)?));
+                    deliveries.push(QueueDelivery {
+                        execution: sender.execution,
+                        operation: sender.operation,
+                        arm: None,
+                        completion: QueueCompletion::SendAccepted,
+                    });
                 }
                 Ok(QueueRuntimeResult::Committed { turns, deliveries })
             }
         }
+    }
+
+    /// Linearize explicit channel close and complete every installed wait in
+    /// global registration order. Buffered payloads remain queued for later
+    /// receive/drain operations.
+    pub fn close_queue(&mut self, queue: QueueShapeId) -> Result<QueueRuntimeResult, String> {
+        let wakes = self.queue_mut(queue)?.close();
+        let mut ordinary = Vec::new();
+        let mut selects = BTreeMap::<(u64, OperationSiteId, u64), (usize, QueueWait, QueueCompletion)>::new();
+        for (index, wake) in wakes.into_iter().enumerate() {
+            let (wait, direction, completion) = match wake {
+                QueueCloseWake::Send { wait, payload } => (
+                    wait,
+                    ExecutionOperation::ChannelSend,
+                    QueueCompletion::SendClosed { payload },
+                ),
+                QueueCloseWake::Receive(wait) => (wait, ExecutionOperation::ChannelReceive, QueueCompletion::ReceiveClosed),
+            };
+            if let Some(arm) = wait.arm {
+                let key = (wait.execution, wait.operation, wait.generation);
+                match selects.get(&key) {
+                    Some((_, selected, _)) if selected.arm.is_some_and(|selected_arm| selected_arm <= arm) => {}
+                    _ => { selects.insert(key, (index, wait, completion)); }
+                }
+            } else {
+                ordinary.push((index, wait, direction, completion));
+            }
+        }
+        let mut selected = ordinary;
+        for (index, wait, completion) in selects.into_values() {
+            let direction = match completion {
+                QueueCompletion::SendClosed { .. } => ExecutionOperation::ChannelSend,
+                QueueCompletion::ReceiveClosed => ExecutionOperation::ChannelReceive,
+                QueueCompletion::SendAccepted | QueueCompletion::ReceivePayload { .. } => unreachable!("close has no success completion"),
+            };
+            selected.push((index, wait, direction, completion));
+        }
+        selected.sort_by_key(|(index, _, _, _)| *index);
+        let mut turns = Vec::with_capacity(selected.len());
+        let mut deliveries = Vec::with_capacity(selected.len());
+        for (_, wait, direction, completion) in selected {
+            if wait.arm.is_some() { self.cancel_select_losers(wait)?; }
+            turns.push((wait.execution, self.commit_wait(wait, queue, direction)?));
+            deliveries.push(QueueDelivery {
+                execution: wait.execution,
+                operation: wait.operation,
+                arm: wait.arm,
+                completion,
+            });
+        }
+        Ok(QueueRuntimeResult::Committed { turns, deliveries })
     }
 
     pub fn cancel(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
@@ -331,27 +451,69 @@ impl TypedQueueRuntime {
                 SelectAdmission::Send(QueueSend::Blocked, _) | SelectAdmission::Receive(QueueReceive::Blocked) => {
                     registered.push((queue, wait));
                 }
-                SelectAdmission::Send(QueueSend::Closed, _) | SelectAdmission::Receive(QueueReceive::Closed) => {
+                SelectAdmission::Send(QueueSend::Closed, payload) => {
                     self.cancel_waits(&registered)?;
-                    self.abort_select(execution, operation)?;
-                    return Ok(QueueSelectResult::Closed { arm });
+                    return Ok(QueueSelectResult::Committed {
+                        arm,
+                        turns: vec![(execution, self.commit_wait(wait, queue, ExecutionOperation::ChannelSend)?)],
+                        deliveries: vec![QueueDelivery {
+                            execution,
+                            operation,
+                            arm: Some(arm),
+                            completion: QueueCompletion::SendClosed { payload },
+                        }],
+                    });
+                }
+                SelectAdmission::Receive(QueueReceive::Closed) => {
+                    self.cancel_waits(&registered)?;
+                    return Ok(QueueSelectResult::Committed {
+                        arm,
+                        turns: vec![(execution, self.commit_wait(wait, queue, ExecutionOperation::ChannelReceive)?)],
+                        deliveries: vec![QueueDelivery {
+                            execution,
+                            operation,
+                            arm: Some(arm),
+                            completion: QueueCompletion::ReceiveClosed,
+                        }],
+                    });
                 }
                 SelectAdmission::Send(QueueSend::Committed { receiver }, payload) => {
                     self.cancel_waits(&registered)?;
                     let mut turns = vec![(execution, self.commit_wait(wait, queue, ExecutionOperation::ChannelSend)?)];
-                    let mut deliveries = Vec::new();
+                    let mut deliveries = vec![QueueDelivery {
+                        execution,
+                        operation,
+                        arm: Some(arm),
+                        completion: QueueCompletion::SendAccepted,
+                    }];
                     if let Some(receiver) = receiver {
                         turns.push((receiver.execution, self.commit_wait(receiver, queue, ExecutionOperation::ChannelReceive)?));
-                        deliveries.push((receiver.execution, receiver.operation, payload));
+                        deliveries.push(QueueDelivery {
+                            execution: receiver.execution,
+                            operation: receiver.operation,
+                            arm: receiver.arm,
+                            completion: QueueCompletion::ReceivePayload { payload },
+                        });
                     }
                     return Ok(QueueSelectResult::Committed { arm, turns, deliveries });
                 }
                 SelectAdmission::Receive(QueueReceive::Payload { payload, sender }) => {
                     self.cancel_waits(&registered)?;
                     let mut turns = vec![(execution, self.commit_wait(wait, queue, ExecutionOperation::ChannelReceive)?)];
-                    let deliveries = vec![(execution, operation, payload)];
+                    let mut deliveries = vec![QueueDelivery {
+                        execution,
+                        operation,
+                        arm: Some(arm),
+                        completion: QueueCompletion::ReceivePayload { payload },
+                    }];
                     if let Some(sender) = sender {
                         turns.push((sender.execution, self.commit_wait(sender, queue, ExecutionOperation::ChannelSend)?));
+                        deliveries.push(QueueDelivery {
+                            execution: sender.execution,
+                            operation: sender.operation,
+                            arm: sender.arm,
+                            completion: QueueCompletion::SendAccepted,
+                        });
                     }
                     return Ok(QueueSelectResult::Committed { arm, turns, deliveries });
                 }
@@ -424,6 +586,25 @@ impl TypedQueueRuntime {
 
     fn cancel_waits(&mut self, waits: &[(QueueShapeId, QueueWait)]) -> Result<(), String> {
         for (queue, wait) in waits { self.queue_mut(*queue)?.cancel(*wait); }
+        Ok(())
+    }
+
+    fn cancel_select_losers(&mut self, winner: QueueWait) -> Result<(), String> {
+        let winning_arm = winner.arm.ok_or_else(|| "select winner is missing an arm identity".to_string())?;
+        let (operation, arms) = self.executions.get(&winner.execution)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .waiting_select_arms()?;
+        if operation != winner.operation { return Err("select close wake has a different operation identity".into()); }
+        for (arm, _, queue) in arms {
+            if arm != winning_arm {
+                self.queue_mut(queue)?.cancel(QueueWait {
+                    execution: winner.execution,
+                    operation,
+                    generation: winner.generation,
+                    arm: Some(arm),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -655,7 +836,7 @@ mod tests {
         let sender = wait(5, 0);
         assert_eq!(queue.register_send(sender, QueuePayload(11)), Ok(QueueSend::Blocked));
         let wakes = queue.close();
-        assert_eq!(wakes, vec![QueueCloseWake::Send(sender)]);
+        assert_eq!(wakes, vec![QueueCloseWake::Send { wait: sender, payload: QueuePayload(11) }]);
     }
 
     #[test]
@@ -703,7 +884,10 @@ mod tests {
             runtime.submit_send(2, 0, QueuePayload(42)),
             Ok(QueueRuntimeResult::Committed {
                 turns: vec![(2, KernelTurn::Complete), (1, KernelTurn::Complete)],
-                deliveries: vec![(1, OperationSiteId(0), QueuePayload(42))],
+                deliveries: vec![
+                    QueueDelivery { execution: 2, operation: OperationSiteId(0), arm: None, completion: QueueCompletion::SendAccepted },
+                    QueueDelivery { execution: 1, operation: OperationSiteId(0), arm: None, completion: QueueCompletion::ReceivePayload { payload: QueuePayload(42) } },
+                ],
             }),
         );
     }
@@ -738,7 +922,9 @@ mod tests {
             Ok(QueueSelectResult::Committed {
                 arm: 0,
                 turns: vec![(1, KernelTurn::Complete)],
-                deliveries: vec![(1, OperationSiteId(0), QueuePayload(10))],
+                deliveries: vec![
+                    QueueDelivery { execution: 1, operation: OperationSiteId(0), arm: Some(0), completion: QueueCompletion::ReceivePayload { payload: QueuePayload(10) } },
+                ],
             }),
         );
     }
@@ -772,7 +958,10 @@ mod tests {
             Ok(QueueSelectResult::Committed {
                 arm: 0,
                 turns: vec![(2, KernelTurn::Complete), (1, KernelTurn::Complete)],
-                deliveries: vec![(1, OperationSiteId(0), QueuePayload(77))],
+                deliveries: vec![
+                    QueueDelivery { execution: 2, operation: OperationSiteId(0), arm: Some(0), completion: QueueCompletion::SendAccepted },
+                    QueueDelivery { execution: 1, operation: OperationSiteId(0), arm: None, completion: QueueCompletion::ReceivePayload { payload: QueuePayload(77) } },
+                ],
             }),
         );
     }
@@ -787,5 +976,71 @@ mod tests {
         assert!(runtime.submit_select(1, 0, &BTreeMap::new())
             .expect_err("send payload is mandatory").contains("no payload"));
         assert_eq!(runtime.execution(1).expect("execution").status(), crate::typed_async::KernelStatus::Waiting(OperationSiteId(0)));
+    }
+
+    #[test]
+    fn close_commits_blocked_send_with_the_exact_reserved_payload() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, execution(ExecutionOperation::ChannelSend)).expect("sender");
+        assert_eq!(runtime.submit_send(1, 4, QueuePayload(88)), Ok(QueueRuntimeResult::Blocked));
+        assert_eq!(
+            runtime.close_queue(QueueShapeId(0)),
+            Ok(QueueRuntimeResult::Committed {
+                turns: vec![(1, KernelTurn::Complete)],
+                deliveries: vec![QueueDelivery {
+                    execution: 1,
+                    operation: OperationSiteId(0),
+                    arm: None,
+                    completion: QueueCompletion::SendClosed { payload: QueuePayload(88) },
+                }],
+            }),
+        );
+    }
+
+    #[test]
+    fn closed_select_arm_commits_its_declared_arm_and_closed_result() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        assert_eq!(runtime.close_queue(QueueShapeId(0)), Ok(QueueRuntimeResult::Committed { turns: vec![], deliveries: vec![] }));
+        runtime.install_execution(1, select_execution(&[
+            (QueueShapeId(0), ExecutionOperation::ChannelReceive),
+        ])).expect("select execution");
+        assert_eq!(
+            runtime.submit_select(1, 7, &BTreeMap::new()),
+            Ok(QueueSelectResult::Committed {
+                arm: 0,
+                turns: vec![(1, KernelTurn::Complete)],
+                deliveries: vec![QueueDelivery {
+                    execution: 1,
+                    operation: OperationSiteId(0),
+                    arm: Some(0),
+                    completion: QueueCompletion::ReceiveClosed,
+                }],
+            }),
+        );
+    }
+
+    #[test]
+    fn close_claims_only_the_lowest_source_arm_for_duplicate_select_endpoints() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, select_execution(&[
+            (QueueShapeId(0), ExecutionOperation::ChannelReceive),
+            (QueueShapeId(0), ExecutionOperation::ChannelReceive),
+        ])).expect("select execution");
+        assert_eq!(runtime.submit_select(1, 3, &BTreeMap::new()), Ok(QueueSelectResult::Blocked));
+        assert_eq!(
+            runtime.close_queue(QueueShapeId(0)),
+            Ok(QueueRuntimeResult::Committed {
+                turns: vec![(1, KernelTurn::Complete)],
+                deliveries: vec![QueueDelivery {
+                    execution: 1,
+                    operation: OperationSiteId(0),
+                    arm: Some(0),
+                    completion: QueueCompletion::ReceiveClosed,
+                }],
+            }),
+        );
     }
 }
