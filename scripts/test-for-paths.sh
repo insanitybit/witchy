@@ -63,6 +63,27 @@ add() { local c="$1"; local x; for x in ${cmds[0]+"${cmds[@]}"}; do [ "$x" = "$c
 # args that cover every selected package. Integration tests live in the
 # root `witchy` package, so that union adds `-p witchy` without pulling
 # the rest of the workspace.
+#
+# MEASURED COST OF THAT UNION (2026-08-27), and why it has not been fixed:
+# `-p witchy` makes cargo BUILD all 24 of the package's test binaries, while
+# the expression then runs only the ~15 the diff selected. Timed back to back
+# after `touch src/lib.rs`: building all 24 takes 63s, building just the
+# rfc0* 15 takes 24s -- so a compiler-stage gate spends ~39s per attempt
+# compiling and linking binaries it will filter out at runtime, against a
+# ~166s median gate.
+#
+# The obvious fix (emit `--test rfc0NNN` instead of `-p witchy`) is WRONG for
+# the reason above, and the failure is silent: measured on the same tree,
+# `nextest list -p witchy-lower -p witchy` reports 2174 tests, while
+# `-p witchy-lower -p witchy --test rfc0101` reports 2. The AND drops
+# witchy-lower entirely and the gate would go green having skipped 2,172
+# tests. Do not narrow the build this way.
+#
+# The only correct route is to split the tests stage into TWO nextest
+# invocations (one per package scope) so neither needs `--test` to cross a
+# package boundary. That is a real redesign: check.sh's fail-fast
+# (--max-fail=1:immediate), the workspace test budget, the preflight replay
+# and the serial test-groups all currently assume a single invocation.
 gate_pkgs=()
 gate_tests=()
 gate_need_examples=0
