@@ -91,6 +91,16 @@ impl CheckedModule {
         &self.linked.declarations
     }
 
+    /// Borrow the lossless source async metadata retained by checked linking.
+    ///
+    /// It is deliberately not an executable plan: typed lowering must turn it
+    /// into an RFC-0161 `AsyncProgram` with frame layouts, ownership
+    /// transitions, and final backend bindings.
+    #[doc(hidden)]
+    pub fn async_surface(&self) -> &witchy_syntax::async_surface::LinkedAsyncSurface {
+        self.linked.async_surface()
+    }
+
     /// Build a catalog from the loader ownership retained during checked link.
     /// Legacy checked-link APIs deliberately fail here rather than accepting
     /// package identity after the fact.
@@ -450,6 +460,30 @@ mod tests {
         assert_eq!(checked.module(), &old.module);
         assert_eq!(checked.origins(), &old.origins);
         assert_eq!(EXPANSIONS.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn checked_module_retains_lossless_async_surface_metadata() {
+        let checked = link_checked(
+            vec![(
+                "main".to_string(),
+                parse(
+                    "async fn increment(value: Int) -> Int:\n    let value = task.done(value).await\n    value + 1\n\nfn main(console: Console):\n    console.print(\"ready\")\n",
+                ),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("checked async source");
+
+        let surface = checked.async_surface();
+        let main = surface
+            .modules
+            .iter()
+            .find(|module| module.module == "main")
+            .expect("main source surface retained");
+        assert_eq!(main.items.len(), 1);
+        assert_eq!(surface.bindings.len(), 2, "entry and continuation are bound");
     }
 
     #[test]

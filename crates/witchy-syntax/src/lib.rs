@@ -14,7 +14,10 @@
 pub mod aliases;
 pub mod ast;
 pub mod async_lower;
-pub(crate) mod async_surface;
+/// Compiler metadata that preserves source async callables until typed lowering
+/// binds them to a final execution representation. It is not a runtime ABI.
+#[doc(hidden)]
+pub mod async_surface;
 pub mod build_entry;
 pub mod cap_ops;
 pub mod consts;

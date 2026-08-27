@@ -832,6 +832,18 @@ pub struct LinkedModule {
     pub declarations: crate::type_resolve::ResolvedDeclarations,
 }
 
+impl LinkedModule {
+    /// Borrow the lossless pre-CPS async metadata tied to this linked module.
+    ///
+    /// This is compiler-only transport, not an execution plan. A typed runtime
+    /// must derive its own shapes, lanes, ownership transitions, and backend
+    /// bindings from the checked program before it can execute anything.
+    #[doc(hidden)]
+    pub fn async_surface(&self) -> &crate::async_surface::LinkedAsyncSurface {
+        &self.async_surface
+    }
+}
+
 /// Process-lifetime cache of bundled std modules pulled into a link set, in
 /// their fully prepared source form: parsed, derive-scheduled, and compile-time
 /// expanded, but not destructively lowered. The expansion of a `derive`-carrying std module (json/meta/

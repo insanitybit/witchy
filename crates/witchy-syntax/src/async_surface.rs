@@ -23,7 +23,7 @@ pub struct AsyncSurfaceId {
 /// future typed builder has the receiver and target-type context required to
 /// form a callable identity without generated names.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AsyncSurfaceItem {
+pub struct AsyncSurfaceItem {
     pub id: AsyncSurfaceId,
     pub line: u32,
     pub item: Item,
@@ -31,9 +31,9 @@ pub(crate) struct AsyncSurfaceItem {
 
 /// Noncanonical source preservation for every async item in a linked program.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct AsyncSurfaceModule {
+pub struct AsyncSurfaceModule {
     pub module: String,
-    pub(crate) items: Vec<AsyncSurfaceItem>,
+    pub items: Vec<AsyncSurfaceItem>,
 }
 
 impl AsyncSurfaceModule {
@@ -82,7 +82,7 @@ impl AsyncSurfaceModule {
 
 /// Final linked location of one lowered source async callable.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum LinkedAsyncCallableLocation {
+pub enum LinkedAsyncCallableLocation {
     Function { item: u32 },
     InherentMethod { item: u32, method: u32 },
 }
@@ -91,7 +91,7 @@ pub(crate) enum LinkedAsyncCallableLocation {
 /// This is the bridge to later typed/layout binding; it deliberately has no
 /// generated callable name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LinkedAsyncCallableBinding {
+pub struct LinkedAsyncCallableBinding {
     pub module: String,
     pub surface: AsyncSurfaceId,
     pub local_state: u32,
@@ -100,9 +100,9 @@ pub(crate) struct LinkedAsyncCallableBinding {
 
 /// Noncanonical source preservation plus post-link callable bindings.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LinkedAsyncSurface {
-    pub(crate) modules: Vec<AsyncSurfaceModule>,
-    pub(crate) bindings: Vec<LinkedAsyncCallableBinding>,
+pub struct LinkedAsyncSurface {
+    pub modules: Vec<AsyncSurfaceModule>,
+    pub bindings: Vec<LinkedAsyncCallableBinding>,
 }
 
 impl LinkedAsyncSurface {
