@@ -1,0 +1,25 @@
+mode opt
+
+// RFC-0153 whole-operation driver for unchanged std/list consumers.  Input
+// construction is deliberately outside the clock: the measured operations are
+// `List.zip` and `List.zip_with`, whose shared loop has two short-circuit
+// stable-length guards and two indexed reads per iteration.
+import list
+
+fn add(left: Int, right: Int) -> Int:
+    left + right
+
+fn main(let console: Console, let clock: Clock):
+    var left = []
+    var right = []
+    for i in 0..20000:
+        list.push(left, i)
+        list.push(right, i * 3)
+
+    let bench_t0 = clock.now_monotonic()
+    let pairs = left.zip(right)
+    let sums = left.zip_with(right, add)
+    let bench_t1 = clock.now_monotonic()
+
+    console.print("${list.length(pairs)}:${list.at(sums, 19999)}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
