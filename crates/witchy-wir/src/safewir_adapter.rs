@@ -423,6 +423,9 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::SafeMemoryFill { .. } => Err(self.error(
                 "typed memory fill requires the deferred valid-byte-pattern contract",
             )),
+            WirNode::SafeKernel(_) => Err(self.error(
+                "opaque kernel operations require the deferred checked kernel-contract adapter",
+            )),
             WirNode::Store { .. }
             | WirNode::Store8 { .. }
             | WirNode::MemoryCopy { .. }
@@ -514,6 +517,9 @@ impl<'a> FunctionAdapter<'a> {
                 self.operations.push(Operation::Load { place, width: MemoryWidth::I8 });
                 Ok(())
             }
+            WirExpr::SafeKernel(_) => Err(self.error(
+                "opaque kernel operations require the deferred checked kernel-contract adapter",
+            )),
             WirExpr::Load { .. } | WirExpr::Load8U { .. } | WirExpr::MemoryGrow(_) => Err(
                 self.error("raw linear-memory expression bypasses the semantic SafeWIR dialect"),
             ),
@@ -786,6 +792,7 @@ mod tests {
         AccessMode, CallableMemoryResult, ParameterMemoryContract, ParameterMemoryEffect,
         ParameterMemoryEffects,
     };
+    use crate::safewir_kernel::{SafeKernelExpr, SafeKernelNode};
     use crate::safewir_surface::{
         SafeObjectExpr, SafeProjectionExpr, SafeRangeExpr,
     };
@@ -919,6 +926,32 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("not the same final value"));
+    }
+
+    #[test]
+    fn final_wir_report_rejects_kernel_operations_until_contracts_are_checked() {
+        let (layouts, layout) = layouts();
+        let object = semantic_place(layout).object.clone();
+        let expression = module(WirExpr::SafeKernel(SafeKernelExpr::Retain {
+            object: object.clone(),
+        }));
+        let error = validate_final_wir_report(
+            &expression,
+            inputs(layouts.clone(), layout),
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("checked kernel-contract adapter"), "{error}");
+
+        let mut statement = module(WirExpr::ConstI32(0));
+        statement.funcs[0].body = vec![WirNode::SafeKernel(SafeKernelNode::Release { object })];
+        let error = validate_final_wir_report(
+            &statement,
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("checked kernel-contract adapter"), "{error}");
     }
 
     #[test]
