@@ -1806,13 +1806,14 @@ stack_candidate_ready() { # stack_candidate_ready <queue-file> <batch-change-ids
     # are referenced by another queued entry in the prospective stack.
     if ! jq -e '(.after // []) | length > 0' "$qf" >/dev/null 2>&1; then
         local referenced=0 child_qf
-        while IFS= read -r child_qf; do
+        for child_qf in "$queue_dir"/*.json; do
+            [ -f "$child_qf" ] || continue
             [ "$child_qf" = "$qf" ] && continue
             if jq -e --arg parent "$cid" '(.after // []) | index($parent) != null' "$child_qf" >/dev/null 2>&1; then
                 referenced=1
                 break
             fi
-        done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print 2>/dev/null)
+        done
         [ "$referenced" -eq 1 ] || return 1
     fi
     while IFS= read -r dep; do
