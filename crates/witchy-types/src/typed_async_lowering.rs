@@ -134,6 +134,20 @@ impl TypedAsyncLoweringInput {
                 return Err(format!("duplicate final async state binding for {:?} state {}", pair[0].callable, pair[0].local_state));
             }
         }
+        // Every source async callable starts exactly one execution. Continuation
+        // states are ordinary entries in its resume table; accepting none or
+        // more than one entry would force a backend to guess a start state.
+        for source_callable in &source_ids {
+            let entries = states.iter().filter(|state| {
+                &state.callable == source_callable && state.kind == TypedAsyncStateKind::Entry
+            }).count();
+            if entries != 1 {
+                return Err(format!(
+                    "async callable {:?} must have exactly one final entry state, found {entries}",
+                    source_callable,
+                ));
+            }
+        }
         Ok(Self { source, states })
     }
 }
