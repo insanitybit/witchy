@@ -4712,8 +4712,12 @@ fn main() -> Int:
         let wat_off = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("off"));
         witchy_syntax::opt::set_for_tests(None);
         assert!(wat_on.matches("call $list_at").count() < wat_off.matches("call $list_at").count(), "on:\n{wat_on}\noff:\n{wat_off}");
-        let zero = link_list_app(&src.replace("f(3)", "f(0)"));
-        assert!(compiled_module_trap_with_opt(&zero, on).contains("list_at"));
+        let cleared = link_list_app(&src.replace(
+            "        let first = list.at(xs, 0)",
+            "        xs = []\n        let first = list.at(xs, 0)",
+        ));
+        assert!(compiled_module_trap_with_opt(&cleared, on).contains("list_at"));
+        assert!(compiled_module_trap_with_opt(&cleared, off).contains("list_at"));
     }
 
     #[test]
