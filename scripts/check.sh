@@ -455,6 +455,22 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}")
     fi
+    # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
+    # above) because those fixtures run in their own isolated shard. So a diff
+    # whose entire selection IS merge_queue -- any change to
+    # tests/merge_queue/** -- leaves this stage with nothing, and nextest's
+    # default is to FAIL on an empty selection. Observed 2026-08-27 on
+    # fix/prewarm-preemption-flake: "Starting 0 tests across 0 binaries
+    # (1 binary skipped)" -> "error: no tests to run" -> branch RED, even
+    # though its tests ran green in the queue-infra shard moments later.
+    #
+    # Narrow deliberately: only when the selection is exactly that one binary,
+    # so a mapper bug that genuinely selects nothing still fails loudly here.
+    if [ "${#nextest_sel[@]}" -eq 2 ] \
+        && [ "${nextest_sel[0]}" = "--test" ] \
+        && [ "${nextest_sel[1]}" = "merge_queue" ]; then
+        test_cmd+=(--no-tests=warn)
+    fi
     # RFC-0159 follow-up: replay the tests that red the PREVIOUS attempt for this
     # change, before the full suite.
     #
