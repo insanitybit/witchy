@@ -187,14 +187,23 @@ fn rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_w
         large_carrier, small_carrier,
         "frame dimensions stay fixed as pulls grow",
     );
+    // RFC-0161 (618ec0817, "require one typed entry state per callable") gives
+    // each callable its own typed entry state, so the two callables here -- the
+    // top level and the inherent generator -- contribute two entry states
+    // rather than one shared entry.
+    //
+    // What this test actually guards is unchanged and still asserted below:
+    // segment_states stays 2 (each generator resumes ONCE), the carrier
+    // dimensions stay fixed as pulls grow (linear work), and slots/lane
+    // width/direct lanes are untouched. Only the entry accounting moved.
     assert_eq!(
-        small_carrier.states, 3,
-        "one top-level entry and two generator resume segments are catalogued",
+        small_carrier.states, 4,
+        "two typed callable entries and two generator resume segments are catalogued",
     );
     assert_eq!(
         (small_carrier.entry_states, small_carrier.segment_states),
-        (1, 2),
-        "the top-level and inherent generators each own a compiled resume segment",
+        (2, 2),
+        "each callable owns a typed entry state and a compiled resume segment",
     );
     assert_eq!(
         small_carrier.max_slots, 2,
