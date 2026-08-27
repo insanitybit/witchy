@@ -102,9 +102,9 @@ type Account:
     balance: Int
 ```
 
-Records construct positionally, by identifier name, or by string literal name
-(`Account(name: "bob", balance: 5)`, `.{ "host": "127.0.0.1", port: 8080 }`),
-read by `.field`, and update by spread (`Account(balance: n, ..acc)`).
+Records construct positionally or by identifier name (`Account(name: "bob", balance: 5)`, `.{ host: "127.0.0.1", port: 8080 }`),
+read by `.field`, and update by spread (`Account(balance: n, ..acc)`). Record/struct
+fields are static identifier keys (not string literals).
 `type X = …` names a shape and never mints a type; `type X: …` mints a nominal
 type. `sealed type` confines *construction* to the defining module (field reads
 and `match` still work anywhere) — that's how invariants get one choke point.

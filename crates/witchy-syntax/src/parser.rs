@@ -440,31 +440,6 @@ impl Parser {
         }
     }
 
-    fn record_field_name(&mut self) -> Result<String, ParseError> {
-        match self.kind().clone() {
-            Tok::Ident(name) => {
-                self.advance();
-                Ok(name)
-            }
-            Tok::Str(s) => {
-                let mut chars = s.chars();
-                let is_valid = match chars.next() {
-                    Some(c) if c.is_ascii_alphabetic() || c == '_' => {
-                        chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    }
-                    _ => false,
-                };
-                if is_valid {
-                    self.advance();
-                    Ok(s)
-                } else {
-                    Err(self.error(format!("string `{s}` is not a valid field identifier")))
-                }
-            }
-            other => Err(self.error(format!("expected an identifier, found `{other}`"))),
-        }
-    }
-
     /// Consume a lifetime name token `'a` (RFC-0083), returning the bare name.
     fn lifetime_name(&mut self) -> Result<String, ParseError> {
         match self.kind().clone() {
@@ -3674,7 +3649,7 @@ impl Parser {
     fn peek_named_record(&self) -> bool {
         match self.toks.get(self.pos + 1).map(|t| &t.kind) {
             Some(Tok::DotDot) => true,
-            Some(Tok::Ident(_)) | Some(Tok::Str(_)) => {
+            Some(Tok::Ident(_)) => {
                 matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::Colon))
             }
             _ => false,
@@ -3694,7 +3669,7 @@ impl Parser {
                 spread = Some(Box::new(self.expr(0)?));
                 break;
             }
-            let field = self.record_field_name()?;
+            let field = self.ident()?;
             self.expect(&Tok::Colon)?;
             fields.push((field, self.expr(0)?));
             if !self.eat(&Tok::Comma) {
@@ -3727,7 +3702,7 @@ impl Parser {
         let mut fields = Vec::new();
         let mut seen = HashSet::default();
         while !self.at(&Tok::RBrace) {
-            let field = self.record_field_name()?;
+            let field = self.ident()?;
             if !seen.insert(field.clone()) {
                 return Err(self.error(format!(
                     "field `{field}` is declared more than once in anonymous record type"
@@ -3836,7 +3811,7 @@ impl Parser {
                 spread = Some(Box::new(self.expr(0)?));
                 break; // a spread is the last element
             }
-            let field = self.record_field_name()?;
+            let field = self.ident()?;
             self.expect(&Tok::Colon)?;
             fields.push((field, self.expr(0)?));
             if !self.eat(&Tok::Comma) {

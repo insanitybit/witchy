@@ -2073,46 +2073,13 @@ fn and_or_not_diagnostics_suggest_witchy_operators() {
 }
 
 #[test]
-fn record_literal_and_type_allow_string_literal_field_names() {
-    let source = r#"
-type Config = .{ "host": String, "port": Int }
+fn string_literal_record_field_names_are_rejected() {
+    let source = "type Config = .{ \"host\": String }\n";
+    let err = parse_module(source).unwrap_err();
+    assert!(err.to_string().contains("expected an identifier"), "{err}");
 
-fn make() -> Config:
-    Config("host": "127.0.0.1", "port": 8080)
-
-fn make_anon():
-    .{ "host": "127.0.0.1", "port": 8080 }
-"#;
-    let module = parse_module(source).expect("string literal record field names parse");
-    let type_alias = module.items.iter().find_map(|item| match item {
-        Item::TypeAlias { name, ty: Type::Named(type_name, type_args), .. } if name == "Config" => {
-            Some((type_name, type_args))
-        }
-        _ => None,
-    }).expect("expected Config type alias");
-    assert!(type_alias.0.starts_with("__anon"));
-    assert_eq!(type_alias.1.len(), 2);
-
-    let make_fn = module.items.iter().find_map(|item| match item {
-        Item::Function(f) if f.name == "make" => Some(f),
-        _ => None,
-    }).expect("expected make function");
-    let Stmt::Expr(Expr::Record { name, fields, .. }) = &make_fn.body.stmts[0] else {
-        panic!("expected record expr");
-    };
-    assert_eq!(name, "Config");
-    assert_eq!(fields[0].0, "host");
-    assert_eq!(fields[1].0, "port");
-
-    let anon_fn = module.items.iter().find_map(|item| match item {
-        Item::Function(f) if f.name == "make_anon" => Some(f),
-        _ => None,
-    }).expect("expected anon function");
-    let Stmt::Expr(Expr::Record { name, fields, .. }) = &anon_fn.body.stmts[0] else {
-        panic!("expected anon record expr");
-    };
-    assert!(name.starts_with("__anon"));
-    assert_eq!(fields[0].0, "host");
-    assert_eq!(fields[1].0, "port");
+    let literal_source = "fn f():\n    .{ \"host\": 1 }\n";
+    let lit_err = parse_module(literal_source).unwrap_err();
+    assert!(lit_err.to_string().contains("expected an identifier"), "{lit_err}");
 }
 

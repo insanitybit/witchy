@@ -4290,10 +4290,6 @@ Safely parse a base-10 integer: an optional leading `-`/`+` then one or more dig
 
 Split text into its newline-separated lines.
 
-#### `str.len() -> Int`
-
-The string slice's length in BYTES (UTF-8).
-
 #### `str.length() -> Int`
 
 The string's length in BYTES (UTF-8). For user-perceived characters, see `char_count`.
