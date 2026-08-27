@@ -4,7 +4,7 @@
 //! has no generated callable names and no legacy scalar-transition fallback.
 
 use crate::typed_async_lowering::FinalCallableIndex;
-use crate::typed_execution::{ExecutionOperation, ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, LaneAction, OperationSite, OperationSiteId, TypedExecutionShape};
+use crate::typed_execution::{ExecutionOperation, ExecutionOutcome, ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, LaneAction, OperationSite, OperationSiteId, TypedExecutionShape};
 
 pub const ASYNC_PROGRAM_SCHEMA_VERSION: u32 = 1;
 
