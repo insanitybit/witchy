@@ -45,9 +45,6 @@ Usage: scripts/reclaim-build-caches.sh [options]
   --include-queued        also consider worktrees whose branch is sitting in
                           the merge queue (their owner may need a warm tree to
                           fix a red gate, so they are held back by default)
-  --include-queued        also consider worktrees whose branch is sitting in
-                          the merge queue (their owner may need a warm tree to
-                          fix a red gate, so they are held back by default)
   --keep-free-gb N        stop once free space reaches N GB
 USAGE
 }
@@ -58,7 +55,6 @@ while [ $# -gt 0 ]; do
         --min-age-hours) min_age_hours="$2"; shift ;;
         --include-unlanded) include_unlanded=1 ;;
         --include-clones) include_clones=1 ;;
-        --include-queued) include_queued=1 ;;
         --include-queued) include_queued=1 ;;
         --keep-free-gb) keep_free_gb="$2"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -77,16 +73,6 @@ if [ -z "$open_paths" ]; then
     echo "reclaim: that is unlikely on a busy machine -- treating every cache as LIVE." >&2
     echo "reclaim: re-run when lsof works rather than deleting blind." >&2
     exit 1
-fi
-
-# A branch waiting in the queue may need a fast fix-up if its gate goes red,
-# and a cold rebuild is the worst moment to hand its owner. Gating itself is
-# unaffected either way -- the coordinator builds in the merge-gate worktree,
-# which is skipped above.
-queued_branches=""
-if [ "$include_queued" -eq 0 ]; then
-    queued_branches="$("$main/scripts/merge-queue.sh" status 2>/dev/null \
-        | sed -n 's/.*"branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u || true)"
 fi
 
 # A branch waiting in the queue may need a fast fix-up if its gate goes red,
@@ -131,8 +117,6 @@ while IFS= read -r wt; do
             state=CLONE
         elif [ "$(( (now - $(stat -f %m "$t")) / 3600 ))" -lt "$min_age_hours" ]; then
             state=RECENT
-        elif [ -n "$queued_branches" ] && grep -qxF -- "$branch" <<<"$queued_branches"; then
-            state=QUEUED
         elif [ -n "$queued_branches" ] && grep -qxF -- "$branch" <<<"$queued_branches"; then
             state=QUEUED
         elif [ "$unlanded" -gt 0 ] && [ "$include_unlanded" -eq 0 ]; then
