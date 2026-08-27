@@ -88,7 +88,104 @@ pub struct AsyncProgram {
 }
 
 impl AsyncProgram {
+    /// Construct a versioned program and bind its semantic fingerprint to the
+    /// complete canonical encoding.  Backends compare this fingerprint with
+    /// their final-layout binding before accepting an execution shape.
+    pub fn new(execution_shapes: Vec<AsyncExecutionShape>) -> Result<Self, String> {
+        let mut program = Self {
+            schema_version: ASYNC_PROGRAM_SCHEMA_VERSION,
+            semantic_fingerprint: [0; 32],
+            execution_shapes,
+        };
+        program.validate_structure()?;
+        program.semantic_fingerprint = program.computed_fingerprint()?;
+        Ok(program)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_structure()?;
+        if self.semantic_fingerprint != self.computed_fingerprint()? {
+            return Err("async-program semantic fingerprint does not match canonical bytes".into());
+        }
+        Ok(())
+    }
+
+    /// Stable, source-name-independent bytes for the semantic program. Types
+    /// are represented by the already-final `closure_layout_fingerprint`; no
+    /// generated symbol or diagnostic text participates in this encoding.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, String> {
+        self.validate_structure()?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&self.schema_version.to_le_bytes());
+        push_len(&mut bytes, self.execution_shapes.len())?;
+        for shape in &self.execution_shapes {
+            push_u32(&mut bytes, shape.id.0);
+            bytes.extend_from_slice(&shape.closure_layout_fingerprint);
+            push_len(&mut bytes, shape.frame.len())?;
+            for lane in &shape.frame {
+                push_u32(&mut bytes, lane.id.0);
+                bytes.push(lane_ownership_tag(lane.ownership));
+                bytes.push(u8::from(lane.initially_initialized));
+            }
+            push_len(&mut bytes, shape.states.len())?;
+            for state in &shape.states {
+                push_u32(&mut bytes, state.state.0);
+                push_u32(&mut bytes, state.callable.0);
+                push_u32s(&mut bytes, &state.capture_to_lane)?;
+                push_len(&mut bytes, state.edges.len())?;
+                for edge in &state.edges {
+                    encode_condition(&mut bytes, edge.condition);
+                    encode_actions(&mut bytes, &edge.actions)?;
+                    encode_outcome(&mut bytes, edge.outcome);
+                }
+            }
+            push_len(&mut bytes, shape.queues.len())?;
+            for queue in &shape.queues {
+                push_u32(&mut bytes, queue.id.0);
+                match queue.capacity {
+                    crate::typed_execution::QueueCapacity::Rendezvous => bytes.push(0),
+                    crate::typed_execution::QueueCapacity::Fixed(capacity) => { bytes.push(1); push_u32(&mut bytes, capacity); }
+                    crate::typed_execution::QueueCapacity::Dynamic => bytes.push(2),
+                }
+                bytes.extend_from_slice(&queue.payload_layout_fingerprint);
+                bytes.push(payload_ownership_tag(queue.ownership));
+            }
+            push_len(&mut bytes, shape.operations.len())?;
+            for operation in &shape.operations {
+                push_u32(&mut bytes, operation.id.0);
+                bytes.push(operation_tag(operation.kind));
+                push_u32s(&mut bytes, &operation.input_lanes)?;
+                push_u32s(&mut bytes, &operation.result_lanes)?;
+                push_u32s(&mut bytes, &operation.pending_move_lanes)?;
+                encode_optional_u32(&mut bytes, operation.fallback_state.map(|state| state.0));
+                encode_optional_u32(&mut bytes, operation.queue.map(|queue| queue.0));
+                push_len(&mut bytes, operation.arms.len())?;
+                for arm in &operation.arms {
+                    push_u32(&mut bytes, arm.ordinal);
+                    bytes.push(operation_tag(arm.operation));
+                    push_u32(&mut bytes, arm.endpoint_lane);
+                    push_u32s(&mut bytes, &arm.input_lanes)?;
+                    push_u32s(&mut bytes, &arm.result_lanes)?;
+                    encode_optional_u32(&mut bytes, arm.queue.map(|queue| queue.0));
+                    bytes.push(payload_ownership_tag(arm.ownership));
+                }
+            }
+            push_len(&mut bytes, shape.dynamic_boundaries.len())?;
+            bytes.extend(shape.dynamic_boundaries.iter().map(|boundary| match boundary {
+                DynamicAsyncBoundary::DynamicAsyncCall => 0,
+                DynamicAsyncBoundary::DynamicSelectEndpoint => 1,
+                DynamicAsyncBoundary::OpaqueHostOperation => 2,
+                DynamicAsyncBoundary::UnsupportedTypedOperation => 3,
+            }));
+        }
+        Ok(bytes)
+    }
+
+    pub fn computed_fingerprint(&self) -> Result<[u8; 32], String> {
+        Ok(*blake3::hash(&self.canonical_bytes()?).as_bytes())
+    }
+
+    fn validate_structure(&self) -> Result<(), String> {
         if self.schema_version != ASYNC_PROGRAM_SCHEMA_VERSION {
             return Err("unsupported async-program schema version".into());
         }
@@ -133,6 +230,60 @@ impl AsyncProgram {
             }
         }
         Ok(())
+    }
+}
+
+fn push_u32(bytes: &mut Vec<u8>, value: u32) { bytes.extend_from_slice(&value.to_le_bytes()); }
+fn push_len(bytes: &mut Vec<u8>, value: usize) -> Result<(), String> {
+    push_u32(bytes, u32::try_from(value).map_err(|_| "async-program canonical length exceeds u32")?);
+    Ok(())
+}
+fn push_u32s(bytes: &mut Vec<u8>, values: &[u32]) -> Result<(), String> {
+    push_len(bytes, values.len())?;
+    for value in values { push_u32(bytes, *value); }
+    Ok(())
+}
+fn encode_optional_u32(bytes: &mut Vec<u8>, value: Option<u32>) {
+    match value { Some(value) => { bytes.push(1); push_u32(bytes, value); }, None => bytes.push(0) }
+}
+fn lane_ownership_tag(ownership: crate::typed_execution::LaneOwnership) -> u8 {
+    match ownership { crate::typed_execution::LaneOwnership::Copy => 0, crate::typed_execution::LaneOwnership::Move => 1, crate::typed_execution::LaneOwnership::MustConsume => 2 }
+}
+fn payload_ownership_tag(ownership: PayloadOwnership) -> u8 {
+    match ownership { PayloadOwnership::Inline => 0, PayloadOwnership::BufferRoot => 1, PayloadOwnership::Boxed => 2 }
+}
+fn operation_tag(operation: ExecutionOperation) -> u8 {
+    match operation { ExecutionOperation::ChannelSend => 0, ExecutionOperation::ChannelReceive => 1, ExecutionOperation::Select => 2, ExecutionOperation::Spawn => 3, ExecutionOperation::Join => 4, ExecutionOperation::Host => 5, ExecutionOperation::Yield => 6, ExecutionOperation::Cancellation => 7 }
+}
+fn encode_condition(bytes: &mut Vec<u8>, condition: ExecutionEdgeCondition) {
+    match condition {
+        ExecutionEdgeCondition::Always => bytes.push(0),
+        ExecutionEdgeCondition::Boolean { lane, when } => { bytes.push(1); push_u32(bytes, lane.0); bytes.push(u8::from(when)); }
+        ExecutionEdgeCondition::Variant { lane, tag } => { bytes.push(2); push_u32(bytes, lane.0); push_u32(bytes, tag); }
+        ExecutionEdgeCondition::SelectArm { operation, arm } => { bytes.push(3); push_u32(bytes, operation.0); push_u32(bytes, arm); }
+    }
+}
+fn encode_actions(bytes: &mut Vec<u8>, actions: &[LaneAction]) -> Result<(), String> {
+    push_len(bytes, actions.len())?;
+    for action in actions {
+        match action {
+            LaneAction::Copy { from, to } => { bytes.push(0); push_u32(bytes, from.0); push_u32(bytes, to.0); }
+            LaneAction::Move { from, to } => { bytes.push(1); push_u32(bytes, from.0); push_u32(bytes, to.0); }
+            LaneAction::Write { to } => { bytes.push(2); push_u32(bytes, to.0); }
+            LaneAction::Clear { lane } => { bytes.push(3); push_u32(bytes, lane.0); }
+            LaneAction::Discharge { lane } => { bytes.push(4); push_u32(bytes, lane.0); }
+        }
+    }
+    Ok(())
+}
+fn encode_outcome(bytes: &mut Vec<u8>, outcome: ExecutionOutcome) {
+    match outcome {
+        ExecutionOutcome::Continue(state) => { bytes.push(0); push_u32(bytes, state.0); }
+        ExecutionOutcome::Ready(state) => { bytes.push(1); push_u32(bytes, state.0); }
+        ExecutionOutcome::Blocked { operation, retry } => { bytes.push(2); push_u32(bytes, operation.0); push_u32(bytes, retry.0); }
+        ExecutionOutcome::Complete => bytes.push(3),
+        ExecutionOutcome::PropagateError => bytes.push(4),
+        ExecutionOutcome::Trap => bytes.push(5),
     }
 }
 
@@ -252,5 +403,18 @@ mod tests {
         let mut shape = shape();
         shape.operations[0].arms[1].ordinal = 2;
         assert!(shape.into_typed_execution(AsyncProgramStateId(0)).expect_err("arm ordering is semantic").contains("dense and ordered"));
+    }
+
+    #[test]
+    fn semantic_fingerprint_covers_arm_operation_and_queue_ownership() {
+        let program = AsyncProgram::new(vec![shape()]).expect("canonical program");
+        program.validate().expect("fresh fingerprint matches canonical bytes");
+        let mut changed = program.clone();
+        changed.execution_shapes[0].operations[0].arms[0].operation = ExecutionOperation::ChannelSend;
+        assert!(changed.validate().expect_err("arm operation changed").contains("fingerprint"));
+
+        let mut queue_changed = program;
+        queue_changed.execution_shapes[0].queues[0].ownership = PayloadOwnership::BufferRoot;
+        assert!(queue_changed.validate().expect_err("queue ownership changed").contains("fingerprint"));
     }
 }

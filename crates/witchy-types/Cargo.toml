@@ -16,3 +16,4 @@ witchy-syntax = { path = "../witchy-syntax" }
 # Matches the runtime dict's foldhash-style choice (8dc801c). no_std-clean
 # (ASLR-seeded, no getrandom), so the wasm playground build keeps working.
 foldhash = "0.2.0"
+blake3 = "1.8.3"

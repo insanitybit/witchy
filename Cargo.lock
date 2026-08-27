@@ -3038,6 +3038,7 @@ dependencies = [
 name = "witchy-types"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "foldhash 0.2.0",
  "witchy-cap-model",
  "witchy-syntax",
