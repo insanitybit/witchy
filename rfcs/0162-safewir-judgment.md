@@ -280,6 +280,32 @@ Only the named encoder kernel-template module can expand validated semantic
 operations to raw instructions. Privileged operations are opaque to the normal
 inliner. Each has an explicit contract and negative test.
 
+### SWIR-KERN-002 - authenticated region watermark
+
+`RegionMark` reads the checked allocator frontier and binds the result to a
+fresh scalar `DefinitionId` in the validator's private LIFO watermark stack.
+Only that exact reaching definition can authorize a later `RegionRewind`.
+An arbitrary scalar, a reassigned local, a watermark from another lexical
+region, a duplicate rewind, or a non-LIFO rewind rejects. The candidate cannot
+claim watermark authority, and template expansion cannot select a different
+allocator global or import than the catalog authenticated during validation.
+
+`RegionRewind::Iteration` is accepted only when validation proves that no
+operation since the matching mark can have linked storage into the RC free
+list or otherwise made preserving that list unsafe. It restores the exact
+watermark and preserves the free list. `RegionRewind::Lexical` restores the
+exact watermark, clears the possibly dangling free list, and invalidates every
+object generation allocated at or above the watermark.
+
+`RegionRewind::CopyOut` additionally requires one live escaping source object
+and proves, in mathematical integers, `watermark <= source` and
+`source + retained_bytes <= current_frontier`. The fixed template evaluates
+operands once in source order, performs the overlap-safe copy to the watermark,
+sets the frontier to `watermark + retained_bytes`, clears the free list, and
+invalidates every displaced generation except the newly bound escaping result
+generation. Zero bytes do not relax watermark, source-generation, or ordering
+obligations.
+
 ### SWIR-ENC-001 - validated encoder authority
 
 The production encoder accepts only a `ValidatedWirModule` whose constructor is
@@ -310,6 +336,10 @@ compilation.
 | `Release` | live owning root; matching layout | consume unique token or perform checked shared RC operation |
 | `Move` | sole unique token; no conflicting alias/borrow | consume input token, transfer unique authority |
 | `Reuse` | destructive rules and non-wrapping new extent | consume old generation, mint distinct new generation |
+| `RegionMark` | authenticated allocator frontier and available watermark budget | bind a fresh scalar definition and push it on the private LIFO watermark stack |
+| `RegionRewind::Iteration` | exact top watermark; no intervening free-list insertion or escaping generation | restore frontier, preserve free list, pop watermark, invalidate rewound generations |
+| `RegionRewind::Lexical` | exact top watermark | restore frontier, clear free list, pop watermark, invalidate rewound generations |
+| `RegionRewind::CopyOut` | exact top watermark; one live escaping source; checked source/frontier bounds | copy once to watermark, set frontier after retained bytes, clear free list, mint escaping generation, invalidate displaced generations |
 | call | checked callable contract | union parameter effects; kill dependent facts on mutation/escape; substitute a declared alias, or transfer exactly one fresh allocation token into a new caller identity |
 
 ## 10. RichWasm correspondence
@@ -333,7 +363,7 @@ the RichWasm calculus.
 | SWIR-CALL-001/002 | typed functions/modules | checked alias/freshness/consume summaries and recursive components |
 | SWIR-REF-001 | separated typed values | Wasm `externref`/GC/capability representation boundary |
 | SWIR-HOST-001 | typed module boundary | Witchy host ABI live-range contracts |
-| SWIR-KERN-001, ENC-001 | erasure to core Wasm | final-candidate validation, sealed templates, private encode authority |
+| SWIR-KERN-001/002, ENC-001 | erasure to core Wasm | final-candidate validation, sealed templates, authenticated region-watermark discipline, private encode authority |
 | SWIR-BUD-001 | no direct correspondence | fail-closed compiler resource policy |
 
 The RichWasm type-safety theorem does not prove Witchy's validator, kernel,
