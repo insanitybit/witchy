@@ -1387,7 +1387,7 @@ impl<'types> Codegen<'types> {
                 // on the ordinary bounds-checked path. Installing a cursor
                 // for those locals hoisted their read before the assignment.
                 let induction = self.analyze_canonical_induction(cond, body);
-                let sequence_indices = self
+                let mut sequence_indices = self
                     .sequence_candidate_indices(body)
                     .into_iter()
                     .filter(|candidate| {
@@ -1400,6 +1400,21 @@ impl<'types> Codegen<'types> {
                         })
                     })
                     .collect::<Vec<_>>();
+                // A guarded-range completion proof establishes the same
+                // entry-domain contract as canonical induction, but its
+                // `while !advanced` condition intentionally does not mention
+                // the index.  The plan owns a cursor for the proven index and
+                // `synchronize_sequence_cursors` advances it only after the
+                // source's final `r = r + 1` assignment has executed.
+                //
+                // Keep this expressed in terms of the existing proof pairs:
+                // no list method or benchmark shape is introduced here, and
+                // the checked fallback remains for every unproven access.
+                if guarded_pairs.is_some() {
+                    sequence_indices.extend(elide_pairs.iter().map(|(index, _)| index.clone()));
+                    sequence_indices.sort();
+                    sequence_indices.dedup();
+                }
                 let batch_level = (!sequence_indices.is_empty()
                     && self.loop_unroll_safe(body)
                     && self.counter_batch_stack.len() < WM_POOL)

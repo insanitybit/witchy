@@ -6206,6 +6206,70 @@ fn main() -> Int:
     }
 
     #[test]
+    fn guarded_range_countdown_cursorizes_only_after_the_checked_completion() {
+        let source = r#"
+import list
+
+fn scan(let n: Int) -> Int:
+    var count = []
+    for i in 0..n:
+        list.push(count, 0)
+    var r = n
+    while r != 1:
+        list.set_at(count, r - 1, r)
+        r = r - 1
+    var advanced = false
+    var total = 0
+    while !advanced:
+        if r == n:
+            return total
+        total = total + list.at(count, r)
+        list.set_at(count, r, list.at(count, r) - 1)
+        if list.at(count, r) > 0:
+            advanced = true
+        else:
+            r = r + 1
+    total
+
+fn main() -> Int:
+    scan(3)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let module = link_list_app(source);
+        assert_eq!(run_int_module_with_opt(&module, default), 2);
+        assert_eq!(
+            run_int_module_with_opt(
+                &module,
+                default.without(witchy_syntax::opt::Opt::BoundsElide),
+            ),
+            2,
+            "the deoptimized path retains the same checked semantics",
+        );
+
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower guarded countdown"));
+        witchy_syntax::opt::set_for_tests(None);
+        let scan = wat.split("(func $app.scan").nth(1).expect("scan WAT");
+        let scan = scan.split("(func $").next().expect("scan body");
+        assert!(scan.contains("__seq_cursor_3_"), "the post-completion loop gets a cursor:\n{scan}");
+        let post_completion = scan.split("block $we2").nth(1).expect("post-completion loop");
+        assert!(
+            !post_completion.contains("call $list_at"),
+            "the post-completion accesses lower directly while the earlier countdown fallback remains checked:\n{post_completion}",
+        );
+
+        let trapping = source.replace("scan(3)", "scan(0)");
+        let trapping_module = link_list_app(&trapping);
+        let optimized_trap = compiled_module_trap_with_opt(&trapping_module, default);
+        let deoptimized_trap = compiled_module_trap_with_opt(
+            &trapping_module,
+            default.without(witchy_syntax::opt::Opt::BoundsElide),
+        );
+        assert!(optimized_trap.contains("list_at"), "the zero-size countdown remains checked: {optimized_trap}");
+        assert!(deoptimized_trap.contains("list_at"), "the deoptimized zero-size countdown traps: {deoptimized_trap}");
+    }
+
+    #[test]
     fn dynamic_cursor_unroll_requires_multiple_independent_accesses() {
         let one_cursor = r#"
 fn main() -> Int:
