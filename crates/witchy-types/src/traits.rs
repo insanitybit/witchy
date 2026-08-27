@@ -3153,11 +3153,43 @@ impl SpecializationTypeKey {
     }
 }
 
+/// The generic signature from which one logical specialization was produced.
+/// Codegen retains this source shape so it can independently substitute the
+/// concrete arguments and compare them with the checked monomorphic function.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogicalSpecializationTemplate {
+    type_parameters: Vec<String>,
+    parameters: Vec<Option<Type>>,
+    result: Option<Type>,
+}
+
+impl LogicalSpecializationTemplate {
+    pub fn type_parameters(&self) -> &[String] {
+        &self.type_parameters
+    }
+
+    pub fn parameters(&self) -> &[Option<Type>] {
+        &self.parameters
+    }
+
+    pub fn result(&self) -> Option<&Type> {
+        self.result.as_ref()
+    }
+}
+
 /// Canonical logical identity for the concrete type arguments selected for one
 /// generic callable. A single lifetime normalizer spans every component, so
 /// relations between arguments survive while source binder names do not.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LogicalSpecializationIdentity(Vec<SpecializationTypeKey>);
+///
+/// The concrete types and source template are retained only as codegen evidence:
+/// equality, ordering, and hashing remain defined solely by the alpha-normalized
+/// keys, preserving the established specialization and memoization identity.
+#[derive(Clone, Debug)]
+pub struct LogicalSpecializationIdentity {
+    keys: Vec<SpecializationTypeKey>,
+    concrete_types: Vec<Type>,
+    template: Option<LogicalSpecializationTemplate>,
+}
 
 impl LogicalSpecializationIdentity {
     pub fn from_types(types: &[Type]) -> Self {
@@ -3166,11 +3198,64 @@ impl LogicalSpecializationIdentity {
             .iter()
             .map(|ty| SpecializationTypeKey(specialization_type_key(ty, &mut lifetimes)))
             .collect();
-        Self(keys)
+        Self {
+            keys,
+            concrete_types: types.to_vec(),
+            template: None,
+        }
+    }
+
+    pub fn from_types_with_template(
+        types: &[Type],
+        type_parameters: Vec<String>,
+        parameters: Vec<Option<Type>>,
+        result: Option<Type>,
+    ) -> Self {
+        let mut identity = Self::from_types(types);
+        identity.template = Some(LogicalSpecializationTemplate {
+            type_parameters,
+            parameters,
+            result,
+        });
+        identity
     }
 
     pub fn types(&self) -> &[SpecializationTypeKey] {
-        &self.0
+        &self.keys
+    }
+
+    pub fn concrete_types(&self) -> &[Type] {
+        &self.concrete_types
+    }
+
+    pub fn template(&self) -> Option<&LogicalSpecializationTemplate> {
+        self.template.as_ref()
+    }
+}
+
+impl PartialEq for LogicalSpecializationIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys == other.keys
+    }
+}
+
+impl Eq for LogicalSpecializationIdentity {}
+
+impl PartialOrd for LogicalSpecializationIdentity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LogicalSpecializationIdentity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.keys.cmp(&other.keys)
+    }
+}
+
+impl std::hash::Hash for LogicalSpecializationIdentity {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.keys, state);
     }
 }
 
@@ -3345,6 +3430,17 @@ mod specialization_identity_tests {
         ]);
         assert_eq!(original, renamed);
         assert_ne!(original, split);
+        assert_ne!(original.concrete_types(), renamed.concrete_types());
+        assert_eq!(original.concrete_types()[0], borrowed("a"));
+        assert_eq!(renamed.concrete_types()[0], borrowed("owner"));
+
+        let hash = |identity: &LogicalSpecializationIdentity| {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            identity.hash(&mut state);
+            state.finish()
+        };
+        assert_eq!(hash(&original), hash(&renamed));
     }
 
     #[test]
@@ -4310,7 +4406,13 @@ fn type_var_list(f: &Function) -> Vec<String> {
         // Bound variables first, then any other signature variables — a
         // bounded fn can be generic over more than its bounds (`collect`
         // is bounded on its RESULT `c` and free in its element `a`).
-        let mut vars: Vec<String> = f.bounds.iter().map(|(v, _, _)| v.clone()).collect();
+        // Multiple bounds on one variable describe one substitution slot.
+        let mut vars = Vec::new();
+        for (variable, _, _) in &f.bounds {
+            if !vars.contains(variable) {
+                vars.push(variable.clone());
+            }
+        }
         for v in signature_type_vars(f) {
             if !vars.contains(&v) {
                 vars.push(v);

@@ -238,7 +238,14 @@ impl Mono<'_> {
         let affine = type_args
             .iter()
             .any(|argument| self.type_carries_once_identity(argument));
-        let identity = LogicalSpecializationIdentity::from_types(&type_args);
+        let template = self.templates[name].clone();
+        let type_parameters = type_var_list(&template);
+        let identity = LogicalSpecializationIdentity::from_types_with_template(
+            &type_args,
+            type_parameters.clone(),
+            template.params.iter().map(|parameter| parameter.ty.clone()).collect(),
+            template.ret.clone(),
+        );
         let key = (name.to_string(), identity.clone());
         if let Some(m) = self.memo.get(&key) {
             return m.clone();
@@ -257,12 +264,12 @@ impl Mono<'_> {
             self.affine_specializations.insert(mangled.clone());
         }
 
-        let mut f = self.templates[name].clone();
+        let mut f = template;
         f.name = mangled.clone();
         // Substitute over the same variable list `resolve_type_args` resolved:
         // the `where`-bound variables for a bounded generic, otherwise the free
         // type variables of the signature.
-        let subst: HashMap<String, Type> = type_var_list(&f).into_iter().zip(type_args).collect();
+        let subst: HashMap<String, Type> = type_parameters.into_iter().zip(type_args).collect();
         for p in &mut f.params {
             if let Some(t) = &p.ty {
                 p.ty = Some(subst_trait_params(t, &subst));

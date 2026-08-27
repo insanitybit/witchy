@@ -232,9 +232,9 @@ impl Codegen<'_> {
     ) -> Result<(Vec<String>, Vec<ObservedGenericCall>), CodegenError> {
         let mut fallbacks = Vec::new();
         let mut calls = Vec::new();
-        let mut missing_access = None;
+        let mut failure = None;
         visit_calls(&caller.body, &mut |expression| {
-            if missing_access.is_some() {
+            if failure.is_some() {
                 return;
             }
             if let Expr::Var(name) = expression
@@ -254,7 +254,7 @@ impl Codegen<'_> {
                 return;
             };
             let Some(access) = self.access_facts.call_at(self.checked_module, expression) else {
-                missing_access = Some(CodegenError {
+                failure = Some(CodegenError {
                     message: format!(
                         "generic call `{name}` in `{}` has no checked access facts; physical specialization cannot fall back implicitly",
                         caller.name
@@ -262,18 +262,25 @@ impl Codegen<'_> {
                 });
                 return;
             };
+            let layout = match self.call_layout_signature(expression, args, caller, caller_key) {
+                Ok(layout) => layout,
+                Err(error) => {
+                    failure = Some(error);
+                    return;
+                }
+            };
             calls.push(ObservedGenericCall {
                 expression: expression as *const Expr as usize,
                 logical_name: name.clone(),
                 key: CallableSpecializationKey {
                     logical: logical.clone(),
                     access: access.identity_key(),
-                    layout: self.call_layout_signature(expression, args, caller, caller_key),
+                    layout,
                     optimization: witchy_syntax::opt::active_schema_key(),
                 },
             });
         });
-        match missing_access {
+        match failure {
             Some(error) => Err(error),
             None => Ok((fallbacks, calls)),
         }
@@ -285,18 +292,32 @@ impl Codegen<'_> {
         arguments: &[Expr],
         caller: &Function,
         caller_key: Option<&CallableSpecializationKey>,
-    ) -> CallableLayoutSignature {
+    ) -> Result<CallableLayoutSignature, CodegenError> {
         let parameters = arguments
             .iter()
-            .map(|argument| {
-                self.ast_type_from_table(argument)
-                    .and_then(|ty| self.layout_id_in_instance(&ty, caller, caller_key))
+            .enumerate()
+            .map(|(position, argument)| {
+                let Some(ty) = self.ast_type_from_table(argument) else {
+                    return Err(CodegenError {
+                        message: format!(
+                            "generic call in `{}` has no checked concrete type for argument {position}; physical specialization cannot select an ordinary ABI",
+                            caller.name
+                        ),
+                    });
+                };
+                self.layout_id_in_instance(&ty, caller, caller_key)
             })
-            .collect();
-        let result = self
-            .ast_type_from_table(call)
-            .and_then(|ty| self.layout_id_in_instance(&ty, caller, caller_key));
-        CallableLayoutSignature::new(parameters, result)
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some(result_ty) = self.ast_type_from_table(call) else {
+            return Err(CodegenError {
+                message: format!(
+                    "generic call in `{}` has no checked concrete result type; physical specialization cannot select an ordinary ABI",
+                    caller.name
+                ),
+            });
+        };
+        let result = self.layout_id_in_instance(&result_ty, caller, caller_key)?;
+        Ok(CallableLayoutSignature::new(parameters, result))
     }
 
     fn ast_type_from_table(&self, expression: &Expr) -> Option<Type> {
@@ -310,41 +331,36 @@ impl Codegen<'_> {
         ty: &Type,
         caller: &Function,
         caller_key: Option<&CallableSpecializationKey>,
-    ) -> Option<LayoutId> {
+    ) -> Result<Option<LayoutId>, CodegenError> {
         if let Some(key) = caller_key {
-            let mut selected = None;
-            for (position, parameter) in caller.params.iter().enumerate() {
-                if parameter
-                    .ty
-                    .as_ref()
-                    .is_some_and(|known| known.unqualified() == ty.unqualified())
-                    && let Some(id) = key.layout.parameters().get(position).copied().flatten()
-                {
-                    if selected.is_some_and(|known| known != id) {
-                        return None;
-                    }
-                    selected = Some(id);
-                }
-            }
-            if caller
-                .ret
-                .as_ref()
-                .is_some_and(|known| known.unqualified() == ty.unqualified())
-                && let Some(id) = key.layout.result()
+            if let Some((_, selected)) = instance_type_layout_bindings(caller, key)?
+                .into_iter()
+                .find(|(known, _)| known.unqualified() == ty.unqualified())
             {
-                if selected.is_some_and(|known| known != id) {
-                    return None;
-                }
-                selected = Some(id);
-            }
-            if selected.is_some() {
-                return selected;
+                // An explicit ordinary binding belongs to this physical
+                // instance and must not fall through to a global layout.
+                return Ok(selected);
             }
         }
-        self.specialized_type_ids
+        let mut selected = None;
+        for (_, id) in self
+            .specialized_type_ids
             .iter()
-            .find(|(known, _)| known.unqualified() == ty.unqualified())
-            .map(|(_, id)| *id)
+            .filter(|(known, _)| known.unqualified() == ty.unqualified())
+        {
+            if selected.is_some_and(|known| known != *id) {
+                return Err(CodegenError {
+                    message: format!(
+                        "physical layout lookup for logical type {:?} is ambiguous: {} and {}",
+                        ty.unqualified(),
+                        selected.expect("conflicting layout has a first value"),
+                        id
+                    ),
+                });
+            }
+            selected = Some(*id);
+        }
+        Ok(selected)
     }
 
     pub(super) fn begin_callable_specialization(
@@ -397,10 +413,183 @@ fn instance_type_layouts(
     function: &Function,
     key: &CallableSpecializationKey,
 ) -> Result<Vec<(Type, LayoutId)>, CodegenError> {
+    Ok(instance_type_layout_bindings(function, key)?
+        .into_iter()
+        .filter_map(|(ty, layout)| layout.map(|layout| (ty, layout)))
+        .collect())
+}
+
+fn substitute_specialization_type(
+    ty: &Type,
+    substitutions: &BTreeMap<String, Type>,
+) -> Type {
+    match ty {
+        Type::Qualified(qualifier, inner) => Type::Qualified(
+            qualifier.clone(),
+            Box::new(substitute_specialization_type(inner, substitutions)),
+        ),
+        Type::Slice(inner) => Type::Slice(Box::new(substitute_specialization_type(
+            inner,
+            substitutions,
+        ))),
+        Type::Named(name, arguments) if arguments.is_empty() => substitutions
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Type::Named(name.clone(), Vec::new())),
+        Type::Named(name, arguments) => Type::Named(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute_specialization_type(argument, substitutions))
+                .collect(),
+        ),
+        Type::Dyn(name, arguments) => Type::Dyn(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute_specialization_type(argument, substitutions))
+                .collect(),
+        ),
+        Type::Tuple(items) => Type::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_specialization_type(item, substitutions))
+                .collect(),
+        ),
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(substitute_specialization_type(base, substitutions)),
+            fields: fields
+                .iter()
+                .map(|(name, field)| {
+                    (
+                        name.clone(),
+                        substitute_specialization_type(field, substitutions),
+                    )
+                })
+                .collect(),
+        },
+        Type::Fn(parameters, result, conventions, qualifiers) => Type::Fn(
+            parameters
+                .iter()
+                .map(|parameter| substitute_specialization_type(parameter, substitutions))
+                .collect(),
+            Box::new(substitute_specialization_type(result, substitutions)),
+            conventions.clone(),
+            *qualifiers,
+        ),
+    }
+}
+
+fn instance_concrete_signature(
+    function: &Function,
+    key: &CallableSpecializationKey,
+) -> Result<(Vec<Option<Type>>, Option<Type>), CodegenError> {
+    let logical = &key.logical;
+    let (parameters, result) = if let Some(template) = logical.template() {
+        if template.type_parameters().len() != logical.concrete_types().len() {
+            return Err(CodegenError {
+                message: format!(
+                    "generic callable `{}` has {} logical type parameters but {} concrete arguments",
+                    function.name,
+                    template.type_parameters().len(),
+                    logical.concrete_types().len()
+                ),
+            });
+        }
+        let mut substitutions = BTreeMap::new();
+        for (parameter, concrete) in template
+            .type_parameters()
+            .iter()
+            .zip(logical.concrete_types())
+        {
+            if substitutions.insert(parameter.clone(), concrete.clone()).is_some() {
+                return Err(CodegenError {
+                    message: format!(
+                        "generic callable `{}` repeats logical type parameter `{parameter}`",
+                        function.name
+                    ),
+                });
+            }
+        }
+        let parameters = template
+            .parameters()
+            .iter()
+            .map(|parameter| {
+                parameter
+                    .as_ref()
+                    .map(|ty| substitute_specialization_type(ty, &substitutions))
+            })
+            .collect::<Vec<_>>();
+        let result = template
+            .result()
+            .map(|ty| substitute_specialization_type(ty, &substitutions));
+        (parameters, result)
+    } else {
+        // Hand-built non-generic keys predate retained templates and remain
+        // valid for closed signatures. A generic shell without its production
+        // specialization evidence is never accepted.
+        (
+            function.params.iter().map(|parameter| parameter.ty.clone()).collect(),
+            function.ret.clone(),
+        )
+    };
+
+    for ty in parameters.iter().flatten().chain(result.iter()) {
+        let mut residual = Vec::new();
+        collect_type_vars(ty, &mut residual);
+        if !residual.is_empty() {
+            return Err(CodegenError {
+                message: format!(
+                    "generic callable `{}` retains unresolved logical types after specialization: {}",
+                    function.name,
+                    residual.join(", ")
+                ),
+            });
+        }
+    }
+    if function.params.len() != parameters.len() {
+        return Err(CodegenError {
+            message: format!(
+                "generic callable `{}` specialization has {} checked parameters but {} retained template parameters",
+                function.name,
+                function.params.len(),
+                parameters.len()
+            ),
+        });
+    }
+    for (position, (parameter, expected)) in
+        function.params.iter().zip(&parameters).enumerate()
+    {
+        if parameter.ty.as_ref() != expected.as_ref() {
+            return Err(CodegenError {
+                message: format!(
+                    "generic callable `{}` parameter {position} does not match its substituted logical type: checked={:?}, expected={expected:?}",
+                    function.name,
+                    parameter.ty
+                ),
+            });
+        }
+    }
+    if function.ret.as_ref() != result.as_ref() {
+        return Err(CodegenError {
+            message: format!(
+                "generic callable `{}` result does not match its substituted logical type: checked={:?}, expected={result:?}",
+                function.name,
+                function.ret
+            ),
+        });
+    }
+    Ok((parameters, result))
+}
+
+fn instance_type_layout_bindings(
+    function: &Function,
+    key: &CallableSpecializationKey,
+) -> Result<Vec<(Type, Option<LayoutId>)>, CodegenError> {
     fn install(
-        layouts: &mut Vec<(Type, LayoutId)>,
+        layouts: &mut Vec<(Type, Option<LayoutId>)>,
         ty: Type,
-        id: LayoutId,
+        id: Option<LayoutId>,
     ) -> Result<(), CodegenError> {
         if let Some((_, existing)) = layouts
             .iter()
@@ -409,7 +598,7 @@ fn instance_type_layouts(
             if *existing != id {
                 return Err(CodegenError {
                     message: format!(
-                        "generic callable instance assigns two physical layouts to logical type {:?}: {existing} and {id}",
+                        "generic callable instance assigns conflicting physical layouts to logical type {:?}: {existing:?} and {id:?}",
                         ty.unqualified()
                     ),
                 });
@@ -420,17 +609,44 @@ fn instance_type_layouts(
         Ok(())
     }
 
+    let (parameters, result) = instance_concrete_signature(function, key)?;
+    if key.layout.parameters().len() != parameters.len() {
+        return Err(CodegenError {
+            message: format!(
+                "generic callable `{}` layout has {} parameter positions for a {}-parameter specialization",
+                function.name,
+                key.layout.parameters().len(),
+                parameters.len()
+            ),
+        });
+    }
     let mut layouts = Vec::new();
-    for (position, parameter) in function.params.iter().enumerate() {
-        if let (Some(ty), Some(id)) = (
-            parameter.ty.as_ref(),
-            key.layout.parameters().get(position).copied().flatten(),
-        ) {
-            install(&mut layouts, ty.clone(), id)?;
+    for (position, parameter) in parameters.into_iter().enumerate() {
+        let layout = key.layout.parameters()[position];
+        match parameter {
+            Some(ty) => install(&mut layouts, ty, layout)?,
+            None if layout.is_some() => {
+                return Err(CodegenError {
+                    message: format!(
+                        "generic callable `{}` parameter {position} has a physical layout but no substituted logical type",
+                        function.name
+                    ),
+                });
+            }
+            None => {}
         }
     }
-    if let (Some(ty), Some(id)) = (function.ret.as_ref(), key.layout.result()) {
-        install(&mut layouts, ty.clone(), id)?;
+    match result {
+        Some(ty) => install(&mut layouts, ty, key.layout.result())?,
+        None if key.layout.result().is_some() => {
+            return Err(CodegenError {
+                message: format!(
+                    "generic callable `{}` result has a physical layout but no substituted logical type",
+                    function.name
+                ),
+            });
+        }
+        None => {}
     }
     Ok(layouts)
 }
@@ -623,6 +839,63 @@ mod tests {
         }
     }
 
+    fn generic_relay_template(parameter_count: usize) -> Function {
+        let mut function = relay_function();
+        function.name = "relay".to_string();
+        function.params = (0..parameter_count)
+            .map(|position| Param {
+                name: format!("value{position}"),
+                ty: Some(named("a")),
+                convention: Convention::Let,
+                default: None,
+            })
+            .collect();
+        function.ret = Some(named("a"));
+        function
+    }
+
+    fn specialized_relay(parameter_count: usize) -> Function {
+        let mut function = generic_relay_template(parameter_count);
+        function.name = "relay__List_Point".to_string();
+        for parameter in &mut function.params {
+            parameter.ty = Some(list_point());
+        }
+        function.ret = Some(list_point());
+        function
+    }
+
+    fn logical_relay_identity(
+        template: &Function,
+        concrete_types: &[Type],
+    ) -> LogicalSpecializationIdentity {
+        LogicalSpecializationIdentity::from_types_with_template(
+            concrete_types,
+            vec!["a".to_string()],
+            template
+                .params
+                .iter()
+                .map(|parameter| parameter.ty.clone())
+                .collect(),
+            template.ret.clone(),
+        )
+    }
+
+    fn physical_key(
+        function: &Function,
+        logical: LogicalSpecializationIdentity,
+        parameters: Vec<Option<LayoutId>>,
+        result: Option<LayoutId>,
+    ) -> CallableSpecializationKey {
+        let access = witchy_types::access::AccessSignature::from_function(function)
+            .expect("closed specialization access signature");
+        CallableSpecializationKey {
+            logical,
+            access: access.identity_key(),
+            layout: CallableLayoutSignature::new(parameters, result),
+            optimization: witchy_syntax::opt::active_schema_key(),
+        }
+    }
+
     fn key_with_access(layout: LayoutId, convention: Convention) -> CallableSpecializationKey {
         let mut function = relay_function();
         function.params[0].convention = convention;
@@ -722,6 +995,205 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn generic_argument_binds_exact_packed_layout_to_substituted_signature() {
+        let layout = packed_list_layout(&mut LayoutInterner::new(), RcHeader::Required);
+        let template = generic_relay_template(1);
+        let function = specialized_relay(1);
+        let key = physical_key(
+            &function,
+            logical_relay_identity(&template, &[list_point()]),
+            vec![Some(layout)],
+            Some(layout),
+        );
+
+        assert_eq!(
+            instance_type_layouts(&function, &key).expect("exact generic layout binding"),
+            vec![(list_point(), layout)]
+        );
+    }
+
+    #[test]
+    fn production_monomorphization_retains_packed_layout_binding_evidence() {
+        with_codegen(
+            "type Point:\n    value: Int\n\nfn relay(value: a) -> a:\n    value\n\nfn main() -> Int:\n    let _ = relay([Point(1)])\n    0\n",
+            |codegen, specializations| {
+                let (logical_name, logical) = specializations
+                    .iter()
+                    .find(|(name, _)| name.starts_with("relay__"))
+                    .expect("relay logical specialization");
+                assert_eq!(logical.concrete_types(), &[list_point()]);
+                let template = logical.template().expect("retained generic template");
+                assert_eq!(template.type_parameters(), &["a".to_string()]);
+                assert_eq!(template.parameters(), &[Some(named("a"))]);
+                assert_eq!(template.result().cloned(), Some(named("a")));
+
+                let function = function_named(codegen, logical_name).clone();
+                let layout =
+                    packed_list_layout(&mut codegen.specialized_layouts, RcHeader::Required);
+                codegen
+                    .specialized_type_ids
+                    .push((list_point(), layout));
+                codegen
+                    .register_generic_callable_instances(specializations)
+                    .expect("discover production packed physical instance");
+                let instances = codegen
+                    .generic_callable_instances
+                    .for_function(logical_name);
+                let [instance] = instances.as_slice() else {
+                    panic!("one production packed physical instance")
+                };
+                assert_eq!(&instance.key.logical, logical);
+                assert_eq!(instance.key.layout.parameters(), &[Some(layout)]);
+                assert_eq!(instance.key.layout.result(), Some(layout));
+                codegen
+                    .with_callable_specialization(
+                        &function,
+                        &instance.emitted_name,
+                        Some(&instance.key),
+                        |codegen| {
+                            assert_eq!(codegen.specialized_layout_id(&list_point()), Some(layout));
+                            Ok(())
+                        },
+                    )
+                    .expect("bind production packed physical instance");
+            },
+        );
+    }
+
+    #[test]
+    fn repeated_bounds_share_one_logical_substitution_slot() {
+        with_codegen(
+            "fn relay(value: a) -> a where a: PartialEq, a: Show:\n    value\n\nfn main() -> Int:\n    relay(1)\n",
+            |codegen, specializations| {
+                let (logical_name, logical) = specializations
+                    .iter()
+                    .find(|(name, _)| name.starts_with("relay__"))
+                    .expect("multi-bound relay specialization");
+                assert_eq!(logical.concrete_types(), &[named("Int")]);
+                assert_eq!(
+                    logical
+                        .template()
+                        .expect("multi-bound retained template")
+                        .type_parameters(),
+                    &["a".to_string()]
+                );
+                codegen
+                    .register_generic_callable_instances(specializations)
+                    .expect("multi-bound physical discovery");
+                let instances = codegen
+                    .generic_callable_instances
+                    .for_function(logical_name);
+                let [instance] = instances.as_slice() else {
+                    panic!("one multi-bound physical instance")
+                };
+                let function = function_named(codegen, logical_name).clone();
+                codegen
+                    .with_callable_specialization(
+                        &function,
+                        &instance.emitted_name,
+                        Some(&instance.key),
+                        |_| Ok(()),
+                    )
+                    .expect("multi-bound specialization setup");
+            },
+        );
+    }
+
+    #[test]
+    fn conflicting_layouts_for_one_substituted_type_reject() {
+        let required = packed_list_layout(&mut LayoutInterner::new(), RcHeader::Required);
+        let elided = packed_list_layout(&mut LayoutInterner::new(), RcHeader::Elided);
+        let template = generic_relay_template(2);
+        let function = specialized_relay(2);
+        let key = physical_key(
+            &function,
+            logical_relay_identity(&template, &[list_point()]),
+            vec![Some(required), Some(elided)],
+            Some(required),
+        );
+
+        let error = instance_type_layouts(&function, &key)
+            .expect_err("one logical type cannot have conflicting physical IDs");
+        assert!(error.message.contains("conflicting physical layouts"));
+    }
+
+    #[test]
+    fn specialized_and_ordinary_positions_for_one_type_reject() {
+        let layout = packed_list_layout(&mut LayoutInterner::new(), RcHeader::Required);
+        let template = generic_relay_template(2);
+        let function = specialized_relay(2);
+        let key = physical_key(
+            &function,
+            logical_relay_identity(&template, &[list_point()]),
+            vec![Some(layout), None],
+            Some(layout),
+        );
+
+        let error = instance_type_layouts(&function, &key)
+            .expect_err("type-directed body layout cannot mix specialized and ordinary ABI");
+        assert!(error.message.contains("conflicting physical layouts"));
+    }
+
+    #[test]
+    fn missing_and_out_of_range_logical_arguments_reject() {
+        let layout = packed_list_layout(&mut LayoutInterner::new(), RcHeader::Required);
+        let template = generic_relay_template(1);
+        let function = specialized_relay(1);
+        for concrete_types in [Vec::new(), vec![list_point(), named("Int")]] {
+            let key = physical_key(
+                &function,
+                logical_relay_identity(&template, &concrete_types),
+                vec![Some(layout)],
+                Some(layout),
+            );
+            let error = instance_type_layouts(&function, &key)
+                .expect_err("logical argument arity mismatch must reject");
+            assert!(error.message.contains("logical type parameters"));
+            assert!(error.message.contains("concrete arguments"));
+        }
+    }
+
+    #[test]
+    fn substituted_signature_mismatch_rejects() {
+        let layout = packed_list_layout(&mut LayoutInterner::new(), RcHeader::Required);
+        let template = generic_relay_template(1);
+        let mut function = specialized_relay(1);
+        function.ret = Some(named("Point"));
+        let key = physical_key(
+            &function,
+            logical_relay_identity(&template, &[list_point()]),
+            vec![Some(layout)],
+            Some(layout),
+        );
+
+        let error = instance_type_layouts(&function, &key)
+            .expect_err("checked function drift from logical substitution must reject");
+        assert!(error.message.contains("result does not match"));
+    }
+
+    #[test]
+    fn ambiguous_instance_lookup_cannot_downgrade_to_ordinary_abi() {
+        with_codegen("fn main() -> Int:\n    0\n", |codegen, _| {
+            let required =
+                packed_list_layout(&mut codegen.specialized_layouts, RcHeader::Required);
+            let elided = packed_list_layout(&mut codegen.specialized_layouts, RcHeader::Elided);
+            let template = generic_relay_template(2);
+            let function = specialized_relay(2);
+            let key = physical_key(
+                &function,
+                logical_relay_identity(&template, &[list_point()]),
+                vec![Some(required), Some(elided)],
+                Some(required),
+            );
+
+            let error = codegen
+                .layout_id_in_instance(&list_point(), &function, Some(&key))
+                .expect_err("ambiguous instance lookup must propagate rejection");
+            assert!(error.message.contains("conflicting physical layouts"));
+        });
     }
 
     #[test]
@@ -858,6 +1330,33 @@ mod tests {
                     .expect_err("cloned expressions have no authenticated access facts");
                 assert!(error.message.contains("has no checked access facts"));
                 assert!(error.message.contains("cannot fall back implicitly"));
+            },
+        );
+    }
+
+    #[test]
+    fn missing_generic_call_type_facts_fail_closed() {
+        with_codegen(
+            "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+            |codegen, specializations| {
+                let main = function_named(codegen, "main");
+                let logical = specializations
+                    .keys()
+                    .find(|name| name.starts_with("identity__"))
+                    .expect("identity specialization");
+                let calls = calls_to(main, logical);
+                let [call] = calls.as_slice() else {
+                    panic!("one generic identity call")
+                };
+                let cloned_call = (*call).clone();
+                let Expr::Call { args, .. } = &cloned_call else {
+                    unreachable!("cloned generic call")
+                };
+                let error = codegen
+                    .call_layout_signature(&cloned_call, args, main, None)
+                    .expect_err("cloned expression has no checked type-table identity");
+                assert!(error.message.contains("no checked concrete type"));
+                assert!(error.message.contains("cannot select an ordinary ABI"));
             },
         );
     }
