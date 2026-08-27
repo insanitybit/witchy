@@ -709,6 +709,9 @@ dependencies_are_acyclic() { # dependencies_are_acyclic <child-id> <after-json>
 }
 
 queue_entry_with_status() { # queue_entry_with_status <queue-file>
+    # Queue files can be atomically renamed or consumed while a status
+    # snapshot is being assembled. A vanished path is a retryable race.
+    [ -f "$1" ] || return 1
     jq -n --slurpfile queue "$1" \
         --slurpfile changes <(cat "$changes_dir"/*.json 2>/dev/null || true) '
         def record($id): first($changes[] | select(.change_id==$id));
@@ -1793,6 +1796,7 @@ change_connected_to_batch() { # change_connected_to_batch <change-id> <batch-cha
 stack_candidate_ready() { # stack_candidate_ready <queue-file> <batch-change-ids...>
     local qf="$1" cid dep state batch_ids=(""); shift
     batch_ids+=("$@")
+    [ -f "$qf" ] || return 1
     cid="$(jq -r '.change_id // empty' "$qf")"
     [ -n "$cid" ] || return 1
     list_contains "$cid" "${batch_ids[@]}" && return 1
@@ -2067,6 +2071,9 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
 
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
+    # --front and resubmission may rename or replace a selected path. Rescan
+    # the live queue instead of feeding a stale filename to jq.
+    [ -f "$f" ] || return 1
     gate_load_start=""
     gate_load_end=""
     gate_preflight_expr=""
