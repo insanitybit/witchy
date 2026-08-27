@@ -190,36 +190,380 @@ fn optimized_wasm_cache_dir() -> Option<std::path::PathBuf> {
 
 const OPT_CACHE_MAGIC: &[u8; 8] = b"WYOPT002";
 const OPT_CACHE_HEADER_LEN: usize = OPT_CACHE_MAGIC.len() + 32 + 32 + 8;
-const BINARYEN_RECIPE_SCHEMA: &[u8] =
-    b"witchy-wasm-opt-v2:-O4,all-features,inlining-optimizing,inline-loops,100,200";
+const BINARYEN_RECIPE_SCHEMA: &[u8] = b"witchy-wasm-opt-v3";
+const BINARYEN_ARGS: [&str; 6] = [
+    "-O4",
+    "--all-features",
+    "--inlining-optimizing",
+    "--inline-functions-with-loops",
+    "--flexible-inline-max-function-size=100",
+    "--one-caller-inline-max-function-size=200",
+];
+const PINNED_BINARYEN_VERSION: &[u8] = b"wasm-opt version 131 (version_131)\n";
+const BINARYEN_BUNDLE_SCHEMA: &[u8] = b"witchy-binaryen-bundle-v1";
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+const RELEASE_BINARYEN_EXECUTABLE_SHA256: &str =
+    "573d9420ea76dbc1e17b5b7debc1de4182f541e59fa4238761b658d795ddb167";
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+const RELEASE_BINARYEN_EXECUTABLE_SHA256: &str =
+    "bad4b6524b2c8e4b27b9aa69bde1a4b9a05ec8887c77ef0d34300f5825acd97c";
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+const RELEASE_BINARYEN_EXECUTABLE_SHA256: &str =
+    "13560cec4415f7fbc0225d8f31168b0d45674e6763f1d93225936cf7d000288f";
+#[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+const RELEASE_BINARYEN_EXECUTABLE_SHA256: &str =
+    "e022347d1375780a09fa412ccef91dfeb136a6a29d6ed5a3101ab42fdba086ea";
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+const RELEASE_BINARYEN_LIBRARY_SHA256: &str =
+    "41916b14f654eff44814d21ed0d73a21913819378fc70dc524cd21430e9db476";
+#[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+const RELEASE_BINARYEN_LIBRARY_SHA256: &str =
+    "ef0aea581645fe624dd9049da13889784e009cc7734717236b4630ddd06a2688";
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes).into()
 }
 
-fn optimized_wasm_input_hash(wasm: &[u8], binaryen_version: &[u8]) -> [u8; 32] {
+fn optimized_wasm_input_hash(wasm: &[u8], binaryen_identity: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     digest.update(BINARYEN_RECIPE_SCHEMA);
-    digest.update([0]);
-    digest.update(binaryen_version);
-    digest.update([0]);
+    for argument in BINARYEN_ARGS {
+        digest.update((argument.len() as u64).to_le_bytes());
+        digest.update(argument.as_bytes());
+    }
+    digest.update((binaryen_identity.len() as u64).to_le_bytes());
+    digest.update(binaryen_identity);
+    digest.update((wasm.len() as u64).to_le_bytes());
     digest.update(wasm);
     digest.finalize().into()
 }
 
-fn binaryen_version() -> Option<&'static [u8]> {
-    static VERSION: OnceLock<Option<Vec<u8>>> = OnceLock::new();
-    VERSION
-        .get_or_init(|| {
-            let output = std::process::Command::new("wasm-opt")
-                .arg("--version")
-                .output()
-                .ok()?;
-            output.status.success().then_some(output.stdout)
-        })
-        .as_deref()
+#[derive(Debug)]
+struct BinaryenTool {
+    executable: std::path::PathBuf,
+    executable_digest: [u8; 32],
+    runtime_library: Option<(std::path::PathBuf, [u8; 32])>,
+    identity: Vec<u8>,
+}
+
+impl BinaryenTool {
+    fn staged_bytes_are_authentic(&self) -> bool {
+        regular_file_sha256(&self.executable) == Some(self.executable_digest)
+            && self.runtime_library.as_ref().is_none_or(|(path, expected)| {
+                regular_file_sha256(path) == Some(*expected)
+            })
+    }
+}
+
+fn decode_sha256_hex(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        digest[index] = nibble(pair[0])?.checked_mul(16)?.checked_add(nibble(pair[1])?)?;
+    }
+    Some(digest)
+}
+
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "macos"),
+))]
+fn release_binaryen_digests() -> Option<([u8; 32], Option<[u8; 32]>)> {
+    let executable = decode_sha256_hex(RELEASE_BINARYEN_EXECUTABLE_SHA256)?;
+    #[cfg(target_os = "macos")]
+    let library = Some(decode_sha256_hex(RELEASE_BINARYEN_LIBRARY_SHA256)?);
+    #[cfg(target_os = "linux")]
+    let library = None;
+    Some((executable, library))
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "macos"),
+)))]
+fn release_binaryen_digests() -> Option<([u8; 32], Option<[u8; 32]>)> {
+    None
+}
+
+fn binaryen_staging_root() -> Option<std::path::PathBuf> {
+    optimized_wasm_cache_dir().map(|dir| dir.join("trusted-binaryen-v2"))
+}
+
+fn regular_file_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+fn regular_file_sha256(path: &std::path::Path) -> Option<[u8; 32]> {
+    regular_file_bytes(path).map(|bytes| sha256(&bytes))
+}
+
+fn binaryen_bundle_identity(
+    executable_digest: [u8; 32],
+    runtime_library_digest: Option<[u8; 32]>,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(BINARYEN_BUNDLE_SCHEMA);
+    digest.update(b"bin/wasm-opt");
+    digest.update(executable_digest);
+    if let Some(library_digest) = runtime_library_digest {
+        digest.update(b"lib/libbinaryen.dylib");
+        digest.update(library_digest);
+    }
+    digest.finalize().into()
+}
+
+fn stage_binaryen_file(
+    bytes: &[u8],
+    expected_digest: [u8; 32],
+    destination: &std::path::Path,
+    executable: bool,
+) -> Option<()> {
+    let parent = destination.parent()?;
+    std::fs::create_dir_all(parent).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).ok()?;
+    }
+    if regular_file_sha256(destination) != Some(expected_digest) {
+        let mut random = [0_u8; 8];
+        getrandom::fill(&mut random).ok()?;
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let temporary = parent.join(format!(".binaryen-{suffix}.tmp"));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary).ok()?;
+        std::io::Write::write_all(&mut file, bytes).ok()?;
+        file.sync_all().ok()?;
+        drop(file);
+        if std::fs::rename(&temporary, destination).is_err() {
+            let _ = std::fs::remove_file(&temporary);
+            return None;
+        }
+    }
+    if regular_file_sha256(destination) != Some(expected_digest) {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o500 } else { 0o400 };
+        std::fs::set_permissions(destination, std::fs::Permissions::from_mode(mode)).ok()?;
+    }
+    Some(())
+}
+
+fn authenticate_binaryen(
+    configured: &std::path::Path,
+    expected_executable_digest: [u8; 32],
+    expected_runtime_library_digest: Option<[u8; 32]>,
+    staging_root: &std::path::Path,
+) -> Option<BinaryenTool> {
+    if !configured.is_absolute() {
+        return None;
+    }
+    let canonical = configured.canonicalize().ok()?;
+    let executable_bytes = regular_file_bytes(&canonical)?;
+    if sha256(&executable_bytes) != expected_executable_digest {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    let runtime_library = {
+        let expected = expected_runtime_library_digest?;
+        let distribution_root = canonical.parent()?.parent()?;
+        if canonical.parent()?.file_name()? != "bin" {
+            return None;
+        }
+        let path = distribution_root.join("lib").join("libbinaryen.dylib");
+        let bytes = regular_file_bytes(&path)?;
+        if sha256(&bytes) != expected {
+            return None;
+        }
+        Some((bytes, expected))
+    };
+    #[cfg(target_os = "linux")]
+    let runtime_library: Option<(Vec<u8>, [u8; 32])> = {
+        if expected_runtime_library_digest.is_some() {
+            return None;
+        }
+        None
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let runtime_library: Option<(Vec<u8>, [u8; 32])> = return None;
+
+    let bundle_identity = binaryen_bundle_identity(
+        expected_executable_digest,
+        runtime_library.as_ref().map(|(_, digest)| *digest),
+    );
+    let digest_hex: String = bundle_identity.iter().map(|byte| format!("{byte:02x}")).collect();
+    let directory = staging_root.join(digest_hex);
+    let executable = directory.join("bin").join("wasm-opt");
+    stage_binaryen_file(
+        &executable_bytes,
+        expected_executable_digest,
+        &executable,
+        true,
+    )?;
+    let staged_runtime_library = if let Some((bytes, digest)) = runtime_library {
+        let path = directory.join("lib").join("libbinaryen.dylib");
+        stage_binaryen_file(&bytes, digest, &path, false)?;
+        Some((path, digest))
+    } else {
+        None
+    };
+    let tool = BinaryenTool {
+        executable,
+        executable_digest: expected_executable_digest,
+        runtime_library: staged_runtime_library,
+        identity: [bundle_identity.as_slice(), PINNED_BINARYEN_VERSION].concat(),
+    };
+    if !tool.staged_bytes_are_authentic() {
+        return None;
+    }
+    let output = std::process::Command::new(&tool.executable)
+        .arg("--version")
+        .env_clear()
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout != PINNED_BINARYEN_VERSION {
+        return None;
+    }
+    Some(tool)
+}
+
+#[derive(Debug)]
+struct ConfiguredBinaryenPin {
+    path: Option<std::path::PathBuf>,
+    executable_digest: Option<String>,
+    runtime_library_digest: Option<String>,
+}
+
+impl ConfiguredBinaryenPin {
+    fn is_present(&self) -> bool {
+        self.path.is_some()
+            || self.executable_digest.is_some()
+            || self.runtime_library_digest.is_some()
+    }
+}
+
+fn resolve_configured_binaryen_pin(
+    compile: ConfiguredBinaryenPin,
+    runtime: ConfiguredBinaryenPin,
+    release: ([u8; 32], Option<[u8; 32]>),
+) -> std::result::Result<(std::path::PathBuf, [u8; 32], Option<[u8; 32]>), &'static str> {
+    let (selected, incomplete) = if compile.is_present() {
+        (compile, "compile-time pin is incomplete")
+    } else if runtime.is_present() {
+        (runtime, "runtime pin is incomplete")
+    } else {
+        return Err("pin is not configured");
+    };
+    let path = selected.path.ok_or(incomplete)?;
+    if !path.is_absolute() {
+        return Err("configured executable path is not absolute");
+    }
+    let executable_digest = decode_sha256_hex(
+        selected.executable_digest.as_deref().ok_or(incomplete)?,
+    )
+    .ok_or("executable digest is not exact lowercase SHA-256")?;
+    let runtime_library_digest = match selected.runtime_library_digest {
+        Some(digest) => Some(
+            decode_sha256_hex(&digest)
+                .ok_or("runtime-library digest is not exact lowercase SHA-256")?,
+        ),
+        None => None,
+    };
+    if executable_digest != release.0 || runtime_library_digest != release.1 {
+        return Err("configured identity is not the reviewed Binaryen release pin");
+    }
+    Ok((path, executable_digest, runtime_library_digest))
+}
+
+fn binaryen_tool() -> std::result::Result<&'static BinaryenTool, &'static str> {
+    static TOOL: OnceLock<std::result::Result<BinaryenTool, &'static str>> = OnceLock::new();
+    TOOL.get_or_init(|| {
+        let compile = ConfiguredBinaryenPin {
+            path: option_env!("WITCHY_PINNED_WASM_OPT_PATH")
+                .map(std::path::PathBuf::from),
+            executable_digest: option_env!("WITCHY_PINNED_WASM_OPT_SHA256")
+                .map(str::to_owned),
+            runtime_library_digest: option_env!("WITCHY_PINNED_BINARYEN_LIB_SHA256")
+                .map(str::to_owned),
+        };
+        let runtime = ConfiguredBinaryenPin {
+            path: std::env::var_os("WITCHY_PINNED_WASM_OPT_PATH").map(Into::into),
+            executable_digest: std::env::var("WITCHY_PINNED_WASM_OPT_SHA256").ok(),
+            runtime_library_digest: std::env::var("WITCHY_PINNED_BINARYEN_LIB_SHA256").ok(),
+        };
+        let release = release_binaryen_digests()
+            .ok_or("platform has no reviewed Binaryen release pin")?;
+        let (configured, executable_digest, runtime_library_digest) =
+            resolve_configured_binaryen_pin(compile, runtime, release)?;
+        authenticate_binaryen(
+            &configured,
+            executable_digest,
+            runtime_library_digest,
+            &binaryen_staging_root().ok_or("private Binaryen staging is unavailable")?,
+        )
+        .ok_or("reviewed Binaryen bundle failed authentication or version check")
+    })
+    .as_ref()
+    .map_err(|reason| *reason)
+}
+
+fn binaryen_required() -> bool {
+    option_env!("WITCHY_REQUIRE_PINNED_BINARYEN") == Some("1")
+        || std::env::var_os("WITCHY_REQUIRE_PINNED_BINARYEN")
+            .is_some_and(|value| value == std::ffi::OsStr::new("1"))
+}
+
+fn resolve_binaryen_result<'a>(
+    required: bool,
+    resolved: std::result::Result<&'a BinaryenTool, &'static str>,
+) -> Result<Option<&'a BinaryenTool>> {
+    match resolved {
+        Ok(tool) => Ok(Some(tool)),
+        Err(reason) if required => Err(Error::msg(format!(
+            "required pinned Binaryen unavailable: {reason}"
+        ))),
+        Err(reason) => {
+            if std::env::var_os("WIRDIAG").is_some() {
+                eprintln!("WIRBAIL wasm-opt-unavailable: {reason}");
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn resolve_binaryen_for_build(required: bool) -> Result<Option<&'static BinaryenTool>> {
+    if !binaryen_enabled() {
+        return Ok(None);
+    }
+    resolve_binaryen_result(required, binaryen_tool())
 }
 
 /// Bind cached optimized wasm to both its original input and its own contents.
@@ -265,53 +609,67 @@ fn optimized_wasm_cache_path(input_hash: &[u8; 32]) -> Option<std::path::PathBuf
     optimized_wasm_cache_dir().map(|dir| dir.join(format!("{hex}.wasm-cache")))
 }
 
-/// (RFC-0034 L1) Run Binaryen `wasm-opt -O2` on the module — a heavier optimizer
+/// (RFC-0034 L1) Run Binaryen `wasm-opt -O4` on the module — a heavier optimizer
 /// than Cranelift's Speed tier (GVN, inlining, DCE, local CSE). It runs ONLY on
 /// the cold compile path below (successful output is cached as validated wasm),
-/// so warm runs skip Binaryen. Optional + graceful: returns the input unchanged if `wasm-opt` isn't
-/// on PATH or fails, or if the `wasm-opt` lever is off (`WITCHY_OPT=-wasm-opt`).
-/// `--all-features` so it accepts witchy's bulk-memory (`memory.copy`); -O2 never
-/// introduces new features, so the output runs under the same wasmtime config.
+/// so warm runs skip Binaryen. Optional + graceful: returns the input unchanged
+/// if the digest-pinned `wasm-opt` is unavailable or fails, or if the
+/// `wasm-opt` lever is off (`WITCHY_OPT=-wasm-opt`). Ambient `PATH` is never
+/// consulted. `--all-features` accepts witchy's bulk-memory (`memory.copy`);
+/// -O4 never introduces new features, so the output runs under the same
+/// wasmtime config.
 fn binaryen_enabled() -> bool {
     witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::WasmOpt)
 }
 
-fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+fn binaryen_optimize<'a>(
+    wasm: &'a [u8],
+    tool: Option<&BinaryenTool>,
+    required: bool,
+) -> Result<std::borrow::Cow<'a, [u8]>> {
     use std::borrow::Cow;
-    if !binaryen_enabled() {
-        return Cow::Borrowed(wasm);
+    let fallback = |reason: &str| {
+        if required {
+            Err(Error::msg(format!("required pinned Binaryen failed: {reason}")))
+        } else {
+            if std::env::var_os("WIRDIAG").is_some() {
+                eprintln!("WIRBAIL wasm-opt-failed: {reason}");
+            }
+            Ok(Cow::Borrowed(wasm))
+        }
+    };
+    let Some(tool) = tool else {
+        return Ok(Cow::Borrowed(wasm));
+    };
+    if !tool.staged_bytes_are_authentic() {
+        return fallback("staged bundle changed after authentication");
     }
-    let mut rnd = [0u8; 8];
-    getrandom::fill(&mut rnd).ok();
-    let tag: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
-    let dir = std::env::temp_dir();
-    let inp = dir.join(format!("witchy_wopt_{tag}.in.wasm"));
-    let outp = dir.join(format!("witchy_wopt_{tag}.out.wasm"));
-    let run = (|| -> Option<Vec<u8>> {
-        std::fs::write(&inp, wasm).ok()?;
-        let ok = std::process::Command::new("wasm-opt")
-            .args([
-                "-O4",
-                "--all-features",
-                "--inlining-optimizing",
-                "--inline-functions-with-loops",
-                "--flexible-inline-max-function-size=100",
-                "--one-caller-inline-max-function-size=200",
-                "-o",
-            ])
-            .arg(&outp)
-            .arg(&inp)
-            .output()
-            .ok()?
-            .status
-            .success();
-        if ok { std::fs::read(&outp).ok() } else { None }
-    })();
-    let _ = std::fs::remove_file(&inp);
-    let _ = std::fs::remove_file(&outp);
-    match run {
-        Some(bytes) => Cow::Owned(bytes),
-        None => Cow::Borrowed(wasm),
+    let Ok(dir) = tempfile::Builder::new().prefix("witchy-wasm-opt-").tempdir() else {
+        return fallback("private temporary directory is unavailable");
+    };
+    let inp = dir.path().join("input.wasm");
+    let outp = dir.path().join("output.wasm");
+    if std::fs::write(&inp, wasm).is_err() {
+        return fallback("optimizer input could not be written");
+    }
+    let output = match std::process::Command::new(&tool.executable)
+        .args(BINARYEN_ARGS)
+        .arg("-o")
+        .arg(&outp)
+        .arg(&inp)
+        .env_clear()
+        .current_dir(dir.path())
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return fallback("optimizer process could not be started"),
+    };
+    if !output.status.success() {
+        return fallback("optimizer process exited unsuccessfully");
+    }
+    match std::fs::read(&outp) {
+        Ok(bytes) => Ok(Cow::Owned(bytes)),
+        Err(_) => fallback("optimizer output could not be read"),
     }
 }
 
@@ -320,7 +678,36 @@ fn binaryen_optimize(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// through safe `Module::new`. Wasmtime's configured compilation cache handles
 /// native-code reuse internally. `cacheable` is false on the preempt engine,
 /// whose differing config must not share artifacts.
-fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
+fn module_from_binaryen_output(
+    engine: &Engine,
+    original_wasm: &[u8],
+    optimized: &std::borrow::Cow<'_, [u8]>,
+    required: bool,
+) -> Result<(Module, bool)> {
+    match Module::new(engine, optimized.as_ref()) {
+        Ok(module) => Ok((module, true)),
+        Err(err) if matches!(optimized, std::borrow::Cow::Owned(_)) => {
+            if required {
+                return Err(Error::msg(format!(
+                    "required pinned Binaryen produced invalid Wasm: {err}"
+                )));
+            }
+            if std::env::var_os("WIRDIAG").is_some() {
+                eprintln!("WIRBAIL wasm-opt-output-rejected: {err}");
+            }
+            Ok((Module::new(engine, original_wasm)?, false))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn build_module_with_binaryen<'a>(
+    engine: &Engine,
+    opt_wasm: &[u8],
+    cacheable: bool,
+    required: bool,
+    resolve_binaryen: impl FnOnce() -> Result<Option<&'a BinaryenTool>>,
+) -> Result<Module> {
     validate_layout_metadata(opt_wasm)?;
     if optimizer_policy(opt_wasm)? == OptimizerPolicy::PreserveRaw {
         return Module::new(engine, opt_wasm);
@@ -328,12 +715,12 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }
-    let binaryen_version = binaryen_enabled().then(binaryen_version).flatten();
-    let input_hash = binaryen_version
-        .map(|version| optimized_wasm_input_hash(opt_wasm, version))
+    let binaryen = resolve_binaryen()?;
+    let input_hash = binaryen
+        .map(|tool| optimized_wasm_input_hash(opt_wasm, &tool.identity))
         .unwrap_or_else(|| sha256(opt_wasm));
-    let path = binaryen_version.and_then(|_| optimized_wasm_cache_path(&input_hash));
-    if let Some(path) = &path {
+    let path = binaryen.and_then(|_| optimized_wasm_cache_path(&input_hash));
+    if !required && let Some(path) = &path {
         if let Ok(envelope) = std::fs::read(path) {
             if let Some(cached_wasm) = decode_optimized_wasm(&input_hash, &envelope) {
                 if let Ok(module) = Module::new(engine, cached_wasm) {
@@ -342,19 +729,9 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
             }
         }
     }
-    let optimized = binaryen_optimize(opt_wasm);
-    let mut optimized_valid = true;
-    let module = match Module::new(engine, optimized.as_ref()) {
-        Ok(module) => module,
-        Err(err) if matches!(optimized, std::borrow::Cow::Owned(_)) => {
-            if std::env::var_os("WIRDIAG").is_some() {
-                eprintln!("WIRBAIL wasm-opt-output-rejected: {err}");
-            }
-            optimized_valid = false;
-            Module::new(engine, opt_wasm)?
-        }
-        Err(err) => return Err(err),
-    };
+    let optimized = binaryen_optimize(opt_wasm, binaryen, required)?;
+    let (module, optimized_valid) =
+        module_from_binaryen_output(engine, opt_wasm, &optimized, required)?;
     if let (Some(path), std::borrow::Cow::Owned(optimized_wasm)) = (&path, &optimized)
         && optimized_valid
     {
@@ -373,6 +750,13 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
         }
     }
     Ok(module)
+}
+
+fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
+    let required = binaryen_required();
+    build_module_with_binaryen(engine, opt_wasm, cacheable, required, || {
+        resolve_binaryen_for_build(required)
+    })
 }
 
 pub type VmId = u32;

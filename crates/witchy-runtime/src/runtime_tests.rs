@@ -258,13 +258,404 @@
         assert_ne!(
             optimized_wasm_input_hash(b"same wasm", b"wasm-opt version 1"),
             optimized_wasm_input_hash(b"same wasm", b"wasm-opt version 2"),
-            "the Binaryen executable version is part of cache identity",
+            "the Binaryen executable identity is part of cache identity",
         );
         assert_ne!(
             optimized_wasm_input_hash(b"wasm A", b"wasm-opt version 1"),
             optimized_wasm_input_hash(b"wasm B", b"wasm-opt version 1"),
             "the input module remains part of cache identity",
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn binaryen_requires_an_authenticated_bundle_and_runs_the_exact_recipe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temporary Binaryen fixture");
+        let distribution = temp.path().join("binaryen-version_131");
+        let configured = distribution.join("bin").join("wasm-opt");
+        std::fs::create_dir_all(configured.parent().unwrap()).expect("fake Binaryen bin");
+        let script = br#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+    printf 'wasm-opt version 131 (version_131)\n'
+    exit 0
+fi
+[ "$#" -eq 9 ] || exit 20
+[ "$1" = "-O4" ] || exit 21
+[ "$2" = "--all-features" ] || exit 22
+[ "$3" = "--inlining-optimizing" ] || exit 23
+[ "$4" = "--inline-functions-with-loops" ] || exit 24
+[ "$5" = "--flexible-inline-max-function-size=100" ] || exit 25
+[ "$6" = "--one-caller-inline-max-function-size=200" ] || exit 26
+[ "$7" = "-o" ] || exit 27
+/bin/cp "$9" "$8"
+"#;
+        std::fs::write(&configured, script).expect("write fake wasm-opt");
+        std::fs::set_permissions(&configured, std::fs::Permissions::from_mode(0o700))
+            .expect("make fake wasm-opt executable");
+        let digest = sha256(script);
+        #[cfg(target_os = "macos")]
+        let library_digest = {
+            let library = distribution.join("lib").join("libbinaryen.dylib");
+            std::fs::create_dir_all(library.parent().unwrap()).expect("fake Binaryen lib");
+            let bytes = b"fake authenticated Binaryen runtime library";
+            std::fs::write(library, bytes).expect("write fake Binaryen runtime library");
+            Some(sha256(bytes))
+        };
+        #[cfg(target_os = "linux")]
+        let library_digest = None;
+        let staging = temp.path().join("staging");
+
+        assert!(authenticate_binaryen(
+            std::path::Path::new("relative-wasm-opt"),
+            digest,
+            library_digest,
+            &staging,
+        )
+        .is_none());
+        assert!(authenticate_binaryen(&configured, [0x55; 32], library_digest, &staging).is_none());
+
+        let tool = authenticate_binaryen(&configured, digest, library_digest, &staging)
+            .expect("the exact configured executable authenticates");
+        assert_eq!(&tool.identity[32..], PINNED_BINARYEN_VERSION);
+        assert_eq!(sha256(&std::fs::read(&tool.executable).unwrap()), digest);
+        assert!(tool.staged_bytes_are_authentic());
+
+        let wasm = b"exact input bytes";
+        let optimized = binaryen_optimize(wasm, Some(&tool), false)
+            .expect("authenticated fake optimizer runs");
+        assert!(
+            matches!(optimized, Cow::Owned(ref bytes) if bytes == wasm),
+            "the fake tool accepts only the exact production argument vector"
+        );
+
+        std::fs::write(&configured, b"#!/bin/sh\nprintf 'substituted\\n'\n")
+            .expect("replace ambient configured path after authentication");
+        let output = std::process::Command::new(&tool.executable)
+            .arg("--version")
+            .output()
+            .expect("execute private staged tool");
+        assert_eq!(output.stdout, PINNED_BINARYEN_VERSION);
+
+        std::fs::set_permissions(&tool.executable, std::fs::Permissions::from_mode(0o700))
+            .expect("make staged test fixture writable");
+        std::fs::write(&tool.executable, b"#!/bin/sh\nexit 0\n")
+            .expect("tamper with staged fixture");
+        assert!(
+            matches!(
+                binaryen_optimize(wasm, Some(&tool), false).unwrap(),
+                Cow::Borrowed(bytes) if bytes == wasm
+            ),
+            "a changed staged executable must fail closed before invocation"
+        );
+        assert!(
+            binaryen_optimize(wasm, Some(&tool), true)
+                .unwrap_err()
+                .to_string()
+                .contains("staged bundle changed after authentication"),
+            "required evidence mode must reject staged tampering"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn binaryen_rejects_unexpected_version_and_preserves_input_on_tool_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temporary Binaryen fixture");
+        let distribution = temp.path().join("binaryen-version_131");
+        let configured = distribution.join("bin").join("wasm-opt");
+        std::fs::create_dir_all(configured.parent().unwrap()).expect("fake Binaryen bin");
+        #[cfg(target_os = "macos")]
+        let library_digest = {
+            let library = distribution.join("lib").join("libbinaryen.dylib");
+            std::fs::create_dir_all(library.parent().unwrap()).expect("fake Binaryen lib");
+            let bytes = b"fake authenticated Binaryen runtime library";
+            std::fs::write(library, bytes).expect("write fake Binaryen runtime library");
+            Some(sha256(bytes))
+        };
+        #[cfg(target_os = "linux")]
+        let library_digest = None;
+        let staging = temp.path().join("staging");
+
+        let wrong_version = b"#!/bin/sh\nprintf 'wasm-opt version 130\\n'\n";
+        std::fs::write(&configured, wrong_version).expect("write wrong-version tool");
+        std::fs::set_permissions(&configured, std::fs::Permissions::from_mode(0o700))
+            .expect("make wrong-version tool executable");
+        assert!(authenticate_binaryen(
+            &configured,
+            sha256(wrong_version),
+            library_digest,
+            &staging,
+        )
+        .is_none());
+
+        let failing = b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wasm-opt version 131 (version_131)\\n'; exit 0; fi\nexit 42\n";
+        std::fs::write(&configured, failing).expect("write failing tool");
+        let tool = authenticate_binaryen(
+            &configured,
+            sha256(failing),
+            library_digest,
+            &staging,
+        )
+        .expect("the failing tool still has the pinned version and identity");
+        let wasm = b"already validated input";
+        assert!(
+            matches!(
+                binaryen_optimize(wasm, Some(&tool), false).unwrap(),
+                Cow::Borrowed(bytes) if bytes == wasm
+            ),
+            "a nonzero optimizer exit must preserve the validated input"
+        );
+        assert!(
+            binaryen_optimize(wasm, Some(&tool), true)
+                .unwrap_err()
+                .to_string()
+                .contains("optimizer process exited unsuccessfully"),
+            "required evidence mode must reject optimizer process failure"
+        );
+    }
+
+    #[test]
+    fn invalid_binaryen_output_falls_back_to_the_validated_input() {
+        let engine = Engine::default();
+        let original = WasmModule::new().finish();
+        let invalid = Cow::Owned(b"not a wasm module".to_vec());
+        let (_, optimized_valid) = module_from_binaryen_output(&engine, &original, &invalid, false)
+            .expect("invalid optimizer output falls back to the original module");
+        assert!(!optimized_valid, "invalid optimizer output must not be cacheable");
+        assert!(
+            module_from_binaryen_output(&engine, &original, &invalid, true)
+                .unwrap_err()
+                .to_string()
+                .contains("required pinned Binaryen produced invalid Wasm"),
+            "required evidence mode must reject invalid optimizer output"
+        );
+    }
+
+    #[test]
+    fn preserve_raw_returns_before_binaryen_resolution() {
+        let engine = Engine::default();
+        let mut preserve_raw = WasmModule::new().finish();
+        append_optimizer_policy(
+            &mut preserve_raw,
+            &witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD,
+        );
+        build_module_with_binaryen(
+            &engine,
+            &preserve_raw,
+            true,
+            false,
+            || -> Result<Option<&BinaryenTool>> {
+                panic!("PreserveRaw must not resolve or invoke Binaryen")
+            },
+        )
+        .expect("PreserveRaw module uses the validated original bytes");
+    }
+
+    #[test]
+    fn binaryen_pin_resolution_rejects_mismatch_partial_sets_and_cross_source_mixing() {
+        let executable_digest = [0x11; 32];
+        let library_digest = [0x22; 32];
+        let executable_hex: String = executable_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let library_hex: String = library_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let absent = || ConfiguredBinaryenPin {
+            path: None,
+            executable_digest: None,
+            runtime_library_digest: None,
+        };
+        let valid = || ConfiguredBinaryenPin {
+            path: Some(std::path::PathBuf::from("/reviewed/bin/wasm-opt")),
+            executable_digest: Some(executable_hex.clone()),
+            runtime_library_digest: Some(library_hex.clone()),
+        };
+
+        assert_eq!(
+            resolve_configured_binaryen_pin(
+                absent(),
+                absent(),
+                (executable_digest, Some(library_digest)),
+            )
+            .unwrap_err(),
+            "pin is not configured"
+        );
+
+        let partial_runtime = ConfiguredBinaryenPin {
+            path: Some(std::path::PathBuf::from("/runtime/bin/wasm-opt")),
+            executable_digest: None,
+            runtime_library_digest: None,
+        };
+        assert_eq!(
+            resolve_configured_binaryen_pin(
+                absent(),
+                partial_runtime,
+                (executable_digest, Some(library_digest)),
+            )
+            .unwrap_err(),
+            "runtime pin is incomplete"
+        );
+
+        let relative = ConfiguredBinaryenPin {
+            path: Some(std::path::PathBuf::from("bin/wasm-opt")),
+            executable_digest: Some(executable_hex.clone()),
+            runtime_library_digest: Some(library_hex.clone()),
+        };
+        assert_eq!(
+            resolve_configured_binaryen_pin(
+                absent(),
+                relative,
+                (executable_digest, Some(library_digest)),
+            )
+            .unwrap_err(),
+            "configured executable path is not absolute"
+        );
+
+        assert_eq!(
+            resolve_configured_binaryen_pin(absent(), valid(), (executable_digest, Some(library_digest)))
+                .unwrap()
+                .1,
+            executable_digest
+        );
+
+        let mismatched = ConfiguredBinaryenPin {
+            path: Some(std::path::PathBuf::from("/reviewed/bin/wasm-opt")),
+            executable_digest: Some("33".repeat(32)),
+            runtime_library_digest: Some(library_hex.clone()),
+        };
+        assert_eq!(
+            resolve_configured_binaryen_pin(absent(), mismatched, (executable_digest, Some(library_digest)))
+                .unwrap_err(),
+            "configured identity is not the reviewed Binaryen release pin"
+        );
+
+        let partial_compile = ConfiguredBinaryenPin {
+            path: Some(std::path::PathBuf::from("/compile/bin/wasm-opt")),
+            executable_digest: None,
+            runtime_library_digest: None,
+        };
+        assert_eq!(
+            resolve_configured_binaryen_pin(
+                partial_compile,
+                valid(),
+                (executable_digest, Some(library_digest)),
+            )
+            .unwrap_err(),
+            "compile-time pin is incomplete",
+            "a partial compile-time pin must not borrow runtime values"
+        );
+
+        let linux_with_library = valid();
+        assert_eq!(
+            resolve_configured_binaryen_pin(absent(), linux_with_library, (executable_digest, None))
+                .unwrap_err(),
+            "configured identity is not the reviewed Binaryen release pin"
+        );
+        let mac_without_library = ConfiguredBinaryenPin {
+            path: Some(std::path::PathBuf::from("/reviewed/bin/wasm-opt")),
+            executable_digest: Some(executable_hex),
+            runtime_library_digest: None,
+        };
+        assert_eq!(
+            resolve_configured_binaryen_pin(
+                absent(),
+                mac_without_library,
+                (executable_digest, Some(library_digest)),
+            )
+            .unwrap_err(),
+            "configured identity is not the reviewed Binaryen release pin"
+        );
+    }
+
+    #[test]
+    fn required_binaryen_rejects_fallback_while_optional_mode_is_observable() {
+        assert!(
+            resolve_binaryen_result(false, Err("test authentication failure"))
+                .expect("optional policy preserves the validated input")
+                .is_none()
+        );
+        let error = resolve_binaryen_result(true, Err("test authentication failure"))
+            .expect_err("required policy must make missing optimization fail closed");
+        assert!(
+            error.to_string().contains(
+                "required pinned Binaryen unavailable: test authentication failure"
+            ),
+            "{error}"
+        );
+    }
+
+    #[cfg(any(
+        all(target_arch = "aarch64", target_os = "linux"),
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "x86_64", target_os = "macos"),
+    ))]
+    #[test]
+    fn binaryen_compiled_release_identity_matches_the_reviewed_lock() {
+        let lock = include_str!("../../../tools/binaryen-version_131.lock");
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        let platform = "aarch64-linux";
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        let platform = "x86_64-linux";
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        let platform = "arm64-macos";
+        #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+        let platform = "x86_64-macos";
+        let asset = lock
+            .split("[[asset]]")
+            .find(|block| block.contains(&format!("platform = \"{platform}\"")))
+            .expect("current platform has one reviewed lock asset");
+        assert!(asset.contains(RELEASE_BINARYEN_EXECUTABLE_SHA256));
+        #[cfg(target_os = "macos")]
+        assert!(asset.contains(RELEASE_BINARYEN_LIBRARY_SHA256));
+        assert!(lock.contains("version_stdout = \"wasm-opt version 131 (version_131)\\n\""));
+    }
+
+    #[cfg(any(
+        all(target_arch = "aarch64", target_os = "linux"),
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "x86_64", target_os = "macos"),
+    ))]
+    #[test]
+    #[ignore = "requires WITCHY_TEST_REVIEWED_BINARYEN_PATH to an extracted official v131 bundle"]
+    fn binaryen_reviewed_release_bundle_authenticates_and_runs() {
+        let configured = std::env::var_os("WITCHY_TEST_REVIEWED_BINARYEN_PATH")
+            .map(std::path::PathBuf::from)
+            .expect("set WITCHY_TEST_REVIEWED_BINARYEN_PATH to bin/wasm-opt");
+        let (executable_digest, library_digest) =
+            release_binaryen_digests().expect("supported release platform");
+        let staging = tempfile::tempdir().expect("private staging root");
+        let tool = authenticate_binaryen(
+            &configured,
+            executable_digest,
+            library_digest,
+            staging.path(),
+        )
+        .expect("official reviewed bundle authenticates");
+        let input = WasmModule::new().finish();
+        let optimized = binaryen_optimize(&input, Some(&tool), true)
+            .expect("official reviewed bundle executes the production recipe");
+        assert!(matches!(optimized, Cow::Owned(_)));
+        Module::new(&Engine::default(), optimized.as_ref())
+            .expect("official Binaryen output remains valid Wasm");
+    }
+
+    #[test]
+    fn binaryen_digest_parser_is_exact() {
+        let digest = [0xab; 32];
+        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(decode_sha256_hex(&hex), Some(digest));
+        assert_eq!(decode_sha256_hex(&hex[..63]), None);
+        assert_eq!(decode_sha256_hex(&"z".repeat(64)), None);
+        assert_eq!(decode_sha256_hex(&"+f".repeat(32)), None);
+        assert_eq!(decode_sha256_hex(&hex.to_uppercase()), None);
     }
 
     #[test]

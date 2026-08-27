@@ -1,0 +1,37 @@
+schema = 1
+version = 131
+release_tag = "version_131"
+source_commit = "1f903c14babf829745b421b92ff0f286e93e4209"
+version_stdout = "wasm-opt version 131 (version_131)\n"
+
+[[asset]]
+platform = "aarch64-linux"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-aarch64-linux.tar.gz"
+sha256 = "ba991f677edd9a21d2bc96c0144bc8ac5b112d4d98a3eb266e075e22e557df2a"
+executable_sha256 = "573d9420ea76dbc1e17b5b7debc1de4182f541e59fa4238761b658d795ddb167"
+executable_format = "ELF 64-bit aarch64 static-pie"
+
+[[asset]]
+platform = "x86_64-linux"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-x86_64-linux.tar.gz"
+sha256 = "b5bf1f0eaf17c63ee588ff7a5954dc8f6ce2c26989051c66f24dfe9ece3e46db"
+executable_sha256 = "bad4b6524b2c8e4b27b9aa69bde1a4b9a05ec8887c77ef0d34300f5825acd97c"
+executable_format = "ELF 64-bit x86_64 static-pie"
+
+[[asset]]
+platform = "arm64-macos"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-arm64-macos.tar.gz"
+sha256 = "e441b48dc22163d209b4f05e44dc7210909b01237642b6c9ae48fd710a3ef83e"
+executable_sha256 = "13560cec4415f7fbc0225d8f31168b0d45674e6763f1d93225936cf7d000288f"
+runtime_library = "lib/libbinaryen.dylib"
+runtime_library_sha256 = "41916b14f654eff44814d21ed0d73a21913819378fc70dc524cd21430e9db476"
+runtime_linkage = "@rpath/libbinaryen.dylib via @loader_path/../lib"
+
+[[asset]]
+platform = "x86_64-macos"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-x86_64-macos.tar.gz"
+sha256 = "d209fadd8a894bdaf3bd3612a23c32a0af184d2f4a979b8c789e6e4f6a4de883"
+executable_sha256 = "e022347d1375780a09fa412ccef91dfeb136a6a29d6ed5a3101ab42fdba086ea"
+runtime_library = "lib/libbinaryen.dylib"
+runtime_library_sha256 = "ef0aea581645fe624dd9049da13889784e009cc7734717236b4630ddd06a2688"
+runtime_linkage = "@rpath/libbinaryen.dylib via @loader_path/../lib"
