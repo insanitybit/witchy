@@ -71,6 +71,7 @@ gate_workspace=0
 corpus_impact=0
 gate_example_mods=()
 gate_witchy_tests=()
+gate_need_conformance=0
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -144,6 +145,16 @@ emit_gate_nextest() {
             expr="${expr:+$expr or }test(/^example_tests::${m}::/)"
         done
     fi
+    # RFC conformance binaries adjudicate semantics ACROSS the pipeline, which
+    # is precisely what a single-crate selection cannot see. Master broke on
+    # 2026-08-27 because an async-lowering change in witchy-types gated green
+    # over 1,068 tests in 15.4s without ever running rfc0130_generator, whose
+    # owned-frame census the change invalidated. They are cheap -- most average
+    # about a second -- so a compiler-stage change always runs them.
+    if [ "$gate_need_conformance" -eq 1 ]; then
+        need_witchy=1
+        expr="${expr:+$expr or }binary_id(/^witchy::rfc0/)"
+    fi
     if [ "$gate_need_stdlib_docs" -eq 1 ]; then
         need_witchy=1
         expr="${expr:+$expr or }test(stdlib_docs_are_current)"
@@ -182,38 +193,50 @@ for p in "${paths[@]}"; do
     case "$p" in
         crates/witchy-types/*)
             any_rust=1
+            gate_need_conformance=1
             add_pkg witchy-types
             add "cargo nextest run -p witchy-types"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'" ;;
         crates/witchy-lower/*)
             any_rust=1
+            gate_need_conformance=1
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-lower"
             add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-wir/*)
             any_rust=1
+            gate_need_conformance=1
             add_pkg witchy-wir
             add "cargo nextest run -p witchy-wir"
             add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-runtime/*)
             any_rust=1
+            gate_need_conformance=1
             add_pkg witchy-runtime
             add "cargo nextest run -p witchy-runtime"
             add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-syntax/*)
             any_rust=1
+            gate_need_conformance=1
             add_pkg witchy-syntax
             add "cargo nextest run -p witchy-syntax"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'" ;;
         crates/witchy-interp/* | crates/witchy-caps/*)
             any_rust=1
+            gate_need_conformance=1
             add_pkg witchy-interp
             add_pkg witchy-caps
             add "cargo nextest run -p witchy-interp -p witchy-caps"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -E 'binary_id(/^witchy::rfc0/)'" ;;
         src/main.rs | src/cli.rs | src/source.rs)
             gate_workspace=1
             add "cargo check -p witchy --all-targets"

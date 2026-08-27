@@ -600,3 +600,42 @@ fn focused_mode_retains_crate_nextest_checks() {
         ]
     );
 }
+
+/// Master broke on 2026-08-27 because an async-lowering change in
+/// `witchy-types` gated GREEN over 1,068 tests in 15.4s without ever running
+/// `rfc0130_generator`, whose owned-frame census the change invalidated. A
+/// single-crate selection cannot see a cross-pipeline conformance suite, so a
+/// compiler-stage change must always pull them in. They are cheap -- most
+/// average about a second.
+#[test]
+fn gate_nextest_compiler_stage_changes_select_rfc_conformance_binaries() {
+    for path in [
+        "crates/witchy-types/src/typed_async_lowering.rs",
+        "crates/witchy-lower/src/codegen/mod.rs",
+        "crates/witchy-wir/src/lib.rs",
+        "crates/witchy-runtime/src/runtime.rs",
+        "crates/witchy-syntax/src/linker.rs",
+        "crates/witchy-interp/src/typed_async.rs",
+    ] {
+        let out = gate_nextest(&[path]);
+        assert!(
+            out.contains("binary_id(/^witchy::rfc0/)"),
+            "{path} did not select the RFC conformance binaries:\n{out}"
+        );
+        assert!(
+            out.contains("-p witchy"),
+            "{path} selected conformance binaries without the root package:\n{out}"
+        );
+    }
+}
+
+/// The converse: a change that cannot affect compiler semantics must NOT drag
+/// the conformance suites in, or the selection stops being a selection.
+#[test]
+fn gate_nextest_queue_scripts_do_not_select_rfc_conformance_binaries() {
+    let out = gate_nextest(&["scripts/merge-queue.sh"]);
+    assert!(
+        !out.contains("binary_id(/^witchy::rfc0/)"),
+        "a queue-script change pulled in the conformance suites:\n{out}"
+    );
+}
