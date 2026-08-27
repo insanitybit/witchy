@@ -21,6 +21,7 @@ pub mod storage;
 pub mod suspension_carrier;
 pub mod traits;
 pub mod typed_execution;
+pub mod typed_async_lowering;
 pub mod typeck;
 pub mod witness;
 

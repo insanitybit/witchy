@@ -48,6 +48,11 @@ pub const ASYNC_REGION_ATTRIBUTE_PREFIX: &str = "__compiler_async_region=";
 /// metadata only; final execution IDs are assigned after typed layout.
 pub const ASYNC_SURFACE_ATTRIBUTE_PREFIX: &str = "__compiler_async_surface=";
 
+/// Linked-module identity paired with [`ASYNC_SURFACE_ATTRIBUTE_PREFIX`]. The
+/// item number alone is module-local, so final typed lowering carries the
+/// module before it assigns canonical execution IDs.
+pub const ASYNC_SURFACE_MODULE_ATTRIBUTE_PREFIX: &str = "__compiler_async_surface_module=";
+
 pub fn async_surface_attribute(item: usize, method: Option<usize>) -> String {
     match method {
         Some(method) => format!("{ASYNC_SURFACE_ATTRIBUTE_PREFIX}{item}:{method}"),
@@ -62,6 +67,16 @@ pub fn async_surface(function: &Function) -> Option<(usize, Option<usize>)> {
         let item = item.parse().ok()?;
         let method = (method != "_").then(|| method.parse().ok()).flatten();
         Some((item, method))
+    })
+}
+
+pub fn async_surface_module_attribute(module: &str) -> String {
+    format!("{ASYNC_SURFACE_MODULE_ATTRIBUTE_PREFIX}{module}")
+}
+
+pub fn async_surface_module(function: &Function) -> Option<&str> {
+    function.attributes.iter().find_map(|attribute| {
+        attribute.strip_prefix(ASYNC_SURFACE_MODULE_ATTRIBUTE_PREFIX)
     })
 }
 

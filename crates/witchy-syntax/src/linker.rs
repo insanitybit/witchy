@@ -2229,6 +2229,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                         crate::suspension::async_surface(&f2),
                         crate::suspension::frame_state(&f2),
                     ) {
+                        f2.attributes.push(crate::suspension::async_surface_module_attribute(mname));
                         async_surface.push_binding(
                             crate::async_surface::LinkedAsyncCallableBinding {
                                 module: mname.clone(),
@@ -2326,11 +2327,12 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                     }
                     let linked_item = u32::try_from(items.len())
                         .expect("linked item count exceeds async-surface location range");
-                    for (method_index, method) in im2.methods.iter().enumerate() {
+                    for (method_index, method) in im2.methods.iter_mut().enumerate() {
                         if let (Some((surface_item, surface_method)), Some(local_state)) = (
                             crate::suspension::async_surface(method),
                             crate::suspension::frame_state(method),
                         ) {
+                            method.attributes.push(crate::suspension::async_surface_module_attribute(mname));
                             let Some(surface_method) = surface_method else {
                                 return source_lerr(format!(
                                     "async surface function marker on linked method `{}`",

@@ -119,6 +119,7 @@ enum MethodResolution {
 fn method_fn(
     name: String,
     pure: bool,
+    attributes: Vec<String>,
     mut params: Vec<Param>,
     ret: Option<Type>,
     body: Block,
@@ -149,7 +150,11 @@ fn method_fn(
         public: true,
         pure,
         comptime_only: false,
-        attributes: Vec::new(),
+        // Async-frame identity is compiler-owned transport, not a trait
+        // property. Preserve it when an inherent async method is lifted to its
+        // final callable so typed lowering never has to recover it from the
+        // generated mangled name.
+        attributes,
         name,
         params,
         ret,
@@ -449,6 +454,7 @@ fn lower_with(
                 generated.push(method_fn(
                     mangled,
                     method.pure,
+                    method.attributes.clone(),
                     params,
                     ret,
                     method.body.clone(),
@@ -484,6 +490,7 @@ fn lower_with(
             generated.push(method_fn(
                 mangled,
                 method.pure,
+                method.attributes.clone(),
                 params,
                 ret,
                 method.body.clone(),
@@ -527,6 +534,7 @@ fn lower_with(
                         generated.push(method_fn(
                             mangled,
                             ms.pure,
+                            Vec::new(),
                             params,
                             ret,
                             body.clone(),
@@ -4344,6 +4352,7 @@ pub(crate) fn monomorphic_impl_method_name(
     let template = method_fn(
         base.clone(),
         pure,
+        Vec::new(),
         params,
         ret,
         Block {
