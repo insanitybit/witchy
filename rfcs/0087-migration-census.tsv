@@ -1,5 +1,6 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	7	auxiliary-result-discard	dict.insert	-	-
+benchmarks/rfc0153_std_show_dict.witchy	10	auxiliary-result-discard	dict.insert	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
 examples/maze/src/maze.witchy	83	auxiliary-result-discard	dict.insert	-	-
 examples/wordcount/src/wordcount.witchy	9	auxiliary-result-discard	dict.insert	-	-
@@ -29,14 +30,14 @@ book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
 spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
-witchy-files	302
+witchy-files	307
 markdown-blocks	238
-checked	540
+checked	545
 rejected	0
 var-declarations	48
-resolved-var-calls	961
+resolved-var-calls	968
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0
 temporary-var-argument	0
-auxiliary-result-discard	18
+auxiliary-result-discard	19
