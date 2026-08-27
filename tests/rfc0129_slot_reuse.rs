@@ -91,6 +91,7 @@ fn bounded_channel_retags_task_slots_without_replacement_allocations() {
     let source = format!(
         "mode opt\n\nfrom chan import Sender\n\nasync fn producer(let tx: Sender(Int), n: Int) -> Nil:\n    var i = 0\n    while i < n:\n        chan.send(tx, i).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    let producer_handle = chan.spawn(producer(tx, {MESSAGES})).await\n    var seen = 0\n    for await value in rx:\n        seen = seen + 1\n        chan.done(value)\n    chan.join(producer_handle).await\n    if seen == {MESSAGES}:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n"
     );
+    let source = source.replace("chan.done(value)", "let _ = chan.done(value)");
     assert_task_slots_retag(&source, MESSAGES, "bounded-channel");
 }
 
