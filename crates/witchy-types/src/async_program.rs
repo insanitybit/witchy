@@ -66,6 +66,23 @@ pub struct AsyncCancellationTransition {
     pub state: AsyncProgramStateId,
 }
 
+/// A backend-owned binding of canonical state IDs to its already-final closure
+/// layout. This is deliberately separate from [`AsyncExecutionShape`]: deriving
+/// it from the program at use time would make layout drift undetectable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncBackendBinding {
+    pub shape: ExecutionShapeId,
+    pub closure_layout_fingerprint: [u8; 32],
+    pub states: Vec<AsyncBackendStateBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncBackendStateBinding {
+    pub state: AsyncProgramStateId,
+    pub callable: FinalCallableIndex,
+    pub capture_to_lane: Vec<u32>,
+}
+
 /// A typed program either lowers an operation or records a closed, stable
 /// boundary for the shared dynamic path. Diagnostic/source text lives in the
 /// source map, never in the semantic program fingerprint.
@@ -329,10 +346,35 @@ fn encode_outcome(bytes: &mut Vec<u8>, outcome: ExecutionOutcome) {
 }
 
 impl AsyncExecutionShape {
+    /// Validate a backend's final-layout binding before it can execute the
+    /// shape. No generated callable spelling participates in this boundary.
+    pub fn validate_backend_binding(&self, binding: &AsyncBackendBinding) -> Result<(), String> {
+        if binding.shape != self.id {
+            return Err("async backend binding names a different execution shape".into());
+        }
+        if binding.closure_layout_fingerprint != self.closure_layout_fingerprint {
+            return Err("async backend closure layout fingerprint drifted".into());
+        }
+        if binding.states.len() != self.states.len() {
+            return Err("async backend state binding count drifted".into());
+        }
+        for (expected, (semantic, backend)) in self.states.iter().zip(&binding.states).enumerate() {
+            if backend.state.0 != expected as u32
+                || backend.state != semantic.state
+                || backend.callable != semantic.callable
+                || backend.capture_to_lane != semantic.capture_to_lane
+            {
+                return Err("async backend state binding drifted from canonical layout".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Bind a canonical shape into the shared interpreter/Wasm execution
     /// contract. The caller supplies the checked entry state; no backend may
     /// infer one from a generated callable name.
-    pub fn into_typed_execution(self) -> Result<TypedExecutionShape, String> {
+    pub fn into_typed_execution(self, binding: &AsyncBackendBinding) -> Result<TypedExecutionShape, String> {
+        self.validate_backend_binding(binding)?;
         let entry = self.entry;
         let shape = TypedExecutionShape {
             id: self.id,
@@ -433,10 +475,23 @@ mod tests {
         }
     }
 
+    fn binding(shape: &AsyncExecutionShape) -> AsyncBackendBinding {
+        AsyncBackendBinding {
+            shape: shape.id,
+            closure_layout_fingerprint: shape.closure_layout_fingerprint,
+            states: shape.states.iter().map(|state| AsyncBackendStateBinding {
+                state: state.state,
+                callable: state.callable,
+                capture_to_lane: state.capture_to_lane.clone(),
+            }).collect(),
+        }
+    }
+
     #[test]
     fn conversion_preserves_ordered_select_and_rollback_bindings() {
         let shape = shape();
-        let execution = shape.into_typed_execution().expect("canonical shape binds");
+        let binding = binding(&shape);
+        let execution = shape.into_typed_execution(&binding).expect("canonical shape binds");
         let operation = &execution.operations[0];
         assert_eq!(operation.fallback_state, Some(ExecutionStateId(0)));
         assert_eq!(operation.arms.len(), 2);
@@ -449,7 +504,8 @@ mod tests {
     fn rejects_a_select_arm_that_reorders_source_priority() {
         let mut shape = shape();
         shape.operations[0].arms[1].ordinal = 2;
-        assert!(shape.into_typed_execution().expect_err("arm ordering is semantic").contains("dense and ordered"));
+        let binding = binding(&shape);
+        assert!(shape.into_typed_execution(&binding).expect_err("arm ordering is semantic").contains("dense and ordered"));
     }
 
     #[test]
@@ -480,5 +536,16 @@ mod tests {
         let mut changed = program;
         changed.execution_shapes[0].entry = AsyncProgramStateId(1);
         assert!(changed.validate().expect_err("entry changed").contains("absent state"));
+    }
+
+    #[test]
+    fn backend_binding_rejects_final_callable_and_layout_drift() {
+        let shape = shape();
+        let mut changed = binding(&shape);
+        changed.states[0].callable = FinalCallableIndex(99);
+        assert!(shape.validate_backend_binding(&changed).expect_err("callable drift").contains("state binding drifted"));
+        let mut changed = binding(&shape);
+        changed.closure_layout_fingerprint[0] ^= 1;
+        assert!(shape.validate_backend_binding(&changed).expect_err("layout drift").contains("fingerprint drifted"));
     }
 }

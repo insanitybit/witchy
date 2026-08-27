@@ -8,7 +8,7 @@ use witchy_types::typed_execution::{
     ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId, ExecutionStateId, FrameLaneId, LaneAction,
     OperationSiteId, TypedExecutionShape,
 };
-use witchy_types::async_program::AsyncExecutionShape;
+use witchy_types::async_program::{AsyncBackendBinding, AsyncExecutionShape};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelStatus {
@@ -53,8 +53,9 @@ impl TypedExecution {
     /// of accepting a parallel fixture-only scheduler representation.
     pub fn from_async_shape(
         shape: AsyncExecutionShape,
+        binding: &AsyncBackendBinding,
     ) -> Result<Self, String> {
-        Self::new(shape.into_typed_execution()?)
+        Self::new(shape.into_typed_execution(binding)?)
     }
 
     pub fn new(shape: TypedExecutionShape) -> Result<Self, String> {
