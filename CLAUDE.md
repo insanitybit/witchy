@@ -22,6 +22,14 @@ repeat the rules; consult it when you're working inside one of these areas.
   hook REPLACES the built-in creation — it must print the new worktree's path as
   its **only** stdout; everything else goes to stderr. When your worktree's work
   is merged, remove the worktree (its multi-GB `target/` goes with it).
+- **Reclaiming disk: use `scripts/reclaim-build-caches.sh`, not `du | sort | rm`.**
+  It is a dry run by default. Two traps it already knows: a worktree's plain
+  `target` is an APFS **CoW clone** of the origin, so `du` reports its full size
+  while deleting it frees almost nothing (34GB of `du` once returned 1GB of
+  `df`) -- the freshly built `target-<agent>` dirs are the ones that pay; and a
+  cache with an open file handle is a **live build** belonging to another agent.
+  It also skips the `merge-gate` worktree, whose prewarm caches every queued
+  branch depends on. Judge reclaim by `df`, never `du`.
 - **The stale-binary check.** If results look stale, compare `which witchy`
   against your build output path.
 - **`spec/stdlib.md` drift** is caught by the `stdlib_docs_are_current` test.
