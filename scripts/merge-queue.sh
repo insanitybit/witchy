@@ -1786,7 +1786,33 @@ cmd_doctor() {
             echo "  stage     : ${lk_stage:-(no stage marker yet)}"
         fi
     else
-        echo "gate lock   : free"
+        # "free" is the single most misread line in this report. The coordinator
+        # rebases and prepares each candidate WITHOUT the lock, so a healthy
+        # coordinator shows a free lock for minutes at a stretch. Read together
+        # with a pending queue that reads as "idle, and nothing is happening",
+        # and the reflex is to restart the coordinator -- which kills the
+        # in-flight gate, orphans its claim, and leaves the next reader looking
+        # at the same picture. That loop cost 27 orphaned-claim recoveries and
+        # 73 coordinator starts in a single day. So say what it is actually doing.
+        echo "gate lock   : free (held only DURING a gate; rebase/prepare runs without it)"
+        local last_log last_log_age
+        last_log="$(find "$logs" -maxdepth 1 -name '*.log' -type f -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null | head -1 || true)"
+        if [ -n "$last_log" ]; then
+            last_log_age=$(( $(date +%s) - $(stat -f %m "$last_log") ))
+            echo "  last gate : $(basename "$last_log") — last wrote ${last_log_age}s ago"
+        fi
+        local last_outcome
+        last_outcome="$(grep -E '"event":"(merged|red|batch_red|timeout|conflict|blocked)"' "$journal" 2>/dev/null \
+            | tail -1 | jq -r '"\(.event) \(.branch // "") at \(.ts)"' 2>/dev/null || true)"
+        [ -n "$last_outcome" ] && echo "  last done : $last_outcome"
+        if [ -n "$cpid" ]; then
+            echo "  NOTE      : a live coordinator with a free lock is NORMAL between gates."
+            echo "              Do NOT restart it to \"unstick\" the queue: that kills any"
+            echo "              in-flight gate and orphans its claim. Confirm it is truly"
+            echo "              idle first — gate log ages above are LOCAL time, the"
+            echo "              journal is UTC."
+        fi
     fi
     echo "test budget : ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET; 0 disables)"
     echo "recent      :"
