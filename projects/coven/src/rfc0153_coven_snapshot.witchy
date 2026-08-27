@@ -1,0 +1,19 @@
+// RFC-0153 measurement driver for the existing Coven snapshot path.
+
+import coven_store
+import json
+from coven_record import Record
+
+fn main(let console: Console, let clock: Clock, store: Dir):
+    for i in 0..1000:
+        let version = "1.0.${i}"
+        let _ = coven_store.claim_record(store, "acme/pkg", version)
+        let record = Record("acme/pkg", version, "released", "sha256:payload", [], [], "guaranteed", "rfc0153", None, None, None, None, 0, "")
+        coven_store.write_record(store, "acme/pkg", version, json.encode(json.from_value(record)))
+
+    let bench_t0 = clock.now_monotonic()
+    let targets = coven_store.all_target_digests(store)
+    let bench_t1 = clock.now_monotonic()
+
+    console.print("${targets.length()}:${targets.at(999).0}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
