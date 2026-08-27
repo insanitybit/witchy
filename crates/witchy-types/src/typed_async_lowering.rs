@@ -16,7 +16,7 @@ use witchy_syntax::suspension::{
 
 use crate::async_control_flow::{
     AsyncCallableId, ControlPathStep, SourceAsyncControlFlow, SourceAsyncControlFlowInventory,
-    SourceAsyncOperationKind, SourceBindingId, SourceExpressionId, source_expression,
+    SourceAsyncOperationKind, SourceBindingId, SourceBindingKind, SourceExpressionId, source_expression,
 };
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
@@ -63,6 +63,11 @@ pub struct TypedAsyncFrameInput {
     /// map checked source places to actual capture/parameter fields without
     /// inspecting a generated callable name or reconstructing a CPS body.
     pub name: String,
+    /// The source declaration carried by this final frame field when the
+    /// lowering contract proves one. Entry parameters are structurally aligned
+    /// with the source callable; continuation captures remain `None` until
+    /// async lowering stamps their lexical binding IDs explicitly.
+    pub source_binding: Option<SourceBindingId>,
     pub ty: Type,
     pub convention: Convention,
 }
@@ -246,6 +251,7 @@ impl TypedAsyncLoweringInput {
                 Ok(TypedAsyncFrameInput {
                     parameter: u32::try_from(parameter).map_err(|_| "async parameter count exceeds u32")?,
                     name: parameter_info.name.clone(),
+                    source_binding: None,
                     ty: inferred.get(parameter).cloned().or_else(|| parameter_info.ty.clone()).ok_or_else(|| format!("async state at final callable index {function_index} has untyped parameter `{}`", parameter_info.name))?,
                     convention: parameter_info.convention,
                 })
@@ -266,6 +272,27 @@ impl TypedAsyncLoweringInput {
         for pair in states.windows(2) {
             if pair[0].callable == pair[1].callable && pair[0].local_state == pair[1].local_state {
                 return Err(format!("duplicate final async state binding for {:?} state {}", pair[0].callable, pair[0].local_state));
+            }
+        }
+        for state in &mut states {
+            if state.kind != TypedAsyncStateKind::Entry {
+                continue;
+            }
+            let flow = source.iter().find(|flow| flow.callable == state.callable)
+                .expect("source callable existence was checked while collecting states");
+            let parameters = flow.bindings.iter().filter(|binding| {
+                binding.kind == SourceBindingKind::Parameter
+            }).collect::<Vec<_>>();
+            if parameters.len() != state.frame.len() {
+                return Err(format!(
+                    "async entry {:?} has {} final parameters but {} source parameters",
+                    state.callable,
+                    state.frame.len(),
+                    parameters.len(),
+                ));
+            }
+            for (frame, source_parameter) in state.frame.iter_mut().zip(parameters) {
+                frame.source_binding = Some(source_parameter.id);
             }
         }
         // Every source async callable starts exactly one execution. Continuation
@@ -532,6 +559,9 @@ mod tests {
         assert!(input.states.iter().all(|state| state.frame.iter().all(|lane| !lane.name.is_empty())));
         assert!(input.states.iter().any(|state| {
             state.frame.iter().any(|lane| lane.name == "self")
+        }));
+        assert!(input.states.iter().filter(|state| state.kind == TypedAsyncStateKind::Entry).all(|state| {
+            state.frame.iter().all(|lane| lane.source_binding.is_some())
         }));
         assert_eq!(input.suspensions.len(), 1);
         assert_eq!(input.operations.len(), input.source[0].operations.len());
