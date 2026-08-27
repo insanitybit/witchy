@@ -822,4 +822,44 @@ fn locate(value: Located(String)) -> .{line: Int, value: String}:
         )
         .expect("typed async projection links");
     }
+
+    #[test]
+    fn typed_async_projection_retains_for_await_without_runtime_helper() {
+        fn no_expand(
+            _: &str,
+            _: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn project(source: &ResolvedSource) -> Result<(), crate::linker::SourceLinkError> {
+            let projection = source
+                .typed_async_projection()
+                .map_err(crate::linker::SourceLinkError::Link)?;
+            let function = projection.module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == "main.drain" => Some(function),
+                _ => None,
+            }).expect("linked async function");
+            assert!(function.is_async, "projection must retain source async syntax");
+            assert!(matches!(
+                function.body.stmts.first(),
+                Some(crate::ast::Stmt::Expr(crate::ast::Expr::For { iter, .. }))
+                    if matches!(iter.as_ref(), crate::ast::Expr::Call { name, .. } if name == "chan.__recv_stream")
+            ));
+            Ok(())
+        }
+
+        let module = parse(
+            "from chan import Receiver\n\nasync fn drain(rx: Receiver(Int)):\n    for await value in rx:\n        let _ = value\n\nfn main():\n    ()\n",
+        );
+        crate::linker::link_with_mode_and_origins_and_source_check(
+            vec![("main".into(), module)],
+            "main",
+            no_expand,
+            crate::linker::LinkMode::Production,
+            project,
+        )
+        .expect("typed async projection links for-await source");
+    }
 }
