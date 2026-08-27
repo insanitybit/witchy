@@ -444,6 +444,15 @@ fn is_builtin_type_name(name: &str) -> bool {
     BUILTIN_TYPE_NAMES.contains(&name) || CapabilityKind::from_name(name).is_some()
 }
 
+/// Linked async signatures can retain the module-qualified spelling for the
+/// compiler-provided Task type while imported uses resolve to its bare name.
+/// Both spellings denote the same builtin nominal type; normalize this at the
+/// shared type-comparison boundary so calls, conversions, and awaits agree.
+fn same_builtin_nominal_head(left: &str, right: &str) -> bool {
+    left == right
+        || matches!((left, right), ("Task", "task.Task") | ("task.Task", "Task"))
+}
+
 fn is_synthetic_type_name(name: &str) -> bool {
     name.strip_prefix("__anon").is_some_and(|n| {
         !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
@@ -4369,7 +4378,16 @@ impl Checker {
     }
 
     fn same_resolved_type(&self, a: &Ty, b: &Ty) -> bool {
-        self.resolve(a) == self.resolve(b)
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        match (&a, &b) {
+            (Ty::Named(x, xa), Ty::Named(y, ya))
+                if same_builtin_nominal_head(x, y) && xa.len() == ya.len() =>
+            {
+                xa.iter().zip(ya).all(|(x, y)| self.same_resolved_type(x, y))
+            }
+            _ => a == b,
+        }
     }
 
     fn has_from_conversion(&self, dst: &Ty, src: &Ty) -> bool {
@@ -5417,7 +5435,9 @@ impl Checker {
                 }
                 Ok(())
             }
-            (Ty::Named(x, xa), Ty::Named(y, ya)) if x == y && xa.len() == ya.len() => {
+            (Ty::Named(x, xa), Ty::Named(y, ya))
+                if same_builtin_nominal_head(x, y) && xa.len() == ya.len() =>
+            {
                 for (p, q) in xa.iter().zip(ya) {
                     self.unify(p, q)?;
                 }
