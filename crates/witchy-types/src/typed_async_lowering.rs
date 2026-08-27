@@ -33,6 +33,26 @@ pub enum TypedAsyncStateKind {
     Segment,
 }
 
+/// Semantic class of a source async operation after ordinary linking and type
+/// checking. This is deliberately a language-operation catalog, not a
+/// benchmark recognizer: every call site of one of these public operations is
+/// classified uniformly, while ordinary static and dynamic async calls retain
+/// their own explicit classes for the shared runtime or a typed rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedAsyncOperationKind {
+    ChannelCreate,
+    ChannelSend,
+    ChannelReceive,
+    Spawn,
+    Join,
+    Yield,
+    CallOperand,
+    DynamicCallOperand,
+    StaticAsyncCall,
+    DynamicAsyncCall,
+    Return,
+}
+
 /// One typed value carried into a final state. Lane IDs and ownership actions
 /// are assigned only when the complete closure layout is known.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +97,7 @@ pub struct TypedAsyncSourceOperationBinding {
     pub callable: AsyncCallableId,
     pub source_operation: u32,
     pub kind: SourceAsyncOperationKind,
+    pub runtime_kind: TypedAsyncOperationKind,
     pub path: Vec<ControlPathStep>,
     /// A source-coordinate handle for the exact pre-CPS operation expression.
     /// It is intentionally noncanonical transport; final typed lowering uses
@@ -88,6 +109,10 @@ pub struct TypedAsyncSourceOperationBinding {
     /// carry a concrete type before executable frame/lane formation begins.
     pub operand_type: Option<Type>,
     pub continuation: Option<FinalCallableIndex>,
+    /// A tail await completes its execution directly and therefore has no
+    /// generated continuation state. Keeping this explicit is required for
+    /// canonical terminal edges; it must never be reconstructed from CPS.
+    pub terminal: bool,
 }
 
 /// The complete bridge between source control flow and final typed state
@@ -109,12 +134,13 @@ impl TypedAsyncLoweringInput {
         let mut input = Self::from_typed(&typed, checked.source_async_control_flow())?;
         for operation in &mut input.operations {
             let Some(_) = operation.expression else { continue };
-            let (_, ty) = Self::typed_source_operation(checked, operation)?;
+            let (expression, ty) = Self::typed_source_operation(checked, operation)?;
             operation.operand_type = Some(typeck::ty_to_ast(ty).ok_or_else(|| format!(
                 "source async {:?} operation {} has a non-concrete operand type `{ty}`",
                 operation.callable,
                 operation.source_operation,
             ))?);
+            operation.runtime_kind = classify_typed_operation(operation.kind, expression);
         }
         Ok(input)
     }
@@ -256,25 +282,9 @@ impl TypedAsyncLoweringInput {
                 ));
             }
         }
-        // This is a total source-to-final binding, not best-effort metadata.
-        // A source await without its continuation would force a later program
-        // producer either to rediscover CPS structure or to invent a resume
-        // target. Both would lose the final-layout contract.
-        for flow in &source {
-            for operation in flow.operations.iter().filter(|operation| {
-                operation.kind == SourceAsyncOperationKind::Await
-            }) {
-                if !suspensions.iter().any(|binding| {
-                    binding.callable == flow.callable
-                        && binding.source_operation == operation.ordinal
-                }) {
-                    return Err(format!(
-                        "source async await operation {} has no final continuation-state binding",
-                        operation.ordinal,
-                    ));
-                }
-            }
-        }
+        // Every await either enters its compiler-formed continuation state or
+        // is a terminal edge. The latter must be represented explicitly below;
+        // a later program producer must not rediscover it from CPS shape.
         let mut operations = Vec::new();
         for flow in &source {
             for operation in &flow.operations {
@@ -282,12 +292,6 @@ impl TypedAsyncLoweringInput {
                     binding.callable == flow.callable
                         && binding.source_operation == operation.ordinal
                 }).map(|binding| binding.final_state);
-                if operation.kind == SourceAsyncOperationKind::Await && continuation.is_none() {
-                    return Err(format!(
-                        "source async await operation {} has no final continuation-state binding",
-                        operation.ordinal,
-                    ));
-                }
                 if operation.kind != SourceAsyncOperationKind::Await && continuation.is_some() {
                     return Err(format!(
                         "source async non-await operation {} has a continuation-state binding",
@@ -298,10 +302,13 @@ impl TypedAsyncLoweringInput {
                     callable: flow.callable.clone(),
                     source_operation: operation.ordinal,
                     kind: operation.kind,
+                    runtime_kind: source_operation_kind(operation.kind),
                     path: operation.path.clone(),
                     expression: operation.expression,
                     operand_type: None,
                     continuation,
+                    terminal: operation.kind == SourceAsyncOperationKind::Await && continuation.is_none()
+                        || operation.kind == SourceAsyncOperationKind::Return,
                 });
             }
         }
@@ -407,6 +414,40 @@ fn typed_source_function<'a>(
     })
 }
 
+fn source_operation_kind(kind: SourceAsyncOperationKind) -> TypedAsyncOperationKind {
+    match kind {
+        SourceAsyncOperationKind::Await => TypedAsyncOperationKind::StaticAsyncCall,
+        SourceAsyncOperationKind::StaticCall => TypedAsyncOperationKind::CallOperand,
+        SourceAsyncOperationKind::DynamicCall => TypedAsyncOperationKind::DynamicCallOperand,
+        SourceAsyncOperationKind::Return => TypedAsyncOperationKind::Return,
+    }
+}
+
+fn classify_typed_operation(
+    source_kind: SourceAsyncOperationKind,
+    expression: &Expr,
+) -> TypedAsyncOperationKind {
+    if source_kind != SourceAsyncOperationKind::Await {
+        return source_operation_kind(source_kind);
+    }
+    let Expr::Unary { op: witchy_syntax::ast::UnOp::Await, expr } = expression else {
+        return TypedAsyncOperationKind::StaticAsyncCall;
+    };
+    match expr.as_ref() {
+        Expr::Call { name, .. } | Expr::LabeledCall { name, .. } => match name.as_str() {
+            "chan.channel" | "chan.unbounded" => TypedAsyncOperationKind::ChannelCreate,
+            "chan.send" => TypedAsyncOperationKind::ChannelSend,
+            "chan.recv" => TypedAsyncOperationKind::ChannelReceive,
+            "chan.spawn" | "task.spawn" => TypedAsyncOperationKind::Spawn,
+            "chan.join" | "task.join" => TypedAsyncOperationKind::Join,
+            "task.yield_now" | "chan.yield_now" => TypedAsyncOperationKind::Yield,
+            _ => TypedAsyncOperationKind::StaticAsyncCall,
+        },
+        Expr::Apply { .. } | Expr::ExistentialCall { .. } => TypedAsyncOperationKind::DynamicAsyncCall,
+        _ => TypedAsyncOperationKind::StaticAsyncCall,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +476,8 @@ mod tests {
             1,
         );
         assert!(input.operations.iter().all(|operation| {
-            (operation.kind == SourceAsyncOperationKind::Await) == operation.continuation.is_some()
+            operation.kind != SourceAsyncOperationKind::Await
+                || operation.continuation.is_some() != operation.terminal
         }));
         let await_operation = input.operations.iter().find(|operation| {
             operation.kind == SourceAsyncOperationKind::Await
@@ -505,7 +547,30 @@ mod tests {
             input.source[0].operations.iter().map(|operation| operation.expression).collect::<Vec<_>>(),
         );
         assert!(input.operations.iter().all(|operation| {
-            (operation.kind == SourceAsyncOperationKind::Await) == operation.continuation.is_some()
+            operation.kind != SourceAsyncOperationKind::Await
+                || operation.continuation.is_some() != operation.terminal
+        }));
+    }
+
+    #[test]
+    fn classifies_every_channel_send_await_as_one_language_operation() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Sender\n\nasync fn send_one(tx: Sender(Int)):\n    chan.send(tx, 7).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
+        assert!(input.operations.iter().any(|operation| {
+            operation.kind == SourceAsyncOperationKind::Await
+                && operation.runtime_kind == TypedAsyncOperationKind::ChannelSend
+                && operation.terminal
+        }));
+        assert!(input.operations.iter().any(|operation| {
+            operation.kind == SourceAsyncOperationKind::StaticCall
+                && operation.runtime_kind == TypedAsyncOperationKind::CallOperand
         }));
     }
 }
