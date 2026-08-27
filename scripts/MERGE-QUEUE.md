@@ -646,4 +646,7 @@ you didn't drop a real commit that landed meanwhile.
 | need to reorder the queue | use `submit --front`; it also reprioritizes an existing queued change |
 | queue file for an already-merged branch | harmless: the rebase collapses to master, gate passes, ff is a no-op; or just `rm` the file |
 | two coordinators running | fixed class (pid-file guard), but if seen: `kill` the older, verify `coordinator.pid` names the survivor |
+| a change record sits in state `gating` and no gate log looks newer | usually NOT an orphaned claim — it is the change being gated right now. `recover_orphaned_change_claims` rewrites a genuinely orphaned record to `queued` at every coordinator start, so a persistent `gating` while a coordinator is alive means the gate is live. Confirm with `ls -t state/merge-queue/logs \| head -1` and its mtime before concluding anything is stuck. |
+| gate logs and journal timestamps appear hours apart | gate log filenames and mtimes are LOCAL time; `journal.jsonl` is UTC. A whole-hours offset between them is the timezone, not a stall. Compare like with like before calling the queue wedged. |
+| queue has ready entries, coordinator healthy, but master has not moved for hours | check whether one branch is monopolising the gate: `ls state/merge-queue/queue \| sort \| head`. A `00front-` entry (from `submit --front`) leads every cycle, and it keeps that slot across a red, so a repeatedly failing front change can starve every ready candidate behind it. See BUG-633. |
 ```
