@@ -176,7 +176,8 @@ Every memory-bearing direct, indirect, closure, recursive, imported primitive,
 and host callable has a contract:
 
 ```text
-parameters = [{ entry, set(Read, Write, Consume, Retain, Escape) } | Unknown]
+parameters = [{ entry, layout, parameter-relative extent,
+                set(Read, Write, Consume, Retain, Escape) } | Unknown]
 entry = NoMemory | BorrowedRead | BorrowedWrite | Shared | Unique | Unknown
 result = Fresh(layout, parameter-relative extent)
        | Aliases(parameter, constant projection)
@@ -197,6 +198,9 @@ eligibility, or object-header-derived range facts. An attached optimizer
 summary has no authority by itself.
 
 At callee entry, the checked source access signature and contract must agree.
+Every memory-bearing entry carries the canonical layout and caller-substitutable
+extent from that signature; `NoMemory` and `Unknown` carry neither. The caller's
+live object shape and the callee binding must both match that contract.
 An owned/consuming parameter transfers the caller's sole token into callee
 `Unique`; an exclusive-write parameter enters `BorrowedWrite`; a read borrow
 enters `BorrowedRead`; a retained/shared parameter enters `Shared`; a scalar

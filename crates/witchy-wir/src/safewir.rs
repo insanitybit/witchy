@@ -278,9 +278,14 @@ pub enum ParameterMemoryEntry {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParameterMemoryContract {
     pub entry: ParameterMemoryEntry,
+    /// Authenticated source-signature layout for memory-bearing parameters.
+    /// `NoMemory` and `Unknown` parameters carry no object shape.
+    pub layout: Option<LayoutId>,
+    /// Caller-substitutable extent from the checked source signature.
+    pub extent: Option<ContractExtent>,
     pub effects: ParameterMemoryEffects,
 }
 
@@ -288,7 +293,21 @@ impl ParameterMemoryContract {
     pub const fn unknown() -> Self {
         Self {
             entry: ParameterMemoryEntry::Unknown,
+            layout: None,
+            extent: None,
             effects: ParameterMemoryEffects::unknown(),
+        }
+    }
+
+    pub fn shape_is_consistent(&self) -> bool {
+        match self.entry {
+            ParameterMemoryEntry::NoMemory | ParameterMemoryEntry::Unknown => {
+                self.layout.is_none() && self.extent.is_none()
+            }
+            ParameterMemoryEntry::BorrowedRead
+            | ParameterMemoryEntry::BorrowedWrite
+            | ParameterMemoryEntry::Shared
+            | ParameterMemoryEntry::Unique => self.layout.is_some() && self.extent.is_some(),
         }
     }
 }
@@ -375,6 +394,13 @@ impl CallableMemoryContract {
     /// Structural callable-contract consistency checked again by the final
     /// validator against the body and source access signature.
     pub fn result_effects_are_consistent(&self) -> bool {
+        if self
+            .parameters
+            .iter()
+            .any(|parameter| !parameter.shape_is_consistent())
+        {
+            return false;
+        }
         let escapes = |parameter: usize| {
             self.parameters
                 .get(parameter)
@@ -590,6 +616,8 @@ mod tests {
         let contract = CallableMemoryContract {
             parameters: vec![ParameterMemoryContract {
                 entry: ParameterMemoryEntry::Shared,
+                layout: Some(layout(3)),
+                extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
                 effects: ParameterMemoryEffects::none(),
             }],
             result: CallableMemoryResult::Shared(BTreeSet::new()),
@@ -624,6 +652,8 @@ mod tests {
         let mut contract = CallableMemoryContract {
             parameters: vec![ParameterMemoryContract {
                 entry: ParameterMemoryEntry::BorrowedRead,
+                layout: Some(layout(5)),
+                extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
                 effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
             }],
             result: CallableMemoryResult::Aliases { parameter: 0, projection },
