@@ -18,11 +18,20 @@ timeout inflates its own p99 to the ceiling and the check silently passes.
 
 Usage: scripts/gate-cap-audit.py
 """
-import re, glob, tomllib, collections
+import re, glob, tomllib, collections, os, time
 ANSI=re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 LINE=re.compile(r'^\s*(?:TRY \d+ )?(PASS|SLOW|FLAKY|FAIL|TIMEOUT|TMT)\s*\[[>\s]*([0-9.]+)s\]\s*\(\s*[\d─/]+\)\s*(\S+)\s+(\S+)\s*$')
+# Only consider logs from the last N days. Test names change -- a suite
+# reorganised into submodules leaves its old names in months of history -- and
+# a name that no longer exists cannot be under-capped. Without this the "dead
+# filter" check reports long-renamed tests forever.
+RECENT_DAYS = int(os.environ.get("GATE_CAP_AUDIT_DAYS", "10"))
+_cutoff = time.time() - RECENT_DAYS * 86400
 ok=collections.defaultdict(list); killed=collections.Counter()
 for f in glob.glob("state/merge-queue/logs/*.log"):
+    try:
+        if os.path.getmtime(f) < _cutoff: continue
+    except OSError: continue
     try: fh=open(f,errors="ignore")
     except OSError: continue
     with fh:

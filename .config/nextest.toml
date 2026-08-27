@@ -219,7 +219,11 @@ priority = 90
 # allowed to finish. Bounded 2 x 240s hard cap; assertions unchanged.
 [[profile.default.overrides]]
 filter = 'test(/sole_live_fixed_select_frames_drain_before_one_reusable_wait_install|sole_live_receive_frame_drains_a_buffered_run_before_installing_wait|sole_live_select_frame_drains_a_buffered_source_order_run|rfc0152_actor_mailbox_preserves_request_order|rfc0152_guarded_paths_preserve_both_outcomes_and_backend_parity|compiler_frame_registration_is_bounded_through_cancel_and_close/)'
-slow-timeout = { period = "240s", terminate-after = 2 }
+# 900s x 2. Raising a cap is ITERATIVE: a killed test can never report longer
+# than its ceiling, so the p99 of 84.9s measured under the old 135s cap was an
+# artifact of that cap. With room to finish, these measure p99 443.6s -- 1.08x
+# under the 480s ceiling, which is no headroom at all.
+slow-timeout = { period = "900s", terminate-after = 2 }
 retries = 1
 priority = 85
 
