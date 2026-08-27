@@ -213,6 +213,21 @@ impl TypedExecutionShape {
             if operation.queue.is_some_and(|queue| queue.0 as usize >= self.queues.len()) {
                 return Err("operation references absent queue shape".to_string());
             }
+            match operation.kind {
+                ExecutionOperation::ChannelSend | ExecutionOperation::ChannelReceive
+                    if operation.queue.is_none() || !operation.arms.is_empty() => {
+                    return Err("direct channel operation must have one queue and no select arms".to_string());
+                }
+                ExecutionOperation::Select if operation.queue.is_some() || operation.arms.is_empty() => {
+                    return Err("select operation must have ordered arms and no direct queue".to_string());
+                }
+                ExecutionOperation::Spawn | ExecutionOperation::Join | ExecutionOperation::Host
+                | ExecutionOperation::Yield | ExecutionOperation::Cancellation
+                    if operation.queue.is_some() || !operation.arms.is_empty() => {
+                    return Err("non-channel operation cannot carry queue or select-arm bindings".to_string());
+                }
+                _ => {}
+            }
             let mut expected_arm = 0_u32;
             for arm in &operation.arms {
                 if arm.ordinal != expected_arm { return Err("operation arm IDs must be dense and ordered".to_string()); }
@@ -222,6 +237,31 @@ impl TypedExecutionShape {
                 }
                 if arm.queue.is_some_and(|queue| queue.0 as usize >= self.queues.len()) {
                     return Err("operation arm references absent queue shape".to_string());
+                }
+                match arm.operation {
+                    ExecutionOperation::ChannelSend | ExecutionOperation::ChannelReceive if arm.queue.is_none() => {
+                        return Err("channel select arm has no queue binding".to_string());
+                    }
+                    ExecutionOperation::ChannelSend | ExecutionOperation::ChannelReceive => {
+                        let queue = &self.queues[arm.queue.expect("checked above").0 as usize];
+                        if queue.ownership != arm.ownership {
+                            return Err("channel select arm ownership disagrees with queue shape".to_string());
+                        }
+                    }
+                    _ if arm.queue.is_some() => return Err("non-channel select arm has a queue binding".to_string()),
+                    _ => {}
+                }
+            }
+        }
+        for state in &self.states {
+            for transition in &state.transitions {
+                if let ExecutionEdgeCondition::SelectArm { operation, arm } = transition.condition {
+                    let operation = &self.operations[operation.0 as usize];
+                    if operation.kind != ExecutionOperation::Select
+                        || operation.arms.get(arm as usize).is_none()
+                    {
+                        return Err("select-arm edge does not name a declared select arm".to_string());
+                    }
                 }
             }
         }
@@ -412,10 +452,15 @@ mod tests {
                 result_lanes: vec![],
                 pending_move_lanes: vec![FrameLaneId(0)],
                 fallback_state: Some(ExecutionStateId(0)),
-                queue: None,
+                queue: Some(QueueShapeId(0)),
                 arms: vec![],
             }],
-            queues: vec![],
+            queues: vec![QueueShape {
+                id: QueueShapeId(0),
+                capacity: QueueCapacity::Rendezvous,
+                payload_layout_fingerprint: [0; 32],
+                ownership: PayloadOwnership::Inline,
+            }],
             cancellation: None,
         }
     }

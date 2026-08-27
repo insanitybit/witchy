@@ -269,7 +269,7 @@ mod tests {
     use witchy_types::typed_execution::{
         CancellationTransition,
         ExecutionOperation, ExecutionState, ExecutionTransition, FrameLane,
-        LaneOwnership, OperationSite,
+        LaneOwnership, OperationSite, PayloadOwnership, QueueCapacity, QueueShape,
     };
 
     fn shape() -> TypedExecutionShape {
@@ -283,10 +283,10 @@ mod tests {
                 ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![LaneAction::Discharge { lane: FrameLaneId(0) }], outcome: ExecutionOutcome::Complete }] },
             ],
             operations: vec![
-                OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelReceive, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: Some(ExecutionStateId(0)), queue: None, arms: vec![] },
+                OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelReceive, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: Some(ExecutionStateId(0)), queue: Some(QueueShapeId(0)), arms: vec![] },
                 OperationSite { id: OperationSiteId(1), kind: ExecutionOperation::Cancellation, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: None, queue: None, arms: vec![] },
             ],
-            queues: vec![],
+            queues: vec![QueueShape { id: QueueShapeId(0), capacity: QueueCapacity::Rendezvous, payload_layout_fingerprint: [0; 32], ownership: PayloadOwnership::Inline }],
             cancellation: Some(CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(1) }),
         }
     }
@@ -358,6 +358,7 @@ mod tests {
     fn select_commit_uses_source_arm_identity_not_transition_position() {
         let mut selecting = shape();
         selecting.operations[0].kind = ExecutionOperation::Select;
+        selecting.operations[0].queue = None;
         selecting.operations[0].arms = vec![
             witchy_types::typed_execution::OperationArm {
                 ordinal: 0,
@@ -365,8 +366,8 @@ mod tests {
                 endpoint_lane: FrameLaneId(0),
                 input_lanes: vec![],
                 result_lanes: vec![FrameLaneId(0)],
-                queue: None,
-                ownership: witchy_types::typed_execution::PayloadOwnership::Inline,
+                queue: Some(QueueShapeId(0)),
+                ownership: PayloadOwnership::Inline,
             },
             witchy_types::typed_execution::OperationArm {
                 ordinal: 1,
@@ -374,8 +375,8 @@ mod tests {
                 endpoint_lane: FrameLaneId(0),
                 input_lanes: vec![],
                 result_lanes: vec![FrameLaneId(0)],
-                queue: None,
-                ownership: witchy_types::typed_execution::PayloadOwnership::Inline,
+                queue: Some(QueueShapeId(0)),
+                ownership: PayloadOwnership::Inline,
             },
         ];
         selecting.states[1].transitions = vec![
