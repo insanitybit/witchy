@@ -69,6 +69,7 @@ RM="$(command -v rm)"
 MKDIR="$(command -v mkdir)"
 MKTEMP="$(command -v mktemp)"
 CHMOD="$(command -v chmod)"
+SED="$(command -v sed)"
 
 scratch="$($MKTEMP -d "${TMPDIR:-/tmp}/witchy-release-smoke.XXXXXX")"
 cleanup() { "$RM" -rf "$scratch"; }
@@ -419,7 +420,7 @@ esac
 
 "$MKDIR" -p old-target/src
 "$CP" trusted/src/trusted_smoke.witchy old-target/src/trusted_smoke.witchy
-sed 's/trusted-publisher/trusted-exe/g' trusted/witchy.toml >old-target/witchy.toml
+"$SED" 's/trusted-publisher/trusted-exe/g' trusted/witchy.toml >old-target/witchy.toml
 if witchy --release build --target trusted-exe old-target >old-target.err 2>&1; then
     echo "release-smoke: legacy trusted-exe target was accepted" >&2
     exit 1
