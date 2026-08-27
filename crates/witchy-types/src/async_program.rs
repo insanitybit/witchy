@@ -4,7 +4,7 @@
 //! has no generated callable names and no legacy scalar-transition fallback.
 
 use crate::typed_async_lowering::FinalCallableIndex;
-use crate::typed_execution::{ExecutionOperation, ExecutionShapeId, FrameLane};
+use crate::typed_execution::{ExecutionOperation, ExecutionShapeId, ExecutionOutcome, FrameLane, LaneAction};
 
 pub const ASYNC_PROGRAM_SCHEMA_VERSION: u32 = 1;
 
@@ -20,6 +20,13 @@ pub struct FinalStateBinding {
     pub state: AsyncProgramStateId,
     pub callable: FinalCallableIndex,
     pub capture_to_lane: Vec<u32>,
+    pub edges: Vec<AsyncStateEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncStateEdge {
+    pub actions: Vec<LaneAction>,
+    pub outcome: ExecutionOutcome,
 }
 
 /// Canonical operation identity. Queue, wait, and backend code bind this ID;
@@ -63,6 +70,7 @@ impl AsyncProgram {
                 for lane in &binding.capture_to_lane {
                     if *lane as usize >= shape.frame.len() { return Err("async capture binding references absent frame lane".into()); }
                 }
+                if binding.edges.is_empty() { return Err("async state has no canonical edge".into()); }
             }
             for (expected_operation, operation) in shape.operations.iter().enumerate() {
                 if operation.id.0 != expected_operation as u32 { return Err("async operation IDs must be dense".into()); }
