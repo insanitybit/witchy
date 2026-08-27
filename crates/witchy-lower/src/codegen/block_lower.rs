@@ -77,10 +77,31 @@ fn local_interpolation_has_single_borrowed_use(
 }
 
 impl<'types> Codegen<'types> {
-    /// Conservative local fact used by the loop bounds proof. Addition cannot
-    /// produce a negative result from two non-negative operands (overflow traps
-    /// before a wrapped value can be observed), so preserve the fact through the
-    /// small expression subset needed by induction-style loop starts.
+    /// Finite upper bound for the small non-negative expression subset used by
+    /// loop starts. Witchy integer arithmetic wraps like Wasm, so addition and
+    /// multiplication are facts only when the upper-bound operation itself
+    /// proves that wrapping is impossible.
+    fn expr_non_negative_upper_bound(&self, value: &Expr) -> Option<i64> {
+        match value {
+            Expr::Int(value) if *value >= 0 => Some(*value),
+            Expr::Var(name) => self.known_non_negative_upper_vars.get(name).copied(),
+            Expr::Call { name, .. }
+                if is_intrinsic_or_public_name(name, intrinsics::LIST_LENGTH)
+                    || is_intrinsic_or_public_name(name, intrinsics::BYTES_LENGTH) =>
+            {
+                Some(i64::from(u32::MAX))
+            }
+            Expr::Binary { op: BinOp::Add, lhs, rhs, .. } => self
+                .expr_non_negative_upper_bound(lhs)?
+                .checked_add(self.expr_non_negative_upper_bound(rhs)?),
+            Expr::Binary { op: BinOp::Mul, lhs, rhs, .. } => self
+                .expr_non_negative_upper_bound(lhs)?
+                .checked_mul(self.expr_non_negative_upper_bound(rhs)?),
+            _ => None,
+        }
+    }
+
+    /// Conservative local fact used by the loop bounds proof.
     fn expr_is_known_non_negative(&self, value: &Expr) -> bool {
         match value {
             Expr::Int(value) => *value >= 0,
@@ -91,8 +112,8 @@ impl<'types> Codegen<'types> {
             {
                 true
             }
-            Expr::Binary { op: BinOp::Add | BinOp::Mul, lhs, rhs, .. } => {
-                self.expr_is_known_non_negative(lhs) && self.expr_is_known_non_negative(rhs)
+            Expr::Binary { op: BinOp::Add | BinOp::Mul, .. } => {
+                self.expr_non_negative_upper_bound(value).is_some()
             }
             Expr::Binary { op: BinOp::Div | BinOp::Mod, lhs, rhs, .. } => {
                 self.expr_is_known_non_negative(lhs) && match rhs.as_ref() {
@@ -175,6 +196,7 @@ impl<'types> Codegen<'types> {
         let mut tail_is_value = false;
         let tail_is_terminal = matches!(block.stmts.last(), Some(Stmt::Return(_)));
         for (i, stmt) in block.stmts.iter().enumerate() {
+            self.prepare_range_fact_binding(stmt);
             match stmt {
                 Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
                     self.update_range_value_binding(name, value);
@@ -182,14 +204,22 @@ impl<'types> Codegen<'types> {
                         Stmt::Assign { .. }
                             if matches!(analysis::self_inplace_op(name, value),
                                 Some(analysis::InPlaceOp::SetAt(_, _))));
+                    let non_negative_upper = self.expr_non_negative_upper_bound(value);
                     if self.expr_is_known_non_negative(value) {
                         self.known_non_negative_vars.insert(name.clone());
                     } else {
                         // Any unrecognized assignment might make it negative.
                         self.known_non_negative_vars.remove(name);
                     }
+                    if let Some(upper) = non_negative_upper {
+                        self.known_non_negative_upper_vars.insert(name.clone(), upper);
+                    } else {
+                        self.known_non_negative_upper_vars.remove(name);
+                    }
                     self.known_byte_length_vars.remove(name);
+                    self.known_strict_byte_length_vars.remove(name);
                     self.known_length_vars.remove(name);
+                    self.known_strict_length_vars.remove(name);
                     if !preserves_static_length {
                         self.known_static_list_lengths.remove(name);
                     }
@@ -234,17 +264,51 @@ impl<'types> Codegen<'types> {
                         // an unchecked access.
                         if matches!(rhs.as_ref(), Expr::Int(offset) if *offset >= 0)
                             && let Expr::Call { name: fname, args } = lhs.as_ref()
-                            && is_intrinsic_or_public_name(fname, intrinsics::LIST_LENGTH)
                             && let [Expr::Var(xs_name)] = args.as_slice()
                         {
-                            self.known_length_vars.entry(name.clone()).or_default().insert(xs_name.clone());
+                            let Expr::Int(offset) = rhs.as_ref() else { unreachable!() };
+                            if is_intrinsic_or_public_name(fname, intrinsics::LIST_LENGTH) {
+                                self.known_length_vars
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .insert(xs_name.clone());
+                                if *offset > 0 {
+                                    self.known_strict_length_vars
+                                        .entry(name.clone())
+                                        .or_default()
+                                        .insert(xs_name.clone());
+                                }
+                            } else if is_intrinsic_or_public_name(fname, intrinsics::BYTES_LENGTH) {
+                                self.known_byte_length_vars
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .insert(xs_name.clone());
+                                if *offset > 0 {
+                                    self.known_strict_byte_length_vars
+                                        .entry(name.clone())
+                                        .or_default()
+                                        .insert(xs_name.clone());
+                                }
+                            }
                         }
                     } else if let Expr::Var(src_name) = value {
                         if let Some(bytes) = self.known_byte_length_vars.get(src_name).cloned() {
                             self.known_byte_length_vars.entry(name.clone()).or_default().extend(bytes);
                         }
+                        if let Some(bytes) = self.known_strict_byte_length_vars.get(src_name).cloned() {
+                            self.known_strict_byte_length_vars
+                                .entry(name.clone())
+                                .or_default()
+                                .extend(bytes);
+                        }
                         if let Some(lists) = self.known_length_vars.get(src_name).cloned() {
                             self.known_length_vars.entry(name.clone()).or_default().extend(lists);
+                        }
+                        if let Some(lists) = self.known_strict_length_vars.get(src_name).cloned() {
+                            self.known_strict_length_vars
+                                .entry(name.clone())
+                                .or_default()
+                                .extend(lists);
                         }
                     }
                 }
@@ -1615,8 +1679,8 @@ impl<'types> Codegen<'types> {
                                     && matches!(vexpr, Expr::Var(_) | Expr::Int(_) | Expr::Bool(_));
                                 if !direct_scalar {
                                     seq.push(N::SetLocal {
-                                        local: "__witchy_set_idx".into(),
-                                        value: Self::wir_convert(iw, ik, Kind::I32),
+                                        local: "__witchy_set_idx_i64".into(),
+                                        value: Self::wir_convert(iw, ik, Kind::I64),
                                     });
                                 }
                                 let slot_value = W::ToSlot(Box::new(vw), Self::wir_kind(vk));
@@ -1626,7 +1690,8 @@ impl<'types> Codegen<'types> {
                                         value: slot_value.clone(),
                                     });
                                 }
-                                let si = || W::GetLocal("__witchy_set_idx".to_string());
+                                let si64 = || W::GetLocal("__witchy_set_idx_i64".to_string());
+                                let si = || Self::wir_convert(si64(), Kind::I64, Kind::I32);
                                 let sv = || if direct_scalar {
                                     slot_value.clone()
                                 } else {
@@ -1671,12 +1736,21 @@ impl<'types> Codegen<'types> {
                                             "__witchy_checked_indexed_stores",
                                         ));
                                     }
-                                    let set_len = || self.sequence_length(name).unwrap_or_else(|| W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 });
+                                    let set_len = || W::Convert {
+                                        from: witchy_wir::wir::Kind::I32,
+                                        to: witchy_wir::wir::Kind::I64,
+                                        arg: Box::new(self.sequence_length(name).unwrap_or_else(|| W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 })),
+                                    };
                                     seq.push(N::If {
-                                        cond: bin(BinOp::GeU, si(), set_len()),
+                                        cond: W::Binary {
+                                            op: BinOp::GeU,
+                                            kind: witchy_wir::wir::Kind::I64,
+                                            lhs: Box::new(si64()),
+                                            rhs: Box::new(set_len()),
+                                        },
                                         then_: vec![N::Drop(W::Call {
                                             func: "list_at".into(),
-                                            args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],
+                                            args: vec![W::GetLocal(name.clone()), si64()],
                                         })],
                                         els: vec![],
                                         result: None,
@@ -1730,24 +1804,29 @@ impl<'types> Codegen<'types> {
                                 let iw = self.lower_expr(iexpr)?;
                                 let fw = self.lower_expr(fexpr)?;
                                 use witchy_wir::wir::BinOp;
-                                let bin = |op, l, r| W::Binary { op, kind: witchy_wir::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
                                 // Stash the index so the bounds check and the helper call
                                 // share it (the index expr is lowered once).
                                 seq.push(N::SetLocal {
-                                    local: "__witchy_set_idx".into(),
-                                    value: Self::wir_convert(iw, ik, Kind::I32),
+                                    local: "__witchy_set_idx_i64".into(),
+                                    value: Self::wir_convert(iw, ik, Kind::I64),
                                 });
-                                let si = || W::GetLocal("__witchy_set_idx".to_string());
+                                let si64 = || W::GetLocal("__witchy_set_idx_i64".to_string());
+                                let si = || Self::wir_convert(si64(), Kind::I64, Kind::I32);
                                 // (BUG-315) An out-of-range (or negative) `update_at` is a
                                 // runtime error on both backends — symmetric with the
                                 // `list.at` READ trap — never a silent no-op. See the
                                 // `SetAt` arm; `$list_at` carries the identical diagnostic.
                                 let upd_len = || W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 };
                                 seq.push(N::If {
-                                    cond: bin(BinOp::Or, bin(BinOp::Lt, si(), W::ConstI32(0)), bin(BinOp::Ge, si(), upd_len())),
+                                    cond: W::Binary {
+                                        op: BinOp::GeU,
+                                        kind: witchy_wir::wir::Kind::I64,
+                                        lhs: Box::new(si64()),
+                                        rhs: Box::new(Self::wir_convert(upd_len(), Kind::I32, Kind::I64)),
+                                    },
                                     then_: vec![N::Drop(W::Call {
                                         func: "list_at".into(),
-                                        args: vec![W::GetLocal(name.clone()), Self::wir_convert(si(), Kind::I32, Kind::I64)],
+                                        args: vec![W::GetLocal(name.clone()), si64()],
                                     })],
                                     els: vec![],
                                     result: None,
@@ -2409,6 +2488,23 @@ impl<'types> Codegen<'types> {
                         }));
                     }
                 }
+            }
+            if matches!(stmt,
+                Stmt::Expr(
+                    Expr::If { .. }
+                        | Expr::Match { .. }
+                        | Expr::Block(_)
+                        | Expr::While { .. }
+                        | Expr::For { .. }
+                        | Expr::WhileLet { .. }
+                ))
+            {
+                // Lowering visits speculative branches and loop bodies in a
+                // compiler-chosen order. Re-apply the exhaustive effect scan
+                // at the join so facts learned on one path cannot escape into
+                // a sibling or the following statement. Canonical loop facts
+                // and completed builder summaries are restored explicitly.
+                self.invalidate_range_built_lengths(stmt);
             }
             if i > 0 {
                 self.note_completed_range_builder(&block.stmts[i - 1], stmt);

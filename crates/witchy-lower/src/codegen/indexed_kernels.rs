@@ -106,15 +106,12 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
     }
 
     fn block_assigns(block: &Block, name: &str) -> bool {
-        block.stmts.iter().any(|stmt| match stmt {
-            Stmt::Assign { name: assigned, .. } => assigned == name,
-            Stmt::Expr(Expr::If { then_block, else_block, .. }) => {
-                block_assigns(then_block, name)
-                    || else_block.as_ref().is_some_and(|block| block_assigns(block, name))
-            }
-            Stmt::Expr(Expr::While { body, .. }) | Stmt::Expr(Expr::For { body, .. }) => block_assigns(body, name),
-            _ => false,
-        })
+        let mut scan = DevirtScan::default();
+        scan.walk_block(block);
+        scan.let_bind.contains_key(name)
+            || scan.other_bind.contains(name)
+            || scan.reassigned.contains(name)
+            || scan.opaque_call_roots.contains(name)
     }
 
     fn guarded_pairs(expr: &Expr, facts: &Facts) -> Vec<(String, String)> {
@@ -141,6 +138,42 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
         }).map(|list| (index.clone(), list.clone())).collect()
     }
 
+    fn invalidate_temporal_facts(stmt: &Stmt, facts: &mut Facts) {
+        let mut scan = DevirtScan::default();
+        scan.walk_stmt(stmt);
+        let shadowed: HashSet<_> = scan
+            .let_bind
+            .keys()
+            .cloned()
+            .chain(scan.other_bind.iter().cloned())
+            .collect();
+        let identity_invalidated: HashSet<_> = shadowed
+            .iter()
+            .cloned()
+            .chain(scan.reassigned.iter().cloned())
+            .chain(scan.opaque_call_roots.iter().cloned())
+            .collect();
+        let length_invalidated: HashSet<_> = shadowed
+            .into_iter()
+            .chain(scan.length_changing_reassigned)
+            .chain(scan.opaque_call_roots)
+            .collect();
+
+        for name in &identity_invalidated {
+            facts.aliases.remove(name);
+            facts.aliases.retain(|_, source| source != name);
+            facts.built.remove(name);
+            facts.countdown.remove(name);
+            facts.countdown.retain(|_, bound| bound != name);
+        }
+        if !length_invalidated.is_empty() {
+            for lists in facts.built.values_mut() {
+                lists.retain(|list| !length_invalidated.contains(list));
+            }
+            facts.built.retain(|_, lists| !lists.is_empty());
+        }
+    }
+
     fn walk_expr(expr: &Expr, facts: &mut Facts, out: &mut Vec<(Expr, Vec<(String, String)>)>) {
         match expr {
             Expr::While { body, .. } => {
@@ -150,9 +183,12 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
                 walk_block(body, &mut nested, out);
             }
             Expr::If { then_block, else_block, .. } => {
-                let mut nested = facts.clone();
-                walk_block(then_block, &mut nested, out);
-                if let Some(block) = else_block { walk_block(block, &mut nested, out); }
+                let mut then_facts = facts.clone();
+                walk_block(then_block, &mut then_facts, out);
+                if let Some(block) = else_block {
+                    let mut else_facts = facts.clone();
+                    walk_block(block, &mut else_facts, out);
+                }
             }
             _ => {}
         }
@@ -160,15 +196,19 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
 
     fn walk_block(block: &Block, facts: &mut Facts, out: &mut Vec<(Expr, Vec<(String, String)>)>) {
         for (position, stmt) in block.stmts.iter().enumerate() {
-            if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt {
-                if let Expr::Var(source) = value { facts.aliases.insert(name.clone(), source.clone()); }
-                else { facts.aliases.remove(name); facts.countdown.remove(name); }
-            }
+            let mut completed_countdown = None;
             if let Stmt::Expr(expr) = stmt {
                 walk_expr(expr, facts, out);
-                if let Some((index, bound)) = normal_countdown(expr, facts) {
-                    facts.countdown.insert(index, bound);
-                }
+                completed_countdown = normal_countdown(expr, facts);
+            }
+            invalidate_temporal_facts(stmt, facts);
+            if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt
+                && let Expr::Var(source) = value
+            {
+                facts.aliases.insert(name.clone(), source.clone());
+            }
+            if let Some((index, bound)) = completed_countdown {
+                facts.countdown.insert(index, bound);
             }
             range_builder(position.checked_sub(1).and_then(|previous| block.stmts.get(previous)), stmt, facts);
         }
@@ -286,30 +326,167 @@ pub(super) struct ProvenIndexDomain {
 }
 
 impl<'types> Codegen<'types> {
+    /// Drop facts attached to the old generation of a directly rebound local
+    /// before the assignment's RHS is analyzed. A same-length set_at retains
+    /// the generation; `update_range_value_binding` separately checks that the
+    /// replacement element stays inside any exact value domain.
+    pub(super) fn prepare_range_fact_binding(&mut self, stmt: &Stmt) {
+        let (Stmt::Let { name, .. } | Stmt::Assign { name, .. }) = stmt else {
+            return;
+        };
+        if matches!(stmt,
+            Stmt::Assign { value, .. }
+                if matches!(analysis::self_inplace_op(name, value),
+                    Some(analysis::InPlaceOp::SetAt(_, _))))
+        {
+            return;
+        }
+
+        self.known_non_negative_vars.remove(name);
+        self.known_non_negative_upper_vars.remove(name);
+        self.known_static_list_lengths.remove(name);
+        self.known_length_vars.remove(name);
+        self.known_strict_length_vars.remove(name);
+        self.known_byte_length_vars.remove(name);
+        self.known_strict_byte_length_vars.remove(name);
+        for roots in self.known_length_vars.values_mut() {
+            roots.remove(name);
+        }
+        self.known_length_vars.retain(|_, roots| !roots.is_empty());
+        for roots in self.known_strict_length_vars.values_mut() {
+            roots.remove(name);
+        }
+        self.known_strict_length_vars
+            .retain(|_, roots| !roots.is_empty());
+        for roots in self.known_byte_length_vars.values_mut() {
+            roots.remove(name);
+        }
+        self.known_byte_length_vars
+            .retain(|_, roots| !roots.is_empty());
+        for roots in self.known_strict_byte_length_vars.values_mut() {
+            roots.remove(name);
+        }
+        self.known_strict_byte_length_vars
+            .retain(|_, roots| !roots.is_empty());
+        self.range_built_lists.remove(name);
+        for roots in self.range_built_lists.values_mut() {
+            roots.remove(name);
+        }
+        self.range_built_lists.retain(|_, roots| !roots.is_empty());
+        self.range_value_lists.remove(name);
+        for roots in self.range_value_lists.values_mut() {
+            roots.remove(name);
+        }
+        self.range_value_lists.retain(|_, roots| !roots.is_empty());
+        self.range_value_vars.retain(|value, (domain, root)| {
+            value != name && domain != name && root != name
+        });
+    }
+
     pub(super) fn invalidate_range_built_lengths(&mut self, stmt: &Stmt) {
         let mut scan = DevirtScan::default();
         scan.walk_stmt(stmt);
+        let direct_binding = match stmt {
+            Stmt::Let { name, .. } | Stmt::Assign { name, .. } => Some(name.as_str()),
+            _ => None,
+        };
+        // This invalidation runs immediately before the current statement is
+        // lowered. Preserve only canonical loop-step locals: their entry facts
+        // are consumed by the loop proof, which independently checks ordering,
+        // rebinding, and calls. Every other value reassignment invalidates now,
+        // while a same-length set_at keeps root facts for the element-domain
+        // checker below to validate as the statement is lowered.
+        let preserved_loop_steps: HashSet<_> = match stmt {
+            Stmt::Expr(Expr::While { body, .. }) => scan
+                .reassigned
+                .iter()
+                .filter(|name| canonical_ordered_step(body, name).is_some())
+                .cloned()
+                .collect(),
+            _ => HashSet::new(),
+        };
         let invalidated: HashSet<_> = scan
             .length_changing_reassigned
-            .into_iter()
-            .chain(scan.opaque_call_roots)
+            .iter()
+            .filter(|name| {
+                direct_binding != Some(name.as_str()) && !preserved_loop_steps.contains(*name)
+            })
+            .cloned()
+            .chain(scan.opaque_call_roots.iter().cloned())
+            .chain(
+                scan.let_bind
+                    .keys()
+                    .filter(|name| direct_binding != Some(name.as_str()))
+                    .cloned(),
+            )
+            .chain(
+                scan.other_bind
+                    .iter()
+                    .filter(|name| direct_binding != Some(name.as_str()))
+                    .cloned(),
+            )
             .collect();
-        for bound in &invalidated {
-            self.range_built_lists.remove(bound);
-            self.range_value_lists.remove(bound);
-            self.range_value_vars.retain(|_, (domain, _)| domain != bound);
-        }
-        for bound in scan
+        let binding_invalidated: HashSet<_> = scan
             .let_bind
             .keys()
-            .chain(&scan.other_bind)
-            .chain(&scan.reassigned)
-        {
+            .filter(|name| direct_binding != Some(name.as_str()))
+            .cloned()
+            .chain(
+                scan.other_bind
+                    .iter()
+                    .filter(|name| direct_binding != Some(name.as_str()))
+                    .cloned(),
+            )
+            .chain(
+                scan.reassigned
+                    .iter()
+                    .filter(|name| {
+                        direct_binding != Some(name.as_str())
+                            && !preserved_loop_steps.contains(*name)
+                    })
+                    .cloned(),
+            )
+            .collect();
+        for bound in &invalidated {
+            self.known_non_negative_vars.remove(bound);
+            self.known_non_negative_upper_vars.remove(bound);
+            self.known_static_list_lengths.remove(bound);
+            self.known_length_vars.remove(bound);
+            self.known_strict_length_vars.remove(bound);
+            self.known_byte_length_vars.remove(bound);
+            self.known_strict_byte_length_vars.remove(bound);
             self.range_built_lists.remove(bound);
             self.range_value_lists.remove(bound);
-            self.range_value_vars.retain(|_, (domain, _)| domain != bound);
+            self.range_value_vars.retain(|value, (domain, root)| {
+                value != bound && domain != bound && root != bound
+            });
+        }
+        for bound in &binding_invalidated {
+            self.range_built_lists.remove(bound);
+            self.range_value_lists.remove(bound);
+            self.range_value_vars
+                .retain(|value, (domain, _)| value != bound && domain != bound);
         }
         if !invalidated.is_empty() {
+            for roots in self.known_length_vars.values_mut() {
+                roots.retain(|root| !invalidated.contains(root));
+            }
+            self.known_length_vars.retain(|_, roots| !roots.is_empty());
+            for roots in self.known_strict_length_vars.values_mut() {
+                roots.retain(|root| !invalidated.contains(root));
+            }
+            self.known_strict_length_vars
+                .retain(|_, roots| !roots.is_empty());
+            for roots in self.known_byte_length_vars.values_mut() {
+                roots.retain(|root| !invalidated.contains(root));
+            }
+            self.known_byte_length_vars
+                .retain(|_, roots| !roots.is_empty());
+            for roots in self.known_strict_byte_length_vars.values_mut() {
+                roots.retain(|root| !invalidated.contains(root));
+            }
+            self.known_strict_byte_length_vars
+                .retain(|_, roots| !roots.is_empty());
             for lists in self.range_built_lists.values_mut() {
                 lists.retain(|list| !invalidated.contains(list));
             }
@@ -604,6 +781,7 @@ impl<'types> Codegen<'types> {
             body,
             intrinsics::LIST_LENGTH,
             &self.known_length_vars,
+            &self.known_strict_length_vars,
         )
     }
 
@@ -620,6 +798,7 @@ impl<'types> Codegen<'types> {
             body,
             intrinsics::BYTES_LENGTH,
             &self.known_byte_length_vars,
+            &self.known_strict_byte_length_vars,
         )
     }
 
@@ -629,6 +808,7 @@ impl<'types> Codegen<'types> {
         body: &Block,
         length_intrinsic: &str,
         known_length_vars: &HashMap<String, HashSet<String>>,
+        known_strict_length_vars: &HashMap<String, HashSet<String>>,
     ) -> Vec<(String, String)> {
         if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide) {
             return Vec::new();
@@ -662,19 +842,29 @@ impl<'types> Codegen<'types> {
         };
         let mut scan = DevirtScan::default();
         scan.walk_block(body);
-        let mut assignments = 0;
-        if !increasing_induction(
-            body,
-            index,
-            &mut assignments,
-            &self.known_non_negative_vars,
-        ) || assignments == 0
-        {
+        // The condition proves the entry value is in range, not every value
+        // the body may assign.  Keep the proof statement-ordered: all accesses
+        // must precede one unit increment, and the exhaustive scans around it
+        // must find no hidden rebind (match/block/lambda included).
+        if canonical_ordered_step(body, index) != Some(1) {
             return Vec::new();
         }
         let mut pairs = Vec::new();
         for guard in guards {
             let Expr::Binary { rhs, .. } = guard else { unreachable!() };
+            let bound_stable = match rhs.as_ref() {
+                Expr::Var(bound) => {
+                    let step = canonical_ordered_step(body, bound);
+                    !scan.let_bind.contains_key(bound)
+                        && !scan.other_bind.contains(bound)
+                        && !scan.opaque_call_roots.contains(bound)
+                        && (!scan.reassigned.contains(bound) || step == Some(-1))
+                }
+                _ => true,
+            };
+            if !bound_stable {
+                continue;
+            }
             let candidate_roots: Vec<String> = match rhs.as_ref() {
                 Expr::Call { name, args }
                     if is_length_call(name)
@@ -697,18 +887,19 @@ impl<'types> Codegen<'types> {
             for root in candidate_roots {
                 let root_length_stable = !scan.let_bind.contains_key(&root)
                     && !scan.other_bind.contains(&root)
-                    && !scan.length_changing_reassigned.contains(&root);
+                    && !scan.length_changing_reassigned.contains(&root)
+                    && !scan.opaque_call_roots.contains(&root);
                 if !root_length_stable {
                     continue;
                 }
                 pairs.push((index.clone(), root.clone()));
-                if let Expr::Var(upper) = rhs.as_ref() {
-                    let mut upper_assignments = 0;
-                    if decreasing_induction(body, upper, &mut upper_assignments)
-                        && upper_assignments > 0
-                    {
-                        pairs.push((upper.clone(), root));
-                    }
+                if let Expr::Var(upper) = rhs.as_ref()
+                    && known_strict_length_vars
+                        .get(upper)
+                        .is_some_and(|roots| roots.contains(&root))
+                    && canonical_ordered_step(body, upper) == Some(-1)
+                {
+                    pairs.push((upper.clone(), root));
                 }
             }
         }
@@ -917,39 +1108,7 @@ impl<'types> Codegen<'types> {
             return None;
         }
 
-        // Determine step and direction from body assignments
-        let mut step = 0i64;
-        for stmt in &body.stmts {
-            if let Stmt::Assign { name, value } = stmt {
-                if name == &local {
-                    match value {
-                        Expr::Binary { op: BinOp::Add, lhs, rhs }
-                            if matches!(lhs.as_ref(), Expr::Var(v) if v == &local) =>
-                        {
-                            if let Expr::Int(s) = rhs.as_ref() {
-                                if *s > 0 {
-                                    step = *s;
-                                }
-                            }
-                        }
-                        Expr::Binary { op: BinOp::Sub, lhs, rhs }
-                            if matches!(lhs.as_ref(), Expr::Var(v) if v == &local) =>
-                        {
-                            if let Expr::Int(s) = rhs.as_ref() {
-                                if *s > 0 {
-                                    step = -*s;
-                                }
-                            }
-                        }
-                        _ => return None,
-                    }
-                }
-            }
-        }
-
-        if step == 0 {
-            return None;
-        }
+        let step = canonical_ordered_step(body, &local)?;
 
         let max_trip_count = if let Expr::Int(bound) = bound_expr {
             if step > 0 && (comp == BinOp::Lt || comp == BinOp::LtEq) {
@@ -1462,82 +1621,56 @@ fn pure_expr_reads_address(
     }
 }
 
-fn increasing_induction<S: std::hash::BuildHasher>(
-    block: &Block,
-    index: &str,
-    assignments: &mut usize,
-    known_nonnegative: &std::collections::HashSet<String, S>,
-) -> bool {
-    for statement in &block.stmts {
-        match statement {
-            Stmt::Assign { name, value } if name == index => {
-                *assignments += 1;
-                let Expr::Binary { op: BinOp::Add, lhs, rhs } = value else {
-                    return false;
-                };
-                let step_is_nonnegative = match rhs.as_ref() {
-                    Expr::Int(step) => *step >= 0,
-                    Expr::Var(step) => known_nonnegative.contains(step),
-                    _ => false,
-                };
-                if !matches!(lhs.as_ref(), Expr::Var(var) if var == index)
-                    || !step_is_nonnegative {
-                    return false;
-                }
+/// Return the single literal step of a canonical loop body. The exhaustive
+/// scans on either side of the assignment reject hidden rebinds in every AST
+/// form. Indexed accesses must precede the update: the loop condition proves
+/// the entry value, while the next iteration rechecks the updated value.
+fn canonical_ordered_step(block: &Block, index: &str) -> Option<i64> {
+    let mut assignment = None;
+    for (position, statement) in block.stmts.iter().enumerate() {
+        if matches!(statement, Stmt::Assign { name, .. } if name == index) {
+            if assignment.replace(position).is_some() {
+                return None;
             }
-            Stmt::Let { name, .. } if name == index => return false,
-            Stmt::Expr(Expr::While { body, .. }) => {
-                if !increasing_induction(body, index, assignments, known_nonnegative) {
-                    return false;
-                }
-            }
-            Stmt::Expr(Expr::If { then_block, else_block, .. }) => {
-                if !increasing_induction(then_block, index, assignments, known_nonnegative)
-                    || else_block.as_ref().is_some_and(|block| {
-                        !increasing_induction(block, index, assignments, known_nonnegative)
-                    })
-                {
-                    return false;
-                }
-            }
-            _ => {}
         }
     }
-    true
-}
+    let position = assignment?;
+    let Stmt::Assign { value, .. } = &block.stmts[position] else { unreachable!() };
+    let step = match value {
+        Expr::Binary { op: BinOp::Add, lhs, rhs }
+            if matches!(lhs.as_ref(), Expr::Var(var) if var == index) =>
+        {
+            let Expr::Int(step) = rhs.as_ref() else { return None };
+            (*step > 0).then_some(*step)
+        }
+        Expr::Binary { op: BinOp::Sub, lhs, rhs }
+            if matches!(lhs.as_ref(), Expr::Var(var) if var == index) =>
+        {
+            let Expr::Int(step) = rhs.as_ref() else { return None };
+            if *step > 0 { step.checked_neg() } else { None }
+        }
+        _ => None,
+    }?;
 
-fn decreasing_induction(block: &Block, index: &str, assignments: &mut usize) -> bool {
-    for statement in &block.stmts {
-        match statement {
-            Stmt::Assign { name, value } if name == index => {
-                *assignments += 1;
-                if !matches!(value,
-                    Expr::Binary { op: BinOp::Sub, lhs, rhs }
-                        if matches!(lhs.as_ref(), Expr::Var(var) if var == index)
-                            && matches!(rhs.as_ref(), Expr::Int(step) if *step >= 0))
-                {
-                    return false;
-                }
-            }
-            Stmt::Let { name, .. } if name == index => return false,
-            Stmt::Expr(Expr::While { body, .. }) => {
-                if !decreasing_induction(body, index, assignments) {
-                    return false;
-                }
-            }
-            Stmt::Expr(Expr::If { then_block, else_block, .. }) => {
-                if !decreasing_induction(then_block, index, assignments)
-                    || else_block
-                        .as_ref()
-                        .is_some_and(|block| !decreasing_induction(block, index, assignments))
-                {
-                    return false;
-                }
-            }
-            _ => {}
-        }
+    let mut before = DevirtScan::default();
+    for statement in &block.stmts[..position] {
+        before.walk_stmt(statement);
     }
-    true
+    let mut after = DevirtScan::default();
+    for statement in &block.stmts[position + 1..] {
+        after.walk_stmt(statement);
+    }
+    let invalidates = |scan: &DevirtScan| {
+        scan.let_bind.contains_key(index)
+            || scan.other_bind.contains(index)
+            || scan.reassigned.contains(index)
+            || scan.opaque_call_roots.contains(index)
+    };
+    let indexed_after = after
+        .indexed_accesses
+        .keys()
+        .any(|(candidate, _)| candidate == index);
+    (!invalidates(&before) && !invalidates(&after) && !indexed_after).then_some(step)
 }
 
 #[cfg(test)]

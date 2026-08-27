@@ -445,6 +445,103 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(ok), vec!["30".to_string()], "compiled WASM must agree");
     }
 
+    /// A loop condition proves an index only at body entry.  Reassigning the
+    /// index before an access, widening a saved bound, shrinking the sequence,
+    /// or reading `upper == length` before its decrement must retain the normal
+    /// trap.  These were capability-free optimized-Wasm OOB reads while the
+    /// interpreter and `WITCHY_OPT=none` correctly rejected every program.
+    #[test]
+    fn bounds_elision_rejects_unstable_loop_facts() {
+        let cases = [
+            (
+                "increment before access",
+                "fn main(console: Console):\n    let xs = [111]\n    var i = 0\n    while i < xs.length():\n        i = i + 1\n        console.print(\"${xs[i]}\")\n",
+            ),
+            (
+                "match-hidden reassignment",
+                "fn main(console: Console):\n    let xs = [111]\n    var i = 0\n    while i < xs.length():\n        match i:\n            0 -> i = 1\n            _ -> Nil\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "branch facts do not flow into sibling paths",
+                "fn main(console: Console):\n    var i = 0\n    if true:\n        i = 0 - 1\n    else:\n        i = 0\n    let xs = [111]\n    while i < xs.length():\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "widened saved bound",
+                "fn main(console: Console):\n    let xs = [111]\n    var n = xs.length()\n    var i = 0\n    while i < n:\n        n = 3\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "upper used before decrement",
+                "fn main(console: Console):\n    let xs = [111]\n    var upper = xs.length()\n    var i = 0\n    while i < upper:\n        console.print(\"${xs[upper]}\")\n        upper = upper - 1\n        i = i + 1\n",
+            ),
+            (
+                "while root shrunk after guard",
+                "import list\n\nfn main(console: Console):\n    var xs = [111]\n    var i = 0\n    while i < xs.length():\n        let _removed = xs.pop()\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "for root shrunk after range creation",
+                "import list\n\nfn main(console: Console):\n    var xs = [111]\n    for i in 0..xs.length():\n        let _removed = xs.pop()\n        console.print(\"${xs[i]}\")\n",
+            ),
+            (
+                "byte index hidden below zero",
+                "import bytes\n\nfn main(console: Console):\n    let xs = bytes.from_string(\"x\")\n    var i = 0\n    while i < bytes.length(xs):\n        match i:\n            0 -> i = 0 - 1\n            _ -> Nil\n        console.print(\"${bytes.at(xs, i)}\")\n        i = i + 3\n",
+            ),
+            (
+                "out-of-bounds store after hidden reassignment",
+                "fn main(console: Console):\n    var xs = [111]\n    var i = 0\n    while i < xs.length():\n        match i:\n            0 -> i = 1\n            _ -> Nil\n        xs[i] = 222\n        i = i + 1\n    console.print(\"unreachable\")\n",
+            ),
+            (
+                "wide store index must not narrow before its check",
+                "fn main(console: Console):\n    var xs = [111]\n    var i = 0 - 4294967296\n    while i < 1:\n        xs[i] = 222\n        console.print(\"${xs[0]}\")\n        return Nil\n        i = i + 1\n",
+            ),
+            (
+                "saved length invalidated before loop",
+                "import list\n\nfn main(console: Console):\n    var xs = [111]\n    let stale = xs.length()\n    let _removed = xs.pop()\n    var i = 0\n    while i < stale:\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "guarded range fact invalidated between loops",
+                "import list\n\nfn attack(let n: Int) -> Int:\n    var count = []\n    for i in 0..n:\n        list.push(count, 0)\n    var r = n\n    while r != 1:\n        list.set_at(count, r - 1, r)\n        r = r - 1\n    let _first = count.pop()\n    let _second = count.pop()\n    var advanced = false\n    while !advanced:\n        if r == n:\n            return 0\n        list.set_at(count, r, 777)\n        if list.at(count, r) > 0:\n            advanced = true\n        else:\n            r = r + 1\n    555\n\nfn main(console: Console):\n    console.print(\"${attack(3)}\")\n",
+            ),
+            (
+                "nonnegative fact invalidated by var call",
+                "fn make_negative(var value: Int):\n    value = 0 - 1\n\nfn main(console: Console):\n    let xs = [111]\n    var i = 0\n    make_negative(i)\n    while i < xs.length():\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "length-bound fact invalidated by var call",
+                "fn widen(var value: Int):\n    value = 3\n\nfn main(console: Console):\n    let xs = [111]\n    var limit = xs.length()\n    widen(limit)\n    var i = 0\n    while i < limit:\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+            ),
+            (
+                "capability-free dependency corrupts caller path",
+                "fn slice(text: String) -> String:\n    let padding = [0]\n    var scratch = [text]\n    var i = 0\n    while i < scratch.length():\n        match i:\n            0 -> i = 0 - 5\n            _ -> Nil\n        scratch[i] = \"evil.json\"\n        i = i + 7\n    if padding.length() == 0:\n        return \"unreachable\"\n    text\n\nfn main(console: Console):\n    let publisher_path = [\"safe.json\"]\n    let _ignored = slice(\"input\")\n    console.print(publisher_path[0])\n",
+            ),
+            (
+                "wrapping addition invalidates nonnegative fact",
+                "fn main(console: Console):\n    let xs = [111]\n    var i = 9223372036854775807\n    i = i + 9223372032559808513\n    while i < xs.length():\n        console.print(\"${xs[i]}\")\n        return Nil\n        i = i + 1\n",
+            ),
+            (
+                "local facts do not cross function units",
+                "fn seed_fact() -> Int:\n    let xs = [1]\n    var i = 0\n    var observed = 0\n    while i < xs.length():\n        observed = xs[i]\n        i = i + 1\n    observed\n\nfn victim(var i: Int) -> Int:\n    let xs = [111]\n    while i < xs.length():\n        return xs[i]\n        i = i + 1\n    0\n\nfn main(console: Console):\n    let _seed = seed_fact()\n    var attack_i = 0 - 4294967296\n    console.print(\"${victim(attack_i)}\")\n",
+            ),
+        ];
+
+        for (name, src) in cases {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).unwrap_or_else(|error| panic!("{name} typechecks: {error}"));
+            assert!(
+                interpreter::run_module(linked.clone(), ".", Vec::new()).is_err(),
+                "interpreter must reject {name}",
+            );
+
+            crate::opt::set_for_tests(Some(crate::opt::OptSet::all()));
+            let compiled = codegen::compile_module_binary(&linked);
+            crate::opt::set_for_tests(None);
+            let bytes = compiled.expect_lowered(name);
+            assert!(
+                crate::run_wasm_bytes(&bytes).is_err(),
+                "optimized Wasm must retain the bounds trap for {name}",
+            );
+        }
+    }
+
     /// `trim` must strip exactly the same whitespace on both backends. The WASM
     /// `$is_ws` helper handles the 6 ASCII whitespace bytes (incl. VT/FF); Rust's
     /// `str::trim` would also strip Unicode whitespace (e.g. NBSP), which WASM does

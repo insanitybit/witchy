@@ -837,6 +837,13 @@ struct SavedScope {
     list_nesting: HashMap<String, (usize, NestBottom)>,
     fn_ret_kind: HashMap<String, Kind>,
     fn_ownership: HashMap<String, ClosureOwnershipEnvelope>,
+    known_non_negative_vars: HashSet<String>,
+    known_non_negative_upper_vars: HashMap<String, i64>,
+    known_byte_length_vars: HashMap<String, HashSet<String>>,
+    known_strict_byte_length_vars: HashMap<String, HashSet<String>>,
+    known_length_vars: HashMap<String, HashSet<String>>,
+    known_strict_length_vars: HashMap<String, HashSet<String>>,
+    known_static_list_lengths: HashMap<String, i64>,
     ret: Kind,
     ret_ty: Option<Type>,
     ret_slot: bool,
@@ -1011,10 +1018,17 @@ struct Codegen<'types> {
     /// or native (`math.sqrt`, `crypto.ed25519_verify`) is NOT one, so it defers.
     emitted_funcs: HashSet<String>,
     known_non_negative_vars: HashSet<String>,
+    /// Finite upper bounds that make non-negative arithmetic wrap-safe.
+    known_non_negative_upper_vars: HashMap<String, i64>,
     /// Immutable byte-length snapshots, tracked separately from lists so a
     /// byte proof can never install a list layout/cursor plan.
     known_byte_length_vars: HashMap<String, HashSet<String>>,
+    /// Byte-length snapshots known to be at least one greater than the local.
+    known_strict_byte_length_vars: HashMap<String, HashSet<String>>,
     known_length_vars: HashMap<String, HashSet<String>>,
+    /// List-length snapshots known to be at least one greater than the local.
+    /// Only these may authorize using a decreasing upper cursor as an index.
+    known_strict_length_vars: HashMap<String, HashSet<String>>,
     /// Exact lengths of local list literals. This is deliberately invalidated
     /// by every unknown rebinding or length-changing mutator; it is only used
     /// for local range facts such as a masked histogram bucket index.
@@ -1695,8 +1709,11 @@ impl<'types> Codegen<'types> {
             collect_source_map: false,
             emitted_funcs: HashSet::new(),
             known_non_negative_vars: HashSet::new(),
+            known_non_negative_upper_vars: HashMap::new(),
             known_byte_length_vars: HashMap::new(),
+            known_strict_byte_length_vars: HashMap::new(),
             known_length_vars: HashMap::new(),
+            known_strict_length_vars: HashMap::new(),
             known_static_list_lengths: HashMap::new(),
             range_built_lists: HashMap::new(),
             range_value_lists: HashMap::new(),
@@ -4876,10 +4893,11 @@ impl<'types> Codegen<'types> {
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
         locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: ABORT_STR_TMP.into(), ty: i32t() });
-        // Scratch slots for the inlined in-place `set_at` fast path (index i32,
-        // value i64): the common in-bounds + owned case stores directly without a
-        // `$list_set_cap` call; the helper is only invoked for OOB / re-own.
+        // Scratch slots for the inlined in-place `set_at` fast path. Keep the
+        // language index as i64 through its bounds check; only the proven-safe
+        // address/helper operand narrows to i32.
         locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
+        locals.push(WirLocal { name: "__witchy_set_idx_i64".into(), ty: i64t() });
         locals.push(WirLocal { name: "__witchy_set_val".into(), ty: i64t() });
         // (RFC-0016) RC-floor free-at-overwrite scratch: the freshly-allocated
         // buffer (a heap pointer) before the old one is freed and the var rebound.
@@ -5098,6 +5116,15 @@ impl<'types> Codegen<'types> {
     /// Begin a compile unit (function/lambda body): run the
     /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
+        // These are local-definition facts. A Codegen instance is reused for
+        // functions and generated lambdas, so no name-keyed fact may cross a
+        // unit boundary and attach to a different local with the same spelling.
+        self.known_non_negative_vars.clear();
+        self.known_non_negative_upper_vars.clear();
+        self.known_byte_length_vars.clear();
+        self.known_strict_byte_length_vars.clear();
+        self.known_length_vars.clear();
+        self.known_strict_length_vars.clear();
         self.range_built_lists.clear();
         self.range_value_lists.clear();
         self.range_value_vars.clear();
@@ -9797,6 +9824,7 @@ impl<'types> Codegen<'types> {
                 // Scratch slots for the inlined in-place set_at/push fast path (a
                 // self-assign accumulator can live inside a lifted lambda body too).
                 locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
+                locals.push(WirLocal { name: "__witchy_set_idx_i64".into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: "__witchy_set_val".into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: "__rc_new".into(), ty: WirTy::Int });
                 locals.push(WirLocal {
@@ -10073,6 +10101,21 @@ impl<'types> Codegen<'types> {
             list_nesting: std::mem::take(&mut self.local_list_nesting),
             fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
             fn_ownership: std::mem::take(&mut self.local_fn_ownership),
+            known_non_negative_vars: std::mem::take(&mut self.known_non_negative_vars),
+            known_non_negative_upper_vars: std::mem::take(
+                &mut self.known_non_negative_upper_vars,
+            ),
+            known_byte_length_vars: std::mem::take(&mut self.known_byte_length_vars),
+            known_strict_byte_length_vars: std::mem::take(
+                &mut self.known_strict_byte_length_vars,
+            ),
+            known_length_vars: std::mem::take(&mut self.known_length_vars),
+            known_strict_length_vars: std::mem::take(
+                &mut self.known_strict_length_vars,
+            ),
+            known_static_list_lengths: std::mem::take(
+                &mut self.known_static_list_lengths,
+            ),
             ret: self.cur_fn_ret_kind,
             ret_ty: self.cur_fn_ret_ty.take(),
             ret_slot: self.cur_fn_ret_slot,
@@ -10140,6 +10183,13 @@ impl<'types> Codegen<'types> {
         self.local_list_nesting = s.list_nesting;
         self.local_fn_ret_kind = s.fn_ret_kind;
         self.local_fn_ownership = s.fn_ownership;
+        self.known_non_negative_vars = s.known_non_negative_vars;
+        self.known_non_negative_upper_vars = s.known_non_negative_upper_vars;
+        self.known_byte_length_vars = s.known_byte_length_vars;
+        self.known_strict_byte_length_vars = s.known_strict_byte_length_vars;
+        self.known_length_vars = s.known_length_vars;
+        self.known_strict_length_vars = s.known_strict_length_vars;
+        self.known_static_list_lengths = s.known_static_list_lengths;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_ret_ty = s.ret_ty;
         self.cur_fn_ret_slot = s.ret_slot;

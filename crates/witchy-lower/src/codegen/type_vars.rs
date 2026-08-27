@@ -220,16 +220,26 @@ impl DevirtScan {
             | Expr::TaggedLit { .. } => {}
             Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| self.walk_expr(x)),
             Expr::Call { name, args } => {
-                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::LIST_SET_AT)
+                let names = |intrinsic: &str| {
+                    name == intrinsic
+                        || witchy_syntax::intrinsics::lookup(intrinsic)
+                            .is_some_and(|spec| name == spec.diagnostic_name)
+                };
+                if (names(intrinsics::LIST_AT) || names(intrinsics::LIST_SET_AT))
                     && args.len() >= 2
                 {
                     if let (Expr::Var(list), Some((index, offset))) = (&args[0], affine_index(&args[1])) {
                         self.record_indexed_access(index, list, offset);
                     }
-                } else if name == intrinsics::LIST_LENGTH {
+                } else if names(intrinsics::LIST_LENGTH) || names(intrinsics::BYTES_LENGTH) {
                     if let Some(Expr::Var(root)) = args.first() {
                         self.length_reads.insert(root.clone());
                     }
+                } else if names(intrinsics::BYTES_AT) || names(intrinsics::BYTES_SET_AT) {
+                    // Byte reads and same-length writes cannot invalidate the
+                    // root identity or the length used by a bounds proof.
+                    // They have their own lowering, so do not register them as
+                    // list sequence-plan candidates.
                 } else {
                     for argument in args {
                         if let Expr::Var(root) = argument {
@@ -523,11 +533,13 @@ fn bounds_elide_pair_for_length(
         !scan.let_bind.contains_key(n)
             && !scan.other_bind.contains(n)
             && !scan.length_changing_reassigned.contains(n)
+            && !scan.opaque_call_roots.contains(n)
     };
     let counter_stable = |n: &str| {
         !scan.let_bind.contains_key(n)
             && !scan.other_bind.contains(n)
             && !scan.reassigned.contains(n)
+            && !scan.opaque_call_roots.contains(n)
     };
     (list_length_stable(&xs) && counter_stable(var)).then_some((var.to_string(), xs))
 }
