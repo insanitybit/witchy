@@ -148,6 +148,7 @@ mod tests {
                 ownership: LaneOwnership::Move,
                 initially_initialized: true,
             }],
+            result_lanes: vec![FrameLaneId(0)],
             states: vec![
                 ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition {
                     condition: witchy_types::typed_execution::ExecutionEdgeCondition::Always,
