@@ -72,7 +72,7 @@ RFC.
 |---|---|---|---|
 | Public task, child, channel, close, cancellation, select, and turn semantics | RFC review | proposed | RFC-0161 |
 | Scope brand, affine Task/container rules, and conditional ownership checking | accepted surface semantics | pending | - |
-| Canonical `AsyncProgram` schema, encoder, frame lanes, ownership transitions, and backend binding | accepted surface semantics | pending | - |
+| Canonical `AsyncProgram` schema, encoder, frame lanes, ownership transitions, and backend binding | accepted surface semantics | partial | Source-control preservation and final-layout schema are merged (`071dcfe03`, `003834abd`, `6a4b1a776`, `d9eef9cf5`, `b646d0d86` through `416befef8`). They deliberately do not yet resolve source operands or execute a normal source program. |
 | Typed queue shape and materialization ABI | RFC-0055 and RFC-0127 constraints | pending | - |
 | `PendingMove(T)` and result-lane ABI | affine checker and queue ownership | pending | - |
 | Intrusive wait record and rendezvous probe/register/match/commit/cancel ABI | accepted select, close, cancellation, and host event rules | pending | - |
@@ -103,7 +103,7 @@ Rows 1 through 10 are imported from RFC-0152 without weakening.
 | 12. explicit channel lifecycle | all capacity modes, affine owner, close/drain/deadlock, waiter order, rendezvous matrix, duplicate endpoints, and `PendingMove` restoration on every non-commit path | pending | - |
 | 13. cooperative cancellation safety | request, wake, close, child selection, scope `return`/`?`, repeat request, non-cooperation, exact traces, and no abandoned must lane | pending | - |
 | 14. one runtime architecture | every static/dynamic path shares slots, turns, waits, cancellation, and queues; census rejects old CPS, scalar recognizers, specialized entries, and a second scheduler | pending | - |
-| 15. async program generality | one kernel or source rejection; canonical schema/fingerprint, closure-layout drift, lane masks, terminal edges, static and dynamic async calls, dynamic select, actor, and pipeline | pending | - |
+| 15. async program generality | one kernel or source rejection; canonical schema/fingerprint, closure-layout drift, lane masks, terminal edges, static and dynamic async calls, dynamic select, actor, and pipeline | partial | Lossless pre-CPS source control topology and final typed-state bindings are merged (`071dcfe03`, `003834abd`, `6a4b1a776`, `d9eef9cf5`, `618ec0817`, `a26427512`, `216808703`, `470e368c7`, `325fa1d91`); canonical fully typed-program validation is merged (`b646d0d86` through `416befef8`). No source-to-executable operation/operand producer or complete kernel exists yet. |
 | 16. host readiness | timer and capability I/O prove scripted admission, finish, losing drain, acknowledged cancel, late/stale completion, bounded state, and no obligation leak | pending | - |
 | 17. source migration | type-resolved repository/public-fixture census, external-source diagnostics, one release cut, no compatibility path or stale artifact | pending | - |
 | 18. installed workflow | clean installed binary runs structured bounded workflow and reports constructed deadlock | pending | - |
