@@ -186,10 +186,12 @@ fn link_file(path: &Path, source_index: &BTreeMap<String, Vec<PathBuf>>) -> Resu
             let import_path = if sibling.exists() || linker::std_source(import).is_some() {
                 sibling
             } else {
-                source_index.get(import).and_then(|candidates| match candidates.as_slice() {
-                    [only] => Some(only.clone()),
-                    _ => None,
-                }).unwrap_or(sibling)
+                dependency_source(&source_path, import)?
+                    .or_else(|| source_index.get(import).and_then(|candidates| match candidates.as_slice() {
+                        [only] => Some(only.clone()),
+                        _ => None,
+                    }))
+                    .unwrap_or(sibling)
             };
             pending.push_back((import.clone(), import_path));
         }
@@ -199,16 +201,67 @@ fn link_file(path: &Path, source_index: &BTreeMap<String, Vec<PathBuf>>) -> Resu
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Resolve a local package dependency before falling back to the global corpus
+/// index. Package-local names are intentionally allowed to collide, so the
+/// global index is only sound when it has exactly one candidate.
+fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, String> {
+    let Some(manifest) = source.ancestors().map(|directory| directory.join("witchy.toml"))
+        .find(|candidate| candidate.is_file())
+    else { return Ok(None); };
+    let text = std::fs::read_to_string(&manifest)
+        .map_err(|error| format!("cannot read `{}`: {error}", manifest.display()))?;
+    let document: toml::Value = toml::from_str(&text)
+        .map_err(|error| format!("cannot parse `{}`: {error}", manifest.display()))?;
+    let Some(path) = document.get("dependencies")
+        .and_then(|dependencies| dependencies.get(name))
+        .and_then(|dependency| dependency.get("path"))
+        .and_then(toml::Value::as_str)
+    else { return Ok(None); };
+    let root = manifest.parent().expect("manifest has a parent").join(path);
+    let bare = name.rsplit('/').next().unwrap_or(name);
+    for candidate in [
+        root.join("src").join(format!("{bare}.witchy")),
+        root.join(format!("{bare}.witchy")),
+        root.join("main.witchy"),
+    ] {
+        if candidate.is_file() { return Ok(Some(candidate)); }
+    }
+    let mut sources = Vec::new();
+    collect_witchy_files(&root, &mut sources)?;
+    sources.sort();
+    match sources.as_slice() {
+        [only] => Ok(Some(only.clone())),
+        _ => Err(format!(
+            "path dependency `{name}` from `{}` has no unambiguous entry source under `{}`",
+            manifest.display(), root.display(),
+        )),
+    }
+}
+
 fn display_from(root: &Path, path: &Path) -> String {
     path.strip_prefix(root).unwrap_or(path).display().to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::extract_witchy_blocks;
+    use super::{dependency_source, extract_witchy_blocks};
 
     #[test]
     fn extracts_only_complete_witchy_fences() {
         assert_eq!(extract_witchy_blocks("```witchy\nfn main():\n    1\n```\n```text\nignored\n```"), vec!["fn main():\n    1\n"]);
+    }
+
+    #[test]
+    fn resolves_a_package_local_path_dependency_before_the_global_index() {
+        let root = tempfile::tempdir().expect("temporary package root");
+        let app = root.path().join("app");
+        let dependency = root.path().join("dependency");
+        std::fs::create_dir_all(app.join("src")).expect("app source directory");
+        std::fs::create_dir_all(dependency.join("src")).expect("dependency source directory");
+        std::fs::write(app.join("witchy.toml"), "[dependencies]\nwidget = { path = \"../dependency\" }\n").expect("manifest");
+        std::fs::write(app.join("src/main.witchy"), "fn main():\n    1\n").expect("entry source");
+        let expected = dependency.join("src/widget.witchy");
+        std::fs::write(&expected, "fn value() -> Int:\n    1\n").expect("dependency source");
+        assert_eq!(dependency_source(&app.join("src/main.witchy"), "widget").expect("dependency lookup"), Some(expected));
     }
 }
