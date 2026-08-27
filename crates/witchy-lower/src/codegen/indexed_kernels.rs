@@ -510,6 +510,16 @@ impl<'types> Codegen<'types> {
     pub(super) fn invalidate_range_built_lengths(&mut self, stmt: &Stmt) {
         let mut scan = DevirtScan::default();
         scan.walk_stmt(stmt);
+        // A scalar read from an exact range-value list may be carried through a
+        // loop when every reassignment of that scalar is another read from the
+        // same value domain and every write to the list stores a value from that
+        // domain.  This is a loop invariant, not a generic reassignment waiver:
+        // an unproven write, rebind, or scalar assignment retains the checked
+        // fallback by leaving the name in the invalidation set below.
+        let preserved_range_value_scalars = match stmt {
+            Stmt::Expr(Expr::While { body, .. }) => self.range_value_loop_invariants(body),
+            _ => HashSet::new(),
+        };
         let direct_binding = match stmt {
             Stmt::Let { name, .. } | Stmt::Assign { name, .. } => Some(name.as_str()),
             _ => None,
@@ -533,7 +543,9 @@ impl<'types> Codegen<'types> {
             .length_changing_reassigned
             .iter()
             .filter(|name| {
-                direct_binding != Some(name.as_str()) && !preserved_loop_steps.contains(*name)
+                direct_binding != Some(name.as_str())
+                    && !preserved_loop_steps.contains(*name)
+                    && !preserved_range_value_scalars.contains(*name)
             })
             .cloned()
             .chain(scan.opaque_call_roots.iter().cloned())
@@ -567,6 +579,7 @@ impl<'types> Codegen<'types> {
                     .filter(|name| {
                         direct_binding != Some(name.as_str())
                             && !preserved_loop_steps.contains(*name)
+                            && !preserved_range_value_scalars.contains(*name)
                     })
                     .cloned(),
             )
@@ -619,6 +632,376 @@ impl<'types> Codegen<'types> {
                 lists.retain(|list| !invalidated.contains(list));
             }
             self.range_value_lists.retain(|_, lists| !lists.is_empty());
+        }
+    }
+
+    fn range_value_loop_invariants(&self, body: &Block) -> HashSet<String> {
+        self.range_value_vars
+            .iter()
+            .filter_map(|(scalar, (domain, root))| {
+                self.range_value_loop_preserves(body, scalar, domain, root)
+                    .then(|| scalar.clone())
+            })
+            .collect()
+    }
+
+    fn range_value_loop_preserves(
+        &self,
+        body: &Block,
+        scalar: &str,
+        domain: &str,
+        root: &str,
+    ) -> bool {
+        let mut domain_scalars: HashSet<String> = self
+            .range_value_vars
+            .iter()
+            .filter_map(|(name, (candidate_domain, candidate_root))| {
+                (candidate_domain == domain && candidate_root == root).then(|| name.clone())
+            })
+            .collect();
+        domain_scalars.insert(scalar.to_string());
+        self.range_value_block_preserves(body, scalar, domain, root, &mut domain_scalars)
+    }
+
+    fn range_value_block_preserves(
+        &self,
+        block: &Block,
+        scalar: &str,
+        domain: &str,
+        root: &str,
+        domain_scalars: &mut HashSet<String>,
+    ) -> bool {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let { name, value, .. } | Stmt::Assign { name, value } => {
+                    if !self.range_value_expr_writes_preserve(
+                        value,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                    if let Some(analysis::InPlaceOp::SetAt(_, element)) =
+                        analysis::self_inplace_op(name, value)
+                    {
+                        if name == root
+                            && !self.range_value_expr_in_domain(
+                                element,
+                                domain,
+                                root,
+                                domain_scalars,
+                            )
+                        {
+                            return false;
+                        }
+                        continue;
+                    }
+                    if name == root
+                        || (name == scalar
+                            && !self.range_value_expr_in_domain(
+                                value,
+                                domain,
+                                root,
+                                domain_scalars,
+                            ))
+                    {
+                        return false;
+                    }
+                    if self.range_value_expr_in_domain(value, domain, root, domain_scalars) {
+                        domain_scalars.insert(name.clone());
+                    } else {
+                        domain_scalars.remove(name);
+                    }
+                }
+                Stmt::Expr(Expr::If {
+                    then_block,
+                    else_block,
+                    ..
+                }) => {
+                    if !self.range_value_expr_writes_preserve(
+                        cond,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                    let mut then_scalars = domain_scalars.clone();
+                    if !self.range_value_block_preserves(
+                        then_block,
+                        scalar,
+                        domain,
+                        root,
+                        &mut then_scalars,
+                    ) {
+                        return false;
+                    }
+                    let mut else_scalars = domain_scalars.clone();
+                    if let Some(else_block) = else_block
+                        && !self.range_value_block_preserves(
+                            else_block,
+                            scalar,
+                            domain,
+                            root,
+                            &mut else_scalars,
+                        )
+                    {
+                        return false;
+                    }
+                    domain_scalars.retain(|name| {
+                        then_scalars.contains(name) && else_scalars.contains(name)
+                    });
+                }
+                Stmt::Expr(Expr::While { cond, body }) => {
+                    if !self.range_value_expr_writes_preserve(
+                        cond,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                    let mut nested_scalars = domain_scalars.clone();
+                    if !self.range_value_block_preserves(
+                        body,
+                        scalar,
+                        domain,
+                        root,
+                        &mut nested_scalars,
+                    ) {
+                        return false;
+                    }
+                }
+                Stmt::Expr(Expr::For { iter, body, .. }) => {
+                    if !self.range_value_expr_writes_preserve(
+                        iter,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                    let mut nested_scalars = domain_scalars.clone();
+                    if !self.range_value_block_preserves(
+                        body,
+                        scalar,
+                        domain,
+                        root,
+                        &mut nested_scalars,
+                    ) {
+                        return false;
+                    }
+                }
+                Stmt::Expr(Expr::WhileLet { scrutinee, body, .. }) => {
+                    if !self.range_value_expr_writes_preserve(
+                        scrutinee,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                    let mut nested_scalars = domain_scalars.clone();
+                    if !self.range_value_block_preserves(
+                        body,
+                        scalar,
+                        domain,
+                        root,
+                        &mut nested_scalars,
+                    ) {
+                        return false;
+                    }
+                }
+                Stmt::Expr(Expr::Block(body)) => {
+                    let mut nested_scalars = domain_scalars.clone();
+                    if !self.range_value_block_preserves(
+                        body,
+                        scalar,
+                        domain,
+                        root,
+                        &mut nested_scalars,
+                    ) {
+                        return false;
+                    }
+                }
+                Stmt::Expr(value) => {
+                    if !self.range_value_expr_writes_preserve(
+                        value,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                    let Some(written_root) = analysis::direct_inplace_root(value) else {
+                        continue;
+                    };
+                    if written_root != root {
+                        continue;
+                    }
+                    let Some(analysis::InPlaceOp::SetAt(_, element)) =
+                        analysis::self_inplace_op(written_root, value)
+                    else {
+                        return false;
+                    };
+                    if !self.range_value_expr_in_domain(
+                        element,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ) {
+                        return false;
+                    }
+                }
+                Stmt::Return(_) | Stmt::LetPattern { .. } | Stmt::Yield(_) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+        true
+    }
+
+    /// Inspect the immediately-evaluated expression portion of a loop body.
+    /// `DevirtScan` already rejects opaque calls that receive the root, but it
+    /// intentionally treats direct `list.set_at` as a same-length operation.
+    /// The value-domain proof needs the stronger property that such an embedded
+    /// write also stores a value in the exact domain.  Blocks are analyzed by
+    /// the statement-ordered caller, so expression-valued control flow is
+    /// conservatively rejected here rather than skipping a condition or arm.
+    fn range_value_expr_writes_preserve(
+        &self,
+        value: &Expr,
+        domain: &str,
+        root: &str,
+        domain_scalars: &HashSet<String>,
+    ) -> bool {
+        match value {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => true,
+            Expr::List(values) | Expr::Tuple(values) | Expr::Ctor { args: values, .. } | Expr::AnonCtor { args: values, .. } => values
+                .iter()
+                .all(|value| self.range_value_expr_writes_preserve(value, domain, root, domain_scalars)),
+            Expr::Call { name, args } => {
+                let values_preserve = args
+                    .iter()
+                    .all(|value| self.range_value_expr_writes_preserve(value, domain, root, domain_scalars));
+                let is_list_set_at = name == intrinsics::LIST_SET_AT
+                    || witchy_syntax::intrinsics::lookup(intrinsics::LIST_SET_AT)
+                        .is_some_and(|spec| name == spec.diagnostic_name);
+                if !is_list_set_at
+                    || !matches!(args.first(), Some(Expr::Var(list)) if list == root)
+                {
+                    return values_preserve;
+                }
+                values_preserve
+                    && args.get(2).is_some_and(|element| self.range_value_expr_in_domain(
+                        element,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ))
+            }
+            Expr::LabeledCall { args, .. } => args.iter().all(|(_, value)| {
+                self.range_value_expr_writes_preserve(value, domain, root, domain_scalars)
+            }),
+            Expr::LabeledMethodCall { receiver, args, .. } => {
+                self.range_value_expr_writes_preserve(receiver, domain, root, domain_scalars)
+                    && args.iter().all(|(_, value)| self.range_value_expr_writes_preserve(
+                        value,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ))
+            }
+            Expr::MethodCall { receiver, args, .. } | Expr::ExistentialCall { receiver, args, .. } => {
+                self.range_value_expr_writes_preserve(receiver, domain, root, domain_scalars)
+                    && args.iter().all(|value| self.range_value_expr_writes_preserve(
+                        value,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ))
+            }
+            Expr::Apply { func, args } => {
+                self.range_value_expr_writes_preserve(func, domain, root, domain_scalars)
+                    && args.iter().all(|value| self.range_value_expr_writes_preserve(
+                        value,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ))
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => {
+                self.range_value_expr_writes_preserve(expr, domain, root, domain_scalars)
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                self.range_value_expr_writes_preserve(base, domain, root, domain_scalars)
+                    && fields.iter().all(|(_, value)| self.range_value_expr_writes_preserve(
+                        value,
+                        domain,
+                        root,
+                        domain_scalars,
+                    ))
+            }
+            Expr::Record { fields, spread, .. } => {
+                fields.iter().all(|(_, value)| self.range_value_expr_writes_preserve(
+                    value,
+                    domain,
+                    root,
+                    domain_scalars,
+                )) && spread.as_ref().is_none_or(|value| self.range_value_expr_writes_preserve(
+                    value,
+                    domain,
+                    root,
+                    domain_scalars,
+                ))
+            }
+            Expr::Index { base, index } | Expr::Binary { lhs: base, rhs: index, .. } | Expr::Range { lo: base, hi: index, .. } => {
+                self.range_value_expr_writes_preserve(base, domain, root, domain_scalars)
+                    && self.range_value_expr_writes_preserve(index, domain, root, domain_scalars)
+            }
+            Expr::If { .. }
+            | Expr::Match { .. }
+            | Expr::Block(_)
+            | Expr::While { .. }
+            | Expr::For { .. }
+            | Expr::WhileLet { .. }
+            | Expr::Lambda { .. } => false,
+        }
+    }
+
+    fn range_value_expr_in_domain(
+        &self,
+        value: &Expr,
+        domain: &str,
+        root: &str,
+        domain_scalars: &HashSet<String>,
+    ) -> bool {
+        match value {
+            Expr::Var(name) => domain_scalars.contains(name),
+            Expr::Call { name, args }
+                if witchy_syntax::cap_ops::surface_name(name) == intrinsics::LIST_AT
+                    && matches!(args.first(), Some(Expr::Var(list)) if list == root) =>
+            {
+                self.range_value_lists
+                    .get(domain)
+                    .is_some_and(|lists| lists.contains(root))
+            }
+            Expr::Index { base, .. } if matches!(base.as_ref(), Expr::Var(list) if list == root) => {
+                self.range_value_lists
+                    .get(domain)
+                    .is_some_and(|lists| lists.contains(root))
+            }
+            _ => false,
         }
     }
 

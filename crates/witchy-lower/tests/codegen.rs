@@ -4556,6 +4556,143 @@ fn main() -> Int:
     }
 
     #[test]
+    fn exact_range_value_domain_survives_proven_loop_carried_reads() {
+        // A loop-carried scalar can retain the exact value-domain fact only
+        // when every reassignment reads the same proven list and every list
+        // write stores a previously-read domain value.  The inner reversal is
+        // deliberately nested: its paired cursors require the carried `k`
+        // fact, while the swap proves the list remains a permutation of 0..n.
+        let src = r#"
+mode opt
+import list
+
+fn range_value_loop(let n: Int) -> Int:
+    var source = []
+    for i in 0..n:
+        list.push(source, i)
+    var copied = []
+    for i in 0..n:
+        list.push(copied, 0)
+    for i in 0..n:
+        copied[i] = source[i]
+    var k = copied[7]
+    while k != 0:
+        var lo = 0
+        var hi = k
+        while lo < hi:
+            let a = copied[lo]
+            let b = copied[hi]
+            copied[lo] = b
+            copied[hi] = a
+            lo = lo + 1
+            hi = hi - 1
+        k = copied[0]
+    copied[0] + copied[7]
+
+fn main() -> Int:
+    range_value_loop(8)
+"#;
+        let default = witchy_syntax::opt::OptSet::default_set();
+        let none = witchy_syntax::opt::OptSet::none();
+        let module = link_list_app(src);
+        assert_eq!(run_int_module_with_opt(&module, default), 7, "optimized result");
+        assert_eq!(run_int_module_with_opt(&module, none), 7, "deoptimized result");
+        witchy_syntax::opt::set_for_tests(Some(default));
+        let on = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower loop-carried exact value domain"));
+        witchy_syntax::opt::set_for_tests(Some(none));
+        let off = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower loop-carried exact value domain deopt"));
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(
+            on.matches("call $list_at").count() + 4 <= off.matches("call $list_at").count(),
+            "the loop-carried domain proof removes the paired reversal checks:\non={on}\noff={off}",
+        );
+    }
+
+    #[test]
+    fn poisoned_loop_carried_range_value_retains_bounds_trap() {
+        // The loop invariant is invalidated by the out-of-domain write before
+        // the carried value is refreshed.  A later iteration therefore must
+        // retain its checked access and trap rather than treating `99` as an
+        // index in the original 0..n value domain.
+        let src = r#"
+mode opt
+import list
+
+fn poisoned_loop(let n: Int) -> Int:
+    var source = []
+    for i in 0..n:
+        list.push(source, i)
+    var copied = []
+    for i in 0..n:
+        list.push(copied, 0)
+    for i in 0..n:
+        copied[i] = source[i]
+    var k = copied[7]
+    while k != 0:
+        copied[0] = 99
+        var lo = 0
+        var hi = k
+        while lo < hi:
+            let a = copied[lo]
+            let b = copied[hi]
+            copied[lo] = b
+            copied[hi] = a
+            lo = lo + 1
+            hi = hi - 1
+        k = copied[0]
+    0
+
+fn main() -> Int:
+    poisoned_loop(8)
+"#;
+        let module = link_list_app(src);
+        let trap = compiled_module_trap_with_opt(&module, witchy_syntax::opt::OptSet::default_set());
+        assert!(trap.contains("list_at"), "poisoned carried value retains its bounds trap: {trap}");
+    }
+
+    #[test]
+    fn condition_write_drops_loop_carried_range_value_proof() {
+        // `list.set_at` has a `var` receiver, so it can write the root while
+        // evaluating an otherwise ordinary boolean condition.  The loop proof
+        // must inspect that condition as well as its bodies: `k` becomes 99
+        // and its next use as an upper cursor must retain the checked trap.
+        let src = r#"
+mode opt
+import list
+
+fn poisoned_condition(let n: Int) -> Int:
+    var source = []
+    for i in 0..n:
+        list.push(source, i)
+    var copied = []
+    for i in 0..n:
+        list.push(copied, 0)
+    for i in 0..n:
+        copied[i] = source[i]
+    var k = copied[7]
+    while k != 0:
+        var lo = 0
+        var hi = k
+        while lo < hi:
+            let a = copied[lo]
+            let b = copied[hi]
+            copied[lo] = b
+            copied[hi] = a
+            lo = lo + 1
+            hi = hi - 1
+        if list.set_at(copied, 0, 99) == Nil:
+            k = copied[0]
+    0
+
+fn main() -> Int:
+    poisoned_condition(8)
+"#;
+        let module = link_list_app(src);
+        let trap = compiled_module_trap_with_opt(&module, witchy_syntax::opt::OptSet::default_set());
+        assert!(trap.contains("list_at"), "condition write retains bounds trap: {trap}");
+    }
+
+    #[test]
     fn out_of_domain_write_drops_exact_range_value_proof() {
         let src = r#"
 mode opt
