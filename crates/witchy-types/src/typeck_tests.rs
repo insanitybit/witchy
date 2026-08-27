@@ -1289,3 +1289,32 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
         // An unknown home is a no-op.
         assert_eq!(strip_home_qualifiers("found `app.Point`", ""), "found `app.Point`");
     }
+
+    #[test]
+    fn source_async_contracts_return_tasks_and_await_unwraps_them() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn value() -> Int:\n    41\n\nasync fn successor() -> Int:\n    let value = value().await\n    value + 1\n",
+        )
+        .expect("source parses");
+        check_source_async_contracts(&module)
+            .expect("an async call returns Task(Int), and await resumes with Int");
+
+        let module = witchy_syntax::parser::parse_module(
+            "async fn value() -> Int:\n    41\n\nfn wrong() -> Int:\n    value()\n",
+        )
+        .expect("source parses");
+        let error = check_source_async_contracts(&module)
+            .expect_err("a source async call cannot be used as its completed value");
+        assert!(error.message.contains("expected `Int`, found `Task(Int)`"), "{error:?}");
+    }
+
+    #[test]
+    fn source_await_rejects_non_task_operands() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn wrong() -> Int:\n    1.await\n",
+        )
+        .expect("source parses");
+        let error = check_source_async_contracts(&module)
+            .expect_err("await only consumes a task");
+        assert!(error.message.contains("`await` requires `Task(T)`"), "{error:?}");
+    }

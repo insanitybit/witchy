@@ -3787,6 +3787,11 @@ struct Checker {
     /// finalized only after the ending substitution is known.
     record_projection_record: Option<HashMap<usize, (Ty, Ty)>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
+    /// Source-level `async fn` declarations expose `Task(T)` to callers while
+    /// their own body returns the declared `T`.  Keeping the body contract
+    /// separate prevents the type checker from depending on CPS lowering to
+    /// explain `await`.
+    async_body_returns: HashMap<String, Ty>,
     /// Callable contract promised by each named reusable function.
     fn_qualifiers: HashMap<String, CallableQualifiers>,
     /// Compiler-marked async segment functions, including whether their source
@@ -9560,9 +9565,16 @@ impl Checker {
                     UnOp::Await if self.current_pure => terr(
                         "pure callable cannot suspend with `await`; task scheduling is an observable effect",
                     ),
-                    // `await e` has the type of `e` (Phase 1: the awaited value is
-                    // the value itself; suspension is invisible to the type).
-                    UnOp::Await => Ok(t),
+                    UnOp::Await => match self.resolve(&t) {
+                        Ty::Named(name, mut arguments)
+                            if name == "Task" && arguments.len() == 1 =>
+                        {
+                            Ok(arguments.remove(0))
+                        }
+                        actual => terr(format!(
+                            "`await` requires `Task(T)`, but this expression has type `{actual}`"
+                        )),
+                    },
                     // Shared borrows and dereferences retain their referent's
                     // runtime shape; the loan pass consumes the source operator.
                     UnOp::Borrow if self.opt_mode => {
@@ -11031,7 +11043,12 @@ impl Checker {
         self.must_live.clear();
         self.must_borrowed.clear();
         self.once_borrowed.clear();
-        self.current_ret = Some(ret.clone());
+        let body_ret =
+            self.async_body_returns
+                .get(&func.name)
+                .cloned()
+                .unwrap_or(ret.clone());
+        self.current_ret = Some(body_ret.clone());
         self.current_pure = func.pure;
         self.pure_var_parameters.clear();
         self.current_isolated_callback = isolated_vm_callback_contract(
@@ -11148,7 +11165,7 @@ impl Checker {
             }
         }
         let body = if func.ret.is_some() {
-            self.infer_block_tail_expected(&func.body, &ret).map_err(|e| {
+            self.infer_block_tail_expected(&func.body, &body_ret).map_err(|e| {
                 type_mismatch_context(
                     || format!("function `{}` body", diagnostic_callable_name(&source_callable)),
                     e,
@@ -11160,7 +11177,7 @@ impl Checker {
         // A broader capability may be returned where a narrower one is declared
         // (`-> Net[Connect]` returning a full `Net`), mirroring call-argument
         // narrowing; `coerce_arg` falls back to unification for everything else.
-        self.coerce_arg(&ret, &body).map_err(|e| TypeError {
+        self.coerce_arg(&body_ret, &body).map_err(|e| TypeError {
             message: format!(
                 "function `{}` body: {}",
                 diagnostic_callable_name(&source_callable),
@@ -11230,6 +11247,52 @@ impl Checker {
 /// Type-check a whole module. Returns the first error found.
 pub fn check(module: &Module) -> Result<(), TypeError> {
     check_with_compiler_syntax(module, false)
+}
+
+/// Type-check source async contracts before CPS lowering erases them.
+///
+/// This is intentionally a semantic proof only.  The production executable is
+/// still lowered by the legacy path until RFC-0161's typed resumable runtime
+/// consumes the same source representation.  Keeping this pass in the normal
+/// linked-source proof makes `Task(T)` call results and `await` unwrapping
+/// independently checked now, rather than inferred from generated closures.
+fn check_source_async_contracts(module: &Module) -> Result<(), TypeError> {
+    let has_async = module.items.iter().any(|item| match item {
+        Item::Function(function) => function.is_async,
+        Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
+        Item::Type(_)
+        | Item::Trait(_)
+        | Item::Const { .. }
+        | Item::TypeAlias { .. }
+        | Item::Comptime(_) => false,
+    });
+    if !has_async {
+        return Ok(());
+    }
+    let checked = witchy_syntax::source_check::check(module.clone())
+        .map_err(|error| TypeError { message: error.message })?;
+    let checked = witchy_syntax::generators::lower(checked)
+        .map_err(|message| TypeError { message })?;
+    let records = witchy_syntax::records::lower_for_async_typeck(checked.module().clone())
+        .map_err(|message| TypeError { message })?;
+    let trait_method_names = collect_trait_method_names(&records);
+    let trait_supertraits = records
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Trait(definition) => Some((definition.name.clone(), definition.supertraits.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let lowered = crate::traits::lower_checked(records).map_err(|message| TypeError { message })?;
+    run_check_with_trait_methods(
+        &lowered,
+        false,
+        &trait_method_names,
+        &trait_supertraits,
+        false,
+    )?;
+    Ok(())
 }
 
 /// Validate complete semantics on the expanded source set before the linker
@@ -11328,6 +11391,7 @@ pub fn check_linked_source_semantics(
     let body_projection = source
         .runtime_projection()
         .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
+    check_source_async_contracts(&body_projection).map_err(source_error)?;
     check_with_compiler_syntax(&body_projection, false).map_err(source_error)?;
     Ok(())
 }
@@ -12102,6 +12166,7 @@ fn run_check_selected(
         existential_upcast_record: Some(HashMap::new()),
         record_projection_record: Some(HashMap::new()),
         fn_sigs: HashMap::new(),
+        async_body_returns: HashMap::new(),
         fn_qualifiers: HashMap::new(),
         suspension_frames,
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
@@ -12279,9 +12344,15 @@ fn run_check_selected(
                         None => c.fresh(),
                     })
                     .collect();
-                let ret = match &f.ret {
+                let body_ret = match &f.ret {
                     Some(t) => c.to_ty_generic(t, &mut vars),
                     None => c.fresh(),
+                };
+                let ret = if f.is_async {
+                    c.async_body_returns.insert(f.name.clone(), body_ret.clone());
+                    Ty::Named("Task".into(), vec![body_ret])
+                } else {
+                    body_ret
                 };
                 c.fn_sigs.insert(f.name.clone(), (params, ret));
                 c.fn_qualifiers.insert(

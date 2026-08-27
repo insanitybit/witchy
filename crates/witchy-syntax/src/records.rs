@@ -26,6 +26,16 @@ pub fn lower(module: AsyncLoweredModule) -> Result<SourceLoweredModule, String> 
     lower_impl(module.into_module(), false).map(SourceLoweredModule::preserve)
 }
 
+/// Prepare source for semantic checking without first erasing `async`.
+///
+/// The typed async front end needs named-field construction normalized while
+/// `async fn` and `await` are still present.  This is deliberately a plain
+/// module result rather than a new terminal lowering stage: callers must still
+/// choose the subsequent async lowering explicitly.
+pub fn lower_for_async_typeck(module: Module) -> Result<Module, String> {
+    lower_impl(module, false)
+}
+
 /// Like [`lower`], but LEAVE a named-field construction of a record type this
 /// module can't see (an imported record, resolved later) instead of erroring —
 /// used by the linker's per-module pass, which runs before the imported modules
