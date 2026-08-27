@@ -83,6 +83,25 @@ pub struct AsyncBackendStateBinding {
     pub capture_to_lane: Vec<u32>,
 }
 
+/// Compiler input available only after async segment formation, ownership
+/// analysis, and final closure layout. The execution table supplies all
+/// operational semantics; the separate state bindings supply physical callable
+/// and capture layout without ever looking at generated function names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalTypedAsyncExecution {
+    pub execution: TypedExecutionShape,
+    pub closure_layout_fingerprint: [u8; 32],
+    pub state_bindings: Vec<FinalTypedAsyncStateBinding>,
+    pub result_lanes: Vec<FrameLaneId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalTypedAsyncStateBinding {
+    pub state: ExecutionStateId,
+    pub callable: FinalCallableIndex,
+    pub capture_to_lane: Vec<FrameLaneId>,
+}
+
 /// A typed program either lowers an operation or records a closed, stable
 /// boundary for the shared dynamic path. Diagnostic/source text lives in the
 /// source map, never in the semantic program fingerprint.
@@ -118,6 +137,19 @@ pub struct AsyncProgram {
 }
 
 impl AsyncProgram {
+    /// Produce the canonical program from a fully typed execution table. This
+    /// is the sole lowering direction: the producer preserves every edge,
+    /// operand, queue, arm, and ownership action already decided by typed
+    /// lowering; it does not inspect legacy CPS expressions to rediscover any
+    /// of them.
+    pub fn from_final_typed_executions(
+        executions: Vec<FinalTypedAsyncExecution>,
+    ) -> Result<Self, String> {
+        let shapes = executions.into_iter().map(FinalTypedAsyncExecution::into_async_shape)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(shapes)
+    }
+
     /// Construct a versioned program and bind its semantic fingerprint to the
     /// complete canonical encoding.  Backends compare this fingerprint with
     /// their final-layout binding before accepting an execution shape.
@@ -288,6 +320,80 @@ impl AsyncProgram {
             }
         }
         Ok(())
+    }
+}
+
+impl FinalTypedAsyncExecution {
+    fn into_async_shape(self) -> Result<AsyncExecutionShape, String> {
+        let FinalTypedAsyncExecution {
+            execution,
+            closure_layout_fingerprint,
+            state_bindings,
+            result_lanes,
+        } = self;
+        execution.validate()?;
+        if state_bindings.len() != execution.states.len() {
+            return Err("final async state binding count drifted from typed execution".into());
+        }
+        let mut bindings = state_bindings;
+        bindings.sort_by_key(|binding| binding.state.0);
+        for (index, binding) in bindings.iter().enumerate() {
+            if binding.state.0 != index as u32 {
+                return Err("final async state binding IDs must be dense".into());
+            }
+            if binding.capture_to_lane.iter().any(|lane| lane.0 as usize >= execution.frame.len()) {
+                return Err("final async capture binding references absent frame lane".into());
+            }
+        }
+        if result_lanes.iter().any(|lane| lane.0 as usize >= execution.frame.len()) {
+            return Err("final async result binding references absent frame lane".into());
+        }
+        let TypedExecutionShape { id, entry, frame, states, operations, queues, cancellation } = execution;
+        let states = states.into_iter().zip(bindings).map(|(state, binding)| {
+            FinalStateBinding {
+                state: AsyncProgramStateId(state.id.0),
+                callable: binding.callable,
+                capture_to_lane: binding.capture_to_lane.into_iter().map(|lane| lane.0).collect(),
+                edges: state.transitions.into_iter().map(|transition| AsyncStateEdge {
+                    condition: transition.condition,
+                    actions: transition.actions,
+                    outcome: transition.outcome,
+                }).collect(),
+            }
+        }).collect();
+        let operations = operations.into_iter().map(|operation| AsyncOperationBinding {
+            id: AsyncProgramOperationId(operation.id.0),
+            kind: operation.kind,
+            input_lanes: operation.input_lanes.into_iter().map(|lane| lane.0).collect(),
+            result_lanes: operation.result_lanes.into_iter().map(|lane| lane.0).collect(),
+            pending_move_lanes: operation.pending_move_lanes.into_iter().map(|lane| lane.0).collect(),
+            fallback_state: operation.fallback_state.map(|state| AsyncProgramStateId(state.0)),
+            queue: operation.queue,
+            arms: operation.arms.into_iter().map(|arm| AsyncOperationArm {
+                ordinal: arm.ordinal,
+                operation: arm.operation,
+                endpoint_lane: arm.endpoint_lane.0,
+                input_lanes: arm.input_lanes.into_iter().map(|lane| lane.0).collect(),
+                result_lanes: arm.result_lanes.into_iter().map(|lane| lane.0).collect(),
+                queue: arm.queue,
+                ownership: arm.ownership,
+            }).collect(),
+        }).collect();
+        Ok(AsyncExecutionShape {
+            id,
+            closure_layout_fingerprint,
+            frame,
+            entry: AsyncProgramStateId(entry.0),
+            result_lanes: result_lanes.into_iter().map(|lane| lane.0).collect(),
+            states,
+            operations,
+            queues,
+            cancellation: cancellation.map(|cancellation| AsyncCancellationTransition {
+                operation: AsyncProgramOperationId(cancellation.operation.0),
+                state: AsyncProgramStateId(cancellation.state.0),
+            }),
+            dynamic_boundaries: Vec::new(),
+        })
     }
 }
 
@@ -547,5 +653,27 @@ mod tests {
         let mut changed = binding(&shape);
         changed.closure_layout_fingerprint[0] ^= 1;
         assert!(shape.validate_backend_binding(&changed).expect_err("layout drift").contains("fingerprint drifted"));
+    }
+
+    #[test]
+    fn final_typed_execution_producer_preserves_the_complete_operation_contract() {
+        let shape = shape();
+        let backend = binding(&shape);
+        let execution = shape.clone().into_typed_execution(&backend).expect("typed execution");
+        let produced = AsyncProgram::from_final_typed_executions(vec![FinalTypedAsyncExecution {
+            execution,
+            closure_layout_fingerprint: shape.closure_layout_fingerprint,
+            state_bindings: shape.states.iter().map(|state| FinalTypedAsyncStateBinding {
+                state: ExecutionStateId(state.state.0),
+                callable: state.callable,
+                capture_to_lane: state.capture_to_lane.iter().copied().map(FrameLaneId).collect(),
+            }).collect(),
+            result_lanes: shape.result_lanes.iter().copied().map(FrameLaneId).collect(),
+        }]).expect("canonical producer");
+        let expected = AsyncProgram::new(vec![shape]).expect("expected program");
+        assert_eq!(produced.semantic_fingerprint, expected.semantic_fingerprint);
+        assert_eq!(produced.execution_shapes[0].operations[0].arms.len(), 2);
+        assert_eq!(produced.execution_shapes[0].states[0].edges[0].condition,
+            ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: 1 });
     }
 }
