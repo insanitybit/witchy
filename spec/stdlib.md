@@ -344,6 +344,10 @@ A channel of logical `capacity`: a positive capacity is bounded (the sender bloc
 
 An unbounded channel - `send` never blocks (the buffer grows without limit).
 
+#### `fn __recv_stream(rx: Receiver(m)) -> List(m)`
+
+Compiler marker for `for await x in rx:`. The async lowering pass unwraps this declaration before execution; it exists only so source type checking can resolve the parser's lossless receive-stream marker. It must never be called as a runtime channel operation.
+
 #### `fn send(tx: Sender(m), msg: m) -> Task(Nil)`
 
 Send `msg`; on a bounded channel this blocks until there is room while some task can make progress. If the whole executor reaches quiescence with this send parked, the close pass releases it and stores the message, even if that temporarily exceeds the logical capacity. Always awaited. The message is erased to the executor's opaque slot at this boundary.
