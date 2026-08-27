@@ -5,8 +5,8 @@
 //! the kernel already establishes the one execution/wait ownership rule.
 
 use witchy_types::typed_execution::{
-    ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId, ExecutionStateId, FrameLaneId, LaneAction,
-    OperationSiteId, TypedExecutionShape,
+    ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome, ExecutionShapeId, ExecutionStateId,
+    FrameLaneId, LaneAction, OperationSiteId, QueueShapeId, TypedExecutionShape,
 };
 use witchy_types::async_program::{AsyncBackendBinding, AsyncExecutionShape};
 
@@ -68,6 +68,22 @@ impl TypedExecution {
     pub fn shape_id(&self) -> ExecutionShapeId { self.shape.id }
     pub fn state(&self) -> ExecutionStateId { self.state }
     pub fn status(&self) -> KernelStatus { self.status }
+
+    /// Recover the one queue operation currently owned by this execution's
+    /// wait record. Queue runtimes use this typed binding instead of accepting
+    /// a source name or a caller-provided queue ID.
+    pub fn waiting_queue_operation(
+        &self,
+    ) -> Result<(OperationSiteId, QueueShapeId, ExecutionOperation), String> {
+        let operation = match self.status {
+            KernelStatus::Waiting(operation) => operation,
+            _ => return Err("execution has no installed queue wait record".into()),
+        };
+        let site = self.shape.operations.get(operation.0 as usize)
+            .ok_or_else(|| "operation vanished after validation".to_string())?;
+        let queue = site.queue.ok_or_else(|| "waiting operation has no typed queue binding".to_string())?;
+        Ok((operation, queue, site.kind))
+    }
 
     /// Execute a deterministic state turn only when its edge is statically
     /// unambiguous. Branching states must use `turn_selected`; silently taking

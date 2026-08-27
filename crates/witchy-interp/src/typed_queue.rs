@@ -5,9 +5,11 @@
 //! ordering, capacity, registration generation, matching, cancellation, and
 //! close/drain rules uniformly for every payload type.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
-use witchy_types::typed_execution::{OperationSiteId, QueueCapacity, QueueShape};
+use witchy_types::typed_execution::{ExecutionOperation, OperationSiteId, QueueCapacity, QueueShape, QueueShapeId};
+
+use crate::typed_async::{KernelTurn, OperationCommit, TypedExecution};
 
 /// Backend-neutral identity for an already typed payload in an execution lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -63,6 +65,25 @@ pub struct TypedQueue {
     send_waiters: VecDeque<PendingSend>,
     receive_waiters: VecDeque<QueueWait>,
     closed: bool,
+}
+
+/// Interpreter adapter which joins the generic queue protocol to canonical
+/// typed executions. It transports opaque payload identities to receive result
+/// lanes and commits only the wait record that owns the matching operation.
+#[derive(Debug, Default)]
+pub struct TypedQueueRuntime {
+    queues: BTreeMap<QueueShapeId, TypedQueue>,
+    executions: BTreeMap<u64, TypedExecution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueRuntimeResult {
+    Blocked,
+    Closed,
+    Committed {
+        turns: Vec<(u64, KernelTurn)>,
+        deliveries: Vec<(u64, OperationSiteId, QueuePayload)>,
+    },
 }
 
 impl TypedQueue {
@@ -183,10 +204,113 @@ impl TypedQueue {
     }
 }
 
+impl TypedQueueRuntime {
+    pub fn install_queue(&mut self, queue: TypedQueue) -> Result<(), String> {
+        let id = queue.shape.id;
+        if self.queues.insert(id, queue).is_some() {
+            return Err("typed queue runtime already has this queue shape ID".into());
+        }
+        Ok(())
+    }
+
+    pub fn install_execution(&mut self, id: u64, execution: TypedExecution) -> Result<(), String> {
+        if self.executions.insert(id, execution).is_some() {
+            return Err("typed queue runtime already has this execution ID".into());
+        }
+        Ok(())
+    }
+
+    pub fn execution(&self, id: u64) -> Option<&TypedExecution> { self.executions.get(&id) }
+
+    pub fn submit_send(&mut self, execution: u64, generation: u64, payload: QueuePayload) -> Result<QueueRuntimeResult, String> {
+        let (operation, queue) = self.waiting_operation(execution, ExecutionOperation::ChannelSend)?;
+        let wait = QueueWait { execution, operation, generation };
+        let result = self.queue_mut(queue)?.register_send(wait, payload)?;
+        match result {
+            QueueSend::Blocked => Ok(QueueRuntimeResult::Blocked),
+            QueueSend::Closed => Ok(QueueRuntimeResult::Closed),
+            QueueSend::Committed { receiver } => {
+                let mut turns = vec![(execution, self.commit(execution, operation)?)];
+                let mut deliveries = Vec::new();
+                if let Some(receiver) = receiver {
+                    self.ensure_wait(receiver, queue, ExecutionOperation::ChannelReceive)?;
+                    turns.push((receiver.execution, self.commit(receiver.execution, receiver.operation)?));
+                    deliveries.push((receiver.execution, receiver.operation, payload));
+                }
+                Ok(QueueRuntimeResult::Committed { turns, deliveries })
+            }
+        }
+    }
+
+    pub fn submit_receive(&mut self, execution: u64, generation: u64) -> Result<QueueRuntimeResult, String> {
+        let (operation, queue) = self.waiting_operation(execution, ExecutionOperation::ChannelReceive)?;
+        let wait = QueueWait { execution, operation, generation };
+        let result = self.queue_mut(queue)?.register_receive(wait)?;
+        match result {
+            QueueReceive::Blocked => Ok(QueueRuntimeResult::Blocked),
+            QueueReceive::Closed => Ok(QueueRuntimeResult::Closed),
+            QueueReceive::Payload { payload, sender } => {
+                let mut turns = vec![(execution, self.commit(execution, operation)?)];
+                let deliveries = vec![(execution, operation, payload)];
+                if let Some(sender) = sender {
+                    self.ensure_wait(sender, queue, ExecutionOperation::ChannelSend)?;
+                    turns.push((sender.execution, self.commit(sender.execution, sender.operation)?));
+                }
+                Ok(QueueRuntimeResult::Committed { turns, deliveries })
+            }
+        }
+    }
+
+    pub fn cancel(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let (operation, queue, _) = self.waiting_operation_any(execution)?;
+        let wait = QueueWait { execution, operation, generation };
+        if !self.queue_mut(queue)?.cancel(wait) { return Ok(false); }
+        self.executions.get_mut(&execution)
+            .expect("execution was checked above")
+            .abort_operation(operation)?;
+        Ok(true)
+    }
+
+    fn waiting_operation(&self, execution: u64, expected: ExecutionOperation) -> Result<(OperationSiteId, QueueShapeId), String> {
+        let (operation, queue, actual) = self.waiting_operation_any(execution)?;
+        if actual != expected { return Err("execution wait has a different typed queue operation".into()); }
+        Ok((operation, queue))
+    }
+
+    fn waiting_operation_any(&self, execution: u64) -> Result<(OperationSiteId, QueueShapeId, ExecutionOperation), String> {
+        self.executions.get(&execution)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .waiting_queue_operation()
+    }
+
+    fn ensure_wait(&self, wait: QueueWait, queue: QueueShapeId, expected: ExecutionOperation) -> Result<(), String> {
+        let (operation, actual_queue, actual) = self.waiting_operation_any(wait.execution)?;
+        if operation != wait.operation || actual_queue != queue || actual != expected {
+            return Err("queue match does not own the target execution wait record".into());
+        }
+        Ok(())
+    }
+
+    fn queue_mut(&mut self, id: QueueShapeId) -> Result<&mut TypedQueue, String> {
+        self.queues.get_mut(&id).ok_or_else(|| "typed queue runtime has no such queue shape".to_string())
+    }
+
+    fn commit(&mut self, execution: u64, operation: OperationSiteId) -> Result<KernelTurn, String> {
+        self.executions.get_mut(&execution)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .commit_operation(OperationCommit::Ready { operation })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use witchy_types::typed_execution::{PayloadOwnership, QueueCapacity, QueueShapeId};
+    use witchy_syntax::ast::Type;
+    use witchy_types::typed_execution::{
+        ExecutionOutcome, ExecutionShapeId, ExecutionState, ExecutionStateId,
+        ExecutionTransition, FrameLane, FrameLaneId, LaneOwnership, OperationSite,
+        PayloadOwnership, TypedExecutionShape,
+    };
 
     fn queue(capacity: QueueCapacity) -> TypedQueue {
         TypedQueue::new(QueueShape {
@@ -199,6 +323,60 @@ mod tests {
 
     fn wait(execution: u64, generation: u64) -> QueueWait {
         QueueWait { execution, operation: OperationSiteId(0), generation }
+    }
+
+    fn execution(kind: ExecutionOperation) -> TypedExecution {
+        let shape = TypedExecutionShape {
+            id: ExecutionShapeId(0),
+            entry: ExecutionStateId(0),
+            frame: vec![FrameLane {
+                id: FrameLaneId(0),
+                ty: Type::Named("Int".into(), Vec::new()),
+                ownership: LaneOwnership::Move,
+                initially_initialized: true,
+            }],
+            states: vec![
+                ExecutionState {
+                    id: ExecutionStateId(0),
+                    transitions: vec![ExecutionTransition {
+                        condition: witchy_types::typed_execution::ExecutionEdgeCondition::Always,
+                        actions: vec![],
+                        outcome: ExecutionOutcome::Blocked {
+                            operation: OperationSiteId(0),
+                            retry: ExecutionStateId(1),
+                        },
+                    }],
+                },
+                ExecutionState {
+                    id: ExecutionStateId(1),
+                    transitions: vec![ExecutionTransition {
+                        condition: witchy_types::typed_execution::ExecutionEdgeCondition::Always,
+                        actions: vec![],
+                        outcome: ExecutionOutcome::Complete,
+                    }],
+                },
+            ],
+            operations: vec![OperationSite {
+                id: OperationSiteId(0),
+                kind,
+                input_lanes: vec![FrameLaneId(0)],
+                result_lanes: if kind == ExecutionOperation::ChannelReceive { vec![FrameLaneId(0)] } else { vec![] },
+                pending_move_lanes: vec![],
+                fallback_state: Some(ExecutionStateId(0)),
+                queue: Some(QueueShapeId(0)),
+                arms: vec![],
+            }],
+            queues: vec![QueueShape {
+                id: QueueShapeId(0),
+                capacity: QueueCapacity::Rendezvous,
+                payload_layout_fingerprint: [3; 32],
+                ownership: PayloadOwnership::Inline,
+            }],
+            cancellation: None,
+        };
+        let mut execution = TypedExecution::new(shape).expect("valid execution");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        execution
     }
 
     #[test]
@@ -274,5 +452,33 @@ mod tests {
         assert!(queue.register_receive(receiver).expect_err("duplicate wait").contains("already has"));
         assert!(queue.cancel(receiver));
         assert_eq!(queue.register_receive(receiver), Ok(QueueReceive::Blocked));
+    }
+
+    #[test]
+    fn runtime_commits_matching_send_and_receive_operations_by_wait_identity() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, execution(ExecutionOperation::ChannelReceive)).expect("receiver");
+        runtime.install_execution(2, execution(ExecutionOperation::ChannelSend)).expect("sender");
+        assert_eq!(runtime.submit_receive(1, 0), Ok(QueueRuntimeResult::Blocked));
+        assert_eq!(
+            runtime.submit_send(2, 0, QueuePayload(42)),
+            Ok(QueueRuntimeResult::Committed {
+                turns: vec![(2, KernelTurn::Complete), (1, KernelTurn::Complete)],
+                deliveries: vec![(1, OperationSiteId(0), QueuePayload(42))],
+            }),
+        );
+    }
+
+    #[test]
+    fn runtime_cancel_requires_the_registered_generation_and_restores_the_execution() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, execution(ExecutionOperation::ChannelReceive)).expect("receiver");
+        assert_eq!(runtime.submit_receive(1, 4), Ok(QueueRuntimeResult::Blocked));
+        assert!(!runtime.cancel(1, 3).expect("stale cancel"));
+        assert!(runtime.cancel(1, 4).expect("matching cancel"));
+        assert_eq!(runtime.execution(1).expect("execution").status(), crate::typed_async::KernelStatus::Ready);
+        assert_eq!(runtime.execution(1).expect("execution").state(), ExecutionStateId(0));
     }
 }
