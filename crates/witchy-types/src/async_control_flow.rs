@@ -6,7 +6,9 @@
 //! and essential: preserve mutually exclusive source paths while the legacy
 //! CPS lowering and its scalar recognizers still exist.
 
-use witchy_syntax::ast::{Block, Expr, Function, Item, Stmt};
+use std::collections::HashMap;
+
+use witchy_syntax::ast::{Block, Expr, Function, Item, Stmt, pattern_binds};
 use witchy_syntax::async_surface::{AsyncSurfaceId, LinkedAsyncSurface};
 
 /// Stable source identity of one async callable in a checked linked program.
@@ -33,6 +35,37 @@ pub struct SourceControlId(pub u32);
 /// assigned only after typed layout and CFG construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceExpressionId(pub u32);
+
+/// Lexical declaration identity within one source async callable.  Unlike a
+/// variable spelling, this remains distinct when an inner block shadows an
+/// outer parameter or local. Final frame formation binds these IDs to capture
+/// fields after closure layout; they are not runtime IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SourceBindingId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceBindingKind {
+    Parameter,
+    Let,
+    Pattern,
+    For,
+    WhileLet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceAsyncBinding {
+    pub id: SourceBindingId,
+    /// Diagnostic-only spelling. Canonical execution uses `id`, never this
+    /// field, so alpha-renaming cannot select a runtime path.
+    pub name: String,
+    pub kind: SourceBindingKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceAsyncBindingUse {
+    pub expression: SourceExpressionId,
+    pub binding: SourceBindingId,
+}
 
 /// A nesting step that distinguishes sequential and mutually-exclusive paths.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -96,6 +129,8 @@ pub struct SourceAsyncOperation {
 pub struct SourceAsyncControlFlow {
     pub callable: AsyncCallableId,
     pub controls: Vec<SourceAsyncControl>,
+    pub bindings: Vec<SourceAsyncBinding>,
+    pub binding_uses: Vec<SourceAsyncBindingUse>,
     pub operations: Vec<SourceAsyncOperation>,
 }
 
@@ -117,9 +152,12 @@ impl SourceAsyncControlFlowInventory {
                 };
                 let Some(function) = function else { continue };
                 let (controls, operations) = collect_function(function);
+                let (bindings, binding_uses) = collect_bindings(function);
                 callables.push(SourceAsyncControlFlow {
                     callable: AsyncCallableId { module: module.module.clone(), surface: item.id.clone() },
                     controls,
+                    bindings,
+                    binding_uses,
                     operations,
                 });
             }
@@ -127,6 +165,132 @@ impl SourceAsyncControlFlowInventory {
         callables.sort_by(|left, right| left.callable.cmp(&right.callable));
         Self { callables }
     }
+}
+
+fn collect_bindings(function: &Function) -> (Vec<SourceAsyncBinding>, Vec<SourceAsyncBindingUse>) {
+    struct Collector {
+        next_expression: u32,
+        bindings: Vec<SourceAsyncBinding>,
+        uses: Vec<SourceAsyncBindingUse>,
+        scopes: Vec<HashMap<String, SourceBindingId>>,
+    }
+
+    impl Collector {
+        fn bind(&mut self, name: String, kind: SourceBindingKind) -> SourceBindingId {
+            let id = SourceBindingId(u32::try_from(self.bindings.len()).expect("async binding count exceeds u32"));
+            self.bindings.push(SourceAsyncBinding { id, name: name.clone(), kind });
+            self.scopes.last_mut().expect("binding collector has a scope").insert(name, id);
+            id
+        }
+
+        fn expression(&mut self, expression: &Expr) {
+            let id = SourceExpressionId(self.next_expression);
+            self.next_expression = self.next_expression.checked_add(1).expect("async source expression count exceeds u32");
+            match expression {
+                Expr::Var(name) => {
+                    if let Some(binding) = self.scopes.iter().rev().find_map(|scope| scope.get(name)).copied() {
+                        self.uses.push(SourceAsyncBindingUse { expression: id, binding });
+                    }
+                }
+                Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+                | Expr::Field { base: expr, .. } | Expr::ExistentialPack { expr, .. }
+                | Expr::ExistentialUpcast { expr, .. } => self.expression(expr),
+                Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
+                | Expr::List(args) | Expr::Tuple(args) => for argument in args { self.expression(argument); },
+                Expr::LabeledCall { args, .. } => for (_, argument) in args { self.expression(argument); },
+                Expr::Apply { func, args } => {
+                    self.expression(func);
+                    for argument in args { self.expression(argument); }
+                }
+                Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. }
+                | Expr::Index { base: lhs, index: rhs } => { self.expression(lhs); self.expression(rhs); }
+                Expr::If { cond, then_block, else_block } => {
+                    self.expression(cond);
+                    self.block(then_block);
+                    if let Some(else_block) = else_block { self.block(else_block); }
+                }
+                Expr::Match { scrutinee, arms } => {
+                    self.expression(scrutinee);
+                    for arm in arms {
+                        self.scopes.push(HashMap::new());
+                        let mut names = Vec::new();
+                        pattern_binds(&arm.pattern, &mut names);
+                        for name in names { self.bind(name, SourceBindingKind::Pattern); }
+                        if let Some(guard) = &arm.guard { self.expression(guard); }
+                        self.expression(&arm.body);
+                        self.scopes.pop();
+                    }
+                }
+                Expr::While { cond, body } => { self.expression(cond); self.block(body); }
+                Expr::For { var, iter, body } => {
+                    self.expression(iter);
+                    self.scopes.push(HashMap::new());
+                    self.bind(var.clone(), SourceBindingKind::For);
+                    self.block(body);
+                    self.scopes.pop();
+                }
+                Expr::Block(block) => self.block(block),
+                Expr::MethodCall { receiver, args, .. } | Expr::ExistentialCall { receiver, args, .. } => {
+                    self.expression(receiver);
+                    for argument in args { self.expression(argument); }
+                }
+                Expr::LabeledMethodCall { receiver, args, .. } => {
+                    self.expression(receiver);
+                    for (_, argument) in args { self.expression(argument); }
+                }
+                Expr::RecordUpdate { base, fields, .. } => {
+                    self.expression(base);
+                    for (_, value) in fields { self.expression(value); }
+                }
+                Expr::Record { fields, spread, .. } => {
+                    for (_, value) in fields { self.expression(value); }
+                    if let Some(spread) = spread { self.expression(spread); }
+                }
+                Expr::WhileLet { pattern, scrutinee, body } => {
+                    self.expression(scrutinee);
+                    self.scopes.push(HashMap::new());
+                    let mut names = Vec::new();
+                    pattern_binds(pattern, &mut names);
+                    for name in names { self.bind(name, SourceBindingKind::WhileLet); }
+                    self.block(body);
+                    self.scopes.pop();
+                }
+                Expr::Lambda { .. } | Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_)
+                | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
+            }
+        }
+
+        fn block(&mut self, block: &Block) {
+            self.scopes.push(HashMap::new());
+            for statement in &block.stmts {
+                match statement {
+                    Stmt::Let { name, value, .. } => { self.expression(value); self.bind(name.clone(), SourceBindingKind::Let); }
+                    Stmt::LetPattern { pattern, value } => {
+                        self.expression(value);
+                        let mut names = Vec::new();
+                        pattern_binds(pattern, &mut names);
+                        for name in names { self.bind(name, SourceBindingKind::Pattern); }
+                    }
+                    Stmt::Assign { value, .. } | Stmt::Expr(value) | Stmt::Yield(value) => self.expression(value),
+                    Stmt::Return(Some(value)) => self.expression(value),
+                    Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+                }
+            }
+            self.scopes.pop();
+        }
+    }
+
+    let mut collector = Collector {
+        next_expression: 0,
+        bindings: Vec::new(),
+        uses: Vec::new(),
+        scopes: vec![HashMap::new()],
+    };
+    for parameter in &function.params {
+        collector.bind(parameter.name.clone(), SourceBindingKind::Parameter);
+    }
+    collector.block(&function.body);
+    (collector.bindings, collector.uses)
 }
 
 fn collect_function(function: &Function) -> (Vec<SourceAsyncControl>, Vec<SourceAsyncOperation>) {
@@ -473,5 +637,21 @@ mod tests {
             "async fn run(input: Int) -> Int:\n    let result = task.done(input).await\n    result\n",
         );
         assert_eq!(first, renamed);
+    }
+
+    #[test]
+    fn binding_inventory_keeps_shadowed_locals_distinct() {
+        let module = parse_module(
+            "async fn run(value: Int):\n    let kept = value\n    if true:\n        let kept = 1\n        task.done(kept).await\n    task.done(kept).await\n",
+        ).expect("parse async source");
+        let Item::Function(function) = &module.items[0] else {
+            panic!("source function")
+        };
+        let (bindings, uses) = collect_bindings(function);
+        let kept = bindings.iter().filter(|binding| binding.name == "kept").collect::<Vec<_>>();
+        assert_eq!(kept.len(), 2);
+        assert_ne!(kept[0].id, kept[1].id);
+        assert!(uses.iter().any(|use_site| use_site.binding == kept[0].id));
+        assert!(uses.iter().any(|use_site| use_site.binding == kept[1].id));
     }
 }
