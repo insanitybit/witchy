@@ -323,6 +323,10 @@ jobs:
         env:
           WITCHY_REQUIRE_PINNED_BINARYEN: "1"
         run: cargo test --locked --test misc binaryen_production_differential::exact_pre_post_production_pipeline_corpus -- --exact --nocapture
+      - name: Verify scalar performance through the reviewed production pipeline
+        env:
+          WITCHY_REQUIRE_PINNED_BINARYEN: "1"
+        run: cargo test --locked --test rfc0129_scalar_executor_performance million_message_scalar_executor_meets_resumption_cost_and_allocation_gate -- --exact --nocapture
       - name: Build exact release binary
         run: |
           env -u WITCHY_PINNED_WASM_OPT_PATH \
