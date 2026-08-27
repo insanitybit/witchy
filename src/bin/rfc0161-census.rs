@@ -217,7 +217,8 @@ fn dependency_source(source: &Path, name: &str) -> Result<Option<PathBuf>, Strin
         .and_then(|dependency| dependency.get("path"))
         .and_then(toml::Value::as_str)
     else { return Ok(None); };
-    let root = manifest.parent().expect("manifest has a parent").join(path);
+    let root = std::fs::canonicalize(manifest.parent().expect("manifest has a parent").join(path))
+        .map_err(|error| format!("cannot resolve path dependency `{name}` from `{}`: {error}", manifest.display()))?;
     let bare = name.rsplit('/').next().unwrap_or(name);
     for candidate in [
         root.join("src").join(format!("{bare}.witchy")),
@@ -253,15 +254,21 @@ mod tests {
 
     #[test]
     fn resolves_a_package_local_path_dependency_before_the_global_index() {
-        let root = tempfile::tempdir().expect("temporary package root");
-        let app = root.path().join("app");
-        let dependency = root.path().join("dependency");
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch").as_nanos();
+        let root = std::env::temp_dir().join(format!("witchy-rfc0161-census-{}-{unique}", std::process::id()));
+        let app = root.join("app");
+        let dependency = root.join("dependency");
         std::fs::create_dir_all(app.join("src")).expect("app source directory");
         std::fs::create_dir_all(dependency.join("src")).expect("dependency source directory");
         std::fs::write(app.join("witchy.toml"), "[dependencies]\nwidget = { path = \"../dependency\" }\n").expect("manifest");
         std::fs::write(app.join("src/main.witchy"), "fn main():\n    1\n").expect("entry source");
         let expected = dependency.join("src/widget.witchy");
         std::fs::write(&expected, "fn value() -> Int:\n    1\n").expect("dependency source");
-        assert_eq!(dependency_source(&app.join("src/main.witchy"), "widget").expect("dependency lookup"), Some(expected));
+        assert_eq!(
+            dependency_source(&app.join("src/main.witchy"), "widget").expect("dependency lookup"),
+            Some(std::fs::canonicalize(expected).expect("canonical dependency source")),
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary package root");
     }
 }
