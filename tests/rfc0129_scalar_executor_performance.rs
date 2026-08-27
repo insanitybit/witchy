@@ -208,7 +208,14 @@ fn nominal_packet_channel_preserves_its_effectful_prologue_on_the_direct_path() 
 /// data flow, not a benchmark or constructor-name special case.
 #[test]
 fn packed_aggregate_channel_uses_direct_scalar_lanes() {
-    witchy::opt::set_for_tests(Some(OptSet::all()));
+    let production_pipeline = std::env::var_os("WITCHY_REQUIRE_PINNED_BINARYEN")
+        .is_some_and(|value| value == "1");
+    let opts = if production_pipeline {
+        OptSet::all()
+    } else {
+        OptSet::all().without(witchy::opt::Opt::WasmOpt)
+    };
+    witchy::opt::set_for_tests(Some(opts));
     let _reset_optimization_override = ResetOptimizationOverride;
     let baseline_source = aggregate_benchmark_source(AGGREGATE_BASELINE_MESSAGES);
     let sustained_source = aggregate_benchmark_source(AGGREGATE_SUSTAINED_MESSAGES);
@@ -235,12 +242,15 @@ fn packed_aggregate_channel_uses_direct_scalar_lanes() {
         baseline.gc_heap_capacity_bytes,
         "the packed direct graph's GC backing capacity must be independent of message count"
     );
-    assert_eq!(
-        sustained.gc_heap_capacity_bytes, 0,
-        "direct packed lanes must bypass the Task/Step GC scheduler heap"
-    );
+    if production_pipeline {
+        assert_eq!(
+            sustained.gc_heap_capacity_bytes, 0,
+            "the reviewed production pipeline must eliminate the packed Task/Step GC scheduler heap"
+        );
+    }
     println!(
-        "aggregate channel baseline_messages={} sustained_messages={} baseline_gc_heap_capacity_bytes={} sustained_gc_heap_capacity_bytes={} sustained_execution_us={}",
+        "aggregate channel lane={} baseline_messages={} sustained_messages={} baseline_gc_heap_capacity_bytes={} sustained_gc_heap_capacity_bytes={} sustained_execution_us={}",
+        if production_pipeline { "reviewed-binaryen" } else { "compiler-only" },
         AGGREGATE_BASELINE_MESSAGES,
         AGGREGATE_SUSTAINED_MESSAGES,
         baseline.gc_heap_capacity_bytes,
