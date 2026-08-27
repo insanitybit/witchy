@@ -33,8 +33,9 @@ queue item has a terminal `merged` event.
   included encoder-test modules were counted as production. The 584
   per-file/per-operation ceiling now scans every workspace crate `src/` tree,
   treats every non-`None` raw body as privileged, fails closed on opaque
-  constructor macros, and is locally green after rebase at commit `ac3a6017a`.
-  Its exact two-test census and 44-test `witchy-wir` shard are green; queue item
+  constructor macros, and is locally green after recovery at commit `40be21d4a`.
+  Its exact two-test census, ignored-test policy, and 44-test `witchy-wir` shard
+  are green; queue item
   `mq-45f0101631194f18708a32305f03a91a92bdf6e4` is pending terminal evidence.
   The older
   `state/agents/wir-helper-census.md` is an API-visibility census and is not
@@ -86,8 +87,14 @@ queue item has a terminal `merged` event.
   and eight deterministic generated adversarial modules. Runtime Binaryen
   tests are 10 passed with one expected ignore; release/installer tests are
   three passed with one expected ignore; the official bundle smoke and package
-  test each pass. Two final Fable reviews ACCEPT. Queue qualification, terminal
-  merge, and four-target CI release evidence remain pending.
+  test each pass. Commit `43720e967` separates compiler-only and
+  reviewed-production performance lanes and carries a local installed-release
+  smoke. The complete focused evidence includes 27 runtime tests, seven misc
+  selections, 928 examples, the Wasm shard, authenticated official v131
+  package execution, and three scalar repetitions in each lane. Final Fable
+  review ACCEPTS. Queue item
+  `mq-09b6bfac40beab6a9977a3e209caf70844c963ff` is ready; terminal merge and
+  four-target CI release evidence remain pending.
 - Commit `cfab0454b` on `impl/rfc0162-wir-surface` introduces untrusted
   executable-side SafeWIR object, projection, provenance, extent, range, and
   access claims plus semantic load/store/copy/fill variants. Every optimizer,
@@ -119,9 +126,27 @@ queue item has a terminal `merged` event.
   effects are unioned across paths; conditional consumption is absorbing.
   The 93-test `witchy-wir` library shard and bug-tier clippy are green, and
   final Opus verdict is ACCEPT after Fable's duplicate-identity and
-  branch-local-alias findings were fixed. Loop fixpoints, exit accumulators,
-  symbolic range facts, recursive components, and queue evidence remain
-  pending.
+  branch-local-alias findings were fixed. Successor commit `d6825e3da` replaces
+  candidate-attested loop joins with validator-owned conservative loop
+  fixpoints, charges every re-evaluation to the operation budget, bounds
+  structured depth before recursive descent, and uses iterative preflight
+  traversals. Stable, consuming, reuse, temporary-lifetime, escape-effect,
+  budget, and maximum-depth fixtures pass; the full `witchy-wir` library shard
+  is 99/99 and bug-tier clippy is green. Fable's final verdict is ACCEPT. Queue
+  item `mq-8168682a32da172075b8c0ada018f85dd2e9c842` depends on the report adapter.
+  Exit accumulators, symbolic range facts, recursive components, and terminal
+  queue evidence remain pending.
+- Commit `9058e272f` on `impl/rfc0162-kernel-ops`, stacked on the semantic
+  surface, adds opaque bump/RC allocation, retain, release, destructive reuse,
+  and reclaim operations. They cannot carry a `WirFunc`, raw body, or ordinary
+  implementation sequence; all optimizer and lowerer visitors traverse their
+  operands and claims; ordinary encoding rejects them without authority. Five
+  focused kernel tests and the earlier 86-test WIR library shard pass. Fable's
+  missed-visitor rejection and Opus's two visitor-test findings were fixed;
+  final Opus verdict is ACCEPT. Queue item
+  `mq-e2a54035340a435eae5926bbfaf1b3d913ec3902` depends on the semantic surface.
+  Fixed templates, validator judgments, migration, and production authority
+  remain pending.
 
 ## Dependency graph and tracks
 
@@ -156,14 +181,14 @@ encoder escape hatch, or runtime safety metadata.
 
 | Track | State | Branch / owner | Required output | Verification / terminal evidence |
 |---|---|---|---|---|
-| T0 census, rule map, ledger | queued candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test and 44-test shard green at `ac3a6017a`; queue terminal pending |
+| T0 census, rule map, ledger | queued candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test, ignored-test policy, and 44-test shard green at `40be21d4a`; queue terminal pending |
 | T1 SafeWIR fact model | queued candidate | `impl/rfc0162-safewir-core` | object, place, range, layout, provenance, ownership, definition, and generation identities | 9 schema tests, 51-test crate shard, and Wasm shard green at `3189cb910`; revised Fable verdict ACCEPT; queue terminal pending |
-| T2 callable and range binding | landed SEC slice | SEC-078 master `da098299a`; remainder unassigned | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 42 escape tests, RC-floor regression, three SEC-078 differential fixtures, detached pre-fix-red proof, isolated full gate, and final Opus ACCEPT; remaining call matrix and range binding pending |
-| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter`, `impl/rfc0162-cfg-validator` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, and structured branch join at `520db2aec`; 93/93 WIR library tests and bug-tier clippy green, final Opus ACCEPT; queue terminal pending; loops/exits/symbolic facts/recursive components and production authority remain incomplete |
+| T2 callable and range binding | landed SEC slice; active remainder | SEC-078 master `da098299a`; `impl/rfc0162-call-contracts`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 42 escape tests, RC-floor regression, three SEC-078 differential fixtures, detached pre-fix-red proof, isolated full gate, and final Opus ACCEPT; remaining call matrix and range binding active |
+| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter`, `impl/rfc0162-cfg-validator` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, structured branch joins at `520db2aec`, and conservative loop fixpoints at `d6825e3da`; 99/99 WIR library tests and bug-tier clippy green; final Fable/Opus verdicts ACCEPT; queue terminal pending; exits/symbolic facts/recursive components and production authority remain incomplete |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
-| T5 kernel and encoder | pending | unassigned | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | pending |
+| T5 kernel and encoder | candidate interface | `impl/rfc0162-kernel-ops`, `impl/rfc0162-kernel-templates` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations at `9058e272f`; visitor/opacity/rejection tests green and final Opus ACCEPT; fixed templates and authority wiring active, queue terminal pending |
 | T6 mandatory production gate | pending | integration | private `ValidatedWirModule`; no unchecked production encode/raw-body path | pending |
-| T7 external TCB and evidence | candidate | `impl/rfc0162-binaryen-pin`; other evidence unassigned | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | pin plus release integration and 13-case exact production corpus at `3ed57023c`; runtime/release/package smokes green and two Fable ACCEPT verdicts; qualification/terminal merge and non-Binaryen evidence pending |
+| T7 external TCB and evidence | candidate | `impl/rfc0162-binaryen-pin`; other evidence active | pinned Binaryen; SEC, mutation, fuzz, poison/reuse, zero-cost, and compiler-cost artifacts | pin plus release integration and 13-case exact production corpus through `43720e967`; runtime/release/package/performance smokes green and final Fable ACCEPT; terminal merge, release-matrix CI, and non-Binaryen evidence pending |
 | T8 review and closeout | pending | integration | Fable review, Opus adjudication if rejected, resolved findings, terminal merge audit | pending |
 
 ## Acceptance ledger
@@ -181,11 +206,11 @@ code. `candidate` means reusable work exists but is not landed proof.
 | 6 | Final optimized WIR checked once and fail closed | pending | No `ValidatedWirModule`; encoding is directly callable | Private validated constructor and production encoder API negative tests |
 | 7 | Optimizer combinations cannot retain stale facts | pending | RFC-0153 facts are local-name keyed | Reassignment, join, loop, inline, specialize, recursion, and pass-combination rejection fixtures |
 | 8 | Raw memory is sealed | pending | All-crates structural parser confirms 584 sites in 25 files; no-growth ceiling is locally green but migration remains zero of 584 | Current census reaches zero outside the named kernel-template module; structural test blocks regressions |
-| 9 | Kernel is small and directly tested | pending | Existing helpers are ordinary WIR functions | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
+| 9 | Kernel is small and directly tested | candidate | Six opaque operation shapes at `9058e272f` cannot carry ordinary WIR bodies and ordinary encoding rejects them; production helpers remain unmigrated and fixed templates are not yet integrated | Published operation census/contracts; poison, boundary, reuse, exact-template, and mutation tests |
 | 10 | Encoder mechanically erases facts | pending | Encoder accepts arbitrary WIR and supports raw bodies | Exact template tests, mandatory Wasm validation, and no production raw-body route |
 | 11 | Applicable SEC corpus is permanent | candidate | SEC-038/039 tests exist; SEC-078 candidate exists; SEC-036 identity unresolved | Source regression plus forged-WIR rejection for SEC-036/037/038/039/078; encoder test where applicable |
 | 12 | Validator mutations are killed | pending | Validator absent | Mutation matrix kills every rule deletion, inversion, or weakening |
-| 13 | Binaryen trust is explicit and reproducible | candidate | `3ed57023c` supplies the PATH-free digest-pinned version-131 implementation, release bundle installation, exact recipe/cache identity and fallback tests, `PreserveRaw` exclusion, authenticated official smoke, and a 13-case exact pre/post production corpus; terminal merge and release-matrix CI evidence are pending | Pinned executable identity/recipe/cache key, explicit fallback, `PreserveRaw` exclusion, pre/post differential corpus |
+| 13 | Binaryen trust is explicit and reproducible | candidate | `43720e967` supplies the PATH-free digest-pinned version-131 implementation, release bundle installation, exact recipe/cache identity and fallback tests, `PreserveRaw` exclusion, authenticated official/package/install smokes, reviewed-production performance lane, and a 13-case exact pre/post production corpus; terminal merge and release-matrix CI evidence are pending | Pinned executable identity/recipe/cache key, explicit fallback, `PreserveRaw` exclusion, pre/post differential corpus |
 | 14 | Generated execution adds zero safety overhead | pending | No matched before/after artifact exists | Exact WAT and calls/loads/stores/branches/accesses/allocations/imports/globals/functions/fields/code-size/dynamic-count/benchmark evidence |
 | 15 | Release claim is fail closed | pending | Unchecked production encoders exist | Deliberately invalid final WIR cannot encode through any production path |
 
