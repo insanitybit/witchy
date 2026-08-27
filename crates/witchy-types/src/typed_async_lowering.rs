@@ -7,7 +7,7 @@
 //! parameter types as the narrow input from which a canonical `AsyncProgram`
 //! can assign frame lanes and backend bindings.
 
-use witchy_syntax::ast::{Convention, Expr, Function, Item, Type};
+use witchy_syntax::ast::{Convention, Item, Type};
 use witchy_syntax::async_surface::AsyncSurfaceId;
 use witchy_syntax::suspension::{
     async_surface, async_surface_module, frame_state, source_suspension, FRAME_ENTRY_ATTRIBUTE,
@@ -16,7 +16,7 @@ use witchy_syntax::suspension::{
 
 use crate::async_control_flow::{
     AsyncCallableId, ControlPathStep, SourceAsyncControlFlow, SourceAsyncControlFlowInventory,
-    SourceAsyncOperationKind, SourceExpressionId, source_expression,
+    SourceAsyncOperationKind,
 };
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
@@ -78,11 +78,6 @@ pub struct TypedAsyncSourceOperationBinding {
     pub source_operation: u32,
     pub kind: SourceAsyncOperationKind,
     pub path: Vec<ControlPathStep>,
-    /// A source-coordinate handle for the exact pre-CPS operation expression.
-    /// It is intentionally noncanonical transport; final typed lowering uses
-    /// it to obtain operands from the retained source item, never from a
-    /// generated closure name or scalar transition recognizer.
-    pub expression: Option<SourceExpressionId>,
     pub continuation: Option<FinalCallableIndex>,
 }
 
@@ -285,7 +280,6 @@ impl TypedAsyncLoweringInput {
                     source_operation: operation.ordinal,
                     kind: operation.kind,
                     path: operation.path.clone(),
-                    expression: operation.expression,
                     continuation,
                 });
             }
@@ -306,90 +300,6 @@ impl TypedAsyncLoweringInput {
         }
         Ok(Self { source, states, suspensions, operations })
     }
-
-    /// Resolve one typed source-operation binding back to the exact retained
-    /// pre-CPS expression which supplies its operands. This is deliberately a
-    /// source/typed-lowering bridge only; callers still need to form typed
-    /// lanes, ownership actions, and executable state edges from checked data.
-    pub fn source_operation_expression<'a>(
-        checked: &'a CheckedModule,
-        operation: &TypedAsyncSourceOperationBinding,
-    ) -> Result<&'a Expr, String> {
-        let expression = operation.expression.ok_or_else(|| format!(
-            "source async {:?} operation {} has no expression operand",
-            operation.callable,
-            operation.source_operation,
-        ))?;
-        let function = checked
-            .async_surface()
-            .function(&operation.callable.module, &operation.callable.surface)
-            .ok_or_else(|| format!(
-                "source async operation {} has no retained callable {:?}",
-                operation.source_operation,
-                operation.callable,
-            ))?;
-        source_expression(function, expression).ok_or_else(|| format!(
-            "source async {:?} operation {} refers to absent source expression {:?}",
-            operation.callable,
-            operation.source_operation,
-            expression,
-        ))
-    }
-
-    /// Resolve an operation through the fully linked typed-source projection.
-    /// The returned expression and inferred type are guaranteed to share the
-    /// same allocation, unlike the lossless syntax sidecar used for diagnostics.
-    pub fn typed_source_operation<'a>(
-        checked: &'a CheckedModule,
-        operation: &TypedAsyncSourceOperationBinding,
-    ) -> Result<(&'a Expr, &'a typeck::Ty), String> {
-        let expression = operation.expression.ok_or_else(|| format!(
-            "source async {:?} operation {} has no expression operand",
-            operation.callable,
-            operation.source_operation,
-        ))?;
-        let typed = checked.typed_async_source().ok_or_else(|| format!(
-            "source async {:?} has no typed pre-CPS projection",
-            operation.callable,
-        ))?;
-        let function = typed_source_function(typed, &operation.callable).ok_or_else(|| format!(
-            "source async operation {} has no typed callable {:?}",
-            operation.source_operation,
-            operation.callable,
-        ))?;
-        let expression = source_expression(function, expression).ok_or_else(|| format!(
-            "source async {:?} operation {} refers to absent typed expression {:?}",
-            operation.callable,
-            operation.source_operation,
-            expression,
-        ))?;
-        let ty = typed.table().type_of(expression).ok_or_else(|| format!(
-            "source async {:?} operation {} has no inferred type",
-            operation.callable,
-            operation.source_operation,
-        ))?;
-        Ok((expression, ty))
-    }
-}
-
-fn typed_source_function<'a>(
-    typed: &'a TypedModule,
-    callable: &AsyncCallableId,
-) -> Option<&'a Function> {
-    let matches_callable = |function: &Function| {
-        async_surface(function)
-            .is_some_and(|(item, method)| {
-                u32::try_from(item).ok() == Some(callable.surface.item)
-                    && method.and_then(|method| u32::try_from(method).ok()) == callable.surface.method
-            })
-            && async_surface_module(function) == Some(callable.module.as_str())
-    };
-    typed.module().items.iter().find_map(|item| match item {
-        Item::Function(function) if matches_callable(function) => Some(function),
-        Item::Impl(definition) => definition.methods.iter().find(|method| matches_callable(method)),
-        Item::Function(_) | Item::Type(_) | Item::Trait(_) | Item::Const { .. }
-        | Item::TypeAlias { .. } | Item::Comptime(_) => None,
-    })
 }
 
 #[cfg(test)]
@@ -422,23 +332,6 @@ mod tests {
         assert!(input.operations.iter().all(|operation| {
             (operation.kind == SourceAsyncOperationKind::Await) == operation.continuation.is_some()
         }));
-        let await_operation = input.operations.iter().find(|operation| {
-            operation.kind == SourceAsyncOperationKind::Await
-        }).expect("typed await operation");
-        assert!(matches!(
-            TypedAsyncLoweringInput::source_operation_expression(&checked, await_operation),
-            Ok(witchy_syntax::ast::Expr::Unary {
-                op: witchy_syntax::ast::UnOp::Await,
-                ..
-            })
-        ));
-        assert!(matches!(
-            TypedAsyncLoweringInput::typed_source_operation(&checked, await_operation),
-            Ok((
-                witchy_syntax::ast::Expr::Unary { op: witchy_syntax::ast::UnOp::Await, .. },
-                crate::typeck::Ty::Int,
-            ))
-        ));
         assert_eq!(
             input.states.iter().filter_map(|state| state.source_suspension).collect::<Vec<_>>(),
             vec![0],
@@ -480,10 +373,6 @@ mod tests {
         assert_eq!(
             input.operations.iter().map(|operation| operation.source_operation).collect::<Vec<_>>(),
             source_operations,
-        );
-        assert_eq!(
-            input.operations.iter().map(|operation| operation.expression).collect::<Vec<_>>(),
-            input.source[0].operations.iter().map(|operation| operation.expression).collect::<Vec<_>>(),
         );
         assert!(input.operations.iter().all(|operation| {
             (operation.kind == SourceAsyncOperationKind::Await) == operation.continuation.is_some()
