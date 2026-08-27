@@ -120,6 +120,18 @@ pub struct TypedAsyncSourceOperationBinding {
     pub terminal: bool,
 }
 
+/// One source control selector retained with its concrete checked type.  It is
+/// intentionally separate from executable edges: a later CFG builder chooses
+/// states and lane actions after final closure layout, but it need not inspect
+/// generated CPS expressions to obtain the branch discriminator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedAsyncSourceControlBinding {
+    pub callable: AsyncCallableId,
+    pub control: u32,
+    pub selector: SourceExpressionId,
+    pub selector_type: Option<Type>,
+}
+
 /// The complete bridge between source control flow and final typed state
 /// layouts. It is not executable and has no legacy scalar transitions.
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +139,7 @@ pub struct TypedAsyncLoweringInput {
     pub source: Vec<SourceAsyncControlFlow>,
     pub states: Vec<TypedAsyncStateInput>,
     pub suspensions: Vec<TypedAsyncSuspensionBinding>,
+    pub controls: Vec<TypedAsyncSourceControlBinding>,
     pub operations: Vec<TypedAsyncSourceOperationBinding>,
 }
 
@@ -146,6 +159,14 @@ impl TypedAsyncLoweringInput {
                 operation.source_operation,
             ))?);
             operation.runtime_kind = classify_typed_operation(operation.kind, expression);
+        }
+        for control in &mut input.controls {
+            let (_, ty) = Self::typed_source_expression(checked, &control.callable, control.selector)?;
+            control.selector_type = Some(typeck::ty_to_ast(ty).ok_or_else(|| format!(
+                "source async {:?} control {} has a non-concrete selector type `{ty}`",
+                control.callable,
+                control.control,
+            ))?);
         }
         Ok(input)
     }
@@ -332,7 +353,23 @@ impl TypedAsyncLoweringInput {
                 ));
             }
         }
-        Ok(Self { source, states, suspensions, operations })
+        let mut controls = source.iter().flat_map(|flow| flow.controls.iter().map(|control| {
+            TypedAsyncSourceControlBinding {
+                callable: flow.callable.clone(),
+                control: control.id.0,
+                selector: control.selector,
+                selector_type: None,
+            }
+        })).collect::<Vec<_>>();
+        controls.sort_by(|left, right| {
+            (&left.callable, left.control).cmp(&(&right.callable, right.control))
+        });
+        for pair in controls.windows(2) {
+            if pair[0].callable == pair[1].callable && pair[0].control == pair[1].control {
+                return Err(format!("source async control {} has multiple typed bindings", pair[0].control));
+            }
+        }
+        Ok(Self { source, states, suspensions, controls, operations })
     }
 
     /// Resolve one typed source-operation binding back to the exact retained
@@ -376,25 +413,25 @@ impl TypedAsyncLoweringInput {
             operation.callable,
             operation.source_operation,
         ))?;
+        Self::typed_source_expression(checked, &operation.callable, expression)
+    }
+
+    fn typed_source_expression<'a>(
+        checked: &'a CheckedModule,
+        callable: &AsyncCallableId,
+        expression: SourceExpressionId,
+    ) -> Result<(&'a Expr, &'a typeck::Ty), String> {
         let typed = checked.typed_async_source().ok_or_else(|| format!(
-            "source async {:?} has no typed pre-CPS projection",
-            operation.callable,
+            "source async {:?} has no typed pre-CPS projection", callable,
         ))?;
-        let function = typed_source_function(typed, &operation.callable).ok_or_else(|| format!(
-            "source async operation {} has no typed callable {:?}",
-            operation.source_operation,
-            operation.callable,
+        let function = typed_source_function(typed, callable).ok_or_else(|| format!(
+            "source async has no typed callable {:?}", callable,
         ))?;
         let expression = source_expression(function, expression).ok_or_else(|| format!(
-            "source async {:?} operation {} refers to absent typed expression {:?}",
-            operation.callable,
-            operation.source_operation,
-            expression,
+            "source async {:?} refers to absent typed expression {:?}", callable, expression,
         ))?;
         let ty = typed.table().type_of(expression).ok_or_else(|| format!(
-            "source async {:?} operation {} has no inferred type",
-            operation.callable,
-            operation.source_operation,
+            "source async {:?} expression {:?} has no inferred type", callable, expression,
         ))?;
         Ok((expression, ty))
     }
@@ -582,5 +619,23 @@ mod tests {
             operation.kind == SourceAsyncOperationKind::StaticCall
                 && operation.runtime_kind == TypedAsyncOperationKind::CallOperand
         }));
+    }
+
+    #[test]
+    fn retains_concrete_control_selector_types_before_cps_lowering() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn choose(flag: Bool) -> Int:\n    if flag:\n        task.done(1).await\n    else:\n        task.done(2).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
+        assert_eq!(input.controls.len(), 1);
+        assert_eq!(
+            input.controls[0].selector_type,
+            Some(witchy_syntax::ast::Type::Named("Bool".into(), Vec::new())),
+        );
     }
 }
