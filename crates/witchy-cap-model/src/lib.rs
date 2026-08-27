@@ -7,6 +7,8 @@
 
 #![deny(unsafe_code)]
 
+pub mod authority;
+
 /// The one audited gateway for this process's environment. `unsafe` is allowed
 /// ONLY here: environment mutation is unsound under edition 2024 and the module
 /// exists to concentrate it behind a checked wrapper, so the crate-wide deny stays
