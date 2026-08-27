@@ -131,6 +131,19 @@ pub enum HostArgument {
     Buffer(Place),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ControlId(u32);
+
+impl ControlId {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Operation {
     DefineScalar {
@@ -200,9 +213,19 @@ pub enum Operation {
         then_operations: Vec<Operation>,
         else_operations: Vec<Operation>,
     },
-    Loop {
+    Block {
+        control: ControlId,
         body: Vec<Operation>,
     },
+    Loop {
+        control: ControlId,
+        body: Vec<Operation>,
+    },
+    Branch {
+        target: ControlId,
+        condition: Option<DefinitionId>,
+    },
+    ReturnVoid,
     ReturnObject {
         object: ObjectIdentity,
     },
@@ -298,6 +321,22 @@ struct State {
     definitions: BTreeSet<DefinitionId>,
     minted: BTreeSet<ObjectIdentity>,
     returned: Option<ReturnedObject>,
+}
+
+#[derive(Default)]
+struct ControlFlows {
+    branches: BTreeMap<ControlId, State>,
+    returned: Option<State>,
+}
+
+impl ControlFlows {
+    fn fact_count(&self) -> usize {
+        self.branches
+            .values()
+            .map(State::fact_count)
+            .chain(self.returned.iter().map(State::fact_count))
+            .fold(0_usize, usize::saturating_add)
+    }
 }
 
 impl State {
@@ -635,9 +674,31 @@ impl Validator<'_> {
             self.validate_extent_against_layout(object, &state, function, None)?;
         }
         self.observe_facts(&state, function, None)?;
+        self.validate_control_structure(function, &function.operations, &mut Vec::new(), 0)?;
 
-        self.validate_operations(function, &function.operations, &mut state, 0)?;
-        self.validate_function_exit(function, &state)?;
+        let mut flows = ControlFlows::default();
+        let falls_through = self.validate_operations(
+            function,
+            &function.operations,
+            &mut state,
+            0,
+            &mut Vec::new(),
+            &mut flows,
+        )?;
+        if !flows.branches.is_empty() {
+            return Err(self.function_error(
+                RuleId::ConservativeJoin,
+                function,
+                None,
+                "branch escaped its lexical control target",
+            ));
+        }
+        if falls_through {
+            self.validate_function_exit(function, &state)?;
+        }
+        if let Some(returned) = &flows.returned {
+            self.validate_function_exit(function, returned)?;
+        }
         Ok(())
     }
 
@@ -684,6 +745,91 @@ impl Validator<'_> {
                 ));
             }
         }
+        let mut controls = BTreeSet::new();
+        for control in control_sites(&function.operations) {
+            if !controls.insert(control) {
+                return Err(self.function_error(
+                    RuleId::ConservativeJoin,
+                    function,
+                    None,
+                    format!(
+                        "ControlId {} is declared by more than one structural site",
+                        control.get()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_control_structure(
+        &self,
+        function: &CandidateFunction,
+        operations: &[Operation],
+        controls: &mut Vec<ControlId>,
+        depth: usize,
+    ) -> Result<(), ValidationError> {
+        if depth > self.budget.expression_depth {
+            return Err(self.function_error(
+                RuleId::BudgetExhaustionFailsClosed,
+                function,
+                None,
+                "structured control census exhausted its depth budget",
+            ));
+        }
+        for operation in operations {
+            match operation {
+                Operation::If { then_operations, else_operations, .. } => {
+                    let nested = depth.checked_add(1).ok_or_else(|| {
+                        self.function_error(
+                            RuleId::BudgetExhaustionFailsClosed,
+                            function,
+                            None,
+                            "structured control census depth overflowed",
+                        )
+                    })?;
+                    self.validate_control_structure(
+                        function,
+                        then_operations,
+                        controls,
+                        nested,
+                    )?;
+                    self.validate_control_structure(
+                        function,
+                        else_operations,
+                        controls,
+                        nested,
+                    )?;
+                }
+                Operation::Block { control, body } | Operation::Loop { control, body } => {
+                    let nested = depth.checked_add(1).ok_or_else(|| {
+                        self.function_error(
+                            RuleId::BudgetExhaustionFailsClosed,
+                            function,
+                            None,
+                            "structured control census depth overflowed",
+                        )
+                    })?;
+                    controls.push(*control);
+                    self.validate_control_structure(function, body, controls, nested)?;
+                    controls.pop();
+                }
+                Operation::Branch { target, .. } => {
+                    if !controls.contains(target) {
+                        return Err(self.function_error(
+                            RuleId::ConservativeJoin,
+                            function,
+                            None,
+                            format!(
+                                "branch target {} is not a lexically enclosing control",
+                                target.get()
+                            ),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -693,7 +839,9 @@ impl Validator<'_> {
         operations: &[Operation],
         state: &mut State,
         control_depth: usize,
-    ) -> Result<(), ValidationError> {
+        controls: &mut Vec<ControlId>,
+        flows: &mut ControlFlows,
+    ) -> Result<bool, ValidationError> {
         if control_depth > self.budget.expression_depth {
             return Err(self.function_error(
                 RuleId::BudgetExhaustionFailsClosed,
@@ -702,7 +850,11 @@ impl Validator<'_> {
                 "structured control depth exhausted",
             ));
         }
+        let mut falls_through = true;
         for operation in operations {
+            if !falls_through {
+                break;
+            }
             self.operations = self.operations.checked_add(1).ok_or_else(|| {
                 self.function_error(
                     RuleId::BudgetExhaustionFailsClosed,
@@ -720,14 +872,44 @@ impl Validator<'_> {
                     "operation budget exhausted",
                 ));
             }
-            self.validate_operation(
+            falls_through = self.validate_operation(
                 function,
                 operation_index,
                 operation,
                 state,
                 control_depth,
+                controls,
+                flows,
             )?;
             self.observe_facts(&state, function, Some(operation_index))?;
+            self.observe_control_facts(
+                flows,
+                falls_through.then_some(&*state),
+                function,
+                Some(operation_index),
+            )?;
+        }
+        Ok(falls_through)
+    }
+
+    fn observe_control_facts(
+        &mut self,
+        flows: &ControlFlows,
+        fallthrough: Option<&State>,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        let live = flows.fact_count().saturating_add(
+            fallthrough.map(State::fact_count).unwrap_or_default(),
+        );
+        self.peak_facts = self.peak_facts.max(live);
+        if live > self.budget.facts {
+            return Err(self.function_error(
+                RuleId::BudgetExhaustionFailsClosed,
+                function,
+                at,
+                "control-flow fact budget exhausted",
+            ));
         }
         Ok(())
     }
@@ -946,7 +1128,9 @@ impl Validator<'_> {
         operation: &Operation,
         state: &mut State,
         control_depth: usize,
-    ) -> Result<(), ValidationError> {
+        controls: &mut Vec<ControlId>,
+        flows: &mut ControlFlows,
+    ) -> Result<bool, ValidationError> {
         let at = Some(operation_index);
         match operation {
             Operation::DefineScalar { definition, value } => {
@@ -1280,42 +1464,115 @@ impl Validator<'_> {
                 let nested_depth =
                     self.nested_control_depth(function, at, control_depth)?;
                 let mut then_state = state.clone();
-                self.validate_operations(
+                let then_falls_through = self.validate_operations(
                     function,
                     then_operations,
                     &mut then_state,
                     nested_depth,
+                    controls,
+                    flows,
                 )?;
                 let mut else_state = state.clone();
-                self.validate_operations(
+                let else_falls_through = self.validate_operations(
                     function,
                     else_operations,
                     &mut else_state,
                     nested_depth,
+                    controls,
+                    flows,
                 )?;
-                *state = self.join_states(function, at, then_state, else_state)?;
+                match (then_falls_through, else_falls_through) {
+                    (true, true) => {
+                        *state = self.join_states(function, at, then_state, else_state)?;
+                    }
+                    (true, false) => *state = then_state,
+                    (false, true) => *state = else_state,
+                    (false, false) => return Ok(false),
+                }
             }
-            Operation::Loop { body } => {
+            Operation::Block { control, body } => {
+                let nested_depth =
+                    self.nested_control_depth(function, at, control_depth)?;
+                controls.push(*control);
+                let body_falls_through = self.validate_operations(
+                    function,
+                    body,
+                    state,
+                    nested_depth,
+                    controls,
+                    flows,
+                )?;
+                controls.pop();
+                let branch_exit = flows.branches.remove(control);
+                match (body_falls_through, branch_exit) {
+                    (true, Some(exit)) => {
+                        *state = self.join_states(function, at, state.clone(), exit)?;
+                    }
+                    (false, Some(exit)) => *state = exit,
+                    (true, None) => {}
+                    (false, None) => return Ok(false),
+                }
+            }
+            Operation::Loop { control, body } => {
                 let nested_depth =
                     self.nested_control_depth(function, at, control_depth)?;
                 let entry = state.clone();
                 let mut header = entry.clone();
                 loop {
-                    let mut back_edge = header.clone();
-                    self.validate_operations(
+                    let mut iteration_state = header.clone();
+                    let mut iteration_flows = ControlFlows::default();
+                    controls.push(*control);
+                    let body_falls_through = self.validate_operations(
                         function,
                         body,
-                        &mut back_edge,
+                        &mut iteration_state,
                         nested_depth,
+                        controls,
+                        &mut iteration_flows,
                     )?;
-                    let next =
-                        self.join_states(function, at, entry.clone(), back_edge)?;
+                    controls.pop();
+                    let back_edge = iteration_flows.branches.remove(control);
+                    let next = match back_edge {
+                        Some(back_edge) => {
+                            self.join_states(function, at, entry.clone(), back_edge)?
+                        }
+                        None => header.clone(),
+                    };
                     if next == header {
-                        *state = next;
+                        self.merge_control_flows(function, at, flows, iteration_flows)?;
+                        if body_falls_through {
+                            *state = iteration_state;
+                        } else {
+                            return Ok(false);
+                        }
                         break;
                     }
                     header = next;
                 }
+            }
+            Operation::Branch { target, condition } => {
+                if !controls.contains(target) {
+                    return Err(self.function_error(
+                        RuleId::ConservativeJoin,
+                        function,
+                        at,
+                        format!(
+                            "branch target {} is not a lexically enclosing control",
+                            target.get()
+                        ),
+                    ));
+                }
+                if let Some(condition) = condition {
+                    self.require_scalar(state, *condition, function, at)?;
+                }
+                self.merge_branch_state(function, at, flows, *target, state.clone())?;
+                if condition.is_none() {
+                    return Ok(false);
+                }
+            }
+            Operation::ReturnVoid => {
+                self.merge_return_state(function, at, flows, state.clone())?;
+                return Ok(false);
             }
             Operation::ReturnObject { object } => {
                 if state.returned.is_some() {
@@ -1351,6 +1608,56 @@ impl Validator<'_> {
                     "linear-memory scalar cannot become a Wasm reference",
                 ));
             }
+        }
+        Ok(true)
+    }
+
+    fn merge_branch_state(
+        &mut self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        flows: &mut ControlFlows,
+        target: ControlId,
+        state: State,
+    ) -> Result<(), ValidationError> {
+        match flows.branches.remove(&target) {
+            Some(existing) => {
+                let joined = self.join_states(function, at, existing, state)?;
+                flows.branches.insert(target, joined);
+            }
+            None => {
+                flows.branches.insert(target, state);
+            }
+        }
+        Ok(())
+    }
+
+    fn merge_return_state(
+        &mut self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        flows: &mut ControlFlows,
+        state: State,
+    ) -> Result<(), ValidationError> {
+        flows.returned = Some(match flows.returned.take() {
+            Some(existing) => self.join_states(function, at, existing, state)?,
+            None => state,
+        });
+        Ok(())
+    }
+
+    fn merge_control_flows(
+        &mut self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        destination: &mut ControlFlows,
+        source: ControlFlows,
+    ) -> Result<(), ValidationError> {
+        for (target, state) in source.branches {
+            self.merge_branch_state(function, at, destination, target, state)?;
+        }
+        if let Some(returned) = source.returned {
+            self.merge_return_state(function, at, destination, returned)?;
         }
         Ok(())
     }
@@ -2610,7 +2917,9 @@ fn operation_count(operations: &[Operation]) -> Option<usize> {
                 pending.extend(else_operations.iter().rev());
                 pending.extend(then_operations.iter().rev());
             }
-            Operation::Loop { body } => pending.extend(body.iter().rev()),
+            Operation::Block { body, .. } | Operation::Loop { body, .. } => {
+                pending.extend(body.iter().rev());
+            }
             _ => {}
         }
     }
@@ -2627,7 +2936,9 @@ fn operations(input: &[Operation]) -> Vec<&Operation> {
                 pending.extend(else_operations.iter().rev());
                 pending.extend(then_operations.iter().rev());
             }
-            Operation::Loop { body } => pending.extend(body.iter().rev()),
+            Operation::Block { body, .. } | Operation::Loop { body, .. } => {
+                pending.extend(body.iter().rev());
+            }
             _ => {}
         }
     }
@@ -2664,6 +2975,18 @@ fn identity_sites(input: &[Operation]) -> Vec<ObjectIdentity> {
         identities.extend(identity);
     }
     identities
+}
+
+fn control_sites(input: &[Operation]) -> Vec<ControlId> {
+    operations(input)
+        .into_iter()
+        .filter_map(|operation| match operation {
+            Operation::Block { control, .. } | Operation::Loop { control, .. } => {
+                Some(*control)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn join_ownership(left: Ownership, right: Ownership) -> Ownership {
@@ -3114,24 +3437,45 @@ mod tests {
     fn loop_fixpoint_accepts_stable_facts_and_rejects_consumed_back_edges() {
         let mut stable = base_module();
         let repeated_load = stable.functions[0].operations[3].clone();
-        stable.functions[0]
-            .operations
-            .push(Operation::Loop { body: vec![repeated_load] });
+        stable.functions[0].operations.push(Operation::Loop {
+            control: ControlId::new(1),
+            body: vec![
+                repeated_load,
+                Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: None,
+                },
+            ],
+        });
         let report = validate_candidate(&stable, ValidationBudget::default()).unwrap();
-        assert_eq!(report.metrics().operations, 6);
+        assert_eq!(report.metrics().operations, 7);
 
         let mut consumed = base_module();
         consumed.functions[0].operations.push(Operation::Loop {
-            body: vec![Operation::Release { object: identity(3, 1) }],
+            control: ControlId::new(1),
+            body: vec![
+                Operation::Release { object: identity(3, 1) },
+                Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: None,
+                },
+            ],
         });
         assert_rule(consumed, RuleId::ConsumeOnce);
 
         let mut reused = base_module();
         reused.functions[0].operations.push(Operation::Loop {
-            body: vec![Operation::Reuse {
-                old: identity(3, 1),
-                new: object(3, 2, Provenance::Fresh),
-            }],
+            control: ControlId::new(1),
+            body: vec![
+                Operation::Reuse {
+                    old: identity(3, 1),
+                    new: object(3, 2, Provenance::Fresh),
+                },
+                Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: None,
+                },
+            ],
         });
         assert_rule(reused, RuleId::ConsumeOnce);
     }
@@ -3143,6 +3487,7 @@ mod tests {
 
         let mut complete = base_module();
         complete.functions[0].operations.push(Operation::Loop {
+            control: ControlId::new(1),
             body: vec![
                 Operation::Alloc { result: temporary.clone() },
                 Operation::Store {
@@ -3150,21 +3495,34 @@ mod tests {
                     width: MemoryWidth::I64,
                 },
                 Operation::Release { object: temporary.identity },
+                Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: None,
+                },
             ],
         });
         validate_candidate(&complete, ValidationBudget::default()).unwrap();
 
-        let mut escaped = base_module();
-        escaped.functions[0].operations.extend([
-            Operation::Loop {
-                body: vec![Operation::Alloc { result: temporary.clone() }],
-            },
-            Operation::Load {
-                place: place(temporary, AccessMode::Read, 0, 8),
-                width: MemoryWidth::I64,
-            },
-        ]);
-        assert_rule(escaped, RuleId::LiveGeneration);
+        let mut branch_local = base_module();
+        branch_local.functions[0].operations.push(Operation::Loop {
+            control: ControlId::new(1),
+            body: vec![
+                Operation::If {
+                    condition: DefinitionId::new(1),
+                    then_operations: vec![Operation::Alloc { result: temporary.clone() }],
+                    else_operations: Vec::new(),
+                },
+                Operation::Load {
+                    place: place(temporary, AccessMode::Read, 0, 8),
+                    width: MemoryWidth::I64,
+                },
+                Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: None,
+                },
+            ],
+        });
+        assert_rule(branch_local, RuleId::LiveGeneration);
     }
 
     #[test]
@@ -3183,11 +3541,18 @@ mod tests {
         let allocated = object(3, 1, Provenance::Fresh);
         module.functions[0].operations.extend([
             Operation::Loop {
-                body: vec![Operation::Call {
-                    callable: "escape".into(),
-                    arguments: vec![CallArgument::Object(allocated.identity)],
-                    result: None,
-                }],
+                control: ControlId::new(1),
+                body: vec![
+                    Operation::Call {
+                        callable: "escape".into(),
+                        arguments: vec![CallArgument::Object(allocated.identity)],
+                        result: None,
+                    },
+                    Operation::Branch {
+                        target: ControlId::new(1),
+                        condition: Some(DefinitionId::new(1)),
+                    },
+                ],
             },
             Operation::Store {
                 place: place(allocated, AccessMode::Write, 0, 8),
@@ -3201,11 +3566,178 @@ mod tests {
     fn loop_fixpoint_iterations_consume_the_operation_budget() {
         let mut module = base_module();
         module.functions[0].operations.push(Operation::Loop {
-            body: vec![Operation::Retain { object: identity(3, 1) }],
+            control: ControlId::new(1),
+            body: vec![
+                Operation::Retain { object: identity(3, 1) },
+                Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: None,
+                },
+            ],
         });
         let error = validate_candidate(
             &module,
-            ValidationBudget { operations: 6, ..ValidationBudget::default() },
+            ValidationBudget { operations: 8, ..ValidationBudget::default() },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.diagnostic,
+            ValidationDiagnostic::Rule(RuleId::BudgetExhaustionFailsClosed)
+        );
+    }
+
+    #[test]
+    fn block_exit_accumulator_never_resurrects_consumed_authority() {
+        let mut module = base_module();
+        let allocated = object(3, 1, Provenance::Fresh);
+        module.functions[0].operations.extend([
+            Operation::Block {
+                control: ControlId::new(1),
+                body: vec![Operation::If {
+                    condition: DefinitionId::new(1),
+                    then_operations: vec![
+                        Operation::Release { object: allocated.identity },
+                        Operation::Branch {
+                            target: ControlId::new(1),
+                            condition: None,
+                        },
+                    ],
+                    else_operations: vec![Operation::Branch {
+                        target: ControlId::new(1),
+                        condition: None,
+                    }],
+                }],
+            },
+            Operation::Store {
+                place: place(allocated, AccessMode::Write, 0, 8),
+                width: MemoryWidth::I64,
+            },
+        ]);
+        assert_rule(module, RuleId::ConsumeOnce);
+    }
+
+    #[test]
+    fn loop_outer_exit_merge_never_drops_a_consumption_effect() {
+        let mut module = base_module();
+        let allocated = object(3, 1, Provenance::Fresh);
+        module.functions[0].operations.extend([
+            Operation::Block {
+                control: ControlId::new(1),
+                body: vec![Operation::Loop {
+                    control: ControlId::new(2),
+                    body: vec![
+                        Operation::Release { object: allocated.identity },
+                        Operation::Branch {
+                            target: ControlId::new(1),
+                            condition: None,
+                        },
+                    ],
+                }],
+            },
+            Operation::Load {
+                place: place(allocated, AccessMode::Read, 0, 8),
+                width: MemoryWidth::I64,
+            },
+        ]);
+        assert_rule(module, RuleId::ConsumeOnce);
+    }
+
+    #[test]
+    fn conditional_void_return_preserves_only_the_fallthrough_path() {
+        let mut module = base_module();
+        let allocated = object(3, 1, Provenance::Fresh);
+        module.functions[0].operations.extend([
+            Operation::If {
+                condition: DefinitionId::new(1),
+                then_operations: vec![Operation::ReturnVoid],
+                else_operations: Vec::new(),
+            },
+            Operation::Store {
+                place: place(allocated, AccessMode::Write, 0, 8),
+                width: MemoryWidth::I64,
+            },
+        ]);
+        validate_candidate(&module, ValidationBudget::default()).unwrap();
+    }
+
+    #[test]
+    fn void_return_state_is_still_checked_against_parameter_effects() {
+        let mut module = base_module();
+        let parameter = object(1, 1, Provenance::Unknown);
+        module.imports.insert(
+            "escape".into(),
+            CallableMemoryContract {
+                parameters: vec![object_parameter(
+                    ParameterMemoryEntry::Shared,
+                    ParameterMemoryEffects::only(ParameterMemoryEffect::Escape),
+                )],
+                result: CallableMemoryResult::NoMemory,
+            },
+        );
+        module.functions[0] = CandidateFunction {
+            name: "main".into(),
+            contract: CallableMemoryContract {
+                parameters: vec![object_parameter(
+                    ParameterMemoryEntry::Shared,
+                    ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
+                )],
+                result: CallableMemoryResult::NoMemory,
+            },
+            parameters: vec![ParameterBinding {
+                definition: parameter.identity.root,
+                object: Some(parameter.clone()),
+            }],
+            operations: vec![
+                Operation::Call {
+                    callable: "escape".into(),
+                    arguments: vec![CallArgument::Object(parameter.identity)],
+                    result: None,
+                },
+                Operation::ReturnVoid,
+            ],
+        };
+        assert_rule(module, RuleId::CheckedCallableContract);
+    }
+
+    #[test]
+    fn control_census_rejects_duplicate_and_nonlexical_targets() {
+        let mut duplicate = base_module();
+        duplicate.functions[0].operations.extend([
+            Operation::Block { control: ControlId::new(1), body: Vec::new() },
+            Operation::Loop { control: ControlId::new(1), body: Vec::new() },
+        ]);
+        assert_rule(duplicate, RuleId::ConservativeJoin);
+
+        let mut nonlexical = base_module();
+        nonlexical.functions[0].operations.push(Operation::Branch {
+            target: ControlId::new(77),
+            condition: None,
+        });
+        assert_rule(nonlexical, RuleId::ConservativeJoin);
+    }
+
+    #[test]
+    fn simultaneous_control_exits_count_against_the_fact_budget() {
+        let mut module = base_module();
+        module.functions[0].operations.push(Operation::Block {
+            control: ControlId::new(1),
+            body: vec![Operation::Block {
+                control: ControlId::new(2),
+                body: vec![
+                    Operation::Branch {
+                        target: ControlId::new(1),
+                        condition: Some(DefinitionId::new(1)),
+                    },
+                    Operation::Branch {
+                        target: ControlId::new(2),
+                        condition: Some(DefinitionId::new(1)),
+                    },
+                ],
+            }],
+        });
+        let error = validate_candidate(
+            &module,
+            ValidationBudget { facts: 14, ..ValidationBudget::default() },
         )
         .unwrap_err();
         assert_eq!(
@@ -3241,8 +3773,11 @@ mod tests {
     fn default_control_depth_fits_a_two_megabyte_validator_stack() {
         let budget = ValidationBudget::default();
         let mut body = Vec::new();
-        for _ in 0..budget.expression_depth {
-            body = vec![Operation::Loop { body }];
+        for control in 0..budget.expression_depth {
+            body = vec![Operation::Loop {
+                control: ControlId::new(u32::try_from(control).unwrap()),
+                body,
+            }];
         }
         let mut module = base_module();
         module.functions[0].operations.extend(body);

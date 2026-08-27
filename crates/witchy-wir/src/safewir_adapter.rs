@@ -2,9 +2,12 @@
 //! candidate graph.
 //!
 //! This module remains a report boundary. It returns no encoder authority and
-//! supports only the straight-line, void, parameter-rooted subset implemented
-//! by the current validator. Every unsupported executable shape is rejected
-//! rather than omitted from the candidate graph.
+//! supports only the void, parameter-rooted semantic-memory subset implemented
+//! by the current validator, including structured branches, blocks, loops, and
+//! void returns. Every unsupported executable shape is rejected rather than
+//! omitted from the candidate graph.
+//! Branch conditions remain limited to adapter-defined scalar constants; final
+//! mutable-local reaching values still require the separate def-use track.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -20,8 +23,8 @@ use crate::safewir_surface::{
     SafeSizeExpr,
 };
 use crate::safewir_validate::{
-    self, CandidateFunction, CandidateModule, CopyKind, HostArgument, MemoryWidth, Operation,
-    ParameterBinding, PostValidationTransform, ValidationBudget, ValidationError,
+    self, CandidateFunction, CandidateModule, ControlId, CopyKind, HostArgument, MemoryWidth,
+    Operation, ParameterBinding, PostValidationTransform, ValidationBudget, ValidationError,
     ValidationReport,
 };
 use crate::wir::{Kind, WirExpr, WirFunc, WirModule, WirNode, WirSeq};
@@ -157,8 +160,10 @@ struct FunctionAdapter<'a> {
     function: &'a WirFunc,
     contract: CallableMemoryContract,
     next_definition: u32,
+    next_control: u32,
     local_names: BTreeMap<String, LocalId>,
     locals: Vec<LocalBinding>,
+    controls: Vec<(String, ControlId)>,
     parameters: Vec<ParameterBinding>,
     operations: Vec<Operation>,
 }
@@ -201,8 +206,10 @@ impl<'a> FunctionAdapter<'a> {
             function,
             contract,
             next_definition: 1,
+            next_control: 1,
             local_names: BTreeMap::new(),
             locals: Vec::new(),
+            controls: Vec::new(),
             parameters: Vec::new(),
             operations: Vec::new(),
         };
@@ -270,6 +277,36 @@ impl<'a> FunctionAdapter<'a> {
             .checked_add(1)
             .ok_or_else(|| self.error("DefinitionId space exhausted"))?;
         Ok(definition)
+    }
+
+    fn fresh_control(&mut self) -> Result<ControlId, FinalWirValidationError> {
+        let control = ControlId::new(self.next_control);
+        self.next_control = self
+            .next_control
+            .checked_add(1)
+            .ok_or_else(|| self.error("ControlId space exhausted"))?;
+        Ok(control)
+    }
+
+    fn push_control(&mut self, label: &str) -> Result<ControlId, FinalWirValidationError> {
+        if self.controls.iter().any(|(active, _)| active == label) {
+            return Err(self.error(format!(
+                "control label `{label}` shadows a lexically enclosing label"
+            )));
+        }
+        let control = self.fresh_control()?;
+        self.controls.push((label.into(), control));
+        Ok(control)
+    }
+
+    fn resolve_control(&self, label: &str) -> Result<ControlId, FinalWirValidationError> {
+        self.controls
+            .iter()
+            .rev()
+            .find_map(|(active, control)| (active == label).then_some(*control))
+            .ok_or_else(|| self.error(format!(
+                "branch target `{label}` is not a lexically enclosing control"
+            )))
     }
 
     fn declare_local(
@@ -415,18 +452,40 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::If { result: Some(_), .. } => Err(self.error(
                 "value-producing branches require stack-result join definitions",
             )),
-            WirNode::Block { .. }
-            | WirNode::Loop { .. }
-            | WirNode::Br { .. } => Err(self.error(
-                "control flow requires the deferred join, dominance, and fixpoint graph",
+            WirNode::Block { result: Some(_), .. } => Err(self.error(
+                "value-producing blocks require stack-result join definitions",
             )),
+            WirNode::Block { label, result: None, body } => {
+                let control = self.push_control(label)?;
+                let body = self.nested_seq(body)?;
+                self.controls.pop();
+                self.operations.push(Operation::Block { control, body });
+                Ok(())
+            }
+            WirNode::Loop { label, body } => {
+                let control = self.push_control(label)?;
+                let body = self.nested_seq(body)?;
+                self.controls.pop();
+                self.operations.push(Operation::Loop { control, body });
+                Ok(())
+            }
+            WirNode::Br { target, cond } => {
+                let target = self.resolve_control(target)?;
+                let condition = cond
+                    .as_ref()
+                    .map(|condition| self.scalar_definition(condition))
+                    .transpose()?;
+                self.operations.push(Operation::Branch { target, condition });
+                Ok(())
+            }
             WirNode::Push(_) | WirNode::Return(Some(_)) => Err(self.error(
                 "value returns require the deferred return-value def-use adapter",
             )),
             WirNode::Drop(expression) | WirNode::Do(expression) => self.expr(expression),
-            WirNode::Return(None) => Err(self.error(
-                "branching returns require the deferred exit-state accumulator",
-            )),
+            WirNode::Return(None) => {
+                self.operations.push(Operation::ReturnVoid);
+                Ok(())
+            }
             WirNode::Unreachable => Ok(()),
             WirNode::StructSet { base, value, .. } => {
                 self.expr(base)?;
@@ -949,6 +1008,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.metrics().operations, 3);
+    }
+
+    #[test]
+    fn final_wir_report_maps_lexical_block_loop_branches_and_void_return() {
+        let (layouts, layout) = layouts();
+        let mut structured = module(WirExpr::ConstI32(0));
+        structured.funcs[0].body = vec![
+            WirNode::Block {
+                label: "exit".into(),
+                result: None,
+                body: vec![WirNode::Loop {
+                    label: "again".into(),
+                    body: vec![
+                        WirNode::Drop(WirExpr::SafeLoad {
+                            place: semantic_place(layout),
+                            kind: Kind::I64,
+                        }),
+                        WirNode::Br {
+                            target: "exit".into(),
+                            cond: Some(WirExpr::ConstI32(1)),
+                        },
+                        WirNode::Br { target: "again".into(), cond: None },
+                    ],
+                }],
+            },
+            WirNode::Return(None),
+        ];
+        let report = validate_final_wir_report(
+            &structured,
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(report.metrics().operations, 7);
+    }
+
+    #[test]
+    fn final_wir_report_rejects_nonlexical_and_shadowed_control_targets() {
+        let (layouts, layout) = layouts();
+        let mut nonlexical = module(WirExpr::ConstI32(0));
+        nonlexical.funcs[0].body = vec![WirNode::Br { target: "ghost".into(), cond: None }];
+        let error = validate_final_wir_report(
+            &nonlexical,
+            inputs(layouts.clone(), layout),
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not a lexically enclosing control"), "{error}");
+
+        let mut shadowed = module(WirExpr::ConstI32(0));
+        shadowed.funcs[0].body = vec![WirNode::Block {
+            label: "same".into(),
+            result: None,
+            body: vec![WirNode::Loop { label: "same".into(), body: Vec::new() }],
+        }];
+        let error = validate_final_wir_report(
+            &shadowed,
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("shadows a lexically enclosing label"), "{error}");
     }
 
     #[test]
