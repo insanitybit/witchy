@@ -490,7 +490,15 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
 
     let submitted_at = Instant::now();
     fixture.mq_ok(&["submit", "a"], "true");
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // The fake prewarm Cargo loops until it is SIGTERMed, so `gate_ran`
+    // appearing at all already proves preemption happened -- the bound below
+    // only has to exclude "waited on something unbounded". Measured flaky at
+    // ~9% (1 in 11 standalone runs) at the old 20s/10s pair, and only on a
+    // loaded box: this repo routinely runs ~10 agents, and load average hit 138
+    // on 10 cores the day this was traced. That made a correct preemption fail
+    // a wall-clock proxy, and one flake reds a whole serialized gate under
+    // --max-fail=1. Widened, not deleted: the property is still asserted.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !gate_ran.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(25));
     }
@@ -500,7 +508,7 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
         fs::read_to_string(&coordinator_log).unwrap_or_default()
     );
     assert!(
-        submitted_at.elapsed() < Duration::from_secs(10),
+        submitted_at.elapsed() < Duration::from_secs(45),
         "queued gate did not start promptly after cancelling inactive prewarm"
     );
     assert!(cancelled.exists(), "queued work did not cancel inactive prewarm Cargo");
