@@ -10,6 +10,7 @@
 #![deny(unsafe_code)]
 
 pub mod access;
+pub mod async_control_flow;
 pub mod loans;
 pub mod existential;
 pub mod migration;

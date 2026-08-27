@@ -101,6 +101,16 @@ impl CheckedModule {
         self.linked.async_surface()
     }
 
+    /// Build the structured source control-flow input for RFC-0161 typed
+    /// lowering. This remains non-executable until final typed frame and
+    /// closure-layout binding are available.
+    #[doc(hidden)]
+    pub fn source_async_control_flow(&self) -> crate::async_control_flow::SourceAsyncControlFlowInventory {
+        crate::async_control_flow::SourceAsyncControlFlowInventory::from_surface(
+            self.async_surface(),
+        )
+    }
+
     /// Build a catalog from the loader ownership retained during checked link.
     /// Legacy checked-link APIs deliberately fail here rather than accepting
     /// package identity after the fact.
@@ -484,6 +494,40 @@ mod tests {
             .expect("main source surface retained");
         assert_eq!(main.items.len(), 1);
         assert_eq!(surface.bindings.len(), 2, "entry and continuation are bound");
+    }
+
+    #[test]
+    fn checked_module_preserves_mutually_exclusive_async_operation_paths() {
+        let checked = link_checked(
+            vec![(
+                "main".to_string(),
+                parse(
+                    "async fn choose(flag: Bool) -> Int:\n    if flag:\n        task.done(1).await\n    else:\n        task.done(2).await\n\nfn main(console: Console):\n    console.print(\"ready\")\n",
+                ),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("checked branching async source");
+
+        let inventory = checked.source_async_control_flow();
+        let callable = inventory.callables.first().expect("async callable retained");
+        let awaits = callable
+            .operations
+            .iter()
+            .filter(|operation| {
+                operation.kind == crate::async_control_flow::SourceAsyncOperationKind::Await
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(awaits.len(), 2);
+        assert_eq!(
+            awaits[0].path,
+            vec![crate::async_control_flow::ControlPathStep::Then],
+        );
+        assert_eq!(
+            awaits[1].path,
+            vec![crate::async_control_flow::ControlPathStep::Else],
+        );
     }
 
     #[test]
