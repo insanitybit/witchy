@@ -94,6 +94,19 @@ queue item has a terminal `merged` event.
   green, and final Opus verdict is ACCEPT after Fable's re-review timed out.
   This is a typed surface only: no production adapter, mandatory gate, raw-site
   migration, or acceptance row is complete.
+- Commit `f4171b513` on `impl/rfc0162-wir-adapter`, stacked on the semantic
+  surface, adds a final-WIR-to-declarative-candidate adapter for a deliberately
+  small report-only subset. The adapter accepts only straight-line void
+  functions with exact parameter-rooted scalar memory operations. It rejects
+  raw memory and raw bodies, mutable locals, control flow, symbolic places,
+  object results, value returns, unknown parameter shape, undeclared import
+  authority, cross-representation access/copy, and typed fill. Fable rejected
+  a memory-parameter escape omitted from the candidate graph; Opus then
+  rejected vacuous value-result contracts. Both classes now fail closed, and
+  final Opus review is ACCEPT. The final 90-test `witchy-wir` library shard and
+  bug-tier clippy are green. This remains diagnostic evidence only: it exposes
+  no `ValidatedWirModule`, encoder authority, source authentication, CFG
+  fixpoint, or production gate, so no acceptance row is complete.
 
 ## Dependency graph and tracks
 
@@ -131,7 +144,7 @@ encoder escape hatch, or runtime safety metadata.
 | T0 census, rule map, ledger | queued candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test and 44-test shard green at `ac3a6017a`; queue terminal pending |
 | T1 SafeWIR fact model | queued candidate | `impl/rfc0162-safewir-core` | object, place, range, layout, provenance, ownership, definition, and generation identities | 9 schema tests, 51-test crate shard, and Wasm shard green at `3189cb910`; revised Fable verdict ACCEPT; queue terminal pending |
 | T2 callable and range binding | candidate dependency | SEC-078 commit `25d3fa4a6`; remainder unassigned | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 41 focused tests, current source regression, detached pre-fix-red proof, and final Opus ACCEPT; qualification/queue/merge and remainder pending |
-| T3 final validator | queued report candidate | `impl/rfc0162-validator` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | closed-world constant subset at `0a4feb592`: 75/75 library tests and bug-tier clippy green, final Fable ACCEPT; queue terminal pending; unsupported CFG/symbolic/alias-set forms and production authority remain no row evidence |
+| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592` plus final-WIR report adapter at `f4171b513`; 90/90 library tests and bug-tier clippy green, final Opus ACCEPT; queue terminal pending; unsupported CFG/symbolic/alias-set/result forms and production authority remain no row evidence |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
 | T5 kernel and encoder | pending | unassigned | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | pending |
 | T6 mandatory production gate | pending | integration | private `ValidatedWirModule`; no unchecked production encode/raw-body path | pending |
