@@ -58,6 +58,11 @@ pub enum TypedAsyncOperationKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedAsyncFrameInput {
     pub parameter: u32,
+    /// The final callable's declared parameter name. This is layout metadata
+    /// from the compiler-produced state, retained so a later lane builder can
+    /// map checked source places to actual capture/parameter fields without
+    /// inspecting a generated callable name or reconstructing a CPS body.
+    pub name: String,
     pub ty: Type,
     pub convention: Convention,
 }
@@ -215,6 +220,7 @@ impl TypedAsyncLoweringInput {
             let frame = function.params.iter().enumerate().map(|(parameter, parameter_info)| {
                 Ok(TypedAsyncFrameInput {
                     parameter: u32::try_from(parameter).map_err(|_| "async parameter count exceeds u32")?,
+                    name: parameter_info.name.clone(),
                     ty: inferred.get(parameter).cloned().or_else(|| parameter_info.ty.clone()).ok_or_else(|| format!("async state at final callable index {function_index} has untyped parameter `{}`", parameter_info.name))?,
                     convention: parameter_info.convention,
                 })
@@ -469,6 +475,10 @@ mod tests {
         assert!(input.states.iter().all(|state| state.callable.module == "main"));
         assert!(input.states.iter().all(|state| state.callable.surface.method == Some(0)));
         assert!(input.states.iter().all(|state| !state.frame.is_empty()));
+        assert!(input.states.iter().all(|state| state.frame.iter().all(|lane| !lane.name.is_empty())));
+        assert!(input.states.iter().any(|state| {
+            state.frame.iter().any(|lane| lane.name == "self")
+        }));
         assert_eq!(input.suspensions.len(), 1);
         assert_eq!(input.operations.len(), input.source[0].operations.len());
         assert_eq!(
