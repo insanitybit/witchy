@@ -871,6 +871,7 @@ struct SavedScope {
     /// the key because lowering clones AST nodes before consuming it; structural
     /// equality survives that boundary whereas pointer identity does not.
     guarded_range_pairs: Vec<(Expr, Vec<(String, String)>)>,
+    guarded_nonempty_roots: Vec<(Expr, Vec<String>)>,
     view_candidates: HashSet<String>,
     view_active: HashSet<String>,
     packed_candidates: HashSet<String>,
@@ -884,6 +885,7 @@ struct SavedScope {
     closure_elide_called: HashSet<String>,
     closure_elide_reassigned: HashSet<String>,
     elide_index_list: Vec<(String, String)>,
+    elide_zero_index_list: Vec<String>,
     /// RFC-0146 loop-scoped sequence plans. Root/layout stability admits a plan
     /// independently of whether an indexed lane is proven in range; unproven
     /// lanes consume the same address plan while retaining an exact trap guard.
@@ -1044,6 +1046,7 @@ struct Codegen<'types> {
     /// scalar and retaining both its bound and source root.
     range_value_vars: HashMap<String, (String, String)>,
     guarded_range_pairs: Vec<(Expr, Vec<(String, String)>)>,
+    guarded_nonempty_roots: Vec<(Expr, Vec<String>)>,
     /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -1190,6 +1193,7 @@ struct Codegen<'types> {
     /// push their own pair (a same-named inner loop disqualifies the outer, so a stale
     /// pair never shadows). Empty ⇒ every `list.at` keeps its trap guard.
     elide_index_list: Vec<(String, String)>,
+    elide_zero_index_list: Vec<String>,
     /// RFC-0146 loop-scoped sequence plans. Root/layout stability admits a plan
     /// independently of whether an indexed lane is proven in range.
     sequence_access_plans: Vec<indexed_kernels::SequenceAccessPlan>,
@@ -1719,6 +1723,7 @@ impl<'types> Codegen<'types> {
             range_value_lists: HashMap::new(),
             range_value_vars: HashMap::new(),
             guarded_range_pairs: Vec::new(),
+            guarded_nonempty_roots: Vec::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),
@@ -1808,6 +1813,7 @@ impl<'types> Codegen<'types> {
             closure_elide_called: HashSet::new(),
             closure_elide_reassigned: HashSet::new(),
             elide_index_list: Vec::new(),
+            elide_zero_index_list: Vec::new(),
             sequence_access_plans: Vec::new(),
             sequence_forwarded_values: HashMap::new(),
             sequence_backend_policy_triggers:
@@ -5129,6 +5135,7 @@ impl<'types> Codegen<'types> {
         self.range_value_lists.clear();
         self.range_value_vars.clear();
         self.guarded_range_pairs = indexed_kernels::guarded_range_built_loop_pairs(body);
+        self.guarded_nonempty_roots = indexed_kernels::guarded_range_built_nonempty_roots(body);
         // Literal-size facts are local-variable facts, never module facts.
         // A code generator is reused across functions (and generated async
         // frames), so carrying a same-named list from an earlier body could
@@ -10142,6 +10149,7 @@ impl<'types> Codegen<'types> {
             range_value_lists: std::mem::take(&mut self.range_value_lists),
             range_value_vars: std::mem::take(&mut self.range_value_vars),
             guarded_range_pairs: std::mem::take(&mut self.guarded_range_pairs),
+            guarded_nonempty_roots: std::mem::take(&mut self.guarded_nonempty_roots),
             view_candidates: std::mem::take(&mut self.view_candidates),
             view_active: std::mem::take(&mut self.view_active),
             packed_candidates: std::mem::take(&mut self.packed_candidates),
@@ -10155,6 +10163,7 @@ impl<'types> Codegen<'types> {
             closure_elide_called: std::mem::take(&mut self.closure_elide_called),
             closure_elide_reassigned: std::mem::take(&mut self.closure_elide_reassigned),
             elide_index_list: std::mem::take(&mut self.elide_index_list),
+            elide_zero_index_list: std::mem::take(&mut self.elide_zero_index_list),
             sequence_access_plans: std::mem::take(&mut self.sequence_access_plans),
             sequence_forwarded_values: std::mem::take(&mut self.sequence_forwarded_values),
             reference_places: std::mem::take(&mut self.reference_places),
@@ -10214,6 +10223,7 @@ impl<'types> Codegen<'types> {
         self.range_value_lists = s.range_value_lists;
         self.range_value_vars = s.range_value_vars;
         self.guarded_range_pairs = s.guarded_range_pairs;
+        self.guarded_nonempty_roots = s.guarded_nonempty_roots;
         self.view_candidates = s.view_candidates;
         self.view_active = s.view_active;
         self.packed_candidates = s.packed_candidates;
@@ -10227,6 +10237,7 @@ impl<'types> Codegen<'types> {
         self.closure_elide_called = s.closure_elide_called;
         self.closure_elide_reassigned = s.closure_elide_reassigned;
         self.elide_index_list = s.elide_index_list;
+        self.elide_zero_index_list = s.elide_zero_index_list;
         self.sequence_access_plans = s.sequence_access_plans;
         self.sequence_forwarded_values = s.sequence_forwarded_values;
         self.reference_places = s.reference_places;

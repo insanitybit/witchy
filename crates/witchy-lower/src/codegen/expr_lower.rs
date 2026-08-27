@@ -1379,6 +1379,11 @@ impl<'types> Codegen<'types> {
                     elide_pairs.sort();
                     elide_pairs.dedup();
                 }
+                let zero_roots = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
+                    .then(|| self.guarded_nonempty_roots.iter().find(|(source, _)| source == e))
+                    .flatten()
+                    .map(|(_, roots)| roots.clone())
+                    .unwrap_or_default();
                 let byte_elide_pairs = self.while_bytes_bounds_elide_pairs(cond, body);
                 // Sequence cursors are initialized once before the loop. Only
                 // a canonical induction variable has a value that is valid at
@@ -1430,6 +1435,7 @@ impl<'types> Codegen<'types> {
                 for pair in &byte_elide_pairs {
                     self.elide_index_list.push(pair.clone());
                 }
+                self.elide_zero_index_list.extend(zero_roots.iter().cloned());
                 let (sequence_plan_count, sequence_setup) =
                     self.install_sequence_access_plans(
                         &elide_pairs,
@@ -1451,6 +1457,7 @@ impl<'types> Codegen<'types> {
                         for _ in 0..num_elide {
                             self.elide_index_list.pop();
                         }
+                        for _ in &zero_roots { self.elide_zero_index_list.pop(); }
                         self.next_label = saved;
                         self.restore_sequence_backend_policy(sequence_policy_checkpoint);
                         return None;
@@ -1490,6 +1497,7 @@ impl<'types> Codegen<'types> {
                 for _ in 0..num_elide {
                     self.elide_index_list.pop();
                 }
+                for _ in &zero_roots { self.elide_zero_index_list.pop(); }
                 if wm.is_some() {
                     self.wm_level -= 1;
                 }

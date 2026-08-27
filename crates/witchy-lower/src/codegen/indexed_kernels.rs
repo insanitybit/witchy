@@ -219,6 +219,69 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
     out
 }
 
+/// Return constant-zero accesses made safe by a normal-completing countdown at
+/// the start of an enclosing infinite loop.  This is deliberately separate
+/// from the variable-index fact above: it establishes only that the range-built
+/// roots are non-empty on the body continuation, not a domain for any variable.
+pub(super) fn guarded_range_built_nonempty_roots(body: &Block) -> Vec<(Expr, Vec<String>)> {
+    fn stmt_value(stmt: &Stmt) -> Option<&Expr> {
+        match stmt { Stmt::Expr(value) | Stmt::Assign { value, .. } => Some(value), _ => None }
+    }
+    fn zero_access_roots(block: &Block, out: &mut HashSet<String>) {
+        fn walk(expr: &Expr, out: &mut HashSet<String>) {
+            match expr {
+                Expr::Call { name, args }
+                    if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::LIST_SET_AT)
+                        && matches!((&args[0], &args[1]), (Expr::Var(_), Expr::Int(0))) => {
+                    if let Expr::Var(root) = &args[0] { out.insert(root.clone()); }
+                    args.iter().for_each(|arg| walk(arg, out));
+                }
+                Expr::Call { args, .. } | Expr::List(args) | Expr::Tuple(args) => args.iter().for_each(|arg| walk(arg, out)),
+                Expr::Binary { lhs, rhs, .. } => { walk(lhs, out); walk(rhs, out); }
+                Expr::Unary { expr, .. } | Expr::Try(expr) => walk(expr, out),
+                Expr::If { cond, then_block, else_block } => { walk(cond, out); zero_access_roots(then_block, out); if let Some(block) = else_block { zero_access_roots(block, out); } }
+                Expr::While { cond, body } | Expr::For { iter: cond, body, .. } => { walk(cond, out); zero_access_roots(body, out); }
+                _ => {}
+            }
+        }
+        for stmt in &block.stmts {
+            match stmt { Stmt::Expr(expr) | Stmt::Assign { value: expr, .. } | Stmt::Let { value: expr, .. } => walk(expr, out), _ => {} }
+        }
+    }
+
+    let mut facts = HashMap::<String, HashSet<String>>::new();
+    let mut aliases = HashMap::<String, String>::new();
+    let mut out = Vec::new();
+    for (position, stmt) in body.stmts.iter().enumerate() {
+        if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt {
+            if let Expr::Var(source) = value { aliases.insert(name.clone(), source.clone()); } else { aliases.remove(name); }
+        }
+        if let (Some(Stmt::Let { name: list, value: Expr::List(items), .. }), Stmt::Expr(Expr::For { iter, body, .. })) = (position.checked_sub(1).and_then(|i| body.stmts.get(i)), stmt)
+            && let Expr::Range { lo, hi, inclusive: false } = iter.as_ref()
+            && matches!(lo.as_ref(), Expr::Int(0))
+            && let Expr::Var(bound) = hi.as_ref()
+            && items.is_empty()
+            && matches!(body.stmts.as_slice(), [only] if matches!(only, Stmt::Expr(value) | Stmt::Assign { value, .. } if matches!(analysis::self_inplace_op(list, value), Some(analysis::InPlaceOp::Push(_)))))
+        { facts.entry(bound.clone()).or_default().insert(list.clone()); }
+        let Stmt::Expr(loop_expr @ Expr::While { body: loop_body, .. }) = stmt else { continue };
+        let Some(Stmt::Expr(countdown)) = loop_body.stmts.first() else { continue };
+        let Expr::While { cond: countdown_cond, body: countdown_body } = countdown else { continue };
+        let Expr::Binary { op: BinOp::NotEq, lhs, rhs } = countdown_cond.as_ref() else { continue };
+        let (Expr::Var(index), Expr::Int(1)) = (lhs.as_ref(), rhs.as_ref()) else { continue };
+        let Some(bound) = aliases.get(index) else { continue };
+        let Some(built) = facts.get(bound) else { continue };
+        let [first, Stmt::Assign { name, value }] = countdown_body.stmts.as_slice() else { continue };
+        if name != index || !matches!(value, Expr::Binary { op: BinOp::Sub, lhs, rhs } if matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))) { continue; }
+        let writes_built = matches!(stmt_value(first), Some(Expr::Call { name, args }) if name == intrinsics::LIST_SET_AT && matches!((&args[0], &args[1]), (Expr::Var(root), Expr::Binary { op: BinOp::Sub, lhs, rhs }) if built.contains(root) && matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))));
+        if !writes_built { continue; }
+        let mut zeros = HashSet::new(); zero_access_roots(&Block { stmts: loop_body.stmts[1..].to_vec(), lines: vec![], region: None }, &mut zeros);
+        let mut scan = DevirtScan::default(); scan.walk_block(loop_body);
+        let mut roots: Vec<_> = zeros.into_iter().filter(|root| built.contains(root) && !scan.length_changing_reassigned.contains(root) && !scan.opaque_call_roots.contains(root)).collect();
+        roots.sort(); if !roots.is_empty() { out.push((loop_expr.clone(), roots)); }
+    }
+    out
+}
+
 #[derive(Default)]
 pub(super) struct SequenceBackendPolicyTriggers(std::cell::Cell<u8>);
 

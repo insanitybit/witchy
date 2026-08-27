@@ -4681,6 +4681,42 @@ fn main() -> Int:
     }
 
     #[test]
+    fn normal_countdown_scopes_constant_zero_elision_to_its_outer_loop() {
+        let src = r#"
+import list
+fn f(let n: Int) -> Int:
+    var xs = []
+    for i in 0..n:
+        list.push(xs, i)
+    var r = n
+    while true:
+        while r != 1:
+            list.set_at(xs, r - 1, r)
+            r = r - 1
+        let first = list.at(xs, 0)
+        if first == 99:
+            return first
+        return 7
+    0
+fn main() -> Int:
+    f(3)
+"#;
+        let module = link_list_app(src);
+        let on = witchy_syntax::opt::OptSet::default_set();
+        let off = witchy_syntax::opt::OptSet::none();
+        assert_eq!(run_int_module_with_opt(&module, on), 7);
+        assert_eq!(run_int_module_with_opt(&module, off), 7);
+        witchy_syntax::opt::set_for_tests(Some(on));
+        let wat_on = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("on"));
+        witchy_syntax::opt::set_for_tests(Some(off));
+        let wat_off = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("off"));
+        witchy_syntax::opt::set_for_tests(None);
+        assert!(wat_on.matches("call $list_at").count() < wat_off.matches("call $list_at").count(), "on:\n{wat_on}\noff:\n{wat_off}");
+        let zero = link_list_app(&src.replace("f(3)", "f(0)"));
+        assert!(compiled_module_trap_with_opt(&zero, on).contains("list_at"));
+    }
+
+    #[test]
     fn paired_cursors_elide_only_a_stable_length_minus_constant_bound() {
         // RFC-0153 binary-transform shape: `lo` starts non-negative and grows,
         // `hi` starts at `length(xs) - 1` and shrinks, and the guard `lo < hi`

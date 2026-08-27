@@ -1482,7 +1482,9 @@ impl Codegen<'_> {
                     // uses the ordinary `list_set_cap` ownership path; only its redundant
                     // validation read is omitted.
                     let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
-                        if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
+                        if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv))
+                        || matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Int(0))
+                            if self.elide_zero_index_list.iter().any(|root| root == lv));
                     let mut nodes = vec![
                         // Assignment order is destination base, destination
                         // coordinate, RHS, then the checked store. Stage all three
@@ -1582,7 +1584,9 @@ impl Codegen<'_> {
                 // Both args are lowered once either way, so string-offset interning is
                 // identical to the checked path.
                     let existing_elision = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
-                    if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
+                    if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv))
+                        || matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Int(0))
+                            if self.elide_zero_index_list.iter().any(|root| root == lv));
                     // RFC-0153 histogram proof: a literal-backed list has an
                     // exact stable length, and `index & mask` is in `0..=mask`
                     // for every signed input. Consume that fact only when the
