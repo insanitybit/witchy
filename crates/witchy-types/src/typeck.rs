@@ -9567,7 +9567,14 @@ impl Checker {
                     ),
                     UnOp::Await => match self.resolve(&t) {
                         Ty::Named(name, mut arguments)
-                            if name == "Task" && arguments.len() == 1 =>
+                            // Linked async projections retain the declaring
+                            // module on imported task values (`task.Task`),
+                            // while locally resolved signatures use `Task`.
+                            // These are the same canonical task constructor;
+                            // keep affine consumption checks identical for
+                            // both spellings.
+                            if (name == "Task" || name == "task.Task")
+                                && arguments.len() == 1 =>
                         {
                             if let Some((root, projected)) = self.affine_place(expr) {
                                 if projected {
