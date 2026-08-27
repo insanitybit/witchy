@@ -59,7 +59,7 @@ host, and a secret. A **grant document** enumerates the whole grant as reviewabl
 diffable data:
 
 ```toml
-# app.grants.toml — the authority the host hands to `main`, bound by parameter name
+# app.grants.toml - the authority the host hands to `main`, bound by parameter name
 [files]
 config = { path = "config.toml", rights = ["Read"] }
 [dirs]
@@ -125,7 +125,7 @@ same resolved grants immediately before guest execution. Linux hosts apply
 Landlock filesystem and TCP restrictions when the running kernel supports them.
 macOS hosts apply a Seatbelt profile covering the same filesystem and TCP
 grants; because macOS has no syscall-granular filter, its syscall layer reports
-`partial` — operation classes rather than syscall numbers. Hosts with no
+`partial` - operation classes rather than syscall numbers. Hosts with no
 provider report every layer as unavailable and continue in best-effort mode.
 Each strict launch prints the provider and enforcement status on stderr. Ordinary
 development runs and reusable embedded runtimes don't arm irreversible
