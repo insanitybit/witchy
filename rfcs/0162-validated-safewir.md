@@ -511,10 +511,10 @@ shape at the validated boundary.
 ### 8. The sealed memory kernel
 
 This RFC chooses an **opaque-operation, inline-encoding boundary**. Allocation,
-retain, release, free-list, region-watermark, and unavoidable byte primitives
-remain first-class SafeWIR operations through optimization and final
-validation. Their implementations are not ordinary `WirFunc` bodies and cannot
-be selected by `wir_opt::inline::do_inlining`.
+retain, release, free-list, region-watermark, bounded scratch-arena, and
+unavoidable byte primitives remain first-class SafeWIR operations through
+optimization and final validation. Their implementations are not ordinary
+`WirFunc` bodies and cannot be selected by `wir_opt::inline::do_inlining`.
 
 After validation, the trusted encoder expands each operation at its use site
 using a fixed kernel template. The generated Wasm therefore need not contain a
@@ -544,6 +544,27 @@ being grandfathered into the kernel.
 
 Adding a new privileged operation requires an explicit kernel contract and
 negative test.
+
+The compiler's bounded format arena is a separate authority domain from the
+ordinary heap and region allocator. `ScratchMark` binds the exact
+`fmt_stack_top` definition on a private scratch LIFO stack.
+`ScratchAllocate` carries the same independently checked mathematical,
+executable, and result-extent size evidence as allocation, but mints only a
+borrowed runtime-buffer generation. Its fixed template evaluates the executable
+size once, checks the wrap-free condition
+`fmt_stack_limit - fmt_stack_top <u size`, traps before mutation when it does
+not fit, advances the frontier once, and returns the old frontier. Validation
+authenticates the exact scratch globals and proves the invariant
+`scratch_base <= fmt_stack_top <= fmt_stack_limit`, so passing that check also
+proves the committed addition non-wrapping.
+
+`ScratchRewind` consumes only the exact top mark from the scratch domain. It is
+accepted only after every generation allocated above that mark has ended its
+borrow and cannot escape or be used later. The rewind restores the exact mark,
+invalidates all such generations, and pops it once. Constants, reassigned
+locals, region watermarks, duplicate rewinds, non-LIFO marks, stale views, and
+cross-domain substitutions reject. Ordinary WIR cannot read or write
+`fmt_stack_top` or use `fmt_stack_limit` as pointer authority.
 
 RFC-0051 established that inlined RC paths are performance-load-bearing. The
 zero-cost gate therefore separately records the emitted calls, loads, stores,

@@ -306,6 +306,40 @@ invalidates every displaced generation except the newly bound escaping result
 generation. Zero bytes do not relax watermark, source-generation, or ordering
 obligations.
 
+### SWIR-KERN-003 - authenticated bounded scratch arena
+
+The final global catalog authenticates `fmt_stack_top` as the mutable scratch
+frontier and `fmt_stack_limit` as its immutable upper bound, including their
+exact kinds, initializers, export dispositions, and the invariant
+`scratch_base <= fmt_stack_top <= fmt_stack_limit`. They belong to the scratch
+domain and cannot be read or written by ordinary scalar-global operations.
+
+`ScratchMark` reads the authenticated frontier, assigns a fresh scalar
+`DefinitionId`, and pushes that definition on a private scratch-watermark stack
+which is disjoint from the region-watermark stack. A region mark, constant,
+reassigned local, scalar-global value, mark from another lexical scope, or
+already consumed definition never satisfies a scratch premise.
+
+`ScratchAllocate` requires one canonical borrowed runtime-buffer layout and
+three reconciled untrusted size descriptions: the mathematical checked size,
+the executable narrowed `i32`, and the result extent. The checked expression
+must prove an unsigned `i32` value, exact reaching-definition equivalence, and
+no checked-only runtime dependency. The current frontier must satisfy the
+authenticated global invariant. The fixed template evaluates the executable
+size once, traps before mutation when
+`fmt_stack_limit - fmt_stack_top <u size`, otherwise advances the frontier once
+by the proven non-wrapping addition and returns the old frontier. The result is
+a fresh borrowed generation tied to the current scratch scope; it never mints
+`Unique`, shared-owner, raw-pointer, or allocator authority. Zero extent does
+not relax identity, layout, scope, or rewind obligations.
+
+`ScratchRewind` accepts only the exact reaching definition at the top of the
+scratch stack. Every borrowed generation allocated above it must be dead on all
+incoming paths, with no escape through a call, container, closure, global, host
+boundary, or returned value. Rewind restores the exact mark, invalidates all
+such generations, consumes and pops the mark once, and leaves heap/free-list
+state unchanged. A duplicate, non-LIFO, cross-domain, or stale rewind rejects.
+
 ### SWIR-ENC-001 - validated encoder authority
 
 The production encoder accepts only a `ValidatedWirModule` whose constructor is
@@ -340,6 +374,9 @@ compilation.
 | `RegionRewind::Iteration` | exact top watermark; no intervening free-list insertion or escaping generation | restore frontier, preserve free list, pop watermark, invalidate rewound generations |
 | `RegionRewind::Lexical` | exact top watermark | restore frontier, clear free list, pop watermark, invalidate rewound generations |
 | `RegionRewind::CopyOut` | exact top watermark; one live escaping source; checked source/frontier bounds | copy once to watermark, set frontier after retained bytes, clear free list, mint escaping generation, invalidate displaced generations |
+| `ScratchMark` | authenticated scratch frontier; available scratch-watermark budget | bind a fresh scalar definition and push it on the separate private scratch LIFO stack |
+| `ScratchAllocate` | exact checked/executable/result size equivalence; canonical borrowed runtime-buffer layout; authenticated frontier invariant | runtime bound once, advance scratch frontier once, mint a fresh borrowed generation in the current scratch scope |
+| `ScratchRewind` | exact top scratch watermark; all enclosed borrowed generations dead and unescaped | restore frontier, invalidate enclosed scratch generations, consume and pop the mark; leave heap/free-list state unchanged |
 | call | checked callable contract | union parameter effects; kill dependent facts on mutation/escape; substitute a declared alias, or transfer exactly one fresh allocation token into a new caller identity |
 
 ## 10. RichWasm correspondence
@@ -363,7 +400,7 @@ the RichWasm calculus.
 | SWIR-CALL-001/002 | typed functions/modules | checked alias/freshness/consume summaries and recursive components |
 | SWIR-REF-001 | separated typed values | Wasm `externref`/GC/capability representation boundary |
 | SWIR-HOST-001 | typed module boundary | Witchy host ABI live-range contracts |
-| SWIR-KERN-001/002, ENC-001 | erasure to core Wasm | final-candidate validation, sealed templates, authenticated region-watermark discipline, private encode authority |
+| SWIR-KERN-001/002/003, ENC-001 | erasure to core Wasm | final-candidate validation, sealed templates, authenticated region and scratch watermark disciplines, private encode authority |
 | SWIR-BUD-001 | no direct correspondence | fail-closed compiler resource policy |
 
 The RichWasm type-safety theorem does not prove Witchy's validator, kernel,
