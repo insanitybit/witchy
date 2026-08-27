@@ -536,6 +536,46 @@ impl TypedQueueRuntime {
         Ok(cancelled)
     }
 
+    /// Apply a cooperative cancellation request to an execution that is parked
+    /// on this queue runtime.  The generation must claim every installed wait
+    /// link first; only then can the execution enter its declared cleanup
+    /// state.  This makes wake-versus-cancel deterministic and prevents a
+    /// later queue event from observing a cancelled select arm.
+    pub fn request_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let cancellable = self.executions.get(&execution)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?;
+        if !cancellable.has_cancellation_transition() {
+            return Err("execution shape has no cancellation transition".into());
+        }
+        let select = cancellable.waiting_select_arms();
+        let claimed = match select {
+            Ok((operation, arms)) => {
+                let mut claimed = 0_usize;
+                for (arm, _, queue) in &arms {
+                    claimed += usize::from(self.queue_mut(*queue)?.cancel(QueueWait {
+                        execution,
+                        operation,
+                        generation,
+                        arm: Some(*arm),
+                    }));
+                }
+                if claimed == 0 { return Ok(false); }
+                if claimed != arms.len() {
+                    return Err("cancellation found a partially installed select wait record".into());
+                }
+                true
+            }
+            Err(_) => {
+                let (operation, queue, _) = self.waiting_operation_any(execution)?;
+                self.queue_mut(queue)?.cancel(QueueWait { execution, operation, generation, arm: None })
+            }
+        };
+        if !claimed { return Ok(false); }
+        self.executions.get_mut(&execution)
+            .expect("execution was checked above")
+            .request_cancellation()
+    }
+
     fn waiting_operation(&self, execution: u64, expected: ExecutionOperation) -> Result<(OperationSiteId, QueueShapeId), String> {
         let (operation, queue, actual) = self.waiting_operation_any(execution)?;
         if actual != expected { return Err("execution wait has a different typed queue operation".into()); }
@@ -703,6 +743,15 @@ mod tests {
                 fallback_state: Some(ExecutionStateId(0)),
                 queue: Some(QueueShapeId(0)),
                 arms: vec![],
+            }, OperationSite {
+                id: OperationSiteId(1),
+                kind: ExecutionOperation::Cancellation,
+                input_lanes: vec![],
+                result_lanes: vec![],
+                pending_move_lanes: vec![],
+                fallback_state: None,
+                queue: None,
+                arms: vec![],
             }],
             queues: vec![QueueShape {
                 id: QueueShapeId(0),
@@ -710,7 +759,10 @@ mod tests {
                 payload_layout_fingerprint: [3; 32],
                 ownership: PayloadOwnership::Inline,
             }],
-            cancellation: None,
+            cancellation: Some(witchy_types::typed_execution::CancellationTransition {
+                operation: OperationSiteId(1),
+                state: ExecutionStateId(1),
+            }),
         };
         let mut execution = TypedExecution::new(shape).expect("valid execution");
         assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
@@ -769,6 +821,15 @@ mod tests {
                         ownership: PayloadOwnership::Inline,
                     }
                 }).collect(),
+            }, OperationSite {
+                id: OperationSiteId(1),
+                kind: ExecutionOperation::Cancellation,
+                input_lanes: vec![],
+                result_lanes: vec![],
+                pending_move_lanes: vec![],
+                fallback_state: None,
+                queue: None,
+                arms: vec![],
             }],
             queues: arms.iter().fold(Vec::new(), |mut queues, (id, _)| {
                 if !queues.iter().any(|queue: &QueueShape| queue.id == *id) {
@@ -781,7 +842,10 @@ mod tests {
                 }
                 queues
             }),
-            cancellation: None,
+            cancellation: Some(witchy_types::typed_execution::CancellationTransition {
+                operation: OperationSiteId(1),
+                state: ExecutionStateId(1),
+            }),
         };
         let mut execution = TypedExecution::new(shape).expect("valid select execution");
         assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
@@ -1042,5 +1106,33 @@ mod tests {
                 }],
             }),
         );
+    }
+
+    #[test]
+    fn cancellation_claims_the_wait_generation_before_entering_cleanup() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, execution(ExecutionOperation::ChannelReceive)).expect("receiver");
+        assert_eq!(runtime.submit_receive(1, 5), Ok(QueueRuntimeResult::Blocked));
+        assert!(!runtime.request_cancellation(1, 4).expect("stale request"));
+        assert!(runtime.request_cancellation(1, 5).expect("matching request"));
+        assert_eq!(runtime.execution(1).expect("execution").status(), crate::typed_async::KernelStatus::Ready);
+        assert_eq!(runtime.execution(1).expect("execution").state(), ExecutionStateId(1));
+        assert_eq!(runtime.close_queue(QueueShapeId(0)), Ok(QueueRuntimeResult::Committed { turns: vec![], deliveries: vec![] }));
+    }
+
+    #[test]
+    fn cancellation_unlinks_every_select_arm_before_cleanup() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_queue(queue(QueueCapacity::Rendezvous)).expect("queue");
+        runtime.install_execution(1, select_execution(&[
+            (QueueShapeId(0), ExecutionOperation::ChannelReceive),
+            (QueueShapeId(0), ExecutionOperation::ChannelReceive),
+        ])).expect("select execution");
+        assert_eq!(runtime.submit_select(1, 6, &BTreeMap::new()), Ok(QueueSelectResult::Blocked));
+        assert!(runtime.request_cancellation(1, 6).expect("matching request"));
+        assert_eq!(runtime.execution(1).expect("execution").status(), crate::typed_async::KernelStatus::Ready);
+        assert_eq!(runtime.execution(1).expect("execution").state(), ExecutionStateId(1));
+        assert_eq!(runtime.close_queue(QueueShapeId(0)), Ok(QueueRuntimeResult::Committed { turns: vec![], deliveries: vec![] }));
     }
 }

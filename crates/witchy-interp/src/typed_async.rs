@@ -68,6 +68,7 @@ impl TypedExecution {
     pub fn shape_id(&self) -> ExecutionShapeId { self.shape.id }
     pub fn state(&self) -> ExecutionStateId { self.state }
     pub fn status(&self) -> KernelStatus { self.status }
+    pub fn has_cancellation_transition(&self) -> bool { self.cancellation.is_some() }
 
     /// Recover the one queue operation currently owned by this execution's
     /// wait record. Queue runtimes use this typed binding instead of accepting
