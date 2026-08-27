@@ -14,7 +14,7 @@ queue item has a terminal `merged` event.
 - Master observed before implementation: `a787a671e`; refreshed during the
   first implementation checkpoint to `416aa0e86` after the RFC-0161 integration
   batch landed. Current integration rebase: `01130ba7a`; latest observed
-  shared master is `5b438661d`, so another integration rebase is owed.
+  shared master is `416befef8`, so another integration rebase is owed.
 - Integration branch: `impl/rfc0162-integration` in
   `.claude/worktrees/rfc0162-validated-safewir`.
 - Current encoder authority contradicts the target contract:
@@ -39,20 +39,25 @@ queue item has a terminal `merged` event.
   The older
   `state/agents/wir-helper-census.md` is an API-visibility census and is not
   evidence for this row.
-- SEC-078 is committed after rebase as `25d3fa4a6` on
-  `security/fix-sec078-call-result-uaf`. The focused escape-analysis shard is
-  green at 41 tests, the current source reproducer is green, and a detached
-  pre-fix worktree at `a787a671e` fails the same reproducer with
-  `arbitrary call result admitted as fresh storage`. Fable and Opus upheld two
-  alias-laundering blockers; both were fixed, and final Opus verdict is ACCEPT.
-  Post-rebase qualification is running under the serialized gate lock; queue
-  and terminal merge evidence remain pending.
+- SEC-078 landed on master as `da098299a` from submitted commit `dbee68461` on
+  `security/fix-sec078-call-result-uaf`, queue item
+  `mq-12fe973edfc236ae281c636efab5c4b41df0c32f`. The isolated full gate was
+  green with zero flakes. The final focused evidence is 42 escape-analysis
+  tests, one RC-floor regression, and three SEC-078 differential fixtures. A
+  detached pre-fix worktree at `a787a671e` fails the same source reproducer
+  with `arbitrary call result admitted as fresh storage`. Final Opus verdict is
+  ACCEPT after the alias-laundering and result-storage blockers were fixed.
 - The schema-1 fact model and independent judgment are committed after rebase
   as `3189cb910` on `impl/rfc0162-safewir-core`. Nine focused schema tests and
   the 51-test `witchy-wir` shard are
   green. Fable accepted the revised schema after its concrete required wording
   fixes were applied; the Wasm shard is green. Queue item
-  `mq-93d52047f7342ae862c5ef99d3508078d24ab77f` is pending terminal evidence.
+  The first two individual gate attempts had green workspace tests and failed
+  only on an unrelated em dash in `book/src/capabilities-sandbox.md`; master
+  fixed that gate violation in `12511ac71`. The unchanged schema commit was
+  rebased as `0d369c5cc` and resubmitted under queue item
+  `mq-93d52047f7342ae862c5ef99d3508078d24ab77f`; terminal evidence remains
+  pending.
 - Fable and Opus both rejected the first `impl/rfc0162-validator` prototype.
   The valid blockers were candidate-attested callee shape, borrowed-to-Fresh
   laundering, asymmetric Shared-result checks, and a host-import namespace
@@ -107,6 +112,16 @@ queue item has a terminal `merged` event.
   bug-tier clippy are green. This remains diagnostic evidence only: it exposes
   no `ValidatedWirModule`, encoder authority, source authentication, CFG
   fixpoint, or production gate, so no acceptance row is complete.
+- Commit `520db2aec` on `impl/rfc0162-cfg-validator`, stacked on the report
+  adapter, resolves final-WIR local indices to validator-owned definitions and
+  validates structured void branches with conservative joins. Duplicate
+  structural definition and generation sites reject before dataflow; alias
+  effects are unioned across paths; conditional consumption is absorbing.
+  The 93-test `witchy-wir` library shard and bug-tier clippy are green, and
+  final Opus verdict is ACCEPT after Fable's duplicate-identity and
+  branch-local-alias findings were fixed. Loop fixpoints, exit accumulators,
+  symbolic range facts, recursive components, and queue evidence remain
+  pending.
 
 ## Dependency graph and tracks
 
@@ -143,8 +158,8 @@ encoder escape hatch, or runtime safety metadata.
 |---|---|---|---|---|
 | T0 census, rule map, ledger | queued candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test and 44-test shard green at `ac3a6017a`; queue terminal pending |
 | T1 SafeWIR fact model | queued candidate | `impl/rfc0162-safewir-core` | object, place, range, layout, provenance, ownership, definition, and generation identities | 9 schema tests, 51-test crate shard, and Wasm shard green at `3189cb910`; revised Fable verdict ACCEPT; queue terminal pending |
-| T2 callable and range binding | candidate dependency | SEC-078 commit `25d3fa4a6`; remainder unassigned | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 41 focused tests, current source regression, detached pre-fix-red proof, and final Opus ACCEPT; qualification/queue/merge and remainder pending |
-| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592` plus final-WIR report adapter at `f4171b513`; 90/90 library tests and bug-tier clippy green, final Opus ACCEPT; queue terminal pending; unsupported CFG/symbolic/alias-set/result forms and production authority remain no row evidence |
+| T2 callable and range binding | landed SEC slice | SEC-078 master `da098299a`; remainder unassigned | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 42 escape tests, RC-floor regression, three SEC-078 differential fixtures, detached pre-fix-red proof, isolated full gate, and final Opus ACCEPT; remaining call matrix and range binding pending |
+| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter`, `impl/rfc0162-cfg-validator` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, and structured branch join at `520db2aec`; 93/93 WIR library tests and bug-tier clippy green, final Opus ACCEPT; queue terminal pending; loops/exits/symbolic facts/recursive components and production authority remain incomplete |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
 | T5 kernel and encoder | pending | unassigned | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | pending |
 | T6 mandatory production gate | pending | integration | private `ValidatedWirModule`; no unchecked production encode/raw-body path | pending |
@@ -162,7 +177,7 @@ code. `candidate` means reusable work exists but is not landed proof.
 | 2 | SafeWIR carries object, layout, extent, provenance, ownership, and generation | pending | No complete fact carrier exists | Accepted and forged fixtures for every fact family |
 | 3 | RichWasm correspondence is explicit | candidate | `0162-safewir-judgment.md` names the RichWasm sections and Witchy extensions; terminal review/merge pending | Every core rule maps to RichWasm or a reviewed named Witchy extension |
 | 4 | Independent normative judgment | candidate | Schema-1 judgment and 20 stable IDs exist on queued `3189cb910`; the rewritten report validator partitions enforced and explicitly deferred rules, but has no complete mutation assurance and does not implement joins/fixpoints | Stable local, transfer, join, and fixpoint rule IDs; accepted/rejected/mutation fixtures per rule |
-| 5 | Call results default to possible aliasing | candidate | SEC-078 candidate defaults arbitrary calls away from fresh for RC-floor analysis only | Land SEC-078 and cover direct, indirect, recursive, closure, projection, imported-call, and validator matrices |
+| 5 | Call results default to possible aliasing | candidate | SEC-078 landed as `da098299a` with source, pre-fix-red, differential, RC-floor, isolated-gate, and Opus evidence | Cover direct, indirect, recursive, closure, projection, imported-call, and validator matrices |
 | 6 | Final optimized WIR checked once and fail closed | pending | No `ValidatedWirModule`; encoding is directly callable | Private validated constructor and production encoder API negative tests |
 | 7 | Optimizer combinations cannot retain stale facts | pending | RFC-0153 facts are local-name keyed | Reassignment, join, loop, inline, specialize, recursion, and pass-combination rejection fixtures |
 | 8 | Raw memory is sealed | pending | All-crates structural parser confirms 584 sites in 25 files; no-growth ceiling is locally green but migration remains zero of 584 | Current census reaches zero outside the named kernel-template module; structural test blocks regressions |
