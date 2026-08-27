@@ -686,4 +686,21 @@ mod tests {
             Some(witchy_syntax::ast::Type::Named("Bool".into(), Vec::new())),
         );
     }
+
+    #[test]
+    fn operation_operands_keep_the_inner_shadowed_binding() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Sender\n\nasync fn send(tx: Sender(Int)):\n    let value = 1\n    if true:\n        let value = 2\n        chan.send(tx, value).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
+        let send = input.operations.iter().find(|operation| {
+            operation.runtime_kind == TypedAsyncOperationKind::ChannelSend
+        }).expect("channel send operation");
+        assert_eq!(send.operand_bindings, vec![SourceBindingId(0), SourceBindingId(2)]);
+    }
 }
