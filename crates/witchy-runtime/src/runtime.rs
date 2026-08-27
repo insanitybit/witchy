@@ -201,6 +201,7 @@ const BINARYEN_ARGS: [&str; 6] = [
 ];
 const PINNED_BINARYEN_VERSION: &[u8] = b"wasm-opt version 131 (version_131)\n";
 const BINARYEN_BUNDLE_SCHEMA: &[u8] = b"witchy-binaryen-bundle-v1";
+const BUNDLED_BINARYEN_RELATIVE_PATH: &str = "libexec/witchy-binaryen/bin/wasm-opt";
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const RELEASE_BINARYEN_EXECUTABLE_SHA256: &str =
     "573d9420ea76dbc1e17b5b7debc1de4182f541e59fa4238761b658d795ddb167";
@@ -223,6 +224,14 @@ const RELEASE_BINARYEN_LIBRARY_SHA256: &str =
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes).into()
+}
+
+fn sha256_hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn binaryen_recipe_evidence() -> String {
+    BINARYEN_ARGS.join("|")
 }
 
 fn optimized_wasm_input_hash(wasm: &[u8], binaryen_identity: &[u8]) -> [u8; 32] {
@@ -419,7 +428,7 @@ fn authenticate_binaryen(
         expected_executable_digest,
         runtime_library.as_ref().map(|(_, digest)| *digest),
     );
-    let digest_hex: String = bundle_identity.iter().map(|byte| format!("{byte:02x}")).collect();
+    let digest_hex = sha256_hex(&bundle_identity);
     let directory = staging_root.join(digest_hex);
     let executable = directory.join("bin").join("wasm-opt");
     stage_binaryen_file(
@@ -503,6 +512,27 @@ fn resolve_configured_binaryen_pin(
     Ok((path, executable_digest, runtime_library_digest))
 }
 
+fn bundled_binaryen_path_for_executable(
+    executable: &std::path::Path,
+) -> std::result::Result<std::path::PathBuf, &'static str> {
+    let bin = executable
+        .parent()
+        .ok_or("installed executable has no parent directory")?;
+    if bin.file_name() != Some(std::ffi::OsStr::new("bin")) {
+        return Err("installed executable is not in the release bin directory");
+    }
+    let root = bin
+        .parent()
+        .ok_or("installed executable has no release root")?;
+    Ok(root.join(BUNDLED_BINARYEN_RELATIVE_PATH))
+}
+
+fn bundled_binaryen_path() -> std::result::Result<std::path::PathBuf, &'static str> {
+    let executable = std::env::current_exe()
+        .map_err(|_| "installed executable path is unavailable")?;
+    bundled_binaryen_path_for_executable(&executable)
+}
+
 fn binaryen_tool() -> std::result::Result<&'static BinaryenTool, &'static str> {
     static TOOL: OnceLock<std::result::Result<BinaryenTool, &'static str>> = OnceLock::new();
     TOOL.get_or_init(|| {
@@ -521,8 +551,18 @@ fn binaryen_tool() -> std::result::Result<&'static BinaryenTool, &'static str> {
         };
         let release = release_binaryen_digests()
             .ok_or("platform has no reviewed Binaryen release pin")?;
-        let (configured, executable_digest, runtime_library_digest) =
-            resolve_configured_binaryen_pin(compile, runtime, release)?;
+        let bundled = option_env!("WITCHY_BUNDLED_BINARYEN") == Some("1");
+        let (configured, executable_digest, runtime_library_digest) = if bundled {
+            if compile.is_present() {
+                return Err("bundled release cannot also embed an absolute Binaryen pin");
+            }
+            // Runtime pin variables cannot redirect an installed release. The
+            // bundle location and reviewed digests are compiled into the
+            // artifact, and the executable is resolved relative to witchy.
+            (bundled_binaryen_path()?, release.0, release.1)
+        } else {
+            resolve_configured_binaryen_pin(compile, runtime, release)?
+        };
         authenticate_binaryen(
             &configured,
             executable_digest,
@@ -673,6 +713,39 @@ fn binaryen_optimize<'a>(
     }
 }
 
+fn trace_binaryen_applied(tool: &BinaryenTool, input: &[u8], output: &[u8]) {
+    if std::env::var_os("WIRDIAG").is_none() {
+        return;
+    }
+    let bundle_digest: [u8; 32] = tool.identity[..32]
+        .try_into()
+        .expect("Binaryen identity begins with its bundle SHA-256");
+    let library_digest = tool
+        .runtime_library
+        .as_ref()
+        .map_or_else(|| "none".to_string(), |(_, digest)| sha256_hex(digest));
+    eprintln!(
+        "WIRTRACE binaryen-applied release=version_131 version_stdout_sha256={} recipe_schema={} args={} bundle_sha256={} executable_sha256={} library_sha256={} input_sha256={} output_sha256={}",
+        sha256_hex(&sha256(PINNED_BINARYEN_VERSION)),
+        String::from_utf8_lossy(BINARYEN_RECIPE_SCHEMA),
+        binaryen_recipe_evidence(),
+        sha256_hex(&bundle_digest),
+        sha256_hex(&tool.executable_digest),
+        library_digest,
+        sha256_hex(&sha256(input)),
+        sha256_hex(&sha256(output)),
+    );
+}
+
+fn trace_binaryen_input(input: &[u8]) {
+    if std::env::var_os("WIRDIAG").is_some() {
+        eprintln!(
+            "WIRTRACE binaryen-input input_sha256={}",
+            sha256_hex(&sha256(input))
+        );
+    }
+}
+
 /// Build a `Module`. On the cacheable (non-preempt) engine, successful Binaryen
 /// output is cached as validated wasm; every cold and warm path enters Wasmtime
 /// through safe `Module::new`. Wasmtime's configured compilation cache handles
@@ -715,6 +788,7 @@ fn build_module_with_binaryen<'a>(
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }
+    trace_binaryen_input(opt_wasm);
     let binaryen = resolve_binaryen()?;
     let input_hash = binaryen
         .map(|tool| optimized_wasm_input_hash(opt_wasm, &tool.identity))
@@ -732,6 +806,11 @@ fn build_module_with_binaryen<'a>(
     let optimized = binaryen_optimize(opt_wasm, binaryen, required)?;
     let (module, optimized_valid) =
         module_from_binaryen_output(engine, opt_wasm, &optimized, required)?;
+    if optimized_valid
+        && let (Some(tool), std::borrow::Cow::Owned(optimized_wasm)) = (binaryen, &optimized)
+    {
+        trace_binaryen_applied(tool, opt_wasm, optimized_wasm);
+    }
     if let (Some(path), std::borrow::Cow::Owned(optimized_wasm)) = (&path, &optimized)
         && optimized_valid
     {

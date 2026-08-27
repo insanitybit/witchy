@@ -143,3 +143,84 @@ fn package_rejects_wrong_name_version_and_symlink() {
     assert!(!rejected_link.status.success());
     assert!(stderr(&rejected_link).contains("not a symlink"));
 }
+
+#[test]
+#[cfg(unix)]
+fn pinned_binaryen_installer_exposes_the_reviewed_target_identity_and_rejects_substitution() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = Scratch::new();
+    let shown = run(
+        Command::new(Path::new(REPO).join("scripts/pinned-binaryen.py"))
+            .args(["show", "--target", TARGET])
+            .current_dir(REPO),
+    );
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    let identity = String::from_utf8(shown.stdout).unwrap();
+    assert!(identity.contains("\"release\": \"version_131\""), "{identity}");
+    assert!(
+        identity.contains(
+            "\"wasm_opt_sha256\": \"bad4b6524b2c8e4b27b9aa69bde1a4b9a05ec8887c77ef0d34300f5825acd97c\""
+        ),
+        "{identity}"
+    );
+
+    let bundle = scratch.join("binaryen");
+    let executable = bundle.join("bin/wasm-opt");
+    std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'wasm-opt version 131 (version_131)\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rejected = run(
+        Command::new(Path::new(REPO).join("scripts/pinned-binaryen.py"))
+            .args(["verify", "--target", TARGET, "--bundle-root"])
+            .arg(&bundle)
+            .current_dir(REPO),
+    );
+    assert!(!rejected.status.success());
+    assert!(stderr(&rejected).contains("wasm-opt digest mismatch"));
+}
+
+#[test]
+#[cfg(unix)]
+#[ignore = "requires WITCHY_TEST_REVIEWED_BINARYEN_ROOT from scripts/pinned-binaryen.py"]
+fn package_contains_the_exact_reviewed_binaryen_bundle() {
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    let target = "aarch64-apple-darwin";
+    #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+    let target = "x86_64-apple-darwin";
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    let target = "aarch64-unknown-linux-gnu";
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    let target = "x86_64-unknown-linux-gnu";
+
+    let scratch = Scratch::new();
+    let binary = fake_binary(&scratch, &format!("witchy {VERSION} (commit {COMMIT})"));
+    let bundle = std::env::var_os("WITCHY_TEST_REVIEWED_BINARYEN_ROOT")
+        .map(PathBuf::from)
+        .expect("set WITCHY_TEST_REVIEWED_BINARYEN_ROOT");
+    let output = scratch.join("dist");
+    let packaged = run(
+        Command::new(Path::new(REPO).join("scripts/release-package.sh"))
+            .args(["--version", VERSION, "--binary"])
+            .arg(&binary)
+            .args(["--target", target, "--commit", COMMIT, "--output-dir"])
+            .arg(&output)
+            .args(["--source-date-epoch", "1720000000", "--binaryen-root"])
+            .arg(&bundle)
+            .current_dir(REPO),
+    );
+    assert!(packaged.status.success(), "{}", stderr(&packaged));
+    let archive = output.join(format!("witchy-{VERSION}-{target}.tar.gz"));
+    let listing = run(Command::new("tar").args(["-tzf"]).arg(&archive));
+    assert!(listing.status.success(), "{}", stderr(&listing));
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.contains("/libexec/witchy-binaryen/bin/wasm-opt\n"));
+    assert!(listing.contains("/share/witchy/binaryen-version_131.lock\n"));
+    if target.ends_with("apple-darwin") {
+        assert!(listing.contains("/libexec/witchy-binaryen/lib/libbinaryen.dylib\n"));
+    }
+}

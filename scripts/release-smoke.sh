@@ -68,6 +68,7 @@ CP="$(command -v cp)"
 RM="$(command -v rm)"
 MKDIR="$(command -v mkdir)"
 MKTEMP="$(command -v mktemp)"
+CHMOD="$(command -v chmod)"
 
 scratch="$($MKTEMP -d "${TMPDIR:-/tmp}/witchy-release-smoke.XXXXXX")"
 cleanup() { "$RM" -rf "$scratch"; }
@@ -75,7 +76,7 @@ trap cleanup EXIT HUP INT TERM
 
 install="$scratch/install"
 "$MKDIR" -p "$install"
-"$PYTHON" - "$archive" "$checksums" "$install" "$target" "$version" <<'PY'
+binaryen_evidence="$("$PYTHON" - "$archive" "$checksums" "$install" "$target" "$version" "$script_dir/../tools/binaryen-version_131.lock" <<'PY'
 import hashlib
 import os
 import pathlib
@@ -83,22 +84,39 @@ import posixpath
 import re
 import sys
 import tarfile
+import tomllib
 
 archive = pathlib.Path(sys.argv[1])
 checksums = pathlib.Path(sys.argv[2])
 install = pathlib.Path(sys.argv[3])
 target = sys.argv[4]
 version = sys.argv[5]
+reviewed_lock = pathlib.Path(sys.argv[6])
 root = f"witchy-{version}-{target}"
 expected = [
     root,
     f"{root}/bin",
+    f"{root}/libexec",
+    f"{root}/libexec/witchy-binaryen",
+    f"{root}/libexec/witchy-binaryen/bin",
+]
+if target.endswith("apple-darwin"):
+    expected.append(f"{root}/libexec/witchy-binaryen/lib")
+expected.extend([
+    f"{root}/share",
+    f"{root}/share/witchy",
     f"{root}/bin/witchy",
+    f"{root}/libexec/witchy-binaryen/bin/wasm-opt",
+])
+if target.endswith("apple-darwin"):
+    expected.append(f"{root}/libexec/witchy-binaryen/lib/libbinaryen.dylib")
+expected.extend([
+    f"{root}/share/witchy/binaryen-version_131.lock",
     f"{root}/README.md",
     f"{root}/CHANGELOG.md",
     f"{root}/LICENSE-MIT",
     f"{root}/LICENSE-APACHE",
-]
+])
 
 manifest = {}
 line_re = re.compile(r"([0-9a-f]{64})  ([^/\n]+)")
@@ -141,7 +159,7 @@ with tarfile.open(archive, mode="r:gz") as tar:
                 raise SystemExit(f"release-smoke: unsafe directory mode for {member.name}")
             destination.mkdir(mode=0o755, parents=True, exist_ok=False)
         elif member.isfile():
-            expected_mode = 0o755 if member.name.endswith("/bin/witchy") else 0o644
+            expected_mode = 0o755 if member.name.endswith(("/bin/witchy", "/bin/wasm-opt")) else 0o644
             if member.mode != expected_mode:
                 raise SystemExit(f"release-smoke: unsafe file mode for {member.name}")
             destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -154,7 +172,37 @@ with tarfile.open(archive, mode="r:gz") as tar:
             os.chmod(destination, expected_mode)
         else:
             raise SystemExit(f"release-smoke: unsupported archive member type: {member.name}")
+
+installed_root = install / root
+installed_lock = installed_root / "share/witchy/binaryen-version_131.lock"
+if installed_lock.read_bytes() != reviewed_lock.read_bytes():
+    raise SystemExit("release-smoke: installed Binaryen identity lock differs from the reviewed lock")
+lock = tomllib.loads(installed_lock.read_text(encoding="utf-8"))
+platforms = {
+    "aarch64-unknown-linux-gnu": "aarch64-linux",
+    "x86_64-unknown-linux-gnu": "x86_64-linux",
+    "aarch64-apple-darwin": "arm64-macos",
+    "x86_64-apple-darwin": "x86_64-macos",
+}
+assets = [asset for asset in lock.get("asset", []) if asset.get("platform") == platforms[target]]
+if len(assets) != 1:
+    raise SystemExit("release-smoke: installed lock has no unique target asset")
+asset = assets[0]
+wasm_opt = installed_root / "libexec/witchy-binaryen/bin/wasm-opt"
+wasm_opt_digest = hashlib.sha256(wasm_opt.read_bytes()).hexdigest()
+if wasm_opt_digest != asset.get("executable_sha256"):
+    raise SystemExit("release-smoke: bundled wasm-opt digest differs from the reviewed identity")
+library_digest = "none"
+if target.endswith("apple-darwin"):
+    library = installed_root / "libexec/witchy-binaryen/lib/libbinaryen.dylib"
+    library_digest = hashlib.sha256(library.read_bytes()).hexdigest()
+    if library_digest != asset.get("runtime_library_sha256"):
+        raise SystemExit("release-smoke: bundled Binaryen library digest differs from the reviewed identity")
+print(f"{wasm_opt_digest}|{library_digest}")
 PY
+)"
+expected_wasm_opt_sha256="${binaryen_evidence%%|*}"
+expected_binaryen_lib_sha256="${binaryen_evidence#*|}"
 
 root="$install/witchy-${version}-${target}"
 "$script_dir/installed-bounded-channels-smoke.sh" --witchy "$root/bin/witchy" >/dev/null
@@ -169,6 +217,16 @@ export TMPDIR="$tmp"
 export XDG_CACHE_HOME="$cache"
 export WITCHY_TEST_STDLIB_CACHE_DIR="$cache/stdlib"
 export PATH="$root/bin"
+# Poison every developer/runtime pin. A bundled release must ignore these and
+# resolve only the authenticated bundle relative to its own executable.
+export WITCHY_PINNED_WASM_OPT_PATH="$work/nonexistent-wasm-opt"
+export WITCHY_PINNED_WASM_OPT_SHA256="$(printf '0%.0s' {1..64})"
+export WITCHY_PINNED_BINARYEN_LIB_SHA256="$(printf '0%.0s' {1..64})"
+
+# A same-name PATH executable must be irrelevant: the release binary resolves
+# only its authenticated bundle relative to its own installed location.
+printf '%s\n' '#!/bin/sh' 'echo ambient-wasm-opt-was-used >&2' 'exit 97' > "$root/bin/wasm-opt"
+"$CHMOD" 755 "$root/bin/wasm-opt"
 
 [ "$(command -v witchy)" = "$root/bin/witchy" ] || {
     echo "release-smoke: extracted witchy is not the selected PATH binary" >&2
@@ -186,10 +244,24 @@ printf '%s\n' \
     '    console.print("release-smoke")' > hello.witchy
 witchy check hello.witchy >/dev/null
 witchy fmt --check hello.witchy
-[ "$(witchy hello.witchy)" = "release-smoke" ] || {
+binaryen_stderr="$work/binaryen.stderr"
+hello_output="$(
+    WIRDIAG=1 WITCHY_REQUIRE_PINNED_BINARYEN=1 witchy hello.witchy 2>"$binaryen_stderr"
+)"
+[ "$hello_output" = "release-smoke" ] || {
     echo "release-smoke: direct source execution produced unexpected output" >&2
     exit 1
 }
+binaryen_trace="$(<"$binaryen_stderr")"
+expected_recipe='recipe_schema=witchy-wasm-opt-v3 args=-O4|--all-features|--inlining-optimizing|--inline-functions-with-loops|--flexible-inline-max-function-size=100|--one-caller-inline-max-function-size=200'
+case "$binaryen_trace" in
+    *"WIRTRACE binaryen-applied release=version_131 "*"$expected_recipe"*" executable_sha256=$expected_wasm_opt_sha256 library_sha256=$expected_binaryen_lib_sha256 "*) ;;
+    *)
+        echo "release-smoke: installed execution lacks exact production Binaryen evidence" >&2
+        printf '%s\n' "$binaryen_trace" >&2
+        exit 1
+        ;;
+esac
 
 printf '%s\n' \
     'fn main(console:Console):' \

@@ -8,15 +8,16 @@ binary=""
 target=""
 commit=""
 output_dir=""
+binaryen_root=""
 source_date_epoch="${SOURCE_DATE_EPOCH:-}"
 
 usage() {
-    echo "usage: release-package.sh --version <X.Y.Z> --binary <.../witchy> --target <triple> --commit <40-hex-sha> --output-dir <dir> [--source-date-epoch <unix-seconds>]" >&2
+    echo "usage: release-package.sh --version <X.Y.Z> --binary <.../witchy> --target <triple> --commit <40-hex-sha> --output-dir <dir> [--binaryen-root <reviewed-v131-bundle>] [--source-date-epoch <unix-seconds>]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --version | --binary | --target | --commit | --output-dir | --source-date-epoch)
+        --version | --binary | --target | --commit | --output-dir | --binaryen-root | --source-date-epoch)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$1" in
                 --version) version="$2" ;;
@@ -24,6 +25,7 @@ while [ "$#" -gt 0 ]; do
                 --target) target="$2" ;;
                 --commit) commit="$2" ;;
                 --output-dir) output_dir="$2" ;;
+                --binaryen-root) binaryen_root="$2" ;;
                 --source-date-epoch) source_date_epoch="$2" ;;
             esac
             shift 2
@@ -69,6 +71,11 @@ esac
     echo "release-package: input must be a regular executable file, not a symlink: $binary" >&2
     exit 1
 }
+if [ -n "$binaryen_root" ]; then
+    "$repo_root/scripts/pinned-binaryen.py" verify \
+        --target "$target" --bundle-root "$binaryen_root" >/dev/null
+    binaryen_root="$(cd "$binaryen_root" && pwd -P)"
+fi
 
 expected="witchy ${version} (commit ${commit})"
 actual="$($binary --version 2>&1)" || {
@@ -95,7 +102,7 @@ output_dir="$(cd "$output_dir" && pwd -P)"
 archive="$output_dir/witchy-${version}-${target}.tar.gz"
 root="witchy-${version}-${target}"
 
-python3 - "$archive" "$root" "$source_date_epoch" "$binary" "$repo_root" <<'PY'
+python3 - "$archive" "$root" "$source_date_epoch" "$binary" "$repo_root" "$target" "$binaryen_root" <<'PY'
 import gzip
 import io
 import os
@@ -110,6 +117,8 @@ root = sys.argv[2]
 epoch = int(sys.argv[3])
 binary = pathlib.Path(sys.argv[4])
 repo = pathlib.Path(sys.argv[5])
+target = sys.argv[6]
+binaryen_root = pathlib.Path(sys.argv[7]) if sys.argv[7] else None
 
 files = [
     (f"{root}/bin/witchy", binary, 0o755),
@@ -119,6 +128,31 @@ files = [
     (f"{root}/LICENSE-APACHE", repo / "LICENSE-APACHE", 0o644),
 ]
 directories = [root, f"{root}/bin"]
+if binaryen_root is not None:
+    directories.extend([
+        f"{root}/libexec",
+        f"{root}/libexec/witchy-binaryen",
+        f"{root}/libexec/witchy-binaryen/bin",
+        f"{root}/share",
+        f"{root}/share/witchy",
+    ])
+    files.insert(1, (
+        f"{root}/libexec/witchy-binaryen/bin/wasm-opt",
+        binaryen_root / "bin" / "wasm-opt",
+        0o755,
+    ))
+    if target.endswith("apple-darwin"):
+        directories.insert(5, f"{root}/libexec/witchy-binaryen/lib")
+        files.insert(2, (
+            f"{root}/libexec/witchy-binaryen/lib/libbinaryen.dylib",
+            binaryen_root / "lib" / "libbinaryen.dylib",
+            0o644,
+        ))
+    files.insert(2 if not target.endswith("apple-darwin") else 3, (
+        f"{root}/share/witchy/binaryen-version_131.lock",
+        repo / "tools" / "binaryen-version_131.lock",
+        0o644,
+    ))
 
 def safe_name(name: str) -> bool:
     return (
@@ -183,7 +217,7 @@ with tarfile.open(archive, mode="r:gz") as tar:
             if not member.isdir() or member.mode != 0o755:
                 raise SystemExit(f"release-package: invalid directory metadata: {member.name}")
         else:
-            expected_mode = 0o755 if member.name.endswith("/bin/witchy") else 0o644
+            expected_mode = 0o755 if member.name.endswith(("/bin/witchy", "/bin/wasm-opt")) else 0o644
             if not member.isfile() or member.mode != expected_mode:
                 raise SystemExit(f"release-package: invalid file metadata: {member.name}")
 PY

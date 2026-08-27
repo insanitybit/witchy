@@ -659,6 +659,29 @@ fi
     }
 
     #[test]
+    fn bundled_binaryen_path_is_fixed_relative_to_the_installed_executable() {
+        let executable = std::path::Path::new("/opt/witchy/bin/witchy");
+        assert_eq!(
+            bundled_binaryen_path_for_executable(executable).unwrap(),
+            std::path::Path::new("/opt/witchy/libexec/witchy-binaryen/bin/wasm-opt")
+        );
+        assert_eq!(
+            bundled_binaryen_path_for_executable(std::path::Path::new("/opt/witchy/witchy"))
+                .unwrap_err(),
+            "installed executable is not in the release bin directory"
+        );
+    }
+
+    #[test]
+    fn binaryen_evidence_names_the_exact_invocation_recipe() {
+        assert_eq!(
+            binaryen_recipe_evidence(),
+            "-O4|--all-features|--inlining-optimizing|--inline-functions-with-loops|--flexible-inline-max-function-size=100|--one-caller-inline-max-function-size=200"
+        );
+        assert_eq!(sha256_hex(&sha256(PINNED_BINARYEN_VERSION)).len(), 64);
+    }
+
+    #[test]
     fn stale_debug_compilation_cache_generations_are_bounded_without_touching_release_cache() {
         let cache = tempfile::tempdir().expect("cache directory");
         let modules = cache.path().join("modules");

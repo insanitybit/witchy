@@ -311,9 +311,28 @@ jobs:
             echo "::error::runner host $host cannot natively verify $TARGET"
             exit 1
           }
+      - name: Install the reviewed Binaryen v131 bundle by exact identity
+        id: binaryen
+        run: |
+          python3 ./scripts/pinned-binaryen.py install \
+            --target "$TARGET" \
+            --output-dir "$RUNNER_TEMP/witchy-binaryen-version_131" \
+            --github-output "$GITHUB_OUTPUT" \
+            --github-env "$GITHUB_ENV"
+      - name: Differentially execute the row-13 production Binaryen corpus
+        env:
+          WITCHY_REQUIRE_PINNED_BINARYEN: "1"
+        run: cargo test --locked --test binaryen_production_differential -- --ignored --nocapture
       - name: Build exact release binary
-        run: cargo build --release --locked --target "$TARGET"
+        run: |
+          env -u WITCHY_PINNED_WASM_OPT_PATH \
+              -u WITCHY_PINNED_WASM_OPT_SHA256 \
+              -u WITCHY_PINNED_BINARYEN_LIB_SHA256 \
+              WITCHY_BUNDLED_BINARYEN=1 \
+              cargo build --release --locked --target "$TARGET"
       - name: Package with canonical logic
+        env:
+          BINARYEN_ROOT: ${{ steps.binaryen.outputs.root }}
         run: |
           ./scripts/release-package.sh \
             --version "$VERSION" \
@@ -321,6 +340,7 @@ jobs:
             --target "$TARGET" \
             --commit "$WITCHY_BUILD_COMMIT" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --binaryen-root "$BINARYEN_ROOT" \
             --output-dir dist
           ./scripts/release-checksums.sh --output dist/SHA256SUMS "dist/witchy-$VERSION-$TARGET.tar.gz"
       - name: Installed-archive and trusted-publisher smoke
