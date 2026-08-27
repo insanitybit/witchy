@@ -8,6 +8,7 @@ use witchy_types::typed_execution::{
     ExecutionOutcome, ExecutionShapeId, ExecutionStateId, FrameLaneId, LaneAction,
     OperationSiteId, TypedExecutionShape,
 };
+use witchy_types::async_program::{AsyncExecutionShape, AsyncProgramStateId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelStatus {
@@ -38,6 +39,16 @@ pub struct TypedExecution {
 }
 
 impl TypedExecution {
+    /// Start from the canonical RFC-0161 program shape. This keeps the
+    /// interpreter on the same semantic IDs and edge contract as Wasm instead
+    /// of accepting a parallel fixture-only scheduler representation.
+    pub fn from_async_shape(
+        shape: AsyncExecutionShape,
+        entry: AsyncProgramStateId,
+    ) -> Result<Self, String> {
+        Self::new(shape.into_typed_execution(entry)?)
+    }
+
     pub fn new(shape: TypedExecutionShape) -> Result<Self, String> {
         shape.validate()?;
         let initialized = shape.frame.iter().map(|lane| lane.initially_initialized).collect();
