@@ -134,8 +134,21 @@ queue item has a terminal `merged` event.
   budget, and maximum-depth fixtures pass; the full `witchy-wir` library shard
   is 99/99 and bug-tier clippy is green. Fable's final verdict is ACCEPT. Queue
   item `mq-8168682a32da172075b8c0ada018f85dd2e9c842` depends on the report adapter.
-  Exit accumulators, symbolic range facts, recursive components, and terminal
+  Value-return exits, symbolic range facts, recursive components, and terminal
   queue evidence remain pending.
+- Commit `d88854a19` on `impl/rfc0162-cfg-adapter`, stacked on the loop
+  validator, maps final WIR `Block`, `Loop`, `Br`, and void `Return` into
+  validator-owned lexical `ControlId`s. Block exits, loop back edges, outer
+  exits, and void returns have separate conservative accumulators; provisional
+  loop exits are discarded until the header fixpoint is stable; simultaneous
+  pending exits plus fallthrough count against the fact budget. Non-enclosing,
+  duplicate, and shadowed targets reject. The 65-test SafeWIR selection and
+  107-test WIR library shard pass, bug-tier clippy is green, and final Fable
+  review is ACCEPT after direct flow-merge, return-contract, and aggregate-fact
+  mutation fixtures were added. Queue item
+  `mq-94ebb9ae02192c6c42a01f39feb9a6beedc2de98` depends on the loop validator.
+  Data-dependent mutable-local conditions and value-return exits remain in
+  their owning def-use/callable tracks.
 - Commit `9058e272f` on `impl/rfc0162-kernel-ops`, stacked on the semantic
   surface, adds opaque bump/RC allocation, retain, release, destructive reuse,
   and reclaim operations. They cannot carry a `WirFunc`, raw body, or ordinary
@@ -184,7 +197,7 @@ encoder escape hatch, or runtime safety metadata.
 | T0 census, rule map, ledger | queued candidate | `impl/rfc0162-integration`, `impl/rfc0162-structural-census` | reproducible production raw-memory/raw-body/callable/layout census; normative rule IDs; RichWasm correspondence | all-crates 584-site no-growth test, ignored-test policy, and 44-test shard green at `40be21d4a`; queue terminal pending |
 | T1 SafeWIR fact model | queued candidate | `impl/rfc0162-safewir-core` | object, place, range, layout, provenance, ownership, definition, and generation identities | 9 schema tests, 51-test crate shard, and Wasm shard green at `3189cb910`; revised Fable verdict ACCEPT; queue terminal pending |
 | T2 callable and range binding | landed SEC slice; active remainder | SEC-078 master `da098299a`; `impl/rfc0162-call-contracts`; `impl/rfc0162-range-binding` | checked callable contracts; `DefinitionId`-keyed RFC-0153 facts tied to generation and length source | 42 escape tests, RC-floor regression, three SEC-078 differential fixtures, detached pre-fix-red proof, isolated full gate, and final Opus ACCEPT; remaining call matrix and range binding active |
-| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter`, `impl/rfc0162-cfg-validator` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, structured branch joins at `520db2aec`, and conservative loop fixpoints at `d6825e3da`; 99/99 WIR library tests and bug-tier clippy green; final Fable/Opus verdicts ACCEPT; queue terminal pending; exits/symbolic facts/recursive components and production authority remain incomplete |
+| T3 final validator | stacked report candidates | `impl/rfc0162-validator`, `impl/rfc0162-wir-adapter`, `impl/rfc0162-cfg-validator`, `impl/rfc0162-cfg-adapter` | deterministic bounded dataflow/fixpoint validator with rule diagnostics and accepted/rejected fixtures | declarative subset at `0a4feb592`, final-WIR report adapter at `f4171b513`, joins/loops through `d6825e3da`, and real WIR exits at `d88854a19`; 107/107 WIR library tests and bug-tier clippy green; final Fable/Opus verdicts ACCEPT; queue terminal pending; mutable-local conditions, symbolic facts, recursive components, and production authority remain incomplete |
 | T4 ordinary operation migration | candidate interface | `impl/rfc0162-wir-surface` | all non-kernel helpers and lowering use semantic SafeWIR operations | semantic variants and complete visitor symmetry at `cfab0454b`; 81 library tests and lowerer compile green; zero production constructors migrated |
 | T5 kernel and encoder | candidate interface | `impl/rfc0162-kernel-ops`, `impl/rfc0162-kernel-templates` | minimal opaque kernel templates; encoder accepts validated authority only; exact encoding tests | six opaque operations at `9058e272f`; visitor/opacity/rejection tests green and final Opus ACCEPT; fixed templates and authority wiring active, queue terminal pending |
 | T6 mandatory production gate | pending | integration | private `ValidatedWirModule`; no unchecked production encode/raw-body path | pending |
