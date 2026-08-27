@@ -581,7 +581,7 @@ fn assert_wir_signature(
     );
 }
 
-fn visit_wir_nodes<'a>(nodes: &'a [WirNode], visit: &mut impl FnMut(&'a WirNode)) {
+fn visit_wir_nodes(nodes: &[WirNode], visit: &mut impl FnMut(&WirNode)) {
     for node in nodes {
         visit(node);
         match node {
@@ -590,6 +590,11 @@ fn visit_wir_nodes<'a>(nodes: &'a [WirNode], visit: &mut impl FnMut(&'a WirNode)
             }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 visit_wir_expr(ptr, visit);
+                visit_wir_expr(value, visit);
+            }
+            WirNode::SafeStore { place, value, .. }
+            | WirNode::SafeStore8 { place, value } => {
+                place.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
                 visit_wir_expr(value, visit);
             }
             WirNode::CallStoreMulti { args, .. } => {
@@ -608,8 +613,20 @@ fn visit_wir_nodes<'a>(nodes: &'a [WirNode], visit: &mut impl FnMut(&'a WirNode)
                 visit_wir_expr(src, visit);
                 visit_wir_expr(len, visit);
             }
+            WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+                destination
+                    .for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
+                source.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
+                visit_wir_expr(len, visit);
+            }
             WirNode::MemoryFill { dest, value, len } => {
                 visit_wir_expr(dest, visit);
+                visit_wir_expr(value, visit);
+                visit_wir_expr(len, visit);
+            }
+            WirNode::SafeMemoryFill { destination, value, len } => {
+                destination
+                    .for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
                 visit_wir_expr(value, visit);
                 visit_wir_expr(len, visit);
             }
@@ -645,7 +662,7 @@ fn visit_wir_nodes<'a>(nodes: &'a [WirNode], visit: &mut impl FnMut(&'a WirNode)
     }
 }
 
-fn visit_wir_expr<'a>(expression: &'a WirExpr, visit: &mut impl FnMut(&'a WirNode)) {
+fn visit_wir_expr(expression: &WirExpr, visit: &mut impl FnMut(&WirNode)) {
     match expression {
         WirExpr::ToSlot(value, _)
         | WirExpr::FromSlot(value, _)
@@ -661,6 +678,9 @@ fn visit_wir_expr<'a>(expression: &'a WirExpr, visit: &mut impl FnMut(&'a WirNod
         }
         WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => {
             visit_wir_expr(ptr, visit);
+        }
+        WirExpr::SafeLoad { place, .. } | WirExpr::SafeLoad8U { place } => {
+            place.for_each_wir_expr(|expression| visit_wir_expr(expression, visit));
         }
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
             for argument in args {
