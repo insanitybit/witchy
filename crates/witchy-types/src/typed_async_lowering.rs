@@ -693,24 +693,18 @@ impl TypedAsyncLoweringInput {
         }).collect::<Vec<_>>();
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 ChannelSelect result lane exceeds u32")?);
         frame.push(FrameLane { id: result, ty: operation.operand_type.clone().ok_or_else(|| "RFC-0161 ChannelSelect has no result type".to_string())?, ownership: LaneOwnership::Move, initially_initialized: false });
+        let (queues, queue_by_endpoint) = select_queue_layout(&operation.operand_bindings, queue_bindings, "ChannelSelect")?;
         let mut arms = Vec::with_capacity(operation.operand_bindings.len());
         for (ordinal, endpoint_binding) in operation.operand_bindings.iter().enumerate() {
             let endpoint_lane = entry.frame.iter().find_map(|input| (input.source_binding == Some(*endpoint_binding)).then_some(FrameLaneId(input.parameter)))
                 .ok_or_else(|| format!("RFC-0161 ChannelSelect endpoint {:?} is absent from the entry frame", endpoint_binding))?;
-            let queue = queue_bindings.iter().find(|binding| binding.endpoint == *endpoint_binding)
-                .ok_or_else(|| format!("RFC-0161 ChannelSelect arm {ordinal} has no compiler-resolved queue binding"))?;
-            if queue.shape.id.0 as usize != ordinal { return Err("RFC-0161 ChannelSelect requires queue shape IDs in arm order".into()); }
-            arms.push(OperationArm { ordinal: u32::try_from(ordinal).map_err(|_| "RFC-0161 ChannelSelect arm count exceeds u32")?, operation: ExecutionOperation::ChannelReceive, endpoint_lane, input_lanes: Vec::new(), result_lanes: vec![result], queue: Some(queue.shape.id), ownership: queue.shape.ownership });
+            let (queue_id, ownership) = queue_by_endpoint[ordinal];
+            arms.push(OperationArm { ordinal: u32::try_from(ordinal).map_err(|_| "RFC-0161 ChannelSelect arm count exceeds u32")?, operation: ExecutionOperation::ChannelReceive, endpoint_lane, input_lanes: Vec::new(), result_lanes: vec![result], queue: Some(queue_id), ownership });
         }
         let transitions = arms.iter().map(|arm| ExecutionTransition { condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: arm.ordinal }, actions: Vec::new(), outcome: ExecutionOutcome::Complete }).collect();
         // Preserve source arm order even when the resolver supplies queue
         // bindings in a different order.  Arm identity is endpoint-based;
         // positional collection would silently pair the wrong queue shape.
-        let queues = operation.operand_bindings.iter().map(|endpoint| {
-            queue_bindings.iter().find(|binding| binding.endpoint == *endpoint)
-                .map(|binding| binding.shape.clone())
-                .ok_or_else(|| "RFC-0161 ChannelSelect queue binding disappeared while forming shape".to_string())
-        }).collect::<Result<Vec<_>, _>>()?;
         let execution = TypedExecutionShape {
             id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
@@ -760,17 +754,15 @@ impl TypedAsyncLoweringInput {
         }).collect::<Vec<_>>();
         let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 continuation ChannelSelect result lane exceeds u32")?);
         frame.push(FrameLane { id: result, ty: continuation.frame[0].ty.clone(), ownership: LaneOwnership::Move, initially_initialized: false });
+        let (queues, queue_by_endpoint) = select_queue_layout(&operation.operand_bindings, queue_bindings, "continuation ChannelSelect")?;
         let mut arms = Vec::with_capacity(operation.operand_bindings.len());
         for (ordinal, endpoint_binding) in operation.operand_bindings.iter().enumerate() {
             let endpoint_lane = entry.frame.iter().find_map(|input| (input.source_binding == Some(*endpoint_binding)).then_some(FrameLaneId(input.parameter)))
                 .ok_or_else(|| format!("RFC-0161 continuation ChannelSelect endpoint {:?} is absent from the entry frame", endpoint_binding))?;
-            let queue = queue_bindings.iter().find(|binding| binding.endpoint == *endpoint_binding)
-                .ok_or_else(|| format!("RFC-0161 continuation ChannelSelect arm {ordinal} has no compiler-resolved queue binding"))?;
-            if queue.shape.id.0 as usize != ordinal { return Err("RFC-0161 continuation ChannelSelect requires queue shape IDs in arm order".into()); }
-            arms.push(OperationArm { ordinal: u32::try_from(ordinal).map_err(|_| "RFC-0161 continuation ChannelSelect arm count exceeds u32")?, operation: ExecutionOperation::ChannelReceive, endpoint_lane, input_lanes: Vec::new(), result_lanes: vec![result], queue: Some(queue.shape.id), ownership: queue.shape.ownership });
+            let (queue_id, ownership) = queue_by_endpoint[ordinal];
+            arms.push(OperationArm { ordinal: u32::try_from(ordinal).map_err(|_| "RFC-0161 continuation ChannelSelect arm count exceeds u32")?, operation: ExecutionOperation::ChannelReceive, endpoint_lane, input_lanes: Vec::new(), result_lanes: vec![result], queue: Some(queue_id), ownership });
         }
         let transitions = arms.iter().map(|arm| ExecutionTransition { condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: arm.ordinal }, actions: Vec::new(), outcome: ExecutionOutcome::Complete }).collect();
-        let queues = operation.operand_bindings.iter().map(|endpoint| queue_bindings.iter().find(|binding| binding.endpoint == *endpoint).map(|binding| binding.shape.clone()).ok_or_else(|| "RFC-0161 continuation ChannelSelect queue binding disappeared while forming shape".to_string())).collect::<Result<Vec<_>, _>>()?;
         let execution = TypedExecutionShape {
             id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
@@ -1231,6 +1223,33 @@ impl TypedAsyncLoweringInput {
     }
 }
 
+/// Build one queue-shape slot per distinct endpoint while retaining one arm
+/// entry per source operand. Duplicate endpoints therefore probe/register the
+/// same queue instead of accidentally creating independent queues.
+fn select_queue_layout(
+    endpoints: &[SourceBindingId],
+    bindings: &[TypedAsyncQueueBinding],
+    label: &str,
+) -> Result<(Vec<QueueShape>, Vec<(crate::typed_execution::QueueShapeId, crate::typed_execution::PayloadOwnership)>), String> {
+    let mut queues = Vec::new();
+    let mut by_endpoint = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let binding = bindings.iter().find(|binding| binding.endpoint == *endpoint)
+            .ok_or_else(|| format!("RFC-0161 {label} has no compiler-resolved queue binding for endpoint {:?}", endpoint))?;
+        let queue_id = if let Some((index, _)) = endpoints[..by_endpoint.len()].iter().enumerate().find(|(_, prior)| **prior == *endpoint) {
+            crate::typed_execution::QueueShapeId(index as u32)
+        } else {
+            let id = crate::typed_execution::QueueShapeId(queues.len() as u32);
+            let mut shape = binding.shape.clone();
+            shape.id = id;
+            queues.push(shape);
+            id
+        };
+        by_endpoint.push((queue_id, binding.shape.ownership));
+    }
+    Ok((queues, by_endpoint))
+}
+
 fn is_nested_terminal_operand(source: &SourceAsyncControlFlow, operation: &TypedAsyncSourceOperationBinding) -> bool {
     if operation.kind == SourceAsyncOperationKind::Await {
         return false;
@@ -1469,6 +1488,22 @@ mod tests {
         assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::Select);
         assert_eq!(execution.execution.operations[0].arms.iter().map(|arm| arm.ordinal).collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(execution.execution.states[1].transitions.len(), 2);
+    }
+
+    #[test]
+    fn queue_aware_select_reuses_queue_for_duplicate_endpoint_arms() {
+        let module = witchy_syntax::parser::parse_module("from chan import Receiver, Selected\n\nasync fn choose(first: Receiver(Int), second: Receiver(Int)) -> Selected(Int):\n    chan.select(first, second).await\n\nfn main():\n    ()\n").expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let select = input.operations.iter_mut().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect).expect("select operation");
+        let endpoint = select.operand_bindings[0];
+        let endpoint_type = select.operand_types[0].clone();
+        select.operand_bindings = vec![endpoint, endpoint];
+        select.operand_types = vec![endpoint_type.clone(), endpoint_type];
+        input.queue_bindings.push(TypedAsyncQueueBinding { endpoint, shape: QueueShape { id: crate::typed_execution::QueueShapeId(9), capacity: crate::typed_execution::QueueCapacity::Rendezvous, payload_layout_fingerprint: [19; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [20; 32]).expect("duplicate endpoint select");
+        assert_eq!(execution.execution.queues.len(), 1);
+        assert_eq!(execution.execution.operations[0].arms.iter().map(|arm| arm.queue).collect::<Vec<_>>(), vec![Some(crate::typed_execution::QueueShapeId(0)); 2]);
     }
 
     #[test]
