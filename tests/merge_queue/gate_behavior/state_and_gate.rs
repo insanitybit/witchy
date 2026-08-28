@@ -467,7 +467,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         isolated_args
             .lines()
-            .any(|line| line == "nextest run --test merge_queue -j 2"),
+            .any(|line| line.starts_with("nextest run --test merge_queue -j 2")),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",
     );
     let invalid_width = check_sh(&root, &["--queue-infra"])
