@@ -20,6 +20,10 @@ use crate::async_control_flow::{
 };
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
+use crate::async_program::{FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
+use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
+    ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, OperationSite,
+    OperationSiteId, TypedExecutionShape};
 
 /// A final callable-table position. This is an internal backend binding input;
 /// it is intentionally not a generated function name.
@@ -153,6 +157,110 @@ pub struct TypedAsyncLoweringInput {
 }
 
 impl TypedAsyncLoweringInput {
+    /// Lower the fully checked source inventory when it is a single linear
+    /// callable whose operations have no value-producing or queue binding
+    /// requirements.  This is intentionally conservative: operations whose
+    /// queue/host/operand semantics are not represented by this producer are
+    /// rejected by name instead of being silently mapped to a different ABI.
+    /// The general producer can extend this boundary once those facts are
+    /// available from typed lowering.
+    pub fn into_linear_execution(
+        &self,
+        shape: ExecutionShapeId,
+        closure_layout_fingerprint: [u8; 32],
+    ) -> Result<FinalTypedAsyncExecution, String> {
+        if self.source.len() != 1 {
+            return Err("RFC-0161 linear producer requires exactly one async callable".into());
+        }
+        let source = &self.source[0];
+        if !source.controls.is_empty() {
+            return Err("RFC-0161 linear producer rejects control-flow selectors until typed edges are bound".into());
+        }
+        let operations = self.operations.iter().filter(|operation| operation.callable == source.callable).collect::<Vec<_>>();
+        if operations.len() != source.operations.len() {
+            return Err("RFC-0161 linear producer found operations for an unknown callable".into());
+        }
+        for operation in &operations {
+            match operation.runtime_kind {
+                TypedAsyncOperationKind::Yield | TypedAsyncOperationKind::Return => {}
+                kind => return Err(format!("RFC-0161 linear producer does not support typed operation {kind:?}")),
+            }
+            if !operation.operand_bindings.is_empty() || operation.operand_type.is_some() {
+                return Err(format!("RFC-0161 linear producer does not support operands for source operation {}", operation.source_operation));
+            }
+        }
+
+        let state_count = operations.len().checked_add(1).ok_or("RFC-0161 linear producer state count overflow")?;
+        let mut states = Vec::with_capacity(state_count);
+        let mut sites = Vec::new();
+        for (index, operation) in operations.iter().enumerate() {
+            let state = ExecutionStateId(index as u32);
+            let next = ExecutionStateId(index as u32 + 1);
+            let outcome = match operation.runtime_kind {
+                TypedAsyncOperationKind::Yield => {
+                    let site_id = OperationSiteId(sites.len() as u32);
+                    sites.push(OperationSite {
+                        id: site_id,
+                        kind: ExecutionOperation::Yield,
+                        input_lanes: Vec::new(),
+                        result_lanes: Vec::new(),
+                        pending_move_lanes: Vec::new(),
+                        fallback_state: None,
+                        queue: None,
+                        arms: Vec::new(),
+                    });
+                    ExecutionOutcome::Ready(next)
+                }
+                TypedAsyncOperationKind::Return => ExecutionOutcome::Complete,
+                _ => unreachable!(),
+            };
+            states.push(ExecutionState {
+                id: state,
+                transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
+                    actions: Vec::new(),
+                    outcome,
+                }],
+            });
+        }
+        if operations.is_empty() {
+            states.push(ExecutionState {
+                id: ExecutionStateId(0),
+                transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
+                    actions: Vec::new(),
+                    outcome: ExecutionOutcome::Complete,
+                }],
+            });
+        } else if !matches!(operations.last().map(|operation| operation.runtime_kind), Some(TypedAsyncOperationKind::Return)) {
+            states.push(ExecutionState {
+                id: ExecutionStateId(operations.len() as u32),
+                transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
+                    actions: Vec::new(),
+                    outcome: ExecutionOutcome::Complete,
+                }],
+            });
+        }
+        let execution = TypedExecutionShape {
+            id: shape,
+            entry: ExecutionStateId(0),
+            frame: Vec::new(),
+            result_lanes: Vec::new(),
+            states,
+            operations: sites,
+            queues: Vec::new(),
+            cancellation: None,
+        };
+        execution.validate()?;
+        let state_bindings = (0..execution.states.len()).map(|state| FinalTypedAsyncStateBinding {
+            state: ExecutionStateId(state as u32),
+            callable: self.states.first().map(|state| state.final_callable).unwrap_or(FinalCallableIndex(0)),
+            capture_to_lane: Vec::new(),
+        }).collect();
+        Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings, dynamic_boundaries: Vec::new() })
+    }
+
     /// Re-run the ordinary checked lowering projection, then bind each final
     /// state to the lossless source identity retained by [`CheckedModule`].
     pub fn from_checked(checked: &CheckedModule) -> Result<Self, String> {
@@ -740,5 +848,39 @@ mod tests {
             operation.runtime_kind == TypedAsyncOperationKind::ChannelSend
         }).expect("channel send operation");
         assert_eq!(send.operand_bindings, vec![SourceBindingId(0), SourceBindingId(2)]);
+    }
+
+    #[test]
+    fn linear_producer_emits_executable_shape_for_empty_async_return() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn noop():\n    ()\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [7; 32])
+            .expect("linear async return is executable");
+        assert_eq!(execution.execution.states.len(), 1);
+        assert_eq!(execution.execution.states[0].transitions[0].outcome, ExecutionOutcome::Complete);
+        assert!(execution.execution.operations.is_empty());
+    }
+
+    #[test]
+    fn linear_producer_rejects_unbound_call_and_channel_semantics_by_operation_kind() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Sender\n\nasync fn send_one(tx: Sender(Int)):\n    chan.send(tx, 7).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
+            .expect_err("channel operation needs the queue-aware producer");
+        assert!(error.contains("CallOperand"), "unexpected rejection: {error}");
     }
 }
