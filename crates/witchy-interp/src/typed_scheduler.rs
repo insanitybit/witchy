@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, VecDeque};
 use crate::typed_async::{KernelTurn, TypedExecution};
 use crate::typed_host::{HostCompletion, HostDelivery, HostOperationId, HostSubmission};
 use crate::typed_queue::{QueuePayload, QueueRuntimeResult, QueueSelectResult, TypedQueue, TypedQueueRuntime};
+use witchy_types::async_program::{AsyncBackendBinding, AsyncProgram};
 use witchy_types::typed_execution::OperationSiteId;
 
 /// One operation-level scheduler observation. The sequence is assigned when
@@ -46,6 +47,30 @@ impl TypedScheduler {
     pub fn install_execution(&mut self, id: u64, execution: TypedExecution) -> Result<(), String> {
         self.runtime.install_execution(id, execution)?;
         self.enqueue_next(id)
+    }
+
+    /// Bind one canonical program shape and install it in the same scheduler
+    /// used by queue and host admissions. The backend binding is mandatory so
+    /// closure-layout drift cannot silently reach the runtime.
+    pub fn install_program_execution(
+        &mut self,
+        program: &AsyncProgram,
+        shape: witchy_types::typed_execution::ExecutionShapeId,
+        execution: u64,
+        binding: &AsyncBackendBinding,
+    ) -> Result<(), String> {
+        program.validate()?;
+        let canonical = program.execution_shapes.iter().find(|candidate| candidate.id == shape)
+            .ok_or_else(|| format!("async program has no execution shape {shape:?}"))?;
+        if binding.shape != shape {
+            return Err("async backend binding shape does not match installed program shape".into());
+        }
+        for queue in &canonical.queues {
+            if !self.runtime.has_queue(queue.id) {
+                self.install_queue(TypedQueue::new(queue.clone()))?;
+            }
+        }
+        self.install_execution(execution, TypedExecution::from_async_shape(canonical.clone(), binding)?)
     }
 
     pub fn ready_len(&self) -> usize { self.ready.len() + self.next_round.len() }

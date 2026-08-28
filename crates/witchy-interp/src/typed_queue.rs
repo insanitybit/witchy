@@ -282,6 +282,7 @@ impl TypedQueueRuntime {
     }
 
     pub fn execution(&self, id: u64) -> Option<&TypedExecution> { self.executions.get(&id) }
+    pub fn has_queue(&self, id: QueueShapeId) -> bool { self.queues.contains_key(&id) }
 
     /// Advance one ready execution through its canonical operation-level turn.
     /// Scheduler code uses this narrow entry point so it cannot bypass the
