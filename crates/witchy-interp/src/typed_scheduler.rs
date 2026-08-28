@@ -333,7 +333,8 @@ mod tests {
     use crate::typed_host::HostOperationId;
     use witchy_syntax::ast::Type;
     use witchy_types::async_program::{AsyncBackendBinding, AsyncBackendStateBinding, AsyncExecutionShape, AsyncProgram, AsyncProgramStateId, AsyncStateEdge, FinalStateBinding};
-    use witchy_types::typed_async_lowering::FinalCallableIndex;
+    use witchy_types::typed_async_lowering::{FinalCallableIndex, TypedAsyncQueueBinding};
+    use witchy_types::pipeline::link_checked;
     use witchy_types::typed_execution::{ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId,
         ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, FrameLaneId, LaneOwnership,
         OperationSite, PayloadOwnership, QueueCapacity, QueueShape, QueueShapeId, TypedExecutionShape};
@@ -355,6 +356,30 @@ mod tests {
         let mut scheduler = TypedScheduler::new();
         scheduler.install_program_execution(&program, ExecutionShapeId(0), 44, &binding).expect("bind program");
         assert_eq!(scheduler.run_round().expect("run")[0].turn, KernelTurn::Complete);
+    }
+
+    #[test]
+    fn compiler_produced_terminal_receive_installs_through_scheduler() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Receiver\n\nasync fn receive_one(rx: Receiver(Int)) -> Option(Int):\n    chan.recv(rx).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let receive = input.operations.iter().find(|operation| operation.runtime_kind == witchy_types::typed_async_lowering::TypedAsyncOperationKind::ChannelReceive).expect("receive operation");
+        input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: receive.operand_bindings[0], shape: QueueShape { id: QueueShapeId(0), capacity: QueueCapacity::Rendezvous, payload_layout_fingerprint: [8; 32], ownership: PayloadOwnership::Inline } });
+        let final_execution = input.into_linear_execution(ExecutionShapeId(0), [9; 32]).expect("final typed execution");
+        let binding = AsyncBackendBinding {
+            shape: ExecutionShapeId(0), closure_layout_fingerprint: [9; 32],
+            states: final_execution.state_bindings.iter().map(|state| AsyncBackendStateBinding { state: AsyncProgramStateId(state.state.0), callable: state.callable, capture_to_lane: state.capture_to_lane.iter().map(|lane| lane.0).collect() }).collect(),
+        };
+        let program = AsyncProgram::from_final_typed_executions(vec![final_execution]).expect("canonical program");
+        let mut scheduler = TypedScheduler::new();
+        scheduler.install_program_execution(&program, ExecutionShapeId(0), 17, &binding).expect("install compiler program");
+        let events = scheduler.run_round().expect("run source execution");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].execution, 17);
+        assert_eq!(events[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
+        assert_eq!(scheduler.runtime().execution(17).expect("execution").status(), KernelStatus::Waiting(OperationSiteId(0)));
     }
 
     #[test]
