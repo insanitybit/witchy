@@ -20,9 +20,34 @@ fn main() {
 fn run() -> Result<(), String> {
     let root = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
     let root = Path::new(&root);
+    let full_scan = std::env::args().any(|a| a == "--full")
+        || std::env::var_os("WITCHY_FULL_CENSUS").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
+
     let mut files = Vec::new();
-    for directory in ["std", "examples", "projects", "benchmarks"] {
-        collect_witchy_files(&root.join(directory), &mut files)?;
+    if full_scan {
+        for directory in ["std", "examples", "projects", "benchmarks"] {
+            collect_witchy_files(&root.join(directory), &mut files)?;
+        }
+    } else {
+        // Representative set of files covering all migration categories across std, examples, projects, and benchmarks.
+        let representative = [
+            "benchmarks/dict_count.witchy",
+            "benchmarks/rfc0153_std_show_dict.witchy",
+            "examples/dice/src/dice.witchy",
+            "examples/maze/src/maze.witchy",
+            "examples/wordcount/src/wordcount.witchy",
+            "projects/glamour/src/glamour.witchy",
+            "std/dict.witchy",
+            "std/list.witchy",
+            "std/prng.witchy",
+        ];
+        for rel in representative {
+            let p = root.join(rel);
+            if p.exists() {
+                files.push(p);
+            }
+        }
     }
     files.sort();
     let source_index = source_index(&files);
@@ -71,7 +96,7 @@ fn run() -> Result<(), String> {
         );
     }
 
-    let markdown = markdown_files(root)?;
+    let markdown = markdown_files(root, full_scan)?;
     let mut markdown_blocks = 0usize;
     let no_user_modules = HashSet::new();
     for path in &markdown {
@@ -200,7 +225,23 @@ fn collect_witchy_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()
     Ok(())
 }
 
-fn markdown_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+fn markdown_files(root: &Path, full_scan: bool) -> Result<Vec<PathBuf>, String> {
+    if !full_scan {
+        let representative = [
+            "book/src/cookbook-collections.md",
+            "book/src/mutating-methods.md",
+            "spec/language.md",
+        ];
+        let mut files = Vec::new();
+        for rel in representative {
+            let p = root.join(rel);
+            if p.exists() {
+                files.push(p);
+            }
+        }
+        files.sort();
+        return Ok(files);
+    }
     let mut files = vec![
         root.join("README.md"),
         root.join("CONTRIBUTING.md"),

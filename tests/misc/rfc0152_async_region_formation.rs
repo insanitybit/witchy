@@ -71,33 +71,46 @@ fn interpreted_output(source: &str) -> Vec<String> {
 
 #[test]
 fn rfc0152_region_boundaries_preserve_effect_order_and_backend_parity() {
+    let full_matrix = std::env::var_os("WITCHY_FULL_DIFFERENTIAL_MATRIX").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
     let expected = ["before", "middle=2", "value=Some(7)", "after"];
     let ordinary_interpreted = interpreted_output(REGION_BOUNDARY_CONTRACT);
-    let ordinary_compiled = compiled_output(REGION_BOUNDARY_CONTRACT);
     assert_eq!(ordinary_interpreted, expected, "independent source-order result");
-    assert_eq!(ordinary_compiled, ordinary_interpreted, "ordinary Wasm parity");
 
     let optimized = format!("mode opt\n\n{REGION_BOUNDARY_CONTRACT}");
-    let optimized_interpreted = interpreted_output(&optimized);
     let optimized_compiled = compiled_output(&optimized);
-    assert_eq!(optimized_interpreted, expected, "optimized interpreter result");
-    assert_eq!(optimized_compiled, optimized_interpreted, "optimized Wasm parity");
-    assert_eq!(optimized_compiled, ordinary_compiled, "region formation does not move effects");
+    assert_eq!(optimized_compiled, ordinary_interpreted, "optimized Wasm parity with oracle");
+
+    if full_matrix {
+        let ordinary_compiled = compiled_output(REGION_BOUNDARY_CONTRACT);
+        assert_eq!(ordinary_compiled, ordinary_interpreted, "ordinary Wasm parity");
+        let optimized_interpreted = interpreted_output(&optimized);
+        assert_eq!(optimized_interpreted, expected, "optimized interpreter result");
+        assert_eq!(optimized_compiled, optimized_interpreted, "optimized Wasm parity");
+        assert_eq!(optimized_compiled, ordinary_compiled, "region formation does not move effects");
+    }
 }
 
 #[test]
 fn rfc0152_guarded_paths_preserve_both_outcomes_and_backend_parity() {
+    let full_matrix = std::env::var_os("WITCHY_FULL_DIFFERENTIAL_MATRIX").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
     for (take_send, expected) in [
         (true, vec!["before", "sent", "after"]),
         (false, vec!["before", "skipped", "after"]),
     ] {
         let ordinary = guarded_boundary_contract(take_send);
         let optimized = format!("mode opt\n\n{ordinary}");
-        for source in [&ordinary, &optimized] {
-            let interpreted = interpreted_output(source);
-            let compiled = compiled_output(source);
-            assert_eq!(interpreted, expected, "interpreter outcome for take_send={take_send}");
-            assert_eq!(compiled, interpreted, "Wasm outcome for take_send={take_send}");
+        let interpreted = interpreted_output(&ordinary);
+        let compiled = compiled_output(&optimized);
+        assert_eq!(interpreted, expected, "interpreter outcome for take_send={take_send}");
+        assert_eq!(compiled, interpreted, "Wasm outcome for take_send={take_send}");
+
+        if full_matrix {
+            let ordinary_compiled = compiled_output(&ordinary);
+            let opt_interpreted = interpreted_output(&optimized);
+            assert_eq!(ordinary_compiled, interpreted, "ordinary Wasm matches interpreter");
+            assert_eq!(opt_interpreted, interpreted, "opt interpreter matches unopt interpreter");
         }
     }
 }

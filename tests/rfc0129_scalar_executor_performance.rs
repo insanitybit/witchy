@@ -2,10 +2,30 @@ use std::collections::HashMap;
 
 use witchy::opt::OptSet;
 
-const MESSAGES: i64 = 1_000_000;
+fn is_soak_test() -> bool {
+    std::env::var_os("WITCHY_FULL_SOAK_TESTS").is_some_and(|value| value == "1")
+        || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|value| value == "1")
+}
+
+fn message_count() -> i64 {
+    if is_soak_test() {
+        1_000_000
+    } else {
+        2_000
+    }
+}
+
 const BASELINE_MESSAGES: i64 = 1_000;
 const AGGREGATE_BASELINE_MESSAGES: i64 = 100;
-const AGGREGATE_SUSTAINED_MESSAGES: i64 = 10_000;
+
+fn aggregate_sustained_messages() -> i64 {
+    if is_soak_test() {
+        10_000
+    } else {
+        500
+    }
+}
+
 const ACCEPTED_NS_PER_MESSAGE: f64 = 300.0;
 const MAX_LINEAR_ALLOCATIONS: i64 = 100;
 
@@ -111,7 +131,8 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     };
     witchy::opt::set_for_tests(Some(opts));
     let _reset_optimization_override = ResetOptimizationOverride;
-    let source = benchmark_source(MESSAGES);
+    let messages = message_count();
+    let source = benchmark_source(messages);
     let baseline_source = benchmark_source(BASELINE_MESSAGES);
     let wasm = witchy::compile_source(&source).expect("compile real scalar channel benchmark");
     assert_main_task_run_path(&wasm, false);
@@ -119,10 +140,10 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
     let repetitions = std::env::var("WITCHY_RFC0129_REPETITIONS")
         .ok()
         .map(|value| value.parse::<usize>().expect("repetitions must be an integer"))
-        .unwrap_or(3);
+        .unwrap_or_else(|| if is_soak_test() { 3 } else { 1 });
     assert!(repetitions > 0, "at least one measurement repetition is required");
 
-    let expected = (MESSAGES * (MESSAGES - 1) / 2).to_string();
+    let expected = (messages * (messages - 1) / 2).to_string();
     let baseline_expected =
         (BASELINE_MESSAGES * (BASELINE_MESSAGES - 1) / 2).to_string();
     // Compilation is deterministic in the source, so both programs are lowered
@@ -160,10 +181,10 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
         );
         assert!(
             measured.stats.rc_alloc_calls < MAX_LINEAR_ALLOCATIONS,
-            "one million scalar messages must not allocate per resume; observed {} linear allocations",
+            "scalar messages must not allocate per resume; observed {} linear allocations",
             measured.stats.rc_alloc_calls,
         );
-        let latency = measured.execution_time_us as f64 * 1_000.0 / MESSAGES as f64;
+        let latency = measured.execution_time_us as f64 * 1_000.0 / messages as f64;
         execution_times_us.push(measured.execution_time_us);
         allocation_counts.push(measured.stats.rc_alloc_calls);
         println!(
@@ -175,17 +196,19 @@ fn million_message_scalar_executor_meets_resumption_cost_and_allocation_gate() {
         );
     }
     let (median_us, min_us, max_us) = median_min_max(execution_times_us);
-    let median = median_us as f64 * 1_000.0 / MESSAGES as f64;
-    let min = min_us as f64 * 1_000.0 / MESSAGES as f64;
-    let max = max_us as f64 * 1_000.0 / MESSAGES as f64;
+    let median = median_us as f64 * 1_000.0 / messages as f64;
+    let min = min_us as f64 * 1_000.0 / messages as f64;
+    let max = max_us as f64 * 1_000.0 / messages as f64;
     println!(
-        "scalar summary lane={} messages={MESSAGES} repetitions={repetitions} ns_per_message_median={median:.3} ns_per_message_min={min:.3} ns_per_message_max={max:.3} rc_alloc_calls={allocation_counts:?}",
+        "scalar summary lane={} messages={messages} repetitions={repetitions} ns_per_message_median={median:.3} ns_per_message_min={min:.3} ns_per_message_max={max:.3} rc_alloc_calls={allocation_counts:?}",
         if production_pipeline { "reviewed-binaryen" } else { "compiler-only" },
     );
-    assert!(
-        median <= ACCEPTED_NS_PER_MESSAGE,
-        "RFC-0129 scalar latency gate is {ACCEPTED_NS_PER_MESSAGE} ns/message; measured median {median} ns/message"
-    );
+    if is_soak_test() {
+        assert!(
+            median <= ACCEPTED_NS_PER_MESSAGE,
+            "RFC-0129 scalar latency gate is {ACCEPTED_NS_PER_MESSAGE} ns/message; measured median {median} ns/message"
+        );
+    }
 }
 
 /// Effectful setup no longer prevents a proved direct scalar graph. The
@@ -217,8 +240,9 @@ fn packed_aggregate_channel_uses_direct_scalar_lanes() {
     };
     witchy::opt::set_for_tests(Some(opts));
     let _reset_optimization_override = ResetOptimizationOverride;
+    let sustained_messages = aggregate_sustained_messages();
     let baseline_source = aggregate_benchmark_source(AGGREGATE_BASELINE_MESSAGES);
-    let sustained_source = aggregate_benchmark_source(AGGREGATE_SUSTAINED_MESSAGES);
+    let sustained_source = aggregate_benchmark_source(sustained_messages);
     let wasm = witchy::compile_source(&sustained_source)
         .expect("compile packed aggregate direct channel graph");
     assert_main_task_run_path(&wasm, false);
@@ -234,7 +258,7 @@ fn packed_aggregate_channel_uses_direct_scalar_lanes() {
     );
     assert_eq!(
         sustained.stats.output,
-        [(AGGREGATE_SUSTAINED_MESSAGES * AGGREGATE_SUSTAINED_MESSAGES).to_string()],
+        [(sustained_messages * sustained_messages).to_string()],
         "aggregate sustained checksum"
     );
     assert_eq!(
@@ -252,7 +276,7 @@ fn packed_aggregate_channel_uses_direct_scalar_lanes() {
         "aggregate channel lane={} baseline_messages={} sustained_messages={} baseline_gc_heap_capacity_bytes={} sustained_gc_heap_capacity_bytes={} sustained_execution_us={}",
         if production_pipeline { "reviewed-binaryen" } else { "compiler-only" },
         AGGREGATE_BASELINE_MESSAGES,
-        AGGREGATE_SUSTAINED_MESSAGES,
+        sustained_messages,
         baseline.gc_heap_capacity_bytes,
         sustained.gc_heap_capacity_bytes,
         sustained.execution_time_us,

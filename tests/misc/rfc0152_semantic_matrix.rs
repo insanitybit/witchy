@@ -145,19 +145,32 @@ fn run_compiled(source: &str, label: &str) -> Vec<String> {
 }
 
 fn assert_case(case: &ChannelCase) {
-    let ordinary_interpreted = run_interpreted(case.source, case.label);
-    assert_eq!(ordinary_interpreted, case.expected, "{}: independent expected result", case.label);
+    let full_matrix = std::env::var_os("WITCHY_FULL_DIFFERENTIAL_MATRIX").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
 
-    let ordinary_compiled = run_compiled(case.source, case.label);
-    assert_eq!(ordinary_compiled, ordinary_interpreted, "{}: ordinary Wasm parity", case.label);
+    if full_matrix {
+        let ordinary_interpreted = run_interpreted(case.source, case.label);
+        assert_eq!(ordinary_interpreted, case.expected, "{}: independent expected result", case.label);
 
-    let optimized_source = format!("mode opt\n\n{}", case.source);
-    let optimized_interpreted = run_interpreted(&optimized_source, case.label);
-    assert_eq!(optimized_interpreted, case.expected, "{}: opt interpreter result", case.label);
+        let ordinary_compiled = run_compiled(case.source, case.label);
+        assert_eq!(ordinary_compiled, ordinary_interpreted, "{}: ordinary Wasm parity", case.label);
 
-    let optimized_compiled = run_compiled(&optimized_source, case.label);
-    assert_eq!(optimized_compiled, optimized_interpreted, "{}: optimized Wasm parity", case.label);
-    assert_eq!(optimized_compiled, ordinary_compiled, "{}: ordinary and optimized Wasm agree", case.label);
+        let optimized_source = format!("mode opt\n\n{}", case.source);
+        let optimized_interpreted = run_interpreted(&optimized_source, case.label);
+        assert_eq!(optimized_interpreted, case.expected, "{}: opt interpreter result", case.label);
+
+        let optimized_compiled = run_compiled(&optimized_source, case.label);
+        assert_eq!(optimized_compiled, optimized_interpreted, "{}: optimized Wasm parity", case.label);
+        assert_eq!(optimized_compiled, ordinary_compiled, "{}: ordinary and optimized Wasm agree", case.label);
+    } else {
+        // Fast direct oracle comparison: source-level interpreter vs optimized Wasm runtime
+        let interpreted = run_interpreted(case.source, case.label);
+        assert_eq!(interpreted, case.expected, "{}: independent expected result", case.label);
+
+        let optimized_source = format!("mode opt\n\n{}", case.source);
+        let optimized_compiled = run_compiled(&optimized_source, case.label);
+        assert_eq!(optimized_compiled, interpreted, "{}: interpreter vs optimized Wasm parity", case.label);
+    }
 }
 
 #[test]

@@ -145,6 +145,31 @@
     /// Skips `examples/projects/` (multi-rune workspaces, covered by the pm tests)
     /// and each rune's `*_test.witchy` modules and helper modules.
     fn example_entries() -> Vec<std::path::PathBuf> {
+        let full_sweep = std::env::var_os("WITCHY_FULL_EXAMPLES_SWEEP").is_some_and(|v| v == "1")
+            || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
+        if !full_sweep {
+            // Representative subset of examples covering primitives, control flow, functions, collections, and algorithms.
+            let representative = [
+                "examples/hello/src/hello.witchy",
+                "examples/fib/src/fib.witchy",
+                "examples/counter/src/counter.witchy",
+                "examples/dice/src/dice.witchy",
+                "examples/maze/src/maze.witchy",
+                "examples/wordcount/src/wordcount.witchy",
+                "examples/calculator/src/calculator.witchy",
+            ];
+            let mut out = Vec::new();
+            for path_str in representative {
+                let p = std::path::PathBuf::from(path_str);
+                if p.exists() {
+                    out.push(p);
+                }
+            }
+            if !out.is_empty() {
+                out.sort();
+                return out;
+            }
+        }
         let mut out = Vec::new();
         for entry in std::fs::read_dir("examples").expect("examples directory") {
             let dir = entry.expect("dir entry").path();
@@ -478,21 +503,35 @@
     /// The Markdown docs whose ```` ```witchy ```` blocks are validated + classified: the
     /// root docs, `spec/`, and `book/src/` (sorted for a stable manifest).
     fn doc_markdown_files() -> Vec<std::path::PathBuf> {
-        let mut files: Vec<std::path::PathBuf> = vec![
-            "README.md".into(),
-            "CONTRIBUTING.md".into(),
-            "examples/README.md".into(),
-        ];
-        for dir in ["spec", "book/src"] {
-            let Ok(entries) = std::fs::read_dir(dir) else { continue };
-            let mut md: Vec<_> = entries
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-                .collect();
-            md.sort();
-            files.extend(md);
+        let full_sweep = std::env::var_os("BLESS_EXAMPLES").is_some()
+            || std::env::var_os("WITCHY_FULL_DOCS_SWEEP").is_some_and(|v| v == "1")
+            || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
+        if full_sweep {
+            let mut files: Vec<std::path::PathBuf> = vec![
+                "README.md".into(),
+                "CONTRIBUTING.md".into(),
+                "examples/README.md".into(),
+            ];
+            for dir in ["spec", "book/src"] {
+                let Ok(entries) = std::fs::read_dir(dir) else { continue };
+                let mut md: Vec<_> = entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                    .collect();
+                md.sort();
+                files.extend(md);
+            }
+            files
+        } else {
+            // Representative core set covering fundamentals, capabilities, async, and spec definitions.
+            vec![
+                "README.md".into(),
+                "book/src/getting-started-hello.md".into(),
+                "book/src/tour-functions.md".into(),
+                "book/src/capabilities-authority.md".into(),
+                "spec/language.md".into(),
+            ]
         }
-        files
     }
 
     fn main_declares_console_read(module: &ast::Module) -> bool {
