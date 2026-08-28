@@ -5,7 +5,7 @@
 //! `TypedQueueRuntime`; this prevents a second scheduler from growing inside
 //! an adapter or benchmark fixture.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::typed_async::{KernelTurn, TypedExecution};
 use crate::typed_host::{HostCompletion, HostDelivery, HostOperationId, HostSubmission};
@@ -102,6 +102,14 @@ impl TypedScheduler {
     /// executions enter the next round in admission order; blocked and
     /// terminal executions do not re-enter until an explicit wake/commit.
     pub fn run_round(&mut self) -> Result<Vec<SchedulerEvent>, String> {
+        self.run_round_selected(&BTreeMap::new())
+    }
+
+    /// Run one deterministic round with explicit transition indices for
+    /// branching typed states. The selector is supplied by the typed backend;
+    /// omitting it for a branching state is an error, never an implicit choice
+    /// of transition zero.
+    pub fn run_round_selected(&mut self, selections: &BTreeMap<u64, usize>) -> Result<Vec<SchedulerEvent>, String> {
         if self.ready.is_empty() {
             std::mem::swap(&mut self.ready, &mut self.next_round);
         }
@@ -110,7 +118,10 @@ impl TypedScheduler {
         for _ in 0..round_len {
             let execution = self.ready.pop_front().expect("round length was bounded");
             self.queued.remove(&execution);
-            let turn = self.runtime.turn_execution(execution)?;
+            let turn = match selections.get(&execution) {
+                Some(index) => self.runtime.execution_mut_turn_selected(execution, *index)?,
+                None => self.runtime.turn_execution(execution)?,
+            };
             let event = SchedulerEvent { sequence: self.reserve_sequence()?, execution, turn };
             if matches!(turn, KernelTurn::Continued(_) | KernelTurn::BecameReady(_)) {
                 self.enqueue_next(execution)?;
@@ -344,6 +355,39 @@ mod tests {
         let mut scheduler = TypedScheduler::new();
         scheduler.install_program_execution(&program, ExecutionShapeId(0), 44, &binding).expect("bind program");
         assert_eq!(scheduler.run_round().expect("run")[0].turn, KernelTurn::Complete);
+    }
+
+    #[test]
+    fn selected_round_executes_explicit_branch_transition() {
+        let execution = TypedExecution::new(TypedExecutionShape {
+            id: ExecutionShapeId(9),
+            entry: ExecutionStateId(0),
+            frame: vec![FrameLane { id: FrameLaneId(0), ty: Type::Named("Bool".into(), Vec::new()), ownership: LaneOwnership::Copy, initially_initialized: true }],
+            result_lanes: vec![],
+            states: vec![ExecutionState { id: ExecutionStateId(0), transitions: vec![
+                ExecutionTransition { condition: ExecutionEdgeCondition::Boolean { lane: FrameLaneId(0), when: true }, actions: vec![], outcome: ExecutionOutcome::Complete },
+                ExecutionTransition { condition: ExecutionEdgeCondition::Boolean { lane: FrameLaneId(0), when: false }, actions: vec![], outcome: ExecutionOutcome::Complete },
+            ] }],
+            operations: vec![], queues: vec![], cancellation: None,
+        }).expect("branching execution");
+        let mut scheduler = TypedScheduler::new();
+        scheduler.install_execution(21, execution).expect("install");
+        assert!(scheduler.run_round().is_err());
+        let mut selected = BTreeMap::new();
+        selected.insert(21, 1);
+        // The failed attempt consumed the ready turn, so reinstall a fresh
+        // execution to exercise the explicit selection path.
+        let execution = TypedExecution::new(TypedExecutionShape {
+            id: ExecutionShapeId(9), entry: ExecutionStateId(0),
+            frame: vec![FrameLane { id: FrameLaneId(0), ty: Type::Named("Bool".into(), Vec::new()), ownership: LaneOwnership::Copy, initially_initialized: true }],
+            result_lanes: vec![], states: vec![ExecutionState { id: ExecutionStateId(0), transitions: vec![
+                ExecutionTransition { condition: ExecutionEdgeCondition::Boolean { lane: FrameLaneId(0), when: true }, actions: vec![], outcome: ExecutionOutcome::Complete },
+                ExecutionTransition { condition: ExecutionEdgeCondition::Boolean { lane: FrameLaneId(0), when: false }, actions: vec![], outcome: ExecutionOutcome::Complete },
+            ] }], operations: vec![], queues: vec![], cancellation: None,
+        }).expect("branching execution");
+        scheduler.install_execution(22, execution).expect("install selected");
+        selected.insert(22, 1);
+        assert_eq!(scheduler.run_round_selected(&selected).expect("selected run")[0].turn, KernelTurn::Complete);
     }
 
     fn linear() -> TypedExecution {

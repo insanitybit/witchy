@@ -293,6 +293,12 @@ impl TypedQueueRuntime {
             .turn()
     }
 
+    pub(crate) fn execution_mut_turn_selected(&mut self, id: u64, transition: usize) -> Result<KernelTurn, String> {
+        self.executions.get_mut(&id)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .turn_selected(transition)
+    }
+
     /// Wake exactly the operation named by an execution's single wait record.
     /// Queue adapters still validate generation and queue identity before
     /// calling this method.
