@@ -22,6 +22,9 @@ use crate::layout::LayoutId;
 use crate::safewir::AccessMode;
 use crate::wir::WirExpr;
 
+mod builders;
+pub use builders::*;
+
 /// Maximum static prefix length for `prefix + i64` scratch formatting. Twenty
 /// decimal digits plus one sign byte must fit without wrapping Wasm's full
 /// unsigned i32 address domain.
