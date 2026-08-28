@@ -1,0 +1,29 @@
+name: Nightly long tests
+
+on:
+  schedule:
+    - cron: '45 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nightly-long-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  long-tests:
+    name: Non-blocking long-running tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Complete non-blocking workspace suite
+        run: cargo nextest run --workspace --all-targets --profile nightly --ignore-default-filter

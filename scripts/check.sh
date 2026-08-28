@@ -157,7 +157,11 @@ fi
 # selector as a compatibility spelling until the coordinator stops emitting it.
 fuzz_excl=""
 case "$gate_fuzz" in
-    reduced) ;;
+    # Keep focused/serialized fuzz selections bounded and reproducible. The
+    # exhaustive corpus is owned by nightly-fuzz.yml, but an explicit local
+    # selector still runs a useful reduced campaign instead of inheriting the
+    # full default corpus.
+    reduced) export WITCHY_FUZZ_PROGRAMS="${WITCHY_GATE_FUZZ_REDUCED:-10}" ;;
     skip)    fuzz_excl="not binary(differential_fuzz)" ;;
     full)    ;;
     *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
@@ -447,6 +451,13 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}")
     fi
+    # The ordinary profile excludes the exhaustive differential-fuzz binary.
+    # An explicit selector is an intentional opt-in (used by the focused
+    # shard and nightly jobs), so bypass that default filter instead of
+    # silently turning the shard into a zero-test run.
+    if [[ " ${nextest_sel[*]} " == *" --test differential_fuzz "* ]]; then
+        test_cmd+=(--ignore-default-filter --profile nightly)
+    fi
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
     # above) because those fixtures run in their own isolated shard. So a diff
     # whose entire selection IS merge_queue -- any change to
@@ -495,7 +506,8 @@ if cargo nextest --version >/dev/null 2>&1; then
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
     # retaining an operator override for repeated reliability measurements.
-    queue_infra_cmd=(cargo nextest run --test merge_queue -j "$queue_infra_jobs")
+    queue_infra_cmd=(cargo nextest run --test merge_queue -j "$queue_infra_jobs" \
+        --ignore-default-filter --profile nightly)
 else
     preflight_cmd=()
     # Plain cargo test runs integration binaries sequentially, so the queue

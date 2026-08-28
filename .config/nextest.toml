@@ -29,10 +29,12 @@ platform = "cfg(target_os = \"macos\")"
 list-wrapper = "bounded-list"
 
 [profile.default]
-# Long-running randomized campaigns remain first-class tests, but run only when a caller
-# explicitly opts into their named target (nightly-fuzz does so with --ignore-default-filter).
-# This is a runner policy, not `#[ignore]`, so a campaign cannot disappear from discovery.
-default-filter = 'not binary(differential_fuzz_campaigns)'
+# The blocking profile is deliberately limited to unit-level binaries whose tests
+# fit the two-second execution contract. Compiler, Wasm, server, fuzz, and other
+# integration binaries remain first-class tests but run in the explicit nightly
+# profile. This is a runner policy, not `#[ignore]`: every test stays discoverable
+# and runnable, while the merge queue has a hard per-test ceiling.
+default-filter = 'not (binary(differential_fuzz_campaigns) | binary_id(witchy::bin/witchy) | binary_id(witchy::misc) | binary_id(witchy) | binary_id(witchy-lower) | binary_id(witchy-interp) | binary_id(witchy::cli_subcommands) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0129_scalar_executor_performance) | binary_id(witchy::rfc0129_slot_reuse) | binary_id(witchy::rfc0129_schedule_parity) | binary_id(witchy::browser) | binary_id(witchy::rfc0080) | binary_id(witchy::worktree) | binary_id(witchy-runtime) | binary_id(witchy::rfc0082) | binary_id(witchy::rfc0101) | binary_id(witchy::rfc0110) | binary_id(witchy::differential_fuzz) | binary_id(witchy-wir) | binary_id(witchy::e2e) | binary_id(witchy::test_for_paths) | binary_id(witchy::merge_queue) | binary_id(witchy::glamour) | binary_id(witchy-types) | binary_id(witchy-lower::codegen) | binary_id(witchy::rfc0122) | binary_id(witchy::rfc0130_generator) | binary_id(witchy::rfc0138) | binary_id(witchy-interp::rfc0082_dynamic) | binary_id(witchy-syntax) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0092) | binary_id(witchy::rfc0112))'
 # One retry, profile-wide. Restored after the workspace-test budget was raised
 # to 1800s: the first attempt at this was backed out because retries lengthen
 # the stage and the old 600s budget -- which already sat below the stage's own
@@ -70,17 +72,27 @@ status-level = "fail"
 # which is the approach that produced the dead filters above. The cost is
 # bounded: a genuinely hung test is killed in 270s instead of 135s, against a
 # 1800s stage budget.
-slow-timeout = { period = "90s", terminate-after = 3 }
+slow-timeout = { period = "2s", terminate-after = 1 }
+test-threads = 4
 
 # CI profile: `cargo nextest run --profile ci`. Retries absorb the occasional
 # flaky network/registry e2e test; JUnit output feeds CI test reporting.
 [profile.ci]
-default-filter = 'not binary(differential_fuzz_campaigns)'
+default-filter = 'not (binary(differential_fuzz_campaigns) | binary_id(witchy::bin/witchy) | binary_id(witchy::misc) | binary_id(witchy) | binary_id(witchy-lower) | binary_id(witchy-interp) | binary_id(witchy::cli_subcommands) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0129_scalar_executor_performance) | binary_id(witchy::rfc0129_slot_reuse) | binary_id(witchy::rfc0129_schedule_parity) | binary_id(witchy::browser) | binary_id(witchy::rfc0080) | binary_id(witchy::worktree) | binary_id(witchy-runtime) | binary_id(witchy::rfc0082) | binary_id(witchy::rfc0101) | binary_id(witchy::rfc0110) | binary_id(witchy::differential_fuzz) | binary_id(witchy-wir) | binary_id(witchy::e2e) | binary_id(witchy::test_for_paths) | binary_id(witchy::merge_queue) | binary_id(witchy::glamour) | binary_id(witchy-lower::codegen) | binary_id(witchy::rfc0122) | binary_id(witchy::rfc0130_generator) | binary_id(witchy::rfc0138) | binary_id(witchy-interp::rfc0082_dynamic) | binary_id(witchy-syntax) | binary_id(witchy-types) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0092) | binary_id(witchy::rfc0112))'
 fail-fast = false
 failure-output = "immediate"
 final-status-level = "slow"
 retries = 2
-slow-timeout = { period = "90s", terminate-after = 2 }
+slow-timeout = { period = "2s", terminate-after = 1 }
+test-threads = 4
+
+# Nightly owns the long-tail tests excluded from the blocking profiles. It runs
+# the complete workspace explicitly, preserving every assertion and avoiding
+# the anti-pattern of ignored tests.
+[profile.nightly]
+inherits = "ci"
+default-filter = "all()"
+slow-timeout = { period = "600s", terminate-after = 2 }
 
 [profile.ci.junit]
 path = "junit.xml"
