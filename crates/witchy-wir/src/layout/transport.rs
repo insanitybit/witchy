@@ -8,7 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use super::{LAYOUT_SCHEMA_VERSION, LayoutError, LayoutId, LayoutInterner, LayoutKind};
+use super::{
+    LAYOUT_SCHEMA_VERSION, LayoutError, LayoutId, LayoutInterner, LayoutKind,
+    RuntimePrefixSlot, ScalarKind,
+};
 
 const BUNDLE_MAGIC: &[u8; 4] = b"WLAB";
 const BUNDLE_VERSION: u32 = 1;
@@ -323,16 +326,69 @@ impl HostLayoutPolicy {
 /// Keeping this match exhaustive makes a future reference/capability layout
 /// variant a compile-time integration task instead of silently authorizing it.
 fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
-    match layouts.get(id).map(|descriptor| descriptor.kind()) {
-        Some(
-            LayoutKind::Scalar(_)
-            | LayoutKind::Tuple { .. }
-            | LayoutKind::PackedRecord { .. }
-            | LayoutKind::PackedList { .. }
-            | LayoutKind::ClosedSum { .. },
-        ) => true,
-        None => false,
+    fn visit(
+        layouts: &LayoutInterner,
+        id: LayoutId,
+        active: &mut BTreeSet<LayoutId>,
+        memo: &mut BTreeMap<LayoutId, bool>,
+    ) -> bool {
+        if let Some(accepted) = memo.get(&id) {
+            return *accepted;
+        }
+        if !active.insert(id) {
+            return false;
+        }
+        let accepted = match layouts.get(id).map(|descriptor| descriptor.kind()) {
+            Some(LayoutKind::Scalar(
+                ScalarKind::Bool
+                | ScalarKind::Int
+                | ScalarKind::Float
+                | ScalarKind::Duration
+                | ScalarKind::U32
+                | ScalarKind::Tag8
+                | ScalarKind::Tag16
+                | ScalarKind::Tag32,
+            )) => true,
+            Some(LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields }) => {
+                fields
+                    .iter()
+                    .all(|child| visit(layouts, *child, active, memo))
+            }
+            Some(LayoutKind::PackedList { element, .. }) => {
+                visit(layouts, *element, active, memo)
+            }
+            Some(LayoutKind::ClosedSum { variants }) => variants
+                .iter()
+                .flatten()
+                .all(|child| visit(layouts, *child, active, memo)),
+            Some(
+                LayoutKind::Scalar(
+                    ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::V128,
+                )
+                | LayoutKind::RuntimeBuffer { .. }
+                | LayoutKind::ScratchBuffer { .. }
+                | LayoutKind::RuntimePointerBuffer { .. }
+                | LayoutKind::RuntimeDictionaryBody { .. }
+                | LayoutKind::RuntimeDictionaryIndex { .. }
+                | LayoutKind::RuntimeValueSlot { .. }
+                | LayoutKind::RuntimePointerValueSlot { .. }
+                | LayoutKind::RuntimeClosedSum { .. }
+                | LayoutKind::ClosureEnvironment { .. }
+                | LayoutKind::ExposedRoot { .. },
+            )
+            | None => false,
+        };
+        active.remove(&id);
+        memo.insert(id, accepted);
+        accepted
     }
+
+    visit(
+        layouts,
+        id,
+        &mut BTreeSet::new(),
+        &mut BTreeMap::new(),
+    )
 }
 
 impl Default for HostLayoutPolicy {
@@ -408,6 +464,26 @@ fn children(kind: &LayoutKind) -> Vec<LayoutId> {
         LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } => fields.clone(),
         LayoutKind::PackedList { element, .. } => vec![*element],
         LayoutKind::ClosedSum { variants } => variants.iter().flatten().copied().collect(),
+        LayoutKind::RuntimeBuffer { element } | LayoutKind::ScratchBuffer { element } => {
+            vec![*element]
+        }
+        LayoutKind::RuntimePointerBuffer { pointee, .. } => vec![*pointee],
+        LayoutKind::RuntimeDictionaryBody { key, value }
+        | LayoutKind::RuntimeDictionaryIndex { key, value } => vec![*key, *value],
+        LayoutKind::RuntimeValueSlot { value } => vec![*value],
+        LayoutKind::RuntimePointerValueSlot { pointee, .. } => vec![*pointee],
+        LayoutKind::RuntimeClosedSum { variants } => {
+            variants.iter().flatten().copied().collect()
+        }
+        LayoutKind::ClosureEnvironment { captures } => captures.clone(),
+        LayoutKind::ExposedRoot { body, prefix, .. } => {
+            let mut children = vec![*body];
+            children.extend(prefix.iter().filter_map(|slot| match slot {
+                RuntimePrefixSlot::Scalar(_) => None,
+                RuntimePrefixSlot::Pointer { pointee, .. } => Some(*pointee),
+            }));
+            children
+        }
     }
 }
 

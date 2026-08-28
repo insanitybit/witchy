@@ -13,8 +13,9 @@ use witchy_syntax::ast::{effective_type_def_params, Type, TypeDef, TypeQual};
 const LAYOUT_MAGIC: &[u8; 4] = b"WLAY";
 const MAX_DESCRIPTOR_ITEMS: usize = 1 << 20;
 
-/// Canonical descriptor encoding version. Any encoding or semantic change
-/// increments this number; old artifacts reject before descriptor use.
+/// Canonical descriptor encoding version. Changing an existing tag or its
+/// semantics increments this number. Additive kinds use an unassigned tag so
+/// canonical bytes and `LayoutId`s for the existing RFC-0111 graph stay exact.
 pub const LAYOUT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -92,15 +93,47 @@ pub enum ScalarKind {
     Tag8,
     Tag16,
     Tag32,
+    /// An untyped byte lane. Unlike `Bool` and the tag kinds, every bit pattern
+    /// is valid and loading it grants no higher-level value authority.
+    RawByte,
+    /// The widened eight-byte carrier used by the ordinary Bool-list ABI.
+    ///
+    /// This is representation-only: it is not a source Bool (whose canonical
+    /// scalar layout is one byte), and its identity grants no Bool value-range
+    /// authority by itself.
+    BoolValueSlot,
+    /// One opaque 128-bit SIMD lane. Its bytes carry no reference authority.
+    V128,
 }
 
 impl ScalarKind {
+    /// Whether ordinary lowering may load or store this scalar directly.
+    ///
+    /// The RFC-0162 representation-only kinds answer `false`: they are
+    /// described by SafeWIR and reached through the checked place builder,
+    /// never by a plain typed load. Exhaustive on purpose, so a new scalar
+    /// must decide rather than inherit `true`.
+    pub fn is_ordinary_lowering_target(self) -> bool {
+        match self {
+            Self::Bool
+            | Self::Int
+            | Self::Float
+            | Self::Duration
+            | Self::U32
+            | Self::Tag8
+            | Self::Tag16
+            | Self::Tag32 => true,
+            Self::RawByte | Self::BoolValueSlot | Self::V128 => false,
+        }
+    }
+
     pub const fn size(self) -> u32 {
         match self {
-            Self::Bool | Self::Tag8 => 1,
+            Self::Bool | Self::Tag8 | Self::RawByte => 1,
             Self::Tag16 => 2,
             Self::U32 | Self::Tag32 => 4,
-            Self::Int | Self::Float | Self::Duration => 8,
+            Self::Int | Self::Float | Self::Duration | Self::BoolValueSlot => 8,
+            Self::V128 => 16,
         }
     }
 
@@ -123,6 +156,32 @@ pub enum LayoutSize {
 pub enum FieldKind {
     Scalar(ScalarKind),
     Inline(LayoutId),
+    Pointer {
+        pointee: LayoutId,
+        slot: PointerSlot,
+    },
+}
+
+/// The representation contract carried by a linear-memory pointer slot.
+///
+/// This is descriptor metadata, not validator state: even `Owned` must be
+/// authenticated against a live object and ownership fact before use. `Raw`
+/// deliberately cannot establish object provenance or ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PointerSlot {
+    Owned,
+    Borrowed,
+    Raw,
+}
+
+impl PointerSlot {
+    pub const fn may_establish_object_provenance(self) -> bool {
+        matches!(self, Self::Owned | Self::Borrowed)
+    }
+
+    pub const fn is_owning(self) -> bool {
+        matches!(self, Self::Owned)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,8 +191,90 @@ pub struct LayoutField {
 }
 
 impl LayoutField {
+    /// Allocation-relative byte offset. For an exposed-root descriptor this is
+    /// never relative to the exposed runtime handle, so prefix fields retain a
+    /// nonnegative range even when they are observed at `handle - n`.
     pub fn offset(&self) -> u32 {
         self.offset
+    }
+
+    pub fn kind(&self) -> FieldKind {
+        self.kind
+    }
+}
+
+/// Canonical allocation-relative metadata for a closed-sum discriminant.
+///
+/// Values are minted only by [`LayoutInterner::closed_sum_tag_metadata`] after
+/// the complete descriptor has reproduced from its authenticated kind graph.
+/// Callers cannot substitute a tag width, scalar kind, or offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosedSumTagMetadata {
+    layout: LayoutId,
+    offset: u32,
+    width: u32,
+    kind: FieldKind,
+}
+
+impl ClosedSumTagMetadata {
+    pub fn layout(&self) -> LayoutId {
+        self.layout
+    }
+
+    pub fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn kind(&self) -> FieldKind {
+        self.kind
+    }
+}
+
+/// Canonical allocation-relative metadata for one selected sum field.
+///
+/// `child_layout` is the exact inline child for [`LayoutKind::ClosedSum`] and
+/// the exact widened value/pointer carrier for
+/// [`LayoutKind::RuntimeClosedSum`]. The parent and ordinals remain attached so
+/// metadata from another sum or variant cannot be confused at later sealed
+/// boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosedSumVariantFieldMetadata {
+    layout: LayoutId,
+    variant: usize,
+    field: usize,
+    child_layout: LayoutId,
+    offset: u32,
+    width: u32,
+    kind: FieldKind,
+}
+
+impl ClosedSumVariantFieldMetadata {
+    pub fn layout(&self) -> LayoutId {
+        self.layout
+    }
+
+    pub fn variant(&self) -> usize {
+        self.variant
+    }
+
+    pub fn field(&self) -> usize {
+        self.field
+    }
+
+    pub fn child_layout(&self) -> LayoutId {
+        self.child_layout
+    }
+
+    pub fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
     }
 
     pub fn kind(&self) -> FieldKind {
@@ -200,6 +341,35 @@ pub enum OperationShape {
     },
 }
 
+/// One checked slot in front of an exposed runtime handle. Callers select only
+/// the scalar or exact pointee identity; physical offsets, padding, and the
+/// resulting anchor are derived by the interner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePrefixSlot {
+    Scalar(ScalarKind),
+    Pointer {
+        pointee: LayoutId,
+        semantics: PointerSlot,
+    },
+}
+
+/// Where the runtime-visible object handle lies within its allocation.
+/// Descriptor fields always remain relative to the allocation base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootAnchor {
+    AllocationBase,
+    Exposed { allocation_offset: u32 },
+}
+
+impl RootAnchor {
+    pub const fn allocation_offset(self) -> u32 {
+        match self {
+            Self::AllocationBase => 0,
+            Self::Exposed { allocation_offset } => allocation_offset,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationShapes {
     copy: OperationShape,
@@ -245,6 +415,104 @@ pub enum LayoutKind {
     PackedRecord { fields: Vec<LayoutId> },
     PackedList { element: LayoutId, rc: RcHeader },
     ClosedSum { variants: Vec<Vec<LayoutId>> },
+    /// A packed `[length: u32][elements...]` runtime buffer. The payload starts
+    /// at byte four without inserting natural-alignment padding; this describes
+    /// both legacy byte buffers and legacy eight-byte value-slot lists.
+    RuntimeBuffer { element: LayoutId },
+    /// Headerless byte storage returned only by the authenticated scratch
+    /// kernel. The payload begins at the object root and has exact extent
+    /// `count * 1`; it is deliberately distinct from `[length][payload]`.
+    ScratchBuffer { element: LayoutId },
+    /// A packed `[length: u32][widened pointer slots...]` runtime buffer.
+    /// Each pointer occupies the low four bytes of one eight-byte value slot;
+    /// the remaining bytes are representation padding and grant no authority.
+    RuntimePointerBuffer {
+        pointee: LayoutId,
+        semantics: PointerSlot,
+    },
+    /// The dictionary's exposed ordered body: `[count: u32][key, value rows...]`.
+    /// Key and value identities are exact eight-byte slot carriers and the row
+    /// stride is fixed by the runtime ABI rather than supplied by callers.
+    RuntimeDictionaryBody {
+        key: LayoutId,
+        value: LayoutId,
+    },
+    /// The non-owning Swiss acceleration carrier reached through the raw hidden
+    /// dictionary prefix pointer. Its exact extent is `20 + 25 * slot_count`;
+    /// segment projections remain a named runtime-catalog concern.
+    RuntimeDictionaryIndex {
+        key: LayoutId,
+        value: LayoutId,
+    },
+    /// One exact source scalar carried in the legacy eight-byte aggregate lane.
+    /// The child identity distinguishes same-width values such as `Int` and
+    /// `Float`; the descriptor owns the widened physical lane.
+    RuntimeValueSlot {
+        value: LayoutId,
+    },
+    /// One exact linear-memory pointer carried in the low four bytes of the
+    /// legacy eight-byte aggregate lane. The high four bytes are padding and
+    /// grant no authority.
+    RuntimePointerValueSlot {
+        pointee: LayoutId,
+        semantics: PointerSlot,
+    },
+    /// The ordinary slot-backed sum ABI: `[tag: u32][eight-byte lanes...]`.
+    /// Every non-empty variant child is one canonical runtime value-slot
+    /// descriptor, so payload identity and pointer ownership survive erasure.
+    RuntimeClosedSum {
+        variants: Vec<Vec<LayoutId>>,
+    },
+    /// Ordered typed captures for the Wasm-GC closure environment.
+    ///
+    /// This is an identity descriptor, not linear-memory storage. Captures are
+    /// canonical runtime value-slot descriptors, but this descriptor has no
+    /// byte fields or byte extent because the encoder emits a typed GC struct.
+    ClosureEnvironment {
+        captures: Vec<LayoutId>,
+    },
+    /// A checked allocation prefix followed by an exposed runtime object. The
+    /// prefix slots are packed canonically and the body starts at the derived
+    /// [`RootAnchor`]; no signed or caller-authored field offset is accepted.
+    ExposedRoot {
+        body: LayoutId,
+        prefix: Vec<RuntimePrefixSlot>,
+        anchor_bias: u32,
+    },
+}
+
+impl LayoutKind {
+    /// Whether an ordinary inline field carrying this layout may be loaded,
+    /// stored, or byte-copied by the pre-SafeWIR lowering paths.
+    ///
+    /// The RFC-0162 runtime layouts answer `false`. They are reachable as
+    /// `FieldKind::Inline` children -- a runtime value slot carries its payload
+    /// that way -- so a consumer that refuses only `FieldKind::Pointer` and the
+    /// representation-only scalars would still see an ordinary inline field and
+    /// emit a plain load, store, or `memory.copy` of the wrong shape. Every
+    /// such consumer asks this first and declines.
+    ///
+    /// Exhaustive on purpose: a new layout kind must decide whether ordinary
+    /// lowering may touch it rather than inherit `true`.
+    pub fn is_ordinary_inline_target(&self) -> bool {
+        match self {
+            Self::Scalar(scalar) => scalar.is_ordinary_lowering_target(),
+            Self::Tuple { .. }
+            | Self::PackedRecord { .. }
+            | Self::PackedList { .. }
+            | Self::ClosedSum { .. } => true,
+            Self::RuntimeBuffer { .. }
+            | Self::ScratchBuffer { .. }
+            | Self::RuntimePointerBuffer { .. }
+            | Self::RuntimeDictionaryBody { .. }
+            | Self::RuntimeDictionaryIndex { .. }
+            | Self::RuntimeValueSlot { .. }
+            | Self::RuntimePointerValueSlot { .. }
+            | Self::RuntimeClosedSum { .. }
+            | Self::ClosureEnvironment { .. }
+            | Self::ExposedRoot { .. } => false,
+        }
+    }
 }
 
 /// An immutable validated physical descriptor. There is no public field or raw
@@ -260,6 +528,7 @@ pub struct LayoutDescriptor {
     variants: Vec<VariantLayout>,
     ownership: Vec<OwnershipPosition>,
     header: HeaderLayout,
+    anchor: RootAnchor,
     operations: OperationShapes,
 }
 
@@ -294,6 +563,10 @@ impl LayoutDescriptor {
 
     pub fn header(&self) -> HeaderLayout {
         self.header
+    }
+
+    pub fn anchor(&self) -> RootAnchor {
+        self.anchor
     }
 
     pub fn operations(&self) -> &OperationShapes {
@@ -606,6 +879,191 @@ impl LayoutInterner {
             .map(|(id, descriptor)| (*id, descriptor))
     }
 
+    /// Return the exact canonical discriminant lane for one closed sum.
+    ///
+    /// Both source-inline and runtime slot-backed sums enter through this one
+    /// query. The descriptor is reproduced before metadata is returned, so a
+    /// decoded or internally corrupted field table cannot mint tag authority.
+    pub fn closed_sum_tag_metadata(
+        &self,
+        layout: LayoutId,
+    ) -> Result<ClosedSumTagMetadata, LayoutError> {
+        let (descriptor, _) = self.checked_closed_sum_descriptor(layout)?;
+        let [tag] = descriptor.fields.as_slice() else {
+            return Err(LayoutError::DescriptorInvariant(
+                "closed-sum tag metadata is malformed",
+            ));
+        };
+        if !matches!(tag.kind, FieldKind::Scalar(_)) {
+            return Err(LayoutError::DescriptorInvariant(
+                "closed-sum tag metadata is malformed",
+            ));
+        }
+        Ok(ClosedSumTagMetadata {
+            layout,
+            offset: tag.offset,
+            width: self.field_width(tag.kind)?,
+            kind: tag.kind,
+        })
+    }
+
+    /// Return one exact selected variant field from the canonical graph.
+    ///
+    /// The caller supplies only parent identity and ordinals. For a generic
+    /// closed sum, scalar children retain both their canonical child id and
+    /// scalar physical kind; fixed aggregates retain their inline child id.
+    /// Runtime sums return their exact eight-byte value/pointer carrier id.
+    pub fn closed_sum_variant_field_metadata(
+        &self,
+        layout: LayoutId,
+        variant: usize,
+        field: usize,
+    ) -> Result<ClosedSumVariantFieldMetadata, LayoutError> {
+        let (descriptor, variants) = self.checked_closed_sum_descriptor(layout)?;
+        let children = variants.get(variant).ok_or(
+            LayoutError::DescriptorInvariant("closed-sum variant index is out of range"),
+        )?;
+        let child_layout = *children.get(field).ok_or(
+            LayoutError::DescriptorInvariant("closed-sum field index is out of range"),
+        )?;
+        let physical = descriptor
+            .variants
+            .get(variant)
+            .and_then(|selected| selected.fields.get(field))
+            .ok_or(LayoutError::DescriptorInvariant(
+                "closed-sum variant field metadata is malformed",
+            ))?;
+        let child = self
+            .descriptors
+            .get(&child_layout)
+            .ok_or(LayoutError::UnknownLayout(child_layout))?;
+        let expected_kind = match &descriptor.kind {
+            LayoutKind::ClosedSum { .. } => match &child.kind {
+                LayoutKind::Scalar(scalar) => FieldKind::Scalar(*scalar),
+                _ => FieldKind::Inline(child_layout),
+            },
+            LayoutKind::RuntimeClosedSum { .. } => FieldKind::Inline(child_layout),
+            _ => {
+                return Err(LayoutError::DescriptorInvariant(
+                    "sum field metadata requires a closed-sum layout",
+                ));
+            }
+        };
+        if physical.kind != expected_kind {
+            return Err(LayoutError::DescriptorInvariant(
+                "closed-sum variant field metadata is malformed",
+            ));
+        }
+        Ok(ClosedSumVariantFieldMetadata {
+            layout,
+            variant,
+            field,
+            child_layout,
+            offset: physical.offset,
+            width: self.field_width(physical.kind)?,
+            kind: physical.kind,
+        })
+    }
+
+    fn checked_closed_sum_descriptor(
+        &self,
+        layout: LayoutId,
+    ) -> Result<(&LayoutDescriptor, &[Vec<LayoutId>]), LayoutError> {
+        let descriptor = self
+            .descriptors
+            .get(&layout)
+            .ok_or(LayoutError::UnknownLayout(layout))?;
+        let variants = match &descriptor.kind {
+            LayoutKind::ClosedSum { variants }
+            | LayoutKind::RuntimeClosedSum { variants } => variants.as_slice(),
+            _ => {
+                return Err(LayoutError::DescriptorInvariant(
+                    "sum metadata requires a closed-sum layout",
+                ));
+            }
+        };
+        self.validate_descriptor(descriptor)?;
+        if variants.len() != descriptor.variants.len() {
+            return Err(LayoutError::DescriptorInvariant(
+                "closed-sum variant metadata is malformed",
+            ));
+        }
+        Ok((descriptor, variants))
+    }
+
+    fn field_width(&self, kind: FieldKind) -> Result<u32, LayoutError> {
+        match kind {
+            FieldKind::Scalar(scalar) => Ok(scalar.size()),
+            FieldKind::Pointer { .. } => Ok(4),
+            FieldKind::Inline(child) => match self
+                .descriptors
+                .get(&child)
+                .ok_or(LayoutError::UnknownLayout(child))?
+                .size
+            {
+                LayoutSize::Fixed(size) => Ok(size),
+                LayoutSize::Dynamic { .. } => Err(LayoutError::DynamicInlineField(child)),
+            },
+        }
+    }
+
+    /// Return the exact live byte extent for one selected closed-sum variant.
+    ///
+    /// A descriptor's fixed `size` is the maximum carrier size across every
+    /// variant. It is therefore not valid evidence that bytes belonging only
+    /// to a larger variant are live after a smaller discriminant is selected.
+    /// This query derives the selected extent from the authenticated tag and
+    /// field graph, including inline child sizes, then preserves the common
+    /// carrier alignment. It deliberately does not trust `payload_size` as an
+    /// independently authorizing width.
+    pub fn variant_live_extent(
+        &self,
+        layout: LayoutId,
+        variant: usize,
+    ) -> Result<u32, LayoutError> {
+        let descriptor = self
+            .descriptors
+            .get(&layout)
+            .ok_or(LayoutError::UnknownLayout(layout))?;
+        if !matches!(
+            &descriptor.kind,
+            LayoutKind::ClosedSum { .. } | LayoutKind::RuntimeClosedSum { .. }
+        ) {
+            return Err(LayoutError::DescriptorInvariant(
+                "variant extent requires a closed-sum layout",
+            ));
+        }
+        let selected = descriptor.variants.get(variant).ok_or(
+            LayoutError::DescriptorInvariant("closed-sum variant index is out of range"),
+        )?;
+
+        let mut live_end = 0u32;
+        for field in descriptor.fields.iter().chain(&selected.fields) {
+            let width = match field.kind {
+                FieldKind::Scalar(scalar) => scalar.size(),
+                FieldKind::Pointer { .. } => 4,
+                FieldKind::Inline(child) => match self
+                    .descriptors
+                    .get(&child)
+                    .ok_or(LayoutError::UnknownLayout(child))?
+                    .size
+                {
+                    LayoutSize::Fixed(size) => size,
+                    LayoutSize::Dynamic { .. } => {
+                        return Err(LayoutError::DynamicInlineField(child));
+                    }
+                },
+            };
+            live_end = live_end.max(
+                field
+                    .offset
+                    .checked_add(width)
+                    .ok_or(LayoutError::ArithmeticOverflow)?,
+            );
+        }
+        align_up(live_end, descriptor.alignment)
+    }
+
     /// Resolve and intern one complete closed logical type. Nominal children are
     /// derived from substituted `TypeDef` fields, never accepted as caller ids.
     pub fn intern_type(
@@ -615,6 +1073,128 @@ impl LayoutInterner {
     ) -> Result<LayoutId, LayoutError> {
         let path = LayoutPath::root(ty);
         self.intern_resolved(ty, resolver, &path, &mut BTreeSet::new())
+    }
+
+    /// Intern one representation-only scalar through the same checked catalog
+    /// path as source-derived layouts. Source lowering should continue to use
+    /// [`Self::intern_type`]; this entry exists for runtime ABI primitives such
+    /// as raw bytes and SIMD chunks.
+    pub fn intern_scalar(&mut self, scalar: ScalarKind) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::Scalar(scalar))
+    }
+
+    /// Intern the canonical packed `[u32 length][elements...]` runtime buffer.
+    /// Only exact scalar element descriptors are accepted in this foundational
+    /// form. Aggregate/runtime container classes require a later named contract
+    /// rather than smuggling an arbitrary stride through this API.
+    pub fn intern_runtime_buffer(&mut self, element: LayoutId) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimeBuffer { element })
+    }
+
+    /// Intern the canonical headerless scratch-byte carrier. Runtime catalog
+    /// validation restricts `element` to the representation-only RawByte
+    /// scalar; ordinary source lowering has no entry point that mints it.
+    pub fn intern_scratch_buffer(&mut self, element: LayoutId) -> Result<LayoutId, LayoutError> {
+        let descriptor = self
+            .get(element)
+            .ok_or(LayoutError::UnknownLayout(element))?;
+        if descriptor.kind() != &LayoutKind::Scalar(ScalarKind::RawByte) {
+            return Err(LayoutError::DescriptorInvariant(
+                "scratch buffer construction requires the exact RawByte scalar",
+            ));
+        }
+        self.intern_kind(LayoutKind::ScratchBuffer { element })
+    }
+
+
+
+    /// Intern the canonical `[u32 length][8-byte widened pointer slots...]`
+    /// runtime buffer. The pointee and slot semantics are part of the canonical
+    /// descriptor identity; callers cannot supply a width, stride, or root.
+    pub fn intern_runtime_pointer_buffer(
+        &mut self,
+        pointee: LayoutId,
+        semantics: PointerSlot,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimePointerBuffer { pointee, semantics })
+    }
+
+    /// Intern the exact ordered dictionary body. Both carriers must be exact
+    /// fixed eight-byte runtime value slots; pointer-bearing slots retain their
+    /// pointee and ownership semantics in their canonical child descriptor.
+    pub fn intern_runtime_dictionary_body(
+        &mut self,
+        key: LayoutId,
+        value: LayoutId,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimeDictionaryBody { key, value })
+    }
+
+    /// Intern the exact raw Swiss carrier paired with one dictionary body.
+    pub fn intern_runtime_dictionary_index(
+        &mut self,
+        key: LayoutId,
+        value: LayoutId,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimeDictionaryIndex { key, value })
+    }
+
+    /// Intern one exact source scalar in the ordinary eight-byte value lane.
+    pub fn intern_runtime_value_slot(
+        &mut self,
+        value: LayoutId,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimeValueSlot { value })
+    }
+
+    /// Intern one ownership-aware pointer in the ordinary eight-byte value lane.
+    pub fn intern_runtime_pointer_value_slot(
+        &mut self,
+        pointee: LayoutId,
+        semantics: PointerSlot,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimePointerValueSlot { pointee, semantics })
+    }
+
+    /// Intern one ordinary slot-backed closed sum. Empty variants are retained
+    /// exactly; non-empty children must already be canonical runtime value slots.
+    pub fn intern_runtime_closed_sum(
+        &mut self,
+        variants: Vec<Vec<LayoutId>>,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimeClosedSum { variants })
+    }
+
+    /// Intern the ordered capture identity of one typed Wasm-GC environment.
+    /// No linear-memory bytes are described or introduced by this operation.
+    pub fn intern_closure_environment(
+        &mut self,
+        captures: Vec<LayoutId>,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::ClosureEnvironment { captures })
+    }
+
+    /// Intern an allocation prefix whose body is addressed through an exposed
+    /// runtime handle. Prefix offsets and the anchor are derived; callers cannot
+    /// supply either or construct an unchecked [`LayoutDescriptor`].
+    pub fn intern_exposed_root(
+        &mut self,
+        body: LayoutId,
+        prefix: Vec<RuntimePrefixSlot>,
+    ) -> Result<LayoutId, LayoutError> {
+        let body_alignment = self
+            .descriptors
+            .get(&body)
+            .ok_or(LayoutError::UnknownLayout(body))?
+            .alignment;
+        let anchor_bias = derive_anchor_bias(&prefix, body_alignment, |id| {
+            self.descriptors.get(&id)
+        })?;
+        self.intern_kind(LayoutKind::ExposedRoot {
+            body,
+            prefix,
+            anchor_bias,
+        })
     }
 
     /// Decode and fully validate canonical bytes without mutating the interner.
@@ -893,16 +1473,27 @@ fn validate_descriptor_item_counts(descriptor: &LayoutDescriptor) -> Result<(), 
     }
 
     match &descriptor.kind {
-        LayoutKind::Scalar(_) | LayoutKind::PackedList { .. } => {}
+        LayoutKind::Scalar(_)
+        | LayoutKind::PackedList { .. }
+        | LayoutKind::RuntimeBuffer { .. }
+        | LayoutKind::ScratchBuffer { .. }
+        | LayoutKind::RuntimePointerBuffer { .. }
+        | LayoutKind::RuntimeDictionaryBody { .. }
+        | LayoutKind::RuntimeDictionaryIndex { .. }
+        | LayoutKind::RuntimeValueSlot { .. }
+        | LayoutKind::RuntimePointerValueSlot { .. } => {}
         LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } => {
             check(fields.len())?;
         }
-        LayoutKind::ClosedSum { variants } => {
+        LayoutKind::ClosedSum { variants }
+        | LayoutKind::RuntimeClosedSum { variants } => {
             check(variants.len())?;
             for variant in variants {
                 check(variant.len())?;
             }
         }
+        LayoutKind::ClosureEnvironment { captures } => check(captures.len())?,
+        LayoutKind::ExposedRoot { prefix, .. } => check(prefix.len())?,
     }
     check(descriptor.fields.len())?;
     check(descriptor.variants.len())?;
@@ -1042,6 +1633,7 @@ fn build_descriptor<'a>(
                 variants: Vec::new(),
                 ownership: Vec::new(),
                 header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
                 operations: OperationShapes {
                     copy: operation.clone(),
                     duplicate: operation.clone(),
@@ -1052,7 +1644,7 @@ fn build_descriptor<'a>(
                 },
             })
         }
-        LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } => {
+        LayoutKind::Tuple { fields } => {
             let (physical_fields, size, alignment) = aggregate_fields(fields, 0, &mut lookup)?;
             let operation = OperationShape::Fields(fields.clone());
             Ok(LayoutDescriptor {
@@ -1064,6 +1656,35 @@ fn build_descriptor<'a>(
                 variants: Vec::new(),
                 ownership: Vec::new(),
                 header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: OperationShapes {
+                    copy: operation.clone(),
+                    duplicate: operation.clone(),
+                    drop: operation.clone(),
+                    equality: operation.clone(),
+                    render: operation.clone(),
+                    serialization: operation,
+                },
+            })
+        }
+        LayoutKind::PackedRecord { fields } => {
+            // These two exact records are private class seals minted only by
+            // the named borrowed-byte and raw-index constructors above.
+            // Representation-only RawByte remains rejected from every other
+            // ordinary aggregate shape.
+            let (physical_fields, size, alignment) =
+                aggregate_fields(fields, 0, &mut lookup)?;
+            let operation = OperationShape::Fields(fields.clone());
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Fixed(size),
+                alignment,
+                fields: physical_fields,
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
                 operations: OperationShapes {
                     copy: operation.clone(),
                     duplicate: operation.clone(),
@@ -1077,6 +1698,7 @@ fn build_descriptor<'a>(
         LayoutKind::PackedList { element, rc } => {
             let element_descriptor =
                 lookup(*element).ok_or(LayoutError::UnknownLayout(*element))?;
+            validate_source_inline_child(*element, element_descriptor)?;
             let element_size = match element_descriptor.size {
                 LayoutSize::Fixed(size) => size,
                 LayoutSize::Dynamic { .. } => {
@@ -1120,6 +1742,7 @@ fn build_descriptor<'a>(
                     capacity_offset: 4,
                     data_offset,
                 },
+                anchor: RootAnchor::AllocationBase,
                 operations: OperationShapes {
                     copy: operation.clone(),
                     duplicate: operation.clone(),
@@ -1173,6 +1796,7 @@ fn build_descriptor<'a>(
                 variants: variant_layouts,
                 ownership: Vec::new(),
                 header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
                 operations: OperationShapes {
                     copy: operation.clone(),
                     duplicate: operation.clone(),
@@ -1182,6 +1806,524 @@ fn build_descriptor<'a>(
                     serialization: operation,
                 },
             })
+        }
+        LayoutKind::RuntimeBuffer { element } => {
+            let element_descriptor =
+                lookup(*element).ok_or(LayoutError::UnknownLayout(*element))?;
+            let LayoutKind::Scalar(element_scalar) = &element_descriptor.kind else {
+                return Err(LayoutError::DescriptorInvariant(
+                    "runtime buffer element must be an exact scalar layout",
+                ));
+            };
+            let stride = element_scalar.size();
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Dynamic { base: 4, stride },
+                // The legacy payload begins at +4 even for i64 and v128 lanes.
+                // Four is therefore the strongest alignment the descriptor may
+                // claim for every element in the runtime buffer.
+                alignment: 4,
+                fields: vec![
+                    LayoutField {
+                        offset: 0,
+                        kind: FieldKind::Scalar(ScalarKind::U32),
+                    },
+                    LayoutField {
+                        offset: 4,
+                        kind: FieldKind::Inline(*element),
+                    },
+                ],
+                variants: Vec::new(),
+                // This primitive authenticates physical ranges only. A later
+                // named runtime class must supply ownership and value-operation
+                // semantics for Bytes, String, slot lists, or host buffers.
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: OperationShapes {
+                    copy: OperationShape::None,
+                    duplicate: OperationShape::None,
+                    drop: OperationShape::None,
+                    equality: OperationShape::None,
+                    render: OperationShape::None,
+                    serialization: OperationShape::None,
+                },
+            })
+        }
+        LayoutKind::ScratchBuffer { element } => {
+            let element_descriptor =
+                lookup(*element).ok_or(LayoutError::UnknownLayout(*element))?;
+            let raw_byte = element_descriptor.kind == LayoutKind::Scalar(ScalarKind::RawByte)
+                && element_descriptor.size == LayoutSize::Fixed(1);
+            let borrowed_byte_seal = matches!(
+                &element_descriptor.kind,
+                LayoutKind::PackedRecord { fields }
+                    if fields.len() == 1
+                        && lookup(fields[0]).is_some_and(|field| {
+                            field.kind == LayoutKind::Scalar(ScalarKind::RawByte)
+                                && field.size == LayoutSize::Fixed(1)
+                        })
+            ) && element_descriptor.size == LayoutSize::Fixed(1);
+            if !raw_byte && !borrowed_byte_seal {
+                return Err(LayoutError::DescriptorInvariant(
+                    "headerless byte carrier element must be RawByte or the sealed borrowed-byte class",
+                ));
+            }
+            let operation = OperationShape::None;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Dynamic { base: 0, stride: 1 },
+                alignment: 1,
+                fields: vec![LayoutField {
+                    offset: 0,
+                    kind: FieldKind::Inline(*element),
+                }],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: OperationShapes {
+                    copy: operation.clone(),
+                    duplicate: operation.clone(),
+                    drop: operation.clone(),
+                    equality: operation.clone(),
+                    render: operation.clone(),
+                    serialization: operation,
+                },
+            })
+        }
+        LayoutKind::RuntimePointerBuffer { pointee, semantics } => {
+            lookup(*pointee).ok_or(LayoutError::UnknownLayout(*pointee))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Dynamic { base: 4, stride: 8 },
+                alignment: 4,
+                fields: vec![
+                    LayoutField {
+                        offset: 0,
+                        kind: FieldKind::Scalar(ScalarKind::U32),
+                    },
+                    LayoutField {
+                        offset: 4,
+                        kind: FieldKind::Pointer {
+                            pointee: *pointee,
+                            slot: *semantics,
+                        },
+                    },
+                ],
+                variants: Vec::new(),
+                // Pointer metadata authenticates representation only. Even an
+                // Owned slot needs separate live-object and ownership evidence.
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: OperationShapes {
+                    copy: OperationShape::None,
+                    duplicate: OperationShape::None,
+                    drop: OperationShape::None,
+                    equality: OperationShape::None,
+                    render: OperationShape::None,
+                    serialization: OperationShape::None,
+                },
+            })
+        }
+        LayoutKind::RuntimeDictionaryBody { key, value } => {
+            validate_runtime_dictionary_slot(*key, lookup(*key))?;
+            validate_runtime_dictionary_slot(*value, lookup(*value))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Dynamic { base: 4, stride: 16 },
+                // Dense rows intentionally begin at exposed-handle + 4, so four
+                // is the strongest alignment the physical ABI may claim.
+                alignment: 4,
+                fields: vec![
+                    LayoutField {
+                        offset: 0,
+                        kind: FieldKind::Scalar(ScalarKind::U32),
+                    },
+                    LayoutField {
+                        offset: 4,
+                        kind: FieldKind::Inline(*key),
+                    },
+                    LayoutField {
+                        offset: 12,
+                        kind: FieldKind::Inline(*value),
+                    },
+                ],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::RuntimeDictionaryIndex { key, value } => {
+            validate_runtime_dictionary_slot(*key, lookup(*key))?;
+            validate_runtime_dictionary_slot(*value, lookup(*value))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Dynamic { base: 20, stride: 25 },
+                alignment: 4,
+                fields: vec![LayoutField {
+                    offset: 0,
+                    kind: FieldKind::Scalar(ScalarKind::U32),
+                }],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::RuntimeValueSlot { value } => {
+            validate_runtime_value(*value, lookup(*value))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Fixed(8),
+                // Slot-backed aggregates place the first lane at byte four.
+                alignment: 4,
+                // Authenticate the logical scalar at the low bytes of the
+                // widened lane; width alone never identifies the payload.
+                fields: vec![LayoutField {
+                    offset: 0,
+                    kind: FieldKind::Inline(*value),
+                }],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::RuntimePointerValueSlot { pointee, semantics } => {
+            if *semantics == PointerSlot::Raw {
+                return Err(LayoutError::DescriptorInvariant(
+                    "ordinary aggregate pointer slots cannot erase ownership as Raw",
+                ));
+            }
+            lookup(*pointee).ok_or(LayoutError::UnknownLayout(*pointee))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Fixed(8),
+                alignment: 4,
+                fields: vec![LayoutField {
+                    offset: 0,
+                    kind: FieldKind::Pointer {
+                        pointee: *pointee,
+                        slot: *semantics,
+                    },
+                }],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::RuntimeClosedSum { variants } => {
+            tag_kind(variants.len())?;
+            let mut variant_layouts = Vec::with_capacity(variants.len());
+            let mut maximum_payload = 0u32;
+            for variant in variants {
+                let fields = runtime_slot_fields(variant, 4, &mut lookup)?;
+                let payload_size = u32::try_from(variant.len())
+                    .map_err(|_| LayoutError::ArithmeticOverflow)?
+                    .checked_mul(8)
+                    .ok_or(LayoutError::ArithmeticOverflow)?;
+                maximum_payload = maximum_payload.max(payload_size);
+                variant_layouts.push(VariantLayout {
+                    fields,
+                    payload_size,
+                    payload_alignment: 4,
+                });
+            }
+            let size = 4u32
+                .checked_add(maximum_payload)
+                .ok_or(LayoutError::ArithmeticOverflow)?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Fixed(size),
+                alignment: 4,
+                fields: vec![LayoutField {
+                    offset: 0,
+                    kind: FieldKind::Scalar(ScalarKind::U32),
+                }],
+                variants: variant_layouts,
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::ClosureEnvironment { captures } => {
+            for capture in captures {
+                validate_runtime_slot(*capture, lookup(*capture))?;
+            }
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                // Captures live in a typed Wasm-GC struct, not linear memory.
+                size: LayoutSize::Fixed(0),
+                alignment: 1,
+                fields: Vec::new(),
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::ExposedRoot {
+            body,
+            prefix,
+            anchor_bias,
+        } => {
+            if prefix.is_empty() {
+                return Err(LayoutError::DescriptorInvariant(
+                    "exposed-root layout requires a non-empty prefix",
+                ));
+            }
+            let body_descriptor = lookup(*body).ok_or(LayoutError::UnknownLayout(*body))?;
+            if matches!(body_descriptor.kind, LayoutKind::ExposedRoot { .. }) {
+                return Err(LayoutError::DescriptorInvariant(
+                    "exposed-root layouts cannot be nested",
+                ));
+            }
+            let mut offset = 0;
+            let mut alignment = 1;
+            let mut fields = Vec::with_capacity(prefix.len() + 1);
+            for slot in prefix {
+                let (field_kind, size, field_alignment) =
+                    runtime_prefix_field(*slot, &mut lookup)?;
+                offset = align_up(offset, field_alignment)?;
+                fields.push(LayoutField {
+                    offset,
+                    kind: field_kind,
+                });
+                offset = offset
+                    .checked_add(size)
+                    .ok_or(LayoutError::ArithmeticOverflow)?;
+                alignment = alignment.max(field_alignment);
+            }
+            let expected_anchor = align_up(offset, body_descriptor.alignment)?;
+            if expected_anchor == 0 || *anchor_bias != expected_anchor {
+                return Err(LayoutError::DescriptorInvariant(
+                    "exposed-root anchor does not match its checked prefix",
+                ));
+            }
+            fields.push(LayoutField {
+                offset: *anchor_bias,
+                kind: FieldKind::Inline(*body),
+            });
+            alignment = alignment.max(body_descriptor.alignment);
+            let size = match body_descriptor.size {
+                LayoutSize::Fixed(size) => LayoutSize::Fixed(
+                    anchor_bias
+                        .checked_add(size)
+                        .ok_or(LayoutError::ArithmeticOverflow)?,
+                ),
+                LayoutSize::Dynamic { base, stride } => LayoutSize::Dynamic {
+                    base: anchor_bias
+                        .checked_add(base)
+                        .ok_or(LayoutError::ArithmeticOverflow)?,
+                    stride,
+                },
+            };
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size,
+                alignment,
+                fields,
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                // Exposed-root operation semantics are deliberately not
+                // inferred from a structural prefix. A later named runtime
+                // class must opt into copy/drop/equality behavior explicitly.
+                header: HeaderLayout::None,
+                anchor: RootAnchor::Exposed {
+                    allocation_offset: *anchor_bias,
+                },
+                operations: OperationShapes {
+                    copy: OperationShape::None,
+                    duplicate: OperationShape::None,
+                    drop: OperationShape::None,
+                    equality: OperationShape::None,
+                    render: OperationShape::None,
+                    serialization: OperationShape::None,
+                },
+            })
+        }
+    }
+}
+
+fn validate_runtime_dictionary_slot(
+    id: LayoutId,
+    descriptor: Option<&LayoutDescriptor>,
+) -> Result<(), LayoutError> {
+    let descriptor = descriptor.ok_or(LayoutError::UnknownLayout(id))?;
+    let exact_family = matches!(
+        descriptor.kind,
+        LayoutKind::Scalar(
+            ScalarKind::BoolValueSlot
+                | ScalarKind::Int
+                | ScalarKind::Float
+                | ScalarKind::Duration,
+        ) | LayoutKind::RuntimePointerValueSlot {
+            semantics: PointerSlot::Owned,
+            ..
+        }
+    );
+    if !exact_family
+        || descriptor.anchor != RootAnchor::AllocationBase
+        || descriptor.size != LayoutSize::Fixed(8)
+        || !descriptor.ownership.is_empty()
+    {
+        return Err(LayoutError::DescriptorInvariant(
+            "runtime dictionary slots must be exact eight-byte scalar or owned pointer carriers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_value(
+    id: LayoutId,
+    descriptor: Option<&LayoutDescriptor>,
+) -> Result<(), LayoutError> {
+    let descriptor = descriptor.ok_or(LayoutError::UnknownLayout(id))?;
+    let exact_source_scalar = matches!(
+        descriptor.kind,
+        LayoutKind::Scalar(
+            ScalarKind::Bool
+                | ScalarKind::Int
+                | ScalarKind::Float
+                | ScalarKind::Duration
+                | ScalarKind::U32,
+        )
+    );
+    if !exact_source_scalar
+        || descriptor.anchor != RootAnchor::AllocationBase
+        || !matches!(descriptor.size, LayoutSize::Fixed(_))
+        || !descriptor.ownership.is_empty()
+    {
+        return Err(LayoutError::DescriptorInvariant(
+            "runtime value slots require an exact fixed source scalar layout",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_slot(
+    id: LayoutId,
+    descriptor: Option<&LayoutDescriptor>,
+) -> Result<(), LayoutError> {
+    let descriptor = descriptor.ok_or(LayoutError::UnknownLayout(id))?;
+    let exact_kind = matches!(
+        descriptor.kind,
+        LayoutKind::RuntimeValueSlot { .. }
+            | LayoutKind::RuntimePointerValueSlot {
+                semantics: PointerSlot::Owned | PointerSlot::Borrowed,
+                ..
+            }
+    );
+    if !exact_kind
+        || descriptor.anchor != RootAnchor::AllocationBase
+        || descriptor.size != LayoutSize::Fixed(8)
+        || descriptor.alignment != 4
+    {
+        return Err(LayoutError::DescriptorInvariant(
+            "runtime aggregate fields require exact canonical eight-byte value slots",
+        ));
+    }
+    Ok(())
+}
+
+fn runtime_slot_fields<'a>(
+    slots: &[LayoutId],
+    base: u32,
+    lookup: &mut impl FnMut(LayoutId) -> Option<&'a LayoutDescriptor>,
+) -> Result<Vec<LayoutField>, LayoutError> {
+    let mut fields = Vec::with_capacity(slots.len());
+    for (index, slot) in slots.iter().copied().enumerate() {
+        validate_runtime_slot(slot, lookup(slot))?;
+        let offset = u32::try_from(index)
+            .map_err(|_| LayoutError::ArithmeticOverflow)?
+            .checked_mul(8)
+            .and_then(|delta| base.checked_add(delta))
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+        fields.push(LayoutField {
+            offset,
+            kind: FieldKind::Inline(slot),
+        });
+    }
+    Ok(fields)
+}
+
+fn no_runtime_operations() -> OperationShapes {
+    OperationShapes {
+        copy: OperationShape::None,
+        duplicate: OperationShape::None,
+        drop: OperationShape::None,
+        equality: OperationShape::None,
+        render: OperationShape::None,
+        serialization: OperationShape::None,
+    }
+}
+
+fn derive_anchor_bias<'a>(
+    prefix: &[RuntimePrefixSlot],
+    body_alignment: u32,
+    mut lookup: impl FnMut(LayoutId) -> Option<&'a LayoutDescriptor>,
+) -> Result<u32, LayoutError> {
+    if prefix.is_empty() {
+        return Err(LayoutError::DescriptorInvariant(
+            "exposed-root layout requires a non-empty prefix",
+        ));
+    }
+    let mut offset = 0;
+    for slot in prefix {
+        let (_, size, alignment) = runtime_prefix_field(*slot, &mut lookup)?;
+        offset = align_up(offset, alignment)?;
+        offset = offset
+            .checked_add(size)
+            .ok_or(LayoutError::ArithmeticOverflow)?;
+    }
+    let anchor = align_up(offset, body_alignment)?;
+    if anchor == 0 {
+        Err(LayoutError::DescriptorInvariant(
+            "exposed-root anchor must follow its prefix",
+        ))
+    } else {
+        Ok(anchor)
+    }
+}
+
+fn runtime_prefix_field<'a>(
+    slot: RuntimePrefixSlot,
+    lookup: &mut impl FnMut(LayoutId) -> Option<&'a LayoutDescriptor>,
+) -> Result<(FieldKind, u32, u32), LayoutError> {
+    match slot {
+        RuntimePrefixSlot::Scalar(scalar) => {
+            Ok((FieldKind::Scalar(scalar), scalar.size(), scalar.alignment()))
+        }
+        RuntimePrefixSlot::Pointer { pointee, semantics } => {
+            lookup(pointee).ok_or(LayoutError::UnknownLayout(pointee))?;
+            Ok((
+                FieldKind::Pointer {
+                    pointee,
+                    slot: semantics,
+                },
+                4,
+                4,
+            ))
         }
     }
 }
@@ -1196,6 +2338,7 @@ fn aggregate_fields<'a>(
     let mut fields = Vec::with_capacity(children.len());
     for child in children {
         let descriptor = lookup(*child).ok_or(LayoutError::UnknownLayout(*child))?;
+        validate_source_inline_child(*child, descriptor)?;
         let size = match descriptor.size {
             LayoutSize::Fixed(size) => size,
             LayoutSize::Dynamic { .. } => return Err(LayoutError::DynamicInlineField(*child)),
@@ -1217,6 +2360,31 @@ fn aggregate_fields<'a>(
         alignment = alignment.max(descriptor.alignment);
     }
     Ok((fields, align_up(offset, alignment)?, alignment))
+}
+
+fn validate_source_inline_child(
+    id: LayoutId,
+    descriptor: &LayoutDescriptor,
+) -> Result<(), LayoutError> {
+    if descriptor.anchor != RootAnchor::AllocationBase {
+        return Err(LayoutError::DescriptorInvariant(
+            "an exposed-root layout cannot be embedded inline",
+        ));
+    }
+    if matches!(
+        descriptor.kind,
+        LayoutKind::Scalar(
+            ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::V128,
+        )
+    ) {
+        return Err(LayoutError::DescriptorInvariant(
+            "a representation-only scalar requires a named runtime descriptor",
+        ));
+    }
+    if matches!(descriptor.size, LayoutSize::Dynamic { .. }) {
+        return Err(LayoutError::DynamicInlineField(id));
+    }
+    Ok(())
 }
 
 fn align_up(value: u32, alignment: u32) -> Result<u32, LayoutError> {
@@ -1292,7 +2460,32 @@ impl Encoder {
             ScalarKind::Tag8 => 5,
             ScalarKind::Tag16 => 6,
             ScalarKind::Tag32 => 7,
+            ScalarKind::RawByte => 8,
+            ScalarKind::V128 => 9,
+            ScalarKind::BoolValueSlot => 10,
         });
+    }
+
+    fn pointer_slot(&mut self, slot: PointerSlot) {
+        self.byte(match slot {
+            PointerSlot::Owned => 0,
+            PointerSlot::Borrowed => 1,
+            PointerSlot::Raw => 2,
+        });
+    }
+
+    fn runtime_prefix_slot(&mut self, slot: RuntimePrefixSlot) {
+        match slot {
+            RuntimePrefixSlot::Scalar(scalar) => {
+                self.byte(0);
+                self.scalar(scalar);
+            }
+            RuntimePrefixSlot::Pointer { pointee, semantics } => {
+                self.byte(1);
+                self.id(pointee);
+                self.pointer_slot(semantics);
+            }
+        }
     }
 
     fn field(&mut self, field: &LayoutField) {
@@ -1305,6 +2498,11 @@ impl Encoder {
             FieldKind::Inline(id) => {
                 self.byte(1);
                 self.id(id);
+            }
+            FieldKind::Pointer { pointee, slot } => {
+                self.byte(2);
+                self.id(pointee);
+                self.pointer_slot(slot);
             }
         }
     }
@@ -1344,6 +2542,62 @@ impl Encoder {
                 for variant in variants {
                     self.ids(variant);
                 }
+            }
+            LayoutKind::RuntimeBuffer { element } => {
+                self.byte(5);
+                self.id(*element);
+            }
+            LayoutKind::ExposedRoot {
+                body,
+                prefix,
+                anchor_bias,
+            } => {
+                self.byte(6);
+                self.id(*body);
+                self.len(prefix.len());
+                for slot in prefix {
+                    self.runtime_prefix_slot(*slot);
+                }
+                self.u32(*anchor_bias);
+            }
+            LayoutKind::RuntimePointerBuffer { pointee, semantics } => {
+                self.byte(7);
+                self.id(*pointee);
+                self.pointer_slot(*semantics);
+            }
+            LayoutKind::RuntimeDictionaryBody { key, value } => {
+                self.byte(8);
+                self.id(*key);
+                self.id(*value);
+            }
+            LayoutKind::RuntimeDictionaryIndex { key, value } => {
+                self.byte(9);
+                self.id(*key);
+                self.id(*value);
+            }
+            LayoutKind::ScratchBuffer { element } => {
+                self.byte(10);
+                self.id(*element);
+            }
+            LayoutKind::RuntimeValueSlot { value } => {
+                self.byte(11);
+                self.id(*value);
+            }
+            LayoutKind::RuntimePointerValueSlot { pointee, semantics } => {
+                self.byte(12);
+                self.id(*pointee);
+                self.pointer_slot(*semantics);
+            }
+            LayoutKind::RuntimeClosedSum { variants } => {
+                self.byte(13);
+                self.len(variants.len());
+                for variant in variants {
+                    self.ids(variant);
+                }
+            }
+            LayoutKind::ClosureEnvironment { captures } => {
+                self.byte(14);
+                self.ids(captures);
             }
         }
     }
@@ -1521,9 +2775,40 @@ impl<'a> Decoder<'a> {
             5 => Ok(ScalarKind::Tag8),
             6 => Ok(ScalarKind::Tag16),
             7 => Ok(ScalarKind::Tag32),
+            8 => Ok(ScalarKind::RawByte),
+            9 => Ok(ScalarKind::V128),
+            10 => Ok(ScalarKind::BoolValueSlot),
             _ => Err(LayoutError::Decode {
                 offset,
                 reason: "unknown scalar kind",
+            }),
+        }
+    }
+
+    fn pointer_slot(&mut self) -> Result<PointerSlot, LayoutError> {
+        let offset = self.offset;
+        match self.byte()? {
+            0 => Ok(PointerSlot::Owned),
+            1 => Ok(PointerSlot::Borrowed),
+            2 => Ok(PointerSlot::Raw),
+            _ => Err(LayoutError::Decode {
+                offset,
+                reason: "unknown pointer slot semantics",
+            }),
+        }
+    }
+
+    fn runtime_prefix_slot(&mut self) -> Result<RuntimePrefixSlot, LayoutError> {
+        let offset = self.offset;
+        match self.byte()? {
+            0 => Ok(RuntimePrefixSlot::Scalar(self.scalar()?)),
+            1 => Ok(RuntimePrefixSlot::Pointer {
+                pointee: self.id()?,
+                semantics: self.pointer_slot()?,
+            }),
+            _ => Err(LayoutError::Decode {
+                offset,
+                reason: "unknown runtime prefix slot",
             }),
         }
     }
@@ -1546,6 +2831,10 @@ impl<'a> Decoder<'a> {
         let kind = match self.byte()? {
             0 => FieldKind::Scalar(self.scalar()?),
             1 => FieldKind::Inline(self.id()?),
+            2 => FieldKind::Pointer {
+                pointee: self.id()?,
+                slot: self.pointer_slot()?,
+            },
             _ => {
                 return Err(LayoutError::Decode {
                     offset: tag_offset,
@@ -1587,6 +2876,55 @@ impl<'a> Decoder<'a> {
                 }
                 Ok(LayoutKind::ClosedSum { variants })
             }
+            5 => Ok(LayoutKind::RuntimeBuffer {
+                element: self.id()?,
+            }),
+            6 => {
+                let body = self.id()?;
+                let count = self.len()?;
+                let mut prefix = Vec::with_capacity(count.min(self.input.len()));
+                for _ in 0..count {
+                    prefix.push(self.runtime_prefix_slot()?);
+                }
+                Ok(LayoutKind::ExposedRoot {
+                    body,
+                    prefix,
+                    anchor_bias: self.u32()?,
+                })
+            }
+            7 => Ok(LayoutKind::RuntimePointerBuffer {
+                pointee: self.id()?,
+                semantics: self.pointer_slot()?,
+            }),
+            8 => Ok(LayoutKind::RuntimeDictionaryBody {
+                key: self.id()?,
+                value: self.id()?,
+            }),
+            9 => Ok(LayoutKind::RuntimeDictionaryIndex {
+                key: self.id()?,
+                value: self.id()?,
+            }),
+            10 => Ok(LayoutKind::ScratchBuffer {
+                element: self.id()?,
+            }),
+            11 => Ok(LayoutKind::RuntimeValueSlot {
+                value: self.id()?,
+            }),
+            12 => Ok(LayoutKind::RuntimePointerValueSlot {
+                pointee: self.id()?,
+                semantics: self.pointer_slot()?,
+            }),
+            13 => {
+                let count = self.len()?;
+                let mut variants = Vec::with_capacity(count.min(self.input.len()));
+                for _ in 0..count {
+                    variants.push(self.ids()?);
+                }
+                Ok(LayoutKind::RuntimeClosedSum { variants })
+            }
+            14 => Ok(LayoutKind::ClosureEnvironment {
+                captures: self.ids()?,
+            }),
             _ => Err(LayoutError::Decode {
                 offset,
                 reason: "unknown layout kind",
@@ -1693,6 +3031,12 @@ impl<'a> Decoder<'a> {
             render: self.operation()?,
             serialization: self.operation()?,
         };
+        let anchor = match &kind {
+            LayoutKind::ExposedRoot { anchor_bias, .. } => RootAnchor::Exposed {
+                allocation_offset: *anchor_bias,
+            },
+            _ => RootAnchor::AllocationBase,
+        };
         Ok(LayoutDescriptor {
             schema_version,
             kind,
@@ -1702,6 +3046,7 @@ impl<'a> Decoder<'a> {
             variants,
             ownership,
             header,
+            anchor,
             operations,
         })
     }
@@ -1815,7 +3160,93 @@ fn sha256(input: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+
+    // RFC-0162: ordinary lowering must refuse every runtime layout. These two
+    // predicates are the single choke point the codegen field-kind, field-read
+    // and field-store paths all consult, so pinning them pins the refusal.
+    //
+    // This is the property the slice claims and the one a plain match on
+    // `FieldKind::Pointer` does NOT give: a runtime value slot carries its
+    // payload as an ordinary `FieldKind::Inline` child, so without this check a
+    // consumer would treat it as an anonymous byte range and emit a load,
+    // store, or `memory.copy` of the wrong shape.
+    #[test]
+    fn representation_only_scalars_are_refused_by_ordinary_lowering() {
+        for ordinary in [
+            ScalarKind::Bool,
+            ScalarKind::Int,
+            ScalarKind::Float,
+            ScalarKind::Duration,
+            ScalarKind::U32,
+            ScalarKind::Tag8,
+            ScalarKind::Tag16,
+            ScalarKind::Tag32,
+        ] {
+            assert!(
+                ordinary.is_ordinary_lowering_target(),
+                "{ordinary:?} is an ordinary scalar and must keep its direct load",
+            );
+        }
+        for representation_only in
+            [ScalarKind::RawByte, ScalarKind::BoolValueSlot, ScalarKind::V128]
+        {
+            assert!(
+                !representation_only.is_ordinary_lowering_target(),
+                "{representation_only:?} must be reached only through the checked place builder",
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_layouts_are_refused_as_ordinary_inline_fields() {
+        let mut interner = LayoutInterner::default();
+        let int = interner.intern_scalar(ScalarKind::Int).expect("scalar");
+
+        // An ordinary scalar stays materializable inline.
+        assert!(
+            interner.get(int).expect("descriptor").kind().is_ordinary_inline_target(),
+            "ordinary layouts keep inline lowering",
+        );
+
+        // A runtime value slot does not, even though its payload is an
+        // ordinary fixed-size scalar reached as FieldKind::Inline.
+        let slot = interner.intern_runtime_value_slot(int).expect("runtime value slot");
+        let descriptor = interner.get(slot).expect("descriptor");
+        assert!(
+            !descriptor.kind().is_ordinary_inline_target(),
+            "a runtime value slot must never be lowered as an inline byte range",
+        );
+        assert!(
+            matches!(descriptor.fields()[0].kind(), FieldKind::Inline(child) if child == int),
+            "the payload really is an ordinary Inline field -- which is why the \
+             kind check, not the field kind, is what refuses it",
+        );
+    }
     use super::*;
+
+
+
+    #[test]
+    fn dictionary_pointer_carrier_requires_exact_owned_semantics() {
+        let mut interner = LayoutInterner::new();
+        let raw = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let bytes = interner.intern_runtime_buffer(raw).unwrap();
+        let owned = interner
+            .intern_runtime_pointer_value_slot(bytes, PointerSlot::Owned)
+            .unwrap();
+        let borrowed = interner
+            .intern_runtime_pointer_value_slot(bytes, PointerSlot::Borrowed)
+            .unwrap();
+        assert!(interner
+            .intern_runtime_dictionary_body(owned, owned)
+            .is_ok());
+        assert_eq!(
+            interner.intern_runtime_dictionary_body(borrowed, owned),
+            Err(LayoutError::DescriptorInvariant(
+                "runtime dictionary slots must be exact eight-byte scalar or owned pointer carriers"
+            )),
+        );
+    }
 
     #[test]
     fn sha256_implementation_matches_the_standard_vector() {
@@ -1836,6 +3267,185 @@ mod tests {
             interner.validate_descriptor(&descriptor),
             Err(LayoutError::DescriptorInvariant(
                 "alignment must be a non-zero power of two"
+            ))
+        );
+    }
+
+    #[test]
+    fn closed_sum_live_extent_is_selected_from_arbitrary_variant_fields() {
+        let mut interner = LayoutInterner::new();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let slot = interner.intern_runtime_value_slot(int).unwrap();
+        let sum = interner
+            .intern_runtime_closed_sum(vec![vec![], vec![slot], vec![slot, slot]])
+            .unwrap();
+
+        assert_eq!(interner.get(sum).unwrap().size(), LayoutSize::Fixed(20));
+        assert_eq!(interner.variant_live_extent(sum, 0), Ok(4));
+        assert_eq!(interner.variant_live_extent(sum, 1), Ok(12));
+        assert_eq!(interner.variant_live_extent(sum, 2), Ok(20));
+        assert_eq!(
+            interner.variant_live_extent(sum, 3),
+            Err(LayoutError::DescriptorInvariant(
+                "closed-sum variant index is out of range"
+            ))
+        );
+        assert_eq!(
+            interner.variant_live_extent(slot, 0),
+            Err(LayoutError::DescriptorInvariant(
+                "variant extent requires a closed-sum layout"
+            ))
+        );
+    }
+
+    #[test]
+    fn closed_sum_metadata_selects_canonical_scalar_and_nested_fields() {
+        let mut interner = LayoutInterner::new();
+        let boolean = interner.intern_scalar(ScalarKind::Bool).unwrap();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let nested = interner
+            .intern_kind(LayoutKind::Tuple {
+                fields: vec![boolean, int],
+            })
+            .unwrap();
+        let sum = interner
+            .intern_kind(LayoutKind::ClosedSum {
+                variants: vec![vec![], vec![boolean], vec![int, nested]],
+            })
+            .unwrap();
+
+        let tag = interner.closed_sum_tag_metadata(sum).unwrap();
+        assert_eq!(tag.layout(), sum);
+        assert_eq!(tag.offset(), 0);
+        assert_eq!(tag.width(), 1);
+        assert_eq!(tag.kind(), FieldKind::Scalar(ScalarKind::Tag8));
+
+        let scalar = interner
+            .closed_sum_variant_field_metadata(sum, 1, 0)
+            .unwrap();
+        assert_eq!(scalar.layout(), sum);
+        assert_eq!(scalar.variant(), 1);
+        assert_eq!(scalar.field(), 0);
+        assert_eq!(scalar.child_layout(), boolean);
+        assert_eq!(scalar.offset(), 8);
+        assert_eq!(scalar.width(), 1);
+        assert_eq!(scalar.kind(), FieldKind::Scalar(ScalarKind::Bool));
+
+        let aggregate = interner
+            .closed_sum_variant_field_metadata(sum, 2, 1)
+            .unwrap();
+        assert_eq!(aggregate.child_layout(), nested);
+        assert_eq!(aggregate.offset(), 16);
+        assert_eq!(aggregate.width(), 16);
+        assert_eq!(aggregate.kind(), FieldKind::Inline(nested));
+        assert_eq!(interner.variant_live_extent(sum, 0), Ok(8));
+        assert_eq!(interner.variant_live_extent(sum, 1), Ok(16));
+        assert_eq!(interner.variant_live_extent(sum, 2), Ok(32));
+    }
+
+    #[test]
+    fn runtime_sum_metadata_preserves_value_and_pointer_carrier_identity() {
+        let mut interner = LayoutInterner::new();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let pointee = interner.intern_runtime_buffer(byte).unwrap();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let value_carrier = interner.intern_runtime_value_slot(int).unwrap();
+        let pointer_carrier = interner
+            .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+            .unwrap();
+        let sum = interner
+            .intern_runtime_closed_sum(vec![
+                vec![],
+                vec![value_carrier],
+                vec![pointer_carrier, value_carrier],
+            ])
+            .unwrap();
+
+        assert_eq!(
+            interner.closed_sum_tag_metadata(sum).unwrap().kind(),
+            FieldKind::Scalar(ScalarKind::U32)
+        );
+        assert_eq!(interner.closed_sum_tag_metadata(sum).unwrap().width(), 4);
+
+        let pointer = interner
+            .closed_sum_variant_field_metadata(sum, 2, 0)
+            .unwrap();
+        assert_eq!(pointer.child_layout(), pointer_carrier);
+        assert_eq!(pointer.offset(), 4);
+        assert_eq!(pointer.width(), 8);
+        assert_eq!(pointer.kind(), FieldKind::Inline(pointer_carrier));
+
+        let value = interner
+            .closed_sum_variant_field_metadata(sum, 2, 1)
+            .unwrap();
+        assert_eq!(value.child_layout(), value_carrier);
+        assert_eq!(value.offset(), 12);
+        assert_eq!(value.width(), 8);
+        assert_eq!(value.kind(), FieldKind::Inline(value_carrier));
+
+        let canonical = interner.get(sum).unwrap().canonical_bytes();
+        let decoded = interner.decode_canonical(&canonical).unwrap();
+        assert_eq!(decoded.layout_id(), sum);
+        assert_eq!(&decoded, interner.get(sum).unwrap());
+    }
+
+    #[test]
+    fn closed_sum_metadata_rejects_wrong_ordinals_layouts_and_malformed_graphs() {
+        let mut interner = LayoutInterner::new();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let carrier = interner.intern_runtime_value_slot(int).unwrap();
+        let sum = interner
+            .intern_runtime_closed_sum(vec![vec![], vec![carrier], vec![carrier, carrier]])
+            .unwrap();
+
+        assert_eq!(
+            interner.closed_sum_tag_metadata(carrier),
+            Err(LayoutError::DescriptorInvariant(
+                "sum metadata requires a closed-sum layout"
+            ))
+        );
+        assert_eq!(
+            interner.closed_sum_variant_field_metadata(sum, 3, 0),
+            Err(LayoutError::DescriptorInvariant(
+                "closed-sum variant index is out of range"
+            ))
+        );
+        assert_eq!(
+            interner.closed_sum_variant_field_metadata(sum, 0, 0),
+            Err(LayoutError::DescriptorInvariant(
+                "closed-sum field index is out of range"
+            ))
+        );
+        assert_eq!(
+            interner.closed_sum_variant_field_metadata(sum, 1, 1),
+            Err(LayoutError::DescriptorInvariant(
+                "closed-sum field index is out of range"
+            ))
+        );
+        assert_eq!(
+            interner.closed_sum_variant_field_metadata(carrier, 0, 0),
+            Err(LayoutError::DescriptorInvariant(
+                "sum metadata requires a closed-sum layout"
+            ))
+        );
+
+        interner
+            .descriptors
+            .get_mut(&sum)
+            .unwrap()
+            .variants[2]
+            .fields[0]
+            .offset = 5;
+        assert_eq!(
+            interner.closed_sum_variant_field_metadata(sum, 2, 0),
+            Err(LayoutError::DescriptorInvariant(
+                "size, alignment, fields, header, ownership, or operation shape disagrees with kind"
+            ))
+        );
+        assert_eq!(
+            interner.closed_sum_tag_metadata(sum),
+            Err(LayoutError::DescriptorInvariant(
+                "size, alignment, fields, header, ownership, or operation shape disagrees with kind"
             ))
         );
     }
@@ -1873,6 +3483,241 @@ mod tests {
                 |_| None
             ),
             Err(LayoutError::UnknownLayout(missing))
+        );
+    }
+
+    #[test]
+    fn release_validation_rejects_malformed_runtime_prefixes_and_anchors() {
+        let mut interner = LayoutInterner::new();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let body = interner.intern_runtime_buffer(byte).unwrap();
+        let exposed = interner
+            .intern_exposed_root(
+                body,
+                vec![RuntimePrefixSlot::Pointer {
+                    pointee: body,
+                    semantics: PointerSlot::Borrowed,
+                }],
+            )
+            .unwrap();
+
+        let mut forged_anchor = interner.get(exposed).unwrap().clone();
+        forged_anchor.anchor = RootAnchor::AllocationBase;
+        assert!(matches!(
+            interner.validate_descriptor(&forged_anchor),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+
+        let mut overlapping = interner.get(exposed).unwrap().clone();
+        overlapping.fields[1].offset = 0;
+        assert!(matches!(
+            interner.validate_descriptor(&overlapping),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+
+        assert_eq!(
+            interner.intern_exposed_root(body, Vec::new()),
+            Err(LayoutError::DescriptorInvariant(
+                "exposed-root layout requires a non-empty prefix"
+            )),
+        );
+        assert_eq!(
+            interner.intern_exposed_root(
+                exposed,
+                vec![RuntimePrefixSlot::Scalar(ScalarKind::U32)],
+            ),
+            Err(LayoutError::DescriptorInvariant(
+                "exposed-root layouts cannot be nested"
+            )),
+        );
+
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::ExposedRoot {
+                    body,
+                    prefix: vec![RuntimePrefixSlot::Scalar(ScalarKind::RawByte)],
+                    anchor_bias: 2,
+                },
+                |id| interner.get(id),
+            ),
+            Err(LayoutError::DescriptorInvariant(
+                "exposed-root anchor does not match its checked prefix"
+            )),
+        );
+    }
+
+    #[test]
+    fn release_validation_rejects_forged_runtime_pointer_buffer_shape() {
+        let mut interner = LayoutInterner::new();
+        let pointee = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let buffer = interner
+            .intern_runtime_pointer_buffer(pointee, PointerSlot::Borrowed)
+            .unwrap();
+        let descriptor = interner.get(buffer).unwrap().clone();
+
+        let mut wrong_stride = descriptor.clone();
+        wrong_stride.size = LayoutSize::Dynamic { base: 4, stride: 4 };
+        assert!(matches!(
+            interner.validate_descriptor(&wrong_stride),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+        assert!(matches!(
+            interner.decode_canonical(&wrong_stride.canonical_bytes()),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+
+        let mut wrong_width = descriptor.clone();
+        wrong_width.fields[1].kind = FieldKind::Scalar(ScalarKind::Int);
+        assert!(matches!(
+            interner.validate_descriptor(&wrong_width),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+
+        let mut wrong_root = descriptor.clone();
+        wrong_root.anchor = RootAnchor::Exposed { allocation_offset: 4 };
+        assert!(matches!(
+            interner.validate_descriptor(&wrong_root),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+
+        let mut wrong_offset = descriptor.clone();
+        wrong_offset.fields[1].offset = 8;
+        assert!(matches!(
+            interner.validate_descriptor(&wrong_offset),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+
+        let canonical = descriptor.canonical_bytes();
+        assert_eq!(interner.decode_canonical(&canonical).unwrap(), descriptor);
+        assert_eq!(descriptor.layout_id(), buffer);
+    }
+
+    #[test]
+    fn runtime_descriptors_reject_dangling_pointers_and_arithmetic_overflow() {
+        let body_descriptor =
+            build_descriptor(LayoutKind::Scalar(ScalarKind::RawByte), |_| None).unwrap();
+        let body = body_descriptor.layout_id();
+        let missing = LayoutId::from_bytes([0x5a; 32]);
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::ExposedRoot {
+                    body,
+                    prefix: vec![RuntimePrefixSlot::Pointer {
+                        pointee: missing,
+                        semantics: PointerSlot::Raw,
+                    }],
+                    anchor_bias: 4,
+                },
+                |id| (id == body).then_some(&body_descriptor),
+            ),
+            Err(LayoutError::UnknownLayout(missing)),
+        );
+
+        let mut huge_body = body_descriptor.clone();
+        huge_body.size = LayoutSize::Fixed(u32::MAX);
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::ExposedRoot {
+                    body,
+                    prefix: vec![RuntimePrefixSlot::Scalar(ScalarKind::RawByte)],
+                    anchor_bias: 1,
+                },
+                |id| (id == body).then_some(&huge_body),
+            ),
+            Err(LayoutError::ArithmeticOverflow),
+        );
+    }
+
+    #[test]
+    fn runtime_only_and_exposed_layouts_cannot_launder_through_source_aggregates() {
+        let mut interner = LayoutInterner::new();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let bool_value_slot = interner
+            .intern_scalar(ScalarKind::BoolValueSlot)
+            .unwrap();
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::Tuple { fields: vec![byte] },
+                |id| interner.get(id),
+            ),
+            Err(LayoutError::DescriptorInvariant(
+                "a representation-only scalar requires a named runtime descriptor"
+            )),
+        );
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::PackedList {
+                    element: byte,
+                    rc: RcHeader::Required,
+                },
+                |id| interner.get(id),
+            ),
+            Err(LayoutError::DescriptorInvariant(
+                "a representation-only scalar requires a named runtime descriptor"
+            )),
+        );
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::Tuple {
+                    fields: vec![bool_value_slot],
+                },
+                |id| interner.get(id),
+            ),
+            Err(LayoutError::DescriptorInvariant(
+                "a representation-only scalar requires a named runtime descriptor"
+            )),
+        );
+
+        let exposed = interner
+            .intern_exposed_root(
+                byte,
+                vec![RuntimePrefixSlot::Pointer {
+                    pointee: byte,
+                    semantics: PointerSlot::Raw,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            build_descriptor(
+                LayoutKind::Tuple {
+                    fields: vec![exposed],
+                },
+                |id| interner.get(id),
+            ),
+            Err(LayoutError::DescriptorInvariant(
+                "an exposed-root layout cannot be embedded inline"
+            )),
+        );
+
+        let forged = LayoutDescriptor {
+            schema_version: LAYOUT_SCHEMA_VERSION,
+            kind: LayoutKind::Tuple {
+                fields: vec![exposed],
+            },
+            size: LayoutSize::Fixed(8),
+            alignment: 4,
+            fields: vec![LayoutField {
+                offset: 0,
+                kind: FieldKind::Inline(exposed),
+            }],
+            variants: Vec::new(),
+            ownership: Vec::new(),
+            header: HeaderLayout::None,
+            anchor: RootAnchor::AllocationBase,
+            operations: OperationShapes {
+                copy: OperationShape::Fields(vec![exposed]),
+                duplicate: OperationShape::Fields(vec![exposed]),
+                drop: OperationShape::Fields(vec![exposed]),
+                equality: OperationShape::Fields(vec![exposed]),
+                render: OperationShape::Fields(vec![exposed]),
+                serialization: OperationShape::Fields(vec![exposed]),
+            },
+        };
+        assert_eq!(
+            interner.decode_canonical(&forged.canonical_bytes()),
+            Err(LayoutError::DescriptorInvariant(
+                "an exposed-root layout cannot be embedded inline"
+            )),
         );
     }
 }

@@ -5768,22 +5768,38 @@ impl<'types> Codegen<'types> {
             })
     }
 
-    fn scalar_layout_kind(kind: ScalarKind) -> Kind {
+    /// The WIR kind a specialized scalar occupies, or `None` when this path
+    /// has no ordinary kind for it. The RFC-0162 representation-only kinds
+    /// have none: they are loaded through the checked place builder, and
+    /// giving them an ordinary kind here would let a caller emit a plain load.
+    fn scalar_layout_kind(kind: ScalarKind) -> Option<Kind> {
         match kind {
-            ScalarKind::Int | ScalarKind::Duration => Kind::I64,
-            ScalarKind::Float => Kind::F64,
+            ScalarKind::Int | ScalarKind::Duration => Some(Kind::I64),
+            ScalarKind::Float => Some(Kind::F64),
             ScalarKind::Bool | ScalarKind::U32 | ScalarKind::Tag8
-            | ScalarKind::Tag16 | ScalarKind::Tag32 => Kind::I32,
+            | ScalarKind::Tag16 | ScalarKind::Tag32 => Some(Kind::I32),
+            ScalarKind::BoolValueSlot | ScalarKind::RawByte | ScalarKind::V128 => None,
         }
     }
 
     fn layout_field_kind(&self, kind: FieldKind) -> Option<Kind> {
         match kind {
-            FieldKind::Scalar(scalar) => Some(Self::scalar_layout_kind(scalar)),
-            FieldKind::Inline(id) => match self.specialized_layouts.get(id)?.size() {
-                LayoutSize::Fixed(_) => Some(Kind::I32),
-                LayoutSize::Dynamic { .. } => None,
-            },
+            FieldKind::Scalar(scalar) => Self::scalar_layout_kind(scalar),
+            FieldKind::Inline(id) => {
+                let child = self.specialized_layouts.get(id)?;
+                // A runtime layout reaches ordinary lowering as an Inline child;
+                // giving it a kind here is how it would be loaded as raw bytes.
+                if !child.kind().is_ordinary_inline_target() {
+                    return None;
+                }
+                match child.size() {
+                    LayoutSize::Fixed(_) => Some(Kind::I32),
+                    LayoutSize::Dynamic { .. } => None,
+                }
+            }
+            // Loading a typed pointer as an ordinary i32 would erase the slot's
+            // ownership/provenance contract; raw access must never mint an object.
+            FieldKind::Pointer { .. } => None,
         }
     }
 
@@ -5909,7 +5925,8 @@ impl<'types> Codegen<'types> {
     ) -> Option<()> {
         use witchy_wir::wir::{Kind as WK, WirExpr as W, WirNode as N};
         match field.kind() {
-            FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8) => {
+            FieldKind::Scalar(ScalarKind::BoolValueSlot | ScalarKind::V128) => return None,
+            FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte) => {
                 nodes.push(N::Store8 { ptr: base, value, offset: field.offset() });
             }
             FieldKind::Scalar(ScalarKind::Tag16) => {
@@ -5937,13 +5954,19 @@ impl<'types> Codegen<'types> {
                         ScalarKind::Int | ScalarKind::Duration => WK::I64,
                         ScalarKind::Float => WK::F64,
                         ScalarKind::U32 | ScalarKind::Tag32 => WK::I32,
-                        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16 => unreachable!(),
+                        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16
+                        | ScalarKind::RawByte | ScalarKind::BoolValueSlot
+                        | ScalarKind::V128 => unreachable!(),
                     },
                     offset: field.offset(),
                 });
             }
             FieldKind::Inline(child) => {
-                let LayoutSize::Fixed(size) = self.specialized_layouts.get(child)?.size() else {
+                let descriptor = self.specialized_layouts.get(child)?;
+                if !descriptor.kind().is_ordinary_inline_target() {
+                    return None;
+                }
+                let LayoutSize::Fixed(size) = descriptor.size() else {
                     return None;
                 };
                 nodes.push(N::MemoryCopy {
@@ -5957,6 +5980,10 @@ impl<'types> Codegen<'types> {
                     len: W::ConstI32(size as i32),
                 });
             }
+            // A typed pointer slot is not an inline byte range: storing or
+            // loading it here would erase its ownership/provenance contract.
+            // The checked place builder owns pointer access.
+            FieldKind::Pointer { .. } => return None,
         }
         Some(())
     }
@@ -6101,7 +6128,7 @@ impl<'types> Codegen<'types> {
         ];
         if fields.is_empty() {
             if let LayoutKind::Scalar(scalar) = element_descriptor.kind() {
-                params.push(WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)) });
+                params.push(WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)?) });
             }
         } else {
             for (index, field) in fields.iter().enumerate() {
@@ -6365,7 +6392,7 @@ impl<'types> Codegen<'types> {
         for index in 0..count {
             if fields.is_empty() {
                 if let LayoutKind::Scalar(scalar) = element_descriptor.kind() {
-                    params.push(WirLocal { name: format!("e{index}"), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)) });
+                    params.push(WirLocal { name: format!("e{index}"), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)?) });
                 }
             } else {
                 for (field_index, field) in fields.iter().enumerate() {
@@ -6502,7 +6529,7 @@ impl<'types> Codegen<'types> {
         });
         body.push(N::Push(W::GetLocal("out_root".into())));
         body.push(N::Push(W::GetLocal("out_cap".into())));
-        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "root".into(), ty: WirTy::Bool }, WirLocal { name: "index".into(), ty: WirTy::Bool }, WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)) }, WirLocal { name: "cap".into(), ty: WirTy::Bool }], ret: vec![WirTy::Bool, WirTy::Bool], locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }, WirLocal { name: "out_root".into(), ty: WirTy::Bool }, WirLocal { name: "out_cap".into(), ty: WirTy::Bool }], body, raw_body: None });
+        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "root".into(), ty: WirTy::Bool }, WirLocal { name: "index".into(), ty: WirTy::Bool }, WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)?) }, WirLocal { name: "cap".into(), ty: WirTy::Bool }], ret: vec![WirTy::Bool, WirTy::Bool], locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }, WirLocal { name: "out_root".into(), ty: WirTy::Bool }, WirLocal { name: "out_cap".into(), ty: WirTy::Bool }], body, raw_body: None });
         Some(name)
     }
 
@@ -6983,7 +7010,8 @@ impl<'types> Codegen<'types> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W};
         match field.kind() {
-            FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8) => {
+            FieldKind::Scalar(ScalarKind::BoolValueSlot | ScalarKind::V128) => None,
+            FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte) => {
                 Some(W::Load8U { ptr: Box::new(base), offset: field.offset() })
             }
             FieldKind::Scalar(ScalarKind::Tag16) => Some(W::Binary {
@@ -7009,12 +7037,18 @@ impl<'types> Codegen<'types> {
                     ScalarKind::Int | ScalarKind::Duration => WK::I64,
                     ScalarKind::Float => WK::F64,
                     ScalarKind::U32 | ScalarKind::Tag32 => WK::I32,
-                    ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16 => unreachable!(),
+                    ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16
+                    | ScalarKind::RawByte | ScalarKind::BoolValueSlot
+                    | ScalarKind::V128 => unreachable!(),
                 },
                 offset: field.offset(),
             }),
             FieldKind::Inline(child) => {
-                let LayoutSize::Fixed(_) = self.specialized_layouts.get(child)?.size() else {
+                let descriptor = self.specialized_layouts.get(child)?;
+                if !descriptor.kind().is_ordinary_inline_target() {
+                    return None;
+                }
+                let LayoutSize::Fixed(_) = descriptor.size() else {
                     return None;
                 };
                 Some(W::Binary {
@@ -7024,6 +7058,10 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::ConstI32(field.offset() as i32)),
                 })
             }
+            // A typed pointer slot is not an inline byte range: storing or
+            // loading it here would erase its ownership/provenance contract.
+            // The checked place builder owns pointer access.
+            FieldKind::Pointer { .. } => None,
         }
     }
 

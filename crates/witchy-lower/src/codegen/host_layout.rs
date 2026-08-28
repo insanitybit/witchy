@@ -96,10 +96,19 @@ impl Codegen<'_> {
         let LayoutKind::PackedList { element, .. } = list_descriptor.kind() else {
             return false;
         };
-        matches!(
-            self.specialized_layouts.get(*element).map(|d| d.kind()),
-            Some(LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } | LayoutKind::Scalar(_))
-        )
+        // `Scalar(_)` used to admit every scalar here. The RFC-0162
+        // representation-only scalars must not be materialized in place by the
+        // host, and `PackedList<RawByte>` is the obvious spelling of `Bytes`,
+        // so this asks the element whether ordinary lowering may touch it.
+        self.specialized_layouts
+            .get(*element)
+            .is_some_and(|d| {
+                matches!(
+                    d.kind(),
+                    LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }
+                ) || matches!(d.kind(), LayoutKind::Scalar(_))
+                    && d.kind().is_ordinary_inline_target()
+            })
     }
 
     fn packed_list_bytes_from_list_is_materializable(&self, name: &str, args: &[Expr]) -> bool {

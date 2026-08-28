@@ -40,6 +40,7 @@ impl Codegen<'_> {
                         LayoutKind::Scalar(actual) if *actual == scalar
                     ),
                     FieldKind::Inline(actual) => actual == *child,
+                    FieldKind::Pointer { .. } => false,
                 }
             })
     }
@@ -54,6 +55,9 @@ impl Codegen<'_> {
             ScalarKind::Tag8 => "tag8",
             ScalarKind::Tag16 => "tag16",
             ScalarKind::Tag32 => "tag32",
+            ScalarKind::RawByte => "raw-byte",
+            ScalarKind::V128 => "v128",
+            ScalarKind::BoolValueSlot => "bool-value-slot",
         }
     }
 
@@ -362,13 +366,23 @@ impl Codegen<'_> {
         }
     }
 
+    /// Load one specialized scalar from `base`.
+    ///
+    /// Returns `None` for scalar kinds this path cannot load directly, so the
+    /// caller falls back to its general route instead of emitting a load of the
+    /// wrong width. `BoolValueSlot` and `V128` are representation-only kinds
+    /// introduced with the RFC-0162 runtime layouts; the specialized comparison
+    /// path never constructs them, and the checked place builder that does load
+    /// them arrives with the runtime-layout builders.
     fn specialized_scalar_load(
         base: witchy_wir::wir::WirExpr,
         scalar: ScalarKind,
-    ) -> witchy_wir::wir::WirExpr {
+    ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp, Kind, WirExpr as W};
-        match scalar {
-            ScalarKind::Bool | ScalarKind::Tag8 => {
+        Some(match scalar {
+            ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
+            // A raw representation byte loads exactly like any other 1-byte scalar.
+            ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => {
                 W::Load8U { ptr: Box::new(base), offset: 0 }
             }
             ScalarKind::Tag16 => W::Binary {
@@ -391,7 +405,7 @@ impl Codegen<'_> {
             ScalarKind::U32 | ScalarKind::Tag32 => {
                 W::Load { ptr: Box::new(base), kind: Kind::I32, offset: 0 }
             }
-        }
+        })
     }
 
     fn specialized_scalar_equality(
@@ -413,9 +427,9 @@ impl Codegen<'_> {
         }
         Some(W::Binary {
             op: BinOp::Eq,
-            kind: Self::wir_kind(Self::scalar_layout_kind(*scalar)),
-            lhs: Box::new(Self::specialized_scalar_load(a, *scalar)),
-            rhs: Box::new(Self::specialized_scalar_load(b, *scalar)),
+            kind: Self::wir_kind(Self::scalar_layout_kind(*scalar)?),
+            lhs: Box::new(Self::specialized_scalar_load(a, *scalar)?),
+            rhs: Box::new(Self::specialized_scalar_load(b, *scalar)?),
         })
     }
 
@@ -527,11 +541,11 @@ impl Codegen<'_> {
                 let tag_a = Self::specialized_scalar_load(
                     Self::specialized_layout_address(W::GetLocal("a".into()), tag_field.offset()),
                     tag,
-                );
+                )?;
                 let tag_b = Self::specialized_scalar_load(
                     Self::specialized_layout_address(W::GetLocal("b".into()), tag_field.offset()),
                     tag,
-                );
+                )?;
                 let mut body = vec![N::If {
                     cond: W::Binary {
                         op: BinOp::Ne,

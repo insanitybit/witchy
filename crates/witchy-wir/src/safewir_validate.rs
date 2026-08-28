@@ -2337,6 +2337,16 @@ impl Validator<'_> {
                                 _ => Extent::Unknown,
                             };
                         }
+                        FieldKind::Pointer { pointee, slot } => {
+                            return Err(self.function_error(
+                                RuleId::CheckedCallableContract,
+                                function,
+                                at,
+                                format!(
+                                    "call projection through {slot:?} pointer slot to {pointee} requires an authenticated dereference judgment"
+                                ),
+                            ));
+                        }
                     }
                 }
                 ContractProjectionStep::Element { index } => {
@@ -2712,6 +2722,16 @@ impl Validator<'_> {
                                 function,
                                 at,
                             )?;
+                        }
+                        FieldKind::Pointer { pointee, slot } => {
+                            return Err(self.function_error(
+                                RuleId::ProjectedLayout,
+                                function,
+                                at,
+                                format!(
+                                    "projection through {slot:?} pointer slot to {pointee} requires an authenticated dereference judgment"
+                                ),
+                            ));
                         }
                     }
                 }
