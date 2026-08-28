@@ -22,7 +22,7 @@ use crate::async_control_flow::{
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
 use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
-use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
+use crate::typed_execution::{CancellationTransition, ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
     ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane,
     FrameLaneId, LaneOwnership, OperationSite, OperationSiteId, QueueShape, TypedExecutionShape};
 
@@ -468,6 +468,11 @@ impl TypedAsyncLoweringInput {
                     actions: Vec::new(),
                     outcome: ExecutionOutcome::Complete,
                 }] },
+                ExecutionState { id: ExecutionStateId(2), transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
+                    actions: Vec::new(),
+                    outcome: ExecutionOutcome::Complete,
+                }] },
             ],
             operations: vec![OperationSite {
                 id: OperationSiteId(0),
@@ -478,9 +483,9 @@ impl TypedAsyncLoweringInput {
                 fallback_state: Some(ExecutionStateId(0)),
                 queue: Some(queue.shape.id),
                 arms: Vec::new(),
-            }],
+            }, OperationSite { id: OperationSiteId(1), kind: ExecutionOperation::Cancellation, input_lanes: Vec::new(), result_lanes: Vec::new(), pending_move_lanes: Vec::new(), fallback_state: None, queue: None, arms: Vec::new() }],
             queues: vec![queue.shape.clone()],
-            cancellation: None,
+            cancellation: Some(CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(2) }),
         };
         execution.validate()?;
         Ok(FinalTypedAsyncExecution {
@@ -490,6 +495,8 @@ impl TypedAsyncLoweringInput {
                 state: ExecutionStateId(0), callable: entry.final_callable, capture_to_lane: (0..entry.frame.len()).map(|index| FrameLaneId(index as u32)).collect(),
             }, FinalTypedAsyncStateBinding {
                 state: ExecutionStateId(1), callable: entry.final_callable, capture_to_lane: vec![result],
+            }, FinalTypedAsyncStateBinding {
+                state: ExecutionStateId(2), callable: entry.final_callable, capture_to_lane: vec![result],
             }],
             dynamic_boundaries: Vec::new(),
         })
@@ -1276,6 +1283,7 @@ mod tests {
         assert_eq!(execution.execution.operations[0].input_lanes, vec![FrameLaneId(0)]);
         assert_eq!(execution.execution.operations[0].result_lanes, vec![FrameLaneId(1)]);
         assert_eq!(execution.execution.queues.len(), 1);
+        assert_eq!(execution.execution.cancellation, Some(CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(2) }));
     }
 
     #[test]
