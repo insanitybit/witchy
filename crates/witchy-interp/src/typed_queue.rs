@@ -275,6 +275,24 @@ impl TypedQueueRuntime {
 
     pub fn execution(&self, id: u64) -> Option<&TypedExecution> { self.executions.get(&id) }
 
+    /// Advance one ready execution through its canonical operation-level turn.
+    /// Scheduler code uses this narrow entry point so it cannot bypass the
+    /// runtime's execution ownership map.
+    pub(crate) fn turn_execution(&mut self, id: u64) -> Result<KernelTurn, String> {
+        self.executions.get_mut(&id)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .turn()
+    }
+
+    /// Wake exactly the operation named by an execution's single wait record.
+    /// Queue adapters still validate generation and queue identity before
+    /// calling this method.
+    pub(crate) fn wake_execution(&mut self, id: u64, operation: OperationSiteId) -> Result<(), String> {
+        self.executions.get_mut(&id)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .wake(operation)
+    }
+
     pub fn submit_send(&mut self, execution: u64, generation: u64, payload: QueuePayload) -> Result<QueueRuntimeResult, String> {
         let (operation, queue) = self.waiting_operation(execution, ExecutionOperation::ChannelSend)?;
         let wait = QueueWait { execution, operation, generation, arm: None };

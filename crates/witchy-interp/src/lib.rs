@@ -21,5 +21,6 @@ pub mod pipeline;
 pub mod typed_async;
 pub mod typed_host;
 pub mod typed_queue;
+pub mod typed_scheduler;
 pub(crate) mod reachability;
 pub(crate) mod tagged;
