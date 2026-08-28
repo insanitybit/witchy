@@ -252,6 +252,15 @@ impl TypedAsyncLoweringInput {
                 return self.into_terminal_receive_execution(shape, closure_layout_fingerprint, receive, queue_bindings);
             }
         }
+        if let Some(send) = source_operations.iter().copied().find(|operation| {
+            operation.callable == source.callable
+                && operation.runtime_kind == TypedAsyncOperationKind::ChannelSend
+                && operation.terminal
+        }) {
+            if source_operations.len() == 1 {
+                return self.into_terminal_send_execution(shape, closure_layout_fingerprint, send, queue_bindings);
+            }
+        }
         let operations = self.operations.iter().filter(|operation| {
             operation.callable == source.callable
                 && !is_nested_terminal_operand(source, operation)
@@ -484,6 +493,46 @@ impl TypedAsyncLoweringInput {
             }],
             dynamic_boundaries: Vec::new(),
         })
+    }
+
+    fn into_terminal_send_execution(
+        &self,
+        shape: ExecutionShapeId,
+        closure_layout_fingerprint: [u8; 32],
+        operation: &TypedAsyncSourceOperationBinding,
+        queue_bindings: &[TypedAsyncQueueBinding],
+    ) -> Result<FinalTypedAsyncExecution, String> {
+        if operation.operand_bindings.len() != 2 || operation.operand_types.len() != 2 {
+            return Err("RFC-0161 ChannelSend terminal send requires typed endpoint and payload operands".into());
+        }
+        let queue = queue_bindings.iter().find(|binding| binding.endpoint == operation.operand_bindings[0])
+            .ok_or_else(|| "RFC-0161 ChannelSend terminal send has no compiler-resolved queue binding".to_string())?;
+        if queue.shape.id.0 != 0 { return Err("RFC-0161 terminal send requires a dense queue shape ID".into()); }
+        let source = &self.source[0];
+        let entry = self.states.iter().find(|state| state.callable == source.callable && state.kind == TypedAsyncStateKind::Entry)
+            .ok_or_else(|| "RFC-0161 terminal send has no final entry state".to_string())?;
+        let mut frame = entry.frame.iter().map(|input| FrameLane {
+            id: FrameLaneId(input.parameter), ty: input.ty.clone(),
+            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy },
+            initially_initialized: true,
+        }).collect::<Vec<_>>();
+        let endpoint = entry.frame.iter().find_map(|input| (input.source_binding == Some(operation.operand_bindings[0])).then_some(FrameLaneId(input.parameter)))
+            .ok_or_else(|| "RFC-0161 terminal send endpoint is absent from the entry frame".to_string())?;
+        let payload = entry.frame.iter().find_map(|input| (input.source_binding == Some(operation.operand_bindings[1])).then_some(FrameLaneId(input.parameter)))
+            .ok_or_else(|| "RFC-0161 terminal send payload must be an entry-frame binding".to_string())?;
+        let execution = TypedExecutionShape {
+            id: shape, entry: ExecutionStateId(0), frame: std::mem::take(&mut frame), result_lanes: Vec::new(),
+            states: vec![
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
+                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![crate::typed_execution::LaneAction::Discharge { lane: payload }], outcome: ExecutionOutcome::Complete }] },
+            ],
+            operations: vec![OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::ChannelSend, input_lanes: vec![endpoint, payload], result_lanes: Vec::new(), pending_move_lanes: vec![payload], fallback_state: Some(ExecutionStateId(0)), queue: Some(queue.shape.id), arms: Vec::new() }],
+            queues: vec![queue.shape.clone()], cancellation: None,
+        };
+        execution.validate()?;
+        Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings: vec![FinalTypedAsyncStateBinding {
+            state: ExecutionStateId(0), callable: entry.final_callable, capture_to_lane: (0..entry.frame.len()).map(|index| FrameLaneId(index as u32)).collect(),
+        }, FinalTypedAsyncStateBinding { state: ExecutionStateId(1), callable: entry.final_callable, capture_to_lane: Vec::new() }], dynamic_boundaries: Vec::new() })
     }
 
     fn into_boolean_control_execution(
@@ -1227,6 +1276,22 @@ mod tests {
         assert_eq!(execution.execution.operations[0].input_lanes, vec![FrameLaneId(0)]);
         assert_eq!(execution.execution.operations[0].result_lanes, vec![FrameLaneId(1)]);
         assert_eq!(execution.execution.queues.len(), 1);
+    }
+
+    #[test]
+    fn queue_aware_producer_lowers_terminal_send_and_declares_pending_move() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let send = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSend).expect("send operation");
+        input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: send.operand_bindings[0], shape: QueueShape { id: crate::typed_execution::QueueShapeId(0), capacity: crate::typed_execution::QueueCapacity::Rendezvous, payload_layout_fingerprint: [5; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [6; 32]).expect("queue-aware send");
+        assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::ChannelSend);
+        assert_eq!(execution.execution.operations[0].input_lanes, vec![FrameLaneId(0), FrameLaneId(1)]);
+        assert_eq!(execution.execution.operations[0].pending_move_lanes, vec![FrameLaneId(1)]);
+        assert!(matches!(execution.execution.states[1].transitions[0].actions.as_slice(), [crate::typed_execution::LaneAction::Discharge { lane: FrameLaneId(1) }]));
     }
 
     #[test]
