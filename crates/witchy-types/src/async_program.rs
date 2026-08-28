@@ -594,7 +594,9 @@ mod tests {
                 result_lanes: vec![0],
                 pending_move_lanes: vec![0],
                 fallback_state: Some(AsyncProgramStateId(0)),
-                queue: Some(QueueShapeId(0)),
+                // Select arms own their queue bindings; the select operation
+                // itself is a multi-endpoint operation and has no direct queue.
+                queue: None,
                 arms: vec![
                     AsyncOperationArm { ordinal: 0, operation: ExecutionOperation::ChannelReceive, endpoint_lane: 0, input_lanes: vec![], result_lanes: vec![0], queue: Some(QueueShapeId(0)), ownership: PayloadOwnership::Inline },
                     AsyncOperationArm { ordinal: 1, operation: ExecutionOperation::ChannelSend, endpoint_lane: 0, input_lanes: vec![0], result_lanes: vec![], queue: Some(QueueShapeId(0)), ownership: PayloadOwnership::Inline },
@@ -677,7 +679,7 @@ mod tests {
         shape.frame[0].ownership = LaneOwnership::MustConsume;
         shape.result_lanes.clear();
         let error = AsyncProgram::new(vec![shape]).expect_err("must lane cannot reach completion");
-        assert!(error.contains("must-consume"));
+        assert!(error.contains("must-consume frame lane undisposed"));
     }
 
     #[test]
