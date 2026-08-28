@@ -94,6 +94,7 @@ stage crates have this maximum direct-dependency graph:
 | Stage | Allowed stage dependencies | Classification | Next boundary change |
 |---|---|---|---|
 | `witchy-cap-model` | none | KEEP | Keep the capability names, classes, arities, and rights vocabulary dependency-bottom and free of syntax, policy, or runtime behavior. |
+| `witchy-worker-protocol` | none | KEEP | Keep the compiler-worker wire schema dependency-bottom and independent of compiler, runtime, syntax, and capability stages. |
 | `witchy-testkit` | `cap-model` | KEEP | Keep deterministic fixture models, validation, provider state machines, expectations, and transcripts authority-free and independent of compiler and runtime stages. |
 | `witchy-test-host` | `testkit` | KEEP | Keep backend-neutral fixture dispatch over opaque handles; adapters in the interpreter, Wasmtime runtime, and browser remain consumers rather than dependencies. |
 | `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |
