@@ -8,6 +8,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use crate::typed_async::{KernelTurn, TypedExecution};
+use crate::typed_host::{HostCompletion, HostDelivery, HostOperationId, HostSubmission};
 use crate::typed_queue::{QueuePayload, QueueRuntimeResult, QueueSelectResult, TypedQueue, TypedQueueRuntime};
 use witchy_types::typed_execution::OperationSiteId;
 
@@ -137,6 +138,38 @@ impl TypedScheduler {
         Ok(result)
     }
 
+    pub fn submit_host(
+        &mut self,
+        execution: u64,
+        generation: u64,
+        host: HostOperationId,
+    ) -> Result<HostSubmission, String> {
+        self.runtime.submit_host(execution, generation, host.0)?;
+        Ok(HostSubmission::Blocked)
+    }
+
+    pub fn complete_host<P>(
+        &mut self,
+        host: HostOperationId,
+        generation: u64,
+        payload: P,
+    ) -> Result<Option<HostCompletion<P>>, String> {
+        let Some((execution, operation, turn)) = self.runtime.complete_host(host.0, generation)? else {
+            return Ok(None);
+        };
+        self.admit_turns(&[(execution, turn)])?;
+        Ok(Some(HostCompletion {
+            turn,
+            delivery: HostDelivery { execution, operation, payload },
+        }))
+    }
+
+    pub fn request_host_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let cancelled = self.runtime.request_host_cancellation(execution, generation)?;
+        if cancelled { self.enqueue_next(execution)?; }
+        Ok(cancelled)
+    }
+
     /// Remove the exact generation's queue registrations before entering the
     /// execution's declared cleanup state. A successful request is admitted
     /// in the next deterministic round.
@@ -173,6 +206,7 @@ impl TypedScheduler {
 mod tests {
     use super::*;
     use crate::typed_async::KernelStatus;
+    use crate::typed_host::HostOperationId;
     use witchy_syntax::ast::Type;
     use witchy_types::typed_execution::{ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId,
         ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, FrameLaneId, LaneOwnership,
@@ -192,6 +226,20 @@ mod tests {
             queues: vec![],
             cancellation: None,
         }).expect("linear execution")
+    }
+
+    fn host_execution() -> TypedExecution {
+        TypedExecution::new(TypedExecutionShape {
+            id: ExecutionShapeId(2), entry: ExecutionStateId(0), frame: vec![], result_lanes: vec![],
+            states: vec![
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
+                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Complete }] },
+            ],
+            operations: vec![
+                witchy_types::typed_execution::OperationSite { id: OperationSiteId(0), kind: witchy_types::typed_execution::ExecutionOperation::Host, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: Some(ExecutionStateId(0)), queue: None, arms: vec![] },
+                witchy_types::typed_execution::OperationSite { id: OperationSiteId(1), kind: witchy_types::typed_execution::ExecutionOperation::Cancellation, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: None, queue: None, arms: vec![] },
+            ], queues: vec![], cancellation: Some(witchy_types::typed_execution::CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(1) }),
+        }).expect("host execution")
     }
 
     #[test]
@@ -250,5 +298,17 @@ mod tests {
         assert!(scheduler.request_cancellation(9, 1).expect("cancel"));
         assert_eq!(scheduler.run_round().expect("cleanup round")[0].turn, KernelTurn::Complete);
         assert_eq!(scheduler.runtime().execution(9).expect("execution").status(), KernelStatus::Complete);
+    }
+
+    #[test]
+    fn host_completion_is_admitted_by_the_same_scheduler() {
+        let mut scheduler = TypedScheduler::new();
+        scheduler.install_execution(11, host_execution()).expect("execution");
+        assert_eq!(scheduler.run_round().expect("block")[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
+        assert_eq!(scheduler.submit_host(11, 5, HostOperationId(7)).expect("submit"), HostSubmission::Blocked);
+        let completion = scheduler.complete_host(HostOperationId(7), 5, 42_u32).expect("complete").expect("matching completion");
+        assert_eq!(completion.delivery.payload, 42);
+        assert_eq!(completion.turn, KernelTurn::Complete);
+        assert_eq!(scheduler.ready_len(), 0);
     }
 }

@@ -4,11 +4,10 @@
 //! payload.  Execution, operation, generation, result lanes, and cancellation
 //! remain owned by the common typed execution kernel.
 
-use std::collections::BTreeMap;
+use witchy_types::typed_execution::OperationSiteId;
 
-use witchy_types::typed_execution::{ExecutionOperation, OperationSiteId};
-
-use crate::typed_async::{KernelStatus, KernelTurn, OperationCommit, TypedExecution};
+use crate::typed_async::{KernelStatus, KernelTurn, TypedExecution};
+use crate::typed_queue::TypedQueueRuntime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HostOperationId(pub u64);
@@ -47,19 +46,15 @@ pub struct HostCompletion<P> {
 /// completion cannot resume an unrelated continuation.
 #[derive(Debug, Default)]
 pub struct TypedHostRuntime {
-    waits: BTreeMap<HostOperationId, HostWait>,
-    executions: BTreeMap<u64, TypedExecution>,
+    runtime: TypedQueueRuntime,
 }
 
 impl TypedHostRuntime {
     pub fn install_execution(&mut self, id: u64, execution: TypedExecution) -> Result<(), String> {
-        if self.executions.insert(id, execution).is_some() {
-            return Err("typed host runtime already has this execution ID".into());
-        }
-        Ok(())
+        self.runtime.install_execution(id, execution)
     }
 
-    pub fn execution(&self, id: u64) -> Option<&TypedExecution> { self.executions.get(&id) }
+    pub fn execution(&self, id: u64) -> Option<&TypedExecution> { self.runtime.execution(id) }
 
     pub fn submit(
         &mut self,
@@ -67,19 +62,7 @@ impl TypedHostRuntime {
         generation: u64,
         host: HostOperationId,
     ) -> Result<HostSubmission, String> {
-        if self.waits.contains_key(&host) {
-            return Err("host operation already has a typed wait registration".into());
-        }
-        let (operation, kind) = self.executions.get(&execution)
-            .ok_or_else(|| "typed host runtime has no such execution".to_string())?
-            .waiting_operation()?;
-        if kind != ExecutionOperation::Host {
-            return Err("execution wait is not a typed host operation".into());
-        }
-        if self.waits.values().any(|wait| wait.execution == execution && wait.operation == operation) {
-            return Err("execution already has a typed host wait registration".into());
-        }
-        self.waits.insert(host, HostWait { execution, operation, generation, host });
+        self.runtime.submit_host(execution, generation, host.0)?;
         Ok(HostSubmission::Blocked)
     }
 
@@ -91,40 +74,25 @@ impl TypedHostRuntime {
         generation: u64,
         payload: P,
     ) -> Result<Option<HostCompletion<P>>, String> {
-        let Some(wait) = self.waits.get(&host).copied() else { return Ok(None) };
-        if wait.generation != generation { return Ok(None); }
-        self.waits.remove(&host);
-        let turn = self.executions.get_mut(&wait.execution)
-            .ok_or_else(|| "host wait execution vanished".to_string())?
-            .commit_operation(OperationCommit::Ready { operation: wait.operation })?;
+        let Some((execution, operation, turn)) = self.runtime.complete_host(host.0, generation)? else { return Ok(None) };
         Ok(Some(HostCompletion {
             turn,
-            delivery: HostDelivery { execution: wait.execution, operation: wait.operation, payload },
+            delivery: HostDelivery { execution, operation, payload },
         }))
     }
 
     /// Acknowledge cancellation only when the caller claims the installed
     /// generation.  The operation is unlinked before typed cleanup starts.
     pub fn request_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
-        let current = self.executions.get(&execution)
+        let current = self.runtime.execution(execution)
             .ok_or_else(|| "typed host runtime has no such execution".to_string())?;
         if !current.has_cancellation_transition() {
             return Err("execution shape has no cancellation transition".into());
         }
         if !matches!(current.status(), KernelStatus::Waiting(_)) {
-            return self.executions.get_mut(&execution)
-                .expect("execution was checked above")
-                .request_cancellation();
+            return self.runtime.request_cancellation(execution, generation);
         }
-        let Some((host, _wait)) = self.waits.iter().find(|(_, wait)| {
-            wait.execution == execution && wait.generation == generation
-        }).map(|(host, wait)| (*host, *wait)) else {
-            return Ok(false);
-        };
-        self.waits.remove(&host);
-        self.executions.get_mut(&execution)
-            .expect("execution was checked above")
-            .request_cancellation()
+        self.runtime.request_host_cancellation(execution, generation)
     }
 }
 
@@ -133,7 +101,7 @@ mod tests {
     use super::*;
     use witchy_syntax::ast::Type;
     use witchy_types::typed_execution::{
-        CancellationTransition, ExecutionOutcome, ExecutionShapeId, ExecutionState,
+        CancellationTransition, ExecutionOperation, ExecutionOutcome, ExecutionShapeId, ExecutionState,
         ExecutionStateId, ExecutionTransition, FrameLane, FrameLaneId, LaneOwnership,
         OperationSite, TypedExecutionShape,
     };

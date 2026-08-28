@@ -104,6 +104,14 @@ pub struct TypedQueue {
 pub struct TypedQueueRuntime {
     queues: BTreeMap<QueueShapeId, TypedQueue>,
     executions: BTreeMap<u64, TypedExecution>,
+    host_waits: BTreeMap<u64, HostWait>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HostWait {
+    execution: u64,
+    operation: OperationSiteId,
+    generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +299,47 @@ impl TypedQueueRuntime {
         self.executions.get_mut(&id)
             .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
             .wake(operation)
+    }
+
+    /// Register one host operation in the same execution registry as queue
+    /// operations. The host token is opaque; generation claims the exact wait.
+    pub(crate) fn submit_host(&mut self, execution: u64, generation: u64, host: u64) -> Result<(), String> {
+        if self.host_waits.contains_key(&host) {
+            return Err("host operation already has a typed wait registration".into());
+        }
+        let (operation, kind) = self.executions.get(&execution)
+            .ok_or_else(|| "typed queue runtime has no such execution".to_string())?
+            .waiting_operation()?;
+        if kind != ExecutionOperation::Host {
+            return Err("execution wait is not a typed host operation".into());
+        }
+        if self.host_waits.values().any(|wait| wait.execution == execution) {
+            return Err("execution already has a typed host wait registration".into());
+        }
+        self.host_waits.insert(host, HostWait { execution, operation, generation });
+        Ok(())
+    }
+
+    /// Complete an exact host wait and return the operation-level turn. Stale
+    /// or duplicate host notifications are harmless and return `None`.
+    pub(crate) fn complete_host(&mut self, host: u64, generation: u64) -> Result<Option<(u64, OperationSiteId, KernelTurn)>, String> {
+        let Some(wait) = self.host_waits.get(&host).copied() else { return Ok(None) };
+        if wait.generation != generation { return Ok(None); }
+        self.host_waits.remove(&host);
+        let turn = self.executions.get_mut(&wait.execution)
+            .ok_or_else(|| "typed host wait execution vanished".to_string())?
+            .commit_operation(OperationCommit::Ready { operation: wait.operation })?;
+        Ok(Some((wait.execution, wait.operation, turn)))
+    }
+
+    pub(crate) fn request_host_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let Some((host, wait)) = self.host_waits.iter()
+            .find(|(_, wait)| wait.execution == execution && wait.generation == generation)
+            .map(|(host, wait)| (*host, *wait)) else { return Ok(false) };
+        self.host_waits.remove(&host);
+        self.executions.get_mut(&wait.execution)
+            .ok_or_else(|| "typed host wait execution vanished".to_string())?
+            .request_cancellation()
     }
 
     pub fn submit_send(&mut self, execution: u64, generation: u64, payload: QueuePayload) -> Result<QueueRuntimeResult, String> {
