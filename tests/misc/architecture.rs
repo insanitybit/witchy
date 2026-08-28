@@ -14,6 +14,8 @@ const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("witchy-wir", &["witchy-syntax"]),
     ("witchy-caps", &["witchy-cap-model", "witchy-syntax"]),
     ("witchy-confinement", &[]),
+    ("witchy-compiler-worker", &["witchy-confinement", "witchy-worker-protocol"]),
+    ("witchy-worker-protocol", &[]),
     ("witchy-lower", &["witchy-syntax", "witchy-types", "witchy-wir"]),
     (
         "witchy-runtime",
