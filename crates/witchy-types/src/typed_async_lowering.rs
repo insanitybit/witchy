@@ -24,7 +24,7 @@ use crate::typeck::{self, TypedModule};
 use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
 use crate::typed_execution::{CancellationTransition, ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
     ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane,
-    FrameLaneId, LaneOwnership, OperationSite, OperationSiteId, QueueShape, TypedExecutionShape};
+    FrameLaneId, LaneOwnership, OperationArm, OperationSite, OperationSiteId, QueueShape, TypedExecutionShape};
 
 /// A final callable-table position. This is an internal backend binding input;
 /// it is intentionally not a generated function name.
@@ -273,6 +273,15 @@ impl TypedAsyncLoweringInput {
                 if send.continuation.is_some() {
                     return self.into_continuation_send_execution(shape, closure_layout_fingerprint, send, queue_bindings);
                 }
+            }
+        }
+        if let Some(select) = queue_operations.iter().copied().find(|operation| {
+            operation.callable == source.callable
+                && operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect
+                && operation.terminal
+        }) {
+            if queue_operations.len() == 1 {
+                return self.into_terminal_select_execution(shape, closure_layout_fingerprint, select, queue_bindings);
             }
         }
         let operations = self.operations.iter().filter(|operation| {
@@ -654,6 +663,57 @@ impl TypedAsyncLoweringInput {
             FinalTypedAsyncStateBinding { state: ExecutionStateId(0), callable: entry.final_callable, capture_to_lane: (0..entry.frame.len()).map(|index| FrameLaneId(index as u32)).collect() },
             FinalTypedAsyncStateBinding { state: ExecutionStateId(1), callable: continuation.final_callable, capture_to_lane: completion.map(|lane| vec![lane]).unwrap_or_default() },
             FinalTypedAsyncStateBinding { state: ExecutionStateId(2), callable: continuation.final_callable, capture_to_lane: completion.map(|lane| vec![lane]).unwrap_or_default() },
+        ], dynamic_boundaries: Vec::new() })
+    }
+
+    fn into_terminal_select_execution(
+        &self,
+        shape: ExecutionShapeId,
+        closure_layout_fingerprint: [u8; 32],
+        operation: &TypedAsyncSourceOperationBinding,
+        queue_bindings: &[TypedAsyncQueueBinding],
+    ) -> Result<FinalTypedAsyncExecution, String> {
+        if operation.operand_bindings.len() < 2 || operation.operand_types.len() != operation.operand_bindings.len() {
+            return Err("RFC-0161 ChannelSelect requires at least two typed endpoint operands".into());
+        }
+        let source = &self.source[0];
+        let entry = self.states.iter().find(|state| state.callable == source.callable && state.kind == TypedAsyncStateKind::Entry)
+            .ok_or_else(|| "RFC-0161 ChannelSelect has no final entry state".to_string())?;
+        let mut frame = entry.frame.iter().map(|input| FrameLane {
+            id: FrameLaneId(input.parameter), ty: input.ty.clone(),
+            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy }, initially_initialized: true,
+        }).collect::<Vec<_>>();
+        let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 ChannelSelect result lane exceeds u32")?);
+        frame.push(FrameLane { id: result, ty: operation.operand_type.clone().ok_or_else(|| "RFC-0161 ChannelSelect has no result type".to_string())?, ownership: LaneOwnership::Move, initially_initialized: false });
+        let mut arms = Vec::with_capacity(operation.operand_bindings.len());
+        for (ordinal, endpoint_binding) in operation.operand_bindings.iter().enumerate() {
+            let endpoint_lane = entry.frame.iter().find_map(|input| (input.source_binding == Some(*endpoint_binding)).then_some(FrameLaneId(input.parameter)))
+                .ok_or_else(|| format!("RFC-0161 ChannelSelect endpoint {:?} is absent from the entry frame", endpoint_binding))?;
+            let queue = queue_bindings.iter().find(|binding| binding.endpoint == *endpoint_binding)
+                .ok_or_else(|| format!("RFC-0161 ChannelSelect arm {ordinal} has no compiler-resolved queue binding"))?;
+            if queue.shape.id.0 as usize != ordinal { return Err("RFC-0161 ChannelSelect requires queue shape IDs in arm order".into()); }
+            arms.push(OperationArm { ordinal: u32::try_from(ordinal).map_err(|_| "RFC-0161 ChannelSelect arm count exceeds u32")?, operation: ExecutionOperation::ChannelReceive, endpoint_lane, input_lanes: Vec::new(), result_lanes: vec![result], queue: Some(queue.shape.id), ownership: queue.shape.ownership });
+        }
+        let transitions = arms.iter().map(|arm| ExecutionTransition { condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: arm.ordinal }, actions: Vec::new(), outcome: ExecutionOutcome::Complete }).collect();
+        let queues = queue_bindings.iter().take(arms.len()).map(|binding| binding.shape.clone()).collect::<Vec<_>>();
+        let execution = TypedExecutionShape {
+            id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
+            states: vec![
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
+                ExecutionState { id: ExecutionStateId(1), transitions },
+                ExecutionState { id: ExecutionStateId(2), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: Vec::new(), outcome: ExecutionOutcome::Complete }] },
+            ],
+            operations: vec![
+                OperationSite { id: OperationSiteId(0), kind: ExecutionOperation::Select, input_lanes: Vec::new(), result_lanes: Vec::new(), pending_move_lanes: Vec::new(), fallback_state: Some(ExecutionStateId(0)), queue: None, arms },
+                OperationSite { id: OperationSiteId(1), kind: ExecutionOperation::Cancellation, input_lanes: Vec::new(), result_lanes: Vec::new(), pending_move_lanes: Vec::new(), fallback_state: None, queue: None, arms: Vec::new() },
+            ],
+            queues, cancellation: Some(CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(2) }),
+        };
+        execution.validate()?;
+        Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings: vec![
+            FinalTypedAsyncStateBinding { state: ExecutionStateId(0), callable: entry.final_callable, capture_to_lane: (0..entry.frame.len()).map(|index| FrameLaneId(index as u32)).collect() },
+            FinalTypedAsyncStateBinding { state: ExecutionStateId(1), callable: entry.final_callable, capture_to_lane: vec![result] },
+            FinalTypedAsyncStateBinding { state: ExecutionStateId(2), callable: entry.final_callable, capture_to_lane: vec![result] },
         ], dynamic_boundaries: Vec::new() })
     }
 
@@ -1317,6 +1377,21 @@ mod tests {
         let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
         let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
         assert!(input.operations.iter().any(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect && operation.operand_bindings.len() == 2));
+    }
+
+    #[test]
+    fn queue_aware_producer_lowers_terminal_select_arms_in_source_order() {
+        let module = witchy_syntax::parser::parse_module("from chan import Receiver, Selected\n\nasync fn choose(first: Receiver(Int), second: Receiver(Int)) -> Selected(Int):\n    chan.select(first, second).await\n\nfn main():\n    ()\n").expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let select = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect).expect("select operation");
+        for (id, endpoint) in select.operand_bindings.iter().enumerate() {
+            input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: *endpoint, shape: QueueShape { id: crate::typed_execution::QueueShapeId(id as u32), capacity: crate::typed_execution::QueueCapacity::Rendezvous, payload_layout_fingerprint: [16 + id as u8; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
+        }
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [18; 32]).expect("terminal select");
+        assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::Select);
+        assert_eq!(execution.execution.operations[0].arms.iter().map(|arm| arm.ordinal).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(execution.execution.states[1].transitions.len(), 2);
     }
 
     #[test]
