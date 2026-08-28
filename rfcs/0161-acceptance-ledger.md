@@ -80,7 +80,7 @@ RFC.
 | Interpreter kernel | three frozen ABIs | pending | - |
 | Compiled Wasm kernel | three frozen ABIs and final closure layouts | pending | - |
 | `HostOperation(T)` finish/cancel/drain bridge | wait ABI and capability contract | pending | - |
-| Type-resolved source/API census and one-cut migration | accepted surface semantics | pending | - |
+| Type-resolved source/API census and one-cut migration | accepted surface semantics | pending | Type-resolved census baseline is durable in `spec/rfc0161-census-2026-08-28.md`; strict completion predicate and `--strict` release gate are merged (`e4487131b`). The baseline reports 550 checked units and 0 compiler rejections, but legacy findings remain, so the one-cut migration is not complete. |
 | Old CPS and scalar-executor removal | semantic, performance, and migration rows | pending | - |
 
 ## Acceptance status
@@ -105,7 +105,7 @@ Rows 1 through 10 are imported from RFC-0152 without weakening.
 | 14. one runtime architecture | every static/dynamic path shares slots, turns, waits, cancellation, and queues; census rejects old CPS, scalar recognizers, specialized entries, and a second scheduler | pending | - |
 | 15. async program generality | one kernel or source rejection; canonical schema/fingerprint, closure-layout drift, lane masks, terminal edges, static and dynamic async calls, dynamic select, actor, and pipeline | partial | Lossless pre-CPS source control topology and final typed-state bindings are merged (`071dcfe03`, `003834abd`, `6a4b1a776`, `d9eef9cf5`, `618ec0817`, `a26427512`, `216808703`, `470e368c7`, `325fa1d91`); canonical fully typed-program validation is merged (`b646d0d86` through `416befef8`); checked source now has an explicit lowering handoff (`ea6e805c9`) and a conservative linear producer for empty returns/yields with deterministic rejection of unsupported operand, queue, call, and control-flow cases (`c3237f251`). General operation/operand production and the shared interpreter/Wasm kernel remain outstanding. |
 | 16. host readiness | timer and capability I/O prove scripted admission, finish, losing drain, acknowledged cancel, late/stale completion, bounded state, and no obligation leak | pending | - |
-| 17. source migration | type-resolved repository/public-fixture census, external-source diagnostics, one release cut, no compatibility path or stale artifact | pending | - |
+| 17. source migration | type-resolved repository/public-fixture census, external-source diagnostics, one release cut, no compatibility path or stale artifact | pending | The repository/public-fixture census and strict no-findings gate are merged (`28878b8b7`, `e4487131b`); its recorded legacy findings are the remaining migration set. A release cut with migrated sources and no stale artifacts is still required. |
 | 18. installed workflow | clean installed binary runs structured bounded workflow and reports constructed deadlock | pending | - |
 
 ## Measurement protocol
