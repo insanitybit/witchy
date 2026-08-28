@@ -206,8 +206,14 @@ impl TypedAsyncLoweringInput {
             }
             return Err("RFC-0161 linear producer rejects control-flow selectors until typed edges are bound".into());
         }
-        let operations = self.operations.iter().filter(|operation| operation.callable == source.callable).collect::<Vec<_>>();
-        if operations.len() != source.operations.len() {
+        let operations = self.operations.iter().filter(|operation| {
+            operation.callable == source.callable
+                && !is_nested_await_operand(source, operation)
+        }).collect::<Vec<_>>();
+        let nested_count = self.operations.iter().filter(|operation| {
+            operation.callable == source.callable && is_nested_await_operand(source, operation)
+        }).count();
+        if operations.len() + nested_count != source.operations.len() {
             return Err("RFC-0161 linear producer found operations for an unknown callable".into());
         }
         let mut terminal_operation = None;
@@ -231,7 +237,10 @@ impl TypedAsyncLoweringInput {
                     operation.source_operation,
                 ));
             }
-            if !operation.operand_bindings.is_empty() || operation.operand_type.is_some() {
+            let unit_yield = operation.runtime_kind == TypedAsyncOperationKind::Yield
+                && operation.operand_bindings.is_empty()
+                && operation.operand_type == Some(Type::Named("Nil".into(), Vec::new()));
+            if (!operation.operand_bindings.is_empty() || operation.operand_type.is_some()) && !unit_yield {
                 return Err(format!("RFC-0161 linear producer does not support operands for source operation {}", operation.source_operation));
             }
             if operation.terminal {
@@ -727,6 +736,19 @@ impl TypedAsyncLoweringInput {
     }
 }
 
+fn is_nested_await_operand(source: &SourceAsyncControlFlow, operation: &TypedAsyncSourceOperationBinding) -> bool {
+    if operation.kind == SourceAsyncOperationKind::Await {
+        return false;
+    }
+    let Some(expression) = operation.expression else { return false; };
+    source.operations.iter()
+        .filter(|candidate| candidate.kind == SourceAsyncOperationKind::Await)
+        .filter_map(|candidate| candidate.expression)
+        .any(|await_expression| source.expression_spans.iter()
+            .find(|span| span.root == await_expression)
+            .is_some_and(|span| expression.0 > span.root.0 && expression.0 < span.end.0))
+}
+
 fn typed_source_function<'a>(
     typed: &'a TypedModule,
     callable: &AsyncCallableId,
@@ -990,7 +1012,7 @@ mod tests {
         let input = checked.typed_async_lowering_input().expect("typed lowering input");
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("channel operation needs the queue-aware producer");
-        assert!(error.contains("CallOperand"), "unexpected rejection: {error}");
+        assert!(error.contains("ChannelSend"), "unexpected rejection: {error}");
     }
 
     #[test]
@@ -1007,6 +1029,24 @@ mod tests {
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("value return needs a result-lane producer");
         assert!(error.contains("value-bearing return"), "unexpected rejection: {error}");
+    }
+
+    #[test]
+    fn linear_producer_lowers_unit_yield_without_erasing_its_type() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn tick():\n    chan.yield_now().await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let yield_operation = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::Yield).expect("yield operation");
+        assert_eq!(yield_operation.operand_type, Some(Type::Named("Nil".into(), Vec::new())));
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [5; 32]).expect("unit yield is executable");
+        assert_eq!(execution.execution.operations.len(), 1);
+        assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::Yield);
     }
 
     #[test]
