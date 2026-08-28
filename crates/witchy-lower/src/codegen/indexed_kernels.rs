@@ -715,6 +715,7 @@ impl<'types> Codegen<'types> {
                     }
                 }
                 Stmt::Expr(Expr::If {
+                    cond,
                     then_block,
                     else_block,
                     ..
