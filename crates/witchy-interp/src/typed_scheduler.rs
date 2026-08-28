@@ -424,6 +424,9 @@ mod tests {
         assert_eq!(scheduler.submit_select(23, 0, &BTreeMap::new()).expect("register select"), QueueSelectResult::Blocked);
         let (_, arms) = scheduler.runtime().execution(23).expect("select execution").waiting_select_arms().expect("waiting arms");
         assert_eq!(arms.iter().map(|(ordinal, _, queue)| (*ordinal, *queue)).collect::<Vec<_>>(), vec![(0, QueueShapeId(0)), (1, QueueShapeId(1))]);
+        assert!(scheduler.request_cancellation(23, 0).expect("cancel compiler select"));
+        assert_eq!(scheduler.runtime().execution(23).expect("cancelled select").state(), ExecutionStateId(2));
+        assert_eq!(scheduler.run_round().expect("run select cleanup")[0].turn, KernelTurn::Complete);
     }
 
     #[test]
