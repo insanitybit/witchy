@@ -720,15 +720,19 @@ fn gen_async_program(seed: u64) -> String {
          \x20       chan.send(tx, next).await\n\
          \x20       i = i + 1\n\
          \x20       next = next + step\n\n\
-         async fn fold(console: Console, rx: Receiver(Int), bias: Int) -> Nil:\n\
+         async fn fold(console: Console, rx: Receiver(Int), bias: Int, n: Int) -> Nil:\n\
          \x20   var sum = bias\n\
-         \x20   for await value in rx:\n\
-         \x20       sum = sum + value\n\
+         \x20   for _i in 0..n:\n\
+         \x20       let value = chan.recv(rx).await\n\
+         \x20       match value:\n\
+         \x20           Some(value) -> sum = sum + value\n\
+         \x20           None -> fail(\"channel closed early\")\n\
          \x20   console.print(\"${{sum}}\")\n\n\
          async fn main(console: Console):\n\
          \x20   let (tx, rx) = chan.channel({capacity}).await\n\
-         \x20   chan.spawn(produce(tx, {count}, ({start}), {step})).await\n\
-         \x20   fold(console, rx, ({bias})).await\n"
+         \x20   let producer_handle = chan.spawn(produce(tx, {count}, ({start}), {step})).await\n\
+         \x20   fold(console, rx, ({bias}), {count}).await\n\
+         \x20   chan.join(producer_handle).await\n"
     )
 }
 
