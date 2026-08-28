@@ -476,6 +476,7 @@ define_rule_ids! {
     SealedRawMemory = 17 => "SWIR-KERN-001",
     ValidatedEncoderAuthority = 18 => "SWIR-ENC-001",
     BudgetExhaustionFailsClosed = 19 => "SWIR-BUD-001",
+    BoundGcDeclarations = 20 => "SWIR-GC-001",
 }
 
 #[cfg(test)]
@@ -509,6 +510,7 @@ mod tests {
             (17, "SWIR-KERN-001"),
             (18, "SWIR-ENC-001"),
             (19, "SWIR-BUD-001"),
+            (20, "SWIR-GC-001"),
         ];
         let codes: BTreeSet<_> = RuleId::ALL.iter().copied().map(RuleId::code).collect();
         assert_eq!(RuleId::ALL.len(), RuleId::COUNT);

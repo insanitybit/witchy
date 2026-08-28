@@ -1,11 +1,11 @@
 //! Fail-closed mapping from final executable WIR to the declarative SafeWIR
 //! candidate graph.
 //!
-//! This module remains a report boundary. It returns no encoder authority and
-//! supports only the void, parameter-rooted semantic-memory subset implemented
-//! by the current validator, including structured branches, blocks, loops, and
-//! void returns. Every unsupported executable shape is rejected rather than
-//! omitted from the candidate graph.
+//! This module is both the report boundary and the only production constructor
+//! for final encoder authority. It supports only the void, parameter-rooted
+//! semantic-memory subset implemented by the current validator, including
+//! structured branches, blocks, loops, and void returns. Every unsupported
+//! executable shape is rejected rather than omitted from the candidate graph.
 //! Branch conditions remain limited to adapter-defined scalar constants; final
 //! mutable-local reaching values still require the separate def-use track.
 
@@ -23,11 +23,11 @@ use crate::safewir_surface::{
     SafeSizeExpr,
 };
 use crate::safewir_validate::{
-    self, CandidateFunction, CandidateModule, ControlId, CopyKind, HostArgument, MemoryWidth,
-    Operation, ParameterBinding, PostValidationTransform, ValidationBudget, ValidationError,
-    ValidationReport,
+    self, CandidateFunction, CandidateGcDeclarations, CandidateGcUse, CandidateModule, ControlId,
+    CopyKind, HostArgument, MemoryWidth, Operation, ParameterBinding, PostValidationTransform,
+    ValidationBudget, ValidationError, ValidationReport,
 };
-use crate::wir::{Kind, WirExpr, WirFunc, WirModule, WirNode, WirSeq};
+use crate::wir::{Kind, WirArrayDef, WirExpr, WirFunc, WirModule, WirNode, WirSeq, WirStructDef};
 
 #[derive(Debug, Clone)]
 pub struct FinalWirValidationInputs {
@@ -35,6 +35,62 @@ pub struct FinalWirValidationInputs {
     pub functions: BTreeMap<String, CallableMemoryContract>,
     pub imports: BTreeMap<String, CallableMemoryContract>,
     pub host_imports: BTreeMap<String, CallableMemoryContract>,
+}
+
+/// Final WIR and GC declarations authorized for the mechanical encoder.
+///
+/// The fields are private and this type is not `Clone`: downstream code cannot
+/// separate authority from the exact module and GC declaration vectors checked
+/// at construction. The production encoder consumes the value before applying
+/// the one permitted post-validation transform.
+///
+/// ```compile_fail,E0451
+/// use witchy_wir::safewir_adapter::ValidatedWirModule;
+/// use witchy_wir::wir::WirModule;
+///
+/// fn forge(
+///     module: WirModule,
+///     report: witchy_wir::safewir_validate::ValidationReport,
+/// ) -> ValidatedWirModule {
+///     ValidatedWirModule {
+///         module,
+///         gc_structs: Vec::new(),
+///         gc_arrays: Vec::new(),
+///         report,
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use witchy_wir::safewir_adapter::ValidatedWirModule;
+/// use witchy_wir::wir::WirStructDef;
+///
+/// fn substitute_after_validation(
+///     mut validated: ValidatedWirModule,
+///     forged: Vec<WirStructDef>,
+/// ) -> ValidatedWirModule {
+///     validated.gc_structs = forged;
+///     validated
+/// }
+/// ```
+pub struct ValidatedWirModule {
+    module: WirModule,
+    gc_structs: Vec<WirStructDef>,
+    gc_arrays: Vec<WirArrayDef>,
+    report: ValidationReport,
+}
+
+impl ValidatedWirModule {
+    /// Metrics from validation of the exact owned module.
+    pub const fn report(&self) -> &ValidationReport {
+        &self.report
+    }
+
+    pub(crate) fn into_encoding_parts(
+        self,
+    ) -> (WirModule, Vec<WirStructDef>, Vec<WirArrayDef>) {
+        (self.module, self.gc_structs, self.gc_arrays)
+    }
 }
 
 #[derive(Debug)]
@@ -78,12 +134,35 @@ impl From<ValidationError> for FinalWirValidationError {
     }
 }
 
+/// Validate final executable WIR and bind successful authority to the exact
+/// module and GC declarations that the production encoder will consume.
+///
+/// There is intentionally no constructor on [`ValidatedWirModule`]. This
+/// function is the only production construction path and delegates to the same
+/// deterministic, budgeted adapter and validator as report mode.
+pub fn validate_final_wir_module(
+    mut module: WirModule,
+    gc_structs: Vec<WirStructDef>,
+    gc_arrays: Vec<WirArrayDef>,
+    inputs: FinalWirValidationInputs,
+    budget: ValidationBudget,
+) -> Result<ValidatedWirModule, FinalWirValidationError> {
+    // Local pruning is part of final candidate preparation, not encoding. The
+    // authority therefore binds the exact pruned module that is validated and
+    // later encoded, while retaining the historical mechanical byte shape.
+    module.prune_unused_locals();
+    let report = validate_final_wir_report(&module, &gc_structs, &gc_arrays, inputs, budget)?;
+    Ok(ValidatedWirModule { module, gc_structs, gc_arrays, report })
+}
+
 /// Validate the final optimized executable WIR in report mode.
 ///
 /// Success is diagnostic evidence only. It deliberately does not expose a
 /// `ValidatedWirModule` or any encoder entrypoint.
 pub fn validate_final_wir_report(
     module: &WirModule,
+    gc_structs: &[WirStructDef],
+    gc_arrays: &[WirArrayDef],
     inputs: FinalWirValidationInputs,
     budget: ValidationBudget,
 ) -> Result<ValidationReport, FinalWirValidationError> {
@@ -149,11 +228,258 @@ pub fn validate_final_wir_report(
         imports: inputs.imports,
         host_imports: inputs.host_imports,
         functions,
+        gc: CandidateGcDeclarations {
+            structs: gc_structs.to_vec(),
+            arrays: gc_arrays.to_vec(),
+            uses: collect_encoded_gc_uses(module),
+        },
         contains_raw_memory: false,
         contains_raw_body: false,
         post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
     };
     Ok(safewir_validate::validate_candidate(&candidate, budget)?)
+}
+
+fn collect_encoded_gc_uses(module: &WirModule) -> Vec<CandidateGcUse> {
+    let mut uses = Vec::new();
+    for import in &module.imports {
+        collect_kinds(&import.params, &mut uses);
+        collect_kinds(&import.results, &mut uses);
+    }
+    for global in &module.globals {
+        collect_kind(global.kind, &mut uses);
+    }
+    for function in &module.funcs {
+        for local in function.params.iter().chain(&function.locals) {
+            collect_kind(local.ty.kind(), &mut uses);
+        }
+        for result in &function.ret {
+            collect_kind(result.kind(), &mut uses);
+        }
+        collect_gc_uses_seq(&function.body, &mut uses);
+    }
+    uses
+}
+
+fn collect_kinds(kinds: &[Kind], uses: &mut Vec<CandidateGcUse>) {
+    for kind in kinds {
+        collect_kind(*kind, uses);
+    }
+}
+
+fn collect_kind(kind: Kind, uses: &mut Vec<CandidateGcUse>) {
+    if let Kind::GcRef(id) = kind {
+        uses.push(CandidateGcUse::ConcreteType(id));
+    }
+}
+
+fn collect_gc_uses_seq(nodes: &WirSeq, uses: &mut Vec<CandidateGcUse>) {
+    for node in nodes {
+        collect_gc_uses_node(node, uses);
+    }
+}
+
+fn collect_gc_uses_node(node: &WirNode, uses: &mut Vec<CandidateGcUse>) {
+    match node {
+        WirNode::Source { body, .. } | WirNode::Loop { body, .. } => {
+            collect_gc_uses_seq(body, uses);
+        }
+        WirNode::Block { result, body, .. } => {
+            if let Some(result) = result {
+                collect_kind(result.kind(), uses);
+            }
+            collect_gc_uses_seq(body, uses);
+        }
+        WirNode::SetLocal { value, .. }
+        | WirNode::SetGlobal { value, .. }
+        | WirNode::Drop(value)
+        | WirNode::Do(value)
+        | WirNode::Push(value) => collect_gc_uses_expr(value, uses),
+        WirNode::Store { ptr, value, kind, .. } => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(ptr, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+        // A kernel operation carries ordinary WIR operands; a GC reference can
+        // reach one, so traverse them rather than treating the node as opaque.
+        WirNode::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expression| collect_gc_uses_expr(expression, uses));
+        }
+        WirNode::SafeStore { place, value, kind } => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(&place.encoded_base, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+        WirNode::CallStoreMulti { args, .. } => {
+            collect_gc_uses_exprs(args, uses);
+        }
+        WirNode::CallIndirectStoreMulti { signature, args, index, .. } => {
+            collect_kinds(&signature.params, uses);
+            collect_kinds(&signature.results, uses);
+            collect_gc_uses_exprs(args, uses);
+            collect_gc_uses_expr(index, uses);
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            collect_gc_uses_expr(dest, uses);
+            collect_gc_uses_expr(src, uses);
+            collect_gc_uses_expr(len, uses);
+        }
+        WirNode::SafeMemoryCopy { destination, source, len, .. } => {
+            collect_gc_uses_expr(&destination.encoded_base, uses);
+            collect_gc_uses_expr(&source.encoded_base, uses);
+            collect_gc_uses_expr(len, uses);
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            collect_gc_uses_expr(dest, uses);
+            collect_gc_uses_expr(value, uses);
+            collect_gc_uses_expr(len, uses);
+        }
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            collect_gc_uses_expr(&destination.encoded_base, uses);
+            collect_gc_uses_expr(value, uses);
+            collect_gc_uses_expr(len, uses);
+        }
+        WirNode::Store8 { ptr, value, .. } => {
+            collect_gc_uses_expr(ptr, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+        WirNode::SafeStore8 { place, value } => {
+            collect_gc_uses_expr(&place.encoded_base, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+        WirNode::If { cond, then_, els, result } => {
+            collect_gc_uses_expr(cond, uses);
+            if let Some(result) = result {
+                collect_kind(result.kind(), uses);
+            }
+            collect_gc_uses_seq(then_, uses);
+            collect_gc_uses_seq(els, uses);
+        }
+        WirNode::Br { cond, .. } | WirNode::Return(cond) => {
+            if let Some(cond) = cond {
+                collect_gc_uses_expr(cond, uses);
+            }
+        }
+        WirNode::Unreachable => {}
+        WirNode::StructSet { struct_id, field, base, value } => {
+            uses.push(CandidateGcUse::StructField {
+                struct_id: *struct_id,
+                field: *field,
+                write: true,
+            });
+            collect_gc_uses_expr(base, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+        WirNode::ArraySet { array_id, array, index, value } => {
+            uses.push(CandidateGcUse::Array { array_id: *array_id, fixed_length: None });
+            collect_gc_uses_expr(array, uses);
+            collect_gc_uses_expr(index, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+    }
+}
+
+fn collect_gc_uses_exprs(expressions: &[WirExpr], uses: &mut Vec<CandidateGcUse>) {
+    for expression in expressions {
+        collect_gc_uses_expr(expression, uses);
+    }
+}
+
+fn collect_gc_uses_expr(expression: &WirExpr, uses: &mut Vec<CandidateGcUse>) {
+    match expression {
+        WirExpr::ConstI64(_)
+        | WirExpr::ConstF64(_)
+        | WirExpr::ConstI32(_)
+        | WirExpr::ConstV128(_)
+        | WirExpr::StrPtr(_)
+        | WirExpr::GetLocal(_)
+        | WirExpr::GetGlobal(_)
+        | WirExpr::MemorySize => {}
+        WirExpr::Vector { args, .. }
+        | WirExpr::Call { args, .. }
+        | WirExpr::CallHost { args, .. } => collect_gc_uses_exprs(args, uses),
+        WirExpr::ToSlot(value, kind) | WirExpr::FromSlot(value, kind) => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(value, uses);
+        }
+        WirExpr::Binary { kind, lhs, rhs, .. } => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(lhs, uses);
+            collect_gc_uses_expr(rhs, uses);
+        }
+        WirExpr::Unary { kind, arg, .. } => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(arg, uses);
+        }
+        WirExpr::Convert { from, to, arg } => {
+            collect_kind(*from, uses);
+            collect_kind(*to, uses);
+            collect_gc_uses_expr(arg, uses);
+        }
+        WirExpr::Load { ptr, kind, .. } => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(ptr, uses);
+        }
+        // Kernel operands are ordinary WIR; traverse them for GC uses.
+        WirExpr::SafeKernel(operation) => {
+            operation.for_each_wir_expr(|expression| collect_gc_uses_expr(expression, uses));
+        }
+        WirExpr::SafeLoad { place, kind } => {
+            collect_kind(*kind, uses);
+            collect_gc_uses_expr(&place.encoded_base, uses);
+        }
+        WirExpr::MemoryGrow(value)
+        | WirExpr::ArrayLen(value)
+        | WirExpr::RefIsNull(value) => collect_gc_uses_expr(value, uses),
+        WirExpr::Load8U { ptr, .. } => collect_gc_uses_expr(ptr, uses),
+        WirExpr::SafeLoad8U { place } => collect_gc_uses_expr(&place.encoded_base, uses),
+        WirExpr::CallIndirect { signature, args, index } => {
+            collect_kinds(&signature.params, uses);
+            collect_kinds(&signature.results, uses);
+            collect_gc_uses_exprs(args, uses);
+            collect_gc_uses_expr(index, uses);
+        }
+        WirExpr::Control(node) => collect_gc_uses_node(node, uses),
+        WirExpr::Seq(nodes) => collect_gc_uses_seq(nodes, uses),
+        WirExpr::StructNew { struct_id, args } => {
+            uses.push(CandidateGcUse::StructNew {
+                struct_id: *struct_id,
+                field_count: args.len(),
+            });
+            collect_gc_uses_exprs(args, uses);
+        }
+        WirExpr::StructGet { struct_id, field, base } => {
+            uses.push(CandidateGcUse::StructField {
+                struct_id: *struct_id,
+                field: *field,
+                write: false,
+            });
+            collect_gc_uses_expr(base, uses);
+        }
+        WirExpr::ArrayNew { array_id, value, len } => {
+            uses.push(CandidateGcUse::Array { array_id: *array_id, fixed_length: None });
+            collect_gc_uses_expr(value, uses);
+            collect_gc_uses_expr(len, uses);
+        }
+        WirExpr::ArrayNewFixed { array_id, items } => {
+            uses.push(CandidateGcUse::Array {
+                array_id: *array_id,
+                fixed_length: Some(items.len()),
+            });
+            collect_gc_uses_exprs(items, uses);
+        }
+        WirExpr::ArrayGet { array_id, array, index } => {
+            uses.push(CandidateGcUse::Array { array_id: *array_id, fixed_length: None });
+            collect_gc_uses_expr(array, uses);
+            collect_gc_uses_expr(index, uses);
+        }
+        WirExpr::RefCast { struct_id, value }
+        | WirExpr::RefCastNullable { struct_id, value } => {
+            uses.push(CandidateGcUse::StructCast(*struct_id));
+            collect_gc_uses_expr(value, uses);
+        }
+        WirExpr::RefNull(kind) => uses.push(CandidateGcUse::RefNull(*kind)),
+    }
 }
 
 struct FunctionAdapter<'a> {
@@ -407,6 +733,11 @@ impl<'a> FunctionAdapter<'a> {
                 Ok(())
             }
             WirNode::SafeMemoryCopy { destination, source, len, kind } => {
+                if destination.encoded_offset != 0 || source.encoded_offset != 0 {
+                    return Err(self.error(
+                        "bulk-memory templates require executable bases with zero immediate offset",
+                    ));
+                }
                 self.require_constant_bulk_length(len, destination, source)?;
                 let source = self.place(source)?;
                 let destination = self.place(destination)?;
@@ -597,9 +928,11 @@ impl<'a> FunctionAdapter<'a> {
             | WirExpr::ConstI32(_)
             | WirExpr::ConstV128(_)
             | WirExpr::StrPtr(_)
-            | WirExpr::MemorySize
             | WirExpr::GetGlobal(_)
             | WirExpr::RefNull(_) => Ok(()),
+            WirExpr::MemorySize => Err(
+                self.error("raw linear-memory expression bypasses the semantic SafeWIR dialect"),
+            ),
         }
     }
 
@@ -807,7 +1140,7 @@ mod tests {
     use crate::safewir_surface::{
         SafeObjectExpr, SafeProjectionExpr, SafeRangeExpr,
     };
-    use crate::wir::{WirLocal, WirTy};
+    use crate::wir::{WirLocal, WirStructDef, WirTy};
     use witchy_syntax::ast::Type;
 
     struct Resolver;
@@ -819,6 +1152,7 @@ mod tests {
             _arguments: &[Type],
         ) -> Option<ResolvedNamed<'a>> {
             Some(match name {
+                "Bool" => ResolvedNamed::Scalar(ScalarKind::Bool),
                 "Int" => ResolvedNamed::Scalar(ScalarKind::Int),
                 "List" => ResolvedNamed::PackedList { rc: RcHeader::Required },
                 "String" => ResolvedNamed::Reference(ReferenceKind::Owning),
@@ -828,32 +1162,74 @@ mod tests {
     }
 
     fn layouts() -> (LayoutBundle, LayoutId) {
+        layouts_for("Int")
+    }
+
+    fn byte_layouts() -> (LayoutBundle, LayoutId) {
+        layouts_for("Bool")
+    }
+
+    fn layouts_for(name: &str) -> (LayoutBundle, LayoutId) {
         let mut interner = LayoutInterner::new();
         let layout = interner
-            .intern_type(&Type::Named("Int".into(), Vec::new()), &Resolver)
+            .intern_type(&Type::Named(name.into(), Vec::new()), &Resolver)
             .unwrap();
         (LayoutBundle::from_interner(&interner, [layout]).unwrap(), layout)
     }
 
     fn semantic_place(layout: LayoutId) -> Box<SafePlaceExpr> {
+        semantic_place_at(layout, AccessMode::Read, 0)
+    }
+
+    fn semantic_place_at(
+        layout: LayoutId,
+        access: AccessMode,
+        encoded_offset: u32,
+    ) -> Box<SafePlaceExpr> {
+        semantic_place_for_extent(layout, access, encoded_offset, 8)
+    }
+
+    fn semantic_place_for_extent(
+        layout: LayoutId,
+        access: AccessMode,
+        encoded_offset: u32,
+        extent: u64,
+    ) -> Box<SafePlaceExpr> {
         let root = WirExpr::GetLocal("object".into());
         Box::new(SafePlaceExpr {
             object: SafeObjectExpr {
                 root: Box::new(root.clone()),
                 layout,
-                extent: SafeExtentExpr::Exact(SafeSizeExpr::Constant(8)),
+                extent: SafeExtentExpr::Exact(SafeSizeExpr::Constant(extent)),
                 provenance: SafeProvenanceExpr::Unknown,
             },
             projection: SafeProjectionExpr::root(),
             range: SafeRangeExpr {
                 object_root: Box::new(root.clone()),
-                start: SafeSizeExpr::Constant(0),
-                length: SafeSizeExpr::Constant(8),
+                start: SafeSizeExpr::Constant(u64::from(encoded_offset)),
+                length: SafeSizeExpr::Constant(extent - u64::from(encoded_offset)),
             },
-            access: AccessMode::Read,
+            access,
             encoded_base: Box::new(root),
-            encoded_offset: 0,
+            encoded_offset,
         })
+    }
+
+    fn read_write_inputs(layouts: LayoutBundle, layout: LayoutId) -> FinalWirValidationInputs {
+        read_write_inputs_for_extent(layouts, layout, 8)
+    }
+
+    fn read_write_inputs_for_extent(
+        layouts: LayoutBundle,
+        layout: LayoutId,
+        extent: u64,
+    ) -> FinalWirValidationInputs {
+        let mut inputs = inputs_for_extent(layouts, layout, extent);
+        let parameter = &mut inputs.functions.get_mut("read").unwrap().parameters[0];
+        parameter.entry = ParameterMemoryEntry::BorrowedWrite;
+        parameter.effects = ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
+            .with(ParameterMemoryEffect::Write);
+        inputs
     }
 
     fn module(expression: WirExpr) -> WirModule {
@@ -876,6 +1252,14 @@ mod tests {
     }
 
     fn inputs(layouts: LayoutBundle, layout: LayoutId) -> FinalWirValidationInputs {
+        inputs_for_extent(layouts, layout, 8)
+    }
+
+    fn inputs_for_extent(
+        layouts: LayoutBundle,
+        layout: LayoutId,
+        extent: u64,
+    ) -> FinalWirValidationInputs {
         FinalWirValidationInputs {
             layouts,
             functions: BTreeMap::from([(
@@ -884,7 +1268,7 @@ mod tests {
                     parameters: vec![ParameterMemoryContract {
                         entry: ParameterMemoryEntry::BorrowedRead,
                         layout: Some(layout),
-                        extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
+                        extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(extent))),
                         effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
                     }],
                     result: CallableMemoryResult::NoMemory,
@@ -895,19 +1279,352 @@ mod tests {
         }
     }
 
+    /// Inputs for a body that never touches the borrowed parameter. The
+    /// validator derives effects from the final body and rejects a declaration
+    /// that claims more, so a GC-only module must declare none.
+    fn inputs_without_parameter_effects(
+        layouts: LayoutBundle,
+        layout: LayoutId,
+    ) -> FinalWirValidationInputs {
+        let mut inputs = inputs(layouts, layout);
+        inputs.functions.get_mut("read").expect("read contract").parameters[0].effects =
+            ParameterMemoryEffects::none();
+        inputs
+    }
+
     #[test]
     fn final_wir_report_maps_one_parameter_rooted_semantic_load() {
-        let (layouts, layout) = layouts();
+        let (layout_bundle, layout) = layouts();
         let report = validate_final_wir_report(
             &module(WirExpr::SafeLoad {
                 place: semantic_place(layout),
                 kind: Kind::I64,
             }),
-            inputs(layouts, layout),
+            &[],
+            &[],
+            inputs(layout_bundle, layout),
             ValidationBudget::default(),
         )
         .unwrap();
         assert_eq!(report.metrics().operations, 1);
+    }
+
+    #[test]
+    fn validated_authority_erases_every_reachable_fixed_template_exactly() {
+        let (layout_bundle, layout) = layouts();
+        let mut semantic = module(WirExpr::ConstI32(0));
+        semantic.funcs[0]
+            .locals
+            .push(WirLocal { name: "unused".into(), ty: WirTy::Int });
+        semantic.funcs[0].body = vec![
+            WirNode::Drop(WirExpr::SafeLoad {
+                place: semantic_place(layout),
+                kind: Kind::I64,
+            }),
+            WirNode::SafeStore {
+                place: semantic_place_at(layout, AccessMode::Write, 0),
+                value: WirExpr::ConstI64(9),
+                kind: Kind::I64,
+            },
+            WirNode::SafeMemoryCopy {
+                destination: semantic_place_at(layout, AccessMode::Write, 0),
+                source: semantic_place(layout),
+                len: WirExpr::ConstI32(8),
+                kind: SafeCopyKind::MayOverlap,
+            },
+        ];
+        let validated = validate_final_wir_module(
+            semantic,
+            Vec::new(),
+            Vec::new(),
+            read_write_inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(validated.report().metrics().operations, 3);
+
+        let encoded = crate::wir_encode::try_encode_validated(validated).unwrap();
+        wasmparser::validate(&encoded).unwrap();
+
+        let mut raw = module(WirExpr::ConstI32(0));
+        raw.funcs[0]
+            .locals
+            .push(WirLocal { name: "unused".into(), ty: WirTy::Int });
+        raw.funcs[0].body = vec![
+            WirNode::Drop(WirExpr::Load {
+                ptr: Box::new(WirExpr::GetLocal("object".into())),
+                kind: Kind::I64,
+                offset: 0,
+            }),
+            WirNode::Store {
+                ptr: WirExpr::GetLocal("object".into()),
+                value: WirExpr::ConstI64(9),
+                kind: Kind::I64,
+                offset: 0,
+            },
+            WirNode::MemoryCopy {
+                dest: WirExpr::GetLocal("object".into()),
+                src: WirExpr::GetLocal("object".into()),
+                len: WirExpr::ConstI32(8),
+            },
+        ];
+        let raw_encoded = crate::wir_encode::try_encode_with_gc(&raw, &[], &[]).unwrap();
+        assert_eq!(encoded, raw_encoded, "ghost erasure must use exact raw templates");
+
+        let (layouts, layout) = byte_layouts();
+        let mut semantic = module(WirExpr::ConstI32(0));
+        semantic.funcs[0].body = vec![
+            WirNode::Drop(WirExpr::SafeLoad8U {
+                place: semantic_place_for_extent(layout, AccessMode::Read, 0, 1),
+            }),
+            WirNode::SafeStore8 {
+                place: semantic_place_for_extent(layout, AccessMode::Write, 0, 1),
+                value: WirExpr::ConstI32(7),
+            },
+        ];
+        let validated = validate_final_wir_module(
+            semantic,
+            Vec::new(),
+            Vec::new(),
+            read_write_inputs_for_extent(layouts, layout, 1),
+            ValidationBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(validated.report().metrics().operations, 2);
+        let encoded = crate::wir_encode::try_encode_validated(validated).unwrap();
+
+        let mut raw = module(WirExpr::ConstI32(0));
+        raw.funcs[0].body = vec![
+            WirNode::Drop(WirExpr::Load8U {
+                ptr: Box::new(WirExpr::GetLocal("object".into())),
+                offset: 0,
+            }),
+            WirNode::Store8 {
+                ptr: WirExpr::GetLocal("object".into()),
+                value: WirExpr::ConstI32(7),
+                offset: 0,
+            },
+        ];
+        let raw_encoded = crate::wir_encode::try_encode_with_gc(&raw, &[], &[]).unwrap();
+        assert_eq!(encoded, raw_encoded, "byte templates must erase exactly");
+    }
+
+    #[test]
+    fn validated_authority_rejects_bulk_places_with_unencoded_offsets() {
+        let (layout_bundle, layout) = layouts();
+        let mut semantic = module(WirExpr::ConstI32(0));
+        semantic.funcs[0].body = vec![WirNode::SafeMemoryCopy {
+            destination: semantic_place_at(layout, AccessMode::Write, 1),
+            source: semantic_place(layout),
+            len: WirExpr::ConstI32(7),
+            kind: SafeCopyKind::MayOverlap,
+        }];
+        let error = validate_final_wir_module(
+            semantic,
+            Vec::new(),
+            Vec::new(),
+            read_write_inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("memory.copy has no immediate offset to encode");
+        assert!(error.to_string().contains("zero immediate offset"), "{error}");
+    }
+
+    #[test]
+    fn validated_authority_rejects_malformed_and_forged_gc_declarations() {
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::SafeLoad {
+                place: semantic_place(layout),
+                kind: Kind::I64,
+            }),
+            vec![WirStructDef { fields: vec![Kind::GcRef(99)], mutable: false }],
+            Vec::new(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("an out-of-band declaration reference must not grant authority");
+        assert!(error.to_string().starts_with("SWIR-GC-001"), "{error}");
+
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::StructNew { struct_id: 99, args: Vec::new() }),
+            Vec::new(),
+            Vec::new(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("an undeclared struct use must not grant authority");
+        assert!(error.to_string().starts_with("SWIR-GC-001"), "{error}");
+
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::StructNew { struct_id: 0, args: Vec::new() }),
+            vec![WirStructDef { fields: vec![Kind::I32], mutable: false }],
+            Vec::new(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("a mismatched struct constructor must not grant authority");
+        assert!(error.to_string().contains("supplies 0 fields"), "{error}");
+
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::RefNull(Kind::I32)),
+            Vec::new(),
+            Vec::new(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("an unsupported scalar ref.null must not reach the encoder");
+        assert!(error.to_string().starts_with("SWIR-GC-001"), "{error}");
+    }
+
+    #[test]
+    fn validated_authority_binds_and_encodes_exact_recursive_gc_declarations() {
+        let (layout_bundle, layout) = layouts();
+        let final_module = module(WirExpr::StructNew {
+            struct_id: 0,
+            args: vec![WirExpr::ConstI32(7), WirExpr::RefNull(Kind::GcRef(1))],
+        });
+        let gc_structs = vec![WirStructDef {
+            fields: vec![Kind::I32, Kind::GcRef(1)],
+            mutable: false,
+        }];
+        let gc_arrays = vec![WirArrayDef { element: Kind::GcRef(0) }];
+        let raw_expected =
+            crate::wir_encode::try_encode_with_gc(&final_module, &gc_structs, &gc_arrays).unwrap();
+        let validated = validate_final_wir_module(
+            final_module,
+            gc_structs,
+            gc_arrays,
+            inputs_without_parameter_effects(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(validated.report().metrics().gc_declarations, 2);
+        assert_eq!(validated.report().metrics().gc_uses, 2);
+
+        let encoded = crate::wir_encode::try_encode_validated(validated).unwrap();
+        assert_eq!(encoded, raw_expected, "authority must consume the exact declarations checked");
+        wasmparser::validate(&encoded).unwrap();
+    }
+
+    #[test]
+    fn validated_authority_rejects_immutable_struct_writes_and_unknown_arrays() {
+        let (layout_bundle, layout) = layouts();
+        let mut write = module(WirExpr::ConstI32(0));
+        write.funcs[0].body = vec![WirNode::StructSet {
+            struct_id: 0,
+            field: 0,
+            base: WirExpr::RefNull(Kind::GcRef(0)),
+            value: WirExpr::ConstI32(1),
+        }];
+        let error = validate_final_wir_module(
+            write,
+            vec![WirStructDef { fields: vec![Kind::I32], mutable: false }],
+            Vec::new(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("writes must agree with the exact declaration's mutability");
+        assert!(error.to_string().contains("immutable but is written"), "{error}");
+
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::ArrayNewFixed {
+                array_id: 0,
+                items: vec![WirExpr::ConstI64(1)],
+            }),
+            Vec::new(),
+            Vec::new(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("an undeclared array must not grant authority");
+        assert!(error.to_string().contains("GC array 0 is not declared"), "{error}");
+
+        let declarations = vec![WirStructDef { fields: Vec::new(), mutable: false }];
+        let arrays = vec![WirArrayDef { element: Kind::I64 }];
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::ArrayNewFixed { array_id: 1, items: Vec::new() }),
+            declarations.clone(),
+            arrays.clone(),
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("array instructions must use the array-relative index band");
+        assert!(error.to_string().contains("GC array 1 is not declared"), "{error}");
+
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_module(
+            module(WirExpr::RefCastNullable {
+                struct_id: 1,
+                value: Box::new(WirExpr::RefNull(Kind::StructRef)),
+            }),
+            declarations,
+            arrays,
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("struct casts must use the struct-relative index band");
+        assert!(error.to_string().contains("GC struct 1 is not declared"), "{error}");
+    }
+
+    #[test]
+    fn validated_authority_fails_closed_on_budget_raw_memory_and_raw_body() {
+        let (layouts, layout) = layouts();
+        let constrained = ValidationBudget {
+            operations: 0,
+            ..ValidationBudget::default()
+        };
+        let budget_error = validate_final_wir_module(
+            module(WirExpr::SafeLoad {
+                place: semantic_place(layout),
+                kind: Kind::I64,
+            }),
+            Vec::new(),
+            Vec::new(),
+            inputs(layouts.clone(), layout),
+            constrained,
+        )
+        .err()
+        .expect("authority must not exist after budget exhaustion");
+        assert!(budget_error.to_string().contains("operation budget exhausted"), "{budget_error}");
+
+        let raw_memory_error = validate_final_wir_module(
+            module(WirExpr::MemorySize),
+            Vec::new(),
+            Vec::new(),
+            inputs(layouts.clone(), layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("raw memory must not grant authority");
+        assert!(raw_memory_error.to_string().contains("raw linear-memory"), "{raw_memory_error}");
+
+        let mut raw_body = module(WirExpr::ConstI32(0));
+        raw_body.funcs[0].raw_body = Some(vec![0x0b]);
+        let raw_body_error = validate_final_wir_module(
+            raw_body,
+            Vec::new(),
+            Vec::new(),
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .err()
+        .expect("raw bodies must not grant authority");
+        assert!(raw_body_error.to_string().contains("raw function bodies"), "{raw_body_error}");
     }
 
     #[test]
@@ -920,6 +1637,8 @@ mod tests {
         });
         assert!(validate_final_wir_report(
             &raw,
+            &[],
+            &[],
             inputs(layouts.clone(), layout),
             ValidationBudget::default(),
         )
@@ -931,6 +1650,8 @@ mod tests {
         forged.encoded_base = Box::new(WirExpr::ConstI32(0));
         assert!(validate_final_wir_report(
             &module(WirExpr::SafeLoad { place: forged, kind: Kind::I64 }),
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -948,6 +1669,8 @@ mod tests {
         }));
         let error = validate_final_wir_report(
             &expression,
+            &[],
+            &[],
             inputs(layouts.clone(), layout),
             ValidationBudget::default(),
         )
@@ -958,6 +1681,8 @@ mod tests {
         statement.funcs[0].body = vec![WirNode::SafeKernel(SafeKernelNode::Release { object })];
         let error = validate_final_wir_report(
             &statement,
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -973,6 +1698,8 @@ mod tests {
                 place: semantic_place(layout),
                 kind: Kind::F64,
             }),
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -988,6 +1715,8 @@ mod tests {
         forged.funcs[0].body = vec![WirNode::Return(Some(WirExpr::GetLocal("object".into())))];
         let error = validate_final_wir_report(
             &forged,
+            &[],
+            &[],
             inputs(layouts.clone(), layout),
             ValidationBudget::default(),
         )
@@ -1000,6 +1729,8 @@ mod tests {
         });
         let error = validate_final_wir_report(
             &embedded,
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -1015,6 +1746,8 @@ mod tests {
             CallableMemoryResult::Unknown;
         let error = validate_final_wir_report(
             &module(WirExpr::ConstI32(0)),
+            &[],
+            &[],
             unknown_result,
             ValidationBudget::default(),
         )
@@ -1025,6 +1758,8 @@ mod tests {
         wrong_root.funcs[0].params[0].ty = WirTy::Int;
         let error = validate_final_wir_report(
             &wrong_root,
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -1047,6 +1782,8 @@ mod tests {
         }];
         let report = validate_final_wir_report(
             &conditional,
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -1081,6 +1818,8 @@ mod tests {
         ];
         let report = validate_final_wir_report(
             &structured,
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -1095,6 +1834,8 @@ mod tests {
         nonlexical.funcs[0].body = vec![WirNode::Br { target: "ghost".into(), cond: None }];
         let error = validate_final_wir_report(
             &nonlexical,
+            &[],
+            &[],
             inputs(layouts.clone(), layout),
             ValidationBudget::default(),
         )
@@ -1109,6 +1850,8 @@ mod tests {
         }];
         let error = validate_final_wir_report(
             &shadowed,
+            &[],
+            &[],
             inputs(layouts, layout),
             ValidationBudget::default(),
         )
@@ -1130,6 +1873,8 @@ mod tests {
         );
         assert!(validate_final_wir_report(
             &forged,
+            &[],
+            &[],
             forged_inputs,
             ValidationBudget::default(),
         )
@@ -1151,6 +1896,8 @@ mod tests {
         );
         assert!(validate_final_wir_report(
             &forged,
+            &[],
+            &[],
             duplicated_inputs,
             ValidationBudget::default(),
         )

@@ -74,6 +74,7 @@ fn place(object: ObjectRef, access: AccessMode) -> Place {
 fn base_module() -> CandidateModule {
     let (layouts, layout) = layouts();
     CandidateModule {
+        gc: Default::default(),
         checked_source_entries: 1,
         layouts,
         imports: BTreeMap::new(),

@@ -1,11 +1,35 @@
-//! WIR to wasm **binary** encoder: turns a [`crate::wir::WirModule`] directly
-//! into a WebAssembly binary via the `wasm-encoder` crate. Its output matches the
-//! WAT text path (`crate::wir::to_wat`) instruction-for-instruction;
-//! `print_node`/`print_expr` there are the authoritative semantics this mirrors.
+//! WIR to wasm **binary** encoder. The production boundary accepts only
+//! [`crate::safewir_adapter::ValidatedWirModule`], applies fixed SafeWIR
+//! template expansion and ghost erasure, emits via `wasm-encoder`, then always
+//! runs `wasmparser` validation. Raw byte-only WIR entrypoints exist only for
+//! crate tests and the explicit `raw-encoder-test-api` feature. One documented
+//! source-map bridge remains until `witchy-lower` can be wired atomically to the
+//! authority API after its raw-memory migration.
 //!
 //! Index spaces: imported functions come first (index = position in
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
+//!
+//! **The raw path is NOT sealed yet, and RFC-0162 row 15 is not satisfied.**
+//! `try_encode_with_gc_source_map` is `pub` and ungated (only `#[doc(hidden)]`),
+//! and `witchy-lower`'s `codegen::assembly` still calls it, so every real
+//! compilation today encodes without SafeWIR validation. Sealing it is the
+//! last step of the raw-memory migration, not something this module has done.
+//! The `compile_fail` case below therefore proves one thing only: the
+//! test-only `try_encode_with_gc` is unreachable from a normal build.
+//!
+#![cfg_attr(not(feature = "raw-encoder-test-api"), doc = r#"
+The test-only raw encoder is unreachable from a normal downstream build
+(this says nothing about the `try_encode_with_gc_source_map` bridge above):
+
+```compile_fail,E0425
+use witchy_wir::wir::WirModule;
+
+fn encode_raw(module: &WirModule) {
+    let _ = witchy_wir::wir_encode::try_encode_with_gc(module, &[], &[]);
+}
+```
+"#)]
 
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::borrow::Cow;
@@ -20,6 +44,7 @@ use wasm_encoder::{
     StorageType, StructType, SubType, TableSection, TableType, TypeSection, ValType,
 };
 
+use crate::safewir_adapter::ValidatedWirModule;
 use crate::wir::{
     BinOp, ClosureSignature, GlobalInit, Kind, UnOp, VectorOp, WirExpr, WirModule, WirNode, WirSeq,
     WirArrayDef, WirStructDef, slot_closure_signature,
@@ -37,6 +62,45 @@ impl fmt::Display for EncodeError {
 }
 
 impl std::error::Error for EncodeError {}
+
+/// Structured failures from the authoritative validated encoder boundary.
+#[derive(Debug)]
+pub enum ValidatedEncodeError {
+    Encoder(EncodeError),
+    WasmValidation {
+        function: Option<String>,
+        error: wasmparser::BinaryReaderError,
+    },
+}
+
+impl fmt::Display for ValidatedEncodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Encoder(error) => error.fmt(formatter),
+            Self::WasmValidation { function: Some(function), error } => {
+                write!(formatter, "encoded WebAssembly failed validation in `{function}`: {error}")
+            }
+            Self::WasmValidation { function: None, error } => {
+                write!(formatter, "encoded WebAssembly failed validation: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidatedEncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Encoder(error) => Some(error),
+            Self::WasmValidation { error, .. } => Some(error),
+        }
+    }
+}
+
+impl From<EncodeError> for ValidatedEncodeError {
+    fn from(error: EncodeError) -> Self {
+        Self::Encoder(error)
+    }
+}
 
 /// Exact instruction-ordinal interval emitted for one source statement root.
 /// `instruction_end` is exclusive. Function indices use the Wasm index space,
@@ -77,6 +141,289 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     } else {
         "encoder invariant failed without a string diagnostic".to_string()
     }
+}
+
+fn function_at_wasm_offset(module: &WirModule, wasm: &[u8], offset: usize) -> Option<String> {
+    let mut body_index = 0_usize;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
+            if body.range().contains(&offset) {
+                return module.funcs.get(body_index).map(|function| function.name.clone());
+            }
+            body_index += 1;
+        }
+    }
+    None
+}
+
+fn post_validation_violation(message: &str) -> EncodeError {
+    EncodeError { message: format!("validated encoder invariant failed: {message}") }
+}
+
+/// The only executable-WIR transform permitted after SafeWIR validation.
+/// Semantic memory operations expand to their fixed raw Wasm templates while
+/// all ghost object, layout, range, provenance, and access facts are erased.
+fn expand_and_erase_safewir(module: &mut WirModule) -> Result<(), EncodeError> {
+    for function in &mut module.funcs {
+        if function.raw_body.is_some() {
+            return Err(post_validation_violation(
+                "a raw function body crossed final SafeWIR validation",
+            ));
+        }
+        function.body = std::mem::take(&mut function.body)
+            .into_iter()
+            .map(erase_node)
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    Ok(())
+}
+
+fn erase_seq(sequence: WirSeq) -> Result<WirSeq, EncodeError> {
+    sequence.into_iter().map(erase_node).collect()
+}
+
+fn erase_node(node: WirNode) -> Result<WirNode, EncodeError> {
+    Ok(match node {
+        WirNode::Source { line, body } => {
+            WirNode::Source { line, body: erase_seq(body)? }
+        }
+        WirNode::SetLocal { local, value } => {
+            WirNode::SetLocal { local, value: erase_expr(value)? }
+        }
+        WirNode::SetGlobal { global, value } => {
+            WirNode::SetGlobal { global, value: erase_expr(value)? }
+        }
+        WirNode::Store { .. }
+        | WirNode::MemoryCopy { .. }
+        | WirNode::MemoryFill { .. }
+        | WirNode::Store8 { .. } => {
+            return Err(post_validation_violation(
+                "a raw linear-memory node crossed final SafeWIR validation",
+            ));
+        }
+        // Opaque kernel operations are erased by expanding their fixed
+        // template, which arrives with the kernel-template slice. Until then
+        // a validated module carrying one cannot encode, rather than
+        // encoding as something that is not the template.
+        WirNode::SafeKernel(_) => {
+            return Err(post_validation_violation(
+                "SafeWIR kernel operations require fixed-template expansion in the validated encoder",
+            ));
+        }
+        WirNode::SafeStore { place, value, kind } => {
+            let place = *place;
+            WirNode::Store {
+                ptr: erase_expr(*place.encoded_base)?,
+                value: erase_expr(value)?,
+                kind,
+                offset: place.encoded_offset,
+            }
+        }
+        WirNode::SafeStore8 { place, value } => {
+            let place = *place;
+            WirNode::Store8 {
+                ptr: erase_expr(*place.encoded_base)?,
+                value: erase_expr(value)?,
+                offset: place.encoded_offset,
+            }
+        }
+        WirNode::SafeMemoryCopy { destination, source, len, kind: _ } => {
+            let destination = *destination;
+            let source = *source;
+            if destination.encoded_offset != 0 || source.encoded_offset != 0 {
+                return Err(post_validation_violation(
+                    "a bulk-copy place retained a nonzero immediate offset",
+                ));
+            }
+            WirNode::MemoryCopy {
+                dest: erase_expr(*destination.encoded_base)?,
+                src: erase_expr(*source.encoded_base)?,
+                len: erase_expr(len)?,
+            }
+        }
+        // Unreachable today: the adapter rejects SafeMemoryFill outright, so no
+        // ValidatedWirModule can carry one. Kept so erasure stays total.
+        WirNode::SafeMemoryFill { destination, value, len } => {
+            let destination = *destination;
+            if destination.encoded_offset != 0 {
+                return Err(post_validation_violation(
+                    "a bulk-fill place retained a nonzero immediate offset",
+                ));
+            }
+            WirNode::MemoryFill {
+                dest: erase_expr(*destination.encoded_base)?,
+                value: erase_expr(value)?,
+                len: erase_expr(len)?,
+            }
+        }
+        WirNode::CallStoreMulti { func, args, dests } => WirNode::CallStoreMulti {
+            func,
+            args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+            dests,
+        },
+        WirNode::CallIndirectStoreMulti { signature, args, index, dests } => {
+            WirNode::CallIndirectStoreMulti {
+                signature,
+                args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+                index: erase_expr(index)?,
+                dests,
+            }
+        }
+        WirNode::If { cond, then_, els, result } => WirNode::If {
+            cond: erase_expr(cond)?,
+            then_: erase_seq(then_)?,
+            els: erase_seq(els)?,
+            result,
+        },
+        WirNode::Block { label, result, body } => {
+            WirNode::Block { label, result, body: erase_seq(body)? }
+        }
+        WirNode::Loop { label, body } => {
+            WirNode::Loop { label, body: erase_seq(body)? }
+        }
+        WirNode::Br { target, cond } => WirNode::Br {
+            target,
+            cond: cond.map(erase_expr).transpose()?,
+        },
+        WirNode::Drop(expression) => WirNode::Drop(erase_expr(expression)?),
+        WirNode::Do(expression) => WirNode::Do(erase_expr(expression)?),
+        WirNode::Push(expression) => WirNode::Push(erase_expr(expression)?),
+        WirNode::Return(expression) => {
+            WirNode::Return(expression.map(erase_expr).transpose()?)
+        }
+        WirNode::Unreachable => WirNode::Unreachable,
+        WirNode::StructSet { struct_id, field, base, value } => WirNode::StructSet {
+            struct_id,
+            field,
+            base: erase_expr(base)?,
+            value: erase_expr(value)?,
+        },
+        WirNode::ArraySet { array_id, array, index, value } => WirNode::ArraySet {
+            array_id,
+            array: erase_expr(array)?,
+            index: erase_expr(index)?,
+            value: erase_expr(value)?,
+        },
+    })
+}
+
+fn erase_expr(expression: WirExpr) -> Result<WirExpr, EncodeError> {
+    Ok(match expression {
+        WirExpr::ConstI64(value) => WirExpr::ConstI64(value),
+        WirExpr::ConstF64(value) => WirExpr::ConstF64(value),
+        WirExpr::ConstI32(value) => WirExpr::ConstI32(value),
+        WirExpr::ConstV128(value) => WirExpr::ConstV128(value),
+        WirExpr::StrPtr(value) => WirExpr::StrPtr(value),
+        WirExpr::GetLocal(name) => WirExpr::GetLocal(name),
+        WirExpr::GetGlobal(name) => WirExpr::GetGlobal(name),
+        WirExpr::Vector { op, args } => WirExpr::Vector {
+            op,
+            args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+        },
+        WirExpr::ToSlot(value, kind) => {
+            WirExpr::ToSlot(Box::new(erase_expr(*value)?), kind)
+        }
+        WirExpr::FromSlot(value, kind) => {
+            WirExpr::FromSlot(Box::new(erase_expr(*value)?), kind)
+        }
+        WirExpr::Binary { op, kind, lhs, rhs } => WirExpr::Binary {
+            op,
+            kind,
+            lhs: Box::new(erase_expr(*lhs)?),
+            rhs: Box::new(erase_expr(*rhs)?),
+        },
+        WirExpr::Unary { op, kind, arg } => WirExpr::Unary {
+            op,
+            kind,
+            arg: Box::new(erase_expr(*arg)?),
+        },
+        WirExpr::Convert { from, to, arg } => WirExpr::Convert {
+            from,
+            to,
+            arg: Box::new(erase_expr(*arg)?),
+        },
+        WirExpr::Load { .. }
+        | WirExpr::MemorySize
+        | WirExpr::MemoryGrow(_)
+        | WirExpr::Load8U { .. } => {
+            return Err(post_validation_violation(
+                "a raw linear-memory expression crossed final SafeWIR validation",
+            ));
+        }
+        // Same as erase_node: the fixed-template expansion for opaque kernel
+        // operations arrives with the kernel-template slice.
+        WirExpr::SafeKernel(_) => {
+            return Err(post_validation_violation(
+                "SafeWIR kernel operations require fixed-template expansion in the validated encoder",
+            ));
+        }
+        WirExpr::SafeLoad { place, kind } => {
+            let place = *place;
+            WirExpr::Load {
+                ptr: Box::new(erase_expr(*place.encoded_base)?),
+                kind,
+                offset: place.encoded_offset,
+            }
+        }
+        WirExpr::SafeLoad8U { place } => {
+            let place = *place;
+            WirExpr::Load8U {
+                ptr: Box::new(erase_expr(*place.encoded_base)?),
+                offset: place.encoded_offset,
+            }
+        }
+        WirExpr::Call { func, args } => WirExpr::Call {
+            func,
+            args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+        },
+        WirExpr::CallHost { import, args } => WirExpr::CallHost {
+            import,
+            args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+        },
+        WirExpr::CallIndirect { signature, args, index } => WirExpr::CallIndirect {
+            signature,
+            args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+            index: Box::new(erase_expr(*index)?),
+        },
+        WirExpr::Control(node) => WirExpr::Control(Box::new(erase_node(*node)?)),
+        WirExpr::Seq(sequence) => WirExpr::Seq(erase_seq(sequence)?),
+        WirExpr::StructNew { struct_id, args } => WirExpr::StructNew {
+            struct_id,
+            args: args.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+        },
+        WirExpr::StructGet { struct_id, field, base } => WirExpr::StructGet {
+            struct_id,
+            field,
+            base: Box::new(erase_expr(*base)?),
+        },
+        WirExpr::ArrayNew { array_id, value, len } => WirExpr::ArrayNew {
+            array_id,
+            value: Box::new(erase_expr(*value)?),
+            len: Box::new(erase_expr(*len)?),
+        },
+        WirExpr::ArrayNewFixed { array_id, items } => WirExpr::ArrayNewFixed {
+            array_id,
+            items: items.into_iter().map(erase_expr).collect::<Result<Vec<_>, _>>()?,
+        },
+        WirExpr::ArrayGet { array_id, array, index } => WirExpr::ArrayGet {
+            array_id,
+            array: Box::new(erase_expr(*array)?),
+            index: Box::new(erase_expr(*index)?),
+        },
+        WirExpr::ArrayLen(array) => WirExpr::ArrayLen(Box::new(erase_expr(*array)?)),
+        WirExpr::RefCast { struct_id, value } => WirExpr::RefCast {
+            struct_id,
+            value: Box::new(erase_expr(*value)?),
+        },
+        WirExpr::RefCastNullable { struct_id, value } => WirExpr::RefCastNullable {
+            struct_id,
+            value: Box::new(erase_expr(*value)?),
+        },
+        WirExpr::RefNull(kind) => WirExpr::RefNull(kind),
+        WirExpr::RefIsNull(value) => {
+            WirExpr::RefIsNull(Box::new(erase_expr(*value)?))
+        }
+    })
 }
 
 struct Preflight<'a> {
@@ -509,7 +856,39 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     encode_with_gc(module, structs, &[])
 }
 
-/// Fallible production boundary for modules that declare both GC structs and
+/// Authoritative production encoder for final validated WIR.
+///
+/// This consumes the authority object, expands only fixed SafeWIR templates,
+/// emits the exact module and GC declarations bound into that object, and runs
+/// standard Wasm validation before returning bytes.
+pub fn try_encode_validated(
+    validated: ValidatedWirModule,
+) -> Result<Vec<u8>, ValidatedEncodeError> {
+    try_encode_validated_with_source_map(validated).map(|encoded| encoded.wasm)
+}
+
+/// Authoritative production encoder retaining compiler-owned source ordinals.
+/// No source metadata is embedded in the returned Wasm module.
+pub fn try_encode_validated_with_source_map(
+    validated: ValidatedWirModule,
+) -> Result<EncodedModule, ValidatedEncodeError> {
+    let (mut module, structs, arrays) = validated.into_encoding_parts();
+    let encoded = catch_unwind(AssertUnwindSafe(|| {
+        expand_and_erase_safewir(&mut module)?;
+        preflight(&module)?;
+        Ok::<_, EncodeError>(encode_with_gc_source_map(&module, &structs, &arrays, false))
+    }))
+    .map_err(|payload| ValidatedEncodeError::Encoder(EncodeError {
+        message: panic_message(payload),
+    }))??;
+    wasmparser::validate(&encoded.wasm).map_err(|error| {
+        let function = function_at_wasm_offset(&module, &encoded.wasm, error.offset());
+        ValidatedEncodeError::WasmValidation { function, error }
+    })?;
+    Ok(encoded)
+}
+
+/// Fallible raw-WIR test boundary for modules that declare both GC structs and
 /// GC arrays.
 ///
 /// WIR builders use named locals, functions, globals, and labels. A compiler
@@ -517,6 +896,7 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
 /// reference/slot crossing. The structural preflight mirrors every encoder
 /// panic precondition so it also works on aborting wasm targets; `catch_unwind`
 /// is a final native containment net for an unforeseen encoder defect.
+#[cfg(any(test, feature = "raw-encoder-test-api"))]
 pub fn try_encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
@@ -525,16 +905,21 @@ pub fn try_encode_with_gc(
     try_encode_with_gc_source_map(module, structs, arrays).map(|encoded| encoded.wasm)
 }
 
-/// Encode a module and retain compiler-owned source-to-instruction ordinals as
-/// an out-of-band development sidecar. The Wasm bytes are identical to
-/// [`try_encode_with_gc`]; no source metadata is embedded in the module.
+/// Transitional RFC-0162 migration bridge for the still-unmigrated production
+/// lowerer. It grants no [`ValidatedWirModule`] authority and must be sealed in
+/// the same change that wires `witchy-lower` to
+/// [`try_encode_validated_with_source_map`]. Ordinary callers should not use it;
+/// raw byte-only entrypoints remain feature-gated.
+#[doc(hidden)]
 pub fn try_encode_with_gc_source_map(
     module: &WirModule,
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
 ) -> Result<EncodedModule, EncodeError> {
     preflight(module)?;
-    catch_unwind(AssertUnwindSafe(|| encode_with_gc_source_map(module, structs, arrays)))
+    catch_unwind(AssertUnwindSafe(|| {
+        encode_with_gc_source_map(module, structs, arrays, true)
+    }))
         .map_err(|payload| EncodeError { message: panic_message(payload) })
 }
 
@@ -549,16 +934,17 @@ pub(crate) fn encode_with_gc(
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
 ) -> Vec<u8> {
-    encode_with_gc_source_map(module, structs, arrays).wasm
+    encode_with_gc_source_map(module, structs, arrays, true).wasm
 }
 
 fn encode_with_gc_source_map(
     module: &WirModule,
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
+    prune_unused_locals: bool,
 ) -> EncodedModule {
     let mut module_clone;
-    let module = if module.funcs.iter().any(|f| f.raw_body.is_none()) {
+    let module = if prune_unused_locals && module.funcs.iter().any(|f| f.raw_body.is_none()) {
         module_clone = module.clone();
         module_clone.prune_unused_locals();
         &module_clone

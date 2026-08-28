@@ -170,6 +170,7 @@ fn no_memory_contract() -> CallableMemoryContract {
 
 fn module(layouts: LayoutBundle) -> CandidateModule {
     CandidateModule {
+        gc: Default::default(),
         checked_source_entries: 1,
         layouts,
         imports: BTreeMap::new(),

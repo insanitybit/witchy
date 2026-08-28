@@ -33,6 +33,7 @@ use crate::safewir::{
     ParameterMemoryEffect, ParameterMemoryEntry, Place, ProjectionStep, Provenance, RuleId,
     SizeExpr,
 };
+use crate::wir::{Kind, WirArrayDef, WirStructDef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationBudget {
@@ -66,9 +67,35 @@ pub struct CandidateModule {
     pub imports: BTreeMap<String, CallableMemoryContract>,
     pub host_imports: BTreeMap<String, CallableMemoryContract>,
     pub functions: Vec<CandidateFunction>,
+    /// Exact target GC declarations and every declaration-sensitive use in the
+    /// executable candidate. These are untrusted input to SWIR-GC-001; encoder
+    /// authority is granted only after this graph is checked.
+    pub gc: CandidateGcDeclarations,
     pub contains_raw_memory: bool,
     pub contains_raw_body: bool,
     pub post_validation_transform: PostValidationTransform,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CandidateGcDeclarations {
+    pub structs: Vec<WirStructDef>,
+    pub arrays: Vec<WirArrayDef>,
+    pub uses: Vec<CandidateGcUse>,
+}
+
+/// A declaration-sensitive fact collected exhaustively from executable WIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateGcUse {
+    /// A concrete reference in a signature, local, global, instruction kind,
+    /// or `ref.null`. The index uses the combined structs-then-arrays band.
+    ConcreteType(u32),
+    StructNew { struct_id: u32, field_count: usize },
+    StructField { struct_id: u32, field: u32, write: bool },
+    StructCast(u32),
+    Array { array_id: u32, fixed_length: Option<usize> },
+    /// Retained separately so malformed scalar `ref.null` cannot reach the
+    /// encoder's unreachable arm.
+    RefNull(Kind),
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +335,8 @@ pub struct ValidationMetrics {
     pub functions: usize,
     pub operations: usize,
     pub peak_facts: usize,
+    pub gc_declarations: usize,
+    pub gc_uses: usize,
 }
 
 /// Report-mode success for the declarative candidate graph. This type carries
@@ -413,6 +442,8 @@ pub fn validate_candidate(
             functions: module.functions.len(),
             operations: validator.operations,
             peak_facts: validator.peak_facts,
+            gc_declarations: module.gc.structs.len() + module.gc.arrays.len(),
+            gc_uses: module.gc.uses.len(),
         },
         elapsed: started.elapsed(),
     })
@@ -446,6 +477,7 @@ impl Validator<'_> {
                 "only fixed template expansion and ghost-fact erasure may follow validation",
             ));
         }
+        self.validate_gc_declarations()?;
         if self.module.functions.len() > self.budget.functions {
             return Err(self.module_error(
                 RuleId::BudgetExhaustionFailsClosed,
@@ -523,6 +555,159 @@ impl Validator<'_> {
         }
         Ok(())
     }
+
+    fn validate_gc_declarations(&mut self) -> Result<(), ValidationError> {
+        let declaration_count = self
+            .module
+            .gc
+            .structs
+            .len()
+            .checked_add(self.module.gc.arrays.len())
+            .ok_or_else(|| {
+                self.module_error(
+                    RuleId::BudgetExhaustionFailsClosed,
+                    "GC declaration count overflowed",
+                )
+            })?;
+        let storage_count = self
+            .module
+            .gc
+            .structs
+            .iter()
+            .try_fold(0_usize, |total, declaration| {
+                total.checked_add(declaration.fields.len())
+            })
+            .and_then(|fields| fields.checked_add(self.module.gc.arrays.len()))
+            .ok_or_else(|| {
+                self.module_error(
+                    RuleId::BudgetExhaustionFailsClosed,
+                    "GC storage count overflowed",
+                )
+            })?;
+        let gc_facts = declaration_count
+            .checked_add(storage_count)
+            .and_then(|total| total.checked_add(self.module.gc.uses.len()))
+            .ok_or_else(|| {
+                self.module_error(
+                    RuleId::BudgetExhaustionFailsClosed,
+                    "GC validation fact count overflowed",
+                )
+            })?;
+        self.peak_facts = self.peak_facts.max(gc_facts);
+        if gc_facts > self.budget.facts {
+            return Err(self.module_error(
+                RuleId::BudgetExhaustionFailsClosed,
+                "GC validation fact budget exhausted",
+            ));
+        }
+        if u32::try_from(declaration_count).is_err() {
+            return Err(self.module_error(
+                RuleId::BoundGcDeclarations,
+                "combined GC declaration count exceeds the encodable type-index space",
+            ));
+        }
+
+        let validate_concrete = |id: u32| {
+            if usize::try_from(id).map_or(true, |id| id >= declaration_count) {
+                Err(self.module_error(
+                    RuleId::BoundGcDeclarations,
+                    format!("concrete GC type index {id} is not declared"),
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        for declaration in &self.module.gc.structs {
+            for kind in &declaration.fields {
+                if let Kind::GcRef(id) = kind {
+                    validate_concrete(*id)?;
+                }
+            }
+        }
+        for declaration in &self.module.gc.arrays {
+            if let Kind::GcRef(id) = declaration.element {
+                validate_concrete(id)?;
+            }
+        }
+
+        for usage in &self.module.gc.uses {
+            match *usage {
+                CandidateGcUse::ConcreteType(id) => validate_concrete(id)?,
+                CandidateGcUse::StructNew { struct_id, field_count } => {
+                    let declaration = self.gc_struct(struct_id)?;
+                    if declaration.fields.len() != field_count {
+                        return Err(self.module_error(
+                            RuleId::BoundGcDeclarations,
+                            format!(
+                                "struct.new {struct_id} supplies {field_count} fields but the exact declaration requires {}",
+                                declaration.fields.len()
+                            ),
+                        ));
+                    }
+                }
+                CandidateGcUse::StructField { struct_id, field, write } => {
+                    let declaration = self.gc_struct(struct_id)?;
+                    if usize::try_from(field)
+                        .map_or(true, |field| field >= declaration.fields.len())
+                    {
+                        return Err(self.module_error(
+                            RuleId::BoundGcDeclarations,
+                            format!("field {field} is not declared by GC struct {struct_id}"),
+                        ));
+                    }
+                    if write && !declaration.mutable {
+                        return Err(self.module_error(
+                            RuleId::BoundGcDeclarations,
+                            format!("GC struct {struct_id} is immutable but is written"),
+                        ));
+                    }
+                }
+                CandidateGcUse::StructCast(struct_id) => {
+                    self.gc_struct(struct_id)?;
+                }
+                CandidateGcUse::Array { array_id, fixed_length } => {
+                    if usize::try_from(array_id)
+                        .map_or(true, |array_id| array_id >= self.module.gc.arrays.len())
+                    {
+                        return Err(self.module_error(
+                            RuleId::BoundGcDeclarations,
+                            format!("GC array {array_id} is not declared"),
+                        ));
+                    }
+                    if fixed_length.is_some_and(|length| u32::try_from(length).is_err()) {
+                        return Err(self.module_error(
+                            RuleId::BoundGcDeclarations,
+                            "array.new_fixed length exceeds the encodable u32 range",
+                        ));
+                    }
+                }
+                CandidateGcUse::RefNull(kind) => match kind {
+                    Kind::ExternRef | Kind::StructRef | Kind::AnyRef => {}
+                    Kind::GcRef(id) => validate_concrete(id)?,
+                    _ => {
+                        return Err(self.module_error(
+                            RuleId::BoundGcDeclarations,
+                            format!("ref.null uses unsupported non-reference kind {kind:?}"),
+                        ));
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
+
+    fn gc_struct(&self, struct_id: u32) -> Result<&WirStructDef, ValidationError> {
+        usize::try_from(struct_id)
+            .ok()
+            .and_then(|struct_id| self.module.gc.structs.get(struct_id))
+            .ok_or_else(|| {
+                self.module_error(
+                    RuleId::BoundGcDeclarations,
+                    format!("GC struct {struct_id} is not declared"),
+                )
+            })
+    }
+
 
     fn validate_function(&mut self, function: &CandidateFunction) -> Result<(), ValidationError> {
         if function.parameters.len() != function.contract.parameters.len()
@@ -3735,6 +3920,7 @@ mod tests {
                     },
                 ],
             }],
+            gc: CandidateGcDeclarations::default(),
             contains_raw_memory: false,
             contains_raw_body: false,
             post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
@@ -3777,6 +3963,7 @@ mod tests {
                     Operation::Load { place: access, width: MemoryWidth::I64 },
                 ],
             }],
+            gc: CandidateGcDeclarations::default(),
             contains_raw_memory: false,
             contains_raw_body: false,
             post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
@@ -3807,6 +3994,7 @@ mod tests {
                     Operation::Load { place: access, width: MemoryWidth::I64 },
                 ],
             }],
+            gc: CandidateGcDeclarations::default(),
             contains_raw_memory: false,
             contains_raw_body: false,
             post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
@@ -4367,6 +4555,7 @@ mod tests {
                     },
                 ],
             }],
+            gc: CandidateGcDeclarations::default(),
             contains_raw_memory: false,
             contains_raw_body: false,
             post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
@@ -4948,6 +5137,13 @@ mod tests {
         module.post_validation_transform = PostValidationTransform::Arbitrary;
         assert_rule(module, RuleId::ValidatedEncoderAuthority);
 
+        let mut module = base_module();
+        module.gc.structs = vec![WirStructDef {
+            fields: vec![Kind::GcRef(1)],
+            mutable: false,
+        }];
+        assert_rule(module, RuleId::BoundGcDeclarations);
+
         let module = base_module();
         let budget = ValidationBudget { operations: 0, ..ValidationBudget::default() };
         let error = validate_candidate(&module, budget).unwrap_err();
@@ -4975,6 +5171,7 @@ mod tests {
             RuleId::BulkRanges,
             RuleId::ReferenceSeparation,
             RuleId::BudgetExhaustionFailsClosed,
+            RuleId::BoundGcDeclarations,
         ];
         const DEFERRED_FULL_RULES: &[RuleId] = &[
             RuleId::CheckedSourceEntry,

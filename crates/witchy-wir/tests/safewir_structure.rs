@@ -284,9 +284,34 @@ fn current_census() -> BTreeMap<String, FileCensus> {
     result
 }
 
-const REVIEWED_TOTAL: usize = 584;
+/// 584 migration sites, plus the 6 sealed-boundary constructors in
+/// `wir_encode.rs` (see the baseline entry below). RFC-0162 row 8 drives the
+/// 584 to zero; the 6 are the permitted floor, not debt.
+const REVIEWED_TOTAL: usize = 590;
 
 const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
+    // SEALED BOUNDARY -- not migration debt.
+    //
+    // `erase_node`/`erase_expr` in the validated encoder turn a validated
+    // SafeWIR operation into the plain wasm operation it always denoted. That
+    // is the one place raw memory nodes are SUPPOSED to be minted: it is the
+    // boundary where SafeWIR stops and wasm begins, and it is reachable only
+    // through `ValidatedWirModule`, whose fields are private and whose only
+    // constructor runs final validation.
+    //
+    // Exactly one constructor per kind, so this entry still blocks growth: a
+    // seventh raw constructor anywhere in the file fails the no-growth test.
+    (
+        "crates/witchy-wir/src/wir_encode.rs",
+        &[
+            (RawKind::Load, 1),
+            (RawKind::Load8U, 1),
+            (RawKind::Store, 1),
+            (RawKind::Store8, 1),
+            (RawKind::MemoryCopy, 1),
+            (RawKind::MemoryFill, 1),
+        ],
+    ),
     (
         "crates/witchy-lower/src/codegen/assembly.rs",
         &[

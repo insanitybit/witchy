@@ -54,6 +54,7 @@ fn callable_checker_recomputes_parameter_effects() {
         provenance: Provenance::Unknown,
     };
     let module = CandidateModule {
+     gc: Default::default(),
         checked_source_entries: 1,
         layouts,
         imports: BTreeMap::new(),
