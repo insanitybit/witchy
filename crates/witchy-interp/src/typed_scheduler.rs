@@ -233,9 +233,30 @@ mod tests {
     use crate::typed_async::KernelStatus;
     use crate::typed_host::HostOperationId;
     use witchy_syntax::ast::Type;
+    use witchy_types::async_program::{AsyncBackendBinding, AsyncBackendStateBinding, AsyncExecutionShape, AsyncProgram, AsyncProgramStateId, AsyncStateEdge, FinalStateBinding};
+    use witchy_types::typed_async_lowering::FinalCallableIndex;
     use witchy_types::typed_execution::{ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId,
         ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, FrameLaneId, LaneOwnership,
         OperationSite, PayloadOwnership, QueueCapacity, QueueShape, QueueShapeId, TypedExecutionShape};
+
+    #[test]
+    fn canonical_program_binding_enters_the_same_execution_kernel() {
+        let program = AsyncProgram::new(vec![AsyncExecutionShape {
+            id: ExecutionShapeId(0), closure_layout_fingerprint: [3; 32], frame: vec![],
+            entry: AsyncProgramStateId(0), result_lanes: vec![], operations: vec![], queues: vec![], cancellation: None,
+            states: vec![FinalStateBinding {
+                state: AsyncProgramStateId(0), callable: FinalCallableIndex(0), capture_to_lane: vec![],
+                edges: vec![AsyncStateEdge { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Complete }],
+            }], dynamic_boundaries: vec![],
+        }]).expect("program");
+        let binding = AsyncBackendBinding {
+            shape: ExecutionShapeId(0), closure_layout_fingerprint: [3; 32],
+            states: vec![AsyncBackendStateBinding { state: AsyncProgramStateId(0), callable: FinalCallableIndex(0), capture_to_lane: vec![] }],
+        };
+        let mut scheduler = TypedScheduler::new();
+        scheduler.install_program_execution(&program, ExecutionShapeId(0), 44, &binding).expect("bind program");
+        assert_eq!(scheduler.run_round().expect("run")[0].turn, KernelTurn::Complete);
+    }
 
     fn linear() -> TypedExecution {
         TypedExecution::new(TypedExecutionShape {
