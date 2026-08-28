@@ -210,13 +210,32 @@ impl TypedAsyncLoweringInput {
         if operations.len() != source.operations.len() {
             return Err("RFC-0161 linear producer found operations for an unknown callable".into());
         }
+        let mut terminal_operation = None;
         for operation in &operations {
+            if let Some(previous) = terminal_operation {
+                return Err(format!(
+                    "RFC-0161 linear producer found source operation {} after terminal operation {}",
+                    operation.source_operation,
+                    previous,
+                ));
+            }
             match operation.runtime_kind {
                 TypedAsyncOperationKind::Yield | TypedAsyncOperationKind::Return => {}
                 kind => return Err(format!("RFC-0161 linear producer does not support typed operation {kind:?}")),
             }
+            if operation.runtime_kind == TypedAsyncOperationKind::Return
+                && (!operation.operand_bindings.is_empty() || operation.operand_type.is_some())
+            {
+                return Err(format!(
+                    "RFC-0161 linear producer does not support value-bearing return at source operation {}",
+                    operation.source_operation,
+                ));
+            }
             if !operation.operand_bindings.is_empty() || operation.operand_type.is_some() {
                 return Err(format!("RFC-0161 linear producer does not support operands for source operation {}", operation.source_operation));
+            }
+            if operation.terminal {
+                terminal_operation = Some(operation.source_operation);
             }
         }
 
@@ -955,6 +974,22 @@ mod tests {
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("channel operation needs the queue-aware producer");
         assert!(error.contains("CallOperand"), "unexpected rejection: {error}");
+    }
+
+    #[test]
+    fn linear_producer_rejects_value_bearing_return_explicitly() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn answer() -> Int:\n    return 7\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
+            .expect_err("value return needs a result-lane producer");
+        assert!(error.contains("value-bearing return"), "unexpected rejection: {error}");
     }
 
     #[test]
