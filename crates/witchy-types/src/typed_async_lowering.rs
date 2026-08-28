@@ -23,8 +23,8 @@ use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
 use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
 use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
-    ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, OperationSite,
-    OperationSiteId, TypedExecutionShape};
+    ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane,
+    LaneOwnership, OperationSite, OperationSiteId, TypedExecutionShape};
 
 /// A final callable-table position. This is an internal backend binding input;
 /// it is intentionally not a generated function name.
@@ -201,6 +201,9 @@ impl TypedAsyncLoweringInput {
         }
         let source = &self.source[0];
         if !source.controls.is_empty() {
+            if self.operations.is_empty() && source.controls.len() == 1 {
+                return self.into_boolean_control_execution(shape, closure_layout_fingerprint);
+            }
             return Err("RFC-0161 linear producer rejects control-flow selectors until typed edges are bound".into());
         }
         let operations = self.operations.iter().filter(|operation| operation.callable == source.callable).collect::<Vec<_>>();
@@ -286,6 +289,49 @@ impl TypedAsyncLoweringInput {
             capture_to_lane: Vec::new(),
         }).collect();
         Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings, dynamic_boundaries: Vec::new() })
+    }
+
+    fn into_boolean_control_execution(
+        &self,
+        shape: ExecutionShapeId,
+        closure_layout_fingerprint: [u8; 32],
+    ) -> Result<FinalTypedAsyncExecution, String> {
+        let source = &self.source[0];
+        let control = &self.controls[0];
+        if control.selector_type != Some(Type::Named("Bool".into(), Vec::new())) {
+            return Err("RFC-0161 control producer requires a concrete Bool selector".into());
+        }
+        let entry = self.states.iter().find(|state| {
+            state.callable == source.callable && state.kind == TypedAsyncStateKind::Entry
+        }).ok_or_else(|| "RFC-0161 control producer has no final entry state".to_string())?;
+        if entry.frame.len() != 1 || entry.frame[0].ty != Type::Named("Bool".into(), Vec::new()) {
+            return Err("RFC-0161 control producer requires one Bool entry parameter".into());
+        }
+        let execution = TypedExecutionShape {
+            id: shape,
+            entry: ExecutionStateId(0),
+            frame: vec![FrameLane { id: crate::typed_execution::FrameLaneId(0), ty: entry.frame[0].ty.clone(), ownership: LaneOwnership::Copy, initially_initialized: true }],
+            result_lanes: Vec::new(),
+            states: vec![ExecutionState {
+                id: ExecutionStateId(0),
+                transitions: vec![
+                    ExecutionTransition { condition: ExecutionEdgeCondition::Boolean { lane: crate::typed_execution::FrameLaneId(0), when: true }, actions: Vec::new(), outcome: ExecutionOutcome::Complete },
+                    ExecutionTransition { condition: ExecutionEdgeCondition::Boolean { lane: crate::typed_execution::FrameLaneId(0), when: false }, actions: Vec::new(), outcome: ExecutionOutcome::Complete },
+                ],
+            }],
+            operations: Vec::new(),
+            queues: Vec::new(),
+            cancellation: None,
+        };
+        execution.validate()?;
+        Ok(FinalTypedAsyncExecution {
+            execution,
+            closure_layout_fingerprint,
+            state_bindings: vec![FinalTypedAsyncStateBinding {
+                state: ExecutionStateId(0), callable: entry.final_callable, capture_to_lane: vec![crate::typed_execution::FrameLaneId(0)],
+            }],
+            dynamic_boundaries: Vec::new(),
+        })
     }
 
     /// Re-run the ordinary checked lowering projection, then bind each final
@@ -909,6 +955,23 @@ mod tests {
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("channel operation needs the queue-aware producer");
         assert!(error.contains("CallOperand"), "unexpected rejection: {error}");
+    }
+
+    #[test]
+    fn boolean_control_producer_emits_typed_terminal_edges() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn choose(flag: Bool):\n    if flag:\n        ()\n    else:\n        ()\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [5; 32]).expect("boolean control execution");
+        assert_eq!(execution.execution.frame.len(), 1);
+        assert_eq!(execution.execution.states[0].transitions.len(), 2);
+        assert!(execution.execution.states[0].transitions.iter().all(|transition| transition.outcome == ExecutionOutcome::Complete));
     }
 
     #[test]
