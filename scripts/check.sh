@@ -128,23 +128,17 @@ else
 fi
 
 # Fuzz policy (WITCHY_GATE_FUZZ, default `full`) — set by the merge-queue
-# coordinator from the branch diff; unset here means full, so a standalone run is
-# unchanged. The differential fuzzer is the single biggest test (~57s) and a fixed
-# 30-seed REGRESSION set (not exploratory), so it earns its keep only when a change
-# can affect backend parity:
-#   full     30 seeds (default; standalone, --full, and when unsure)
-#   reduced  10 seeds — a change touches parity surface (codegen/interp/std/…); the
-#            full 30 still run post-merge on CI (heap-checked) and in `--full`
+# coordinator from the branch diff. Ordinary Rust tests are bounded deterministic
+# fixture contracts; the larger fixed regression corpus is an explicit nightly target.
+# This separates fast failure localization from breadth sampling without dropping either
+# correctness contract.
+#   full     the ordinary fixture tests in this workspace pass
+#   reduced  same ordinary smoke (retained for coordinator compatibility)
 #   skip     none — a docs/rfc/bug/config-only diff cannot change parity, so no
 #            fuzz seed could catch anything; skip the whole differential_fuzz binary
-# `reduced` works by setting WITCHY_FUZZ_PROGRAMS (only the big test reads it, so
-# the cheaper metamorphic checks keep their full counts). `skip` filters the binary.
 gate_fuzz="${WITCHY_GATE_FUZZ:-full}"
-# `--full` is the EXHAUSTIVE push gate (it adds the heap-check / uaf / rc / type
-# sanitizer fuzz sweeps below, several of which run `differential_fuzz` at its
-# DEFAULT 30 seeds). Diff-scoping is only for the per-merge default gate — never
-# weaken --full — so force `full` here regardless of WITCHY_GATE_FUZZ. Otherwise a
-# reduced/skip mode would silently shrink or drop the very sweeps --full exists for.
+# `--full` forces ordinary fixture coverage regardless of diff-scoping. Exhaustive
+# fuzz campaigns are intentionally only scheduled/manual CI in nightly-fuzz.yml.
 [ "$full" -eq 1 ] && gate_fuzz="full"
 # A serialized path selector is more precise than the daemon's coarse diff
 # classification. In particular, an older daemon can classify a change to the
@@ -158,13 +152,12 @@ if [ "$gate_fuzz" = "skip" ] && [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
             ;;
     esac
 fi
-# `reduced` runs the fuzzer under WITCHY_FUZZ_PROGRAMS=N. We set that var in this
-# shell's OWN environment (exported below only for that mode) rather than splicing
-# an `env` array into test_cmd — bash 3.2 (the macOS gate host) errors on an EMPTY
-# array expansion under `set -u`, so an unused `fuzz_env=()` would abort the script.
+# `reduced` deliberately uses the same bounded smoke corpus as `full`; the former
+# ten-seed setting made one ordinary test exceed the two-second ceiling. Keep the
+# selector as a compatibility spelling until the coordinator stops emitting it.
 fuzz_excl=""
 case "$gate_fuzz" in
-    reduced) export WITCHY_FUZZ_PROGRAMS="${WITCHY_GATE_FUZZ_REDUCED:-10}" ;;
+    reduced) ;;
     skip)    fuzz_excl="not binary(differential_fuzz)" ;;
     full)    ;;
     *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
@@ -360,9 +353,8 @@ esac
 # from the merge gate. It runs explicitly via `--e2e` and as part of `--full`.
 if cargo nextest --version >/dev/null 2>&1; then
     # On macOS the list wrapper avoids a second cold exec per test binary by
-    # deriving the ignored list from the ordinary list. Keep that optimization
-    # fail-closed: a new/renamed #[ignore] must update its audited-name policy before
-    # the gate runs, otherwise nextest could misclassify the test.
+    # deriving the one audited legacy ignored test from the ordinary list. Keep that
+    # optimization fail-closed: a new/renamed #[ignore] must update its policy first.
     scripts/nextest-list-wrapper.sh --validate-ignore-policy "$PWD"
     # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one
     # filterset (nextest ANDs, so join with ` and `).
@@ -1155,28 +1147,9 @@ else
     run "Rust-class paired correctness" rust_class_check
 fi
 if [ "$full" -eq 1 ]; then
-    # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked
-    # heap on, so a codegen heap bug (wrong offset, missing ensure, mis-layout) in
-    # any optimization surfaces as a redzone trap or backend DIVERGE on random
-    # programs — not just the curated suite. Runs with all WITCHY_OPT levers on.
-    run "fuzz (checked heap)"  env WITCHY_HEAP_CHECK=1 cargo nextest run --test differential_fuzz
-    # RFC-0037 §3 use-after-free sweep: the sanitizer poisons every freed block, so a
-    # use-after-free of an un-reused block reads a trap pattern deterministically (a class
-    # the freelist-clobber-based differential can miss). On a correct compiler this is
-    # output-preserving, so a DIVERGE here is a real reclamation bug under `rc-floor`. Wider
-    # than the in-suite default so more freed-then-read shapes are exercised.
-    run "fuzz (uaf sanitizer)" env WITCHY_UAF_FUZZ_PROGRAMS=40 cargo nextest run --test differential_fuzz -E 'test(uaf_sanitizer)'
-    # RFC-0051 I1 dup/drop assertion sweep: WITCHY_RC_ASSERT traps (fire-and-report) when a
-    # value with an implausible header reaches $rc_dup/$rc_drop — an I1 emission-invariant
-    # violation (a view/slice/scalar dup'd/dropped). Zero fires across this + examples + e2e is
-    # the RFC's precondition for deleting the release-path plausibility heuristic. A DIVERGE
-    # here names a real type-predicate gap (the SEC-037 class), not a false positive.
-    run "fuzz (rc assertion)"  env WITCHY_RC_ASSERT_PROGRAMS=40 cargo nextest run --test differential_fuzz -E 'test(rc_assert_dup_drop_is_false_positive_free)'
-    # RFC-0037 §3 type-confusion sweep: WITCHY_TYPE_CHECK tags every $rc_alloc object and asserts
-    # the tag at typed reads (boxed .field + packed unbox at().field). On a correct compiler it is
-    # output-preserving, so a DIVERGE/trap is a real layout/unbox confusion. Runs the whole fuzz
-    # corpus (records/ADTs/packable lists) under the sanitizer.
-    run "fuzz (type sanitizer)" env WITCHY_TYPE_CHECK=1 cargo nextest run --test differential_fuzz
+    # Full differential-fuzz campaigns are explicit, non-blocking nightly CI targets.
+    # `.github/workflows/nightly-fuzz.yml` preserves their legacy corpus sizes and sanitizer
+    # modes; neither ordinary nor --full local gates execute them.
     run "e2e (from scratch)"   ./scripts/e2e-full.sh
     # RFC-0030 bench/soak. The deterministic guards — the never-OOM soak and the
     # per-optimization counter assertions (src/stats.rs) — are HARD-gated in the

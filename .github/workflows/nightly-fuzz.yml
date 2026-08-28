@@ -1,0 +1,71 @@
+name: Nightly differential fuzz
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nightly-differential-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  campaigns:
+    name: Differential fuzz campaigns
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Fixed, reproducible corpus sizes formerly run by check.sh --full.
+      WITCHY_FUZZ_PROGRAMS: "30"
+      WITCHY_FUZZ_STATEMENTS: "100"
+      WITCHY_ASYNC_FUZZ_PROGRAMS: "2"
+      WITCHY_RECLAIM_PROGRAMS: "30"
+      WITCHY_LAW_PROGRAMS: "40"
+      WITCHY_UAF_FUZZ_PROGRAMS: "12"
+      WITCHY_UAF_FUZZ_STATEMENTS: "100"
+      WITCHY_RC_ASSERT_PROGRAMS: "12"
+      WITCHY_RC_ASSERT_STATEMENTS: "100"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: nextest
+      - name: Backend-parity and metamorphic corpus
+        run: >-
+          cargo nextest run --profile ci --ignore-default-filter
+          --test differential_fuzz_campaigns
+          -E 'not test(/^differential_fuzz::/)'
+      - name: Checked heap corpus
+        env:
+          WITCHY_HEAP_CHECK: "1"
+        run: >-
+          cargo nextest run --profile ci --ignore-default-filter
+          --test differential_fuzz_campaigns
+          -E 'not test(/^differential_fuzz::/)'
+      - name: Type sanitizer corpus
+        env:
+          WITCHY_TYPE_CHECK: "1"
+        run: >-
+          cargo nextest run --profile ci --ignore-default-filter
+          --test differential_fuzz_campaigns
+          -E 'not test(/^differential_fuzz::/)'
+      - name: Extended UAF sanitizer corpus
+        env:
+          WITCHY_UAF_FUZZ_PROGRAMS: "40"
+        run: >-
+          cargo nextest run --profile ci --ignore-default-filter
+          --test differential_fuzz_campaigns
+          -E 'test(uaf_sanitizer_campaign)'
+      - name: Extended RC assertion corpus
+        env:
+          WITCHY_RC_ASSERT_PROGRAMS: "40"
+        run: >-
+          cargo nextest run --profile ci --ignore-default-filter
+          --test differential_fuzz_campaigns
+          -E 'test(rc_assertion_campaign)'

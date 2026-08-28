@@ -12,6 +12,7 @@ Usage:
     scripts/gate-test-cost.py --top 40         # deeper tail
     scripts/gate-test-cost.py --trend          # week-over-week regression
     scripts/gate-test-cost.py --budget 5.0     # list tests over a budget
+    scripts/gate-test-cost.py --assert-budget 2 # fail if any ordinary test exceeds 2s
 """
 
 import argparse
@@ -144,6 +145,7 @@ def profile(run, top, budget):
         print(f"  {duration:8.1f}s  n={counts[binary]:5}  "
               f"{duration / counts[binary]:6.2f}s/test  {binary}")
 
+    over = []
     if budget:
         over = [t for t in tests if t[0] > budget]
         excess = sum(d - budget for d, _, _ in over)
@@ -152,6 +154,7 @@ def profile(run, top, budget):
               f"({excess:.0f}s CPU above budget, ~{excess / cores():.0f}s of wall) ---")
         for duration, binary, name in over:
             print(f"  {duration:7.1f}s  {binary:26} {name[:64]}")
+    return over
 
 
 def aggregate(runs, top, budget):
@@ -260,6 +263,8 @@ def main():
                          "one gate's load noise)")
     ap.add_argument("--budget", type=float, default=0.0,
                     help="list every test slower than this many seconds")
+    ap.add_argument("--assert-budget", type=float, default=0.0,
+                    help="fail if any test in the newest completed gate exceeds this many seconds")
     ap.add_argument("--runs", type=int, default=60,
                     help="how many recent gate logs to mine for --trend")
     args = ap.parse_args()
@@ -280,7 +285,14 @@ def main():
     if not runs:
         print("no gate log with a completed test stage found", file=sys.stderr)
         return 1
-    profile(runs[-1], args.top, args.budget)
+    budget = args.assert_budget or args.budget
+    over = profile(runs[-1], args.top, budget)
+    if args.assert_budget and over:
+        print(
+            f"FAIL: {len(over)} tests exceed the {args.assert_budget:.1f}s hard ceiling",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

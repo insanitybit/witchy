@@ -40,9 +40,9 @@ repo_root="${WITCHY_NEXTEST_IGNORED_SOURCE_ROOT:-$(cd "$(dirname "$0")/.." && pw
                 ;;
         esac
     fi
-    if [ "$audited_ignore_count" -gt 2 ]; then
-        # New ignored tests must be reviewed here rather than being accepted
-        # merely because the source scanner happened to recognize them.
+    # This optimization has one deliberately reviewed legacy exception. New ignored
+    # tests must use a separate target or an explicit runner policy instead.
+    if [ "$audited_ignore_count" -gt 1 ]; then
         policy_valid=0
     fi
     if [ "$policy_valid" -ne 1 ]; then
@@ -193,19 +193,17 @@ if [ "$ignored" -eq 1 ]; then
         fi
         sleep 0.05
     done
-    awk -v ignored="$audited_ignored_tests" '
-        BEGIN {
-            count = split(ignored, names, "\n")
-            for (i = 1; i <= count; i += 1) {
-                if (names[i] != "") wanted[names[i]] = 1
-            }
+    awk '
+        NR == FNR {
+            if ($0 != "") wanted[$0] = 1
+            next
         }
         /: test$/ {
             name = $0
             sub(/: test$/, "", name)
             if (name in wanted) print
         }
-    ' "$normal_output"
+    ' <(printf '%s\n' "$audited_ignored_tests") "$normal_output"
     rm -f "$normal_done" "$normal_output" 2>/dev/null || true
     exit 0
 else

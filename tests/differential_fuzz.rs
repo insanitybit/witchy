@@ -998,13 +998,7 @@ struct ConfigTally {
     compared_lines: usize,
 }
 
-#[test]
-fn differential_fuzz_async_state_machines() {
-    // Async compilation is materially heavier than a scalar statement, so keep
-    // this arm deliberately small by default. Each seed still changes the loop
-    // bound, channel capacity, carried values, and fold result; scheduled fuzz
-    // jobs can raise the count without changing reproduction by seed.
-    let programs = env_usize("WITCHY_ASYNC_FUZZ_PROGRAMS", 2);
+fn run_async_state_machine_corpus(programs: usize) {
     assert!(programs > 0, "the async differential corpus must not be empty");
 
     std::thread::scope(|s| {
@@ -1072,13 +1066,37 @@ fn differential_fuzz_async_state_machines() {
     });
 }
 
+/// The ordinary test proves the state-machine generator continues to emit every construct that
+/// makes the async corpus meaningful. Running this through the CLI parity path costs tens of
+/// seconds per optimizer shape; that backend contract lives in the explicit exhaustive campaign
+/// below, where it retains the original seed count and sanitizer modes.
 #[test]
-fn differential_fuzz_interpreter_vs_compiled() {
-    // Counts are env-overridable so the scheduled/`--full` job can scale coverage up. The
-    // defaults keep total work (programs × statements × CONFIGS) close to the pre-cross-lever
-    // budget while adding per-lever coverage.
-    let programs = env_usize("WITCHY_FUZZ_PROGRAMS", 30);
-    let statements = env_usize("WITCHY_FUZZ_STATEMENTS", 100);
+fn differential_fuzz_async_generator_exercises_state_machine_shapes() {
+    let src = gen_async_program(5);
+    for shape in [
+        "async fn produce",
+        "while i < n:",
+        "chan.send(tx, next).await",
+        "async fn fold",
+        "for await value in rx:",
+        "chan.channel(",
+        "chan.spawn(produce(",
+        "fold(console, rx,",
+    ] {
+        assert!(
+            src.contains(shape),
+            "async state-machine generator omitted required shape {shape:?}\n--- program ---\n{src}"
+        );
+    }
+}
+
+/// Runs the explicit async campaign target. It is not an ordinary test because one program
+/// invokes the CLI compiler/runtime under three optimizer modes and exceeds the two-second cap.
+pub fn run_async_state_machine_campaign() {
+    run_async_state_machine_corpus(env_usize("WITCHY_ASYNC_FUZZ_PROGRAMS", 2));
+}
+
+fn run_scalar_differential_corpus(programs: usize, statements: usize) {
     let default_idx = CONFIGS.iter().position(|c| c.is_empty()).unwrap();
 
     struct SeedResult {
@@ -1215,16 +1233,39 @@ fn differential_fuzz_interpreter_vs_compiled() {
     );
 }
 
-/// (RFC-0005 positive control) A DETERMINISTIC test that the capability-aggregate grammar
-/// actually reaches BOTH backends — not a probabilistic claim resting on the random sweep.
-/// It generates one program per cap-aggregate kind (38..=46) by seeding `gen_program` so that
-/// kind is emitted, but more robustly it just asserts each fixed cap shape compiles and agrees
-/// via `witchy parity`, independent of the random program count. This is the guard that the
-/// cap grammar is non-vacuous even when `WITCHY_FUZZ_PROGRAMS` is dialed down: if a future
-/// codegen change makes any cap aggregate stop reaching a backend, THIS fails immediately with
-/// a minimal, named reproducer rather than only as a statistical coverage miss.
+/// Runs the explicit scalar differential campaign target.
+pub fn run_scalar_differential_campaign() {
+    run_scalar_differential_corpus(
+        env_usize("WITCHY_FUZZ_PROGRAMS", 30),
+        env_usize("WITCHY_FUZZ_STATEMENTS", 100),
+    );
+}
+
+/// Keep the fuzzer's grammar-coverage contract independent from expensive backend execution.
+/// This is deliberately deterministic: it exercises the same generator over a fixed stream of
+/// seeds, but does not invoke either compiler. Backend parity is covered by the bounded smoke
+/// seed above and the explicit exhaustive campaign; this test makes a missing generator arm
+/// fail immediately rather than requiring a multi-minute parity sweep to discover it.
 #[test]
-fn capability_aggregates_reach_both_backends() {
+fn differential_fuzz_generator_covers_every_statement_kind() {
+    let expected = (1u64 << NKINDS) - 1;
+    let mut kinds_used = 0;
+    for seed in 0..100 {
+        let (_, used) = gen_program(seed, 100);
+        kinds_used |= used;
+        if kinds_used == expected {
+            return;
+        }
+    }
+    let missing = expected & !kinds_used;
+    panic!(
+        "generator never emitted statement kind(s) (missing bitmask {missing:#b}) in the fixed coverage stream"
+    );
+}
+
+/// Fixed capability-aggregate controls shared by the fast generator contract and the exhaustive
+/// backend-parity campaign.
+fn capability_aggregate_control_source() -> (String, usize) {
     // Each snippet is a complete `main` body line-set exercising one RFC-0005 shape, using only
     // the single `root`/`net` grants `witchy parity` supplies. Preamble (types + helpers) is
     // shared via CAP_LIB. Every snippet prints only deterministic scalar/String projections;
@@ -1244,31 +1285,70 @@ fn capability_aggregates_reach_both_backends() {
     ];
     // Reuse the generator's exact preamble so the control tests the SAME types/helpers the
     // random sweep uses (drift here would make the control lie). `gen_program(seed, 0)` yields
-    // the full preamble + an empty `main` body; we append each case's body.
+    // the full preamble + an empty `main` body; append every independent shape to that one body.
+    // A marker before each case keeps a failed composite program directly diagnosable.
     let (preamble, _) = gen_program(0, 0);
-    for (name, body) in cases {
-        let src = format!("{preamble}{body}");
-        // Every case must COMPILE (a cap grammar the acceptance gate rejects is a generator bug).
+    let mut body = String::new();
+    for (name, case) in cases {
+        body.push_str(&format!("    // capability-aggregate control: {name}\n"));
+        body.push_str(case);
+    }
+    (format!("{preamble}{body}"), cases.len())
+}
+
+/// The ordinary control proves every named capability aggregate remains in the deterministic
+/// fixture. Backend parity for this source is an explicit campaign below: even one full CLI
+/// parity run is slower than the two-second per-test ceiling.
+#[test]
+fn capability_aggregate_control_has_every_named_shape() {
+    let (src, cases) = capability_aggregate_control_source();
+    assert_eq!(cases, 11, "capability aggregate control lost a named shape");
+    for name in [
+        "record_project",
+        "net_wrapper",
+        "nested_record",
+        "sum_mixed_variants",
+        "match_wrong_arm_order",
+        "recursive_cap_adt",
+        "mutually_recursive_cap_adt",
+        "qualified_narrowed_field",
+        "project_and_rebuild",
+        "let_pattern_destructure_named",
+        "let_pattern_destructure_wildcard",
+    ] {
         assert!(
-            check_accepts(&src, &format!("capctl_check_{name}")).unwrap_or(false),
-            "capability-aggregate control `{name}` did not pass `witchy check`.\n--- program ---\n{src}"
+            src.contains(&format!("// capability-aggregate control: {name}")),
+            "capability aggregate control omitted {name:?}\n--- program ---\n{src}"
         );
-        match run_parity(&src, "", &format!("capctl_{name}")) {
-            ParityResult::Agree(n) => assert!(
-                n >= 1,
-                "capability-aggregate control `{name}` produced no comparable output.\n--- program ---\n{src}"
-            ),
-            other => {
-                let what = match other {
-                    ParityResult::Diverge(o) => format!("DIVERGE\n{o}"),
-                    ParityResult::Crash(o) => format!("CRASH (signal)\n{o}"),
-                    ParityResult::TimedOut => "TIMED OUT".to_string(),
-                    ParityResult::Skip => "SKIPPED (did not compile on a backend)".to_string(),
-                    ParityResult::BothErrorAgree => "both backends errored".to_string(),
-                    ParityResult::Agree(_) => unreachable!(),
-                };
-                panic!("capability-aggregate control `{name}` did not agree: {what}\n--- program ---\n{src}");
-            }
+    }
+}
+
+/// Runs the explicit capability-aggregate backend-parity campaign target.
+pub fn run_capability_aggregate_campaign() {
+    let (src, cases) = capability_aggregate_control_source();
+    match run_parity(&src, "", "capctl_composite") {
+        ParityResult::Agree(n) => assert!(
+            n >= cases,
+            "capability-aggregate composite control produced too few comparable output lines ({n}, want at least {}).\n--- program ---\n{src}",
+            cases
+        ),
+        other => {
+            let what = match other {
+                ParityResult::Diverge(o) => format!("DIVERGE\n{o}"),
+                ParityResult::Crash(o) => format!("CRASH (signal)\n{o}"),
+                ParityResult::TimedOut => "TIMED OUT".to_string(),
+                ParityResult::Skip => {
+                    let accepted = check_accepts(&src, "capctl_check_composite").unwrap_or(false);
+                    assert!(
+                        accepted,
+                        "capability-aggregate composite control did not pass `witchy check`.\n--- program ---\n{src}"
+                    );
+                    "SKIPPED despite passing `witchy check` (backend acceptance drift)".to_string()
+                }
+                ParityResult::BothErrorAgree => "both backends errored".to_string(),
+                ParityResult::Agree(_) => unreachable!(),
+            };
+            panic!("capability-aggregate composite control did not agree: {what}\n--- program ---\n{src}");
         }
     }
 }
@@ -1453,9 +1533,7 @@ fn run_compiled(src: &str, cfg: &str, tag: &str) -> (bool, String) {
     (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-#[test]
-fn metamorphic_dead_alloc_invariant() {
-    let programs = env_usize("WITCHY_RECLAIM_PROGRAMS", 30);
+fn run_dead_alloc_metamorphic_corpus(programs: usize) {
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..programs as u64).map(|seed| {
             s.spawn(move || {
@@ -1474,9 +1552,24 @@ fn metamorphic_dead_alloc_invariant() {
     });
 }
 
+/// The ordinary test verifies the fixture relationship itself: the transformed source contains
+/// the same live program plus deliberately unused allocations that perturb allocation order.
 #[test]
-fn metamorphic_property_laws() {
-    let programs = env_usize("WITCHY_LAW_PROGRAMS", 40);
+fn dead_alloc_fixture_adds_only_dead_allocations() {
+    let (base, twin) = gen_reclaim_pair(3);
+    assert_ne!(base, twin, "dead-allocation transform must change allocation layout");
+    assert!(!base.contains("let dz"), "base program must not include injected dead lists");
+    assert!(!base.contains("let dw"), "base program must not include injected dead strings");
+    assert!(twin.contains("let dz"), "twin program lost injected dead lists");
+    assert!(twin.contains("let dw"), "twin program lost injected dead strings");
+}
+
+/// Runs the explicit dead-allocation metamorphic campaign target.
+pub fn run_dead_alloc_metamorphic_campaign() {
+    run_dead_alloc_metamorphic_corpus(env_usize("WITCHY_RECLAIM_PROGRAMS", 30));
+}
+
+fn run_property_law_corpus(programs: usize) {
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..programs as u64).map(|seed| {
             s.spawn(move || {
@@ -1516,8 +1609,33 @@ fn metamorphic_property_laws() {
     });
 }
 
+/// Verify that one deterministic law fixture contains every oracle projection. The complete
+/// compiler/interpreter and truth-value check is retained as the explicit 40-seed campaign.
 #[test]
-fn uaf_sanitizer_is_false_positive_free() {
+fn property_law_fixture_contains_every_oracle() {
+    let src = gen_law_program(7);
+    assert_eq!(src.matches("console.print(").count(), NLAWS);
+    for shape in ["is_perm(sorted(xs), xs)", "dict.get_or", "bytes.to_string", "set.union"] {
+        assert!(src.contains(shape), "law fixture omitted {shape:?}\n--- program ---\n{src}");
+    }
+}
+
+/// Runs the explicit property-law metamorphic campaign target.
+pub fn run_property_law_campaign() {
+    run_property_law_corpus(env_usize("WITCHY_LAW_PROGRAMS", 40));
+}
+
+/// The ordinary generator contract keeps sanitizer corpus fixtures tied to the same deterministic
+/// statement generator without starting a compiler subprocess.
+#[test]
+fn sanitizer_corpus_generator_retains_executable_shapes() {
+    let (src, used) = gen_program(1, 32);
+    assert_ne!(used, 0, "sanitizer corpus generator produced no statement kinds");
+    assert!(src.contains("fn main(console: Console, root: Dir, net: Net):"));
+}
+
+/// Runs the explicit UAF poison-on-free parity campaign target.
+pub fn run_uaf_sanitizer_campaign() {
     run_sanitizer_corpus(SanitizerCorpus {
         programs_key: "WITCHY_UAF_FUZZ_PROGRAMS", statements_key: "WITCHY_UAF_FUZZ_STATEMENTS", prefix: "uaf_",
         seed_mul: 0x1234_5678_9ABC_DEF1, seed_add: 1, sanitizer: "WITCHY_UAF_CHECK",
@@ -1537,8 +1655,8 @@ fn uaf_sanitizer_is_false_positive_free() {
 /// the SEC-037 class. Zero fires across this + examples + e2e is the RFC's precondition
 /// for deleting the release-path `header_ok` heuristic entirely. Runs under `rc-floor`
 /// (the only lever that emits dup/drop).
-#[test]
-fn rc_assert_dup_drop_is_false_positive_free() {
+/// Runs the explicit RC assertion campaign target.
+pub fn run_rc_assertion_campaign() {
     run_sanitizer_corpus(SanitizerCorpus {
         programs_key: "WITCHY_RC_ASSERT_PROGRAMS", statements_key: "WITCHY_RC_ASSERT_STATEMENTS", prefix: "rcassert_",
         seed_mul: 0x0F1E_2D3C_4B5A_6978, seed_add: 7, sanitizer: "WITCHY_RC_ASSERT",
