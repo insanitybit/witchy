@@ -1609,6 +1609,19 @@ mod tests {
     }
 
     #[test]
+    fn queue_aware_producer_preserves_fixed_and_dynamic_capacity_shapes() {
+        let module = witchy_syntax::parser::parse_module("from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nfn main():\n    ()\n").expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        for capacity in [crate::typed_execution::QueueCapacity::Fixed(3), crate::typed_execution::QueueCapacity::Dynamic] {
+            let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+            let send = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSend).expect("send operation");
+            input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: send.operand_bindings[0], shape: QueueShape { id: crate::typed_execution::QueueShapeId(0), capacity, payload_layout_fingerprint: [23; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
+            let execution = input.into_linear_execution(ExecutionShapeId(0), [24; 32]).expect("capacity-aware send");
+            assert_eq!(execution.execution.queues[0].capacity, capacity);
+        }
+    }
+
+    #[test]
     fn queue_aware_producer_lowers_select_into_continuation_capture() {
         let module = witchy_syntax::parser::parse_module("from chan import Receiver, Selected\n\nasync fn choose(first: Receiver(Int), second: Receiver(Int)) -> Nil:\n    let selected = chan.select(first, second).await\n    return\n\nfn main():\n    ()\n").expect("parse source");
         let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
