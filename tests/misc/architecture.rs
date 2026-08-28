@@ -124,7 +124,9 @@ fn stage_crates_follow_the_declared_dependency_dag() {
 /// top-level file per RFC, which costs every gate for every branch.
 #[test]
 fn root_integration_test_binaries_stay_within_budget() {
-    const BUDGET: usize = 24;
+    // The explicitly nightly differential-fuzz campaign is a first-class
+    // binary, even though it is absent from the blocking profile.
+    const BUDGET: usize = 25;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut drivers: Vec<String> = std::fs::read_dir(&root)
