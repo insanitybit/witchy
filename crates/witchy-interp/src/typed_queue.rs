@@ -620,6 +620,12 @@ impl TypedQueueRuntime {
                 .expect("execution was checked above")
                 .request_cancellation();
         }
+        // Host waits live in this same execution registry but have no queue
+        // link. Claiming the exact host generation here keeps scheduler-level
+        // cancellation uniform across queue and capability I/O operations.
+        if self.host_waits.values().any(|wait| wait.execution == execution) {
+            return self.request_host_cancellation(execution, generation);
+        }
         let select = cancellable.waiting_select_arms();
         let claimed = match select {
             Ok((operation, arms)) => {
@@ -814,7 +820,7 @@ mod tests {
                 result_lanes: if kind == ExecutionOperation::ChannelReceive { vec![FrameLaneId(0)] } else { vec![] },
                 pending_move_lanes: vec![],
                 fallback_state: Some(ExecutionStateId(0)),
-                queue: Some(QueueShapeId(0)),
+                queue: if matches!(kind, ExecutionOperation::ChannelSend | ExecutionOperation::ChannelReceive) { Some(QueueShapeId(0)) } else { None },
                 arms: vec![],
             }, OperationSite {
                 id: OperationSiteId(1),
@@ -1040,6 +1046,17 @@ mod tests {
         assert!(runtime.cancel(1, 4).expect("matching cancel"));
         assert_eq!(runtime.execution(1).expect("execution").status(), crate::typed_async::KernelStatus::Ready);
         assert_eq!(runtime.execution(1).expect("execution").state(), ExecutionStateId(0));
+    }
+
+    #[test]
+    fn generic_cancellation_claims_a_host_wait_without_a_queue_link() {
+        let mut runtime = TypedQueueRuntime::default();
+        runtime.install_execution(7, execution(ExecutionOperation::Host)).expect("host");
+        runtime.submit_host(7, 9, 41).expect("host wait");
+        assert!(!runtime.request_cancellation(7, 8).expect("stale request"));
+        assert!(runtime.request_cancellation(7, 9).expect("matching request"));
+        assert_eq!(runtime.complete_host(41, 9).expect("late completion"), None);
+        assert_eq!(runtime.execution(7).expect("host").state(), ExecutionStateId(1));
     }
 
     #[test]
