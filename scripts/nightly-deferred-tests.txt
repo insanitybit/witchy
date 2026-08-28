@@ -1,0 +1,37 @@
+# Single source of truth for the tests excluded from the default merge gate
+# because they cost >2s and ran in ~every gate (scripts/gate-test-cost.py
+# --aggregate --runs 50), yet no smaller N preserves what they check --
+# genuine perf benchmarks or real subprocess builds. See the NIGHTLY-DEFERRED
+# block comment in scripts/check.sh for the full audit.
+#
+# One exact nextest test name per line (module-qualified where the test file
+# uses `mod`, bare where it doesn't — matches what `cargo nextest list`
+# prints). Blank lines and lines starting with # are ignored.
+#
+# Consumed by:
+#   - scripts/check.sh: builds nightly_excl_positive from this file, so the
+#     default/--fast gate excludes exactly these tests.
+#   - scripts/gate-test-cost.py --assert-budget: exempts exactly these tests
+#     from the budget check, so --full/CI can enforce "no other test exceeds
+#     2s" without re-litigating this deliberate list every time.
+#
+# Adding a test here is a real decision, not a way to silence a slow test:
+# read scripts/check.sh's NIGHTLY-DEFERRED comment for the bar before adding
+# one, and say why in the commit that adds it.
+million_message_scalar_executor_meets_resumption_cost_and_allocation_gate
+packed_aggregate_channel_uses_direct_scalar_lanes
+trusted_application_executables::trusted_publisher_application_end_to_end
+trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app
+bounded_channel_retags_task_slots_without_replacement_allocations
+simultaneous_fanout_retags_task_slots_without_replacement_allocations
+source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline
+rfc0129_acceptance_row_3_deterministic_schedule_backends_agree
+async_loan_tail::recursive_async_segment_scc_is_a_portable_tail_loop
+async_loan_tail::suspension_keeps_a_continuation_and_is_not_a_tail_edge
+nominal_packet_channel_preserves_its_effectful_prologue_on_the_direct_path
+tag_definition_site::typed_tag_names_resolve_at_definition_site_on_both_backends
+tag_definition_site::definition_site_markers_are_consumed_before_typechecking
+tail_positions::own_heap_parameter_forwards_through_the_tail_loop
+access_matrix_matches_independent_oracle_across_every_deopt
+indirect_tail::out_of_component_target_is_ordinary_indirect_exit
+trusted_application_executables::dependency_footprint_does_not_widen_the_trusted_root

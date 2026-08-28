@@ -13,6 +13,19 @@ Usage:
     scripts/gate-test-cost.py --trend          # week-over-week regression
     scripts/gate-test-cost.py --budget 5.0     # list tests over a budget
     scripts/gate-test-cost.py --assert-budget 2 # fail if any ordinary test exceeds 2s
+    scripts/gate-test-cost.py --assert-budget 2 --exempt-file scripts/nightly-deferred-tests.txt
+        # same, but skip the tests scripts/check.sh already excludes from the
+        # default gate (see NIGHTLY-DEFERRED there) -- run this against a
+        # --full or CI gate log, where those tests DO appear, to catch a NEW
+        # test crossing the budget without re-litigating the deferred list.
+
+--assert-budget mines the SINGLE newest gate log, whatever kind it is. A
+default/--fast merge-gate is often SCOPED to the touched paths (see
+WITCHY_GATE_SCOPE / the coordinator's batch classification in
+merge-queue.sh) and runs a different test subset each time -- its "over
+budget" set is run-dependent, not a stable enforcement signal. Point this
+at a --full or CI log (the whole workspace, every time) before treating a
+failure as real, and before wiring this into any automated gate.
 """
 
 import argparse
@@ -102,7 +115,21 @@ def cores():
         return 1
 
 
-def profile(run, top, budget):
+def load_exempt(path):
+    """One test name per line; blank lines and '#' comments ignored."""
+    if not path:
+        return set()
+    names = set()
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            names.add(line)
+    return names
+
+
+def profile(run, top, budget, exempt=None):
     tests = sorted(run["tests"], reverse=True)
     cpu = sum(d for d, _, _ in tests)
     ncpu = cores()
@@ -147,10 +174,14 @@ def profile(run, top, budget):
 
     over = []
     if budget:
-        over = [t for t in tests if t[0] > budget]
+        exempt = exempt or set()
+        all_over = [t for t in tests if t[0] > budget]
+        over = [t for t in all_over if t[2] not in exempt]
+        skipped = len(all_over) - len(over)
         excess = sum(d - budget for d, _, _ in over)
         print()
-        print(f"--- {len(over)} tests over the {budget:.1f}s budget "
+        exempt_note = f", {skipped} exempted" if skipped else ""
+        print(f"--- {len(over)} tests over the {budget:.1f}s budget{exempt_note} "
               f"({excess:.0f}s CPU above budget, ~{excess / cores():.0f}s of wall) ---")
         for duration, binary, name in over:
             print(f"  {duration:7.1f}s  {binary:26} {name[:64]}")
@@ -217,6 +248,9 @@ def main():
                     help="list every test slower than this many seconds")
     ap.add_argument("--assert-budget", type=float, default=0.0,
                     help="fail if any test in the newest completed gate exceeds this many seconds")
+    ap.add_argument("--exempt-file", type=str, default="",
+                    help="path to a file of test names (one per line) to skip "
+                         "when applying --assert-budget/--budget")
     ap.add_argument("--runs", type=int, default=60,
                     help="how many recent gate logs to mine for --trend")
     args = ap.parse_args()
@@ -234,7 +268,8 @@ def main():
         print("no gate log with a completed test stage found", file=sys.stderr)
         return 1
     budget = args.assert_budget or args.budget
-    over = profile(runs[-1], args.top, budget)
+    exempt = load_exempt(args.exempt_file)
+    over = profile(runs[-1], args.top, budget, exempt)
     if args.assert_budget and over:
         print(
             f"FAIL: {len(over)} tests exceed the {args.assert_budget:.1f}s hard ceiling",

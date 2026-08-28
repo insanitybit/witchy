@@ -203,7 +203,20 @@ esac
 # Deferred out of the default/--fast merge-gate; still run under --full, CI's
 # per-push `cargo nextest run --workspace`, and explicitly via
 # `cargo nextest run -E "$nightly_excl_positive"`.
-nightly_excl_positive='test(/^million_message_scalar_executor_meets_resumption_cost_and_allocation_gate$|^packed_aggregate_channel_uses_direct_scalar_lanes$|^trusted_application_executables::trusted_publisher_application_end_to_end$|^trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app$|^bounded_channel_retags_task_slots_without_replacement_allocations$|^simultaneous_fanout_retags_task_slots_without_replacement_allocations$|^source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline$|^rfc0129_acceptance_row_3_deterministic_schedule_backends_agree$|^async_loan_tail::recursive_async_segment_scc_is_a_portable_tail_loop$|^async_loan_tail::suspension_keeps_a_continuation_and_is_not_a_tail_edge$|^nominal_packet_channel_preserves_its_effectful_prologue_on_the_direct_path$|^tag_definition_site::typed_tag_names_resolve_at_definition_site_on_both_backends$|^tag_definition_site::definition_site_markers_are_consumed_before_typechecking$|^tail_positions::own_heap_parameter_forwards_through_the_tail_loop$|^access_matrix_matches_independent_oracle_across_every_deopt$|^indirect_tail::out_of_component_target_is_ordinary_indirect_exit$|^trusted_application_executables::dependency_footprint_does_not_widen_the_trusted_root$/)'
+#
+# The list itself lives in scripts/nightly-deferred-tests.txt -- ONE source of
+# truth shared with scripts/gate-test-cost.py --assert-budget, which exempts
+# exactly these names when --full/CI enforces the 2s budget on everything
+# else. Editing this list means editing that file, not this script.
+nightly_deferred_file="scripts/nightly-deferred-tests.txt"
+nightly_names=""
+while IFS= read -r nightly_line || [ -n "$nightly_line" ]; do
+    case "$nightly_line" in
+        ''|'#'*) continue ;;
+    esac
+    nightly_names="${nightly_names:+$nightly_names|}^${nightly_line}\$"
+done < "$nightly_deferred_file"
+nightly_excl_positive="test(/${nightly_names}/)"
 nightly_excl="not ($nightly_excl_positive)"
 
 # Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
