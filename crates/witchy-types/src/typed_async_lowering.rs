@@ -695,7 +695,14 @@ impl TypedAsyncLoweringInput {
             arms.push(OperationArm { ordinal: u32::try_from(ordinal).map_err(|_| "RFC-0161 ChannelSelect arm count exceeds u32")?, operation: ExecutionOperation::ChannelReceive, endpoint_lane, input_lanes: Vec::new(), result_lanes: vec![result], queue: Some(queue.shape.id), ownership: queue.shape.ownership });
         }
         let transitions = arms.iter().map(|arm| ExecutionTransition { condition: ExecutionEdgeCondition::SelectArm { operation: OperationSiteId(0), arm: arm.ordinal }, actions: Vec::new(), outcome: ExecutionOutcome::Complete }).collect();
-        let queues = queue_bindings.iter().take(arms.len()).map(|binding| binding.shape.clone()).collect::<Vec<_>>();
+        // Preserve source arm order even when the resolver supplies queue
+        // bindings in a different order.  Arm identity is endpoint-based;
+        // positional collection would silently pair the wrong queue shape.
+        let queues = operation.operand_bindings.iter().map(|endpoint| {
+            queue_bindings.iter().find(|binding| binding.endpoint == *endpoint)
+                .map(|binding| binding.shape.clone())
+                .ok_or_else(|| "RFC-0161 ChannelSelect queue binding disappeared while forming shape".to_string())
+        }).collect::<Result<Vec<_>, _>>()?;
         let execution = TypedExecutionShape {
             id: shape, entry: ExecutionStateId(0), frame, result_lanes: vec![result],
             states: vec![
@@ -1385,7 +1392,9 @@ mod tests {
         let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
         let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
         let select = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect).expect("select operation");
-        for (id, endpoint) in select.operand_bindings.iter().enumerate() {
+        // Resolver output is not required to be positional; the producer
+        // must reconstruct queues by endpoint identity.
+        for (id, endpoint) in select.operand_bindings.iter().enumerate().rev() {
             input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: *endpoint, shape: QueueShape { id: crate::typed_execution::QueueShapeId(id as u32), capacity: crate::typed_execution::QueueCapacity::Rendezvous, payload_layout_fingerprint: [16 + id as u8; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
         }
         let execution = input.into_linear_execution(ExecutionShapeId(0), [18; 32]).expect("terminal select");
