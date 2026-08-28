@@ -368,6 +368,22 @@ mod tests {
     }
 
     #[test]
+    fn committed_send_discharges_its_pending_payload_lane() {
+        let mut sending = shape();
+        sending.operations[0].kind = ExecutionOperation::ChannelSend;
+        sending.operations[0].input_lanes = vec![FrameLaneId(0)];
+        sending.operations[0].pending_move_lanes = vec![FrameLaneId(0)];
+        sending.operations[0].result_lanes = Vec::new();
+        sending.states[1].transitions[0].actions = vec![LaneAction::Discharge { lane: FrameLaneId(0) }];
+        sending.cancellation = None;
+        let mut execution = TypedExecution::new(sending).expect("valid send shape");
+        assert_eq!(execution.turn(), Ok(KernelTurn::Blocked(OperationSiteId(0))));
+        assert!(execution.initialized[0], "payload remains live while send is blocked");
+        assert_eq!(execution.commit_operation(OperationCommit::Ready { operation: OperationSiteId(0) }), Ok(KernelTurn::Complete));
+        assert!(!execution.initialized[0], "successful send discharges the moved payload");
+    }
+
+    #[test]
     fn select_commit_uses_source_arm_identity_not_transition_position() {
         let mut selecting = shape();
         selecting.operations[0].kind = ExecutionOperation::Select;
