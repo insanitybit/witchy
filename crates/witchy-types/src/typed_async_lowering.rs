@@ -318,6 +318,9 @@ impl TypedAsyncLoweringInput {
         }
         let capture_to_lane = (0..frame.len()).map(|lane| FrameLaneId(lane as u32)).collect::<Vec<_>>();
         let entry_callable = entry.map(|state| state.final_callable).unwrap_or(FinalCallableIndex(0));
+        let entry_lanes = entry.map(|state| {
+            state.frame.iter().filter_map(|input| input.source_binding.map(|binding| (binding, FrameLaneId(input.parameter)))).collect::<BTreeMap<_, _>>()
+        }).unwrap_or_default();
         let execution = TypedExecutionShape {
             id: shape,
             entry: ExecutionStateId(0),
@@ -330,6 +333,13 @@ impl TypedAsyncLoweringInput {
         };
         execution.validate()?;
         let state_bindings = (0..execution.states.len()).map(|state| {
+            let target = if state == 0 {
+                entry
+            } else {
+                operations.get(state - 1)
+                    .and_then(|operation| operation.continuation)
+                    .and_then(|continuation| self.states.iter().find(|candidate| candidate.final_callable == continuation))
+            };
             let callable = if state == 0 {
                 entry_callable
             } else {
@@ -339,10 +349,13 @@ impl TypedAsyncLoweringInput {
                     .map(|candidate| candidate.final_callable)
                     .unwrap_or(entry_callable)
             };
+            let capture_to_lane = target.map(|target| {
+                target.frame.iter().filter_map(|input| input.source_binding.and_then(|binding| entry_lanes.get(&binding).copied())).collect()
+            }).unwrap_or_else(|| capture_to_lane.clone());
             FinalTypedAsyncStateBinding {
                 state: ExecutionStateId(state as u32),
                 callable,
-                capture_to_lane: capture_to_lane.clone(),
+                capture_to_lane,
             }
         }).collect();
         Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings, dynamic_boundaries: Vec::new() })
@@ -1079,7 +1092,7 @@ mod tests {
     #[test]
     fn linear_producer_binds_continuation_state_to_its_final_callable() {
         let module = witchy_syntax::parser::parse_module(
-            "async fn tick():\n    chan.yield_now().await\n    chan.yield_now().await\n\nfn main():\n    ()\n",
+            "async fn tick(value: Int) -> Int:\n    chan.yield_now().await\n    chan.yield_now().await\n    value\n\nfn main():\n    ()\n",
         ).expect("parse source");
         let checked = link_checked(
             vec![("main".to_string(), module)],
@@ -1091,6 +1104,7 @@ mod tests {
         let continuation = yield_operation.continuation.expect("yield continuation");
         let execution = input.into_linear_execution(ExecutionShapeId(0), [6; 32]).expect("yield execution");
         assert_eq!(execution.state_bindings[1].callable, continuation);
+        assert_eq!(execution.state_bindings[1].capture_to_lane, vec![FrameLaneId(0)]);
     }
 
     #[test]
