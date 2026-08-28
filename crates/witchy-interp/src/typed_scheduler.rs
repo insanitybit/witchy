@@ -22,6 +22,26 @@ pub struct SchedulerEvent {
     pub turn: KernelTurn,
 }
 
+/// Canonical external-event admission result. Payload values are deliberately
+/// absent; only the typed operation outcome belongs in a cross-backend trace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdmissionResult {
+    Blocked,
+    Committed,
+    Closed,
+    Stale,
+    Cancelled,
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmissionEvent {
+    pub sequence: u64,
+    pub operation: OperationSiteId,
+    pub generation: u64,
+    pub result: AdmissionResult,
+}
+
 /// The single deterministic scheduler used by the typed interpreter path.
 #[derive(Debug, Default)]
 pub struct TypedScheduler {
@@ -30,6 +50,8 @@ pub struct TypedScheduler {
     next_round: VecDeque<u64>,
     queued: BTreeSet<u64>,
     next_sequence: u64,
+    admission_sequence: u64,
+    admissions: Vec<AdmissionEvent>,
 }
 
 impl TypedScheduler {
@@ -74,6 +96,7 @@ impl TypedScheduler {
     }
 
     pub fn ready_len(&self) -> usize { self.ready.len() + self.next_round.len() }
+    pub fn admission_trace(&self) -> &[AdmissionEvent] { &self.admissions }
 
     /// Run the snapshot of the current ready queue. Continued and yielded
     /// executions enter the next round in admission order; blocked and
@@ -131,7 +154,9 @@ impl TypedScheduler {
         generation: u64,
         payload: QueuePayload,
     ) -> Result<QueueRuntimeResult, String> {
+        let operation = self.operation_id(execution)?;
         let result = self.runtime.submit_send(execution, generation, payload)?;
+        self.record_admission(operation, generation, queue_result(&result))?;
         self.admit_queue_result(&result)?;
         Ok(result)
     }
@@ -141,7 +166,9 @@ impl TypedScheduler {
         execution: u64,
         generation: u64,
     ) -> Result<QueueRuntimeResult, String> {
+        let operation = self.operation_id(execution)?;
         let result = self.runtime.submit_receive(execution, generation)?;
+        self.record_admission(operation, generation, queue_result(&result))?;
         self.admit_queue_result(&result)?;
         Ok(result)
     }
@@ -152,7 +179,9 @@ impl TypedScheduler {
         generation: u64,
         send_payloads: &std::collections::BTreeMap<u32, QueuePayload>,
     ) -> Result<QueueSelectResult, String> {
+        let operation = self.operation_id(execution)?;
         let result = self.runtime.submit_select(execution, generation, send_payloads)?;
+        self.record_admission(operation, generation, select_result(&result))?;
         self.admit_select_result(&result)?;
         Ok(result)
     }
@@ -224,6 +253,36 @@ impl TypedScheduler {
         self.next_sequence = self.next_sequence.checked_add(1)
             .ok_or_else(|| "typed scheduler transition sequence overflow".to_string())?;
         Ok(sequence)
+    }
+
+    fn operation_id(&self, execution: u64) -> Result<OperationSiteId, String> {
+        self.runtime.execution(execution)
+            .ok_or_else(|| "typed scheduler has no such execution".to_string())?
+            .waiting_operation().map(|(operation, _)| operation)
+    }
+
+    fn record_admission(&mut self, operation: OperationSiteId, generation: u64, result: AdmissionResult) -> Result<(), String> {
+        let sequence = self.admission_sequence;
+        self.admission_sequence = self.admission_sequence.checked_add(1)
+            .ok_or_else(|| "typed scheduler admission sequence overflow".to_string())?;
+        self.admissions.push(AdmissionEvent { sequence, operation, generation, result });
+        Ok(())
+    }
+}
+
+fn queue_result(result: &QueueRuntimeResult) -> AdmissionResult {
+    match result {
+        QueueRuntimeResult::Blocked => AdmissionResult::Blocked,
+        QueueRuntimeResult::Committed { deliveries, .. } if deliveries.iter().any(|delivery| matches!(delivery.completion, crate::typed_queue::QueueCompletion::SendClosed { .. } | crate::typed_queue::QueueCompletion::ReceiveClosed)) => AdmissionResult::Closed,
+        QueueRuntimeResult::Committed { .. } => AdmissionResult::Committed,
+    }
+}
+
+fn select_result(result: &QueueSelectResult) -> AdmissionResult {
+    match result {
+        QueueSelectResult::Blocked => AdmissionResult::Blocked,
+        QueueSelectResult::Committed { deliveries, .. } if deliveries.iter().any(|delivery| matches!(delivery.completion, crate::typed_queue::QueueCompletion::SendClosed { .. } | crate::typed_queue::QueueCompletion::ReceiveClosed)) => AdmissionResult::Closed,
+        QueueSelectResult::Committed { .. } => AdmissionResult::Committed,
     }
 }
 
@@ -341,6 +400,12 @@ mod tests {
         scheduler.install_execution(9, cancellable()).expect("execution");
         assert_eq!(scheduler.run_round().expect("block round")[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
         assert!(matches!(scheduler.submit_receive(9, 1).expect("register receive"), QueueRuntimeResult::Blocked));
+        assert_eq!(scheduler.admission_trace(), &[AdmissionEvent {
+            sequence: 0,
+            operation: OperationSiteId(0),
+            generation: 1,
+            result: AdmissionResult::Blocked,
+        }]);
         assert!(scheduler.request_cancellation(9, 1).expect("cancel"));
         assert_eq!(scheduler.run_round().expect("cleanup round")[0].turn, KernelTurn::Complete);
         assert_eq!(scheduler.runtime().execution(9).expect("execution").status(), KernelStatus::Complete);
