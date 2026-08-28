@@ -1236,6 +1236,13 @@ fn select_queue_layout(
     for endpoint in endpoints {
         let binding = bindings.iter().find(|binding| binding.endpoint == *endpoint)
             .ok_or_else(|| format!("RFC-0161 {label} has no compiler-resolved queue binding for endpoint {:?}", endpoint))?;
+        if bindings.iter().filter(|candidate| candidate.endpoint == *endpoint).skip(1).any(|candidate| {
+            candidate.shape.capacity != binding.shape.capacity
+                || candidate.shape.payload_layout_fingerprint != binding.shape.payload_layout_fingerprint
+                || candidate.shape.ownership != binding.shape.ownership
+        }) {
+            return Err(format!("RFC-0161 {label} has conflicting queue shapes for duplicate endpoint {:?}", endpoint));
+        }
         let queue_id = if let Some((index, _)) = endpoints[..by_endpoint.len()].iter().enumerate().find(|(_, prior)| **prior == *endpoint) {
             crate::typed_execution::QueueShapeId(index as u32)
         } else {
@@ -1504,6 +1511,8 @@ mod tests {
         let execution = input.into_linear_execution(ExecutionShapeId(0), [20; 32]).expect("duplicate endpoint select");
         assert_eq!(execution.execution.queues.len(), 1);
         assert_eq!(execution.execution.operations[0].arms.iter().map(|arm| arm.queue).collect::<Vec<_>>(), vec![Some(crate::typed_execution::QueueShapeId(0)); 2]);
+        input.queue_bindings.push(TypedAsyncQueueBinding { endpoint, shape: QueueShape { id: crate::typed_execution::QueueShapeId(10), capacity: crate::typed_execution::QueueCapacity::Fixed(1), payload_layout_fingerprint: [19; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
+        assert!(input.into_linear_execution(ExecutionShapeId(0), [21; 32]).expect_err("conflicting duplicate queue shape").contains("conflicting queue shapes"));
     }
 
     #[test]
