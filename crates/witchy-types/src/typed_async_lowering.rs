@@ -1352,6 +1352,19 @@ mod tests {
     }
 
     #[test]
+    fn queue_aware_producer_lowers_receive_into_continuation_capture() {
+        let module = witchy_syntax::parser::parse_module("from chan import Receiver\n\nasync fn receive_then(rx: Receiver(Int)) -> Option(Int):\n    let value = chan.recv(rx).await\n    value\n\nfn main():\n    ()\n").expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let receive = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelReceive).expect("receive operation");
+        input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: receive.operand_bindings[0], shape: QueueShape { id: crate::typed_execution::QueueShapeId(0), capacity: crate::typed_execution::QueueCapacity::Rendezvous, payload_layout_fingerprint: [12; 32], ownership: crate::typed_execution::PayloadOwnership::Inline } });
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [13; 32]).expect("continuation receive");
+        assert_eq!(execution.execution.operations[0].result_lanes, vec![FrameLaneId(1)]);
+        assert_eq!(execution.execution.states.len(), 3);
+        assert_eq!(execution.state_bindings[1].callable, receive.continuation.expect("continuation callable"));
+    }
+
+    #[test]
     fn queue_aware_producer_lowers_terminal_send_and_declares_pending_move() {
         let module = witchy_syntax::parser::parse_module(
             "from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nfn main():\n    ()\n",
