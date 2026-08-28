@@ -155,7 +155,13 @@ impl TypedScheduler {
         payload: QueuePayload,
     ) -> Result<QueueRuntimeResult, String> {
         let operation = self.operation_id(execution)?;
-        let result = self.runtime.submit_send(execution, generation, payload)?;
+        let result = match self.runtime.submit_send(execution, generation, payload) {
+            Ok(result) => result,
+            Err(error) => {
+                self.record_admission(operation, generation, AdmissionResult::Error(error.clone()))?;
+                return Err(error);
+            }
+        };
         self.record_admission(operation, generation, queue_result(&result))?;
         self.admit_queue_result(&result)?;
         Ok(result)
@@ -167,7 +173,13 @@ impl TypedScheduler {
         generation: u64,
     ) -> Result<QueueRuntimeResult, String> {
         let operation = self.operation_id(execution)?;
-        let result = self.runtime.submit_receive(execution, generation)?;
+        let result = match self.runtime.submit_receive(execution, generation) {
+            Ok(result) => result,
+            Err(error) => {
+                self.record_admission(operation, generation, AdmissionResult::Error(error.clone()))?;
+                return Err(error);
+            }
+        };
         self.record_admission(operation, generation, queue_result(&result))?;
         self.admit_queue_result(&result)?;
         Ok(result)
@@ -180,7 +192,13 @@ impl TypedScheduler {
         send_payloads: &std::collections::BTreeMap<u32, QueuePayload>,
     ) -> Result<QueueSelectResult, String> {
         let operation = self.operation_id(execution)?;
-        let result = self.runtime.submit_select(execution, generation, send_payloads)?;
+        let result = match self.runtime.submit_select(execution, generation, send_payloads) {
+            Ok(result) => result,
+            Err(error) => {
+                self.record_admission(operation, generation, AdmissionResult::Error(error.clone()))?;
+                return Err(error);
+            }
+        };
         self.record_admission(operation, generation, select_result(&result))?;
         self.admit_select_result(&result)?;
         Ok(result)
@@ -409,6 +427,9 @@ mod tests {
             generation: 1,
             result: AdmissionResult::Blocked,
         }]);
+        let duplicate = scheduler.submit_receive(9, 1).expect_err("duplicate wait is rejected");
+        assert!(duplicate.contains("already has"), "unexpected duplicate error: {duplicate}");
+        assert!(matches!(scheduler.admission_trace()[1].result, AdmissionResult::Error(_)));
         assert!(scheduler.request_cancellation(9, 1).expect("cancel"));
         assert_eq!(scheduler.run_round().expect("cleanup round")[0].turn, KernelTurn::Complete);
         assert_eq!(scheduler.runtime().execution(9).expect("execution").status(), KernelStatus::Complete);
