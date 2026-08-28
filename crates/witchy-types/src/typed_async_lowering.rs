@@ -24,7 +24,7 @@ use crate::typeck::{self, TypedModule};
 use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
 use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
     ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane,
-    LaneOwnership, OperationSite, OperationSiteId, TypedExecutionShape};
+    FrameLaneId, LaneOwnership, OperationSite, OperationSiteId, TypedExecutionShape};
 
 /// A final callable-table position. This is an internal backend binding input;
 /// it is intentionally not a generated function name.
@@ -291,10 +291,27 @@ impl TypedAsyncLoweringInput {
                 }],
             });
         }
+        let entry = self.states.iter().find(|state| {
+            state.callable == source.callable && state.kind == TypedAsyncStateKind::Entry
+        });
+        let frame: Vec<FrameLane> = entry.map(|state| state.frame.iter().map(|input| FrameLane {
+            id: FrameLaneId(input.parameter),
+            ty: input.ty.clone(),
+            ownership: match input.convention {
+                Convention::Own | Convention::Var => LaneOwnership::Move,
+                Convention::Let | Convention::Borrow => LaneOwnership::Copy,
+            },
+            initially_initialized: true,
+        }).collect()).unwrap_or_default();
+        if frame.iter().enumerate().any(|(index, lane)| lane.id.0 != index as u32) {
+            return Err("RFC-0161 linear producer requires dense entry parameter lanes".into());
+        }
+        let capture_to_lane = (0..frame.len()).map(|lane| FrameLaneId(lane as u32)).collect::<Vec<_>>();
+        let entry_callable = entry.map(|state| state.final_callable).unwrap_or(FinalCallableIndex(0));
         let execution = TypedExecutionShape {
             id: shape,
             entry: ExecutionStateId(0),
-            frame: Vec::new(),
+            frame,
             result_lanes: Vec::new(),
             states,
             operations: sites,
@@ -304,8 +321,8 @@ impl TypedAsyncLoweringInput {
         execution.validate()?;
         let state_bindings = (0..execution.states.len()).map(|state| FinalTypedAsyncStateBinding {
             state: ExecutionStateId(state as u32),
-            callable: self.states.first().map(|state| state.final_callable).unwrap_or(FinalCallableIndex(0)),
-            capture_to_lane: Vec::new(),
+            callable: entry_callable,
+            capture_to_lane: capture_to_lane.clone(),
         }).collect();
         Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings, dynamic_boundaries: Vec::new() })
     }
@@ -1025,5 +1042,23 @@ mod tests {
         assert_eq!(program.execution_shapes.len(), 2);
         assert_eq!(program.execution_shapes.iter().map(|shape| shape.id.0).collect::<Vec<_>>(), vec![0, 1]);
         program.validate().expect("canonical fingerprints");
+    }
+
+    #[test]
+    fn linear_producer_preserves_typed_entry_parameter_lanes() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn keep(own value: Int):\n    ()\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [4; 32]).expect("typed frame");
+        assert_eq!(execution.execution.frame.len(), 1);
+        assert_eq!(execution.execution.frame[0].ty, Type::Named("Int".into(), Vec::new()));
+        assert_eq!(execution.execution.frame[0].ownership, LaneOwnership::Move);
+        assert_eq!(execution.state_bindings[0].capture_to_lane, vec![FrameLaneId(0)]);
     }
 }
