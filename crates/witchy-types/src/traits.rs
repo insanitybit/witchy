@@ -119,6 +119,7 @@ enum MethodResolution {
 fn method_fn(
     name: String,
     pure: bool,
+    is_async: bool,
     attributes: Vec<String>,
     mut params: Vec<Param>,
     ret: Option<Type>,
@@ -164,7 +165,7 @@ fn method_fn(
         // concrete type (discharging the bound).
         bounds,
         is_gen: false,
-        is_async: false,
+        is_async,
     }
 }
 
@@ -454,6 +455,7 @@ fn lower_with(
                 generated.push(method_fn(
                     mangled,
                     method.pure,
+                    method.is_async,
                     method.attributes.clone(),
                     params,
                     ret,
@@ -490,6 +492,7 @@ fn lower_with(
             generated.push(method_fn(
                 mangled,
                 method.pure,
+                method.is_async,
                 method.attributes.clone(),
                 params,
                 ret,
@@ -534,6 +537,7 @@ fn lower_with(
                         generated.push(method_fn(
                             mangled,
                             ms.pure,
+                            false,
                             Vec::new(),
                             params,
                             ret,
@@ -4454,6 +4458,7 @@ pub(crate) fn monomorphic_impl_method_name(
     let template = method_fn(
         base.clone(),
         pure,
+        provided.is_some_and(|method| method.is_async),
         Vec::new(),
         params,
         ret,

@@ -1316,6 +1316,16 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
     }
 
     #[test]
+    fn source_async_inherent_methods_return_tasks_and_await_unwraps_them() {
+        let module = witchy_syntax::parser::parse_module(
+            "type Doubler:\n    base: Int\n\nasync fn step(n: Int) -> Int:\n    n + n\n\nimpl Doubler:\n    async fn scaled(self, x: Int) -> Int:\n        let doubled = step(x).await\n        self.base + doubled\n\nasync fn main(console: Console):\n    let d = Doubler(100)\n    let r = d.scaled(5).await\n    console.print(\"${r}\")\n",
+        )
+        .expect("source parses");
+        check_source_async_contracts(&module)
+            .expect("an async inherent method call returns Task(Int)");
+    }
+
+    #[test]
     fn source_tasks_are_affine_and_await_consumes_their_obligation() {
         let module = witchy_syntax::parser::parse_module(
             "async fn value() -> Int:\n    41\n\nfn drops() -> Int:\n    value()\n    1\n",
