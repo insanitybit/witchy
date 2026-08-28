@@ -42,12 +42,37 @@ use super::{
 /// ```
 #[derive(Debug, Clone)]
 pub struct SafeExactExtent {
-    bytes: u64,
+    source: ExactExtentSource,
+}
+
+#[derive(Debug, Clone)]
+enum ExactExtentSource {
+    /// A compile-time byte count, for a fixed-size descriptor.
+    Fixed(u64),
+    /// One executable count operand, for a dynamically sized descriptor. The
+    /// header bytes, the stride, and the range arithmetic all stay
+    /// descriptor-derived: this supplies the count and nothing else.
+    Counted(WirExpr),
 }
 
 impl SafeExactExtent {
     pub const fn fixed(bytes: u64) -> Self {
-        Self { bytes }
+        Self { source: ExactExtentSource::Fixed(bytes) }
+    }
+
+    /// Retain one exact executable count identity for final def-use binding.
+    ///
+    /// This is what lets a runtime-sized object be described at all. A bytes
+    /// buffer is allocated as `rc_alloc(2 * len + 20)`, so its extent is not a
+    /// constant and `fixed` cannot express it; without this the 399 raw sites
+    /// in `wir_helpers` have no migration target.
+    ///
+    /// Construction grants no authority. The count is checked against the
+    /// claim-operand grammar here, and bound to an exact reaching definition by
+    /// the final validator.
+    pub fn counted(count: WirExpr) -> Result<Self, SafePlaceBuildError> {
+        validate_claim_operand(&count, "counted object length")?;
+        Ok(Self { source: ExactExtentSource::Counted(count) })
     }
 }
 
@@ -56,6 +81,82 @@ impl SafeExactExtent {
 /// Construction grants no authority. A [`SafePlaceBuilder`] accepts this value
 /// only when its base expression and Wasm immediate offset exactly denote the
 /// descriptor-derived projection under the builder's checked address grammar.
+
+#[derive(Debug, Clone, Copy)]
+struct DynamicShape {
+    base: u32,
+    stride: u32,
+}
+
+/// Derive the checked dynamic shape of a runtime-sized descriptor.
+///
+/// Deliberately an allowlist. A dynamically sized layout only gets a counted
+/// extent if this function recognises its exact shape; anything else -- in
+/// particular a pointer-bearing family -- is rejected rather than inheriting
+/// scalar buffer authority.
+fn dynamic_shape(
+    layouts: &LayoutInterner,
+    descriptor: &crate::layout::LayoutDescriptor,
+    layout: LayoutId,
+) -> Result<DynamicShape, SafePlaceBuildError> {
+    let element = match descriptor.kind() {
+        LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => *element,
+        _ => return Err(SafePlaceBuildError::UnsupportedDynamicLayout(layout)),
+    };
+    let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
+        return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
+    };
+    // A pointer slot anywhere in the object means a loaded pointer's
+    // provenance would ride on a byte range this builder cannot authenticate.
+    if descriptor
+        .fields()
+        .iter()
+        .any(|field| matches!(field.kind(), FieldKind::Pointer { .. }))
+    {
+        return Err(SafePlaceBuildError::UnsupportedDynamicLayout(layout));
+    }
+    let element_descriptor = layouts
+        .get(element)
+        .ok_or(SafePlaceBuildError::UnknownLayout(element))?;
+    let LayoutSize::Fixed(element_size) = element_descriptor.size() else {
+        return Err(SafePlaceBuildError::DynamicInlineField(element));
+    };
+    // The stride must be the element's own size, or an index would not land on
+    // an element boundary.
+    if element_size != stride {
+        return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
+    }
+    Ok(DynamicShape { base, stride })
+}
+
+/// `base + count * stride`, as a checked size expression.
+///
+/// A constant count is folded and narrowed here so the common case carries no
+/// symbolic arithmetic. A dynamic count stays symbolic for the final validator
+/// to bind and prove non-wrapping.
+fn counted_length(
+    count: &WirExpr,
+    base: u32,
+    stride: u32,
+) -> Result<SafeSizeExpr, SafePlaceBuildError> {
+    if let Some(count) = constant_u32(count)? {
+        let length = u64::from(count)
+            .checked_mul(u64::from(stride))
+            .and_then(|payload| u64::from(base).checked_add(payload))
+            .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+        let length = u32::try_from(length)
+            .map_err(|_| SafePlaceBuildError::NarrowingOverflow { value: length })?;
+        return Ok(SafeSizeExpr::Constant(u64::from(length)));
+    }
+    Ok(checked_narrow(SafeSizeExpr::Add(
+        Box::new(SafeSizeExpr::Constant(u64::from(base))),
+        Box::new(SafeSizeExpr::Multiply(
+            Box::new(SafeSizeExpr::Value(Box::new(count.clone()))),
+            Box::new(SafeSizeExpr::Constant(u64::from(stride))),
+        )),
+    )))
+}
+
 #[derive(Debug, Clone)]
 pub struct SafeEncodedAddress {
     base: WirExpr,
@@ -129,9 +230,8 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         }
         let provenance = provenance_for_ordinary_root(&object_root)?;
 
-        let (extent, full_length) = match descriptor.size() {
-            LayoutSize::Fixed(expected) => {
-                let actual = exact_extent.bytes;
+        let (extent, full_length) = match (descriptor.size(), exact_extent.source) {
+            (LayoutSize::Fixed(expected), ExactExtentSource::Fixed(actual)) => {
                 let actual = u32::try_from(actual)
                     .map_err(|_| SafePlaceBuildError::NarrowingOverflow { value: actual })?;
                 if actual != expected {
@@ -143,8 +243,33 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
                 let size = SafeSizeExpr::Constant(u64::from(expected));
                 (SafeExtentExpr::Exact(size.clone()), size)
             }
-            LayoutSize::Dynamic { .. } => {
+            // A fixed descriptor already knows its own size; accepting a count
+            // for it would let a caller claim a length the layout contradicts.
+            (LayoutSize::Fixed(_), ExactExtentSource::Counted(_)) => {
+                return Err(SafePlaceBuildError::UnexpectedCheckedLength(layout));
+            }
+            (LayoutSize::Dynamic { .. }, ExactExtentSource::Fixed(_)) => {
                 return Err(SafePlaceBuildError::MissingCheckedLength(layout));
+            }
+            (LayoutSize::Dynamic { base, stride }, ExactExtentSource::Counted(count)) => {
+                // The count must not be read through the object it measures:
+                // that would make the extent depend on the storage it bounds.
+                if same_address_leaf(&count, &object_root) {
+                    return Err(SafePlaceBuildError::CountAliasesObjectRoot);
+                }
+                let shape = dynamic_shape(layouts, descriptor, layout)?;
+                if shape.base != base || shape.stride != stride {
+                    return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
+                }
+                let full_length = counted_length(&count, base, stride)?;
+                (
+                    SafeExtentExpr::Counted {
+                        header: SafeSizeExpr::Constant(u64::from(base)),
+                        count: Box::new(count),
+                        stride: SafeSizeExpr::Constant(u64::from(stride)),
+                    },
+                    full_length,
+                )
             }
         };
 
@@ -530,6 +655,14 @@ pub enum SafePlaceBuildError {
     UnsupportedObjectRoot,
     GlobalObjectRoot,
     MissingCheckedLength(LayoutId),
+    /// A fixed-size descriptor was handed a counted extent.
+    UnexpectedCheckedLength(LayoutId),
+    /// The count operand reads through the object whose extent it defines.
+    CountAliasesObjectRoot,
+    /// The descriptor's dynamic base/stride disagree with its own element.
+    DynamicDescriptorMismatch(LayoutId),
+    /// A dynamically sized layout this builder has no extent grammar for.
+    UnsupportedDynamicLayout(LayoutId),
     FixedExtentMismatch { expected: u32, actual: u32 },
     HeaderNotDefined(LayoutId),
     UnknownHeaderComponent(u32),
@@ -560,6 +693,21 @@ impl fmt::Display for SafePlaceBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownLayout(layout) => write!(formatter, "unknown canonical LayoutId {layout}"),
+            Self::UnexpectedCheckedLength(layout) => write!(
+                formatter,
+                "layout {layout} has a fixed descriptor size and must not be claimed with a counted extent"
+            ),
+            Self::CountAliasesObjectRoot => formatter.write_str(
+                "a counted extent must not read its count through the object it measures"
+            ),
+            Self::DynamicDescriptorMismatch(layout) => write!(
+                formatter,
+                "layout {layout} has a dynamic size that disagrees with its own element stride"
+            ),
+            Self::UnsupportedDynamicLayout(layout) => write!(
+                formatter,
+                "layout {layout} is dynamically sized but has no checked counted-extent grammar"
+            ),
             Self::NonCanonicalLayout { claimed, canonical } => write!(
                 formatter,
                 "LayoutId {claimed} does not match canonical descriptor identity {canonical}"
@@ -645,6 +793,95 @@ impl std::error::Error for SafePlaceBuildError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // RFC-0162 S0: a runtime-sized object could not be DESCRIBED before this.
+    // `SafeExactExtent` offered only `fixed(bytes)`, so every dynamically sized
+    // buffer -- which is what `wir_helpers` allocates, 399 of the 584 census
+    // sites -- was rejected with `MissingCheckedLength` and had no migration
+    // target at all.
+    #[test]
+    fn a_runtime_sized_buffer_can_be_claimed_with_a_counted_extent() {
+        let mut interner = LayoutInterner::default();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        let buffer = interner.intern_runtime_buffer(byte).expect("runtime buffer");
+
+        // Before S0 this was `MissingCheckedLength`: a dynamic descriptor with
+        // a fixed extent still is.
+        let refused = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::fixed(8),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Write,
+        );
+        assert!(
+            matches!(refused, Err(SafePlaceBuildError::MissingCheckedLength(id)) if id == buffer),
+            "a dynamic descriptor still refuses a constant extent",
+        );
+
+        // With a counted extent it is accepted, and the extent is the
+        // descriptor's own base and stride -- not anything the caller supplied.
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted extent"),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Write,
+        )
+        .expect("a runtime-sized buffer is claimable with a counted extent");
+        match &builder.object.extent {
+            SafeExtentExpr::Counted { header, count, stride } => {
+                assert!(
+                    matches!(header, SafeSizeExpr::Constant(4)),
+                    "header is descriptor-derived, not caller-supplied: {header:?}",
+                );
+                assert!(
+                    matches!(stride, SafeSizeExpr::Constant(1)),
+                    "stride is descriptor-derived, not caller-supplied: {stride:?}",
+                );
+                assert!(
+                    matches!(&**count, WirExpr::GetLocal(name) if name == "n"),
+                    "the count is the operand the caller supplied: {count:?}",
+                );
+            }
+            other => panic!("expected a counted extent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_counted_extent_may_not_read_through_the_object_it_measures() {
+        let mut interner = LayoutInterner::default();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        let buffer = interner.intern_runtime_buffer(byte).expect("runtime buffer");
+        let refused = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("res".into())).expect("counted extent"),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Write,
+        );
+        assert!(
+            matches!(refused, Err(SafePlaceBuildError::CountAliasesObjectRoot)),
+            "the extent must not depend on the storage it bounds",
+        );
+    }
+
+    #[test]
+    fn a_fixed_descriptor_refuses_a_counted_extent() {
+        let mut interner = LayoutInterner::default();
+        let int = interner.intern_scalar(ScalarKind::Int).expect("scalar");
+        let refused = SafePlaceBuilder::new(
+            &interner,
+            int,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted extent"),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Read,
+        );
+        assert!(
+            matches!(refused, Err(SafePlaceBuildError::UnexpectedCheckedLength(id)) if id == int),
+            "a layout that knows its own size must not accept a claimed length",
+        );
+    }
     use crate::layout::{
         ClosedTypeResolver, PointerSlot, RcHeader, ReferenceKind, ResolvedNamed,
         RuntimePrefixSlot, ScalarKind,
