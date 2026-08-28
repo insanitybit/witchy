@@ -48,6 +48,7 @@ pub enum TypedAsyncOperationKind {
     ChannelCreate,
     ChannelSend,
     ChannelReceive,
+    ChannelSelect,
     Spawn,
     Join,
     Yield,
@@ -1152,6 +1153,7 @@ fn classify_typed_operation(
             "chan.channel" | "chan.unbounded" => TypedAsyncOperationKind::ChannelCreate,
             "chan.send" => TypedAsyncOperationKind::ChannelSend,
             "chan.recv" => TypedAsyncOperationKind::ChannelReceive,
+            "chan.select" => TypedAsyncOperationKind::ChannelSelect,
             "chan.spawn" | "task.spawn" => TypedAsyncOperationKind::Spawn,
             "chan.join" | "task.join" => TypedAsyncOperationKind::Join,
             "task.yield_now" | "chan.yield_now" => TypedAsyncOperationKind::Yield,
@@ -1305,6 +1307,16 @@ mod tests {
             operation.kind == SourceAsyncOperationKind::StaticCall
                 && operation.runtime_kind == TypedAsyncOperationKind::CallOperand
         }));
+    }
+
+    #[test]
+    fn classifies_select_await_as_a_distinct_typed_operation() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Receiver, Selected\n\nasync fn choose(first: Receiver(Int), second: Receiver(Int)) -> Selected(Int):\n    chan.select(first, second).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
+        assert!(input.operations.iter().any(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect && operation.operand_bindings.len() == 2));
     }
 
     #[test]
