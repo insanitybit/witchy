@@ -1786,7 +1786,7 @@ fn main(console: Console):
     fn chan_throughput_bounded_by_rc_floor() {
         let run = |messages| {
             let src = format!(
-                "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, {messages})).await\n    for await v in rx:\n        chan.done(v)\n    console.print(\"{messages}\")\n"
+                "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    for await v in rx:\n        let _ = chan.done(v)\n    chan.join(producer_handle).await\n    console.print(\"{messages}\")\n"
             );
             compute(&src).unwrap_or_else(|error| panic!("compile+run {messages} messages: {error}"))
         };
