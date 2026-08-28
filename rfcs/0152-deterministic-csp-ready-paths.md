@@ -15,7 +15,12 @@ tracking: "Superseded by RFC-0161. (2026-08-27 status audit: RFC-0161 is `propos
 
 # RFC-0152: Deterministic CSP Ready Paths
 
-> **Superseded (2026-08-26).** Accepted RFC-0161 replaces this incremental
+> **Superseded (2026-08-26).** RFC-0161 replaces this incremental
+>
+> 2026-08-28 (status audit): this paragraph originally read "Accepted RFC-0161".
+> RFC-0161 is `proposed`; its ledger states "The RFC remains proposed until the
+> public semantic decisions are accepted." The supersession stands.
+>
 > ready-path specialization program with one typed resumable runtime. The
 > landed facts and fixtures recorded here remain useful inputs, but no pending
 > RFC-0152 acceptance row is proven and new implementation work belongs to

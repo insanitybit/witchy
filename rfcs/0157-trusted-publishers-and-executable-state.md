@@ -1,7 +1,7 @@
 ---
 rfc: 0157
 title: "Trusted Publishers and Executable-State Writes"
-status: accepted
+status: implemented
 created: 2026-08-25
 superseded-by:
 related:
@@ -10,18 +10,27 @@ related:
   - "0126 (capability effects contract)"
   - "0155 (authenticated executable caches, rejected)"
   - "0156 (AOT native trusted executables, rejected)"
-tracking: "Accepted policy. Re-verified 2026-08-27: the one-cut rename and the
-  ordinary-cache restoration HAVE landed. `trusted_publisher` appears across
-  witchy-cap-model, witchy-caps, witchy-runtime, witchy-syntax, projects/coven and
-  src/trusted_publisher.rs; the only residual `trusted-exe` mentions are the
-  rejection tests that assert the legacy target fails loudly
-  (scripts/release-smoke.sh:423-429, src/trusted_publisher.rs:1116-1119), and
-  src/commands/wasm_exec.rs:309 records the ordinary cache policy for publisher
-  applications. Status stays `accepted` because the startup-evidence and
-  security-documentation acceptance rows were not verified by this audit."
+tracking: >
+  Implemented. Every acceptance row was verified against master on 2026-08-28;
+  per-row evidence is in the dated note below. The startup-evidence row is a
+  standing precondition on any future AOT proposal, not a deliverable of this RFC.
 ---
 
 # RFC-0157: Trusted Publishers and Executable-State Writes
+
+> 2026-08-28 (status audit): status `accepted` -> `implemented`. Each acceptance
+> criterion was checked against master; `tests/rfc0092` was run, not just read.
+>
+> | Criterion | Evidence |
+> |---|---|
+> | `--target trusted-publisher` emits and runs the packaged shape | `tests/rfc0092`: `trusted_publisher_application_end_to_end` and `committed_minigrep_builds_and_runs_as_an_installed_trusted_app` — 6/6 green. |
+> | Old target and `[targets.trusted-exe]` fail loudly, naming replacements | `scripts/release-smoke.sh:423-429` builds with the legacy target and requires the error to name both spellings; `src/trusted_publisher.rs:1116-1119` asserts the same for the manifest table. |
+> | Delegation, isolation, confinement, trap, output, exit-status tests pass under the renamed target | The whole RFC-0092 suite is written against `trusted-publisher` and passes, including `dependency_footprint_does_not_widen_the_trusted_root`, `trusted_publisher_application_required_confinement_fails_before_main`, and `explicit_exec_policy_uses_a_separately_bound_readable_dir`. |
+> | Publisher applications use the ordinary cache policy; a missing or invalid entry recompiles without a prompt | `src/commands/wasm_exec.rs:307-315` runs the ordinary `Runtime::batch()` path. Proven by construction rather than by a dedicated test: no prompt, authenticator, or cache-credential code exists to take a different branch (see the next row). |
+> | Corrupt embedded Wasm, launch-contract, binding-plan, and descriptor digests fail before guest execution | `src/trusted_publisher.rs:817, 885, 964, 968-974` — `corrupt_descriptor_fails_closed` and the WASM/descriptor digest-mismatch assertions. |
+> | No production cache authenticator, credential, or hidden cache-path exclusion | Negative check: `cache_authenticator`, `cache_credential`, `cache_secret`, and `authenticated_cache` appear nowhere in `crates/` or `src/`. |
+> | Security documentation states that write authority over a root accepts future-execution influence | `spec/capabilities.md:530-533`. |
+> | Startup evidence before any new AOT proposal | Not a deliverable of this RFC — a standing precondition on future AOT work, recorded here so a later proposal cannot skip it. |
 
 ## Summary
 

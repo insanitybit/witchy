@@ -126,6 +126,12 @@ its `scripts/rfc-status.sh` prerequisite shipped; the fan-out did not, and the
 tracking says so. RFC-0095 (`rejected`) — rejected by RFC-0157 after shipping;
 `grimoire install` remains in the tree, which the rejection anticipates.
 
-**Left open.** Numbers 0096 and 0141 are unallocated (0124 is documented as
-deliberately not reused). `execution-plan.md` records supersession in a `note:`
-rather than `superseded-by:`; it is superseded by no single RFC.
+**Left open.** Nothing. The three items this audit could not close on 2026-08-27
+were closed on 2026-08-28: RFC-0157 was promoted to `implemented` after each
+acceptance row was verified and `tests/rfc0092` was run green (6/6) against the
+renamed target; the unallocated numbers 0096 and 0141 are now documented in
+`README.md`, including RFC-0142's dependency on the unwritten 0141; and
+`execution-plan.md` now carries an explicit `superseded-by:` naming the four
+sources that replaced it. RFC-0152's body paragraph, which called RFC-0161
+"accepted" where the tracking correction had already been applied, carries a
+matching dated note.

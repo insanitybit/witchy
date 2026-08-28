@@ -1,5 +1,6 @@
 ---
 status: superseded
+superseded-by: "no single RFC - replaced by numbered RFC status fields, stale-rfc-acceptance-ledger.md, RELEASE-READINESS.md, and scripts/rfc-status.sh"
 note: Historical 2026-07-01 pickup index, superseded after its listed implementation work landed. Use numbered RFC status, the release queue, the stale-RFC terminal-outcome ledger, and live merge-queue/worktree reports for current selection.
 updated: 2026-07-19
 ---

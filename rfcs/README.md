@@ -51,6 +51,13 @@ interpreter/Wasm dual implementation is required.
 RFC-0124 is intentionally not reused. Its discarded-collection optimization was
 absorbed into RFC-0123 and then into RFC-0125.
 
+**Unallocated numbers.** 0096 and 0141 have no file and never had one. 0141 is
+referenced by [RFC-0142](0142-structural-program-configuration-and-overload-resolution.md)
+as the canonical-constraint-solving RFC it waits on; that RFC was never written, so
+the dependency is real but unwritten. 0096 is a plain skip. Neither is reserved —
+either may be allocated to a new RFC, and 0141 is the natural number for the
+constraint-solving work if it is ever taken up.
+
 ## Status lifecycle
 
 ```
