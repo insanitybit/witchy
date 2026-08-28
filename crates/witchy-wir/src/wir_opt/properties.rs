@@ -267,8 +267,11 @@ fn evaluate_safe_kernel_expr(
     });
     let allocation = match operation {
         crate::safewir_kernel::SafeKernelExpr::Allocate { .. }
+        | crate::safewir_kernel::SafeKernelExpr::ScratchAllocate { .. }
         | crate::safewir_kernel::SafeKernelExpr::Reuse { .. } => AllocationKind::Present,
-        crate::safewir_kernel::SafeKernelExpr::Retain { .. } => AllocationKind::None,
+        crate::safewir_kernel::SafeKernelExpr::RegionMark
+        | crate::safewir_kernel::SafeKernelExpr::ScratchMark
+        | crate::safewir_kernel::SafeKernelExpr::Retain { .. } => AllocationKind::None,
     };
     properties.combine(&EvaluationProperties {
         host_effect: HostEffect::None,

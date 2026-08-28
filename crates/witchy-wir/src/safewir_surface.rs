@@ -6,10 +6,44 @@
 //! `DefinitionId`s from the actual def-use graph and checks the redundant
 //! executable form before any encoder authority can exist. Constructing these
 //! values alone grants no validation or encoding authority.
+//!
+//! [`SafeDynamicHeaderBuilder`] is the sole migration bootstrap for reading a
+//! canonical dynamic buffer/list header before its exact count is available.
+//! It deliberately emits `SafeExtentExpr::Unknown` only for that fixed header
+//! projection, and it emits read access without accepting caller-selected
+//! access authority. The final adapter/validator must recognize that exact
+//! builder shape, bind the fresh load result, and require subsequent payload
+//! access to use [`SafeExactExtent::counted`] with the bound executable count
+//! identity.
+
+
 
 use crate::layout::LayoutId;
 use crate::safewir::AccessMode;
 use crate::wir::WirExpr;
+
+/// Maximum static prefix length for `prefix + i64` scratch formatting. Twenty
+/// decimal digits plus one sign byte must fit without wrapping Wasm's full
+/// unsigned i32 address domain.
+pub const MAX_SCRATCH_FORMATTER_PREFIX_LENGTH: u32 = u32::MAX - 21;
+
+pub const fn scratch_formatter_prefix_is_nonwrapping(length: u32) -> bool {
+    length <= MAX_SCRATCH_FORMATTER_PREFIX_LENGTH
+}
+
+#[cfg(test)]
+mod scratch_formatter_range_tests {
+    use super::{
+        MAX_SCRATCH_FORMATTER_PREFIX_LENGTH, scratch_formatter_prefix_is_nonwrapping,
+    };
+
+    #[test]
+    fn scratch_formatter_uses_the_full_unsigned_i32_address_domain() {
+        assert_eq!(MAX_SCRATCH_FORMATTER_PREFIX_LENGTH, u32::MAX - 21);
+        assert!(scratch_formatter_prefix_is_nonwrapping(u32::MAX - 21));
+        assert!(!scratch_formatter_prefix_is_nonwrapping(u32::MAX - 20));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum SafeSizeExpr {
@@ -21,7 +55,7 @@ pub enum SafeSizeExpr {
 }
 
 impl SafeSizeExpr {
-    fn for_each_wir_expr(&self, visit: &mut impl FnMut(&WirExpr)) {
+    pub(crate) fn for_each_wir_expr(&self, visit: &mut impl FnMut(&WirExpr)) {
         match self {
             Self::Constant(_) => {}
             Self::Value(value) => visit(value),
@@ -33,7 +67,7 @@ impl SafeSizeExpr {
         }
     }
 
-    fn for_each_wir_expr_mut(&mut self, visit: &mut impl FnMut(&mut WirExpr)) {
+    pub(crate) fn for_each_wir_expr_mut(&mut self, visit: &mut impl FnMut(&mut WirExpr)) {
         match self {
             Self::Constant(_) => {}
             Self::Value(value) => visit(value),
@@ -50,6 +84,10 @@ impl SafeSizeExpr {
 pub enum SafeExtentExpr {
     Unknown,
     Exact(SafeSizeExpr),
+    /// A canonical closed-sum descriptor with no candidate-selected byte
+    /// extent. The final validator may derive a selected live extent only from
+    /// authenticated discriminant evidence.
+    ClosedSum,
     Counted {
         header: SafeSizeExpr,
         count: Box<WirExpr>,
@@ -60,7 +98,7 @@ pub enum SafeExtentExpr {
 impl SafeExtentExpr {
     pub(crate) fn for_each_wir_expr(&self, visit: &mut impl FnMut(&WirExpr)) {
         match self {
-            Self::Unknown => {}
+            Self::Unknown | Self::ClosedSum => {}
             Self::Exact(size) => size.for_each_wir_expr(visit),
             Self::Counted { header, count, stride } => {
                 header.for_each_wir_expr(visit);
@@ -72,7 +110,7 @@ impl SafeExtentExpr {
 
     pub(crate) fn for_each_wir_expr_mut(&mut self, visit: &mut impl FnMut(&mut WirExpr)) {
         match self {
-            Self::Unknown => {}
+            Self::Unknown | Self::ClosedSum => {}
             Self::Exact(size) => size.for_each_wir_expr_mut(visit),
             Self::Counted { header, count, stride } => {
                 header.for_each_wir_expr_mut(visit);
@@ -88,20 +126,51 @@ pub enum SafeProjectionStep {
     Header {
         component: u32,
     },
+    /// The descriptor-defined closed-sum discriminant. Construction carries no
+    /// evidence about the currently selected variant.
+    SumTag,
+    /// One descriptor-defined field in one compile-time variant. The ordinal
+    /// identifies physical metadata only; it does not assert that the variant
+    /// is currently selected.
+    VariantField {
+        variant: u32,
+        field: u32,
+    },
     Field {
         index: u32,
     },
     Element {
         index: Box<WirExpr>,
     },
+    /// Untrusted marker for a pure executable i32 index expression. This is a
+    /// transport shape only: construction does not prove the expression is in
+    /// range, non-wrapping, or related to the object's live length. The final
+    /// adapter must bind every leaf to its exact reaching definition and the
+    /// validator must authenticate the successful control-flow edge.
+    DerivedElement {
+        index: Box<WirExpr>,
+    },
     Slice {
         start: Box<WirExpr>,
         length: Box<WirExpr>,
     },
+    /// Untrusted marker for one scratch-relative cursor. The executable address
+    /// remains `root + cursor`; only the final-WIR adapter can authenticate the
+    /// relation, so this syntax grants no absolute-address authority.
+    DerivedScratchElement {
+        cursor: Box<WirExpr>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SafeProjectionExpr(Vec<SafeProjectionStep>);
+pub struct SafeProjectionExpr {
+    steps: Vec<SafeProjectionStep>,
+    /// Sealed, non-authorizing marker for numeric formatting's absolute
+    /// backward cursor. Cursor/count expressions deliberately remain in the
+    /// ordinary object/range/encoded fields so generic WIR and reaching-def
+    /// traversal sees each executable operand without learning new authority.
+    numeric_backward_cursor: bool,
+}
 
 impl SafeProjectionExpr {
     pub fn root() -> Self {
@@ -109,35 +178,59 @@ impl SafeProjectionExpr {
     }
 
     pub fn from_steps(steps: impl IntoIterator<Item = SafeProjectionStep>) -> Self {
-        Self(steps.into_iter().collect())
+        Self {
+            steps: steps.into_iter().collect(),
+            numeric_backward_cursor: false,
+        }
+    }
+
+    pub fn numeric_backward_cursor() -> Self {
+        Self {
+            steps: Vec::new(),
+            numeric_backward_cursor: true,
+        }
+    }
+
+    pub fn is_numeric_backward_cursor(&self) -> bool {
+        self.numeric_backward_cursor
     }
 
     pub fn steps(&self) -> &[SafeProjectionStep] {
-        &self.0
+        &self.steps
     }
 
     fn for_each_wir_expr(&self, visit: &mut impl FnMut(&WirExpr)) {
-        for step in &self.0 {
+        for step in &self.steps {
             match step {
-                SafeProjectionStep::Header { .. } | SafeProjectionStep::Field { .. } => {}
-                SafeProjectionStep::Element { index } => visit(index),
+                SafeProjectionStep::Header { .. }
+                | SafeProjectionStep::SumTag
+                | SafeProjectionStep::VariantField { .. }
+                | SafeProjectionStep::Field { .. } => {}
+                SafeProjectionStep::Element { index }
+                | SafeProjectionStep::DerivedElement { index } => visit(index),
                 SafeProjectionStep::Slice { start, length } => {
                     visit(start);
                     visit(length);
                 }
+                SafeProjectionStep::DerivedScratchElement { cursor } => visit(cursor),
             }
         }
     }
 
     fn for_each_wir_expr_mut(&mut self, visit: &mut impl FnMut(&mut WirExpr)) {
-        for step in &mut self.0 {
+        for step in &mut self.steps {
             match step {
-                SafeProjectionStep::Header { .. } | SafeProjectionStep::Field { .. } => {}
-                SafeProjectionStep::Element { index } => visit(index),
+                SafeProjectionStep::Header { .. }
+                | SafeProjectionStep::SumTag
+                | SafeProjectionStep::VariantField { .. }
+                | SafeProjectionStep::Field { .. } => {}
+                SafeProjectionStep::Element { index }
+                | SafeProjectionStep::DerivedElement { index } => visit(index),
                 SafeProjectionStep::Slice { start, length } => {
                     visit(start);
                     visit(length);
                 }
+                SafeProjectionStep::DerivedScratchElement { cursor } => visit(cursor),
             }
         }
     }
@@ -265,6 +358,34 @@ pub enum SafeCopyKind {
 
 #[cfg(test)]
 mod tests {
+
+    // RFC-0162: the numeric backward cursor is a sealed, non-authorizing
+    // marker. It must never be inferred from projection steps, and it must
+    // never travel through the ordinary `from_steps` construction path.
+    #[test]
+    fn numeric_backward_cursor_marker_is_sealed() {
+        let root = SafeProjectionExpr::root();
+        assert!(!root.is_numeric_backward_cursor());
+        assert!(root.steps().is_empty());
+
+        let marked = SafeProjectionExpr::numeric_backward_cursor();
+        assert!(marked.is_numeric_backward_cursor());
+        assert!(
+            marked.steps().is_empty(),
+            "the marker carries no projection authority",
+        );
+
+        // Ordinary construction never sets the marker, whatever the steps.
+        let ordinary = SafeProjectionExpr::from_steps([
+            SafeProjectionStep::Field { index: 0 },
+            SafeProjectionStep::SumTag,
+        ]);
+        assert!(
+            !ordinary.is_numeric_backward_cursor(),
+            "from_steps must not infer the sealed marker",
+        );
+        assert_eq!(ordinary.steps().len(), 2);
+    }
     use super::*;
     use crate::safewir::AccessMode;
     use crate::wir::{Kind, WirFunc, WirLocal, WirModule, WirNode, WirTy, to_wat};

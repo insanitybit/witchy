@@ -1201,6 +1201,29 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
                     print_expr(s, &object.root, depth);
                     emit(s, depth, "safewir.kernel.reclaim");
                 }
+                SafeKernelNode::RegionRewind(rewind) => {
+                    use crate::safewir_kernel::SafeRegionRewind;
+                    match rewind {
+                        SafeRegionRewind::Iteration { watermark } => {
+                            print_expr(s, watermark, depth);
+                            emit(s, depth, "safewir.kernel.region.rewind.iteration");
+                        }
+                        SafeRegionRewind::Lexical { watermark } => {
+                            print_expr(s, watermark, depth);
+                            emit(s, depth, "safewir.kernel.region.rewind.lexical");
+                        }
+                        SafeRegionRewind::CopyOut { watermark, source, retained_bytes } => {
+                            print_expr(s, watermark, depth);
+                            print_expr(s, source, depth);
+                            print_expr(s, retained_bytes, depth);
+                            emit(s, depth, "safewir.kernel.region.rewind.copy_out");
+                        }
+                    }
+                }
+                SafeKernelNode::ScratchRewind { watermark } => {
+                    print_expr(s, watermark, depth);
+                    emit(s, depth, "safewir.kernel.scratch.rewind");
+                }
             }
         }
         WirNode::If {
@@ -1449,8 +1472,8 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
         }
         WirExpr::SafeKernel(operation) => {
             match operation {
-                SafeKernelExpr::Allocate { class, encoded_size, .. } => {
-                    print_expr(s, encoded_size, depth);
+                SafeKernelExpr::Allocate { class, size, .. } => {
+                    print_expr(s, &size.encoded, depth);
                     let operation = match class {
                         crate::safewir_kernel::SafeAllocationClass::Bump => {
                             "safewir.kernel.allocate.bump"
@@ -1465,11 +1488,17 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                     print_expr(s, &object.root, depth);
                     emit(s, depth, "safewir.kernel.retain");
                 }
-                SafeKernelExpr::Reuse { object, encoded_size, .. } => {
+                SafeKernelExpr::Reuse { object, size, .. } => {
                     print_expr(s, &object.root, depth);
-                    print_expr(s, encoded_size, depth);
+                    print_expr(s, &size.encoded, depth);
                     emit(s, depth, "safewir.kernel.reuse");
                 }
+                SafeKernelExpr::ScratchAllocate { size, .. } => {
+                    print_expr(s, &size.encoded, depth);
+                    emit(s, depth, "safewir.kernel.scratch.allocate");
+                }
+                SafeKernelExpr::RegionMark => emit(s, depth, "safewir.kernel.region.mark"),
+                SafeKernelExpr::ScratchMark => emit(s, depth, "safewir.kernel.scratch.mark"),
             }
         }
         WirExpr::Call { func, args } => {

@@ -746,6 +746,9 @@ fn extent(extent: &SafeExtentExpr) -> Result<Extent, FinalWirValidationError> {
         SafeExtentExpr::Counted { .. } => Err(FinalWirValidationError::module(
             "counted executable extents require exact scalar definition bindings",
         )),
+        SafeExtentExpr::ClosedSum => Err(FinalWirValidationError::module(
+            "closed-sum extents require the deferred def-use adapter",
+        )),
     }
 }
 
@@ -771,9 +774,17 @@ fn projection(place: &SafePlaceExpr) -> Result<Projection, FinalWirValidationErr
                 ProjectionStep::Header { component: *component }
             }
             SafeProjectionStep::Field { index } => ProjectionStep::Field { index: *index },
-            SafeProjectionStep::Element { .. } | SafeProjectionStep::Slice { .. } => {
+            SafeProjectionStep::Element { .. }
+            | SafeProjectionStep::Slice { .. }
+            | SafeProjectionStep::DerivedElement { .. }
+            | SafeProjectionStep::DerivedScratchElement { .. } => {
                 return Err(FinalWirValidationError::module(
                     "indexed projections require exact reaching definitions",
+                ));
+            }
+            SafeProjectionStep::SumTag | SafeProjectionStep::VariantField { .. } => {
+                return Err(FinalWirValidationError::module(
+                    "closed-sum projections require the deferred def-use adapter",
                 ));
             }
         });

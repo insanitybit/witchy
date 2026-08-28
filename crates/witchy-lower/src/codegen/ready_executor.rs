@@ -557,7 +557,7 @@ mod tests {
     use witchy_wir::wir::{WirExpr, WirNode};
     use witchy_wir::layout::LayoutId;
     use witchy_wir::safewir_kernel::{
-        SafeAllocationClass, SafeKernelExpr, SafeKernelNode, SafeKernelResultClaim,
+        SafeAllocationClass, SafeKernelExpr, SafeKernelNode, SafeKernelResultClaim, SafeKernelSize,
     };
     use witchy_wir::safewir_surface::{SafeExtentExpr, SafeObjectExpr, SafeProvenanceExpr, SafeSizeExpr};
 
@@ -605,10 +605,16 @@ mod tests {
                         },
                     ))),
                 },
-                encoded_size: Box::new(WirExpr::Call {
-                    func: "ready".into(),
-                    args: vec![],
-                }),
+                size: SafeKernelSize {
+                    checked: SafeSizeExpr::Value(Box::new(WirExpr::Call {
+                        func: "ready".into(),
+                        args: vec![],
+                    })),
+                    encoded: Box::new(WirExpr::Call {
+                        func: "ready".into(),
+                        args: vec![],
+                    }),
+                },
             })),
             WirNode::SafeKernel(SafeKernelNode::Reclaim {
                 object: SafeObjectExpr {
@@ -633,7 +639,13 @@ mod tests {
             collect_closure_codes_node(node, &mut closure_codes);
         }
         assert_eq!(closure_codes, [7, 11]);
-        assert_eq!(rewrite_call_seq(&mut body, "ready", "ready_i64"), 2);
+        // RFC-0162: a kernel size is the pair (checked, encoded). Generic WIR
+        // transforms must visit BOTH sides, or a definition rewrite could
+        // update the executable operand while leaving the checked operand
+        // stale -- exactly the divergence validation exists to prevent. This
+        // fixture puts the same call in both sides of the allocation size plus
+        // one in the reclaim root, so a both-sides visitor rewrites three.
+        assert_eq!(rewrite_call_seq(&mut body, "ready", "ready_i64"), 3);
 
         let mut called = Vec::new();
         for node in &body {
@@ -655,7 +667,7 @@ mod tests {
                 _ => panic!("unexpected visitor fixture shape"),
             }
         }
-        assert_eq!(called, ["ready_i64", "ready_i64"]);
+        assert_eq!(called, ["ready_i64", "ready_i64", "ready_i64"]);
     }
 
     #[test]
