@@ -652,6 +652,9 @@ mod tests {
 
         let mut queue_changed = program;
         queue_changed.execution_shapes[0].queues[0].ownership = PayloadOwnership::BufferRoot;
+        for arm in &mut queue_changed.execution_shapes[0].operations[0].arms {
+            arm.ownership = PayloadOwnership::BufferRoot;
+        }
         assert!(queue_changed.validate().expect_err("queue ownership changed").contains("fingerprint"));
     }
 
@@ -659,6 +662,12 @@ mod tests {
     fn semantic_fingerprint_covers_entry_result_and_cancellation_bindings() {
         let mut shape = shape();
         shape.operations[0].kind = ExecutionOperation::Cancellation;
+        shape.operations[0].input_lanes.clear();
+        shape.operations[0].result_lanes.clear();
+        shape.operations[0].pending_move_lanes.clear();
+        shape.operations[0].fallback_state = None;
+        shape.operations[0].queue = None;
+        shape.operations[0].arms.clear();
         shape.states[0].edges[0].condition = ExecutionEdgeCondition::Always;
         shape.cancellation = Some(AsyncCancellationTransition {
             operation: AsyncProgramOperationId(0),
