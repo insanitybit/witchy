@@ -6,6 +6,13 @@
     }
 
     #[test]
+    fn qualified_and_imported_task_types_unify_at_call_sites() {
+        assert!(super::same_builtin_nominal_head("Task", "task.Task"));
+        assert!(super::same_builtin_nominal_head("task.Task", "Task"));
+        assert!(!super::same_builtin_nominal_head("Task", "Other.Task"));
+    }
+
+    #[test]
     fn pure_named_bodies_allow_local_computation_traps_and_pure_calls() {
         check_source(
             "pure fn increment(x: Int) -> Int:\n    x + 1\n\npure fn compute(x: Int) -> Int:\n    var total = x\n    total = increment(total)\n    total\n\npure fn propagate(value: Result(Int, String)) -> Result(Int, String):\n    let unwrapped = value?\n    Ok(unwrapped)\n\npure fn stop(message: String):\n    fail(message)\n",
