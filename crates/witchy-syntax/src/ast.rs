@@ -464,7 +464,7 @@ pub struct Param {
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Convention {
     /// The default (no keyword): an owned value, observably immutable to the
     /// caller (value semantics).
@@ -512,7 +512,7 @@ impl CallableQualifiers {
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Named(String, Vec<Type>),
     Tuple(Vec<Type>),
@@ -663,7 +663,7 @@ fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeQual {
     /// `frozen` — deeply immutable; sharing is safe, mutation is a check-time error.
     Frozen,

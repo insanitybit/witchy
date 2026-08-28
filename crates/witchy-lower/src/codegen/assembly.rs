@@ -21,6 +21,23 @@ pub(super) struct ModuleLayoutResolver<'a> {
     definitions: BTreeMap<&'a str, &'a witchy_syntax::ast::TypeDef>,
     header_free_lists: Vec<Type>,
     specialize_bool_lists: bool,
+    // Memoizes the three structural type-graph walks below
+    // (contains_bool_list / type_contains_dynamic_list /
+    // type_requests_specialized_layout), keyed by the queried type. Sound
+    // because every public entry point starts with an EMPTY substitution
+    // environment and empty cycle-guard set -- the result is a pure function
+    // of (ty, this resolver) alone, never of where in the caller's tree walk
+    // the query originated. Without this, `collect_specialized_layout_requests`
+    // re-derives the answer for every node of a type tree from scratch,
+    // including re-expanding named type definitions (std's own recursive
+    // scheduler types among them) at each one: measured as 26% of total
+    // compile time on a trivial fixture (scripts/gate-test-cost.py-flagged
+    // rfc0129_slot_reuse/rfc0090 tail-lowering tests all pay this).
+    bool_list_cache: std::cell::RefCell<HashMap<Type, bool>>,
+    dynamic_list_cache: std::cell::RefCell<HashMap<Type, bool>>,
+    // See the INVARIANT comment at its one writer, register_specialized_layouts:
+    // nothing may populate this cache before `specialize_bool_lists` is set.
+    specialized_layout_cache: std::cell::RefCell<HashMap<Type, bool>>,
 }
 
 impl<'a> ModuleLayoutResolver<'a> {
@@ -35,7 +52,14 @@ impl<'a> ModuleLayoutResolver<'a> {
                 definitions.insert(definition.name.as_str(), definition);
             }
         }
-        Self { definitions, header_free_lists, specialize_bool_lists }
+        Self {
+            definitions,
+            header_free_lists,
+            specialize_bool_lists,
+            bool_list_cache: std::cell::RefCell::new(HashMap::default()),
+            dynamic_list_cache: std::cell::RefCell::new(HashMap::default()),
+            specialized_layout_cache: std::cell::RefCell::new(HashMap::default()),
+        }
     }
 
     fn definition(&self, name: &str) -> Option<&'a witchy_syntax::ast::TypeDef> {
@@ -95,6 +119,18 @@ pub(super) fn type_requests_specialized_layout(
     ty: &Type,
     resolver: &ModuleLayoutResolver<'_>,
 ) -> bool {
+    if let Some(cached) = resolver.specialized_layout_cache.borrow().get(ty) {
+        return *cached;
+    }
+    let result = type_requests_specialized_layout_uncached(ty, resolver);
+    resolver.specialized_layout_cache.borrow_mut().insert(ty.clone(), result);
+    result
+}
+
+fn type_requests_specialized_layout_uncached(
+    ty: &Type,
+    resolver: &ModuleLayoutResolver<'_>,
+) -> bool {
     match ty.unqualified() {
         Type::Named(name, arguments) if name == "List" => arguments.first().is_some_and(|element| {
             // Scalar lists are physically specialized too: Bool is stored as a
@@ -127,6 +163,15 @@ pub(super) fn type_contains_dynamic_list(
     ty: &Type,
     resolver: &ModuleLayoutResolver<'_>,
 ) -> bool {
+    if let Some(cached) = resolver.dynamic_list_cache.borrow().get(ty) {
+        return *cached;
+    }
+    let result = type_contains_dynamic_list_uncached(ty, resolver);
+    resolver.dynamic_list_cache.borrow_mut().insert(ty.clone(), result);
+    result
+}
+
+fn type_contains_dynamic_list_uncached(ty: &Type, resolver: &ModuleLayoutResolver<'_>) -> bool {
     fn visit(
         ty: &Type,
         resolver: &ModuleLayoutResolver<'_>,
@@ -198,6 +243,15 @@ pub(super) fn type_contains_dynamic_list(
 }
 
 fn contains_bool_list(ty: &Type, resolver: &ModuleLayoutResolver<'_>) -> bool {
+    if let Some(cached) = resolver.bool_list_cache.borrow().get(ty) {
+        return *cached;
+    }
+    let result = contains_bool_list_uncached(ty, resolver);
+    resolver.bool_list_cache.borrow_mut().insert(ty.clone(), result);
+    result
+}
+
+fn contains_bool_list_uncached(ty: &Type, resolver: &ModuleLayoutResolver<'_>) -> bool {
     fn is_bool(
         ty: &Type,
         substitutions: &BTreeMap<String, Type>,
@@ -474,6 +528,15 @@ fn register_specialized_layouts(cg: &mut Codegen<'_>, module: &Module) {
     // logical type two incompatible layouts. Nested dynamic lists are handled
     // separately above: the outer list remains uniform.
     let mut resolver = ModuleLayoutResolver::new(module, header_free_lists, true);
+    // INVARIANT: nothing between construction and this assignment may call
+    // `type_requests_specialized_layout` (directly or via
+    // `bool_list_wrapper_requires_uniform`) on this resolver -- that cache is
+    // keyed only on (ty, resolver) and does not itself track
+    // `specialize_bool_lists`, so a query before this write would memoize a
+    // stale answer for the rest of the compile. `bool_lists_cross_callable_
+    // boundary` below only reaches `contains_bool_list`, which is independent
+    // of this field; keep it that way, or invalidate `specialized_layout_cache`
+    // if a future caller needs to query earlier.
     let specialize_bool_lists = witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::InPlace)
         && !bool_lists_cross_callable_boundary(cg, module, &resolver);
     resolver.specialize_bool_lists = specialize_bool_lists;
