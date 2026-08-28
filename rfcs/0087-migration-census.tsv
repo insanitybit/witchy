@@ -30,12 +30,12 @@ book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__
 book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
 spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
-witchy-files	308
-markdown-blocks	238
-checked	546
+witchy-files	9
+markdown-blocks	51
+checked	60
 rejected	0
-var-declarations	48
-resolved-var-calls	968
+var-declarations	23
+resolved-var-calls	197
 mechanical-self-reassignment	0
 expression-position-mutator	11
 immutable-var-argument	0
