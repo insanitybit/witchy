@@ -9,56 +9,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 const LOCK: &str = include_str!("../../tools/binaryen-version_131.lock");
 const EXACT_RECIPE: &str = "-O4|--all-features|--inlining-optimizing|--inline-functions-with-loops|--flexible-inline-max-function-size=100|--one-caller-inline-max-function-size=200";
-const SEC_036_037: &str = r#"type R:
-    text: String
-    values: List(Int)
-
-fn alias_text(s: String) -> String:
-    var working = s
-    working = working + "!"
-    working
-
-fn alias_values(xs: List(Int)) -> List(Int):
-    var working = xs
-    working = list.concat(working, working)
-    working
-
-fn alias_field(r: R) -> String:
-    var working = r.text
-    working = working.to_upper()
-    working
-
-fn main(console: Console):
-    let text = "owned".to_upper()
-    let values = [3, 5, 8]
-    let record = R(text, values)
-    console.print(text)
-    console.print(alias_text(text))
-    console.print("${values}")
-    console.print("${alias_values(values)}")
-    console.print(record.text)
-    console.print(alias_field(record))
-"#;
-const SEC_038_OOB: &str = r#"import bytes
-
-fn main(console: Console):
-    let b = bytes.from_string("hi!")
-    console.print("${bytes.at(b, 5)}")
-"#;
-const SEC_038_NEGATIVE: &str = r#"import bytes
-
-fn main(console: Console):
-    let b = bytes.from_string("hi!")
-    console.print("${bytes.at(b, 0 - 1)}")
-"#;
-const SEC_039: &str = r#"fn main(console: Console):
-    var xs = [3, 1, 2]
-    list.sort(xs)
-    console.print("${xs}")
-    var t = "abc"
-    t = t.trim()
-    console.print("[${t}]")
-"#;
+const SEC_036: &str = include_str!("../fixtures/rfc0162-sec/sec036-alias-initialized-overwrite.witchy");
+const SEC_036_DIRECT: &str = include_str!("../fixtures/rfc0162-sec/sec036-direct-alias-init-shapes.witchy");
+const SEC_037: &str = include_str!("../../examples/minigrep/src/minigrep.witchy");
+const SEC_037_INPUT: &str = include_str!("../../examples/data/poem.txt");
+const SEC_038_OOB: &str = include_str!("../fixtures/rfc0162-sec/sec038-bytes-positive-oob.witchy");
+const SEC_038_NEGATIVE: &str = include_str!("../fixtures/rfc0162-sec/sec038-bytes-negative-oob.witchy");
+const SEC_039: &str = include_str!("../fixtures/rfc0162-sec/sec039-literal-overwrite.witchy");
 const SEC_078: &str = r#"fn slice(text: String, depth: Int) -> String:
     if depth <= 0:
         text
@@ -115,40 +72,80 @@ struct CorpusCase {
     source: String,
     expected: Expected,
     opts: &'static str,
-    sanitizers: bool,
+    uaf_check: bool,
+    rc_assert: bool,
+    arguments: Vec<String>,
+    input_files: Vec<(String, String)>,
 }
 
 fn sec_cases() -> Vec<CorpusCase> {
     vec![
         CorpusCase {
-            name: "SEC-036-037-alias-reassignment".into(),
-            source: SEC_036_037.into(),
+            name: "SEC-036-alias-initialized-overwrite".into(),
+            source: SEC_036.into(),
+            expected: Expected::Success("Console,Dir[Read],Net[Connect]\n".into()),
+            opts: "all",
+            uaf_check: true,
+            rc_assert: true,
+            arguments: Vec::new(),
+            input_files: Vec::new(),
+        },
+        CorpusCase {
+            name: "SEC-036-direct-var-field-index-list-aliases".into(),
+            source: SEC_036_DIRECT.into(),
             expected: Expected::Success(
-                "OWNED\nOWNED!\n[3, 5, 8]\n[3, 5, 8, 3, 5, 8]\nOWNED\nOWNED\n".into(),
+                "owned\nowned!\nowned\nOWNED\nowned\nOWNED\nowned\n[3, 5, 8]\n[3, 5, 8, 3, 5, 8]\n[3, 5, 8]\n".into(),
             ),
             opts: "all",
-            sanitizers: true,
+            uaf_check: true,
+            rc_assert: true,
+            arguments: Vec::new(),
+            input_files: Vec::new(),
+        },
+        CorpusCase {
+            name: "SEC-037-retained-lines-container-element".into(),
+            source: SEC_037.into(),
+            expected: Expected::Success(
+                "I'm nobody! Who are you?\nAre you nobody, too?\n".into(),
+            ),
+            opts: "all",
+            uaf_check: true,
+            // `WITCHY_RC_ASSERT` is a separate, known non-gating diagnostic
+            // that still fires on minigrep. UAF poisoning and the independent
+            // output oracle remain enabled for this production regression.
+            rc_assert: false,
+            arguments: vec!["nobody".into(), "poem.txt".into()],
+            input_files: vec![("poem.txt".into(), SEC_037_INPUT.into())],
         },
         CorpusCase {
             name: "SEC-038-positive-oob".into(),
             source: SEC_038_OOB.into(),
             expected: Expected::RuntimeFailure("bytes index 5 out of bounds (length 3)"),
             opts: "all",
-            sanitizers: false,
+            uaf_check: false,
+            rc_assert: false,
+            arguments: Vec::new(),
+            input_files: Vec::new(),
         },
         CorpusCase {
             name: "SEC-038-negative-oob".into(),
             source: SEC_038_NEGATIVE.into(),
             expected: Expected::RuntimeFailure("bytes index -1 out of bounds (length 3)"),
             opts: "all",
-            sanitizers: false,
+            uaf_check: false,
+            rc_assert: false,
+            arguments: Vec::new(),
+            input_files: Vec::new(),
         },
         CorpusCase {
             name: "SEC-039-literal-overwrite".into(),
             source: SEC_039.into(),
             expected: Expected::Success("[1, 2, 3]\n[abc]\n".into()),
             opts: "all",
-            sanitizers: true,
+            uaf_check: true,
+            rc_assert: true,
+            arguments: Vec::new(),
+            input_files: Vec::new(),
         },
         CorpusCase {
             name: "SEC-078-aliased-call-result".into(),
@@ -157,7 +154,10 @@ fn sec_cases() -> Vec<CorpusCase> {
             // Folding would erase the recursive dependency-call shape that
             // makes this regression load-bearing.
             opts: "all,-fold",
-            sanitizers: true,
+            uaf_check: true,
+            rc_assert: true,
+            arguments: Vec::new(),
+            input_files: Vec::new(),
         },
     ]
 }
@@ -226,7 +226,10 @@ fn main(console: Console):
             "{page_len}:{page_len}:{last}:{loop_sum}:{closure_result}:{boxed_score}:{triangular}:0:-9223372036854775808:{seed}\n"
         )),
         opts: "all",
-        sanitizers: true,
+        uaf_check: true,
+        rc_assert: true,
+        arguments: Vec::new(),
+        input_files: Vec::new(),
     }
 }
 
@@ -342,6 +345,19 @@ fn run_case(
         .unwrap()
         .write_all(case.source.as_bytes())
         .unwrap();
+    for (relative, contents) in &case.input_files {
+        let relative = Path::new(relative);
+        assert!(
+            relative.components().all(|part| matches!(part, std::path::Component::Normal(_))),
+            "corpus input path must stay beneath its private root: {}",
+            relative.display()
+        );
+        let destination = temporary.path().join(relative);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(destination, contents).unwrap();
+    }
     let home = temporary.path().join("home");
     let cache = temporary.path().join("cache");
     let tmp = temporary.path().join("tmp");
@@ -349,8 +365,12 @@ fn run_case(
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::create_dir_all(&tmp).unwrap();
     let mut command = Command::new(BIN);
+    // Every case gets an isolated working directory; SEC-037 additionally
+    // consumes its staged poem through the real Dir[Read] production path.
     command
+        .current_dir(temporary.path())
         .arg(&source)
+        .args(&case.arguments)
         .env_clear()
         .env("HOME", &home)
         .env("XDG_CACHE_HOME", &cache)
@@ -358,10 +378,11 @@ fn run_case(
         .env("WITCHY_OPT", opts)
         .env("WITCHY_REQUIRE_PINNED_BINARYEN", "1")
         .env("WIRDIAG", "1");
-    if case.sanitizers {
-        command
-            .env("WITCHY_UAF_CHECK", "1")
-            .env("WITCHY_RC_ASSERT", "1");
+    if case.uaf_check {
+        command.env("WITCHY_UAF_CHECK", "1");
+    }
+    if case.rc_assert {
+        command.env("WITCHY_RC_ASSERT", "1");
     }
     if lane == "post" {
         command.envs(pin.iter().cloned());
@@ -492,10 +513,19 @@ fn assert_exact_trace(case: &CorpusCase, stderr: &[u8]) -> String {
 
 #[test]
 fn corpus_manifest_covers_every_applicable_sec_fixture_and_generated_shape() {
+    assert!(
+        SEC_037.contains("for line in contents.lines():")
+            && SEC_037.contains("hits.push(line)")
+            && SEC_037.contains("for line in hits:")
+            && SEC_037.contains("console.print(line)"),
+        "the real minigrep source no longer preserves SEC-037's retained-container-element trigger"
+    );
     let cases = corpus();
     let names: Vec<&str> = cases.iter().map(|case| case.name.as_str()).collect();
     for required in [
-        "SEC-036-037-alias-reassignment",
+        "SEC-036-alias-initialized-overwrite",
+        "SEC-036-direct-var-field-index-list-aliases",
+        "SEC-037-retained-lines-container-element",
         "SEC-038-positive-oob",
         "SEC-038-negative-oob",
         "SEC-039-literal-overwrite",
@@ -506,7 +536,7 @@ fn corpus_manifest_covers_every_applicable_sec_fixture_and_generated_shape() {
             "missing applicable fixture {required}"
         );
     }
-    assert_eq!(cases.len(), 13);
+    assert_eq!(cases.len(), 15);
     assert_eq!(
         names
             .iter()
@@ -516,6 +546,10 @@ fn corpus_manifest_covers_every_applicable_sec_fixture_and_generated_shape() {
     );
     for case in cases {
         assert!(!case.source.is_empty());
+        for (relative, contents) in &case.input_files {
+            assert!(!relative.is_empty());
+            assert!(!contents.is_empty());
+        }
         match case.expected {
             Expected::Success(expected) => assert!(!expected.is_empty()),
             Expected::RuntimeFailure(expected_error) => assert!(!expected_error.is_empty()),

@@ -1,0 +1,5 @@
+import bytes
+
+fn main(console: Console):
+    let value = bytes.from_string("hi!")
+    console.print("${bytes.at(value, 0 - 1)}")

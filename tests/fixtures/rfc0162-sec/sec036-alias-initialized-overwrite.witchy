@@ -1,0 +1,7 @@
+import toml
+import list
+
+fn main(console: Console):
+    let manifest = "[capabilities]\nruntime = [\"Console\", \"Dir[Read]\", \"Net[Connect]\"]\n"
+    let declared = toml.get_array(manifest, "capabilities.runtime")
+    console.print(list.join(declared, ","))

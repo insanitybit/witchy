@@ -1,0 +1,7 @@
+fn main(console: Console):
+    var values = [3, 1, 2]
+    list.sort(values)
+    console.print("${values}")
+    var text = "abc"
+    text = text.trim()
+    console.print("[${text}]")

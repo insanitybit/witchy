@@ -127,7 +127,7 @@ use crate::{ast, codegen, parser, typeck};
     #[test]
     fn rc_free_at_overwrite_does_not_free_a_literal_sec_039() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    list.sort(xs)\n    console.print(\"${xs}\")\n    var t = \"abc\"\n    t = t.trim()\n    console.print(\"[${t}]\")\n";
+        let src = include_str!("../../tests/fixtures/rfc0162-sec/sec039-literal-overwrite.witchy");
         let oracle = link_run(src);
         assert_eq!(oracle, vec!["[1, 2, 3]", "[abc]"], "oracle shape changed");
         let mut settings: Vec<(String, OptSet)> = vec![

@@ -1,0 +1,38 @@
+type Record:
+    text: String
+
+fn alias_variable(text: String) -> String:
+    var working = text
+    working = working + "!"
+    working
+
+fn alias_field(record: Record) -> String:
+    var working = record.text
+    working = working.to_upper()
+    working
+
+fn alias_index(values: List(String)) -> String:
+    var working = values[0]
+    working = working.to_upper()
+    working
+
+fn alias_list(values: List(Int)) -> List(Int):
+    var working = values
+    working = list.concat(working, working)
+    working
+
+fn main(console: Console):
+    let text = "OwNeD".to_lower()
+    let record = Record(text)
+    let values = [text]
+    console.print(text)
+    console.print(alias_variable(text))
+    console.print(text)
+    console.print(alias_field(record))
+    console.print(record.text)
+    console.print(alias_index(values))
+    console.print(values[0])
+    let numbers = [3, 5, 8]
+    console.print("${numbers}")
+    console.print("${alias_list(numbers)}")
+    console.print("${numbers}")

@@ -134,8 +134,9 @@ use super::*;
         assert_rc_corpus_stable(src, &["q1", "z1"]);
     }
 
-    /// Regression: `toml.get_array` on a real manifest is sound under `WITCHY_OPT=rc-floor`.
-    /// This once returned [] — a free-at-overwrite use-after-free in `std/string.last_index_of`
+    /// (SEC-036) `toml.get_array` on a real manifest is sound under the
+    /// shipping optimized configuration and the explicit `rc-floor` trigger.
+    /// This once returned [] — a free-at-overwrite use-after-free in string `rfind`
     /// (`var rest = s; rest = string.substring(rest, …)`): the first reassignment freed `rest`'s
     /// initial buffer, which ALIASED the borrowed param `s`, so the caller's string dangled and a
     /// later allocation (routed through the Phase-A free-list) overwrote it. Fixed by excluding
@@ -143,7 +144,36 @@ use super::*;
     /// does not own is never free-at-overwrite-reclaimed. (Not the dup/drop emission: bisected to the
     /// free-at-overwrite pass with every step-1..4 dup/drop disabled.)
     #[test]
-    fn rc_floor_toml_get_array_is_sound() {
-        let src = "import toml\nimport list\nfn main(console: Console):\n    let m = \"[capabilities]\\nruntime = [\\\"Console\\\", \\\"Dir[Read]\\\", \\\"Net[Connect]\\\"]\\n\"\n    let declared = toml.get_array(m, \"capabilities.runtime\")\n    console.print(list.join(declared, \",\"))\n";
-        assert_rc_corpus_stable(src, &["Console,Dir[Read],Net[Connect]"]);
+    fn rc_floor_toml_get_array_alias_init_is_sound_sec_036() {
+        let src = include_str!("../../tests/fixtures/rfc0162-sec/sec036-alias-initialized-overwrite.witchy");
+        let expected = ["Console,Dir[Read],Net[Connect]"];
+        assert_rc_corpus_stable(src, &expected);
+    }
+
+    /// (SEC-036) Directly pin all three alias-initializer forms excluded by the
+    /// fix: a variable, field projection, and index projection, including the
+    /// distinct List reclamation path. This keeps the ownership regression live
+    /// even if the historical TOML call chain changes.
+    #[test]
+    fn alias_initialized_var_field_and_index_stay_live_sec_036() {
+        use crate::opt::{self, OptSet};
+        let src = include_str!("../../tests/fixtures/rfc0162-sec/sec036-direct-alias-init-shapes.witchy");
+        let expected = [
+            "owned",
+            "owned!",
+            "owned",
+            "OWNED",
+            "owned",
+            "OWNED",
+            "owned",
+            "[3, 5, 8]",
+            "[3, 5, 8, 3, 5, 8]",
+            "[3, 5, 8]",
+        ];
+        assert_eq!(link_run(src), expected, "SEC-036 direct-shape interpreter oracle changed");
+
+        opt::set_for_tests(Some(OptSet::all()));
+        let optimized = wasm_run(src);
+        opt::set_for_tests(None);
+        assert_eq!(optimized, expected, "SEC-036: optimized Wasm reclaimed a direct alias initializer");
     }

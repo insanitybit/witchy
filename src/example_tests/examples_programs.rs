@@ -479,25 +479,40 @@ fn main_receives_command_line_args() {
     assert_eq!(run(Vec::new()), vec![""]);
 }
 
+/// (SEC-037) The real historical trigger: each `contents.lines()` element is
+/// retained in `hits`, then read after the source container's lifetime. Wrong
+/// RC handling at the element read/copy corrupted or prematurely reclaimed
+/// storage still observed through `hits`. Both backends must match the
+/// independent expected lines; agreement alone would not detect matching
+/// corruption.
 #[test]
-fn minigrep_example_searches_a_file_like_the_rust_book() {
+fn minigrep_lines_survive_source_container_sec_037() {
+    use crate::opt::{self, OptSet};
+    let path = "examples/minigrep/src/minigrep.witchy";
+    let args = vec!["nobody".to_string(), "examples/data/poem.txt".to_string()];
+    let expected = vec!["I'm nobody! Who are you?", "Are you nobody, too?"];
+    let (linked, _) = crate::link_file(path).expect("link the SEC-037 minigrep source");
+    typeck::check(&linked).expect("typecheck the SEC-037 minigrep source");
+    let interpreted = interpreter::run_module_args(linked, ".", Vec::new(), args.clone())
+        .expect("interpret the SEC-037 minigrep source");
+    assert_eq!(interpreted, expected, "SEC-037 interpreter oracle changed");
+
+    opt::set_for_tests(Some(OptSet::all()));
     let (out, code) = crate::execute_file_exit(
-        "examples/minigrep/src/minigrep.witchy",
+        path,
         Vec::new(),
         Vec::new(),
-        vec!["nobody".into(), "examples/data/poem.txt".into()],
+        args,
         None,
         Vec::new(),
     )
     .unwrap();
+    opt::set_for_tests(None);
     assert_eq!(code, 0);
-    assert_eq!(
-        out,
-        vec!["I'm nobody! Who are you?", "Are you nobody, too?"]
-    );
+    assert_eq!(out, expected, "SEC-037 optimized Wasm lost or corrupted a retained line");
 
     let (out, code) = crate::execute_file_exit(
-        "examples/minigrep/src/minigrep.witchy",
+        path,
         Vec::new(),
         Vec::new(),
         Vec::new(),
