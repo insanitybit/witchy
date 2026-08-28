@@ -280,6 +280,14 @@ worktree, `target/`, master, and the merge queue as shared state:
 - Use a per-agent target dir for long commands:
   `CARGO_TARGET_DIR=target-claude cargo nextest run --workspace`.
 
+**Keep the blocking suite fast.** Treat roughly two seconds per ordinary test
+as a useful optimization target: first measure the slowest tests, then reduce
+fixture size, remove redundant setup, or move genuinely long compiler/Wasm,
+integration, and fuzz campaigns to an explicitly named nightly/non-blocking
+job. This is guidance, not a correctness gate; do not weaken assertions or
+hide tests with `#[ignore]`. Preserve a discoverable runner path and record
+why a test remains long.
+
 **Uncommitted changes you didn't write are the common case, and they are
 someone's in-flight work.** Don't discard them and don't silently fold them into
 your own commit. Read the diff and decide: unrelated to your task → leave it
