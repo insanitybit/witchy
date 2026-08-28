@@ -4,7 +4,9 @@
 # a failure surfaces as early as possible.
 #
 #   ./scripts/check.sh --fast  the COMMIT gate: tests (minus the load-flaky
-#                              e2e) with clippy overlapped in the background,
+#                              e2e and the nightly-deferred perf/build tests,
+#                              see NIGHTLY-DEFERRED below) with clippy
+#                              overlapped in the background,
 #                              plus witchy-fmt IF any .witchy files changed —
 #                              the fast inner loop
 #   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
@@ -166,6 +168,27 @@ case "$gate_fuzz" in
     full)    ;;
     *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
 esac
+
+# NIGHTLY-DEFERRED PERF/BUILD TESTS ------------------------------------------
+# Four tests cost 7-31s each and ran in essentially every one of the last 50
+# gates (scripts/gate-test-cost.py --aggregate), yet none of them adjudicate
+# stable-semantics parity (RFC-0135) -- they measure real wall-clock cost or
+# do a real `--release` cargo build, so there is no smaller N that preserves
+# what they check:
+#   - rfc0129_scalar_executor_performance::million_message_scalar_executor_meets_resumption_cost_and_allocation_gate
+#     (31s) and ::packed_aggregate_channel_uses_direct_scalar_lanes (17s) are
+#     genuine perf benchmarks (comment on the former: intentionally compiled
+#     once, only execution is sampled -- it is already the cheapest shape for
+#     what it measures).
+#   - rfc0092::trusted_application_executables::trusted_publisher_application_end_to_end
+#     (7s) and rfc0092::trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app
+#     (5s) each shell out to a real `--release` build, the same shape as the
+#     `binary(e2e)` tests this gate already defers below.
+# Deferred out of the default/--fast merge-gate the same way; still run under
+# --full, CI's per-push `cargo nextest run --workspace`, and explicitly via
+# `cargo nextest run -E "$nightly_excl_positive"`.
+nightly_excl_positive='test(/^million_message_scalar_executor_meets_resumption_cost_and_allocation_gate$|^packed_aggregate_channel_uses_direct_scalar_lanes$|^trusted_application_executables::trusted_publisher_application_end_to_end$|^trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app$/)'
+nightly_excl="not ($nightly_excl_positive)"
 
 # Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
 # coordinator from the batch diff (see merge-queue.sh). `docs` means every
@@ -371,6 +394,7 @@ if cargo nextest --version >/dev/null 2>&1; then
         printf 'check.sh: reusing exact RFC-0087 census proof for %.12s\n' "$census_proof_sha"
     fi
     [ "$full" -eq 0 ] && excl="$excl and not binary(e2e)"
+    [ "$full" -eq 0 ] && excl="$excl and $nightly_excl"
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
     fi
