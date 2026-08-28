@@ -240,8 +240,12 @@ impl TypedScheduler {
     }
 
     pub fn request_host_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let operation = self.runtime.execution(execution).and_then(|execution| execution.waiting_operation().ok().map(|(operation, _)| operation));
         let cancelled = self.runtime.request_host_cancellation(execution, generation)?;
-        if cancelled { self.enqueue_next(execution)?; }
+        if cancelled {
+            if let Some(operation) = operation { self.record_admission(operation, generation, AdmissionResult::Cancelled)?; }
+            self.enqueue_next(execution)?;
+        }
         Ok(cancelled)
     }
 
@@ -249,8 +253,12 @@ impl TypedScheduler {
     /// execution's declared cleanup state. A successful request is admitted
     /// in the next deterministic round.
     pub fn request_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let operation = self.runtime.execution(execution).and_then(|execution| execution.waiting_operation().ok().map(|(operation, _)| operation));
         let requested = self.runtime.request_cancellation(execution, generation)?;
-        if requested { self.enqueue_next(execution)?; }
+        if requested {
+            if let Some(operation) = operation { self.record_admission(operation, generation, AdmissionResult::Cancelled)?; }
+            self.enqueue_next(execution)?;
+        }
         Ok(requested)
     }
 
@@ -431,6 +439,11 @@ mod tests {
         assert!(duplicate.contains("already has"), "unexpected duplicate error: {duplicate}");
         assert!(matches!(scheduler.admission_trace()[1].result, AdmissionResult::Error(_)));
         assert!(scheduler.request_cancellation(9, 1).expect("cancel"));
+        assert!(scheduler.admission_trace().iter().any(|event| {
+            event.operation == OperationSiteId(0)
+                && event.generation == 1
+                && event.result == AdmissionResult::Cancelled
+        }));
         assert_eq!(scheduler.run_round().expect("cleanup round")[0].turn, KernelTurn::Complete);
         assert_eq!(scheduler.runtime().execution(9).expect("execution").status(), KernelStatus::Complete);
     }
