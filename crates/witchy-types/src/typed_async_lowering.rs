@@ -123,6 +123,10 @@ pub struct TypedAsyncSourceOperationBinding {
     /// source facts, not variable spellings, so shadowed locals remain distinct
     /// when final closure layout later assigns frame lanes.
     pub operand_bindings: Vec<SourceBindingId>,
+    /// Concrete types of source call arguments, in lexical argument order.
+    /// These are retained before CPS lowering so executable producers can form
+    /// endpoint, payload, and result lanes without rewalking generated code.
+    pub operand_types: Vec<Type>,
     /// The finalized operand type captured from the linked pre-CPS typed
     /// projection. A bare `return` has no operand; every other operation must
     /// carry a concrete type before executable frame/lane formation begins.
@@ -432,6 +436,7 @@ impl TypedAsyncLoweringInput {
                 operation.callable,
                 operation.source_operation,
             ))?);
+            operation.operand_types = Self::typed_operation_operand_types(checked, operation)?;
             operation.runtime_kind = classify_typed_operation(operation.kind, expression);
         }
         for control in &mut input.controls {
@@ -671,6 +676,7 @@ impl TypedAsyncLoweringInput {
                     expression: operation.expression,
                     operand_bindings,
                     operand_type: None,
+                    operand_types: Vec::new(),
                     continuation,
                     terminal: operation.kind == SourceAsyncOperationKind::Await && continuation.is_none()
                         || operation.kind == SourceAsyncOperationKind::Return,
@@ -752,6 +758,35 @@ impl TypedAsyncLoweringInput {
             operation.source_operation,
         ))?;
         Self::typed_source_expression(checked, &operation.callable, expression)
+    }
+
+    fn typed_operation_operand_types(
+        checked: &CheckedModule,
+        operation: &TypedAsyncSourceOperationBinding,
+    ) -> Result<Vec<Type>, String> {
+        let (expression, _) = Self::typed_source_operation(checked, operation)?;
+        let call = match expression {
+            Expr::Unary { op: witchy_syntax::ast::UnOp::Await, expr } => expr.as_ref(),
+            other => other,
+        };
+        let typed = checked.typed_async_source().ok_or_else(|| format!(
+            "source async {:?} has no typed pre-CPS projection", operation.callable,
+        ))?;
+        let argument_types = |arguments: &[&Expr]| arguments.iter().map(|argument| {
+            let ty = typed.table().type_of(argument).ok_or_else(|| format!(
+                "source async {:?} operation {} argument has no inferred type",
+                operation.callable, operation.source_operation,
+            ))?;
+            typeck::ty_to_ast(ty).ok_or_else(|| format!(
+                "source async {:?} operation {} has a non-concrete argument type `{ty}`",
+                operation.callable, operation.source_operation,
+            ))
+        }).collect::<Result<Vec<_>, String>>();
+        match call {
+            Expr::Call { args, .. } => argument_types(&args.iter().collect::<Vec<_>>()),
+            Expr::LabeledCall { args, .. } => argument_types(&args.iter().map(|(_, arg)| arg).collect::<Vec<_>>()),
+            _ => Ok(Vec::new()),
+        }
     }
 
     fn typed_source_expression<'a>(
@@ -973,12 +1008,14 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).expect("checked source");
         let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
-        assert!(input.operations.iter().any(|operation| {
+        let send = input.operations.iter().find(|operation| {
             operation.kind == SourceAsyncOperationKind::Await
                 && operation.runtime_kind == TypedAsyncOperationKind::ChannelSend
-                && operation.terminal
-                && operation.operand_bindings == vec![SourceBindingId(0)]
-        }));
+        }).expect("channel send await");
+        assert!(send.terminal);
+        assert_eq!(send.operand_bindings, vec![SourceBindingId(0)]);
+        assert_eq!(send.operand_types.len(), 2);
+        assert!(matches!(send.operand_types[1], Type::Named(ref name, _) if name == "Int"));
         assert!(input.operations.iter().any(|operation| {
             operation.kind == SourceAsyncOperationKind::StaticCall
                 && operation.runtime_kind == TypedAsyncOperationKind::CallOperand
