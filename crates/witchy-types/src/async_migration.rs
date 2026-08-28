@@ -77,6 +77,20 @@ impl Census {
         }
         counts
     }
+
+    /// Number of findings that require a source migration for RFC-0161.
+    /// Async callable declarations are retained as valid new-surface facts;
+    /// every other category describes a changed or legacy call site.
+    pub fn migration_findings(&self) -> usize {
+        self.findings.iter().filter(|finding| finding.category != Category::AsyncCallable).count()
+    }
+
+    /// Whether this checked report is safe to use as evidence for the final
+    /// one-cut migration. A type-check failure or any changed-surface finding
+    /// keeps the result false.
+    pub fn migration_complete(&self) -> bool {
+        self.checked && self.migration_findings() == 0
+    }
 }
 
 /// Census all resolved changed-concurrency calls owned by `entry_module`.
@@ -224,5 +238,7 @@ mod tests {
         assert_eq!(counts["legacy-cancellation"], 1);
         assert_eq!(counts["legacy-receive-quiescence"], 1);
         assert_eq!(counts["task-consumption"], 6);
+        assert!(!census.migration_complete());
+        assert_eq!(census.migration_findings(), census.findings.len() - 1);
     }
 }

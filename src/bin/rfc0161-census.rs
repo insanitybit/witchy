@@ -17,7 +17,10 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let root = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let strict = arguments.iter().any(|argument| argument == "--strict");
+    let root = arguments.iter().find(|argument| argument.as_str() != "--strict")
+        .cloned().unwrap_or_else(|| ".".to_string());
     let root = Path::new(&root);
     let mut files = Vec::new();
     for directory in ["std", "examples", "projects", "benchmarks", "tests"] {
@@ -61,11 +64,20 @@ fn run() -> Result<(), String> {
     for category in categories() {
         println!("{}\t{}", category.as_str(), totals.get(category.as_str()).copied().unwrap_or(0));
     }
+    let migration_findings = categories().iter()
+        .filter(|category| **category != Category::AsyncCallable)
+        .map(|category| totals.get(category.as_str()).copied().unwrap_or(0))
+        .sum::<usize>();
+    println!("migration-findings\t{migration_findings}");
+    println!("migration-complete\t{}", rejected.is_empty() && migration_findings == 0);
     if !rejected.is_empty() {
         println!();
         println!("compiler-rejections");
         for rejection in rejected { println!("{rejection}"); }
         return Err("one or more corpus sources failed checking; migration findings remain above".to_string());
+    }
+    if strict && migration_findings != 0 {
+        return Err(format!("RFC-0161 strict census found {migration_findings} migration findings"));
     }
     Ok(())
 }
