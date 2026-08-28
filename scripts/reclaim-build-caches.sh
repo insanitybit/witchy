@@ -100,6 +100,16 @@ while IFS= read -r wt; do
     # gate rebuilds from cold without them and every queued branch pays for it.
     case "$wt" in *"/merge-gate") continue ;; esac
 
+    # Ask the cheap question first. Most registered worktrees have no build
+    # cache at all -- they were never built in, or theirs was already
+    # reclaimed -- and interrogating git about every one of them cost more
+    # than the whole rest of the run put together.
+    has_cache=0
+    for t in "$wt"/target*; do
+        if [ -d "$t" ]; then has_cache=1; break; fi
+    done
+    [ "$has_cache" -eq 1 ] || continue
+
     branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo DETACHED)"
     dirty="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
     # The queue rebases, so a landed branch is never an ancestor of master --
@@ -126,14 +136,21 @@ while IFS= read -r wt; do
         else
             state=STALE
         fi
-        size="$(du -sm "$t" 2>/dev/null | cut -f1 || echo 0)"
-        printf '%9s  %-8s  %s\n' "$size" "$state" "${t#"$main"/}"
         if [ "$state" = STALE ]; then
+            # Size only what we might actually delete. `du` over a multi-GB CoW
+            # target tree costs seconds, and on a busy checkout nearly every
+            # cache is held back -- sizing all of them made the common
+            # "nothing to do" run take minutes while competing with a live gate
+            # for IO, which is the exact moment you least want to spend it.
+            size="$(du -sm "$t" 2>/dev/null | cut -f1 || echo 0)"
+            printf '%9s  %-8s  %s\n' "$size" "$state" "${t#"$main"/}"
             # Carry the mtime so the deletion order is oldest-first: the least
             # recently touched cache is the one whose owner is least likely to
             # be mid-task and pay for the rebuild.
             doomed+=("$(stat -f %m "$t")	$t")
             freed_candidates=$((freed_candidates + size))
+        else
+            printf '%9s  %-8s  %s\n' "-" "$state" "${t#"$main"/}"
         fi
     done
 done < <(git -C "$main" worktree list --porcelain | awk '/^worktree /{print $2}')
