@@ -535,6 +535,52 @@ mod tests {
         assert_eq!(to_wat(&semantic), to_wat(&raw));
     }
 
+    // RFC-0162: the 584-site migration can only proceed one subsystem at a time
+    // if a PARTIALLY migrated module still encodes. Validation forbids raw
+    // memory and the ordinary encoder forbids SafeWIR, so without the bridge a
+    // module holding one migrated site and one unmigrated site would encode
+    // through neither, and all 584 would have to move at once.
+    #[test]
+    fn migration_bridge_encodes_a_module_that_is_part_raw_and_part_safewir() {
+        let mixed = module(vec![
+            // an already-migrated site
+            WirNode::Drop(WirExpr::SafeLoad {
+                place: place(AccessMode::Read, 0),
+                kind: Kind::I32,
+            }),
+            // a site not migrated yet
+            WirNode::Drop(WirExpr::Load {
+                ptr: Box::new(WirExpr::GetLocal("object".into())),
+                kind: Kind::I32,
+                offset: 0,
+            }),
+        ]);
+        let encoded = crate::wir_encode::try_encode_with_gc_source_map(&mixed, &[], &[])
+            .expect("a partially migrated module must still encode");
+        assert!(!encoded.wasm.is_empty());
+
+        // And the migrated site erases to exactly the raw operation it denotes,
+        // so migrating a site does not change the emitted program.
+        let all_raw = module(vec![
+            WirNode::Drop(WirExpr::Load {
+                ptr: Box::new(WirExpr::GetLocal("object".into())),
+                kind: Kind::I32,
+                offset: 0,
+            }),
+            WirNode::Drop(WirExpr::Load {
+                ptr: Box::new(WirExpr::GetLocal("object".into())),
+                kind: Kind::I32,
+                offset: 0,
+            }),
+        ]);
+        let raw_encoded = crate::wir_encode::try_encode_with_gc_source_map(&all_raw, &[], &[])
+            .expect("the all-raw module encodes");
+        assert_eq!(
+            encoded.wasm, raw_encoded.wasm,
+            "migrating a site must not change the emitted bytes",
+        );
+    }
+
     #[test]
     fn ordinary_encoder_rejects_semantic_memory_without_authority() {
         let semantic = module(vec![WirNode::Drop(WirExpr::SafeLoad {
