@@ -8,7 +8,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use crate::typed_async::{KernelTurn, TypedExecution};
-use crate::typed_queue::{QueueRuntimeResult, QueueSelectResult, TypedQueue, TypedQueueRuntime};
+use crate::typed_queue::{QueuePayload, QueueRuntimeResult, QueueSelectResult, TypedQueue, TypedQueueRuntime};
 use witchy_types::typed_execution::OperationSiteId;
 
 /// One operation-level scheduler observation. The sequence is assigned when
@@ -97,6 +97,55 @@ impl TypedScheduler {
         Ok(())
     }
 
+    /// Submit a typed send through the scheduler-owned queue runtime and
+    /// admit every execution made runnable by the commit.
+    pub fn submit_send(
+        &mut self,
+        execution: u64,
+        generation: u64,
+        payload: QueuePayload,
+    ) -> Result<QueueRuntimeResult, String> {
+        let result = self.runtime.submit_send(execution, generation, payload)?;
+        self.admit_queue_result(&result)?;
+        Ok(result)
+    }
+
+    pub fn submit_receive(
+        &mut self,
+        execution: u64,
+        generation: u64,
+    ) -> Result<QueueRuntimeResult, String> {
+        let result = self.runtime.submit_receive(execution, generation)?;
+        self.admit_queue_result(&result)?;
+        Ok(result)
+    }
+
+    pub fn submit_select(
+        &mut self,
+        execution: u64,
+        generation: u64,
+        send_payloads: &std::collections::BTreeMap<u32, QueuePayload>,
+    ) -> Result<QueueSelectResult, String> {
+        let result = self.runtime.submit_select(execution, generation, send_payloads)?;
+        self.admit_select_result(&result)?;
+        Ok(result)
+    }
+
+    pub fn close_queue(&mut self, queue: witchy_types::typed_execution::QueueShapeId) -> Result<QueueRuntimeResult, String> {
+        let result = self.runtime.close_queue(queue)?;
+        self.admit_queue_result(&result)?;
+        Ok(result)
+    }
+
+    /// Remove the exact generation's queue registrations before entering the
+    /// execution's declared cleanup state. A successful request is admitted
+    /// in the next deterministic round.
+    pub fn request_cancellation(&mut self, execution: u64, generation: u64) -> Result<bool, String> {
+        let requested = self.runtime.request_cancellation(execution, generation)?;
+        if requested { self.enqueue_next(execution)?; }
+        Ok(requested)
+    }
+
     /// Wake a matching typed wait and enqueue the execution for the next
     /// round. The operation identity is checked by the kernel before enqueue.
     pub fn wake(&mut self, execution: u64, operation: OperationSiteId) -> Result<(), String> {
@@ -127,7 +176,7 @@ mod tests {
     use witchy_syntax::ast::Type;
     use witchy_types::typed_execution::{ExecutionEdgeCondition, ExecutionOutcome, ExecutionShapeId,
         ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane, FrameLaneId, LaneOwnership,
-        TypedExecutionShape};
+        OperationSite, PayloadOwnership, QueueCapacity, QueueShape, QueueShapeId, TypedExecutionShape};
 
     fn linear() -> TypedExecution {
         TypedExecution::new(TypedExecutionShape {
@@ -170,5 +219,36 @@ mod tests {
         assert!(scheduler.wake(1, OperationSiteId(0)).is_err());
         assert_eq!(scheduler.ready_len(), 1);
         assert_eq!(scheduler.runtime().execution(1).expect("execution").status(), KernelStatus::Ready);
+    }
+
+    fn cancellable() -> TypedExecution {
+        TypedExecution::new(TypedExecutionShape {
+            id: ExecutionShapeId(1),
+            entry: ExecutionStateId(0),
+            frame: vec![],
+            result_lanes: vec![],
+            states: vec![
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(0) } }] },
+                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Complete }] },
+            ],
+            operations: vec![
+                OperationSite { id: OperationSiteId(0), kind: witchy_types::typed_execution::ExecutionOperation::ChannelReceive, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: Some(ExecutionStateId(0)), queue: Some(QueueShapeId(0)), arms: vec![] },
+                OperationSite { id: OperationSiteId(1), kind: witchy_types::typed_execution::ExecutionOperation::Cancellation, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: None, queue: None, arms: vec![] },
+            ],
+            queues: vec![QueueShape { id: QueueShapeId(0), capacity: QueueCapacity::Rendezvous, payload_layout_fingerprint: [0; 32], ownership: PayloadOwnership::Inline }],
+            cancellation: Some(witchy_types::typed_execution::CancellationTransition { operation: OperationSiteId(1), state: ExecutionStateId(1) }),
+        }).expect("cancellable execution")
+    }
+
+    #[test]
+    fn cancellation_unlinks_wait_before_cleanup_round() {
+        let mut scheduler = TypedScheduler::new();
+        scheduler.install_queue(TypedQueue::new(QueueShape { id: QueueShapeId(0), capacity: QueueCapacity::Rendezvous, payload_layout_fingerprint: [0; 32], ownership: PayloadOwnership::Inline })).expect("queue");
+        scheduler.install_execution(9, cancellable()).expect("execution");
+        assert_eq!(scheduler.run_round().expect("block round")[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
+        assert!(matches!(scheduler.submit_receive(9, 1).expect("register receive"), QueueRuntimeResult::Blocked));
+        assert!(scheduler.request_cancellation(9, 1).expect("cancel"));
+        assert_eq!(scheduler.run_round().expect("cleanup round")[0].turn, KernelTurn::Complete);
+        assert_eq!(scheduler.runtime().execution(9).expect("execution").status(), KernelStatus::Complete);
     }
 }
