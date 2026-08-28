@@ -201,7 +201,13 @@ impl TypedAsyncLoweringInput {
         }
         let source = &self.source[0];
         if !source.controls.is_empty() {
-            if self.operations.is_empty() && source.controls.len() == 1 {
+            if source.controls.len() == 1 && self.operations.iter().all(|operation| {
+                operation.callable == source.callable
+                    && operation.runtime_kind == TypedAsyncOperationKind::Return
+                    && operation.terminal
+                    && operation.operand_bindings.is_empty()
+                    && operation.operand_type.is_none()
+            }) {
                 return self.into_boolean_control_execution(shape, closure_layout_fingerprint);
             }
             return Err("RFC-0161 linear producer rejects control-flow selectors until typed edges are bound".into());
@@ -376,6 +382,14 @@ impl TypedAsyncLoweringInput {
         }).ok_or_else(|| "RFC-0161 control producer has no final entry state".to_string())?;
         if entry.frame.len() != 1 || entry.frame[0].ty != Type::Named("Bool".into(), Vec::new()) {
             return Err("RFC-0161 control producer requires one Bool entry parameter".into());
+        }
+        let branch_returns = self.operations.iter().filter(|operation| operation.callable == source.callable).collect::<Vec<_>>();
+        if !branch_returns.is_empty() {
+            let then_count = branch_returns.iter().filter(|operation| operation.path == vec![ControlPathStep::IfThen(crate::async_control_flow::SourceControlId(control.control))]).count();
+            let else_count = branch_returns.iter().filter(|operation| operation.path == vec![ControlPathStep::IfElse(crate::async_control_flow::SourceControlId(control.control))]).count();
+            if then_count != 1 || else_count != 1 || branch_returns.len() != 2 {
+                return Err("RFC-0161 control producer requires one bare return on each Bool branch".into());
+            }
         }
         let execution = TypedExecutionShape {
             id: shape,
@@ -1122,6 +1136,22 @@ mod tests {
         assert_eq!(execution.execution.frame.len(), 1);
         assert_eq!(execution.execution.states[0].transitions.len(), 2);
         assert!(execution.execution.states[0].transitions.iter().all(|transition| transition.outcome == ExecutionOutcome::Complete));
+    }
+
+    #[test]
+    fn boolean_control_producer_accepts_explicit_branch_returns() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn choose(flag: Bool):\n    if flag:\n        return\n    else:\n        return\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        assert_eq!(input.operations.iter().filter(|operation| operation.runtime_kind == TypedAsyncOperationKind::Return).count(), 2);
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [9; 32]).expect("branch returns");
+        assert_eq!(execution.execution.states[0].transitions.len(), 2);
     }
 
     #[test]
