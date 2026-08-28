@@ -169,25 +169,41 @@ case "$gate_fuzz" in
     *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
 esac
 
-# NIGHTLY-DEFERRED PERF/BUILD TESTS ------------------------------------------
-# Four tests cost 7-31s each and ran in essentially every one of the last 50
-# gates (scripts/gate-test-cost.py --aggregate), yet none of them adjudicate
-# stable-semantics parity (RFC-0135) -- they measure real wall-clock cost or
-# do a real `--release` cargo build, so there is no smaller N that preserves
-# what they check:
-#   - rfc0129_scalar_executor_performance::million_message_scalar_executor_meets_resumption_cost_and_allocation_gate
-#     (31s) and ::packed_aggregate_channel_uses_direct_scalar_lanes (17s) are
-#     genuine perf benchmarks (comment on the former: intentionally compiled
-#     once, only execution is sampled -- it is already the cheapest shape for
-#     what it measures).
-#   - rfc0092::trusted_application_executables::trusted_publisher_application_end_to_end
-#     (7s) and rfc0092::trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app
-#     (5s) each shell out to a real `--release` build, the same shape as the
-#     `binary(e2e)` tests this gate already defers below.
-# Deferred out of the default/--fast merge-gate the same way; still run under
-# --full, CI's per-push `cargo nextest run --workspace`, and explicitly via
+# NIGHTLY-DEFERRED PERF/BUILD/COMPILE-BOUND TESTS ----------------------------
+# scripts/gate-test-cost.py --aggregate --runs 50 found EVERY test costing
+# more than 2s that ran in essentially every gate (n=40-41 of 50 mined logs).
+# None gets to keep charging every merge just because it is correctness-
+# adjudicating; the policy is optimize, replace, remove, or defer -- there is
+# no fifth option. Two shapes account for all 17:
+#
+#   1. Genuine perf benchmarks / real subprocess builds (4 tests, 5-31s): no
+#      smaller N preserves what they measure. rfc0129_scalar_executor_performance
+#      ::million_message_scalar_executor_meets_resumption_cost_and_allocation_gate
+#      and ::packed_aggregate_channel_uses_direct_scalar_lanes measure real
+#      execution cost; rfc0092's trusted_publisher_application_end_to_end and
+#      trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_
+#      installed_trusted_app each shell out to a real `--release` cargo build,
+#      the same shape as the `binary(e2e)` tests this gate already defers.
+#
+#   2. RFC-0135 parity oracles and structural/tail-lowering checks over TINY
+#      fixtures (13 tests, 2-26s) whose cost is the compiler's own optimizer
+#      pipeline (`mode opt`, `OptSet::all()`, `optimized_wir`) invoked once per
+#      test -- not test design, and not a magnitude a source-level rewrite can
+#      fix. Read each one before adding it here: none scales a loop count or
+#      message count that a smaller value would shrink without weakening the
+#      assertion (see git blame on this block for the per-test audit). RFC-0135
+#      already scopes "stays in the inner loop" to focused `witchy parity
+#      <file>` runs on the tests a developer is touching, not to every fixture
+#      re-running on every unrelated merge; the full corpus is explicitly
+#      stabilization/release/periodic-CI, not every gate. Real fix is a shared
+#      one -- cutting the compiler's optimizer-invocation overhead once so
+#      every one of these gets cheap together -- tracked as a follow-up, not
+#      attempted here.
+#
+# Deferred out of the default/--fast merge-gate; still run under --full, CI's
+# per-push `cargo nextest run --workspace`, and explicitly via
 # `cargo nextest run -E "$nightly_excl_positive"`.
-nightly_excl_positive='test(/^million_message_scalar_executor_meets_resumption_cost_and_allocation_gate$|^packed_aggregate_channel_uses_direct_scalar_lanes$|^trusted_application_executables::trusted_publisher_application_end_to_end$|^trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app$/)'
+nightly_excl_positive='test(/^million_message_scalar_executor_meets_resumption_cost_and_allocation_gate$|^packed_aggregate_channel_uses_direct_scalar_lanes$|^trusted_application_executables::trusted_publisher_application_end_to_end$|^trusted_minigrep_distribution::committed_minigrep_builds_and_runs_as_an_installed_trusted_app$|^bounded_channel_retags_task_slots_without_replacement_allocations$|^simultaneous_fanout_retags_task_slots_without_replacement_allocations$|^source_only_semantics_survive_the_checked_interpreter_and_wasm_pipeline$|^rfc0129_acceptance_row_3_deterministic_schedule_backends_agree$|^async_loan_tail::recursive_async_segment_scc_is_a_portable_tail_loop$|^async_loan_tail::suspension_keeps_a_continuation_and_is_not_a_tail_edge$|^nominal_packet_channel_preserves_its_effectful_prologue_on_the_direct_path$|^tag_definition_site::typed_tag_names_resolve_at_definition_site_on_both_backends$|^tag_definition_site::definition_site_markers_are_consumed_before_typechecking$|^tail_positions::own_heap_parameter_forwards_through_the_tail_loop$|^access_matrix_matches_independent_oracle_across_every_deopt$|^indirect_tail::out_of_component_target_is_ordinary_indirect_exit$|^trusted_application_executables::dependency_footprint_does_not_widen_the_trusted_root$/)'
 nightly_excl="not ($nightly_excl_positive)"
 
 # Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
