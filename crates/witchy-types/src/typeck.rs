@@ -444,6 +444,13 @@ fn is_builtin_type_name(name: &str) -> bool {
     BUILTIN_TYPE_NAMES.contains(&name) || CapabilityKind::from_name(name).is_some()
 }
 
+/// Linked async signatures may retain the module-qualified spelling for the
+/// compiler-provided Task type while source calls use its bare builtin name.
+fn same_builtin_nominal_head(left: &str, right: &str) -> bool {
+    left == right
+        || matches!((left, right), ("Task", "task.Task") | ("task.Task", "Task"))
+}
+
 fn is_synthetic_type_name(name: &str) -> bool {
     name.strip_prefix("__anon").is_some_and(|n| {
         !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
@@ -4369,7 +4376,16 @@ impl Checker {
     }
 
     fn same_resolved_type(&self, a: &Ty, b: &Ty) -> bool {
-        self.resolve(a) == self.resolve(b)
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        match (&a, &b) {
+            (Ty::Named(x, xa), Ty::Named(y, ya))
+                if same_builtin_nominal_head(x, y) && xa.len() == ya.len() =>
+            {
+                xa.iter().zip(ya).all(|(x, y)| self.same_resolved_type(x, y))
+            }
+            _ => a == b,
+        }
     }
 
     fn has_from_conversion(&self, dst: &Ty, src: &Ty) -> bool {
@@ -5417,7 +5433,9 @@ impl Checker {
                 }
                 Ok(())
             }
-            (Ty::Named(x, xa), Ty::Named(y, ya)) if x == y && xa.len() == ya.len() => {
+            (Ty::Named(x, xa), Ty::Named(y, ya))
+                if same_builtin_nominal_head(x, y) && xa.len() == ya.len() =>
+            {
                 for (p, q) in xa.iter().zip(ya) {
                     self.unify(p, q)?;
                 }
@@ -9569,6 +9587,21 @@ impl Checker {
                         Ty::Named(name, mut arguments)
                             if (name == "Task" || name == "task.Task") && arguments.len() == 1 =>
                         {
+                            if let Some((root, projected)) = self.affine_place(expr) {
+                                if projected {
+                                    return terr(format!(
+                                        "cannot await a projected task from `{root}`; transfer the whole Task value before starting it"
+                                    ));
+                                }
+                                self.reject_own_of_borrowed_must(&root, "`await`")?;
+                                if self.is_consumed_binding(&root) {
+                                    return terr(format!(
+                                        "cannot await task `{root}` after it was already started or transferred"
+                                    ));
+                                }
+                                self.mark_consumed_binding(&root);
+                                self.consume_must_binding(&root);
+                            }
                             Ok(arguments.remove(0))
                         }
                         actual => terr(format!(
@@ -11457,7 +11490,6 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
             _ => None,
         })
         .collect::<HashMap<_, _>>();
-
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
     // The checked flavor surfaces unsatisfiable dispatch ("`Float` does not
@@ -12088,6 +12120,7 @@ fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
             )
         })
         .collect::<HashMap<_, _>>();
+    positions.entry("Task".to_string()).or_insert_with(|| vec![false]);
     loop {
         let before = positions.clone();
         for definition in &definitions {
@@ -12112,6 +12145,7 @@ fn must_consume_catalog(module: &Module) -> MustConsumeCatalog {
         .filter(|definition| definition.must_consume)
         .map(|definition| definition.name.clone())
         .collect::<HashSet<_>>();
+    names.insert("Task".to_string());
     loop {
         let before = names.len();
         for definition in &definitions {
