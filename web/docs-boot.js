@@ -1,6 +1,6 @@
-// The witchy-book page boot (RFC-0041): mount the compiled docs app into the page, wiring the
+// The witchy-book page boot: mount the compiled docs app into the page, wiring the
 // browser's real fetch / history / DOM and the runnable-cell slot renderer. The witchy rune is
-// empty-root-footprint; THIS glue holds the authority — exactly the shape the tested docs
+// empty-root-footprint; THIS glue holds the authority - exactly the shape the tested docs
 // driver (`web/witchy-runtime/glamour-docs.test.mjs`) uses, only with real globals instead of
 // injected fakes. So there is no server: the page fetches static content and runs snippets
 // client-side.
@@ -39,8 +39,8 @@ const runProgram = createSandboxedProgramRunner({ document, loadCompiler });
 // chapter route can never make the fetch route-relative.
 const contentFetch = (url) => fetch(contentUrl(url, here));
 
-// (RFC-0041) A `glamour-app` fence names a bundled INTERACTIVE demo. Mount it LIVE with the
-// book's OWN glamour-dom runtime into a contained sub-tree. NETWORK IS DENIED — no `fetch` is
+// A `glamour-app` fence names a bundled INTERACTIVE demo. Mount it LIVE with the
+// book's OWN glamour-dom runtime into a contained sub-tree. NETWORK IS DENIED - no `fetch` is
 // passed, so any `UiFetch`/http Cmd the app emits simply isn't performed; a timer IS provided
 // so an interactive/animated app works. This trusted bundled app remains in the
 // main frame; unlike an arbitrary runnable cell, it is not sent through the
@@ -107,9 +107,9 @@ await mount(wasm, document.getElementById("app"), {
   location: locationShim,
   history: historyShim,
   onPopState,
-  // (RFC-0040) the host mints the app's `UiRoot`; the policy value is just a label.
+  // the host mints the app's `UiRoot`; the policy value is just a label.
   instantiateOpts: { userCaps: [["witchy-book"]] },
-  // (RFC-0041) each `witchy` fence becomes a SYNTAX-HIGHLIGHTED cell in a non-diffed slot:
+  // each `witchy` fence becomes a SYNTAX-HIGHLIGHTED cell in a non-diffed slot:
   // a runnable one (editable + Run) where the snippet actually runs in the cell, or a
   // read-only one for a capability example that can't (so it never shows a Run error).
   // `highlightWitchy` escapes its input (XSS-safe), so it can paint via innerHTML.

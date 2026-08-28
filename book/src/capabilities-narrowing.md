@@ -184,7 +184,7 @@ elsewhere. (HTTPS isn't a separate right: ask for TLS at connect time with a
 `tls:` prefix on the address you dial - `net.connect("tls:example.com:443")`.)
 
 For the common SSRF / DNS-rebinding guard, `net.deny(Net.private())` excludes
-the internal ranges in one line - loopback, RFC-1918, link-local (including the
+the internal ranges in one line - loopback, private IPv4 ranges, link-local (including the
 `169.254.169.254` cloud-metadata address), CGNAT, and "this host". It's matched
 against the **resolved** IP, so a hostname that rebinds to an internal address is
 denied at connect time, not just at a check beforehand.

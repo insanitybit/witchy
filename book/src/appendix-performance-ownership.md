@@ -32,7 +32,7 @@ is sound:
 | Source fact | What the compiler may do |
 |---|---|
 | A `let` helper only reads during the call | Borrow the input without creating a new owner |
-| A `var` function returns a whole local to its caller slot | Avoid a scratch copy and use direct write-back |
+| A `var` function returns a whole local to its caller slot | Avoid a temporary copy and use direct write-back |
 | An `own` parameter is consumed with `move` | Carry the existing buffer across the call |
 | A value is `unique` | Mutate or extract in place while the proof holds |
 | A value is `frozen` | Share reads without opening a mutable path |
@@ -122,7 +122,7 @@ updates. Conversely, an owned `unique T` value can open a mutable reference
 only when the borrow checker can prove the owner and projection are exclusive.
 `unique` is not a synonym for `&mut`, and `var` is not a synonym for either.
 
-Use `local unique` for scratch state that must be reclaimed or optimized inside
+Use `local unique` for temporary state that must be reclaimed or optimized inside
 one call but must not be returned, stored in a task, or captured by an escaping
 closure. Use `frozen` when sharing reads is the contract and mutation would be
 a bug, not merely a missed optimization.

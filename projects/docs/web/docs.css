@@ -1,6 +1,6 @@
-/* witchy-book theme (RFC-0041/0107) — a reading UX in the spirit of The Rust Book (mdBook): a fixed,
+/* witchy-book theme - a reading UX in the spirit of The Rust Book (mdBook): a fixed,
    independently-scrolling sidebar and a centered reading column. The docs app is a glamour rune;
-   this is the only styling — the rune emits inert VNodes, never HTML, so nothing here is a sink. */
+   this is the only styling - the rune emits inert VNodes, never HTML, so nothing here is a sink. */
 :root {
   color-scheme: dark;
   --bg: #14141f; --fg: #d7d7e0; --muted: #9797ae; --accent: #c9a4ff;
@@ -75,10 +75,10 @@ body {
   .page { margin-left: 0; }
 }
 
-/* A runnable code cell (RFC-0041 P2), with a syntax-highlight overlay. */
+/* A runnable code cell, with a syntax-highlight overlay. */
 .witchy-cell { position: relative; margin: 1.25rem 0; border: 1px solid #2a2a3a; border-radius: 8px; overflow: hidden; }
 
-/* Copy-to-clipboard button — top-right of every code cell (runnable and static alike). Subtle
+/* Copy-to-clipboard button - top-right of every code cell (runnable and static alike). Subtle
    until the cell is hovered, so it never competes with the code. */
 .witchy-copy {
   position: absolute; top: 0.4rem; right: 0.4rem; z-index: 2;
@@ -106,7 +106,7 @@ body {
 }
 
 .witchy-editor-wrap { position: relative; }
-/* The <pre> is in normal flow and SIZES the cell — it grows to fit every line, so the whole
+/* The <pre> is in normal flow and SIZES the cell - it grows to fit every line, so the whole
    program is always visible (no scroll, no cutoff). */
 .witchy-highlight { background: #1e1e2e; color: #e6e6ef; min-height: 3rem; }
 /* The textarea overlays the <pre> exactly; its text is transparent so the coloured pre shows
@@ -128,11 +128,11 @@ body {
 .witchy-stats { margin: 0; padding: 0.75rem; white-space: pre-wrap; background: #111822; color: #b9d7ff; border-top: 1px solid #2a2a3a; font-family: ui-monospace, monospace; font-size: 0.82rem; }
 .witchy-stats:empty { display: none; }
 
-/* A NON-runnable witchy example (a capability demo): highlighted, read-only — no Run cell. */
+/* A NON-runnable witchy example (a capability demo): highlighted, read-only - no Run cell. */
 .witchy-static { position: relative; margin: 1.25rem 0; padding: 0.75rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1e1e2e; overflow-x: auto; }
 .witchy-static code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88rem; line-height: 1.5; tab-size: 4; white-space: pre-wrap; word-break: break-word; }
 
-/* A live INTERACTIVE glamour demo mounted in the page (RFC-0041). */
+/* A live INTERACTIVE glamour demo mounted in the page. */
 .glamour-app { margin: 1.25rem 0; padding: 1.25rem 1rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1a1a2a; }
 .counter-demo { display: flex; align-items: center; gap: 0.75rem; justify-content: center; }
 .counter-btn { font: inherit; font-size: 1.2rem; line-height: 1; width: 2.2rem; height: 2.2rem; border: 0; border-radius: 6px; background: #6b3fa0; color: #fff; cursor: pointer; }

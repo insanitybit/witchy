@@ -1,8 +1,8 @@
-// RFC-0041: resolve a docs-bundle asset URL against the BUNDLE ROOT, not the current page.
+// Resolve a docs-bundle asset URL against the BUNDLE ROOT, not the current page.
 //
 // The docs app is a client-side SPA: the home page is at `/` but chapters route to
 // `/p/<slug>`. A page-relative URL (`./content/x.md`, `./witchy.wasm`) resolves against the
-// *current route* — from `/p/capabilities` that is `/p/content/...` / `/p/witchy.wasm`, a 404.
+// *current route* - from `/p/capabilities` that is `/p/content/...` / `/p/witchy.wasm`, a 404.
 // Resolving against the bundle module's own URL (`import.meta.url` of `docs-boot.js`, always at
 // the bundle root) is immune to the client route AND still works under a deploy subpath
 // (GitHub Pages `/<repo>/`), because the module itself lives at `/<repo>/docs-boot.js`.
