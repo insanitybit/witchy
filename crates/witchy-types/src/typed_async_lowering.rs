@@ -579,7 +579,7 @@ mod tests {
             "main",
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).expect("checked source");
-        let input = TypedAsyncLoweringInput::from_checked(&checked).expect("typed lowering input");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
         assert_eq!(input.source.len(), 1);
         assert_eq!(input.states.len(), 2);
         assert!(input.states.iter().all(|state| state.callable.module == "main"));

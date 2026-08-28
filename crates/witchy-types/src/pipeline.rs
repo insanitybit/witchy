@@ -121,6 +121,21 @@ impl CheckedModule {
         self.typed_async_source.as_ref()
     }
 
+    /// Produce the compiler-owned, source-addressable input for RFC-0161
+    /// executable lowering.  Keeping this operation on `CheckedModule`
+    /// ensures that source operands and inferred types come from the same
+    /// linked/type-checked allocation; callers cannot accidentally pair a
+    /// detached AST with a stale typed table.  The returned value is still a
+    /// lowering input, not an executable runtime program: frame lanes,
+    /// ownership actions, and backend bindings are formed by the later
+    /// executable-lowering stage.
+    #[doc(hidden)]
+    pub fn typed_async_lowering_input(
+        &self,
+    ) -> Result<crate::typed_async_lowering::TypedAsyncLoweringInput, String> {
+        crate::typed_async_lowering::TypedAsyncLoweringInput::from_checked(self)
+    }
+
     /// Build a catalog from the loader ownership retained during checked link.
     /// Legacy checked-link APIs deliberately fail here rather than accepting
     /// package identity after the fact.
