@@ -380,6 +380,22 @@ mod tests {
         assert_eq!(events[0].execution, 17);
         assert_eq!(events[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
         assert_eq!(scheduler.runtime().execution(17).expect("execution").status(), KernelStatus::Waiting(OperationSiteId(0)));
+        scheduler.submit_receive(17, 0).expect("register compiler receive");
+        let sender = TypedExecution::new(TypedExecutionShape {
+            id: ExecutionShapeId(1), entry: ExecutionStateId(0), frame: vec![], result_lanes: vec![],
+            states: vec![
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) } }] },
+                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition { condition: ExecutionEdgeCondition::Always, actions: vec![], outcome: ExecutionOutcome::Complete }] },
+            ],
+            operations: vec![OperationSite { id: OperationSiteId(0), kind: witchy_types::typed_execution::ExecutionOperation::ChannelSend, input_lanes: vec![], result_lanes: vec![], pending_move_lanes: vec![], fallback_state: Some(ExecutionStateId(0)), queue: Some(QueueShapeId(0)), arms: vec![] }],
+            queues: vec![QueueShape { id: QueueShapeId(0), capacity: QueueCapacity::Rendezvous, payload_layout_fingerprint: [8; 32], ownership: PayloadOwnership::Inline }], cancellation: None,
+        }).expect("sender shape");
+        scheduler.install_execution(18, sender).expect("install sender");
+        scheduler.run_round().expect("run sender");
+        let result = scheduler.submit_send(18, 0, QueuePayload(7)).expect("commit sender and receiver");
+        assert!(matches!(result, QueueRuntimeResult::Committed { .. }));
+        assert_eq!(scheduler.runtime().execution(17).expect("receiver").status(), KernelStatus::Complete);
+        assert_eq!(scheduler.runtime().execution(18).expect("sender").status(), KernelStatus::Complete);
     }
 
     #[test]
