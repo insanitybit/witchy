@@ -24,7 +24,7 @@ use crate::typeck::{self, TypedModule};
 use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
 use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
     ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, FrameLane,
-    FrameLaneId, LaneOwnership, OperationSite, OperationSiteId, TypedExecutionShape};
+    FrameLaneId, LaneOwnership, OperationSite, OperationSiteId, QueueShape, TypedExecutionShape};
 
 /// A final callable-table position. This is an internal backend binding input;
 /// it is intentionally not a generated function name.
@@ -138,6 +138,15 @@ pub struct TypedAsyncSourceOperationBinding {
     pub terminal: bool,
 }
 
+/// Compiler-resolved queue identity and layout for one source endpoint. Queue
+/// identity is intentionally supplied separately from source syntax: the
+/// producer must never invent a capacity or alias based on a callable name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedAsyncQueueBinding {
+    pub endpoint: SourceBindingId,
+    pub shape: QueueShape,
+}
+
 /// One source control selector retained with its concrete checked type.  It is
 /// intentionally separate from executable edges: a later CFG builder chooses
 /// states and lane actions after final closure layout, but it need not inspect
@@ -159,6 +168,7 @@ pub struct TypedAsyncLoweringInput {
     pub suspensions: Vec<TypedAsyncSuspensionBinding>,
     pub controls: Vec<TypedAsyncSourceControlBinding>,
     pub operations: Vec<TypedAsyncSourceOperationBinding>,
+    pub queue_bindings: Vec<TypedAsyncQueueBinding>,
 }
 
 impl TypedAsyncLoweringInput {
@@ -181,6 +191,7 @@ impl TypedAsyncLoweringInput {
                 suspensions: self.suspensions.iter().filter(|binding| binding.callable == source.callable).cloned().collect(),
                 controls: self.controls.iter().filter(|control| control.callable == source.callable).cloned().collect(),
                 operations: self.operations.iter().filter(|operation| operation.callable == source.callable).cloned().collect(),
+                queue_bindings: self.queue_bindings.clone(),
             };
             let shape = ExecutionShapeId(u32::try_from(index).map_err(|_| "RFC-0161 linear program shape count exceeds u32")?);
             executions.push(input.into_linear_execution(shape, *fingerprint)?);
@@ -200,6 +211,19 @@ impl TypedAsyncLoweringInput {
         shape: ExecutionShapeId,
         closure_layout_fingerprint: [u8; 32],
     ) -> Result<FinalTypedAsyncExecution, String> {
+        self.into_linear_execution_with_queues(shape, closure_layout_fingerprint, &self.queue_bindings)
+    }
+
+    /// Lower a terminal receive when the compiler has supplied the resolved
+    /// queue shape. This is the first queue-aware source path; all other queue
+    /// operations remain rejected until their result/pending-move lanes are
+    /// resolved by the same explicit metadata contract.
+    pub fn into_linear_execution_with_queues(
+        &self,
+        shape: ExecutionShapeId,
+        closure_layout_fingerprint: [u8; 32],
+        queue_bindings: &[TypedAsyncQueueBinding],
+    ) -> Result<FinalTypedAsyncExecution, String> {
         if self.source.len() != 1 {
             return Err("RFC-0161 linear producer requires exactly one async callable".into());
         }
@@ -215,6 +239,18 @@ impl TypedAsyncLoweringInput {
                 return self.into_boolean_control_execution(shape, closure_layout_fingerprint);
             }
             return Err("RFC-0161 linear producer rejects control-flow selectors until typed edges are bound".into());
+        }
+        let source_operations = self.operations.iter().filter(|operation| {
+            operation.callable == source.callable && !is_nested_terminal_operand(source, operation)
+        }).collect::<Vec<_>>();
+        if let Some(receive) = source_operations.iter().copied().find(|operation| {
+            operation.callable == source.callable
+                && operation.runtime_kind == TypedAsyncOperationKind::ChannelReceive
+                && operation.terminal
+        }) {
+            if source_operations.len() == 1 {
+                return self.into_terminal_receive_execution(shape, closure_layout_fingerprint, receive, queue_bindings);
+            }
         }
         let operations = self.operations.iter().filter(|operation| {
             operation.callable == source.callable
@@ -369,6 +405,85 @@ impl TypedAsyncLoweringInput {
             }
         }).collect();
         Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings, dynamic_boundaries: Vec::new() })
+    }
+
+    fn into_terminal_receive_execution(
+        &self,
+        shape: ExecutionShapeId,
+        closure_layout_fingerprint: [u8; 32],
+        operation: &TypedAsyncSourceOperationBinding,
+        queue_bindings: &[TypedAsyncQueueBinding],
+    ) -> Result<FinalTypedAsyncExecution, String> {
+        if operation.operand_bindings.len() != 1 || operation.operand_types.len() != 1 {
+            return Err("RFC-0161 terminal receive requires one typed endpoint operand".into());
+        }
+        let queue = queue_bindings.iter().find(|binding| binding.endpoint == operation.operand_bindings[0])
+            .ok_or_else(|| "RFC-0161 terminal receive has no compiler-resolved queue binding".to_string())?;
+        if queue.shape.id.0 != 0 {
+            return Err("RFC-0161 terminal receive requires a dense queue shape ID".into());
+        }
+        let source = &self.source[0];
+        let entry = self.states.iter().find(|state| {
+            state.callable == source.callable && state.kind == TypedAsyncStateKind::Entry
+        }).ok_or_else(|| "RFC-0161 terminal receive has no final entry state".to_string())?;
+        let frame = entry.frame.iter().map(|input| FrameLane {
+            id: FrameLaneId(input.parameter),
+            ty: input.ty.clone(),
+            ownership: match input.convention { Convention::Own | Convention::Var => LaneOwnership::Move, Convention::Let | Convention::Borrow => LaneOwnership::Copy },
+            initially_initialized: true,
+        }).collect::<Vec<_>>();
+        let endpoint = entry.frame.iter().find_map(|input| {
+            (input.source_binding == Some(operation.operand_bindings[0])).then_some(FrameLaneId(input.parameter))
+        }).ok_or_else(|| "RFC-0161 terminal receive endpoint is absent from the entry frame".to_string())?;
+        let result = FrameLaneId(u32::try_from(frame.len()).map_err(|_| "RFC-0161 terminal receive result lane exceeds u32")?);
+        let mut frame = frame;
+        frame.push(FrameLane {
+            id: result,
+            ty: operation.operand_type.clone().ok_or_else(|| "RFC-0161 terminal receive has no result type".to_string())?,
+            ownership: LaneOwnership::Move,
+            initially_initialized: false,
+        });
+        let execution = TypedExecutionShape {
+            id: shape,
+            entry: ExecutionStateId(0),
+            frame,
+            result_lanes: vec![result],
+            states: vec![
+                ExecutionState { id: ExecutionStateId(0), transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
+                    actions: Vec::new(),
+                    outcome: ExecutionOutcome::Blocked { operation: OperationSiteId(0), retry: ExecutionStateId(1) },
+                }] },
+                ExecutionState { id: ExecutionStateId(1), transitions: vec![ExecutionTransition {
+                    condition: ExecutionEdgeCondition::Always,
+                    actions: Vec::new(),
+                    outcome: ExecutionOutcome::Complete,
+                }] },
+            ],
+            operations: vec![OperationSite {
+                id: OperationSiteId(0),
+                kind: ExecutionOperation::ChannelReceive,
+                input_lanes: vec![endpoint],
+                result_lanes: vec![result],
+                pending_move_lanes: Vec::new(),
+                fallback_state: Some(ExecutionStateId(0)),
+                queue: Some(queue.shape.id),
+                arms: Vec::new(),
+            }],
+            queues: vec![queue.shape.clone()],
+            cancellation: None,
+        };
+        execution.validate()?;
+        Ok(FinalTypedAsyncExecution {
+            execution,
+            closure_layout_fingerprint,
+            state_bindings: vec![FinalTypedAsyncStateBinding {
+                state: ExecutionStateId(0), callable: entry.final_callable, capture_to_lane: (0..entry.frame.len()).map(|index| FrameLaneId(index as u32)).collect(),
+            }, FinalTypedAsyncStateBinding {
+                state: ExecutionStateId(1), callable: entry.final_callable, capture_to_lane: vec![result],
+            }],
+            dynamic_boundaries: Vec::new(),
+        })
     }
 
     fn into_boolean_control_execution(
@@ -713,7 +828,7 @@ impl TypedAsyncLoweringInput {
                 return Err(format!("source async control {} has multiple typed bindings", pair[0].control));
             }
         }
-        Ok(Self { source, states, suspensions, controls, operations })
+        Ok(Self { source, states, suspensions, controls, operations, queue_bindings: Vec::new() })
     }
 
     /// Resolve one typed source-operation binding back to the exact retained
@@ -1089,6 +1204,29 @@ mod tests {
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("channel operation needs the queue-aware producer");
         assert!(error.contains("ChannelSend"), "unexpected rejection: {error}");
+    }
+
+    #[test]
+    fn queue_aware_producer_lowers_terminal_receive_with_explicit_shape() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Receiver\n\nasync fn receive_one(rx: Receiver(Int)) -> Option(Int):\n    chan.recv(rx).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let receive = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelReceive).expect("receive operation");
+        input.queue_bindings.push(TypedAsyncQueueBinding {
+            endpoint: receive.operand_bindings[0],
+            shape: QueueShape { id: crate::typed_execution::QueueShapeId(0), capacity: crate::typed_execution::QueueCapacity::Rendezvous, payload_layout_fingerprint: [3; 32], ownership: crate::typed_execution::PayloadOwnership::Inline },
+        });
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [4; 32]).expect("queue-aware receive");
+        assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::ChannelReceive);
+        assert_eq!(execution.execution.operations[0].input_lanes, vec![FrameLaneId(0)]);
+        assert_eq!(execution.execution.operations[0].result_lanes, vec![FrameLaneId(1)]);
+        assert_eq!(execution.execution.queues.len(), 1);
     }
 
     #[test]
