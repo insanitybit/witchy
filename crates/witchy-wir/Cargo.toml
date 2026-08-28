@@ -26,3 +26,6 @@ native = ["dep:wasmtime"]
 # Synthetic WIR and optimizer-oracle tests intentionally encode unchecked
 # modules. Normal dependents receive only the fallible production boundary.
 raw-encoder-test-api = []
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
