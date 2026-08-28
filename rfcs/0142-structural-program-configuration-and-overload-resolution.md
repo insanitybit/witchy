@@ -205,4 +205,4 @@ Provide a mutable builder (`GlamourApp.new().with_model(...).with_update(...)`).
 ## Future Possibilities
 
 1. **Extensible Component Island Plans**: Using structural records to allow custom island hydration triggers (`activate: .OnVisible`, `activate: .OnInteraction`) without expanding constructor signatures.
-2. **Generalized Configuration Traits**: Allowing third-party libraries to define custom structural configuration converters using a standard `IntoProgram` trait once trait constraint normalization ([RFC-0141](0141-canonical-constraint-solving.md)) lands.
+2. **Generalized Configuration Traits**: Allowing third-party libraries to define custom structural configuration converters using a standard `IntoProgram` trait once trait constraint normalization (an unwritten canonical-constraint-solving RFC; number 0141 is unallocated) lands.

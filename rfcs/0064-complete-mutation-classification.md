@@ -1,22 +1,48 @@
 ---
 rfc: 0064
 title: "Complete the mutation classification: enforce row 3, reject ambiguous inference, extend the discard error to free calls"
-status: implemented
+status: superseded
 created: 2026-07-05
+superseded-by: "0087 (uniform var write-back)"
 predecessors:
   - "0043 (declared mutation — defines the classification this RFC finishes enforcing)"
   - "bugs/BUG-209, BUG-213, BUG-242 (the three shipped gaps, each independently probed)"
-tracking:
-  - "Check 1 (row 3): `check_var_conventions` in crates/witchy-types/src/typeck.rs"
-  - "Check 2 (ambiguous inference) + Check 1's elided-tail completion: the post-inference block in `check_function`, same file"
-  - "Check 3 (discard on free calls): `rewrite_block`'s bare-expression arm in crates/witchy-types/src/traits.rs"
-  - "Tests: `rfc0064_*` in crates/witchy-types/src/typeck_tests.rs (unit) and src/example_tests.rs (differential, both backends)"
+tracking: >
+  All three checks shipped in 2026-07 (merged as 88d6cfab3 / 1fa579876), then were
+  deliberately removed by RFC-0087, which abolished the return-shape table these
+  checks enforced. The named evidence below no longer exists on master:
+  `check_var_conventions`, the `check_function` post-inference block, and the
+  `rfc0064_*` unit/differential tests were all deleted with the uniform-var cut.
+  The three silent-failure harms this RFC targeted are nonetheless closed - by
+  uniform `var` write-back rather than by these diagnostics. Re-verified 2026-08-27.
 ---
 
 # RFC-0064: Complete the mutation classification
 
 > Code blocks are deliberately **not** tagged `witchy` so the doc-examples
 > sweep does not execute pre-implementation snippets.
+
+> 2026-08-27 (status audit): status corrected `implemented` -> `superseded` by
+> RFC-0087. Empirical basis, three independent lines of evidence on master
+> `1b39e66be`:
+>
+> 1. **Behavioral probes.** All three checks this RFC specifies are absent.
+>    `fn combined(by: Int, var xs: List(Int)) -> List(Int)` (row 3, Check 1),
+>    `fn bump(var xs: List(Int), by: Int)` with an elided return (Check 2), and a
+>    bare `list.push(xs, 2)` statement (Check 3) each pass `witchy check` cleanly
+>    where this RFC requires a compile error.
+> 2. **Git history.** The checks and their `rfc0064_*` tests were added
+>    (`f01be10be`, `5da76da74`, `a9ef237c7`; merged `88d6cfab3`) and later removed;
+>    `check_var_conventions` and `rfc0064_*` no longer appear anywhere in the tree.
+> 3. **RFC-0087's own predecessor note** names this RFC as the one that "enforced
+>    the return-shape table this RFC removes".
+>
+> The user-visible outcome is not lost. Re-running the RFC's own motivating
+> gauntlet on master, `bump(xs, 5)` mutates (prints `1`, not the documented silent
+> no-op), the bare `list.push` free call mutates (prints `2`), and both row-3 and
+> elided-return shapes are parity-clean (`witchy parity` agrees on both). Uniform
+> `var` write-back made the shapes correct instead of rejecting them, so the
+> diagnostics this RFC specified became unnecessary rather than unimplemented.
 
 ## Summary
 

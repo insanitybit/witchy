@@ -10,7 +10,15 @@ related:
   - "0126 (capability effects contract)"
   - "0155 (authenticated executable caches, rejected)"
   - "0156 (AOT native trusted executables, rejected)"
-tracking: "Accepted policy. The one-cut trusted-exe to trusted-publisher rename, ordinary-cache restoration, and documentation updates remain to be implemented."
+tracking: "Accepted policy. Re-verified 2026-08-27: the one-cut rename and the
+  ordinary-cache restoration HAVE landed. `trusted_publisher` appears across
+  witchy-cap-model, witchy-caps, witchy-runtime, witchy-syntax, projects/coven and
+  src/trusted_publisher.rs; the only residual `trusted-exe` mentions are the
+  rejection tests that assert the legacy target fails loudly
+  (scripts/release-smoke.sh:423-429, src/trusted_publisher.rs:1116-1119), and
+  src/commands/wasm_exec.rs:309 records the ordinary cache policy for publisher
+  applications. Status stays `accepted` because the startup-evidence and
+  security-documentation acceptance rows were not verified by this audit."
 ---
 
 # RFC-0157: Trusted Publishers and Executable-State Writes

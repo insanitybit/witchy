@@ -1,3 +1,14 @@
+---
+rfc: 0119
+title: "coven-web as a human-2FA identity issuer (in-browser promote/yank on a trusted registry)"
+status: implemented
+created: 2026-08-09
+superseded-by:
+tracking: >
+  Status normalized from a prose `Status: Implemented` line to frontmatter by the
+  2026-08-27 status audit.
+---
+
 # RFC-0119: coven-web as a human-2FA identity issuer (in-browser promote/yank on a trusted registry)
 
 - Status: Implemented

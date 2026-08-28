@@ -32,7 +32,7 @@ story is intentionally smaller. Start with these capstones, then follow their
 |---|---|---|
 | [RFC-0125](0125-core-language-contract.md) | Core data model, functions, modules, traits, patterns, errors, and expression boundaries | 0021, 0022, 0042, 0045, 0046, 0048-0050, 0052, 0054, 0056, 0062, 0065, 0078, 0081, 0097, 0098, 0113, 0123; 0084 stays deferred |
 | [RFC-0126](0126-capability-effects-contract.md) | Capabilities, effects, refinement, grants, host bindings, and effectful stdlib rules | 0002, 0003, 0005, 0009, 0011-0014, 0020, 0038, 0040, 0057, 0060, 0068, 0076, 0077, 0091, 0102, 0103, 0106, 0121; 0085/0086 stay deferred |
-| [RFC-0127](0127-ownership-and-opt-mode.md) | Value ownership, mutation, qualifiers, `mode opt`, references, lifetimes, layouts, and no-copy contracts | 0024-0030, 0033, 0034, 0043, 0051, 0062, 0064, 0083, 0087-0090, 0110-0112, 0122; 0114 stays deferred |
+| [RFC-0127](0127-ownership-and-opt-mode.md) | Value ownership, mutation, qualifiers, `mode opt`, references, lifetimes, layouts, and no-copy contracts | 0024-0030, 0033, 0034, 0043, 0051, 0062, 0064, 0083, 0087-0090, 0110-0112, 0122; 0114 shipped 2026-08-20 |
 | [RFC-0128](0128-regions-and-reclamation.md) | `region:`, arenas, RC fallback, copy-out, and predictable reclamation | 0016, 0024, 0035, 0051, `regions.md` |
 | [RFC-0129](0129-concurrency-tasks-and-channels.md) | `async`/`await`, tasks, typed channels, structured concurrency, and parallel workers | 0032, 0036, 0055, 0059, `concurrency-design.md` |
 | [RFC-0130](0130-generators-and-iterators.md) | `Iter`, `gen fn`, `yield`, resumable frames, and `FromIterator` | 0052, 0059, 0074 |
@@ -71,6 +71,14 @@ proposed ──▶ accepted ──▶ planned ──▶ implemented
 - **implemented** — shipped. **Frozen** from here on (see below).
 - **rejected** — decided against. Frozen. Kept so the reasoning isn't relitigated.
 - **superseded** — replaced. Frozen. Set `superseded-by:` to the new RFC.
+
+Companion documents — an `NNNN-acceptance-ledger.md`, a migration/performance
+report, or a normative judgment filed beside an RFC — are not RFCs and are not on
+this lifecycle. Most carry no `status:` at all. The two that track live in-flight
+work (`0161-acceptance-ledger.md`, `0162-safewir-judgment.md`) use
+`status: active`, meaning "this companion is being written against work currently
+in the merge queue". An `active` companion is settled by its parent RFC's status,
+not by its own.
 
 An accepted RFC may move directly to implemented when it ships without a
 separate planning phase. A deferred RFC may return to proposed, accepted, or

@@ -1,3 +1,16 @@
+---
+rfc: 0105
+title: "Deterministic capability fixtures and test transcripts"
+status: implemented
+created: 2026-07-25
+superseded-by:
+tracking: >
+  Status normalized from a prose `Status:` line to frontmatter by the 2026-08-27 status
+  audit; the prose line already read `implemented`. Evidence: the backend-neutral
+  `FixturePlan`/`TestTranscript` contract in `crates/witchy-testkit` with the shared
+  fixture host in `crates/witchy-test-host`.
+---
+
 # RFC-0105: Deterministic capability fixtures and test transcripts
 
 Status: implemented

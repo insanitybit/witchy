@@ -21,6 +21,17 @@ tracking: "Both parts shipped. Part 2 (escape-driven SROA): a frame-confined rec
 
 # RFC-0027: Packed layouts and escape-driven SROA
 
+
+> 2026-08-27 (status audit): status `implemented` re-verified; both parts are still
+> in the tree. One tracking reference is stale: the named contract test
+> `packed_list_cannot_cross_a_boundary` no longer exists. RFC-0111 stage 2 relaxed
+> that contract and replaced the test with its inverse,
+> `packed_list_can_cross_a_direct_or_stored_boundary`
+> (`crates/witchy-types/tests/typeck.rs:299`) — closed direct signatures and ordinary
+> record fields now carry the canonical packed layout instead of being a compile
+> error. Trait and first-class boundaries remain guarded. Read this RFC's
+> "clean COMPILE ERROR at any position" language as superseded on those two
+> positions.
 The shipped escape analysis and packed/SROA lowering are implemented in
 [`crates/witchy-lower/src/escape.rs`](../crates/witchy-lower/src/escape.rs) and
 [`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs),

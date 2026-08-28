@@ -1,3 +1,14 @@
+---
+rfc: 0120
+title: "Opt-in installs of staged (unreleased) versions in the package manager"
+status: implemented
+created: 2026-08-09
+superseded-by:
+tracking: >
+  Status normalized from a prose `Status: Implemented (2026-08-09)` line to
+  frontmatter by the 2026-08-27 status audit.
+---
+
 # RFC-0120: Opt-in installs of staged (unreleased) versions in `pm`
 
 - Status: Implemented (2026-08-09)

@@ -7,6 +7,8 @@
 #[path = "support/temp_dir.rs"]
 mod temp_dir;
 
+#[path = "misc/rfc_status_hygiene.rs"]
+mod rfc_status_hygiene;
 #[path = "misc/example_source_paths.rs"]
 mod example_source_paths;
 #[path = "misc/examples_index.rs"]

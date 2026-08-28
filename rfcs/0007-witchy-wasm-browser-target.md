@@ -22,6 +22,10 @@ tracking: |
 
 # RFC-0007: witchy-WASM in the browser: a pure-compute target
 
+
+> 2026-08-27 (status audit): status `implemented` re-verified. Path-only drift in
+> `tracking:` — the shim test is now `tests/browser/shim.rs`, not
+> `tests/browser_shim.rs`.
 ## Summary
 
 Run witchyc-compiled WASM in the browser by writing a small JavaScript shim that

@@ -24,7 +24,7 @@ calls made through an explicitly interceptable interface or dynamic boundary.
 Ruby's open classes, refinements, delegation, and method interception make
 frameworks unusually expressive. Witchy's current coherence model intentionally
 binds methods to trait impls or the type's owning module, and
-[RFC-0077](0077-testability-without-monkeypatching.md) rejects a
+[RFC-0077](0077-mockable-capabilities-for-tests.md) rejects a
 test-only monkeypatch dispatch model.
 
 That rejection should not imply that adaptation and interception are undesirable.

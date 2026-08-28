@@ -84,3 +84,48 @@ This ledger is complete only when every `MISSING`, `FAILING`, and `EXTERNALLY
 BLOCKED` row has become `PROVEN` or `EXPLICITLY DEFERRED` with a concrete revival
 condition; every scoped RFC or plan has terminal metadata; and every goal-owned
 branch has a terminal merge-queue journal event or a checked-in pickup record.
+
+## 2026-08-27 corpus-wide status audit
+
+Every file in `rfcs/` was audited against master `1b39e66be`. Scope: 203 files —
+147 numbered RFC bodies, 19 companion ledgers/reports, 23 legacy unnumbered
+plans, plus `README.md` and `TEMPLATE.md`. Status claims were checked against
+executable evidence, not against each other.
+
+**Method.** Four independent passes. (1) Frontmatter census: status, lifecycle
+validity, `superseded-by`, duplicate/absent numbers, dangling intra-`rfcs/`
+links. (2) Self-declared evidence: for each of the 126 `implemented` RFCs, every
+path and identifier named in its own `tracking:` field was resolved against
+`git ls-files` and a token index built from 1,184 tracked source files. (3)
+Behavioral probes: features whose status was in doubt were exercised with
+`witchy check`, `witchy`, and `witchy parity`. (4) Git archaeology: `git log -S`
+on named symbols to distinguish "never shipped" from "shipped, then removed".
+
+**Headline: the corpus is substantially accurate.** 121 of 126 `implemented`
+RFCs resolve all of their own named evidence. Non-implemented RFCs carry
+specific, honest `tracking:` fields — RFC-0059 is representative, recording two
+shipped increments and one deferred step rather than a single flat status.
+
+| Item | Requirement | State | Evidence / terminal action |
+|---|---|---|---|
+| RFC-0064 | Row-3 shape error, ambiguous-inference rejection, and the free-call discard error are enforced | MISSING | All three probes pass `witchy check` where the RFC requires a compile error. `check_var_conventions` and `rfc0064_*` were added (`f01be10be`, `5da76da74`, `a9ef237c7`; merged `88d6cfab3`) then removed. RFC-0087's predecessor note names 0064 as enforcing "the return-shape table this RFC removes". Status corrected `implemented` -> `superseded` by RFC-0087. The three harms are closed by uniform `var` write-back, verified by re-running the RFC's own gauntlet (mutates, parity-clean). |
+| RFC-0114 | Must-consume obligations are enforced | PROVEN | `must type` compiles and runs on master; `rfcs/README.md` claimed "0114 stays deferred" against the RFC's own `implemented` status. README corrected. |
+| RFC-0157 | Trusted-exe to trusted-publisher rename and ordinary-cache restoration | PROVEN | `tracking:` said both "remain to be implemented". `trusted_publisher` spans witchy-cap-model, witchy-caps, witchy-runtime, witchy-syntax, projects/coven, and `src/trusted_publisher.rs`; the only residual `trusted-exe` sites are the rejection tests (`scripts/release-smoke.sh:423-429`, `src/trusted_publisher.rs:1116-1119`). `src/commands/wasm_exec.rs:309` records the ordinary cache policy. Tracking corrected; status stays `accepted` because the startup-evidence and security-documentation rows were not verified here. |
+| RFC-0027 | Packed lists are a compile error at any boundary the flat layout cannot represent | PROVEN (contract narrowed) | The named test `packed_list_cannot_cross_a_boundary` is gone; RFC-0111 stage 2 replaced it with its inverse, `packed_list_can_cross_a_direct_or_stored_boundary` (`crates/witchy-types/tests/typeck.rs:299`). Status stays `implemented`; dated note records the narrowed contract. |
+| RFC-0152 | Supersession names RFC-0161 as accepted | MISSING | RFC-0161 is `proposed`; its own ledger states "The RFC remains proposed until the public semantic decisions are accepted." Tracking corrected; the supersession itself stands. |
+| RFC-0105 / 0119 / 0120 | Status is machine-readable | MISSING | All three declared status in a prose `Status:` line that no tool parses. YAML frontmatter added, preserving the declared value. |
+| Cross-links | Intra-`rfcs/` links resolve | MISSING | Three dangling targets: `0007-rune-runtime.md` (renamed to `0007-witchy-wasm-browser-target.md`), `0077-testability-without-monkeypatching.md` (renamed to `0077-mockable-capabilities-for-tests.md`), and `0141-canonical-constraint-solving.md` (never written; 0141 unallocated). All three repointed or reworded. |
+| Lifecycle completeness | Every status is on the README lifecycle | PROVEN | `status: active` on `0161-acceptance-ledger.md` and `0162-safewir-judgment.md` is now documented in `rfcs/README.md` as the companion-document status for work live in the merge queue. |
+| Enforcement | Status hygiene cannot silently rot again | PROVEN | `tests/misc/rfc_status_hygiene.rs` gates three invariants: every numbered non-companion RFC declares a lifecycle status; `superseded` implies a non-empty `superseded-by`; intra-`rfcs/` links resolve. Complements `scripts/rfc-status.sh --check`, which reports live branch/queue state but does not validate frontmatter or links. |
+
+**Verified-correct and deliberately unchanged.** RFC-0128 (`accepted`) — `region:`
+runs but emits "unstable and may change or be removed". RFC-0132 (`accepted`) —
+`Dynamic` is genuinely an unknown type. RFC-0130 (`accepted`) — `gen fn`/`yield`
+lower to `Iter(a)` but `for` does not yet iterate one. RFC-0079 (`deferred`) —
+its `scripts/rfc-status.sh` prerequisite shipped; the fan-out did not, and the
+tracking says so. RFC-0095 (`rejected`) — rejected by RFC-0157 after shipping;
+`grimoire install` remains in the tree, which the rejection anticipates.
+
+**Left open.** Numbers 0096 and 0141 are unallocated (0124 is documented as
+deliberately not reused). `execution-plan.md` records supersession in a `note:`
+rather than `superseded-by:`; it is superseded by no single RFC.

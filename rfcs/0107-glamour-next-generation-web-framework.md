@@ -22,6 +22,11 @@ related:
 
 # RFC-0107: Glamour 1.0 — capability-safe, compiler-directed web applications
 
+
+> 2026-08-27 (status audit): status `implemented` re-verified. The acceptance
+> evidence lives in `projects/glamour/RFC-0107-ACCEPTANCE.md` (per-criterion PROVEN
+> rows with CI run and artifact ids); there are no `rfc0107`-named tests in
+> `crates/` or `src/`, so search that file rather than the test tree.
 > Provisional syntax. Code blocks in this RFC are intentionally not tagged
 > `witchy`, so the runnable-documentation gate does not treat design sketches as
 > implemented APIs.

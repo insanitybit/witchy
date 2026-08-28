@@ -10,7 +10,7 @@ related:
   - "0137 (compiler-derived CSP)"
   - "0139 (high-ROI channel optimization)"
   - "0146 (post-hybrid performance program)"
-tracking: "Superseded by accepted RFC-0161. Its typed-channel facts, semantic fixtures, counters, and bounded-frame experiments remain inputs to RFC-0161; its pending acceptance rows are not evidence of implementation."
+tracking: "Superseded by RFC-0161. (2026-08-27 status audit: RFC-0161 is `proposed`, not accepted - its ledger states \"The RFC remains proposed until the public semantic decisions are accepted.\" This RFC's supersession stands regardless; only the word \"accepted\" was wrong.) Its typed-channel facts, semantic fixtures, counters, and bounded-frame experiments remain inputs to RFC-0161; its pending acceptance rows are not evidence of implementation."
 ---
 
 # RFC-0152: Deterministic CSP Ready Paths
