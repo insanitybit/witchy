@@ -449,6 +449,27 @@ mod tests {
     }
 
     #[test]
+    fn compiler_produced_terminal_send_cancels_through_declared_cleanup_state() {
+        let module = witchy_syntax::parser::parse_module(
+            "from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
+        let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let send = input.operations.iter().find(|operation| operation.runtime_kind == witchy_types::typed_async_lowering::TypedAsyncOperationKind::ChannelSend).expect("send operation");
+        input.queue_bindings.push(TypedAsyncQueueBinding { endpoint: send.operand_bindings[0], shape: QueueShape { id: QueueShapeId(0), capacity: QueueCapacity::Rendezvous, payload_layout_fingerprint: [28; 32], ownership: PayloadOwnership::Inline } });
+        let final_execution = input.into_linear_execution(ExecutionShapeId(0), [29; 32]).expect("final typed send");
+        let binding = AsyncBackendBinding { shape: ExecutionShapeId(0), closure_layout_fingerprint: [29; 32], states: final_execution.state_bindings.iter().map(|state| AsyncBackendStateBinding { state: AsyncProgramStateId(state.state.0), callable: state.callable, capture_to_lane: state.capture_to_lane.iter().map(|lane| lane.0).collect() }).collect() };
+        let program = AsyncProgram::from_final_typed_executions(vec![final_execution]).expect("canonical program");
+        let mut scheduler = TypedScheduler::new();
+        scheduler.install_program_execution(&program, ExecutionShapeId(0), 31, &binding).expect("install compiler send");
+        assert_eq!(scheduler.run_round().expect("run send")[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
+        assert_eq!(scheduler.submit_send(31, 0, QueuePayload(7)).expect("register send"), QueueRuntimeResult::Blocked);
+        assert!(scheduler.request_cancellation(31, 0).expect("cancel compiler send"));
+        assert_eq!(scheduler.runtime().execution(31).expect("cancelled send").state(), ExecutionStateId(2));
+        assert_eq!(scheduler.run_round().expect("run send cleanup")[0].turn, KernelTurn::Complete);
+    }
+
+    #[test]
     fn selected_round_executes_explicit_branch_transition() {
         let execution = TypedExecution::new(TypedExecutionShape {
             id: ExecutionShapeId(9),
