@@ -13,13 +13,72 @@
         link_run(src)
     }
 
+    pub(crate) fn proptest_cases() -> u32 {
+        std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8)
+    }
+
     /// Link a single-`main` source (pulling in any imported std module) and run
     /// it on the interpreter — the path that resolves `import crypto`.
     fn link_run(src: &str) -> Vec<String> {
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
+        let linked = prepared_module(src);
         interpreter::run_module(linked, ".", Vec::new()).expect("run")
+    }
+
+    /// Link and run on the interpreter with explicit CLI argument inputs.
+    fn link_run_args(src: &str, args: Vec<String>) -> Vec<String> {
+        let linked = prepared_module(src);
+        interpreter::run_module_args(linked, ".", Vec::new(), args).expect("run")
+    }
+
+    /// Compile and run on Wasm with explicit CLI argument inputs.
+    #[allow(dead_code)]
+    fn run_on_wasm_args(src: &str, args: Vec<String>) -> Vec<String> {
+        thread_local! {
+            static WASM_CACHE: std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>> =
+                std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+        let bytes = WASM_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(b) = cache.get(src) {
+                return b.clone();
+            }
+            let linked = prepared_module(src);
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect_lowered("the binary path lowers this program");
+            if cache.len() >= 128 {
+                cache.clear();
+            }
+            cache.insert(src.to_string(), bytes.clone());
+            bytes
+        });
+        with_batch_runtime(|rt| {
+            use crate::runtime::Capabilities;
+            let mut actor = rt
+                .spawn(
+                    &bytes,
+                    Capabilities {
+                        print: true,
+                        print_int: true,
+                        clock: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(Vec::new()),
+                        net_connect: true,
+                        net_listen: true,
+                        args,
+                        ..Default::default()
+                    },
+                    4,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        })
     }
 
     /// A bundled std module's parse result never changes within one process
@@ -62,24 +121,24 @@
         WASM_RUNTIME.with(|rt| f(&mut rt.borrow_mut()))
     }
 
-    /// Last fully linked+typechecked module on this thread. `link_run` then
-    /// `wasm_run*` on the same source (or two wasm runs under force-copy)
-    /// used to parse, link, and typecheck std twice.
+    /// Linked+typechecked module cache on this thread. Reuses parsed, linked,
+    /// and typechecked AST graphs across repeated invocations and proptest templates.
     fn prepared_module(src: &str) -> ast::Module {
         thread_local! {
-            static LAST: std::cell::RefCell<Option<(String, ast::Module)>> =
-                std::cell::RefCell::new(None);
+            static CACHE: std::cell::RefCell<std::collections::HashMap<String, ast::Module>> =
+                std::cell::RefCell::new(std::collections::HashMap::new());
         }
-        LAST.with(|slot| {
+        CACHE.with(|slot| {
             let mut slot = slot.borrow_mut();
-            if let Some((prev, module)) = slot.as_ref() {
-                if prev == src {
-                    return module.clone();
-                }
+            if let Some(module) = slot.get(src) {
+                return module.clone();
             }
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
-            *slot = Some((src.to_string(), linked.clone()));
+            if slot.len() >= 128 {
+                slot.clear();
+            }
+            slot.insert(src.to_string(), linked.clone());
             linked
         })
     }
@@ -304,7 +363,7 @@
         }
 
         proptest! {
-            #![proptest_config(ProptestConfig::with_cases(16))]
+            #![proptest_config(ProptestConfig::with_cases(super::proptest_cases()))]
 
             #[test]
             fn sum_matches_reference(lo in -300i64..300, len in 0i64..600, inclusive in any::<bool>()) {

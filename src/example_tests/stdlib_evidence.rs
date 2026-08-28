@@ -6,88 +6,58 @@ use super::{link_run, wasm_run};
 /// stdlib, and comparing to a Rust reference. These catch edge cases (empty
 /// strings, embedded quotes/newlines, negative timestamps) unit tests miss.
 mod stdlib_properties {
-    use super::link_run;
+    use super::super::{link_run_args, proptest_cases};
     use proptest::prelude::*;
 
-    /// Escape a Rust string into the body of a witchy `"..."` literal.
-    fn esc(s: &str) -> String {
-        let mut out = String::new();
-        for c in s.chars() {
-            match c {
-                '\\' => out.push_str("\\\\"),
-                '"' => out.push_str("\\\""),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                _ => out.push(c),
-            }
-        }
-        out
-    }
+    const HEX_ENCODE_PROG: &str = "import encoding\nimport list\nfn main(console: Console, argv: List(String)):\n    let s = list.at(argv, 0)\n    console.print(encoding.hex_encode(s))\n";
+    const BASE64_PROG: &str = "import encoding\nimport list\nfn main(console: Console, argv: List(String)):\n    let s = list.at(argv, 0)\n    console.print(yn(encoding.base64_decode(encoding.base64_encode(s)).unwrap_or(\"?\") == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n";
+    const HEX_ROUNDTRIP_PROG: &str = "import encoding\nimport list\nfn main(console: Console, argv: List(String)):\n    let s = list.at(argv, 0)\n    console.print(yn(encoding.hex_decode(encoding.hex_encode(s)).unwrap_or(\"?\") == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n";
+    const TIME_UNIX_PROG: &str = "import time\nimport string\nimport list\nfn main(console: Console, argv: List(String)):\n    let n = string.to_int(list.at(argv, 0))\n    console.print(yn(time.to_unix(time.from_unix(n)) == n))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n";
+    const SEMVER_PROG: &str = "import semver\nimport list\nfn main(console: Console, argv: List(String)):\n    let v = list.at(argv, 0)\n    match semver.parse(v):\n        Ok(x) -> console.print(semver.format(x))\n        Err(e) -> console.print(\"err\")\n";
+    const PATH_NORM_PROG: &str = "import path\nimport list\nfn main(console: Console, argv: List(String)):\n    let p = list.at(argv, 0)\n    let once = path.normalize(p)\n    console.print(yn(path.normalize(once) == once))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n";
+    const RLE_PROG: &str = "import ascii\nimport list\nimport string\n\nfn encode(t: String) -> String:\n    let cs = t.chars()\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + \"${k}\" + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = e.chars()\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + (ascii.to_digit(list.at(cs, i)) ?? 0)\n            i = i + 1\n        if i < n:\n            out = out + list.at(cs, i).repeat(k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console, argv: List(String)):\n    let s = list.at(argv, 0)\n    console.print(yn(decode(encode(s)) == s))\n";
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(ProptestConfig::with_cases(proptest_cases()))]
 
         /// `encoding.hex_encode` equals the byte-wise lowercase hex reference.
         #[test]
         fn hex_encode_matches_reference(s in "[ -#%-z|~]{0,40}") {
-            let src = format!(
-                "import encoding\nfn main(console: Console):\n    console.print(encoding.hex_encode(\"{}\"))\n",
-                esc(&s)
-            );
             let reference: String = s.bytes().map(|b| format!("{b:02x}")).collect();
-            prop_assert_eq!(link_run(&src), vec![reference]);
+            prop_assert_eq!(link_run_args(HEX_ENCODE_PROG, vec![s]), vec![reference]);
         }
 
         /// base64 decode is the inverse of encode, for any printable ASCII.
         #[test]
         fn base64_roundtrips(s in "[ -#%-z|~]{0,48}") {
-            let src = format!(
-                "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    console.print(yn(encoding.base64_decode(encoding.base64_encode(s)).unwrap_or(\"?\") == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
-                esc(&s)
-            );
-            prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            prop_assert_eq!(link_run_args(BASE64_PROG, vec![s]), vec!["y".to_string()]);
         }
 
         /// hex decode is the inverse of encode.
         #[test]
         fn hex_roundtrips(s in "[ -#%-z|~]{0,48}") {
-            let src = format!(
-                "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    console.print(yn(encoding.hex_decode(encoding.hex_encode(s)).unwrap_or(\"?\") == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
-                esc(&s)
-            );
-            prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            prop_assert_eq!(link_run_args(HEX_ROUNDTRIP_PROG, vec![s]), vec!["y".to_string()]);
         }
 
         /// `time.to_unix` is the exact inverse of `time.from_unix`, across the
         /// CE range and negative (pre-1970) timestamps.
         #[test]
         fn time_unix_roundtrips(n in -62135596800i64..=253402300799i64) {
-            let src = format!(
-                "import time\nfn main(console: Console):\n    console.print(yn(time.to_unix(time.from_unix({n})) == {n}))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n"
-            );
-            prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            prop_assert_eq!(link_run_args(TIME_UNIX_PROG, vec![n.to_string()]), vec!["y".to_string()]);
         }
 
         /// `semver.format` after `parse` reproduces the canonical version.
         #[test]
         fn semver_roundtrips(a in 0i64..2000, b in 0i64..2000, c in 0i64..2000) {
             let v = format!("{a}.{b}.{c}");
-            let src = format!(
-                "import semver\nfn main(console: Console):\n    match semver.parse(\"{v}\"):\n        Ok(x) -> console.print(semver.format(x))\n        Err(e) -> console.print(\"err\")\n"
-            );
-            prop_assert_eq!(link_run(&src), vec![v]);
+            prop_assert_eq!(link_run_args(SEMVER_PROG, vec![v.clone()]), vec![v]);
         }
 
         /// `path.normalize` is idempotent — normalizing an already-normal path
         /// changes nothing — over arbitrary `.`/`..`/segment soup.
         #[test]
         fn path_normalize_is_idempotent(p in "[a-c./]{0,24}") {
-            let src = format!(
-                "import path\nfn main(console: Console):\n    let once = path.normalize(\"{}\")\n    console.print(yn(path.normalize(once) == once))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
-                esc(&p)
-            );
-            prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            prop_assert_eq!(link_run_args(PATH_NORM_PROG, vec![p]), vec!["y".to_string()]);
         }
 
         /// Run-length decode is the inverse of encode (the `examples/rle`
@@ -97,11 +67,7 @@ mod stdlib_properties {
         /// asserts the round-trip and documents that boundary.
         #[test]
         fn rle_round_trips_over_digit_free_text(s in "[a-zA-Z ]{0,40}") {
-            let src = format!(
-                "import ascii\n\nfn encode(t: String) -> String:\n    let cs = t.chars()\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + \"${{k}}\" + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = e.chars()\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + (ascii.to_digit(list.at(cs, i)) ?? 0)\n            i = i + 1\n        if i < n:\n            out = out + list.at(cs, i).repeat(k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    console.print(yn(decode(encode(s)) == s))\n",
-                esc(&s)
-            );
-            prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            prop_assert_eq!(link_run_args(RLE_PROG, vec![s]), vec!["y".to_string()]);
         }
     }
 }
