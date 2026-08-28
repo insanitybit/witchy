@@ -208,10 +208,10 @@ impl TypedAsyncLoweringInput {
         }
         let operations = self.operations.iter().filter(|operation| {
             operation.callable == source.callable
-                && !is_nested_await_operand(source, operation)
+                && !is_nested_terminal_operand(source, operation)
         }).collect::<Vec<_>>();
         let nested_count = self.operations.iter().filter(|operation| {
-            operation.callable == source.callable && is_nested_await_operand(source, operation)
+            operation.callable == source.callable && is_nested_terminal_operand(source, operation)
         }).count();
         if operations.len() + nested_count != source.operations.len() {
             return Err("RFC-0161 linear producer found operations for an unknown callable".into());
@@ -229,18 +229,19 @@ impl TypedAsyncLoweringInput {
                 TypedAsyncOperationKind::Yield | TypedAsyncOperationKind::Return => {}
                 kind => return Err(format!("RFC-0161 linear producer does not support typed operation {kind:?}")),
             }
+            let unit_terminal = matches!(operation.runtime_kind, TypedAsyncOperationKind::Yield | TypedAsyncOperationKind::Return)
+                && operation.operand_bindings.is_empty()
+                && operation.operand_type == Some(Type::Named("Nil".into(), Vec::new()));
             if operation.runtime_kind == TypedAsyncOperationKind::Return
                 && (!operation.operand_bindings.is_empty() || operation.operand_type.is_some())
+                && !unit_terminal
             {
                 return Err(format!(
                     "RFC-0161 linear producer does not support value-bearing return at source operation {}",
                     operation.source_operation,
                 ));
             }
-            let unit_yield = operation.runtime_kind == TypedAsyncOperationKind::Yield
-                && operation.operand_bindings.is_empty()
-                && operation.operand_type == Some(Type::Named("Nil".into(), Vec::new()));
-            if (!operation.operand_bindings.is_empty() || operation.operand_type.is_some()) && !unit_yield {
+            if (!operation.operand_bindings.is_empty() || operation.operand_type.is_some()) && !unit_terminal {
                 return Err(format!("RFC-0161 linear producer does not support operands for source operation {}", operation.source_operation));
             }
             if operation.terminal {
@@ -747,13 +748,13 @@ impl TypedAsyncLoweringInput {
     }
 }
 
-fn is_nested_await_operand(source: &SourceAsyncControlFlow, operation: &TypedAsyncSourceOperationBinding) -> bool {
+fn is_nested_terminal_operand(source: &SourceAsyncControlFlow, operation: &TypedAsyncSourceOperationBinding) -> bool {
     if operation.kind == SourceAsyncOperationKind::Await {
         return false;
     }
     let Some(expression) = operation.expression else { return false; };
     source.operations.iter()
-        .filter(|candidate| candidate.kind == SourceAsyncOperationKind::Await)
+        .filter(|candidate| matches!(candidate.kind, SourceAsyncOperationKind::Await | SourceAsyncOperationKind::Return))
         .filter_map(|candidate| candidate.expression)
         .any(|await_expression| source.expression_spans.iter()
             .find(|span| span.root == await_expression)
@@ -1040,6 +1041,21 @@ mod tests {
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("value return needs a result-lane producer");
         assert!(error.contains("value-bearing return"), "unexpected rejection: {error}");
+    }
+
+    #[test]
+    fn linear_producer_accepts_explicit_unit_return() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn done():\n    return\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [8; 32]).expect("unit return");
+        assert_eq!(execution.execution.states[0].transitions[0].outcome, ExecutionOutcome::Complete);
     }
 
     #[test]
