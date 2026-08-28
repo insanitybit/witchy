@@ -328,10 +328,21 @@ impl TypedAsyncLoweringInput {
             cancellation: None,
         };
         execution.validate()?;
-        let state_bindings = (0..execution.states.len()).map(|state| FinalTypedAsyncStateBinding {
-            state: ExecutionStateId(state as u32),
-            callable: entry_callable,
-            capture_to_lane: capture_to_lane.clone(),
+        let state_bindings = (0..execution.states.len()).map(|state| {
+            let callable = if state == 0 {
+                entry_callable
+            } else {
+                operations.get(state - 1)
+                    .and_then(|operation| operation.continuation)
+                    .and_then(|continuation| self.states.iter().find(|candidate| candidate.final_callable == continuation))
+                    .map(|candidate| candidate.final_callable)
+                    .unwrap_or(entry_callable)
+            };
+            FinalTypedAsyncStateBinding {
+                state: ExecutionStateId(state as u32),
+                callable,
+                capture_to_lane: capture_to_lane.clone(),
+            }
         }).collect();
         Ok(FinalTypedAsyncExecution { execution, closure_layout_fingerprint, state_bindings, dynamic_boundaries: Vec::new() })
     }
@@ -1047,6 +1058,23 @@ mod tests {
         let execution = input.into_linear_execution(ExecutionShapeId(0), [5; 32]).expect("unit yield is executable");
         assert_eq!(execution.execution.operations.len(), 1);
         assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::Yield);
+    }
+
+    #[test]
+    fn linear_producer_binds_continuation_state_to_its_final_callable() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn tick():\n    chan.yield_now().await\n    chan.yield_now().await\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let yield_operation = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::Yield).expect("yield operation");
+        let continuation = yield_operation.continuation.expect("yield continuation");
+        let execution = input.into_linear_execution(ExecutionShapeId(0), [6; 32]).expect("yield execution");
+        assert_eq!(execution.state_bindings[1].callable, continuation);
     }
 
     #[test]
