@@ -8,6 +8,7 @@
 //! can assign frame lanes and backend bindings.
 
 use witchy_syntax::ast::{Convention, Expr, Function, Item, Type};
+use std::collections::BTreeMap;
 use witchy_syntax::async_surface::AsyncSurfaceId;
 use witchy_syntax::suspension::{
     async_surface, async_surface_module, frame_bindings, frame_state, source_suspension, FRAME_ENTRY_ATTRIBUTE,
@@ -20,7 +21,7 @@ use crate::async_control_flow::{
 };
 use crate::pipeline::CheckedModule;
 use crate::typeck::{self, TypedModule};
-use crate::async_program::{FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
+use crate::async_program::{AsyncProgram, FinalTypedAsyncExecution, FinalTypedAsyncStateBinding};
 use crate::typed_execution::{ExecutionEdgeCondition, ExecutionOperation, ExecutionOutcome,
     ExecutionShapeId, ExecutionState, ExecutionStateId, ExecutionTransition, OperationSite,
     OperationSiteId, TypedExecutionShape};
@@ -157,6 +158,32 @@ pub struct TypedAsyncLoweringInput {
 }
 
 impl TypedAsyncLoweringInput {
+    /// Produce one canonical program for all source callables that are within
+    /// the conservative linear boundary. Shape IDs are assigned in the same
+    /// lexical callable order retained by `from_typed`; each callable's final
+    /// closure fingerprint must be supplied explicitly.
+    pub fn into_linear_program(
+        &self,
+        closure_layout_fingerprints: &BTreeMap<AsyncCallableId, [u8; 32]>,
+    ) -> Result<AsyncProgram, String> {
+        let mut executions = Vec::with_capacity(self.source.len());
+        for (index, source) in self.source.iter().enumerate() {
+            let fingerprint = closure_layout_fingerprints.get(&source.callable).ok_or_else(|| {
+                format!("RFC-0161 linear program has no closure fingerprint for {:?}", source.callable)
+            })?;
+            let input = Self {
+                source: vec![source.clone()],
+                states: self.states.iter().filter(|state| state.callable == source.callable).cloned().collect(),
+                suspensions: self.suspensions.iter().filter(|binding| binding.callable == source.callable).cloned().collect(),
+                controls: self.controls.iter().filter(|control| control.callable == source.callable).cloned().collect(),
+                operations: self.operations.iter().filter(|operation| operation.callable == source.callable).cloned().collect(),
+            };
+            let shape = ExecutionShapeId(u32::try_from(index).map_err(|_| "RFC-0161 linear program shape count exceeds u32")?);
+            executions.push(input.into_linear_execution(shape, *fingerprint)?);
+        }
+        AsyncProgram::from_final_typed_executions(executions)
+    }
+
     /// Lower the fully checked source inventory when it is a single linear
     /// callable whose operations have no value-producing or queue binding
     /// requirements.  This is intentionally conservative: operations whose
@@ -882,5 +909,23 @@ mod tests {
         let error = input.into_linear_execution(ExecutionShapeId(0), [0; 32])
             .expect_err("channel operation needs the queue-aware producer");
         assert!(error.contains("CallOperand"), "unexpected rejection: {error}");
+    }
+
+    #[test]
+    fn linear_program_producer_emits_all_independent_async_callables() {
+        let module = witchy_syntax::parser::parse_module(
+            "async fn first():\n    ()\n\nasync fn second():\n    ()\n\nfn main():\n    ()\n",
+        ).expect("parse source");
+        let checked = link_checked(
+            vec![("main".to_string(), module)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let input = checked.typed_async_lowering_input().expect("typed lowering input");
+        let fingerprints = input.source.iter().map(|flow| (flow.callable.clone(), [flow.callable.surface.item as u8; 32])).collect();
+        let program = input.into_linear_program(&fingerprints).expect("linear async program");
+        assert_eq!(program.execution_shapes.len(), 2);
+        assert_eq!(program.execution_shapes.iter().map(|shape| shape.id.0).collect::<Vec<_>>(), vec![0, 1]);
+        program.validate().expect("canonical fingerprints");
     }
 }
