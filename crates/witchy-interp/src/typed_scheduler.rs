@@ -198,7 +198,9 @@ impl TypedScheduler {
         generation: u64,
         host: HostOperationId,
     ) -> Result<HostSubmission, String> {
+        let operation = self.operation_id(execution)?;
         self.runtime.submit_host(execution, generation, host.0)?;
+        self.record_admission(operation, generation, AdmissionResult::Blocked)?;
         Ok(HostSubmission::Blocked)
     }
 
@@ -211,6 +213,7 @@ impl TypedScheduler {
         let Some((execution, operation, turn)) = self.runtime.complete_host(host.0, generation)? else {
             return Ok(None);
         };
+        self.record_admission(operation, generation, AdmissionResult::Committed)?;
         self.admit_turns(&[(execution, turn)])?;
         Ok(Some(HostCompletion {
             turn,
@@ -417,9 +420,21 @@ mod tests {
         scheduler.install_execution(11, host_execution()).expect("execution");
         assert_eq!(scheduler.run_round().expect("block")[0].turn, KernelTurn::Blocked(OperationSiteId(0)));
         assert_eq!(scheduler.submit_host(11, 5, HostOperationId(7)).expect("submit"), HostSubmission::Blocked);
+        assert_eq!(scheduler.admission_trace(), &[AdmissionEvent {
+            sequence: 0,
+            operation: OperationSiteId(0),
+            generation: 5,
+            result: AdmissionResult::Blocked,
+        }]);
         let completion = scheduler.complete_host(HostOperationId(7), 5, 42_u32).expect("complete").expect("matching completion");
         assert_eq!(completion.delivery.payload, 42);
         assert_eq!(completion.turn, KernelTurn::Complete);
         assert_eq!(scheduler.ready_len(), 0);
+        assert_eq!(scheduler.admission_trace()[1], AdmissionEvent {
+            sequence: 1,
+            operation: OperationSiteId(0),
+            generation: 5,
+            result: AdmissionResult::Committed,
+        });
     }
 }
