@@ -92,6 +92,36 @@ fn process_group(pid: i32) -> i32 {
         .expect("process group is numeric")
 }
 
+/// A `check.sh` invocation with the ambient gate environment scrubbed.
+///
+/// These fixtures run INSIDE a real gate, and the coordinator exports a
+/// growing set of `WITCHY_GATE_*` knobs to the gate it launches (the `env`
+/// line in `merge-queue.sh`'s `run_gate`). Every one of those knobs is
+/// therefore in the fixture's environment too, so a fixture that asserts on
+/// check.sh's stage list is really asserting on whatever the coordinator
+/// happened to be doing for some unrelated branch.
+///
+/// Listing the knobs to remove made each call site an out-of-date copy of the
+/// coordinator's list. `WITCHY_GATE_PREFLIGHT_EXPR` was added to the injector
+/// and to none of the scrub lists, so any branch whose previous attempt had
+/// red tests prepended a "preflight (tests that red the last attempt)" stage
+/// and red the gate for whichever branch was actually being validated --
+/// observed on three separate branches on 2026-08-27. Scrubbing the prefix
+/// makes a knob added later hermetic here by construction.
+///
+/// Knobs a fixture means to exercise are set on the returned command, after
+/// the scrub.
+fn check_sh(root: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("bash");
+    command.arg(root.join("scripts/check.sh")).args(args);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("WITCHY_GATE_") {
+            command.env_remove(&key);
+        }
+    }
+    command
+}
+
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(repo)

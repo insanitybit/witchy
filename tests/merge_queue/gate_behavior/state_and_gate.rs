@@ -271,6 +271,29 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(before, after, "reporting must not mutate queue state");
 }
 
+/// The fixtures below assert on check.sh's exact stage list, so any gate knob
+/// the coordinator exports must be scrubbed before check.sh is spawned. This
+/// pins the scrub to the prefix rather than to a list somebody has to remember
+/// to extend: a knob the coordinator gains later is covered here on the day it
+/// is added.
+#[test]
+fn fixture_gate_invocations_scrub_every_ambient_gate_knob() {
+    let temp = TempDir::new();
+    // SAFETY: single-threaded test-local environment mutation, undone below.
+    unsafe { std::env::set_var("WITCHY_GATE_A_KNOB_ADDED_LATER", "1") };
+    let command = check_sh(temp.path(), &["--fast"]);
+    let removed: Vec<_> = command
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+    unsafe { std::env::remove_var("WITCHY_GATE_A_KNOB_ADDED_LATER") };
+    assert!(
+        removed.iter().any(|key| key == "WITCHY_GATE_A_KNOB_ADDED_LATER"),
+        "a gate knob the fixture never heard of must still be scrubbed: {removed:?}",
+    );
+}
+
 #[test]
 fn fast_gate_emits_structured_foreground_and_background_timings() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -319,25 +342,13 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     let cargo_args_file = temp.path().join("cargo-args");
     let cargo_env_file = temp.path().join("cargo-env");
     let proof_sha = "0123456789abcdef0123456789abcdef01234567";
-    let output = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--fast")
+    let output = check_sh(&root, &["--fast"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("CARGO_PROFILE_TEST_STRIP")
-        .env_remove("WITCHY_GATE_NEXTEST")
-        .env_remove("WITCHY_GATE_NEXTEST_EXPR")
-        .env_remove("WITCHY_GATE_CHECK_PACKAGES")
-        .env_remove("WITCHY_GATE_SKIP_BOOK")
-        .env_remove("WITCHY_GATE_SKIP_RUST_CLASS")
-        .env_remove("WITCHY_GATE_SKIP_COMPILE")
-        .env_remove("WITCHY_GATE_SKIP_WASM")
-        .env_remove("WITCHY_GATE_SKIP_FMT")
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_CENSUS_PROOF_SHA", proof_sha)
         .env("FAKE_GIT_HEAD", proof_sha)
-        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -370,12 +381,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
 
     fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
-    let local = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--wasm")
+    let local = check_sh(&root, &["--wasm"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-local"))
-        .env_remove("WITCHY_GATE_SCOPE")
         .env_remove("CARGO_PROFILE_TEST_STRIP")
         .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
         .output()
@@ -389,9 +397,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
 
     fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
-    let overridden = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--wasm")
+    let overridden = check_sh(&root, &["--wasm"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-overridden"))
         .env("WITCHY_GATE_SCOPE", "all")
@@ -427,9 +433,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "background timing included time spent waiting for foreground collection: {stdout}",
     );
 
-    let isolated = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--fast")
+    let isolated = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
@@ -466,9 +470,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .any(|line| line == "nextest run --test merge_queue -j 2"),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",
     );
-    let invalid_width = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--queue-infra")
+    let invalid_width = check_sh(&root, &["--queue-infra"])
         .env("PATH", &path)
         .env("WITCHY_QUEUE_INFRA_JOBS", "0")
         .output()
@@ -480,9 +482,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
-    let focused = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--fast")
+    let focused = check_sh(&root, &["--fast"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-focused"))
         .env("WITCHY_GATE_SCOPE", "all")
@@ -491,8 +491,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "WITCHY_GATE_NEXTEST_EXPR",
             "package(witchy-types) or test(/^example_tests::/)",
         )
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
@@ -515,9 +513,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
     let fuzz_env_file = temp.path().join("fuzz-env");
-    let differential_fuzz = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--fast")
+    let differential_fuzz = check_sh(&root, &["--fast"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-differential-fuzz"))
         .env("WITCHY_GATE_SCOPE", "all")
@@ -527,9 +523,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "WITCHY_GATE_NEXTEST",
             "--test merge_queue --test differential_fuzz",
         )
-        .env_remove("WITCHY_GATE_NEXTEST_EXPR")
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_FUZZ_ENV_FILE", &fuzz_env_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -563,8 +556,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     fs::write(&witchy_bin, "#!/bin/sh\nexit 0\n").expect("write fake witchy");
     fs::set_permissions(&witchy_bin, fs::Permissions::from_mode(0o755))
         .expect("chmod fake witchy");
-    let example_tests = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
+    let example_tests = check_sh(&root, &[])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target-example-tests"))
         .env("WITCHY_GATE_SCOPE", "all")
@@ -575,8 +567,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_COMPILE", "1")
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
@@ -617,8 +607,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     // try to invoke or build it.
     let types_target = temp.path().join("target-types-only");
     fs::create_dir_all(&types_target).expect("create types-only target");
-    let types_only = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
+    let types_only = check_sh(&root, &[])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", &types_target)
         .env("WITCHY_GATE_SCOPE", "all")
@@ -630,8 +619,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_COMPILE", "0")
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
@@ -655,8 +642,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     fs::write(interp_target.join("debug/witchy"), "#!/bin/sh\nexit 0\n").expect("write interp witchy");
     fs::set_permissions(interp_target.join("debug/witchy"), fs::Permissions::from_mode(0o755))
         .expect("chmod interp witchy");
-    let interp = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
+    let interp = check_sh(&root, &[])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", &interp_target)
         .env("WITCHY_GATE_SCOPE", "all")
@@ -671,8 +657,6 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_COMPILE", "0")
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
@@ -709,12 +693,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     );
 
     let clippy_pid_file = temp.path().join("red-clippy.pid");
-    let failed = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
-        .arg("--fast")
+    let failed = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("FAKE_CARGO_FAIL_NEXTEST", "1")
         .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
@@ -822,17 +803,9 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
     fs::set_permissions(&witchy, fs::Permissions::from_mode(0o755))
         .expect("chmod fake witchy");
 
-    let green = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
+    let green = check_sh(&root, &[])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", &target)
-        .env_remove("WITCHY_GATE_SCOPE")
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_SKIP_BOOK")
-        .env_remove("WITCHY_GATE_SKIP_RUST_CLASS")
-        .env_remove("WITCHY_GATE_SKIP_COMPILE")
-        .env_remove("WITCHY_GATE_SKIP_WASM")
-        .env_remove("WITCHY_GATE_SKIP_FMT")
         .env_remove("WITCHY_FAILFAST_POLL")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
@@ -876,17 +849,9 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         .expect("chmod red fake witchy");
     let nextest_pid_file = temp.path().join("nextest.pid");
     let started = Instant::now();
-    let red = Command::new("bash")
-        .arg(root.join("scripts/check.sh"))
+    let red = check_sh(&root, &[])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", &target_red)
-        .env_remove("WITCHY_GATE_SCOPE")
-        .env_remove("WITCHY_GATE_QUEUE_INFRA")
-        .env_remove("WITCHY_GATE_SKIP_BOOK")
-        .env_remove("WITCHY_GATE_SKIP_RUST_CLASS")
-        .env_remove("WITCHY_GATE_SKIP_COMPILE")
-        .env_remove("WITCHY_GATE_SKIP_WASM")
-        .env_remove("WITCHY_GATE_SKIP_FMT")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("WITCHY_FAILFAST_POLL", "1")
         .env("FAKE_CARGO_FAIL_CLIPPY", "1")
