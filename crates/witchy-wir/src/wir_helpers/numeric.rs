@@ -427,7 +427,10 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
             WirLocal { name: "next32".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "plen".into(), value: E::Load { ptr: Box::new(getl("prefix")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "plen".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("prefix")),
+                    kind: Kind::I32,
+                } },
             N::If {
                 cond: bin(BinOp::Eq, Kind::I64, getl("n"), i64c(0)),
                 then_: vec![

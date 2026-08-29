@@ -43,6 +43,26 @@ fn helper_layouts() -> &'static HelperLayouts {
     })
 }
 
+/// A checked place for READING the length word of a helper-allocated byte
+/// buffer.
+///
+/// The read is what establishes the count, so there is no count to claim yet.
+/// It claims only the descriptor's header region, which is strictly less than
+/// the write path claims.
+pub(crate) fn byte_buffer_length_read_place(root: WirExpr) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.byte_buffer,
+        SafeExactExtent::header_only(),
+        root.clone(),
+        AccessMode::Read,
+    )
+    .expect("the helper byte-buffer header is claimable")
+    .runtime_buffer_length(SafeEncodedAddress::new(root, 0))
+    .expect("the length word is at the descriptor's own header offset")
+}
+
 /// A checked place for the length word of a helper-allocated byte buffer.
 ///
 /// `root` is the allocation pointer and `count` is the executable payload

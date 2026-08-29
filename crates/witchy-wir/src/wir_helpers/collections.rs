@@ -107,7 +107,10 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
         body: vec![
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal { local: "present".into(), value: b(BinOp::Gt, getl("len"), i32c(0)) },
             N::SetLocal { local: "old".into(), value: i64c(0) },

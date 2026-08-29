@@ -58,7 +58,10 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
             N::If {
                 cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
                 then_: vec![
-                    N::SetLocal { local: "slots".into(), value: E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 } },
+                    N::SetLocal { local: "slots".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                } },
                     N::SetLocal { local: "bucket".into(), value: E::Call { func: "dict_find_bucket".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
                     N::If {
                         cond: b(BinOp::Ge, getl("bucket"), i32c(0)),
@@ -127,7 +130,10 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
             N::If {
                 cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
                 then_: vec![
-                    N::SetLocal { local: "slots".into(), value: E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 } },
+                    N::SetLocal { local: "slots".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                } },
                     N::SetLocal { local: "bucket".into(), value: E::Call { func: "dict_find_bucket".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
                     N::If {
                         cond: b(BinOp::Lt, getl("bucket"), i32c(0)),
@@ -220,11 +226,17 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: ["count", "i", "new", "idx", "slots"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
-            setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            setl("count", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                }),
             setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
             N::If {
                 cond: b(BinOp::Ne, getl("idx"), i32c(0)),
-                then_: vec![setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 })],
+                then_: vec![setl("slots", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                })],
                 els: vec![],
                 result: None,
             },
@@ -316,11 +328,17 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: ["count", "i", "list", "tup", "idx", "slots"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
-            setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            setl("count", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                }),
             setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
             N::If {
                 cond: b(BinOp::Ne, getl("idx"), i32c(0)),
-                then_: vec![setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 })],
+                then_: vec![setl("slots", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                })],
                 els: vec![],
                 result: None,
             },

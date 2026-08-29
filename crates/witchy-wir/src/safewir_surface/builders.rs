@@ -49,6 +49,9 @@ pub struct SafeExactExtent {
 enum ExactExtentSource {
     /// A compile-time byte count, for a fixed-size descriptor.
     Fixed(u64),
+    /// The descriptor's own header region, for a dynamically sized object whose
+    /// count is not yet known.
+    HeaderOnly,
     /// One executable count operand, for a dynamically sized descriptor. The
     /// header bytes, the stride, and the range arithmetic all stay
     /// descriptor-derived: this supplies the count and nothing else.
@@ -58,6 +61,17 @@ enum ExactExtentSource {
 impl SafeExactExtent {
     pub const fn fixed(bytes: u64) -> Self {
         Self { source: ExactExtentSource::Fixed(bytes) }
+    }
+
+    /// Claim only the descriptor's header region of a dynamically sized object.
+    ///
+    /// Reading a buffer's length word is the operation that ESTABLISHES its
+    /// count, so a counted extent is circular there. This claims strictly less:
+    /// the `base` bytes the descriptor places before the payload, whose
+    /// presence follows from the root being a well-formed allocation of this
+    /// layout -- which claiming the layout at all already assumes.
+    pub const fn header_only() -> Self {
+        Self { source: ExactExtentSource::HeaderOnly }
     }
 
     /// Retain one exact executable count identity for final def-use binding.
@@ -330,6 +344,13 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             (LayoutSize::Dynamic { .. }, ExactExtentSource::Fixed(_)) => {
                 return Err(SafePlaceBuildError::MissingCheckedLength(layout));
             }
+            (LayoutSize::Dynamic { base, .. }, ExactExtentSource::HeaderOnly) => {
+                let size = SafeSizeExpr::Constant(u64::from(base));
+                (SafeExtentExpr::Exact(size.clone()), size)
+            }
+            (LayoutSize::Fixed(_), ExactExtentSource::HeaderOnly) => {
+                return Err(SafePlaceBuildError::UnexpectedCheckedLength(layout));
+            }
             (LayoutSize::Dynamic { base, stride }, ExactExtentSource::Counted(count)) => {
                 // The count must not be read through the object it measures:
                 // that would make the extent depend on the storage it bounds.
@@ -372,12 +393,12 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         encoded: SafeEncodedAddress,
     ) -> Result<Box<SafePlaceExpr>, SafePlaceBuildError> {
         self.validate_fixed_address(&encoded, 0, "root")?;
-        Ok(self.finish(
+        self.finish(
             SafeProjectionExpr::root(),
             SafeSizeExpr::Constant(0),
             self.full_length.clone(),
             encoded,
-        ))
+        )
     }
 
     /// Claim one descriptor-defined packed-list header component.
@@ -418,12 +439,12 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             });
         };
         self.validate_fixed_address(&encoded, field.offset(), "runtime buffer length")?;
-        Ok(self.finish(
+        self.finish(
             SafeProjectionExpr::from_steps([SafeProjectionStep::Field { index: 0 }]),
             SafeSizeExpr::Constant(u64::from(field.offset())),
             SafeSizeExpr::Constant(u64::from(kind.size())),
             encoded,
-        ))
+        )
     }
 
     pub fn header(
@@ -446,12 +467,12 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             _ => return Err(SafePlaceBuildError::UnknownHeaderComponent(component)),
         };
         self.validate_fixed_address(&encoded, offset, "header")?;
-        Ok(self.finish(
+        self.finish(
             SafeProjectionExpr::from_steps([SafeProjectionStep::Header { component }]),
             SafeSizeExpr::Constant(u64::from(offset)),
             SafeSizeExpr::Constant(4),
             encoded,
-        ))
+        )
     }
 
     /// Claim one fixed descriptor field. Pointer slots are rejected because a
@@ -491,12 +512,12 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             }
         };
         self.validate_fixed_address(&encoded, field.offset(), "fixed field")?;
-        Ok(self.finish(
+        self.finish(
             SafeProjectionExpr::from_steps([SafeProjectionStep::Field { index }]),
             SafeSizeExpr::Constant(u64::from(field.offset())),
             SafeSizeExpr::Constant(u64::from(length)),
             encoded,
-        ))
+        )
     }
 
     /// Claim one packed-list element. The index remains an executable scalar
@@ -510,14 +531,14 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         let (base, stride) = self.packed_elements("element")?;
         self.validate_indexed_address(&encoded, &index, base, stride, "element")?;
         let start = indexed_start(&index, base, stride)?;
-        Ok(self.finish(
+        self.finish(
             SafeProjectionExpr::from_steps([SafeProjectionStep::Element {
                 index: Box::new(index),
             }]),
             start,
             SafeSizeExpr::Constant(u64::from(stride)),
             encoded,
-        ))
+        )
     }
 
     /// Claim a contiguous packed-list slice. Start and length are independently
@@ -534,7 +555,7 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         self.validate_indexed_address(&encoded, &start, base, stride, "slice")?;
         let range_start = indexed_start(&start, base, stride)?;
         let range_length = scaled_length(&length, stride)?;
-        Ok(self.finish(
+        self.finish(
             SafeProjectionExpr::from_steps([SafeProjectionStep::Slice {
                 start: Box::new(start),
                 length: Box::new(length),
@@ -542,7 +563,7 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             range_start,
             range_length,
             encoded,
-        ))
+        )
     }
 
     fn descriptor(
@@ -654,14 +675,39 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         Ok(())
     }
 
+    /// Build the place, refusing a constant range that leaves the object's
+    /// constant extent.
+    ///
+    /// `validate_range` proves `start + length <= extent` in the final
+    /// validator, but that proof does not run during the RFC-0162 migration
+    /// window: the bridge erases without validating. Settling the constant
+    /// cases here means the builder never hands back a place that only a later
+    /// validator would have caught. A symbolic extent or range is left to the
+    /// validator, which is the only thing that can discharge it.
     fn finish(
         &self,
         projection: SafeProjectionExpr,
         start: SafeSizeExpr,
         length: SafeSizeExpr,
         encoded: SafeEncodedAddress,
-    ) -> Box<SafePlaceExpr> {
-        Box::new(SafePlaceExpr {
+    ) -> Result<Box<SafePlaceExpr>, SafePlaceBuildError> {
+        if let (
+            SafeExtentExpr::Exact(SafeSizeExpr::Constant(extent)),
+            SafeSizeExpr::Constant(claimed_start),
+            SafeSizeExpr::Constant(claimed_length),
+        ) = (&self.object.extent, &start, &length)
+        {
+            let end = claimed_start
+                .checked_add(*claimed_length)
+                .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+            if end > *extent {
+                return Err(SafePlaceBuildError::RangeOutsideExtent {
+                    end,
+                    extent: *extent,
+                });
+            }
+        }
+        Ok(Box::new(SafePlaceExpr {
             object: self.object.clone(),
             projection,
             range: SafeRangeExpr {
@@ -672,7 +718,7 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             access: self.access,
             encoded_base: Box::new(encoded.base),
             encoded_offset: encoded.offset,
-        })
+        }))
     }
 }
 
@@ -833,6 +879,8 @@ pub enum SafePlaceBuildError {
     ProjectionRequiresPackedList { projection: &'static str },
     /// A runtime-buffer-only projection was attempted on another layout.
     ProjectionRequiresRuntimeBuffer { projection: &'static str },
+    /// A projection's byte range leaves the object's claimed extent.
+    RangeOutsideExtent { end: u64, extent: u64 },
     UnsupportedClaimOperand { role: &'static str },
     NegativeClaimValue { role: &'static str, value: i64 },
     EncodedBaseMismatch { projection: &'static str },
@@ -912,6 +960,10 @@ impl fmt::Display for SafePlaceBuildError {
                 formatter,
                 "packed-list layout {layout} requires header or element projection, not a raw field ordinal"
             ),
+            Self::RangeOutsideExtent { end, extent } => write!(
+                formatter,
+                "projection reaches byte {end} of an object whose claimed extent is {extent}"
+            ),
             Self::ProjectionRequiresRuntimeBuffer { projection } => {
                 write!(formatter, "{projection} requires a runtime buffer descriptor")
             }
@@ -953,6 +1005,61 @@ impl std::error::Error for SafePlaceBuildError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A header-only extent exists so the length word can be READ -- the
+    // operation that establishes the count, which makes a counted extent
+    // circular there. It must authorise strictly less than a counted extent.
+    #[test]
+    fn a_header_only_extent_reaches_the_length_word_but_never_the_payload() {
+        let mut interner = LayoutInterner::default();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        let buffer = interner.intern_runtime_buffer(byte).expect("runtime buffer");
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::header_only(),
+            WirExpr::GetLocal("b".into()),
+            AccessMode::Read,
+        )
+        .expect("the header region is claimable without knowing the count");
+
+        assert!(
+            builder
+                .runtime_buffer_length(SafeEncodedAddress::new(WirExpr::GetLocal("b".into()), 0))
+                .is_ok(),
+            "the length word lies inside the header region",
+        );
+
+        // The payload does not. This is what `finish`'s range check enforces:
+        // without it the builder handed back a place reaching byte 5 of a
+        // 4-byte claim, which only the validator would have caught -- and the
+        // migration bridge does not run the validator.
+        let payload = builder.element(
+            WirExpr::ConstI32(0),
+            SafeEncodedAddress::new(WirExpr::GetLocal("b".into()), 4),
+        );
+        assert!(
+            matches!(payload, Err(SafePlaceBuildError::RangeOutsideExtent { end: 5, extent: 4 })),
+            "a header-only claim must not reach past the header: {payload:?}",
+        );
+    }
+
+    #[test]
+    fn a_fixed_layout_refuses_a_header_only_extent() {
+        let mut interner = LayoutInterner::default();
+        let int = interner.intern_scalar(ScalarKind::Int).expect("scalar");
+        let refused = SafePlaceBuilder::new(
+            &interner,
+            int,
+            SafeExactExtent::header_only(),
+            WirExpr::GetLocal("b".into()),
+            AccessMode::Read,
+        );
+        assert!(
+            matches!(refused, Err(SafePlaceBuildError::UnexpectedCheckedLength(id)) if id == int),
+            "a layout that knows its own size has no separate header region",
+        );
+    }
 
     // RFC-0162 S2: a dynamic index means the wasm address is
     // `root + base + index*stride`, so the old check -- "is encoded.base the

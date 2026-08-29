@@ -146,7 +146,10 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
                 result: None,
             },
             setl("p", E::FromSlot(Box::new(getl("k")), Kind::I32)),
-            setl("len", E::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
+            setl("len", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("p")),
+                    kind: Kind::I32,
+                }),
             setl("x", i64c(-7046029254386353131i64)), // 0x9e3779b97f4a7c15 (golden-ratio seed)
             setl("i", i32c(0)),
             vec_loop,

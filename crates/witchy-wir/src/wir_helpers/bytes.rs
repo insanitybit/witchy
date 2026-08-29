@@ -440,7 +440,10 @@ pub(super) fn bytes_push_helper() -> WirFunc {
             },
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal {
                 local: "newlen".into(),
@@ -498,11 +501,17 @@ pub(super) fn bytes_append_helper() -> WirFunc {
         body: vec![
             N::SetLocal {
                 local: "blen".into(),
-                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal {
                 local: "slen".into(),
-                value: E::Load { ptr: Box::new(getl("suffix")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("suffix")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal {
                 local: "tot".into(),
@@ -567,7 +576,10 @@ pub(super) fn bytes_reserve_helper() -> WirFunc {
             },
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal {
                 local: "add32".into(),
@@ -609,7 +621,10 @@ pub(super) fn bytes_set_at_helper() -> WirFunc {
     let len_i64 = || E::Convert {
         from: Kind::I32,
         to: Kind::I64,
-        arg: Box::new(E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 }),
+        arg: Box::new(E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                }),
     };
     let idx_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("idx")) };
     let val_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) };
@@ -648,7 +663,10 @@ pub(super) fn bytes_set_at_helper() -> WirFunc {
             },
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal {
                 local: "new".into(),
@@ -690,7 +708,10 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
     let len_i64 = || E::Convert {
         from: Kind::I32,
         to: Kind::I64,
-        arg: Box::new(E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 }),
+        arg: Box::new(E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                }),
     };
     let i_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
     let j_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) };
@@ -731,7 +752,10 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
             },
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+                    kind: Kind::I32,
+                },
             },
             N::SetLocal {
                 local: "new".into(),

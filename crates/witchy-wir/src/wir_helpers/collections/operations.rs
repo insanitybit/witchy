@@ -345,7 +345,10 @@ pub(crate) fn list_push_cap_helper() -> WirFunc {
             reowns_bump,
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                },
             },
             N::If {
                 cond: b32(BinOp::Gt, getl("cap"), getl("len")),
@@ -413,7 +416,10 @@ pub(in crate::wir_helpers) fn list_set_cap_helper() -> WirFunc {
             WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "len".into(), value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "len".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                } },
             N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
             N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
             N::If {
@@ -494,7 +500,10 @@ pub(crate) fn list_update_cap_helper() -> WirFunc {
             WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "len".into(), value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "len".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                } },
             N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
             N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
             N::If {
@@ -538,7 +547,10 @@ pub(crate) fn list_push_helper() -> WirFunc {
         body: vec![
             N::SetLocal {
                 local: "len".into(),
-                value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                },
             },
             // (RFC-0016) allocate the new buffer through `$rc_alloc` (header at new-4,
             // bumps `$heap`) so a confined list overwritten by a fresh push is freeable.
@@ -693,7 +705,10 @@ pub(in crate::wir_helpers) fn list_drop_helper() -> WirFunc {
             WirLocal { name: "new".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 }, getl("k")) },
+            N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                }, getl("k")) },
             N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] } },
             N::SafeStore {
                 place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("newlen")),

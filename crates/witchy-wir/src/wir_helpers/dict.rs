@@ -175,7 +175,10 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             N::SetLocal { local: "idx".into(), value: i32c(0) },
             N::SetLocal {
                 local: "count".into(),
-                value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 },
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                },
             },
             N::If {
                 cond: E::GetGlobal("__witchy_extract_active".into()),
@@ -485,7 +488,10 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
         body: vec![
-            setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            setl("count", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                }),
             setl("found", E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] }),
             setl("bytes", b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16)))),
             // (RFC-0016) allocate the copy through `$rc_alloc` (header + reuse); the hidden
@@ -509,7 +515,10 @@ pub(crate) fn dict_insert_helper() -> WirFunc {
                     b(BinOp::Ne, getl("idx"), i32c(0)),
                     b(BinOp::Le, getl("mode"), i32c(2))),
                 then_: vec![
-                    setl("slots", E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }),
+                    setl("slots", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                }),
                     N::If {
                     cond: b(BinOp::Ge, getl("found"), i32c(0)),
                         then_: vec![
@@ -596,7 +605,10 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
             .chain(std::iter::once(WirLocal { name: "old".into(), ty: WirTy::Int }))
             .collect(),
         body: vec![
-            N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "count".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                } },
             N::SetGlobal {
                 global: "__witchy_extract_active".into(),
                 value: b(
@@ -654,7 +666,10 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
                             N::If {
                                 cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
-                                then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }, getl("found"), getl("v")] })],
+                                then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                }, getl("found"), getl("v")] })],
                                 els: vec![],
                                 result: None,
                             },
@@ -683,7 +698,10 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                                         func: "dict_index_put".into(),
                                         args: vec![
                                             getl("idx"),
-                                            E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 },
+                                            E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                },
                                             getl("count"),
                                             getl("k"),
                                             getl("v"),
@@ -860,7 +878,10 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
         N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
         N::If {
             cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
-            then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }, getl("found"), getl("v")] })],
+            then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                }, getl("found"), getl("v")] })],
             els: vec![],
             result: None,
         },
@@ -905,7 +926,10 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
                 func: "dict_index_put".into(),
                 args: vec![
                     getl("idx"),
-                    E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 },
+                    E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                },
                     getl("count"),
                     getl("k"),
                     getl("v"),
@@ -980,7 +1004,10 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
             .collect(),
         body: vec![
             reowns_bump,
-            N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "count".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                } },
             N::SetLocal {
                 local: "found".into(),
                 value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] },
@@ -1063,7 +1090,10 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
                     setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
                     N::If {
                         cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
-                        then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }, getl("found"), getl("new")] })],
+                        then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                }, getl("found"), getl("new")] })],
                         els: vec![],
                         result: None,
                     },
@@ -1148,7 +1178,10 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
                     setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
                     N::If {
                         cond: b(BinOp::Ne, getl("idx"), i32c(0)),
-                        then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 }, getl("found"), getl("new")] })],
+                        then_: vec![N::Do(E::Call { func: "dict_index_update_value".into(), args: vec![getl("idx"), E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                    kind: Kind::I32,
+                }, getl("found"), getl("new")] })],
                         els: vec![],
                         result: None,
                     },
@@ -1341,7 +1374,10 @@ pub(crate) fn dict_remove_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: ["count", "i", "new", "n"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
-            setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            setl("count", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                }),
             // (RFC-0016) allocate via rc_alloc (header + reuse); the hidden index word
             // sits at new-4 inside the rc region (new = rc_res + 4).
             setl("new", b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4))),
@@ -1396,7 +1432,10 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
             .chain(std::iter::once(WirLocal { name: "old".into(), ty: WirTy::Int }))
             .collect(),
         body: vec![
-            N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "count".into(), value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                } },
             N::SetGlobal {
                 global: "__witchy_extract_active".into(),
                 value: b(

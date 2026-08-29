@@ -30,7 +30,10 @@ pub(super) fn encoding_helper() -> WirFunc {
             // size header stays the worst case; the tail slack is unused).
             N::SetLocal {
                 local: "res".into(),
-                value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, b(BinOp::Mul, E::Load { ptr: Box::new(getl("in")), kind: Kind::I32, offset: 0 }, i32c(2)), i32c(20))] },
+                value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, b(BinOp::Mul, E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("in")),
+                    kind: Kind::I32,
+                }, i32c(2)), i32c(20))] },
             },
             N::SetLocal {
                 local: "n".into(),

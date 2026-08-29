@@ -284,12 +284,12 @@ fn current_census() -> BTreeMap<String, FileCensus> {
     result
 }
 
-/// 535 migration sites remaining, plus the 6 sealed-boundary constructors in
+/// 498 migration sites remaining, plus the 6 sealed-boundary constructors in
 /// `wir_encode.rs` (see the baseline entry below). RFC-0162 row 8 drives the
 /// migration sites to zero; the 6 are the permitted floor, not debt.
 ///
 /// This ceiling ratchets DOWN as the migration proceeds. It started at 584+6.
-const REVIEWED_TOTAL: usize = 541;
+const REVIEWED_TOTAL: usize = 504;
 
 const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
@@ -366,14 +366,9 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
             (RawKind::HeapGlobalWrite, 1),
         ],
     ),
-    // SEALED BOUNDARY -- not migration debt.
-    //
-    // `erase_node`/`erase_expr` in the validated encoder turn a validated
-    // SafeWIR operation into the plain wasm operation it always denoted. That
-    // is the one place raw memory nodes are SUPPOSED to be minted, and it is
-    // reachable only through `ValidatedWirModule`.
-    //
-    // Exactly one constructor per kind, so this entry still blocks growth.
+    // SEALED BOUNDARY -- not migration debt. `erase_node`/`erase_expr`
+    // mint the plain wasm operation a validated SafeWIR operation always
+    // denoted; one constructor per kind, so this still blocks growth.
     (
         "crates/witchy-wir/src/wir_encode.rs",
         &[
@@ -388,7 +383,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/bytes.rs",
         &[
-            (RawKind::Load, 13),
+            (RawKind::Load, 5),
             (RawKind::Load8U, 3),
             (RawKind::Store, 7),
             (RawKind::Store8, 6),
@@ -398,7 +393,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/collections.rs",
         &[
-            (RawKind::Load, 4),
+            (RawKind::Load, 3),
             (RawKind::Store, 2),
             (RawKind::MemoryCopy, 1),
         ],
@@ -406,7 +401,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/collections/operations.rs",
         &[
-            (RawKind::Load, 10),
+            (RawKind::Load, 5),
             (RawKind::Store, 14),
             (RawKind::MemoryCopy, 7),
             (RawKind::MemoryFill, 1),
@@ -415,7 +410,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/dict.rs",
         &[
-            (RawKind::Load, 34),
+            (RawKind::Load, 21),
             (RawKind::Load8U, 1),
             (RawKind::Store, 51),
             (RawKind::Store8, 2),
@@ -426,21 +421,15 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/dict/lookup.rs",
         &[
-            (RawKind::Load, 21),
+            (RawKind::Load, 20),
             (RawKind::Load8U, 9),
         ],
     ),
     (
         "crates/witchy-wir/src/wir_helpers/dict/read.rs",
         &[
-            (RawKind::Load, 18),
+            (RawKind::Load, 12),
             (RawKind::Store, 7),
-        ],
-    ),
-    (
-        "crates/witchy-wir/src/wir_helpers/encoding.rs",
-        &[
-            (RawKind::Load, 1),
         ],
     ),
     (
@@ -467,7 +456,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/numeric.rs",
         &[
-            (RawKind::Load, 3),
+            (RawKind::Load, 2),
             (RawKind::Load8U, 1),
             (RawKind::Store8, 10),
             (RawKind::MemoryCopy, 2),
@@ -476,7 +465,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/strings.rs",
         &[
-            (RawKind::Load, 17),
+            (RawKind::Load, 16),
             (RawKind::Load8U, 13),
             (RawKind::Store, 1),
         ],

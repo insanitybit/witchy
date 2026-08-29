@@ -1030,7 +1030,10 @@ pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
             WirLocal { name: "hi".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            setl("slen", E::Load { ptr: Box::new(getl("s")), kind: Kind::I32, offset: 0 }),
+            setl("slen", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("s")),
+                    kind: Kind::I32,
+                }),
             // lo = clamp(start, 0, slen)
             setl("lo", nar(getl("start"))),
             N::If {
