@@ -27,6 +27,12 @@ pub(crate) struct HelperLayouts {
     /// `[u32 length][bytes...]` -- the shape `rc_alloc` hands back for strings,
     /// byte buffers, and every other payload the helpers treat as bytes.
     byte_buffer: LayoutId,
+    /// `[u32 length][8-byte slots...]` -- the shape a List has. Physically the
+    /// same descriptor family as `byte_buffer`, differing only in stride, which
+    /// the descriptor supplies: a runtime buffer over `Int` is
+    /// `Dynamic { base: 4, stride: 8 }`. Sharing the family is what lets one set
+    /// of accessors serve both without a per-caller branch.
+    slot_buffer: LayoutId,
 }
 
 fn helper_layouts() -> &'static HelperLayouts {
@@ -39,8 +45,158 @@ fn helper_layouts() -> &'static HelperLayouts {
         let byte_buffer = interner
             .intern_runtime_buffer(byte)
             .expect("a runtime buffer over an exact scalar is always internable");
-        HelperLayouts { interner, byte_buffer }
+        let slot = interner
+            .intern_scalar(ScalarKind::Int)
+            .expect("the Int scalar is a primitive layout");
+        let slot_buffer = interner
+            .intern_runtime_buffer(slot)
+            .expect("a runtime buffer over an exact scalar is always internable");
+        HelperLayouts { interner, byte_buffer, slot_buffer }
     })
+}
+
+/// A checked place for the length word of a helper-allocated SLOT list.
+///
+/// `count` is the buffer's element CAPACITY, not the length being written. The
+/// stored value is data and may be any expression; the count is a claim operand
+/// and must be a leaf, so this is migratable exactly where the helper already
+/// holds a capacity local -- which the `*_cap` family does, by construction.
+pub(crate) fn slot_buffer_length_place(root: WirExpr, count: WirExpr) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.slot_buffer,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root.clone(),
+        AccessMode::Write,
+    )
+    .expect("the helper slot-buffer layout is claimable")
+    .runtime_buffer_length(SafeEncodedAddress::new(root, 0))
+    .expect("the length word is at the descriptor's own header offset")
+}
+
+/// A checked place for one slot of a helper-allocated slot list.
+///
+/// The stride is eight and comes from the descriptor, never from here.
+pub(crate) fn slot_buffer_element_place(
+    root: WirExpr,
+    index: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let payload = payload_offset(layouts.slot_buffer);
+    let stride = element_stride(layouts.slot_buffer);
+    // A scalar access carries a wasm immediate, so the payload offset rides
+    // THERE and costs nothing. Folding it into the base instead would emit an
+    // extra `i32.const`/`i32.add` per site -- measured as +2 instructions each,
+    // which the migration may not spend. Only a bulk copy, which has no
+    // immediate operand, has to fold (see the slice accessor below).
+    let (encoded, immediate) = scaled_index_address(root.clone(), &index, payload, stride);
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.slot_buffer,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper slot-buffer layout is claimable")
+    .element(index, SafeEncodedAddress::new(encoded, immediate))
+    .expect("a descriptor-strided slot index reconciles against the descriptor")
+}
+
+/// A checked place for a contiguous run of slots, for bulk copies.
+///
+/// `start` and `len` are in ELEMENTS; the descriptor's stride turns them into
+/// bytes. As with the byte-buffer slice, the payload offset rides in the base
+/// with a zero immediate so a `memory.copy` -- which has no immediate operand --
+/// can carry it.
+pub(crate) fn slot_buffer_payload_slice_place(
+    root: WirExpr,
+    start: WirExpr,
+    len: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let payload = payload_offset(layouts.slot_buffer);
+    let stride = element_stride(layouts.slot_buffer);
+    let encoded = strided_element_address(root.clone(), &start, payload, stride);
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.slot_buffer,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper slot-buffer layout is claimable")
+    .slice(start, len, SafeEncodedAddress::new(encoded, 0))
+    .expect("a contiguous slot slice reconciles against the descriptor")
+}
+
+/// The encoded address of element `index`, with the payload offset left in the
+/// wasm IMMEDIATE so a scalar access spends no instruction on it.
+///
+/// A constant index folds into that immediate too, because a constant
+/// projection may not carry an index term -- `validate_fixed_address` refuses a
+/// scaled term, correctly, since such an address denotes a projection the claim
+/// did not make.
+fn scaled_index_address(
+    root: WirExpr,
+    index: &WirExpr,
+    payload: i32,
+    stride: i32,
+) -> (WirExpr, u32) {
+    if let WirExpr::ConstI32(n) = index {
+        let immediate = u32::try_from(payload + n * stride)
+            .expect("a constant slot offset is a nonnegative address");
+        return (root, immediate);
+    }
+    let scaled = WirExpr::Binary {
+        op: crate::wir::BinOp::Mul,
+        kind: crate::wir::Kind::I32,
+        lhs: Box::new(index.clone()),
+        rhs: Box::new(WirExpr::ConstI32(stride)),
+    };
+    let immediate = u32::try_from(payload).expect("a payload offset is nonnegative");
+    (add32(root, scaled), immediate)
+}
+
+/// The encoded address of element `index` in a strided runtime buffer.
+///
+/// A CONSTANT index is folded into the payload constant rather than emitted as
+/// `index * stride`. Both spell the same address, but a constant projection may
+/// not carry an index term -- `validate_fixed_address` refuses a scaled term,
+/// correctly, because that address would denote a projection the claim did not
+/// make. Folding keeps the two spellings in agreement with the grammar.
+fn strided_element_address(root: WirExpr, index: &WirExpr, payload: i32, stride: i32) -> WirExpr {
+    if let WirExpr::ConstI32(n) = index {
+        let offset = payload + n * stride;
+        return add32(root, WirExpr::ConstI32(offset));
+    }
+    add32(
+        add32(root, WirExpr::ConstI32(payload)),
+        WirExpr::Binary {
+            op: crate::wir::BinOp::Mul,
+            kind: crate::wir::Kind::I32,
+            lhs: Box::new(index.clone()),
+            rhs: Box::new(WirExpr::ConstI32(stride)),
+        },
+    )
+}
+
+/// The descriptor's element stride, asked rather than assumed.
+fn element_stride(layout: LayoutId) -> i32 {
+    let descriptor = helper_layouts()
+        .interner
+        .get(layout)
+        .expect("the helper layout is interned in this module");
+    match descriptor.size() {
+        LayoutSize::Dynamic { stride, .. } => {
+            i32::try_from(stride).expect("a runtime buffer stride is a small width")
+        }
+        LayoutSize::Fixed(_) => unreachable!("a runtime buffer descriptor is dynamically sized"),
+    }
 }
 
 /// A checked place for one payload byte of a helper-allocated byte buffer.

@@ -273,17 +273,17 @@ pub(crate) fn list_push_cap_helper() -> WirFunc {
             els: vec![],
             result: None,
         },
-        N::Store {
-            ptr: b32(BinOp::Add, getl("list"), b32(BinOp::Mul, getl("len"), i32c(8))),
+        N::SafeStore {
+            place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                getl("list"), getl("len"), getl("cap"), crate::safewir::AccessMode::Write,
+            ),
             value: getl("x"),
             kind: Kind::I64,
-            offset: 4,
         },
-        N::Store {
-            ptr: getl("list"),
+        N::SafeStore {
+            place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("list"), getl("cap")),
             value: b32(BinOp::Add, getl("len"), i32c(1)),
             kind: Kind::I32,
-            offset: 0,
         },
         N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
         N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
@@ -306,22 +306,27 @@ pub(crate) fn list_push_cap_helper() -> WirFunc {
             local: "new".into(),
             value: E::Call { func: "rc_alloc".into(), args: vec![b32(BinOp::Add, i32c(4), b32(BinOp::Mul, getl("newcap"), i32c(8)))] },
         },
-        N::Store {
-            ptr: getl("new"),
+        N::SafeStore {
+            place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("newcap")),
             value: b32(BinOp::Add, getl("len"), i32c(1)),
             kind: Kind::I32,
-            offset: 0,
         },
-        N::MemoryCopy {
-            dest: b32(BinOp::Add, getl("new"), i32c(4)),
-            src: b32(BinOp::Add, getl("list"), i32c(4)),
+        N::SafeMemoryCopy {
+            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                getl("new"), i32c(0), getl("len"), getl("newcap"), crate::safewir::AccessMode::Write,
+            ),
+            source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                getl("list"), i32c(0), getl("len"), getl("cap"), crate::safewir::AccessMode::Read,
+            ),
             len: b32(BinOp::Mul, getl("len"), i32c(8)),
         },
-        N::Store {
-            ptr: b32(BinOp::Add, getl("new"), b32(BinOp::Mul, getl("len"), i32c(8))),
+        N::SafeStore {
+            place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                getl("new"), getl("len"), getl("newcap"), crate::safewir::AccessMode::Write,
+            ),
             value: getl("x"),
             kind: Kind::I64,
-            offset: 4,
         },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
