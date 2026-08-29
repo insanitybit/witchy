@@ -467,10 +467,36 @@ pub(crate) fn starts_with_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    // A length read claims only the descriptor's header region: reading the word
+    // is what ESTABLISHES the count, so a counted extent would be circular.
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
+    // A SIMD lane compare reads a sixteen-byte SLICE of each payload. `slen` and
+    // `plen` bound their own object -- claiming `plen` for `s` would be a claim
+    // about the wrong object, which is why `s`'s length is bound below rather
+    // than borrowed. The loop guard is `i + 16 > plen` and the prologue has
+    // established `plen <= slen`, so a sixteen-byte claim at `i` is honest for
+    // both.
+    let vec_lane = |root: &str, count: &str| {
+        crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl(root),
+            getl("i"),
+            i32c(16),
+            getl(count),
+            crate::safewir::AccessMode::Read,
+        )
+    };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
+    let s_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"),
+            getl("i"),
+            getl("slen"),
+            crate::safewir::AccessMode::Read,
+        ),
+    };
     let p_byte = E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
             getl("p"),
@@ -489,8 +515,8 @@ pub(crate) fn starts_with_helper() -> WirFunc {
                     target: "vdone".into(),
                     cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("plen"))),
                 },
-                setl("vs", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
-                setl("vp", load_v128(b(BinOp::Add, b(BinOp::Add, getl("p"), i32c(4)), getl("i")))),
+                setl("vs", E::SafeLoad { place: vec_lane("s", "slen"), kind: Kind::V128 }),
+                setl("vp", E::SafeLoad { place: vec_lane("p", "plen"), kind: Kind::V128 }),
                 setl(
                     "mask",
                     E::Vector {
@@ -539,6 +565,7 @@ pub(crate) fn starts_with_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "plen".into(), ty: WirTy::Bool },
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
             WirLocal { name: "i".into(), ty: WirTy::Bool },
             WirLocal { name: "mask".into(), ty: WirTy::Bool },
             WirLocal { name: "vs".into(), ty: WirTy::V128 },
@@ -546,8 +573,12 @@ pub(crate) fn starts_with_helper() -> WirFunc {
         ],
         body: vec![
             setl("plen", load(getl("p"))),
+            // Bound rather than read inline: a claim operand must be a leaf the
+            // validator can bind to a reaching definition, and every `s` access
+            // below needs `s`'s own count.
+            setl("slen", load(getl("s"))),
             N::If {
-                cond: b(BinOp::Gt, getl("plen"), load(getl("s"))),
+                cond: b(BinOp::Gt, getl("plen"), getl("slen")),
                 then_: vec![N::Return(Some(i32c(0)))],
                 els: vec![],
                 result: None,
@@ -569,7 +600,15 @@ pub(crate) fn ends_with_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    // Only the length reads migrate here. Every `s` access uses the index
+    // `off + i`, a computed expression, and a claim's index must be a leaf; the
+    // `p` side is already claimed. Binding `off + i` per iteration would put two
+    // instructions inside a hot loop to no benefit, so those sites stay raw and
+    // are reported rather than worked around.
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U {

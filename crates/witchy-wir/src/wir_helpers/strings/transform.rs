@@ -698,7 +698,25 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
         place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
         kind: Kind::I32,
     };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    // A SIMD lane access is a sixteen-byte SLICE of the payload, not a scalar at
+    // an index, so it claims the range it actually touches. The slice accessor
+    // folds the payload offset into the base and leaves a zero immediate, which
+    // is exactly the address `v128.load`/`v128.store` want -- so the emitted
+    // address is the same one this helper spelled by hand.
+    //
+    // `len` bounds both objects: `s` is the source string and `res` was
+    // allocated as `4 + len`. The vector loops are guarded by
+    // `i + 16 > len -> exit`, so a sixteen-byte claim at `i` is honest.
+    let vec_bytes = || i32c(16);
+    let vec_lane = |root: &str, index: E, access| {
+        crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl(root),
+            index,
+            vec_bytes(),
+            getl("len"),
+            access,
+        )
+    };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
 
     // Range checks for single byte
@@ -715,7 +733,7 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
                     target: "cvdone".into(),
                     cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
                 },
-                setl("v", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                setl("v", E::SafeLoad { place: vec_lane("s", getl("i"), crate::safewir::AccessMode::Read), kind: Kind::V128 }),
                 setl(
                     "target_match",
                     E::Vector {
@@ -759,7 +777,7 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
             label: "ctl".into(),
             body: vec![
                 N::Br { target: "ctdone".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
-                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
+                setl("b", E::SafeLoad8U { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("s"), getl("i"), getl("len"), crate::safewir::AccessMode::Read) }),
                 N::If {
                     cond: in_range(65, 90),
                     then_: vec![
@@ -803,7 +821,7 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
                     target: "vtdone".into(),
                     cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
                 },
-                setl("v", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                setl("v", E::SafeLoad { place: vec_lane("s", getl("i"), crate::safewir::AccessMode::Read), kind: Kind::V128 }),
                 setl(
                     "target_match",
                     E::Vector {
@@ -849,11 +867,10 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
                         args: vec![getl("v_mod"), getl("v"), getl("target_match")],
                     },
                 ),
-                N::Store {
-                    ptr: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("i")),
+                N::SafeStore {
+                    place: vec_lane("res", getl("i"), crate::safewir::AccessMode::Write),
                     value: getl("v_trans"),
                     kind: Kind::V128,
-                    offset: 0,
                 },
                 setl("i", b(BinOp::Add, getl("i"), i32c(16))),
                 N::Br { target: "vtl".into(), cond: None },
@@ -869,7 +886,7 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
-                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
+                setl("b", E::SafeLoad8U { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("s"), getl("i"), getl("len"), crate::safewir::AccessMode::Read) }),
                 N::If {
                     cond: getl("up"),
                     then_: vec![N::If {
@@ -886,7 +903,7 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
                     }],
                     result: None,
                 },
-                N::Store8 { ptr: b(BinOp::Add, getl("res"), getl("i")), value: getl("b"), offset: 4 },
+                N::SafeStore8 { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), getl("i"), getl("len"), crate::safewir::AccessMode::Write), value: getl("b") },
                 setl("i", b(BinOp::Add, getl("i"), i32c(1))),
                 N::Br { target: "l".into(), cond: None },
             ],
