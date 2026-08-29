@@ -967,13 +967,16 @@ pub fn try_encode_with_gc_source_map(
     // this the 584 sites would have to move in one atomic change, because
     // validation forbids raw memory and this encoder forbids SafeWIR.
     //
-    // Nothing is cloned until a module actually carries a SafeWIR operation,
-    // so this costs nothing while the migration has not started.
     // Erase unconditionally rather than sniffing for SafeWIR first: a
     // hand-rolled detector across every node and expression variant would have
     // to be exhaustive to be safe, and a missed variant is a compile failure
-    // for the program that uses it. Erasure already walks the whole body, so
-    // the only extra cost is the clone this `&WirModule` signature forces.
+    // for the program that uses it.
+    //
+    // The clone is therefore unconditional, on every compile. It is also the
+    // SECOND full clone on this path -- `encode_with_gc_source_map` already
+    // deep-clones when `prune_unused_locals` is set, which it is here -- plus a
+    // complete rebuild of the IR. Measured against a debug compile it is noise,
+    // but it is a real cost, not a free one, and it goes away with this mode.
     let mut owned = module.clone();
     expand_and_erase_safewir(&mut owned, ErasureMode::TransitionalBridge)?;
     preflight(&owned)?;

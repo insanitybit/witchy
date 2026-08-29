@@ -579,10 +579,52 @@ mod tests {
             encoded.wasm, raw_encoded.wasm,
             "migrating a site must not change the emitted bytes",
         );
+
+        // Pin byte identity against the PRE-BRIDGE implementation, which still
+        // exists as the test-only `try_encode_with_gc`. Comparing the bridge
+        // only against itself would not catch erasure drifting away from what
+        // the raw encoder emits.
+        let pre_bridge = crate::wir_encode::try_encode_with_gc(&all_raw, &[], &[])
+            .expect("the all-raw module encodes on the pre-bridge path");
+        assert_eq!(
+            raw_encoded.wasm, pre_bridge,
+            "the bridge must be byte-identity for an all-raw module",
+        );
     }
 
+    // `encoded_offset` is the field most likely to be dropped or normalized by
+    // a future refactor of erasure, and every other bridge fixture uses zero.
     #[test]
-    fn ordinary_encoder_rejects_semantic_memory_without_authority() {
+    fn migration_bridge_preserves_a_nonzero_encoded_offset() {
+        let mut place = place(AccessMode::Read, 0);
+        place.encoded_offset = 12;
+        let semantic = module(vec![WirNode::Drop(WirExpr::SafeLoad {
+            place,
+            kind: Kind::I32,
+        })]);
+        let raw = module(vec![WirNode::Drop(WirExpr::Load {
+            ptr: Box::new(WirExpr::GetLocal("object".into())),
+            kind: Kind::I32,
+            offset: 12,
+        })]);
+        let erased = crate::wir_encode::try_encode_with_gc_source_map(&semantic, &[], &[])
+            .expect("a nonzero offset erases");
+        let expected = crate::wir_encode::try_encode_with_gc_source_map(&raw, &[], &[])
+            .expect("the raw equivalent encodes");
+        assert_eq!(
+            erased.wasm, expected.wasm,
+            "erasure must carry the load immediate offset through unchanged",
+        );
+    }
+
+    // NOTE: this covers `try_encode_with_gc`, which is `#[cfg(any(test,
+    // raw-encoder-test-api))]` and unreachable from a normal build. It does NOT
+    // cover the production entrypoint `try_encode_with_gc_source_map`, which
+    // during the RFC-0162 migration window deliberately ERASES SafeWIR instead
+    // of rejecting it. No test pins a rejection on the production path, because
+    // there is currently no rejection there to pin.
+    #[test]
+    fn test_only_raw_encoder_rejects_semantic_memory_without_authority() {
         let semantic = module(vec![WirNode::Drop(WirExpr::SafeLoad {
             place: place(AccessMode::Read, 0),
             kind: Kind::I32,

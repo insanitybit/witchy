@@ -249,7 +249,13 @@ queue item has a terminal `merged` event.
   surface, adds opaque bump/RC allocation, retain, release, destructive reuse,
   and reclaim operations. They cannot carry a `WirFunc`, raw body, or ordinary
   implementation sequence; all optimizer and lowerer visitors traverse their
-  operands and claims; ordinary encoding rejects them without authority. Five
+  operands and claims. Ordinary encoding rejected them without authority when
+  this was written; that is no longer true of the PRODUCTION entrypoint. The
+  RFC-0162 migration bridge (`ErasureMode::TransitionalBridge`) erases SafeWIR
+  on `try_encode_with_gc_source_map` so a partially migrated module still
+  encodes, and the rejection now survives only on the test-only
+  `try_encode_with_gc`. Row 15 is not satisfied until that bridge is sealed.
+  Five
   focused kernel tests and the earlier 86-test WIR library shard pass. Fable's
   missed-visitor rejection and Opus's two visitor-test findings were fixed;
   final Opus verdict is ACCEPT. After resolving a queue conflict on current
