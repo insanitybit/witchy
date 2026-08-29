@@ -585,3 +585,168 @@ fn payload_offset(layout: LayoutId) -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+mod final_validation {
+    use super::helper_layouts;
+    use crate::layout::{LayoutBundle, LayoutId};
+    use crate::safewir::{
+        CallableMemoryContract, CallableMemoryResult, ContractExtent, ContractSizeExpr,
+        ParameterMemoryContract, ParameterMemoryEffect, ParameterMemoryEffects,
+        ParameterMemoryEntry,
+    };
+    use crate::safewir_adapter::{validate_final_wir_report, FinalWirValidationInputs};
+    use crate::safewir_validate::ValidationBudget;
+    use std::collections::BTreeMap;
+
+    /// How far a fully migrated helper is from the VALIDATED encoder.
+    ///
+    /// This is the first end-to-end measurement of that distance, and it exists
+    /// because the raw-constructor census does not measure it. The production
+    /// encoder runs `ErasureMode::TransitionalBridge`
+    /// (`witchy-lower/src/codegen/assembly.rs`), which erases claims WITHOUT
+    /// checking them, so a helper can be fully migrated and still compile
+    /// unchecked. Migration is the precondition; passing this is the goal.
+    ///
+    /// The two subjects are chosen to separate the gates. `ascii_case` is
+    /// completely migrated -- header read, both SIMD lane accesses, and the
+    /// scalar tail -- and returns a String. `dict_reindex` is migrated on its
+    /// dense side and returns nothing. The difference matters: the FIRST refusal
+    /// is not about memory at all.
+    ///
+    /// Each expectation pins the message the validator gives TODAY, so that
+    /// closing one of these gates fails this test and says which. A test that
+    /// merely asserted "not yet validated" would keep passing while the reason
+    /// silently changed.
+    ///
+    /// What the two measurements establish: both refusals name the DEF-USE
+    /// ADAPTER, once for a returned value and once for a parameter extent that is
+    /// a function of another parameter. Neither is about the symbolic size/range
+    /// domain, and neither is about a missing projection or accessor. So the
+    /// single component between this migration and validated compilation is
+    /// def-use binding -- which is what the "a count must be a leaf" rule has
+    /// been preparing operands for all along.
+    #[test]
+    fn migrated_helpers_report_their_distance_from_validated_encoding() {
+        // A value-returning callable is refused before any claim is examined, so
+        // this gate is in front of every helper that returns anything -- which is
+        // nearly all of them.
+        assert_distance(
+            crate::wir_helpers::strings::ascii_case_helper(),
+            vec![scalar_parameter(), scalar_parameter()],
+            "value-returning callables require the deferred return-value def-use adapter",
+        );
+        // With that gate cleared by a void signature, the next refusal is the one
+        // the leaf rules were built for: binding a loop-carried operand to an
+        // exact reaching definition.
+        assert_distance(
+            crate::wir_helpers::dict_reindex_helper(),
+            vec![
+                counted_parameter(helper_layouts().dict_body, 1, 16, true),
+                scalar_parameter(),
+                scalar_parameter(),
+            ],
+            "symbolic counted parameter extents require the deferred def-use adapter",
+        );
+    }
+
+    /// A scalar parameter that carries no memory authority.
+    fn scalar_parameter() -> ParameterMemoryContract {
+        ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            effects: ParameterMemoryEffects::none(),
+        }
+    }
+
+    /// A memory parameter whose extent is a function of another parameter.
+    ///
+    /// This is what a helper's real contract looks like: `dict_reindex(d, cap, ..)`
+    /// borrows a dense array of `4 + cap * 16` bytes, so the extent names
+    /// parameter one rather than a constant. `ContractSizeExpr::Parameter`
+    /// exists precisely for that, which is a good sign the contract vocabulary
+    /// anticipated runtime-sized helper arguments.
+    fn counted_parameter(
+        layout: LayoutId,
+        count: usize,
+        stride: u64,
+        write: bool,
+    ) -> ParameterMemoryContract {
+        ParameterMemoryContract {
+            entry: if write {
+                ParameterMemoryEntry::BorrowedWrite
+            } else {
+                ParameterMemoryEntry::BorrowedRead
+            },
+            layout: Some(layout),
+            extent: Some(ContractExtent::Counted {
+                header: ContractSizeExpr::Constant(4),
+                count: ContractSizeExpr::Parameter(count),
+                stride: ContractSizeExpr::Constant(stride),
+            }),
+            effects: if write {
+                ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
+                    .with(ParameterMemoryEffect::Write)
+            } else {
+                ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
+            },
+        }
+    }
+
+    /// Run one helper through report-mode final validation and pin the outcome.
+    fn assert_distance(
+        function: crate::wir::WirFunc,
+        parameters: Vec<ParameterMemoryContract>,
+        expected: &str,
+    ) {
+        let layouts = helper_layouts();
+        let bundle = LayoutBundle::from_interner(
+            &layouts.interner,
+            [layouts.byte_buffer, layouts.dict_body],
+        )
+        .expect("the helper layouts bundle");
+        let name = function.name.clone();
+        assert_eq!(
+            parameters.len(),
+            function.params.len(),
+            "`{name}` declares {} parameters; the contract lists {}",
+            function.params.len(),
+            parameters.len(),
+        );
+        let module = crate::wir::WirModule {
+            imports: Vec::new(),
+            funcs: vec![function],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let inputs = FinalWirValidationInputs {
+            layouts: bundle,
+            functions: BTreeMap::from([(
+                name.clone(),
+                CallableMemoryContract { parameters, result: CallableMemoryResult::NoMemory },
+            )]),
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+        };
+        match validate_final_wir_report(&module, &[], &[], inputs, ValidationBudget::default()) {
+            Ok(report) => panic!(
+                "`{name}` now passes final validation ({} operations). That is the \
+                 milestone: wire the production encoder to the validated path.",
+                report.metrics().operations,
+            ),
+            Err(error) => {
+                let reported = error.to_string();
+                assert!(
+                    reported.contains(expected),
+                    "`{name}` is expected to stop at `{expected}`; it now reports \
+                     something else, which is the new roadmap and belongs in this \
+                     expectation: {reported}",
+                );
+            }
+        }
+    }
+}
