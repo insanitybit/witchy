@@ -32,35 +32,49 @@ pub(in crate::wir_helpers) fn concat_helper() -> WirFunc {
             WirLocal { name: "alen".into(), ty: WirTy::Bool },
             WirLocal { name: "blen".into(), ty: WirTy::Bool },
             WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "total".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal { local: "alen".into(), value: load_i32(getl("a")) },
             N::SetLocal { local: "blen".into(), value: load_i32(getl("b")) },
             // (RFC-0016) allocate through `$rc_alloc` (header at res-4 + free-list reuse).
+            // Bound rather than spelled twice: this is both the allocation size and
+            // the capacity every claim below is measured against, and a claim
+            // operand must be a leaf.
+            N::SetLocal { local: "total".into(), value: add(getl("alen"), getl("blen")) },
             N::SetLocal {
                 local: "res".into(),
                 value: E::Call {
                     func: "rc_alloc".into(),
-                    args: vec![add(i32c(4), add(getl("alen"), getl("blen")))],
+                    args: vec![add(i32c(4), getl("total"))],
                 },
             },
-            // header: total length at res+0
-            N::Store {
-                ptr: getl("res"),
-                value: add(getl("alen"), getl("blen")),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("total")),
+                value: getl("total"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            // copy a's bytes to res+4
-            N::MemoryCopy {
-                dest: add(getl("res"), i32c(4)),
-                src: add(getl("a"), i32c(4)),
+            // Each operand is claimed against the length that bounds ITS OWN
+            // object: the destination against `total`, and each source against its
+            // own length. The second copy starts at `alen`, which is a leaf.
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("res"), i32c(0), getl("alen"), getl("total"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("a"), i32c(0), getl("alen"), getl("alen"), crate::safewir::AccessMode::Read,
+                ),
                 len: getl("alen"),
             },
-            // copy b's bytes to res+4+alen
-            N::MemoryCopy {
-                dest: add(add(getl("res"), i32c(4)), getl("alen")),
-                src: add(getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("res"), getl("alen"), getl("blen"), getl("total"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("b"), i32c(0), getl("blen"), getl("blen"), crate::safewir::AccessMode::Read,
+                ),
                 len: getl("blen"),
             },
             N::Push(getl("res")),
