@@ -28,9 +28,10 @@ pub(crate) fn str_eq_helper() -> WirFunc {
     };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
-    let byte_at = |base: &str| E::Load8U {
-        ptr: Box::new(ptr_at(base)),
-        offset: 0,
+    let byte_at = |base: &str| E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl(base), getl("i"), getl("len"), crate::safewir::AccessMode::Read,
+        ),
     };
     WirFunc {
         name: "str_eq".into(),
@@ -926,7 +927,11 @@ pub(in crate::wir_helpers) fn str_find_byte_helper() -> WirFunc {
     };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let ptr_at = || bin(BinOp::Add, bin(BinOp::Add, getl("s"), i32c(4)), getl("i"));
-    let byte_at = || E::Load8U { ptr: Box::new(ptr_at()), offset: 0 };
+    let byte_at = || E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"), getl("i"), getl("len"), crate::safewir::AccessMode::Read,
+        ),
+    };
 
     WirFunc {
         name: "str_find_byte".into(),
