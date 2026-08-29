@@ -75,6 +75,24 @@ pub(crate) fn slot_buffer_length_place(root: WirExpr, count: WirExpr) -> Box<Saf
     .expect("the length word is at the descriptor's own header offset")
 }
 
+/// A checked place for READING the length word of a slot list.
+///
+/// As with the byte-buffer read, the read is what establishes the count, so
+/// there is no count to claim yet and this claims only the descriptor's header.
+pub(crate) fn slot_buffer_length_read_place(root: WirExpr) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.slot_buffer,
+        SafeExactExtent::header_only(),
+        root.clone(),
+        AccessMode::Read,
+    )
+    .expect("the helper slot-buffer header is claimable")
+    .runtime_buffer_length(SafeEncodedAddress::new(root, 0))
+    .expect("the length word is at the descriptor's own header offset")
+}
+
 /// A checked place for one slot of a helper-allocated slot list.
 ///
 /// The stride is eight and comes from the descriptor, never from here.

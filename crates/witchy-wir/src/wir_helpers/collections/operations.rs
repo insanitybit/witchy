@@ -548,6 +548,7 @@ pub(crate) fn list_push_helper() -> WirFunc {
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "newlen".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal {
@@ -557,31 +558,39 @@ pub(crate) fn list_push_helper() -> WirFunc {
                     kind: Kind::I32,
                 },
             },
+            // The pushed-to length, bound once: it is the new buffer's capacity and
+            // therefore its claim count, and it is used three times below.
+            N::SetLocal { local: "newlen".into(), value: b(BinOp::Add, getl("len"), i32c(1)) },
             // (RFC-0016) allocate the new buffer through `$rc_alloc` (header at new-4,
             // bumps `$heap`) so a confined list overwritten by a fresh push is freeable.
             N::SetLocal {
                 local: "new".into(),
                 value: E::Call {
                     func: "rc_alloc".into(),
-                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, b(BinOp::Add, getl("len"), i32c(1)), i32c(8)))],
+                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))],
                 },
             },
-            N::Store {
-                ptr: getl("new"),
-                value: b(BinOp::Add, getl("len"), i32c(1)),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("newlen")),
+                value: getl("newlen"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            N::MemoryCopy {
-                dest: b(BinOp::Add, getl("new"), i32c(4)),
-                src: b(BinOp::Add, getl("list"), i32c(4)),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("new"), i32c(0), getl("len"), getl("newlen"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("list"), i32c(0), getl("len"), getl("len"), crate::safewir::AccessMode::Read,
+                ),
                 len: b(BinOp::Mul, getl("len"), i32c(8)),
             },
-            N::Store {
-                ptr: b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("len"), i32c(8))),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                    getl("new"), getl("len"), getl("newlen"), crate::safewir::AccessMode::Write,
+                ),
                 value: getl("x"),
                 kind: Kind::I64,
-                offset: 4,
             },
             N::Push(getl("new")),
         ],
@@ -645,9 +654,11 @@ pub(crate) fn list_concat_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::slot_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let total = b(BinOp::Add, getl("alen"), getl("blen"));
     WirFunc {
         name: "list_concat".into(),
         params: vec![
@@ -655,32 +666,49 @@ pub(crate) fn list_concat_helper() -> WirFunc {
             WirLocal { name: "b".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool], // i32 list pointer
-        locals: ["alen", "blen", "new"]
+        locals: ["alen", "blen", "new", "total"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
         body: vec![
             setl("alen", load(getl("a"))),
             setl("blen", load(getl("b"))),
+            // The concatenated length, bound once: the result's capacity and so
+            // its claim count, used five times below.
+            setl("total", b(BinOp::Add, getl("alen"), getl("blen"))),
             // (RFC-0016) allocate through `$rc_alloc` (header at new-4 + free-list reuse).
             setl(
                 "new",
                 E::Call {
                     func: "rc_alloc".into(),
-                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, total.clone(), i32c(8)))],
+                    args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("total"), i32c(8)))],
                 },
             ),
-            N::Store { ptr: getl("new"), value: total, kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("total")),
+                value: getl("total"),
+                kind: Kind::I32,
+            },
             // a's elements → new+4
-            N::MemoryCopy {
-                dest: b(BinOp::Add, getl("new"), i32c(4)),
-                src: b(BinOp::Add, getl("a"), i32c(4)),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("new"), i32c(0), getl("alen"), getl("total"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("a"), i32c(0), getl("alen"), getl("alen"), crate::safewir::AccessMode::Read,
+                ),
                 len: b(BinOp::Mul, getl("alen"), i32c(8)),
             },
             // b's elements → new+4 + alen*8
-            N::MemoryCopy {
-                dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("alen"), i32c(8))),
-                src: b(BinOp::Add, getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("new"), getl("alen"), getl("blen"), getl("total"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("b"), i32c(0), getl("blen"), getl("blen"), crate::safewir::AccessMode::Read,
+                ),
                 len: b(BinOp::Mul, getl("blen"), i32c(8)),
             },
             N::Push(getl("new")),

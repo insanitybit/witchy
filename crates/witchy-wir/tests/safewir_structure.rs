@@ -289,7 +289,7 @@ fn current_census() -> BTreeMap<String, FileCensus> {
 /// migration sites to zero; the 6 are the permitted floor, not debt.
 ///
 /// This ceiling ratchets DOWN as the migration proceeds. It started at 584+6.
-const REVIEWED_TOTAL: usize = 468;
+const REVIEWED_TOTAL: usize = 461;
 
 const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
@@ -398,10 +398,11 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_helpers/collections/operations.rs",
         &[
-            (RawKind::Load, 5),
-            (RawKind::Store, 10),
-            (RawKind::MemoryCopy, 6),
+            (RawKind::Load, 4),
+            (RawKind::Store, 7),
+            (RawKind::MemoryCopy, 3),
             (RawKind::MemoryFill, 1),
+
 
         ],
     ),
