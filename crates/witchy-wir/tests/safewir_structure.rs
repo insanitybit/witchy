@@ -610,3 +610,78 @@ fn census_distinguishes_semantic_operations_from_aliased_raw_wir() {
     assert_eq!(census.counts.get(&RawKind::Store8), Some(&1));
     assert_eq!(census.total(), 4);
 }
+
+/// Every `#[test]` attaches exactly once, and no test-shaped function is unrun.
+///
+/// Both halves of this were real: a bulk attribute edit left `#[test]` twice on
+/// two tests and omitted it entirely from a third
+/// (`final_wir_report_maps_one_parameter_rooted_semantic_load`), which meant a
+/// test of the final-validator mapping path silently never ran. Rust reports
+/// both as WARNINGS -- `duplicate_macro_attributes` and `dead_code` -- and this
+/// gate runs bug-lint clippy tiers only, so neither blocked anything.
+///
+/// Scanning source rather than denying the lints crate-wide is deliberate: a
+/// `deny` would fire inside whatever another agent has in flight here, while a
+/// test names the exact file and line and fails only on this defect.
+#[test]
+fn every_test_attribute_attaches_exactly_once_and_no_test_is_unrun() {
+    let mut duplicated = Vec::new();
+    let mut unrun = Vec::new();
+    let mut sources = Vec::new();
+    rust_files(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"), &mut sources);
+    sources.sort();
+    for path in sources {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let lines: Vec<&str> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(name) = free_function_name(line) else {
+                continue;
+            };
+            // Walk back over the item's attribute and doc-comment block.
+            let mut attributes = 0_usize;
+            let mut cursor = index;
+            while cursor > 0 {
+                let previous = lines[cursor - 1].trim();
+                if previous == "#[test]" {
+                    attributes += 1;
+                } else if !(previous.starts_with("///")
+                    || previous.starts_with("//")
+                    || previous.starts_with("#["))
+                {
+                    break;
+                }
+                cursor -= 1;
+            }
+            if attributes > 1 {
+                duplicated.push(format!("{}:{} {name}", path.display(), index + 1));
+            }
+            // A zero-argument function nothing else in the file names is either a
+            // test or dead. Requiring "named nowhere else" keeps this exact: a
+            // shared fixture helper is always called somewhere.
+            if attributes == 0
+                && line.contains("()")
+                && !line.contains("->")
+                && source.matches(name.as_str()).count() == 1
+            {
+                unrun.push(format!("{}:{} {name}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        duplicated.is_empty(),
+        "these items carry `#[test]` more than once: {duplicated:#?}",
+    );
+    assert!(
+        unrun.is_empty(),
+        "these look like tests but carry no `#[test]`, so they never run: {unrun:#?}",
+    );
+}
+
+/// The name of a function defined at a module's top indentation level.
+fn free_function_name(line: &str) -> Option<String> {
+    let body = line.strip_prefix("    fn ").or_else(|| line.strip_prefix("fn "))?;
+    let name = body.split(['(', '<']).next()?;
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit()))
+        .then(|| name.to_string())
+}

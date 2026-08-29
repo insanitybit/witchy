@@ -1592,7 +1592,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
 mod intrinsic_catalog_tests {
     use super::*;
 
-    #[test]
     /// Every local a helper NAMES is a local it DECLARES -- including inside a
     /// SafeWIR claim.
     ///

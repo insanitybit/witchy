@@ -1370,7 +1370,6 @@ mod tests {
         inputs
     }
 
-    #[test]
     // RFC-0162 A1-const: an indexed projection and a counted extent are
     // dischargeable when every operand is a literal. Before this the adapter
     // rejected them outright with "indexed projections require exact reaching
@@ -1417,6 +1416,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn final_wir_report_maps_one_parameter_rooted_semantic_load() {
         let (layout_bundle, layout) = layouts();
         let report = validate_final_wir_report(
