@@ -44,12 +44,16 @@ use crate::{codegen, parser, typeck};
         // Oracle-validated: both the unoptimized and optimized binaries match the
         // interpreter (a behavior-preserving win, not a behavior change).
         assert_eq!(
-            run_bytes_print_only(&witchy_wir::wir_encode::encode(&m, &[])),
+            run_bytes_print_only(&witchy_wir::wir_encode::try_encode_with_gc_source_map(&m, &[], &[])
+                .expect("the migration bridge encodes a helper-bearing module")
+                .wasm),
             want,
             "unoptimized",
         );
         assert_eq!(
-            run_bytes_print_only(&witchy_wir::wir_encode::encode(&opt_m, &[])),
+            run_bytes_print_only(&witchy_wir::wir_encode::try_encode_with_gc_source_map(&opt_m, &[], &[])
+                .expect("the migration bridge encodes a helper-bearing module")
+                .wasm),
             want,
             "optimized",
         );

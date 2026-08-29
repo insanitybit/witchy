@@ -228,7 +228,11 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                         els: vec![],
                         result: None,
                     },
-                    N::Store { ptr: getl("idx"), value: getl("slots"), kind: Kind::I32, offset: 0 },
+                    N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("idx"), getl("slots")),
+                value: getl("slots"),
+                kind: Kind::I32,
+            },
                     N::MemoryFill {
                         dest: b(BinOp::Add, getl("idx"), i32c(4)),
                         value: i32c(0x80),
@@ -326,7 +330,11 @@ pub(crate) fn dict_new_helper() -> WirFunc {
                 value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![i32c(8)] }, i32c(4)),
             },
             N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
-            N::Store { ptr: getl("p"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("p"), i32c(0)),
+                value: i32c(0),
+                kind: Kind::I32,
+            },
             N::Push(getl("p")),
         ],
         raw_body: None,
@@ -377,7 +385,11 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
                 ),
             },
             N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
-            N::Store { ptr: getl("p"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("p"), i32c(0)),
+                value: i32c(0),
+                kind: Kind::I32,
+            },
             // The key mode is not part of this intrinsic's public ABI.  The empty
             // carrier is mode-neutral; later scalar operations select their normal
             // hash/equality path, while compound modes leave it unused.
@@ -407,7 +419,11 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
                             args: vec![b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(25)))],
                         },
                     },
-                    N::Store { ptr: getl("idx"), value: getl("slots"), kind: Kind::I32, offset: 0 },
+                    N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("idx"), getl("slots")),
+                value: getl("slots"),
+                kind: Kind::I32,
+            },
                     N::MemoryFill {
                         dest: b(BinOp::Add, getl("idx"), i32c(4)),
                         value: i32c(0x80),
@@ -1333,7 +1349,11 @@ pub(crate) fn dict_remove_helper() -> WirFunc {
             setl("i", i32c(0)),
             setl("n", i32c(0)),
             scan,
-            N::Store { ptr: getl("new"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("n")),
+                value: getl("n"),
+                kind: Kind::I32,
+            },
             N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), getl("n"), getl("mode")] }),
             // `$rc_alloc` reserved the FULL `count`-slot capacity (the size arg above)
             // and already advanced `$heap`, so the count-n slack stays reserved for a

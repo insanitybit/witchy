@@ -251,7 +251,13 @@
                 ],
                 raw_body: None,
             };
-            let binary = encode(&rc_test_module(rc_free_helper_for_test(uaf_check, false), run), &[]);
+            let binary = crate::wir_encode::try_encode_with_gc_source_map(
+                &rc_test_module(rc_free_helper_for_test(uaf_check, false), run),
+                &[],
+                &[],
+            )
+            .expect("the migration bridge encodes a helper-bearing module")
+            .wasm;
             wasmparser::validate(&binary).expect("both rc_free modes must remain valid Wasm");
         }
     }

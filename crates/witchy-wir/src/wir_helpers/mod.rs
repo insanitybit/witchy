@@ -31,4 +31,5 @@ pub(crate) use strings::*;
 mod vm;
 pub use vm::*;
 mod registry;
+mod layouts;
 pub use registry::{WirHelperSpec, wir_helper};

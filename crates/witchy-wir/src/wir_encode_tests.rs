@@ -74,8 +74,16 @@
     }
 
     /// Run a module via the binary encoder.
+    ///
+    /// Goes through the production bridge rather than the raw `encode`: the WIR
+    /// helper library now emits SafeWIR, and the raw entrypoint carries no
+    /// erasure, so it would meet an operation it is not allowed to encode.
+    /// These tests assert what the helpers DO, so they should encode the way
+    /// production encodes.
     fn run_encoded(module: &WirModule) -> Vec<String> {
-        run_binary(&encode(module, &[]))
+        let encoded = crate::wir_encode::try_encode_with_gc_source_map(module, &[], &[])
+            .expect("the migration bridge encodes a helper-bearing module");
+        run_binary(&encoded.wasm)
     }
 
     /// Assert the encoder output runs identically to the expected lines. (Was
@@ -88,7 +96,13 @@
 
     /// Assert the module TRAPS when run (e.g. the RFC-0005 in-place bounds check fires).
     fn assert_traps(module: &WirModule) {
-        let binary = encode(&with_rc_floor(module), &[]);
+        let binary = crate::wir_encode::try_encode_with_gc_source_map(
+            &with_rc_floor(module),
+            &[],
+            &[],
+        )
+        .expect("the migration bridge encodes a helper-bearing module")
+        .wasm;
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
         config.wasm_simd(true);

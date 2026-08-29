@@ -36,7 +36,11 @@ pub(super) fn encoding_helper() -> WirFunc {
                 local: "n".into(),
                 value: E::CallHost { import: "encoding".into(), args: vec![getl("op"), getl("in"), b(BinOp::Add, getl("res"), i32c(4))] },
             },
-            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("n")),
+                value: getl("n"),
+                kind: Kind::I32,
+            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -64,7 +68,11 @@ pub(super) fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: 
         body: vec![
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(hexlen + 4)] } },
-            N::Store { ptr: getl("res"), value: i32c(hexlen), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(hexlen)),
+                value: i32c(hexlen),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: import.into(), args: host_args }),
             N::Push(getl("res")),
         ],
@@ -106,7 +114,11 @@ pub(super) fn crypto_xof_helper(name: &str, import: &str) -> WirFunc {
                 local: "res".into(),
                 value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("n"), i32c(4))] },
             },
-            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("n")),
+                value: getl("n"),
+                kind: Kind::I32,
+            },
             // Host squeezes exactly `n` bytes into `res+4`.
             N::Do(E::CallHost {
                 import: import.into(),
@@ -143,7 +155,11 @@ pub(super) fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg
         body: vec![
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(hexlen + 4)] } },
-            N::Store { ptr: getl("res"), value: i32c(hexlen), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(hexlen)),
+                value: i32c(hexlen),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: import.into(), args: host_args }),
             N::Push(getl("res")),
         ],
@@ -174,7 +190,11 @@ pub(super) fn crypto_reveal_helper() -> WirFunc {
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "crypto_reveal_len".into(), args: vec![getl("key")] } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],

@@ -24,7 +24,11 @@ pub(in crate::wir_helpers) fn dir_read_helper() -> WirFunc {
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_len".into(), args: vec![getl("h"), getl("rel")] } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -55,7 +59,11 @@ pub(in crate::wir_helpers) fn dir_read_bytes_helper() -> WirFunc {
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_bytes_len".into(), args: vec![getl("h"), getl("rel")] } },
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -87,7 +95,11 @@ pub(in crate::wir_helpers) fn file_read_helper() -> WirFunc {
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "file_read_len".into(), args: vec![getl("f")] } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -126,7 +138,11 @@ pub(in crate::wir_helpers) fn exec_helper() -> WirFunc {
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "exec_run".into(), args: vec![getl("exec"), getl("h"), getl("path"), getl("args"), getl("stdin")] } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -153,7 +169,11 @@ pub(in crate::wir_helpers) fn build_read_helper() -> WirFunc {
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "build_read_len".into(), args: vec![getl("rel")] } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -193,7 +213,11 @@ pub(in crate::wir_helpers) fn regex_match_spans_helper() -> WirFunc {
             },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],

@@ -386,7 +386,11 @@ pub(in crate::wir_helpers) fn list_set_cap_helper() -> WirFunc {
         N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
         N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
         N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] } },
-        N::Store { ptr: getl("new"), value: getl("len"), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
         N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
         N::Store { ptr: slot("new"), value: getl("x"), kind: Kind::I64, offset: 0 },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
@@ -462,7 +466,11 @@ pub(crate) fn list_update_cap_helper() -> WirFunc {
         N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
         N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
         N::SetLocal { local: "nb".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] } },
-        N::Store { ptr: getl("nb"), value: getl("len"), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("nb"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
         N::MemoryCopy { dest: b(BinOp::Add, getl("nb"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
         N::Store { ptr: b(BinOp::Add, b(BinOp::Add, getl("nb"), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8))), value: getl("nv"), kind: Kind::I64, offset: 0 },
         N::SetLocal { local: "ret_ptr".into(), value: getl("nb") },
@@ -687,7 +695,11 @@ pub(in crate::wir_helpers) fn list_drop_helper() -> WirFunc {
         body: vec![
             N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 }, getl("k")) },
             N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] } },
-            N::Store { ptr: getl("new"), value: getl("newlen"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("newlen")),
+                value: getl("newlen"),
+                kind: Kind::I32,
+            },
             N::MemoryCopy {
                 dest: b(BinOp::Add, getl("new"), i32c(4)),
                 src: b(BinOp::Add, b(BinOp::Add, getl("list"), i32c(4)), b(BinOp::Mul, getl("k"), i32c(8))),

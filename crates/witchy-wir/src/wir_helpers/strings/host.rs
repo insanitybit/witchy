@@ -91,7 +91,11 @@ pub(in crate::wir_helpers) fn string_from_code_helper() -> WirFunc {
                 ],
                 result: None,
             },
-            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("n")),
+                value: getl("n"),
+                kind: Kind::I32,
+            },
             N::Push(getl("res")),
         ],
         raw_body: None,

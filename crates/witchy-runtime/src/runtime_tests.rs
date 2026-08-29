@@ -1423,7 +1423,8 @@ fi
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        witchy_wir::wir_encode::try_encode_with_gc(&module, &[], &[])
+        witchy_wir::wir_encode::try_encode_with_gc_source_map(&module, &[], &[])
+            .map(|encoded| encoded.wasm)
             .expect("combined checked-UAF fixture must encode")
     }
 

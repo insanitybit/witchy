@@ -1338,7 +1338,9 @@ fn yes(b: Bool) -> String:
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        let wasm = witchy_wir::wir_encode::encode(&module, &[]);
+        let wasm = witchy_wir::wir_encode::try_encode_with_gc_source_map(&module, &[], &[])
+                .expect("the migration bridge encodes a helper-bearing module")
+                .wasm;
         assert!(validates_wasm_gc(&wasm), "encoded module must validate");
 
         // Run with ONLY `print` granted — nothing else. Success proves the module

@@ -74,7 +74,11 @@ pub(in crate::wir_helpers) fn staged_string_helper_typed(
                 },
             },
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -104,7 +108,11 @@ pub(in crate::wir_helpers) fn compiler_introspect_helper(name: &str, import: &st
             N::SetLocal { local: "len".into(), value: E::CallHost { import: import.into(), args: host_args } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],
@@ -233,7 +241,11 @@ pub(in crate::wir_helpers) fn net_recv_helper(name: &str, len_import: &str, extr
             },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![add(getl("res"), i32c(4))] }),
             N::Push(getl("res")),
         ],

@@ -24,7 +24,11 @@ pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
                 then_: vec![
                     // (RFC-0016) the None wrapper `[tag=1]` via `$rc_alloc`.
                     N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(4)] } },
-                    N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
+                    N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(1)),
+                value: i32c(1),
+                kind: Kind::I32,
+            },
                     N::Return(Some(getl("res"))),
                 ],
                 els: vec![],
@@ -32,10 +36,18 @@ pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
             },
             // (RFC-0016) the value string, then the `Some[tag=0][ptr]` wrapper, via `$rc_alloc`.
             N::SetLocal { local: "str".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("str"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("str"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost { import: "env_fill".into(), args: vec![getl("env"), getl("name"), b(BinOp::Add, getl("str"), i32c(4))] }),
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(12)] } },
-            N::Store { ptr: getl("res"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(0)),
+                value: i32c(0),
+                kind: Kind::I32,
+            },
             N::Store { ptr: getl("res"), value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) }, kind: Kind::I64, offset: 4 },
             N::Push(getl("res")),
         ],
@@ -70,20 +82,32 @@ pub(in crate::wir_helpers) fn build_get_env_helper() -> WirFunc {
                 cond: b(BinOp::Lt, getl("len"), i32c(0)),
                 then_: vec![
                     N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(4)] } },
-                    N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
+                    N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(1)),
+                value: i32c(1),
+                kind: Kind::I32,
+            },
                     N::Return(Some(getl("res"))),
                 ],
                 els: vec![],
                 result: None,
             },
             N::SetLocal { local: "str".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::Store { ptr: getl("str"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("str"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::CallHost {
                 import: "build_env_fill".into(),
                 args: vec![getl("name"), b(BinOp::Add, getl("str"), i32c(4))],
             }),
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(12)] } },
-            N::Store { ptr: getl("res"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(0)),
+                value: i32c(0),
+                kind: Kind::I32,
+            },
             N::Store {
                 ptr: getl("res"),
                 value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) },

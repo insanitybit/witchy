@@ -35,7 +35,11 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
     // the same point the manual bump reached, keeping the redzone registration valid.
     let mut then_zero = vec![
         N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(5 + rz)] } },
-        N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), i32c(1)),
+                value: i32c(1),
+                kind: Kind::I32,
+            },
         N::Store8 { ptr: getl("res"), value: i32c(48), offset: 4 },
     ];
     if checked {
@@ -206,7 +210,11 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             local: "res".into(),
             value: E::Call { func: "rc_alloc".into(), args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("len"))] },
         },
-        N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
         N::If {
             cond: getl("neg"),
             then_: vec![N::Store8 { ptr: getl("res"), value: i32c(45), offset: 4 }],
@@ -425,7 +433,11 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
                 then_: vec![
                     N::SetLocal { local: "total_len".into(), value: bin(BinOp::Add, Kind::I32, getl("plen"), i32c(1)) },
                     N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("total_len"))] } },
-                    N::Store { ptr: getl("res"), value: getl("total_len"), kind: Kind::I32, offset: 0 },
+                    N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("total_len")),
+                value: getl("total_len"),
+                kind: Kind::I32,
+            },
                     N::MemoryCopy { dest: bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), src: bin(BinOp::Add, Kind::I32, getl("prefix"), i32c(4)), len: getl("plen") },
                     N::Store8 { ptr: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("plen")), value: i32c(48), offset: 0 },
                     N::Push(getl("res")),
@@ -457,7 +469,11 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
                     N::SetLocal { local: "len".into(), value: bin(BinOp::Add, Kind::I32, getl("ndigits"), getl("neg")) },
                     N::SetLocal { local: "total_len".into(), value: bin(BinOp::Add, Kind::I32, getl("plen"), getl("len")) },
                     N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![bin(BinOp::Add, Kind::I32, i32c(4 + rz), getl("total_len"))] } },
-                    N::Store { ptr: getl("res"), value: getl("total_len"), kind: Kind::I32, offset: 0 },
+                    N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("total_len")),
+                value: getl("total_len"),
+                kind: Kind::I32,
+            },
                     N::MemoryCopy { dest: bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), src: bin(BinOp::Add, Kind::I32, getl("prefix"), i32c(4)), len: getl("plen") },
                     N::If {
                         cond: getl("neg"),
@@ -914,7 +930,11 @@ pub(super) fn float_to_str_helper() -> WirFunc {
             // header stays 516 — a valid upper bound; the tail slack is unused).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(516)] } },
             N::SetLocal { local: "n".into(), value: E::CallHost { import: "float_to_str".into(), args: vec![getl("x"), b(BinOp::Add, getl("res"), i32c(4))] } },
-            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("n")),
+                value: getl("n"),
+                kind: Kind::I32,
+            },
             N::Push(getl("res")),
         ],
         raw_body: None,

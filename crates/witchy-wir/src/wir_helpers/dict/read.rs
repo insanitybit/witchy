@@ -230,7 +230,11 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
             },
             // (RFC-0016) allocate the projected list through `$rc_alloc` (header + reuse).
             setl("new", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
-            N::Store { ptr: getl("new"), value: getl("count"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("count")),
+                value: getl("count"),
+                kind: Kind::I32,
+            },
             N::If {
                 cond: E::GetGlobal("__witchy_extract_active".into()),
                 then_: vec![N::SetGlobal {
@@ -277,7 +281,11 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
                 // (RFC-0016) each pair tuple via `$rc_alloc` (20 bytes: [tag][key][value]).
                 setl("tup", E::Call { func: "rc_alloc".into(), args: vec![i32c(20)] }),
-                N::Store { ptr: getl("tup"), value: i32c(0), kind: Kind::I32, offset: 0 },
+                N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("tup"), i32c(0)),
+                value: i32c(0),
+                kind: Kind::I32,
+            },
                 N::If {
                     cond: b(BinOp::Ne, getl("idx"), i32c(0)),
                     then_: vec![
@@ -320,7 +328,11 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
             // `$heap` past the list, so each pair tuple's rc_alloc lands in a distinct block
             // above it and never overlaps a written slot.
             setl("list", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(8)))] }),
-            N::Store { ptr: getl("list"), value: getl("count"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("list"), getl("count")),
+                value: getl("count"),
+                kind: Kind::I32,
+            },
             N::If {
                 cond: E::GetGlobal("__witchy_extract_active".into()),
                 then_: vec![N::SetGlobal {

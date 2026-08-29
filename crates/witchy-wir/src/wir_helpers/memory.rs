@@ -504,7 +504,11 @@ pub(crate) fn rc_alloc_helper() -> WirFunc {
             // Off the RC path (`$dup`/`$drop` not emitted) the refcount is written but
             // never read — inert, +4 bytes/object.
             setl("base", E::Call { func: "bump_alloc".into(), args: vec![b(BinOp::Add, getl("size"), i32c(8))] }),
-            N::Store { ptr: getl("base"), value: i32c(1), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("base"), i32c(1)),
+                value: i32c(1),
+                kind: Kind::I32,
+            },
             N::Store { ptr: getl("base"), value: getl("size"), kind: Kind::I32, offset: 4 },
             N::Push(b(BinOp::Add, getl("base"), i32c(8))),
         ],

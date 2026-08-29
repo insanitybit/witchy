@@ -95,7 +95,11 @@ pub(super) fn bytes_from_list_helper() -> WirFunc {
         body: vec![
             setl("len", load_len(getl("xs"))),
             setl("res", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             setl("i", i32c(0)),
             N::Block {
                 label: "done".into(),
@@ -260,7 +264,11 @@ pub(super) fn bytes_to_string_helper() -> WirFunc {
                     ],
                 },
             },
-            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("n")),
+                value: getl("n"),
+                kind: Kind::I32,
+            },
             N::Push(getl("res")),
         ],
         raw_body: None,

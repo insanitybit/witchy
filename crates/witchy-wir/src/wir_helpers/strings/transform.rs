@@ -127,7 +127,11 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
             src: b(BinOp::Add, getl("piece"), i32c(4)),
             len: getl("plen"),
         },
-        N::Store { ptr: getl("s"), value: getl("need"), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("s"), getl("need")),
+                value: getl("need"),
+                kind: Kind::I32,
+            },
         N::SetLocal { local: "ret_ptr".into(), value: getl("s") },
         N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
     ];
@@ -141,7 +145,11 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
             result: None,
         },
         N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), getl("newcap"))] } },
-        N::Store { ptr: getl("new"), value: getl("need"), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("need")),
+                value: getl("need"),
+                kind: Kind::I32,
+            },
         N::MemoryCopy {
             dest: b(BinOp::Add, getl("new"), i32c(4)),
             src: b(BinOp::Add, getl("s"), i32c(4)),
@@ -209,7 +217,11 @@ pub(crate) fn substr_helper() -> WirFunc {
                 local: "res".into(),
                 value: E::Call { func: "rc_alloc".into(), args: vec![add(i32c(4), getl("len"))] },
             },
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             N::MemoryCopy {
                 dest: add(getl("res"), i32c(4)),
                 src: add(add(getl("src"), i32c(4)), getl("start")),
@@ -504,7 +516,11 @@ pub(crate) fn split_helper() -> WirFunc {
                     cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("seplen")) },
                     then_: vec![
                         N::Store { ptr: getl("result"), value: ext(getl("s")), kind: Kind::I64, offset: 4 },
-                        N::Store { ptr: getl("result"), value: i32c(1), kind: Kind::I32, offset: 0 },
+                        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("result"), i32c(1)),
+                value: i32c(1),
+                kind: Kind::I32,
+            },
                         N::Return(Some(getl("result"))),
                     ],
                     els: vec![],
@@ -516,7 +532,11 @@ pub(crate) fn split_helper() -> WirFunc {
             ];
             // the trailing piece [start, slen), then write the real length.
             body.extend(push_piece(getl("start"), b(BinOp::Sub, getl("slen"), getl("start"))));
-            body.push(N::Store { ptr: getl("result"), value: getl("count"), kind: Kind::I32, offset: 0 });
+            body.push(N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("result"), getl("count")),
+                value: getl("count"),
+                kind: Kind::I32,
+            });
             body.push(N::Push(getl("result")));
             body
         },
@@ -617,7 +637,11 @@ pub(crate) fn str_chars_helper() -> WirFunc {
             setl("bi", i32c(0)),
             scan_loop,
             // The real length is the actual character count.
-            N::Store { ptr: getl("result"), value: getl("count"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("result"), getl("count")),
+                value: getl("count"),
+                kind: Kind::I32,
+            },
             N::Push(getl("result")),
         ],
         raw_body: None,
@@ -886,7 +910,11 @@ pub(crate) fn ascii_case_helper() -> WirFunc {
             },
             // Transformation pass
             setl("res", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), getl("len"))] }),
-            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
+                value: getl("len"),
+                kind: Kind::I32,
+            },
             setl("i", i32c(0)),
             vec_transform_loop,
             tail_transform_loop,
@@ -1016,7 +1044,11 @@ pub(crate) fn replace_helper() -> WirFunc {
         setl("src", i32c(0)),
         empty_loop,
         setl("reslen", b(BinOp::Sub, getl("dst"), b(BinOp::Add, getl("res"), i32c(4)))),
-        N::Store { ptr: getl("res"), value: getl("reslen"), kind: Kind::I32, offset: 0 },
+        N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("reslen")),
+                value: getl("reslen"),
+                kind: Kind::I32,
+            },
         N::Return(Some(getl("res"))),
     ];
     // --- non-empty `from`: count matches, then fill. ---
@@ -1095,7 +1127,11 @@ pub(crate) fn replace_helper() -> WirFunc {
             setl("src", i32c(0)),
             count_loop,
             setl("reslen", b(BinOp::Add, getl("slen"), b(BinOp::Mul, getl("cnt"), b(BinOp::Sub, getl("tlen"), getl("flen"))))),
-            N::Store { ptr: getl("res"), value: getl("reslen"), kind: Kind::I32, offset: 0 },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("reslen")),
+                value: getl("reslen"),
+                kind: Kind::I32,
+            },
             setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
             setl("src", i32c(0)),
             fill_loop,
