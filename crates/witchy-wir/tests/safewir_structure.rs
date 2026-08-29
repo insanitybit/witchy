@@ -284,12 +284,12 @@ fn current_census() -> BTreeMap<String, FileCensus> {
     result
 }
 
-/// 473 migration sites remaining, plus the 6 sealed-boundary constructors in
+/// 468 migration sites remaining, plus the 6 sealed-boundary constructors in
 /// `wir_encode.rs` (see the baseline entry below). RFC-0162 row 8 drives the
 /// migration sites to zero; the 6 are the permitted floor, not debt.
 ///
 /// This ceiling ratchets DOWN as the migration proceeds. It started at 584+6.
-const REVIEWED_TOTAL: usize = 479;
+const REVIEWED_TOTAL: usize = 474;
 
 const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (

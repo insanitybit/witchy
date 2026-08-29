@@ -69,7 +69,7 @@ pub(super) fn bytes_at_helper() -> WirFunc {
                 from: Kind::I32,
                 to: Kind::I64,
                 arg: Box::new(WirExpr::SafeLoad8U {
-                    place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(
                         getl("b"),
                         getl("i32"),
                         getl("len"),
@@ -124,7 +124,7 @@ pub(super) fn bytes_from_list_helper() -> WirFunc {
                     body: vec![
                         N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
                         N::SafeStore8 {
-                            place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                            place: crate::wir_helpers::layouts::byte_buffer_element_place(
                                 getl("res"),
                                 getl("i"),
                                 getl("len"),
@@ -423,7 +423,7 @@ pub(super) fn bytes_repeat_helper() -> WirFunc {
                     body: vec![
                         N::Br { target: "done".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("c"))) },
                         N::SafeStore8 {
-                            place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                            place: crate::wir_helpers::layouts::byte_buffer_element_place(
                                 getl("res"),
                                 getl("i"),
                                 getl("c"),
@@ -519,7 +519,7 @@ pub(super) fn bytes_push_helper() -> WirFunc {
                 kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
             N::SafeStore8 {
-                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                place: crate::wir_helpers::layouts::byte_buffer_element_place(
                     getl("new"),
                     getl("len"),
                     getl("newlen"),
@@ -808,7 +808,7 @@ pub(super) fn bytes_set_at_helper() -> WirFunc {
                 kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
             N::SafeStore8 {
-                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                place: crate::wir_helpers::layouts::byte_buffer_element_place(
                     getl("new"),
                     getl("idx32"),
                     getl("len"),
@@ -926,7 +926,7 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
             N::SetLocal {
                 local: "bi".into(),
                 value: E::SafeLoad8U {
-                    place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(
                         getl("b"),
                         getl("i32"),
                         getl("len"),
@@ -937,7 +937,7 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
             N::SetLocal {
                 local: "bj".into(),
                 value: E::SafeLoad8U {
-                    place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(
                         getl("b"),
                         getl("j32"),
                         getl("len"),
@@ -946,7 +946,7 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
                 },
             },
             N::SafeStore8 {
-                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                place: crate::wir_helpers::layouts::byte_buffer_element_place(
                     getl("new"),
                     getl("i32"),
                     getl("len"),
@@ -955,7 +955,7 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
                 value: getl("bj"),
             },
             N::SafeStore8 {
-                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                place: crate::wir_helpers::layouts::byte_buffer_element_place(
                     getl("new"),
                     getl("j32"),
                     getl("len"),
