@@ -43,6 +43,44 @@ fn helper_layouts() -> &'static HelperLayouts {
     })
 }
 
+/// A checked place for one payload byte of a helper-allocated byte buffer.
+///
+/// `count` must be a LOCAL already holding the buffer's length -- typically the
+/// `len`/`slen`/`plen` the helper loaded before its loop. It cannot be the
+/// length `Load` itself: a claim operand has to be a leaf the final validator
+/// can bind to an exact reaching definition, and `validate_claim_operand`
+/// rightly refuses anything else. Where a helper has no such local, the site is
+/// not migratable yet and must wait for the def-use adapter rather than have a
+/// local invented for it -- adding one would change emitted code and forfeit
+/// the zero-cost property.
+///
+/// The base offset and stride come from the descriptor; the caller supplies
+/// only the root, the index, and the count.
+pub(crate) fn byte_buffer_element_place(
+    root: WirExpr,
+    index: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let encoded = WirExpr::Binary {
+        op: crate::wir::BinOp::Add,
+        kind: crate::wir::Kind::I32,
+        lhs: Box::new(root.clone()),
+        rhs: Box::new(index.clone()),
+    };
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.byte_buffer,
+        SafeExactExtent::counted(count).expect("a length local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper byte-buffer layout is claimable")
+    .element(index, SafeEncodedAddress::new(encoded, 4))
+    .expect("a stride-one payload index reconciles against the descriptor")
+}
+
 /// A checked place for READING the length word of a helper-allocated byte
 /// buffer.
 ///

@@ -278,7 +278,14 @@ pub(crate) fn find_byte_helper() -> WirFunc {
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))), offset: 4 };
-    let sub_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sub"), getl("j"))), offset: 4 };
+    let sub_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("sub"),
+            getl("j"),
+            getl("sublen"),
+            crate::safewir::AccessMode::Read,
+        ),
+    };
     let cmp_loop = N::Block {
         label: "cmpdone".into(),
         result: None,
@@ -436,7 +443,14 @@ pub(crate) fn starts_with_helper() -> WirFunc {
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
-    let p_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("p"), getl("i"))), offset: 4 };
+    let p_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("p"),
+            getl("i"),
+            getl("plen"),
+            crate::safewir::AccessMode::Read,
+        ),
+    };
     let vec_loop = N::Block {
         label: "vdone".into(),
         result: None,
@@ -534,7 +548,14 @@ pub(crate) fn ends_with_helper() -> WirFunc {
         ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("off"), getl("i")))),
         offset: 4,
     };
-    let p_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("p"), getl("i"))), offset: 4 };
+    let p_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("p"),
+            getl("i"),
+            getl("plen"),
+            crate::safewir::AccessMode::Read,
+        ),
+    };
     let vec_loop = N::Block {
         label: "vdone".into(),
         result: None,
@@ -796,7 +817,14 @@ pub(crate) fn char_to_byte_from_helper() -> WirFunc {
                     els: vec![],
                     result: None,
                 },
-                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
+                setl("b", E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"),
+            getl("i"),
+            getl("slen"),
+            crate::safewir::AccessMode::Read,
+        ),
+    }),
                 seqlen,
                 setl("i", b(BinOp::Add, getl("i"), getl("seqlen"))),
                 setl("count", b(BinOp::Add, getl("count"), i32c(1))),

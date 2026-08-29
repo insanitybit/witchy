@@ -792,7 +792,14 @@ pub(crate) fn str_to_int_helper() -> WirFunc {
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
-    let byte = || E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
+    let byte = || E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"),
+            getl("i"),
+            getl("len"),
+            crate::safewir::AccessMode::Read,
+        ),
+    };
     let not = |e: E| E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
     let is_ws_b = || not(E::Call { func: "is_ws".into(), args: vec![getl("b")] });
     let inc_i = || setl("i", b32(BinOp::Add, getl("i"), i32c(1)));
