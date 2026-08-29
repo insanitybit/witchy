@@ -284,12 +284,17 @@ fn current_census() -> BTreeMap<String, FileCensus> {
     result
 }
 
-/// 468 migration sites remaining, plus the 6 sealed-boundary constructors in
+/// 474 migration sites remaining, plus the 6 sealed-boundary constructors in
 /// `wir_encode.rs` (see the baseline entry below). RFC-0162 row 8 drives the
 /// migration sites to zero; the 6 are the permitted floor, not debt.
 ///
 /// This ceiling ratchets DOWN as the migration proceeds. It started at 584+6.
-const REVIEWED_TOTAL: usize = 474;
+///
+/// Keep this in step with the table below by REGENERATING it from
+/// `print_current_safewir_raw_constructor_census`, never by editing the number
+/// alone: `reviewed_census_is_internally_consistent` compares the two and it is
+/// the only part of this file that runs outside the nightly census.
+const REVIEWED_TOTAL: usize = 480;
 
 const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
@@ -366,18 +371,28 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
             (RawKind::HeapGlobalWrite, 1),
         ],
     ),
-    // SEALED BOUNDARY -- not migration debt. `erase_node`/`erase_expr`
-    // mint the plain wasm operation a validated SafeWIR operation always
-    // denoted; one constructor per kind, so this still blocks growth.
+    // TWO constructors per kind, and only one of each pair is the sealed floor.
+    //
+    //   1. SEALED BOUNDARY -- not migration debt. The `Safe*` arms of
+    //      `erase_node`/`erase_expr` mint the plain wasm operation a validated
+    //      SafeWIR operation always denoted. Six, permanently.
+    //   2. TRANSITIONAL -- migration debt that expires on its own. The raw arms
+    //      rebuild a still-raw node so erasure can recurse into an already
+    //      migrated child (`Store8 { value: SafeLoad8U { .. } }`). Six more,
+    //      which become unreachable when the last raw site in the tree goes.
+    //
+    // So the floor stays 6; the other 6 must reach zero with the census. Two
+    // per kind is therefore the ceiling here, and a THIRD of any kind still
+    // fails the no-growth check.
     (
         "crates/witchy-wir/src/wir_encode.rs",
         &[
-            (RawKind::Load, 1),
-            (RawKind::Load8U, 1),
-            (RawKind::Store, 1),
-            (RawKind::Store8, 1),
-            (RawKind::MemoryCopy, 1),
-            (RawKind::MemoryFill, 1),
+            (RawKind::Load, 2),
+            (RawKind::Load8U, 2),
+            (RawKind::Store, 2),
+            (RawKind::Store8, 2),
+            (RawKind::MemoryCopy, 2),
+            (RawKind::MemoryFill, 2),
         ],
     ),
     (
@@ -453,7 +468,6 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
         "crates/witchy-wir/src/wir_helpers/numeric.rs",
         &[
             (RawKind::Load, 2),
-            (RawKind::Load8U, 1),
             (RawKind::Store8, 10),
             (RawKind::MemoryCopy, 2),
         ],
@@ -462,7 +476,7 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
         "crates/witchy-wir/src/wir_helpers/strings.rs",
         &[
             (RawKind::Load, 16),
-            (RawKind::Load8U, 13),
+            (RawKind::Load8U, 9),
             (RawKind::Store, 1),
         ],
     ),
@@ -497,6 +511,38 @@ fn is_nightly() -> bool {
     std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
         || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
         || std::env::var_os("WITCHY_FULL_CENSUS").is_some_and(|v| v == "1")
+}
+
+/// The ceiling and the table must agree, and this must be checked in the
+/// BLOCKING suite rather than only under `WITCHY_NIGHTLY`.
+///
+/// The scan below is nightly because parsing every production file with `syn`
+/// costs ~16s. This check costs microseconds: it is arithmetic over two
+/// constants. Leaving it inside the nightly gate is what let the ceiling drift 6
+/// below its own table while every `cargo nextest run -p witchy-wir
+/// --features native` reported the census tests green -- they were returning
+/// early. A ratchet nobody runs is not a ratchet.
+#[test]
+fn reviewed_census_is_internally_consistent() {
+    let baseline = reviewed_baseline();
+    let baseline_total: usize = baseline.values().flat_map(BTreeMap::values).sum();
+    assert_eq!(
+        baseline_total, REVIEWED_TOTAL,
+        "reviewed census is internally inconsistent: regenerate REVIEWED_BASELINE \
+         and REVIEWED_TOTAL together from print_current_safewir_raw_constructor_census",
+    );
+    assert_eq!(
+        baseline.len(),
+        REVIEWED_BASELINE.len(),
+        "REVIEWED_BASELINE lists a file twice; the map silently dropped an entry",
+    );
+    for (file, counts) in REVIEWED_BASELINE {
+        assert_eq!(
+            counts.len(),
+            baseline[*file].len(),
+            "REVIEWED_BASELINE repeats a RawKind for `{file}`; the map dropped a count",
+        );
+    }
 }
 
 #[test]
