@@ -14,7 +14,7 @@
 
 use std::sync::OnceLock;
 
-use crate::layout::{LayoutId, LayoutInterner, LayoutSize, ScalarKind};
+use crate::layout::{LayoutId, LayoutInterner, LayoutSize, RcHeader, ScalarKind};
 use crate::safewir::AccessMode;
 use crate::safewir_surface::{
     SafeEncodedAddress, SafeExactExtent, SafePlaceBuilder, SafePlaceExpr,
@@ -33,6 +33,11 @@ pub(crate) struct HelperLayouts {
     /// `Dynamic { base: 4, stride: 8 }`. Sharing the family is what lets one set
     /// of accessors serve both without a per-caller branch.
     slot_buffer: LayoutId,
+    /// `[u32 length][u32 capacity][1-byte elements...]` -- a source packed list
+    /// over a byte-wide element, which is `Dynamic { base: 8, stride: 1 }` with a
+    /// real `HeaderLayout::PackedList`. Distinct from the two runtime buffers
+    /// above: it carries a CAPACITY word, so its payload starts at eight.
+    bool_list: LayoutId,
 }
 
 fn helper_layouts() -> &'static HelperLayouts {
@@ -51,7 +56,13 @@ fn helper_layouts() -> &'static HelperLayouts {
         let slot_buffer = interner
             .intern_runtime_buffer(slot)
             .expect("a runtime buffer over an exact scalar is always internable");
-        HelperLayouts { interner, byte_buffer, slot_buffer }
+        let bool_element = interner
+            .intern_scalar(ScalarKind::Bool)
+            .expect("the Bool scalar is a primitive layout");
+        let bool_list = interner
+            .intern_packed_list(bool_element, RcHeader::Required)
+            .expect("a packed list over an exact fixed element is always internable");
+        HelperLayouts { interner, byte_buffer, slot_buffer, bool_list }
     })
 }
 
@@ -150,6 +161,72 @@ pub(crate) fn slot_buffer_payload_slice_place(
     .expect("the helper slot-buffer layout is claimable")
     .slice(start, len, SafeEncodedAddress::new(encoded, 0))
     .expect("a contiguous slot slice reconciles against the descriptor")
+}
+
+/// A checked place for one header component of a byte-wide packed list.
+///
+/// Component zero is the length and component one is the capacity; both offsets
+/// come from the descriptor's own `HeaderLayout::PackedList`.
+pub(crate) fn bool_list_header_place(
+    root: WirExpr,
+    component: u32,
+    count: WirExpr,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.bool_list,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root.clone(),
+        AccessMode::Write,
+    )
+    .expect("the helper packed-list layout is claimable")
+    .header(component, SafeEncodedAddress::new(root, header_offset(layouts.bool_list, component)))
+    .expect("a header component sits at the descriptor's own offset")
+}
+
+/// A checked place for a contiguous run of a byte-wide packed list's payload.
+pub(crate) fn bool_list_payload_slice_place(
+    root: WirExpr,
+    start: WirExpr,
+    len: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let payload = payload_offset(layouts.bool_list);
+    let stride = element_stride(layouts.bool_list);
+    let encoded = strided_element_address(root.clone(), &start, payload, stride);
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.bool_list,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper packed-list layout is claimable")
+    .slice(start, len, SafeEncodedAddress::new(encoded, 0))
+    .expect("a contiguous payload slice reconciles against the descriptor")
+}
+
+/// A header component's byte offset, asked of the descriptor.
+fn header_offset(layout: LayoutId, component: u32) -> u32 {
+    let descriptor = helper_layouts()
+        .interner
+        .get(layout)
+        .expect("the helper layout is interned in this module");
+    match descriptor.header() {
+        crate::layout::HeaderLayout::PackedList { length_offset, capacity_offset, .. } => {
+            match component {
+                0 => length_offset,
+                1 => capacity_offset,
+                _ => unreachable!("a packed list defines two header components"),
+            }
+        }
+        crate::layout::HeaderLayout::None => {
+            unreachable!("this layout defines a packed-list header")
+        }
+    }
 }
 
 /// The encoded address of element `index`, with the payload offset left in the

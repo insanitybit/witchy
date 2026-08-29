@@ -27,9 +27,26 @@ pub(crate) fn list_repeat_bool_helper() -> WirFunc {
             N::SetLocal { local: "count".into(), value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(get("n")) } },
             N::If { cond: E::Binary { op: BinOp::Lt, kind: Kind::I32, lhs: Box::new(get("count")), rhs: Box::new(i32c(0)) }, then_: vec![N::SetLocal { local: "count".into(), value: i32c(0) }], els: vec![], result: None },
             N::SetLocal { local: "root".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(i32c(8), get("count"))] } },
-            N::Store { ptr: get("root"), value: get("count"), kind: Kind::I32, offset: 0 },
-            N::Store { ptr: get("root"), value: get("count"), kind: Kind::I32, offset: 4 },
-            N::MemoryFill { dest: add(get("root"), i32c(8)), value: get("value"), len: get("count") },
+            // `[u32 length][u32 capacity][bytes]`: both header offsets and the
+            // payload start come from the descriptor, not from the 0/4/8 written
+            // here before.
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::bool_list_header_place(get("root"), 0, get("count")),
+                value: get("count"),
+                kind: Kind::I32,
+            },
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::bool_list_header_place(get("root"), 1, get("count")),
+                value: get("count"),
+                kind: Kind::I32,
+            },
+            N::SafeMemoryFill {
+                destination: crate::wir_helpers::layouts::bool_list_payload_slice_place(
+                    get("root"), i32c(0), get("count"), get("count"), crate::safewir::AccessMode::Write,
+                ),
+                value: get("value"),
+                len: get("count"),
+            },
             N::Push(get("root")),
         ],
         raw_body: None,

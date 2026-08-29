@@ -1106,6 +1106,21 @@ impl LayoutInterner {
         self.intern_kind(LayoutKind::RuntimeBuffer { element })
     }
 
+    /// Intern a source packed list: `[u32 length][u32 capacity][elements...]`.
+    ///
+    /// `intern_type` already reaches this kind, but only with a
+    /// `ClosedTypeResolver` and a source `Type` in hand. The WIR helper library
+    /// has neither -- it builds functions from scratch -- and the shape it needs
+    /// is fixed, so it gets the same direct entry point the runtime kinds have.
+    /// Offsets, stride, and the header remain derived by the descriptor.
+    pub fn intern_packed_list(
+        &mut self,
+        element: LayoutId,
+        rc: RcHeader,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::PackedList { element, rc })
+    }
+
     /// Intern the canonical headerless scratch-byte carrier. Runtime catalog
     /// validation restricts `element` to the representation-only RawByte
     /// scalar; ordinary source lowering has no entry point that mints it.
