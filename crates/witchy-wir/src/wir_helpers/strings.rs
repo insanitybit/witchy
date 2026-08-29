@@ -26,8 +26,15 @@ pub(crate) fn str_eq_helper() -> WirFunc {
         place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
         kind: Kind::I32,
     };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
-    let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
+    // A 16-byte SIMD read of the payload at `i`: a slice of sixteen stride-one
+    // elements. Both operands have the same length on this path -- `str_eq` only
+    // scans after the lengths matched -- so `len` is the count for either base.
+    let load_v128 = |base: &str| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl(base), getl("i"), i32c(16), getl("len"), crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::V128,
+    };
     let byte_at = |base: &str| E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
             getl(base), getl("i"), getl("len"), crate::safewir::AccessMode::Read,
@@ -75,8 +82,8 @@ pub(crate) fn str_eq_helper() -> WirFunc {
                             target: "vdone".into(),
                             cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
                         },
-                        N::SetLocal { local: "v1".into(), value: load_v128(ptr_at("a")) },
-                        N::SetLocal { local: "v2".into(), value: load_v128(ptr_at("b")) },
+                        N::SetLocal { local: "v1".into(), value: load_v128("a") },
+                        N::SetLocal { local: "v2".into(), value: load_v128("b") },
                         N::SetLocal {
                             local: "mask".into(),
                             value: E::Vector {
@@ -151,11 +158,20 @@ pub(crate) fn str_cmp_helper() -> WirFunc {
         place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
         kind: Kind::I32,
     };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
-    let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
-    let byte_at = |base: &str| E::Load8U {
-        ptr: Box::new(ptr_at(base)),
-        offset: 0,
+    // Unlike `str_eq`, the two operands here may differ in length, so each
+    // claim carries ITS OWN count -- `alen` for `a`, `blen` for `b`. The closures
+    // take the count name for that reason; a single shared count would claim one
+    // operand against the other's extent.
+    let load_v128 = |base: &str, count: &str| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl(base), getl("i"), i32c(16), getl(count), crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::V128,
+    };
+    let byte_at = |base: &str, count: &str| E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl(base), getl("i"), getl(count), crate::safewir::AccessMode::Read,
+        ),
     };
     let vec_loop = N::Block {
         label: "vdone".into(),
@@ -167,8 +183,8 @@ pub(crate) fn str_cmp_helper() -> WirFunc {
                     target: "vdone".into(),
                     cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("n"))),
                 },
-                N::SetLocal { local: "va".into(), value: load_v128(ptr_at("a")) },
-                N::SetLocal { local: "vb".into(), value: load_v128(ptr_at("b")) },
+                N::SetLocal { local: "va".into(), value: load_v128("a", "alen") },
+                N::SetLocal { local: "vb".into(), value: load_v128("b", "blen") },
                 N::SetLocal {
                     local: "mask".into(),
                     value: E::Vector {
@@ -194,7 +210,7 @@ pub(crate) fn str_cmp_helper() -> WirFunc {
                             local: "i".into(),
                             value: bin(BinOp::Add, getl("i"), getl("diff_pos")),
                         },
-                        N::Return(Some(bin(BinOp::Sub, byte_at("a"), byte_at("b")))),
+                        N::Return(Some(bin(BinOp::Sub, byte_at("a", "alen"), byte_at("b", "blen")))),
                     ],
                     els: vec![],
                     result: None,
@@ -217,8 +233,8 @@ pub(crate) fn str_cmp_helper() -> WirFunc {
                     target: "done".into(),
                     cond: Some(bin(BinOp::Ge, getl("i"), getl("n"))),
                 },
-                N::SetLocal { local: "ca".into(), value: byte_at("a") },
-                N::SetLocal { local: "cb".into(), value: byte_at("b") },
+                N::SetLocal { local: "ca".into(), value: byte_at("a", "alen") },
+                N::SetLocal { local: "cb".into(), value: byte_at("b", "blen") },
                 N::If {
                     cond: bin(BinOp::Ne, getl("ca"), getl("cb")),
                     then_: vec![N::Return(Some(bin(BinOp::Sub, getl("ca"), getl("cb"))))],
