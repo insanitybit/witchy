@@ -18,10 +18,11 @@ pub fn print_str_helper() -> WirFunc {
                     lhs: Box::new(WirExpr::GetLocal("s".into())),
                     rhs: Box::new(WirExpr::ConstI32(4)),
                 },
-                WirExpr::Load {
-                    ptr: Box::new(WirExpr::GetLocal("s".into())),
+                WirExpr::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(
+                        WirExpr::GetLocal("s".into()),
+                    ),
                     kind: Kind::I32,
-                    offset: 0,
                 },
             ],
         })],

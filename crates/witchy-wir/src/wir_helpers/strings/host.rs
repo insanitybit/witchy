@@ -109,13 +109,17 @@ pub(in crate::wir_helpers) fn rcopy_str_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_i32 = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     WirFunc {
         name: "rcopy_str".into(),
         params: vec![WirLocal { name: "p".into(), ty: WirTy::Str }],
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "n".into(), ty: WirTy::Bool },
+            WirLocal { name: "plen".into(), ty: WirTy::Bool },
             WirLocal { name: "size".into(), ty: WirTy::Bool },
         ],
         body: vec![
@@ -125,7 +129,8 @@ pub(in crate::wir_helpers) fn rcopy_str_helper() -> WirFunc {
                 els: vec![],
                 result: None,
             },
-            N::SetLocal { local: "size".into(), value: b(BinOp::Add, i32c(4), load_i32(getl("p"))) },
+            N::SetLocal { local: "plen".into(), value: load_i32(getl("p")) },
+            N::SetLocal { local: "size".into(), value: b(BinOp::Add, i32c(4), getl("plen")) },
             // (SEC-037) Allocate the copy through `$rc_alloc` so it carries the `[rc][size]`
             // header — otherwise rc-floor's free-at-overwrite could reclaim this header-less
             // buffer and corrupt the free-list (OOB). rc_alloc ensures + reserves the header and
@@ -140,7 +145,20 @@ pub(in crate::wir_helpers) fn rcopy_str_helper() -> WirFunc {
                     rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("size")) }),
                 },
             },
-            N::MemoryCopy { dest: getl("n"), src: getl("p"), len: getl("size") },
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_root_place(
+                    getl("n"),
+                    getl("plen"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_root_place(
+                    getl("p"),
+                    getl("plen"),
+                    crate::safewir::AccessMode::Read,
+                ),
+                len: getl("size"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            },
             N::Push(b(BinOp::Sub, getl("n"), E::GetGlobal("rcopy_delta".into()))),
         ],
         raw_body: None,

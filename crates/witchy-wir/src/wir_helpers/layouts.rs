@@ -153,15 +153,36 @@ pub(crate) fn byte_buffer_payload_slice_place(
     SafePlaceBuilder::new(
         &layouts.interner,
         layouts.byte_buffer,
-        SafeExactExtent::counted(count).expect("a helper count is an ordinary claim operand"),
+        SafeExactExtent::counted(count).expect("a length local is an ordinary claim operand"),
         root,
         mode,
     )
     .expect("the helper byte-buffer layout is claimable")
-    .slice(
-        start,
-        len,
-        SafeEncodedAddress::new(encoded_base, 4),
+    .slice(start, len, SafeEncodedAddress::new(encoded_base, 4))
+    .expect("a contiguous payload slice reconciles against the descriptor")
+}
+
+/// A checked place for the complete byte buffer (header + payload) for bulk
+/// operations like `memory.copy` and `memory.fill`.
+///
+/// This claims the entire buffer at `root` with no projection, spanning from
+/// offset 0 through the full dynamic extent (header + `count` payload bytes).
+/// Used for operations that transfer or initialize the whole object rather than
+/// addressing individual elements.
+pub(crate) fn byte_buffer_root_place(
+    root: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.byte_buffer,
+        SafeExactExtent::counted(count).expect("a helper length is an ordinary claim operand"),
+        root.clone(),
+        access,
     )
-    .expect("the payload slice is claimable")
+    .expect("the helper byte-buffer layout is claimable")
+    .root(SafeEncodedAddress::new(root, 0))
+    .expect("the root place at the buffer base is claimable")
 }
