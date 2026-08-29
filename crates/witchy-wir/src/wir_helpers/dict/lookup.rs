@@ -73,13 +73,30 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             label: "vl".into(),
             body: vec![
                 N::Br { target: "vdone".into(), cond: Some(b32(BinOp::Gt, b32(BinOp::Add, getl("i"), i32c(16)), getl("len"))) },
-                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 4 }),
+                setl("w", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_payload_slice(
+                        getl("p"),
+                        getl("i"),
+                        i32c(8),
+                        getl("len"),
+                    ),
+                    kind: Kind::I64,
+                }),
                 setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c1.clone())),
                 setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
-                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 12 }),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(8))),
+                setl("w", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_payload_slice(
+                        getl("p"),
+                        getl("i"),
+                        i32c(8),
+                        getl("len"),
+                    ),
+                    kind: Kind::I64,
+                }),
                 setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c2.clone())),
                 setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
-                setl("i", b32(BinOp::Add, getl("i"), i32c(16))),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(8))),
                 N::Br { target: "vl".into(), cond: None },
             ],
         }],
@@ -91,7 +108,15 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             label: "wl".into(),
             body: vec![
                 N::Br { target: "wdone".into(), cond: Some(b32(BinOp::Gt, b32(BinOp::Add, getl("i"), i32c(8)), getl("len"))) },
-                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 4 }),
+                setl("w", E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_payload_slice(
+                        getl("p"),
+                        getl("i"),
+                        i32c(8),
+                        getl("len"),
+                    ),
+                    kind: Kind::I64,
+                }),
                 setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c1.clone())),
                 setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
                 setl("i", b32(BinOp::Add, getl("i"), i32c(8))),
@@ -106,7 +131,19 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
             label: "tl".into(),
             body: vec![
                 N::Br { target: "tdone".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
-                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), offset: 4 }) }), c1.clone())),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), E::Convert {
+                    from: Kind::I32,
+                    to: Kind::I64,
+                    arg: Box::new(E::SafeLoad {
+                        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                            getl("p"),
+                            getl("i"),
+                            getl("len"),
+                            crate::safewir::AccessMode::Read,
+                        ),
+                        kind: Kind::I32,
+                    }),
+                }), c1.clone())),
                 setl("i", b32(BinOp::Add, getl("i"), i32c(1))),
                 N::Br { target: "tl".into(), cond: None },
             ],
@@ -542,9 +579,14 @@ pub(crate) fn dict_slice_eq_helper() -> WirFunc {
     };
     let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
-    let str_byte_at = |off: &str| E::Load8U {
-        ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl("str_ptr"), i32c(4)), getl(off))),
-        offset: 0,
+    let str_byte_at = |off: &str| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("str_ptr"),
+            getl(off),
+            getl("slice_len"),
+            crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::I32,
     };
     let slice_byte_at = |off: &str| E::Load8U {
         ptr: Box::new(bin(BinOp::Add, getl("slice_ptr"), getl(off))),
@@ -625,10 +667,14 @@ pub(crate) fn dict_slice_eq_helper() -> WirFunc {
                             cond: E::Binary {
                                 op: BinOp::Ne,
                                 kind: Kind::I64,
-                                lhs: Box::new(E::Load {
-                                    ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl("str_ptr"), i32c(4)), getl("i"))),
+                                lhs: Box::new(E::SafeLoad {
+                                    place: crate::wir_helpers::layouts::byte_buffer_payload_slice(
+                                        getl("str_ptr"),
+                                        getl("i"),
+                                        i32c(8),
+                                        getl("slice_len"),
+                                    ),
                                     kind: Kind::I64,
-                                    offset: 0,
                                 }),
                                 rhs: Box::new(E::Load {
                                     ptr: Box::new(bin(BinOp::Add, getl("slice_ptr"), getl("i"))),

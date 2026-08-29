@@ -569,6 +569,21 @@ pub(crate) fn byte_buffer_root_place(
     .expect("the root place at the buffer base is claimable")
 }
 
+/// A checked read-only multi-byte slice within a helper byte-buffer payload.
+///
+/// Dictionary hashing and equality read words from the payload. Reusing the
+/// bulk-copy slice constructor keeps their address representation canonical:
+/// the descriptor-derived header offset is folded into the base and the Wasm
+/// immediate remains zero.
+pub(crate) fn byte_buffer_payload_slice(
+    root: WirExpr,
+    start_index: WirExpr,
+    length: WirExpr,
+    count: WirExpr,
+) -> Box<SafePlaceExpr> {
+    byte_buffer_payload_slice_place(root, start_index, length, count, AccessMode::Read)
+}
+
 fn add32(lhs: WirExpr, rhs: WirExpr) -> WirExpr {
     WirExpr::Binary {
         op: crate::wir::BinOp::Add,
