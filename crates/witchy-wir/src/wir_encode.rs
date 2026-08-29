@@ -223,16 +223,60 @@ fn erase_node(node: WirNode, mode: ErasureMode) -> Result<WirNode, EncodeError> 
         WirNode::SetGlobal { global, value } => {
             WirNode::SetGlobal { global, value: erase_expr(value, mode)? }
         }
-        raw @ (WirNode::Store { .. }
-        | WirNode::MemoryCopy { .. }
-        | WirNode::MemoryFill { .. }
-        | WirNode::Store8 { .. }) => {
+        // An unmigrated raw memory node. In the migration window its OPERANDS
+        // may already be migrated -- `Store8 { value: SafeLoad8U { .. } }` is
+        // exactly what a partially converted helper produces -- so the node
+        // passes through but its children must still be erased. Returning it
+        // untouched leaves SafeWIR inside a raw node, where nothing downstream
+        // will erase it and preflight rejects the whole function.
+        WirNode::Store { ptr, value, kind, offset } => {
             if mode == ErasureMode::Validated {
                 return Err(post_validation_violation(
                     "a raw linear-memory node crossed final SafeWIR validation",
                 ));
             }
-            raw
+            WirNode::Store {
+                ptr: erase_expr(ptr, mode)?,
+                value: erase_expr(value, mode)?,
+                kind,
+                offset,
+            }
+        }
+        WirNode::Store8 { ptr, value, offset } => {
+            if mode == ErasureMode::Validated {
+                return Err(post_validation_violation(
+                    "a raw linear-memory node crossed final SafeWIR validation",
+                ));
+            }
+            WirNode::Store8 {
+                ptr: erase_expr(ptr, mode)?,
+                value: erase_expr(value, mode)?,
+                offset,
+            }
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            if mode == ErasureMode::Validated {
+                return Err(post_validation_violation(
+                    "a raw linear-memory node crossed final SafeWIR validation",
+                ));
+            }
+            WirNode::MemoryCopy {
+                dest: erase_expr(dest, mode)?,
+                src: erase_expr(src, mode)?,
+                len: erase_expr(len, mode)?,
+            }
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            if mode == ErasureMode::Validated {
+                return Err(post_validation_violation(
+                    "a raw linear-memory node crossed final SafeWIR validation",
+                ));
+            }
+            WirNode::MemoryFill {
+                dest: erase_expr(dest, mode)?,
+                value: erase_expr(value, mode)?,
+                len: erase_expr(len, mode)?,
+            }
         }
         // Opaque kernel operations are erased by expanding their fixed
         // template, which arrives with the kernel-template slice. Until then
@@ -375,16 +419,40 @@ fn erase_expr(expression: WirExpr, mode: ErasureMode) -> Result<WirExpr, EncodeE
             to,
             arg: Box::new(erase_expr(*arg, mode)?),
         },
-        raw @ (WirExpr::Load { .. }
-        | WirExpr::MemorySize
-        | WirExpr::MemoryGrow(_)
-        | WirExpr::Load8U { .. }) => {
+        // As with raw nodes: an unmigrated raw load may already address a
+        // migrated operand, so its children are erased even though the load
+        // itself passes through.
+        WirExpr::Load { ptr, kind, offset } => {
             if mode == ErasureMode::Validated {
                 return Err(post_validation_violation(
                     "a raw linear-memory expression crossed final SafeWIR validation",
                 ));
             }
-            raw
+            WirExpr::Load { ptr: Box::new(erase_expr(*ptr, mode)?), kind, offset }
+        }
+        WirExpr::Load8U { ptr, offset } => {
+            if mode == ErasureMode::Validated {
+                return Err(post_validation_violation(
+                    "a raw linear-memory expression crossed final SafeWIR validation",
+                ));
+            }
+            WirExpr::Load8U { ptr: Box::new(erase_expr(*ptr, mode)?), offset }
+        }
+        WirExpr::MemoryGrow(pages) => {
+            if mode == ErasureMode::Validated {
+                return Err(post_validation_violation(
+                    "a raw linear-memory expression crossed final SafeWIR validation",
+                ));
+            }
+            WirExpr::MemoryGrow(Box::new(erase_expr(*pages, mode)?))
+        }
+        WirExpr::MemorySize => {
+            if mode == ErasureMode::Validated {
+                return Err(post_validation_violation(
+                    "a raw linear-memory expression crossed final SafeWIR validation",
+                ));
+            }
+            WirExpr::MemorySize
         }
         // Same as erase_node: the fixed-template expansion for opaque kernel
         // operations arrives with the kernel-template slice.

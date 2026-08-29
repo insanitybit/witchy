@@ -592,6 +592,38 @@ mod tests {
         );
     }
 
+    // The mixed case the bridge exists for, at NODE granularity: a raw memory
+    // node whose operand is already migrated. A partially converted helper
+    // produces exactly this -- `Store8 { value: SafeLoad8U { .. } }` -- and
+    // passing the raw node through untouched left SafeWIR inside it, where
+    // nothing downstream erases it and preflight rejects the whole function.
+    #[test]
+    fn migration_bridge_erases_inside_an_unmigrated_raw_node() {
+        let mixed = module(vec![WirNode::Store8 {
+            ptr: WirExpr::GetLocal("object".into()),
+            value: WirExpr::SafeLoad8U { place: place(AccessMode::Read, 0) },
+            offset: 0,
+        }]);
+        let encoded = crate::wir_encode::try_encode_with_gc_source_map(&mixed, &[], &[])
+            .expect("a raw node holding a migrated operand must still encode");
+
+        // And it erases to exactly the all-raw equivalent.
+        let all_raw = module(vec![WirNode::Store8 {
+            ptr: WirExpr::GetLocal("object".into()),
+            value: WirExpr::Load8U {
+                ptr: Box::new(WirExpr::GetLocal("object".into())),
+                offset: 0,
+            },
+            offset: 0,
+        }]);
+        let expected = crate::wir_encode::try_encode_with_gc_source_map(&all_raw, &[], &[])
+            .expect("the all-raw equivalent encodes");
+        assert_eq!(
+            encoded.wasm, expected.wasm,
+            "erasing inside a raw node must produce the same bytes",
+        );
+    }
+
     // `encoded_offset` is the field most likely to be dropped or normalized by
     // a future refactor of erasure, and every other bridge fixture uses zero.
     #[test]
