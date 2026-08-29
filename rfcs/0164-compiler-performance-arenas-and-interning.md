@@ -131,6 +131,30 @@ Both are real, both are kept. Neither changes the compiler's allocation
 *count*, which is why this RFC proposes going further rather than stopping
 here.
 
+### Coordination with RFC-0162 (SafeWIR)
+
+RFC-0162's active migration (`rfcs/0162-acceptance-ledger.md`) is converting
+roughly 584 candidate-WIR constructor sites across 25 production files in
+`witchy-wir`/`witchy-lower` to validated constructors, across several
+stacked `impl/rfc0162-*` branches. That is the same construction surface
+Phase 2 below would restructure (bump-allocating WIR nodes instead of
+`Vec<Box<...>>`).
+
+- **Phase 1 can run concurrently with SafeWIR.** It is scoped to
+  `witchy-types/src/typeck.rs` and the checker fixpoint, a different crate
+  with no file overlap with SafeWIR's construction sites.
+- **Phase 2 should wait for SafeWIR's migration to land or stabilize**, not
+  start alongside it. Two independent migrations rewriting the same
+  construction call sites at once is not just a rebase-conflict risk: doing
+  the arena-allocation work against constructor sites SafeWIR is still
+  restructuring underneath it means redoing that work once SafeWIR lands
+  anyway. Re-check `rfcs/0162-acceptance-ledger.md`'s checkpoint before
+  starting Phase 2 — this is a coordination note, not a hard gate; if
+  SafeWIR is terminally merged by the time Phase 1 is done, the ordering
+  concern is moot.
+- Phase 3 is `witchy-types`-scoped like Phase 1 and carries the same
+  concurrency latitude, independent of Phase 2's SafeWIR sequencing.
+
 ### Phase 1 — intern `typeck::Ty` (`witchy-types`)
 
 Replace `Ty`'s pervasive deep clones with a cheap, `Copy` handle (`TyId`, an
