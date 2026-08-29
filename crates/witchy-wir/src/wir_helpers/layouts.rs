@@ -124,3 +124,85 @@ pub(crate) fn byte_buffer_length_place(root: WirExpr, count: WirExpr) -> Box<Saf
     .runtime_buffer_length(SafeEncodedAddress::new(root, 0))
     .expect("the length word is at the descriptor's own header offset")
 }
+
+/// A checked place for one payload byte at `index` within a helper-allocated
+/// byte buffer.
+///
+/// The payload starts at descriptor offset 4 with stride 1. The builder
+/// normalizes an implicit stride-one index, so the encoded address is simply
+/// `root + 4 + index`.
+pub(crate) fn byte_buffer_payload_element_place(
+    root: WirExpr,
+    index: WirExpr,
+    count: WirExpr,
+    mode: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.byte_buffer,
+        SafeExactExtent::counted(count).expect("a helper count is an ordinary claim operand"),
+        root.clone(),
+        mode,
+    )
+    .expect("the helper byte-buffer layout is claimable")
+    .element(
+        index.clone(),
+        SafeEncodedAddress::new(
+            WirExpr::Binary {
+                op: crate::wir::BinOp::Add,
+                kind: crate::wir::Kind::I32,
+                lhs: Box::new(WirExpr::Binary {
+                    op: crate::wir::BinOp::Add,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(root),
+                    rhs: Box::new(WirExpr::ConstI32(4)),
+                }),
+                rhs: Box::new(index),
+            },
+            0,
+        ),
+    )
+    .expect("the payload element is claimable")
+}
+
+/// A checked place for a contiguous payload slice starting at `start` with
+/// length `len` within a helper-allocated byte buffer.
+///
+/// Used for bulk copy operations. Both operands must be leaves (locals or
+/// constants) for the validator to bind them.
+pub(crate) fn byte_buffer_payload_slice_place(
+    root: WirExpr,
+    start: WirExpr,
+    len: WirExpr,
+    count: WirExpr,
+    mode: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    // The encoded address is `root + start` with offset 4 to account for the header.
+    // For constant 0, this simplifies to just `root` with offset 4.
+    let encoded_base = if matches!(start, WirExpr::ConstI32(0)) {
+        root.clone()
+    } else {
+        WirExpr::Binary {
+            op: crate::wir::BinOp::Add,
+            kind: crate::wir::Kind::I32,
+            lhs: Box::new(root.clone()),
+            rhs: Box::new(start.clone()),
+        }
+    };
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.byte_buffer,
+        SafeExactExtent::counted(count).expect("a helper count is an ordinary claim operand"),
+        root,
+        mode,
+    )
+    .expect("the helper byte-buffer layout is claimable")
+    .slice(
+        start,
+        len,
+        SafeEncodedAddress::new(encoded_base, 4),
+    )
+    .expect("the payload slice is claimable")
+}

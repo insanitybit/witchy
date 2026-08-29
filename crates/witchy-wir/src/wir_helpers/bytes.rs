@@ -27,12 +27,15 @@ pub(super) fn bytes_at_helper() -> WirFunc {
     // The index is i64 and checked in i64 (see `list_at_helper` — the interpreter
     // indexes with `i as usize`, so an out-of-i32-range index must trap and carry
     // its true value); narrowed to i32 only after the check passes.
+    let len_i32 = || WirExpr::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("b")),
+        kind: Kind::I32,
+    };
     let len_i64 = || WirExpr::Convert {
         from: Kind::I32,
         to: Kind::I64,
-        arg: Box::new(WirExpr::Load { ptr: Box::new(getl("b")), kind: Kind::I32, offset: 0 }),
+        arg: Box::new(getl("len")),
     };
-    let i_i32 = || WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
     WirFunc {
         name: "bytes_at".into(),
         params: vec![
@@ -40,8 +43,12 @@ pub(super) fn bytes_at_helper() -> WirFunc {
             WirLocal { name: "i".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int], // i64 byte value 0..=255
-        locals: vec![],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "i32".into(), ty: WirTy::Bool },
+        ],
         body: vec![
+            WirNode::SetLocal { local: "len".into(), value: len_i32() },
             WirNode::If {
                 // i64 comparisons yield i32 — combine with `i32.or`.
                 cond: bin32(
@@ -54,12 +61,20 @@ pub(super) fn bytes_at_helper() -> WirFunc {
                 els: vec![],
                 result: None,
             },
+            WirNode::SetLocal {
+                local: "i32".into(),
+                value: WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) },
+            },
             WirNode::Push(WirExpr::Convert {
                 from: Kind::I32,
                 to: Kind::I64,
-                arg: Box::new(WirExpr::Load8U {
-                    ptr: Box::new(bin32(BinOp::Add, getl("b"), i_i32())),
-                    offset: 4,
+                arg: Box::new(WirExpr::SafeLoad8U {
+                    place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                        getl("b"),
+                        getl("i32"),
+                        getl("len"),
+                        crate::safewir::AccessMode::Read,
+                    ),
                 }),
             }),
         ],
@@ -108,10 +123,14 @@ pub(super) fn bytes_from_list_helper() -> WirFunc {
                     label: "l".into(),
                     body: vec![
                         N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
-                        N::Store8 {
-                            ptr: b(BinOp::Add, getl("res"), getl("i")),
+                        N::SafeStore8 {
+                            place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                                getl("res"),
+                                getl("i"),
+                                getl("len"),
+                                crate::safewir::AccessMode::Write,
+                            ),
                             value: byte_value(),
-                            offset: 4,
                         },
                         setl("i", b(BinOp::Add, getl("i"), i32c(1))),
                         N::Br { target: "l".into(), cond: None },
@@ -146,10 +165,14 @@ pub(super) fn bytes_slice_helper() -> WirFunc {
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     // `len` header is an i32; widen (unsigned) to i64 so all clamping is in i64.
-    let len_i64 = |p: E| E::Convert {
+    let len_i32 = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
+    let len_i64 = || E::Convert {
         from: Kind::I32,
         to: Kind::I64,
-        arg: Box::new(E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 }),
+        arg: Box::new(getl("len_i32")),
     };
     let to_i32 = |v: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(v) };
     WirFunc {
@@ -161,12 +184,14 @@ pub(super) fn bytes_slice_helper() -> WirFunc {
         ],
         ret: vec![WirTy::Str],
         locals: vec![
+            WirLocal { name: "len_i32".into(), ty: WirTy::Bool },
             WirLocal { name: "len".into(), ty: WirTy::Int },
             WirLocal { name: "lo".into(), ty: WirTy::Int },
             WirLocal { name: "hi".into(), ty: WirTy::Int },
         ],
         body: vec![
-            setl("len", len_i64(getl("src"))),
+            setl("len_i32", len_i32(getl("src"))),
+            setl("len", len_i64()),
             // lo = max(start, 0)
             setl("lo", getl("start")),
             N::If {
@@ -235,7 +260,10 @@ pub(super) fn bytes_to_string_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     WirFunc {
         name: "bytes_to_string".into(),
         params: vec![WirLocal { name: "b".into(), ty: WirTy::Str }],
@@ -311,11 +339,13 @@ pub(super) fn bytes_with_capacity_helper() -> WirFunc {
                     args: vec![b32(BinOp::Add, i32c(4), getl("c"))],
                 },
             },
-            N::Store {
-                ptr: getl("res"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("res"),
+                    i32c(0),
+                ),
                 value: i32c(0),
                 kind: Kind::I32,
-                offset: 0,
             },
             N::Push(getl("res")),
         ],
@@ -376,11 +406,13 @@ pub(super) fn bytes_repeat_helper() -> WirFunc {
                     args: vec![b32(BinOp::Add, i32c(4), getl("c"))],
                 },
             },
-            N::Store {
-                ptr: getl("res"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("res"),
+                    getl("c"),
+                ),
                 value: getl("c"),
                 kind: Kind::I32,
-                offset: 0,
             },
             N::SetLocal { local: "i".into(), value: i32c(0) },
             N::Block {
@@ -390,10 +422,14 @@ pub(super) fn bytes_repeat_helper() -> WirFunc {
                     label: "l".into(),
                     body: vec![
                         N::Br { target: "done".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("c"))) },
-                        N::Store8 {
-                            ptr: b32(BinOp::Add, getl("res"), getl("i")),
+                        N::SafeStore8 {
+                            place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                                getl("res"),
+                                getl("i"),
+                                getl("c"),
+                                crate::safewir::AccessMode::Write,
+                            ),
                             value: getl("v"),
-                            offset: 4,
                         },
                         N::SetLocal { local: "i".into(), value: b32(BinOp::Add, getl("i"), i32c(1)) },
                         N::Br { target: "l".into(), cond: None },
@@ -456,21 +492,40 @@ pub(super) fn bytes_push_helper() -> WirFunc {
                     args: vec![b32(BinOp::Add, i32c(4), getl("newlen"))],
                 },
             },
-            N::Store {
-                ptr: getl("new"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("new"),
+                    getl("newlen"),
+                ),
                 value: getl("newlen"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            N::MemoryCopy {
-                dest: b32(BinOp::Add, getl("new"), i32c(4)),
-                src: b32(BinOp::Add, getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("new"),
+                    i32c(0),
+                    getl("len"),
+                    getl("newlen"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("b"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Read,
+                ),
                 len: getl("len"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
-            N::Store8 {
-                ptr: b32(BinOp::Add, getl("new"), getl("len")),
+            N::SafeStore8 {
+                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    getl("new"),
+                    getl("len"),
+                    getl("newlen"),
+                    crate::safewir::AccessMode::Write,
+                ),
                 value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) },
-                offset: 4,
             },
             N::Push(getl("new")),
         ],
@@ -524,21 +579,49 @@ pub(super) fn bytes_append_helper() -> WirFunc {
                     args: vec![b32(BinOp::Add, i32c(4), getl("tot"))],
                 },
             },
-            N::Store {
-                ptr: getl("new"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("new"),
+                    getl("tot"),
+                ),
                 value: getl("tot"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            N::MemoryCopy {
-                dest: b32(BinOp::Add, getl("new"), i32c(4)),
-                src: b32(BinOp::Add, getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("new"),
+                    i32c(0),
+                    getl("blen"),
+                    getl("tot"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("b"),
+                    i32c(0),
+                    getl("blen"),
+                    getl("blen"),
+                    crate::safewir::AccessMode::Read,
+                ),
                 len: getl("blen"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
-            N::MemoryCopy {
-                dest: b32(BinOp::Add, b32(BinOp::Add, getl("new"), i32c(4)), getl("blen")),
-                src: b32(BinOp::Add, getl("suffix"), i32c(4)),
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("new"),
+                    getl("blen"),
+                    getl("slen"),
+                    getl("tot"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("suffix"),
+                    i32c(0),
+                    getl("slen"),
+                    getl("slen"),
+                    crate::safewir::AccessMode::Read,
+                ),
                 len: getl("slen"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
             N::Push(getl("new")),
         ],
@@ -592,16 +675,31 @@ pub(super) fn bytes_reserve_helper() -> WirFunc {
                     args: vec![b32(BinOp::Add, b32(BinOp::Add, i32c(4), getl("len")), getl("add32"))],
                 },
             },
-            N::Store {
-                ptr: getl("new"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("new"),
+                    getl("len"),
+                ),
                 value: getl("len"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            N::MemoryCopy {
-                dest: b32(BinOp::Add, getl("new"), i32c(4)),
-                src: b32(BinOp::Add, getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("new"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("b"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Read,
+                ),
                 len: getl("len"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
             N::Push(getl("new")),
         ],
@@ -626,8 +724,6 @@ pub(super) fn bytes_set_at_helper() -> WirFunc {
                     kind: Kind::I32,
                 }),
     };
-    let idx_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("idx")) };
-    let val_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) };
     WirFunc {
         name: "bytes_set_at".into(),
         params: vec![
@@ -639,6 +735,8 @@ pub(super) fn bytes_set_at_helper() -> WirFunc {
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx32".into(), ty: WirTy::Bool },
+            WirLocal { name: "val32".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::If {
@@ -669,27 +767,54 @@ pub(super) fn bytes_set_at_helper() -> WirFunc {
                 },
             },
             N::SetLocal {
+                local: "idx32".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("idx")) },
+            },
+            N::SetLocal {
+                local: "val32".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("val")) },
+            },
+            N::SetLocal {
                 local: "new".into(),
                 value: E::Call {
                     func: "rc_alloc".into(),
                     args: vec![b32(BinOp::Add, i32c(4), getl("len"))],
                 },
             },
-            N::Store {
-                ptr: getl("new"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("new"),
+                    getl("len"),
+                ),
                 value: getl("len"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            N::MemoryCopy {
-                dest: b32(BinOp::Add, getl("new"), i32c(4)),
-                src: b32(BinOp::Add, getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("new"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("b"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Read,
+                ),
                 len: getl("len"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
-            N::Store8 {
-                ptr: b32(BinOp::Add, getl("new"), idx_i32()),
-                value: val_i32(),
-                offset: 4,
+            N::SafeStore8 {
+                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    getl("new"),
+                    getl("idx32"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                value: getl("val32"),
             },
             N::Push(getl("new")),
         ],
@@ -713,8 +838,6 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
                     kind: Kind::I32,
                 }),
     };
-    let i_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
-    let j_i32 = || E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) };
     WirFunc {
         name: "bytes_swap".into(),
         params: vec![
@@ -726,10 +849,20 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "i32".into(), ty: WirTy::Bool },
+            WirLocal { name: "j32".into(), ty: WirTy::Bool },
             WirLocal { name: "bi".into(), ty: WirTy::Bool },
             WirLocal { name: "bj".into(), ty: WirTy::Bool },
         ],
         body: vec![
+            N::SetLocal {
+                local: "i32".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) },
+            },
+            N::SetLocal {
+                local: "j32".into(),
+                value: E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) },
+            },
             N::If {
                 cond: b32(
                     BinOp::Or,
@@ -764,40 +897,71 @@ pub(super) fn bytes_swap_helper() -> WirFunc {
                     args: vec![b32(BinOp::Add, i32c(4), getl("len"))],
                 },
             },
-            N::Store {
-                ptr: getl("new"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(
+                    getl("new"),
+                    getl("len"),
+                ),
                 value: getl("len"),
                 kind: Kind::I32,
-                offset: 0,
             },
-            N::MemoryCopy {
-                dest: b32(BinOp::Add, getl("new"), i32c(4)),
-                src: b32(BinOp::Add, getl("b"), i32c(4)),
+            N::SafeMemoryCopy {
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("new"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("b"),
+                    i32c(0),
+                    getl("len"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Read,
+                ),
                 len: getl("len"),
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
             },
             N::SetLocal {
                 local: "bi".into(),
-                value: E::Load8U {
-                    ptr: Box::new(b32(BinOp::Add, getl("b"), i_i32())),
-                    offset: 4,
+                value: E::SafeLoad8U {
+                    place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                        getl("b"),
+                        getl("i32"),
+                        getl("len"),
+                        crate::safewir::AccessMode::Read,
+                    ),
                 },
             },
             N::SetLocal {
                 local: "bj".into(),
-                value: E::Load8U {
-                    ptr: Box::new(b32(BinOp::Add, getl("b"), j_i32())),
-                    offset: 4,
+                value: E::SafeLoad8U {
+                    place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                        getl("b"),
+                        getl("j32"),
+                        getl("len"),
+                        crate::safewir::AccessMode::Read,
+                    ),
                 },
             },
-            N::Store8 {
-                ptr: b32(BinOp::Add, getl("new"), i_i32()),
+            N::SafeStore8 {
+                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    getl("new"),
+                    getl("i32"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Write,
+                ),
                 value: getl("bj"),
-                offset: 4,
             },
-            N::Store8 {
-                ptr: b32(BinOp::Add, getl("new"), j_i32()),
+            N::SafeStore8 {
+                place: crate::wir_helpers::layouts::byte_buffer_payload_element_place(
+                    getl("new"),
+                    getl("j32"),
+                    getl("len"),
+                    crate::safewir::AccessMode::Write,
+                ),
                 value: getl("bi"),
-                offset: 4,
             },
             N::Push(getl("new")),
         ],
