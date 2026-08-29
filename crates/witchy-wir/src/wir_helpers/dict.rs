@@ -1095,7 +1095,7 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
-    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    let val_at = |idx: &str| E::SafeLoad { place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl(idx), crate::wir_helpers::layouts::DICT_ROW_VALUE, getl("cap"), crate::safewir::AccessMode::Read), kind: Kind::I64 };
     let call_clos = |arg: E| E::CallIndirect {
         signature: gc_slot_closure_signature(1, 1),
         args: vec![getl("clos"), arg],
@@ -1180,7 +1180,7 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
-    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    let val_at = |idx: &str| E::SafeLoad { place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl(idx), crate::wir_helpers::layouts::DICT_ROW_VALUE, getl("cap"), crate::safewir::AccessMode::Read), kind: Kind::I64 };
     let call_clos = |arg: E| E::CallIndirect {
         signature: gc_slot_closure_signature(1, 1),
         args: vec![getl("clos"), arg],

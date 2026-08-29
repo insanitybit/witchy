@@ -91,13 +91,15 @@ pub(super) fn bytes_from_list_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load_len = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_len = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let slot_ptr = || b(BinOp::Add, b(BinOp::Add, getl("xs"), i32c(4)), b(BinOp::Mul, getl("i"), i32c(8)));
     let byte_value = || E::Convert {
         from: Kind::I64,
         to: Kind::I32,
-        arg: Box::new(E::Load { ptr: Box::new(slot_ptr()), kind: Kind::I64, offset: 0 }),
+        arg: Box::new(E::SafeLoad { place: crate::wir_helpers::layouts::slot_buffer_element_place(getl("xs"), getl("i"), getl("len"), crate::safewir::AccessMode::Read), kind: Kind::I64 }),
     };
     WirFunc {
         name: "bytes_from_list".into(),

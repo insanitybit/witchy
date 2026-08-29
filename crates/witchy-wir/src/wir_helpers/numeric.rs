@@ -215,7 +215,7 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             },
         N::If {
             cond: getl("neg"),
-            then_: vec![N::Store8 { ptr: getl("res"), value: i32c(45), offset: 4 }],
+            then_: vec![N::SafeStore8 { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), i32c(0), getl("len"), crate::safewir::AccessMode::Write), value: i32c(45) }],
             els: vec![],
             result: None,
         },
@@ -554,7 +554,7 @@ pub(crate) fn str_fmt_prefix_int_view_helper() -> WirFunc {
             WirLocal { name: "next".into(), ty: WirTy::Int },
         ],
         body: vec![
-            N::SetLocal { local: "plen".into(), value: E::Load { ptr: Box::new(get("prefix")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "plen".into(), value: E::SafeLoad { place: crate::wir_helpers::layouts::byte_buffer_length_read_place(get("prefix")), kind: Kind::I32 } },
             N::SetLocal { local: "neg".into(), value: b64(BinOp::Lt, get("n"), i64c(0)) },
             N::SetLocal { local: "mag".into(), value: E::Control(Box::new(N::If {
                 cond: get("neg"),
@@ -799,7 +799,10 @@ pub(crate) fn str_to_int_helper() -> WirFunc {
     let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let byte = || E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
             getl("s"),
