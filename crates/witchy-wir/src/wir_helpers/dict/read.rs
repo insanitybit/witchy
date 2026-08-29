@@ -52,6 +52,7 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
             WirLocal { name: "idx".into(), ty: WirTy::Bool },
             WirLocal { name: "bucket".into(), ty: WirTy::Bool },
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
+            WirLocal { name: "dcount".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
@@ -71,6 +72,14 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
                     },
                 ],
                 els: vec![
+                    // The dense count bounds the row `dict_find` returns. Reading the length
+                    // word is what ESTABLISHES that count, so it is claimed
+                    // `header_only` and bound to a local; a counted extent here would
+                    // be circular.
+                    N::SetLocal { local: "dcount".into(), value: E::SafeLoad {
+                        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                        kind: Kind::I32,
+                    } },
                     N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
                     N::If {
                         cond: b(BinOp::Lt, getl("found"), i32c(0)),
@@ -78,7 +87,7 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
                         els: vec![],
                         result: None,
                     },
-                    N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))), kind: Kind::I64, offset: 12 })),
+                    N::Return(Some(E::SafeLoad { place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl("found"), crate::wir_helpers::layouts::DICT_ROW_VALUE, getl("dcount"), crate::safewir::AccessMode::Read), kind: Kind::I64 })),
                 ],
                 result: None,
             },
@@ -124,6 +133,7 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
             WirLocal { name: "idx".into(), ty: WirTy::Bool },
             WirLocal { name: "bucket".into(), ty: WirTy::Bool },
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
+            WirLocal { name: "dcount".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
@@ -143,6 +153,14 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
                     },
                 ],
                 els: vec![
+                    // The dense count bounds the row `dict_find` returns. Reading the length
+                    // word is what ESTABLISHES that count, so it is claimed
+                    // `header_only` and bound to a local; a counted extent here would
+                    // be circular.
+                    N::SetLocal { local: "dcount".into(), value: E::SafeLoad {
+                        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                        kind: Kind::I32,
+                    } },
                     N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
                     N::If {
                         cond: b(BinOp::Lt, getl("found"), i32c(0)),
@@ -150,7 +168,7 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
                         els: vec![],
                         result: None,
                     },
-                    N::Return(Some(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))), kind: Kind::I64, offset: 12 })),
+                    N::Return(Some(E::SafeLoad { place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl("found"), crate::wir_helpers::layouts::DICT_ROW_VALUE, getl("dcount"), crate::safewir::AccessMode::Read), kind: Kind::I64 })),
                 ],
                 result: None,
             },
@@ -193,12 +211,17 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let dense_src = E::Load {
-        ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("i"), i32c(16)))),
+    // `entry_off` is the caller's byte offset within a row -- 4 for the key lane
+    // and 12 for the value lane. Translate it once into the descriptor's lane
+    // ordinal so the row descriptor, not this arithmetic, supplies the offset.
+    let lane = if entry_off == 4 { crate::wir_helpers::layouts::DICT_ROW_KEY } else { crate::wir_helpers::layouts::DICT_ROW_VALUE };
+    let dense_src = E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl("i"), lane, getl("count"), crate::safewir::AccessMode::Read),
         kind: Kind::I64,
-        offset: entry_off,
     };
-    let output_ptr = b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("i"), i32c(8)));
+    // The output is a fresh `count`-element slot list, so the same `count`
+    // bounds both objects.
+    let output_place = || crate::wir_helpers::layouts::slot_buffer_element_place(getl("new"), getl("i"), getl("count"), crate::safewir::AccessMode::Write);
     let scan = N::Block {
         label: "done".into(),
         result: None,
@@ -211,8 +234,8 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
                     // The dense entry is the owning source of truth. The
                     // carrier's value lane is maintenance metadata and may be
                     // shared across persistent replacements.
-                    then_: vec![N::Store { ptr: output_ptr.clone(), value: dense_src.clone(), kind: Kind::I64, offset: 4 }],
-                    els: vec![N::Store { ptr: output_ptr, value: dense_src.clone(), kind: Kind::I64, offset: 4 }],
+                    then_: vec![N::SafeStore { place: output_place(), value: dense_src.clone(), kind: Kind::I64 }],
+                    els: vec![N::SafeStore { place: output_place(), value: dense_src.clone(), kind: Kind::I64 }],
                     result: None,
                 },
                 setl("i", b(BinOp::Add, getl("i"), i32c(1))),
@@ -279,11 +302,26 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let entry = |off: u32| E::Load {
-        ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("i"), i32c(16)))),
+    // The caller's byte offset within a row becomes the descriptor's lane
+    // ordinal, so the row descriptor supplies the offset rather than this
+    // arithmetic.
+    let entry = |off: u32| E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(
+            getl("d"),
+            getl("i"),
+            if off == 4 { crate::wir_helpers::layouts::DICT_ROW_KEY } else { crate::wir_helpers::layouts::DICT_ROW_VALUE },
+            getl("count"),
+            crate::safewir::AccessMode::Read,
+        ),
         kind: Kind::I64,
-        offset: off,
     };
+    // A pair tuple is a twenty-byte `[tag][key][value]` block, which this helper
+    // already treats as a byte-buffer-shaped object -- its tag is written through
+    // `byte_buffer_length_place`. Its two eight-byte lanes are therefore payload
+    // slices, and sixteen payload bytes is the whole extent it was allocated with.
+    let tuple_lane = |start: i32| crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+        getl("tup"), i32c(start), i32c(8), i32c(16), crate::safewir::AccessMode::Write,
+    );
     let scan = N::Block {
         label: "done".into(),
         result: None,
@@ -301,21 +339,20 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
                 N::If {
                     cond: b(BinOp::Ne, getl("idx"), i32c(0)),
                     then_: vec![
-                        N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
-                        N::Store { ptr: getl("tup"), value: entry(12), kind: Kind::I64, offset: 12 },
+                        N::SafeStore { place: tuple_lane(0), value: entry(4), kind: Kind::I64 },
+                        N::SafeStore { place: tuple_lane(8), value: entry(12), kind: Kind::I64 },
                     ],
                     els: vec![
-                        N::Store { ptr: getl("tup"), value: entry(4), kind: Kind::I64, offset: 4 },
-                        N::Store { ptr: getl("tup"), value: entry(12), kind: Kind::I64, offset: 12 },
+                        N::SafeStore { place: tuple_lane(0), value: entry(4), kind: Kind::I64 },
+                        N::SafeStore { place: tuple_lane(8), value: entry(12), kind: Kind::I64 },
                     ],
                     result: None,
                 },
                 // list slot i ← tuple pointer (zero-extended into the i64 slot).
-                N::Store {
-                    ptr: b(BinOp::Add, getl("list"), b(BinOp::Mul, getl("i"), i32c(8))),
+                N::SafeStore {
+                    place: crate::wir_helpers::layouts::slot_buffer_element_place(getl("list"), getl("i"), getl("count"), crate::safewir::AccessMode::Write),
                     value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("tup")) },
                     kind: Kind::I64,
-                    offset: 4,
                 },
                 setl("i", b(BinOp::Add, getl("i"), i32c(1))),
                 N::Br { target: "l".into(), cond: None },
