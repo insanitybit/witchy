@@ -12,7 +12,7 @@ use crate::layout::{
     FieldKind, HeaderLayout, LayoutId, LayoutInterner, LayoutKind, LayoutSize, RootAnchor,
 };
 use crate::safewir::AccessMode;
-use crate::wir::WirExpr;
+use crate::wir::{BinOp, WirExpr};
 
 use super::{
     SafeExtentExpr, SafeObjectExpr, SafePlaceExpr, SafeProjectionExpr, SafeProjectionStep,
@@ -155,6 +155,85 @@ fn counted_length(
             Box::new(SafeSizeExpr::Constant(u64::from(stride))),
         )),
     )))
+}
+
+
+/// A bound on how much address arithmetic will be decomposed before giving up,
+/// so a pathological expression cannot make this walk unboundedly.
+const ADDRESS_GRAMMAR_TERM_LIMIT: usize = 64;
+
+/// One address expression decomposed into `root + index * stride + constant`.
+///
+/// This exists so the dynamic-index check can be a reconciliation against the
+/// descriptor rather than a catalogue of expression shapes. Helper code spells
+/// the same address several ways -- operands commuted, additions nested either
+/// way, constants split -- and matching each spelling would be a shape zoo of
+/// exactly the kind this codebase forbids. Flattening first means one rule.
+#[derive(Default)]
+struct AffineAddress<'expr> {
+    root: Option<&'expr WirExpr>,
+    scaled: Option<(&'expr WirExpr, u64)>,
+    constant: u64,
+}
+
+impl<'expr> AffineAddress<'expr> {
+    fn of(expression: &'expr WirExpr) -> Option<Self> {
+        let mut address = Self::default();
+        let mut terms = 0usize;
+        address.accumulate(expression, &mut terms).ok()?;
+        Some(address)
+    }
+
+    fn accumulate(
+        &mut self,
+        expression: &'expr WirExpr,
+        terms: &mut usize,
+    ) -> Result<(), SafePlaceBuildError> {
+        *terms += 1;
+        if *terms > ADDRESS_GRAMMAR_TERM_LIMIT {
+            return Err(SafePlaceBuildError::ArithmeticOverflow);
+        }
+        match expression {
+            // Addition is flattened and treated as commutative, so `a + b` and
+            // `b + a` decompose identically.
+            WirExpr::Binary { op: BinOp::Add, lhs, rhs, .. } => {
+                self.accumulate(lhs, terms)?;
+                self.accumulate(rhs, terms)
+            }
+            WirExpr::ConstI32(value) => {
+                let value = u64::try_from(*value)
+                    .map_err(|_| SafePlaceBuildError::ArithmeticOverflow)?;
+                self.constant = self
+                    .constant
+                    .checked_add(value)
+                    .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+                Ok(())
+            }
+            // A scaled term, in either operand order.
+            WirExpr::Binary { op: BinOp::Mul, lhs, rhs, .. } => {
+                let (operand, scale) = match (constant_u32(lhs)?, constant_u32(rhs)?) {
+                    (None, Some(scale)) => (lhs.as_ref(), scale),
+                    (Some(scale), None) => (rhs.as_ref(), scale),
+                    // Two constants would be a folded constant, and two
+                    // non-constants is not an affine address.
+                    _ => return Err(SafePlaceBuildError::ArithmeticOverflow),
+                };
+                if self.scaled.is_some() {
+                    return Err(SafePlaceBuildError::ArithmeticOverflow);
+                }
+                self.scaled = Some((operand, u64::from(scale)));
+                Ok(())
+            }
+            // Anything else is the root, and there may be only one.
+            other => {
+                if self.root.is_some() {
+                    return Err(SafePlaceBuildError::ArithmeticOverflow);
+                }
+                self.root = Some(other);
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -537,11 +616,42 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
                 role: "dynamic projection index",
             });
         }
-        if !same_address_leaf(&encoded.base, &self.object.root) {
+        // For a dynamic index the wasm address cannot be `root + immediate`, so
+        // asking whether `encoded.base` IS the root leaf is the wrong question.
+        // Decompose it instead and reconcile every term against the descriptor.
+        let Some(address) = AffineAddress::of(&encoded.base) else {
+            // Outside the affine grammar: the encoded base does not denote the
+            // claimed projection, which is the same failure the leaf-root case
+            // reports.
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        let Some(root) = address.root else {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        if !same_address_leaf(root, &self.object.root) {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         }
-        let _ = (base, stride);
-        Err(SafePlaceBuildError::DynamicEncodedAddressUnsupported { projection })
+        let Some((claimed_index, claimed_stride)) = address.scaled else {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        // The scaled operand must be the very index being claimed, not merely
+        // some index-shaped expression.
+        if !same_address_leaf(claimed_index, index) {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        // Stride and base come from the descriptor. A caller cannot supply
+        // either, so an address that walks by the wrong step is refused.
+        if claimed_stride != u64::from(stride) {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        let claimed_base = address
+            .constant
+            .checked_add(u64::from(encoded.offset))
+            .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+        if claimed_base != u64::from(base) {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        Ok(())
     }
 
     fn finish(
@@ -844,6 +954,124 @@ impl std::error::Error for SafePlaceBuildError {}
 mod tests {
     use super::*;
 
+    // RFC-0162 S2: a dynamic index means the wasm address is
+    // `root + base + index*stride`, so the old check -- "is encoded.base the
+    // root leaf?" -- could never succeed and every dynamic-index site was
+    // unreachable. The address is now decomposed and reconciled term by term
+    // against the descriptor.
+    fn dynamic_buffer(interner: &mut LayoutInterner) -> LayoutId {
+        let byte = interner.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        interner.intern_runtime_buffer(byte).expect("runtime buffer")
+    }
+
+    fn scaled_address(base: u32, index: &str, stride: i32) -> WirExpr {
+        WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::GetLocal("res".into())),
+            rhs: Box::new(WirExpr::Binary {
+                op: BinOp::Add,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::ConstI32(base as i32)),
+                rhs: Box::new(WirExpr::Binary {
+                    op: BinOp::Mul,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::GetLocal(index.into())),
+                    rhs: Box::new(WirExpr::ConstI32(stride)),
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_dynamic_index_address_is_reconciled_against_the_descriptor() {
+        let mut interner = LayoutInterner::default();
+        let buffer = dynamic_buffer(&mut interner);
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted"),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Read,
+        )
+        .expect("claimable");
+
+        // base 4, stride 1 both come from the RuntimeBuffer descriptor.
+        let place = builder
+            .element(
+                WirExpr::GetLocal("i".into()),
+                SafeEncodedAddress::new(scaled_address(4, "i", 1), 0),
+            )
+            .expect("a dynamic index is claimable once the address reconciles");
+        assert_eq!(place.encoded_offset, 0);
+    }
+
+    #[test]
+    fn a_dynamic_address_that_walks_by_the_wrong_stride_is_refused() {
+        let mut interner = LayoutInterner::default();
+        let buffer = dynamic_buffer(&mut interner);
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted"),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Read,
+        )
+        .expect("claimable");
+        // stride 8 where the descriptor says 1: this address does not land on
+        // an element boundary of THIS layout.
+        let refused = builder.element(
+            WirExpr::GetLocal("i".into()),
+            SafeEncodedAddress::new(scaled_address(4, "i", 8), 0),
+        );
+        assert!(refused.is_err(), "the descriptor's stride is not negotiable");
+
+        // And an address that scales a DIFFERENT operand than the claimed index.
+        let wrong_operand = builder.element(
+            WirExpr::GetLocal("i".into()),
+            SafeEncodedAddress::new(scaled_address(4, "j", 1), 0),
+        );
+        assert!(
+            wrong_operand.is_err(),
+            "the scaled operand must be the very index being claimed",
+        );
+    }
+
+    #[test]
+    fn address_decomposition_is_commutative_and_folds_split_constants() {
+        // `(2 + res) + (i * 1) + 2` is the same address as `res + 4 + i*1`.
+        let commuted = WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::Binary {
+                op: BinOp::Add,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::ConstI32(2)),
+                rhs: Box::new(WirExpr::GetLocal("res".into())),
+            }),
+            rhs: Box::new(WirExpr::Binary {
+                op: BinOp::Add,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::Binary {
+                    op: BinOp::Mul,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::ConstI32(1)),
+                    rhs: Box::new(WirExpr::GetLocal("i".into())),
+                }),
+                rhs: Box::new(WirExpr::ConstI32(2)),
+            }),
+        };
+        let address = AffineAddress::of(&commuted).expect("decomposes");
+        assert_eq!(address.constant, 4, "split constants fold");
+        assert!(
+            matches!(address.root, Some(WirExpr::GetLocal(name)) if name == "res"),
+            "the non-constant, non-scaled leaf is the root",
+        );
+        let (operand, stride) = address.scaled.expect("a scaled term");
+        assert_eq!(stride, 1, "the scale is read from either operand order");
+        assert!(matches!(operand, WirExpr::GetLocal(name) if name == "i"));
+    }
+
     // RFC-0162 S1: a runtime buffer keeps its length in an ordinary descriptor
     // field, not a HeaderLayout, so `header()` does not apply and
     // `fixed_field()` refuses it. This is the sanctioned accessor, and it emits
@@ -1137,19 +1365,27 @@ mod tests {
                 rhs: Box::new(WirExpr::ConstI32(8)),
             }),
         };
-        assert!(matches!(
-            builder.element(
-                WirExpr::GetLocal("index".into()),
-                SafeEncodedAddress::new(indexed, 8),
-            ),
-            Err(SafePlaceBuildError::EncodedBaseMismatch { .. })
-        ));
+        // `root + index*8` with an immediate 8 IS the correct address for
+        // element `index` of a stride-8 list. It was refused only because no
+        // dynamic address could be proved at all; S2 reconciles it against the
+        // descriptor and accepts it.
+        assert!(
+            builder
+                .element(
+                    WirExpr::GetLocal("index".into()),
+                    SafeEncodedAddress::new(indexed, 8),
+                )
+                .is_ok(),
+            "a correctly-formed dynamic element address is now provable",
+        );
+        // A bare root carries no index term, so it cannot denote a dynamic
+        // element address whatever the immediate says.
         assert!(matches!(
             builder.element(
                 WirExpr::GetLocal("index".into()),
                 SafeEncodedAddress::new(root(), 8),
             ),
-            Err(SafePlaceBuildError::DynamicEncodedAddressUnsupported { .. })
+            Err(SafePlaceBuildError::EncodedBaseMismatch { .. })
         ));
     }
 
