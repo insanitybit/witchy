@@ -936,7 +936,7 @@ impl<'a> FunctionAdapter<'a> {
         }
     }
 
-    fn place(&self, place: &SafePlaceExpr) -> Result<Place, FinalWirValidationError> {
+    fn place(&mut self, place: &SafePlaceExpr) -> Result<Place, FinalWirValidationError> {
         if self.scalar_key(&place.object.root)? != self.scalar_key(&place.range.object_root)?
             || self.scalar_key(&place.object.root)? != self.scalar_key(&place.encoded_base)?
         {
@@ -958,7 +958,7 @@ impl<'a> FunctionAdapter<'a> {
                 "object roots require a checked memory-bearing parameter binding",
             ));
         }
-        let start = size(&place.range.start)?;
+        let start = self.size_at(&place.range.start)?;
         if start != SizeExpr::Constant(u64::from(place.encoded_offset)) {
             return Err(self.error(
                 "executable immediate offset contradicts the claimed byte-range start",
@@ -980,29 +980,29 @@ impl<'a> FunctionAdapter<'a> {
             object: ObjectRef {
                 identity,
                 layout: place.object.layout,
-                extent: extent(&place.object.extent)?,
+                extent: self.extent_at(&place.object.extent)?,
                 provenance,
             },
-            projection: projection(place)?,
+            projection: self.projection_at(place)?,
             range: ByteRange {
                 object: identity,
                 start,
-                length: size(&place.range.length)?,
+                length: self.size_at(&place.range.length)?,
             },
             access: place.access,
         })
     }
 
     fn require_constant_bulk_length(
-        &self,
+        &mut self,
         executable: &WirExpr,
         first: &SafePlaceExpr,
         second: &SafePlaceExpr,
     ) -> Result<(), FinalWirValidationError> {
         let executable = constant_u64(executable)
             .ok_or_else(|| self.error("bulk length is not an exact nonnegative constant"))?;
-        let first = size(&first.range.length)?;
-        let second = size(&second.range.length)?;
+        let first = self.size_at(&first.range.length)?;
+        let second = self.size_at(&second.range.length)?;
         if first != SizeExpr::Constant(executable) || second != SizeExpr::Constant(executable) {
             return Err(self.error(
                 "executable bulk length contradicts one or both checked ranges",
@@ -1072,58 +1072,136 @@ fn contract_size(size: &ContractSizeExpr) -> Result<SizeExpr, FinalWirValidation
     }
 }
 
-fn extent(extent: &SafeExtentExpr) -> Result<Extent, FinalWirValidationError> {
-    match extent {
-        SafeExtentExpr::Unknown => Ok(Extent::Unknown),
-        SafeExtentExpr::Exact(value) => Ok(Extent::Exact(size(value)?)),
-        SafeExtentExpr::Counted { .. } => Err(FinalWirValidationError::module(
-            "counted executable extents require exact scalar definition bindings",
-        )),
-        SafeExtentExpr::ClosedSum => Err(FinalWirValidationError::module(
-            "closed-sum extents require the deferred def-use adapter",
-        )),
-    }
-}
-
-fn size(expression: &SafeSizeExpr) -> Result<SizeExpr, FinalWirValidationError> {
+/// The literal value of an executable operand, when it has one.
+///
+/// Deliberately only literals. A `GetLocal` also denotes a scalar, but naming
+/// *which* definition reaches this read is the def-use adapter's job; guessing
+/// here would bind a fact to whichever write happened to be last.
+fn constant_operand(expression: &WirExpr) -> Option<i128> {
     match expression {
-        SafeSizeExpr::Constant(value) => Ok(SizeExpr::Constant(*value)),
-        SafeSizeExpr::Add(left, right) => Ok(SizeExpr::add(size(left)?, size(right)?)),
-        SafeSizeExpr::Multiply(left, right) => {
-            Ok(SizeExpr::multiply(size(left)?, size(right)?))
-        }
-        SafeSizeExpr::NarrowU32(value) => Ok(SizeExpr::narrow_u32(size(value)?)),
-        SafeSizeExpr::Value(_) => Err(FinalWirValidationError::module(
-            "symbolic size expressions require exact reaching definitions",
-        )),
+        WirExpr::ConstI32(value) => Some(i128::from(*value)),
+        WirExpr::ConstI64(value) => Some(i128::from(*value)),
+        _ => None,
     }
 }
 
-fn projection(place: &SafePlaceExpr) -> Result<Projection, FinalWirValidationError> {
-    let mut steps = Vec::with_capacity(place.projection.steps().len());
-    for step in place.projection.steps() {
-        steps.push(match step {
-            SafeProjectionStep::Header { component } => {
-                ProjectionStep::Header { component: *component }
-            }
-            SafeProjectionStep::Field { index } => ProjectionStep::Field { index: *index },
-            SafeProjectionStep::Element { .. }
-            | SafeProjectionStep::Slice { .. }
-            | SafeProjectionStep::DerivedElement { .. }
-            | SafeProjectionStep::DerivedScratchElement { .. } => {
-                return Err(FinalWirValidationError::module(
-                    "indexed projections require exact reaching definitions",
-                ));
-            }
-            SafeProjectionStep::SumTag | SafeProjectionStep::VariantField { .. } => {
-                return Err(FinalWirValidationError::module(
-                    "closed-sum projections require the deferred def-use adapter",
-                ));
-            }
-        });
+impl FunctionAdapter<'_> {
+    /// Mint an exact scalar definition for a literal.
+    fn constant_definition(
+        &mut self,
+        value: i128,
+    ) -> Result<DefinitionId, FinalWirValidationError> {
+        let definition = self.fresh_definition()?;
+        self.operations.push(Operation::DefineScalar { definition, value });
+        Ok(definition)
     }
-    Ok(Projection::from_steps(steps))
+
+    /// Bind one executable operand to an exact scalar definition, for operands
+    /// whose value is a literal.
+    fn constant_operand_definition(
+        &mut self,
+        expression: &WirExpr,
+        role: &'static str,
+    ) -> Result<DefinitionId, FinalWirValidationError> {
+        let Some(value) = constant_operand(expression) else {
+            return Err(FinalWirValidationError::module(format!(
+                "{role} is not a literal; a runtime operand requires exact reaching definitions"
+            )));
+        };
+        if value < 0 {
+            return Err(FinalWirValidationError::module(format!(
+                "{role} must not be negative"
+            )));
+        }
+        self.constant_definition(value)
+    }
+
+    fn extent_at(
+        &mut self,
+        extent: &SafeExtentExpr,
+    ) -> Result<Extent, FinalWirValidationError> {
+        match extent {
+            SafeExtentExpr::Unknown => Ok(Extent::Unknown),
+            SafeExtentExpr::Exact(value) => Ok(Extent::Exact(self.size_at(value)?)),
+            SafeExtentExpr::Counted { header, count, stride } => {
+                let header = self.size_at(header)?;
+                let stride = self.size_at(stride)?;
+                let count = self.constant_operand_definition(count, "a counted extent's count")?;
+                Ok(Extent::Counted { header, count, stride })
+            }
+            SafeExtentExpr::ClosedSum => Err(FinalWirValidationError::module(
+                "closed-sum extents require the deferred def-use adapter",
+            )),
+        }
+    }
+
+    fn size_at(
+        &mut self,
+        expression: &SafeSizeExpr,
+    ) -> Result<SizeExpr, FinalWirValidationError> {
+        match expression {
+            SafeSizeExpr::Constant(value) => Ok(SizeExpr::Constant(*value)),
+            SafeSizeExpr::Add(left, right) => {
+                let left = self.size_at(left)?;
+                let right = self.size_at(right)?;
+                Ok(SizeExpr::add(left, right))
+            }
+            SafeSizeExpr::Multiply(left, right) => {
+                let left = self.size_at(left)?;
+                let right = self.size_at(right)?;
+                Ok(SizeExpr::multiply(left, right))
+            }
+            SafeSizeExpr::NarrowU32(value) => {
+                let value = self.size_at(value)?;
+                Ok(SizeExpr::narrow_u32(value))
+            }
+            SafeSizeExpr::Value(expression) => {
+                let definition =
+                    self.constant_operand_definition(expression, "a symbolic size operand")?;
+                Ok(SizeExpr::Definition(definition))
+            }
+        }
+    }
+
+    fn projection_at(
+        &mut self,
+        place: &SafePlaceExpr,
+    ) -> Result<Projection, FinalWirValidationError> {
+        let mut steps = Vec::with_capacity(place.projection.steps().len());
+        for step in place.projection.steps() {
+            steps.push(match step {
+                SafeProjectionStep::Header { component } => {
+                    ProjectionStep::Header { component: *component }
+                }
+                SafeProjectionStep::Field { index } => ProjectionStep::Field { index: *index },
+                SafeProjectionStep::Element { index } => ProjectionStep::Element {
+                    index: self.constant_operand_definition(index, "an element index")?,
+                },
+                SafeProjectionStep::Slice { start, length } => {
+                    let start = self.constant_operand_definition(start, "a slice start")?;
+                    let length = self.constant_operand_definition(length, "a slice length")?;
+                    ProjectionStep::Slice { start, length }
+                }
+                // Scratch-kernel markers. These are not an indexed projection
+                // with a literal index; they carry their own contract and the
+                // scratch track owns them.
+                SafeProjectionStep::DerivedElement { .. }
+                | SafeProjectionStep::DerivedScratchElement { .. } => {
+                    return Err(FinalWirValidationError::module(
+                        "derived scratch projections require the deferred def-use adapter",
+                    ));
+                }
+                SafeProjectionStep::SumTag | SafeProjectionStep::VariantField { .. } => {
+                    return Err(FinalWirValidationError::module(
+                        "closed-sum projections require the deferred def-use adapter",
+                    ));
+                }
+            });
+        }
+        Ok(Projection::from_steps(steps))
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1293,6 +1371,52 @@ mod tests {
     }
 
     #[test]
+    // RFC-0162 A1-const: an indexed projection and a counted extent are
+    // dischargeable when every operand is a literal. Before this the adapter
+    // rejected them outright with "indexed projections require exact reaching
+    // definitions", so even a constant index was unreachable and S1's runtime
+    // buffer work could not be used end to end.
+    //
+    // Runtime operands still reject: naming WHICH definition reaches a
+    // `GetLocal` read is the def-use adapter's job, and guessing here would
+    // bind a fact to whichever write happened to be last.
+    #[test]
+    fn a_literal_index_binds_to_an_exact_scalar_definition() {
+        let (layout_bundle, layout) = layouts();
+        let mut place = semantic_place(layout);
+        place.projection = SafeProjectionExpr::from_steps([SafeProjectionStep::Element {
+            index: Box::new(WirExpr::ConstI32(0)),
+        }]);
+        let literal = validate_final_wir_report(
+            &module(WirExpr::SafeLoad { place, kind: Kind::I64 }),
+            &[],
+            &[],
+            inputs(layout_bundle.clone(), layout),
+            ValidationBudget::default(),
+        );
+        assert!(
+            !matches!(&literal, Err(error) if error.to_string().contains("exact reaching definitions")),
+            "a literal index must not be turned away for lacking reaching definitions: {literal:?}",
+        );
+
+        let mut runtime = semantic_place(layout);
+        runtime.projection = SafeProjectionExpr::from_steps([SafeProjectionStep::Element {
+            index: Box::new(WirExpr::GetLocal("i".into())),
+        }]);
+        let error = validate_final_wir_report(
+            &module(WirExpr::SafeLoad { place: runtime, kind: Kind::I64 }),
+            &[],
+            &[],
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .expect_err("a runtime index still requires exact reaching definitions");
+        assert!(
+            error.to_string().contains("exact reaching definitions"),
+            "the runtime case must say what it is missing: {error}",
+        );
+    }
+
     fn final_wir_report_maps_one_parameter_rooted_semantic_load() {
         let (layout_bundle, layout) = layouts();
         let report = validate_final_wir_report(
