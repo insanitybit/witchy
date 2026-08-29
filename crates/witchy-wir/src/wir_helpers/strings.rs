@@ -22,7 +22,10 @@ pub(crate) fn str_eq_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
-    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_i32 = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
     let byte_at = |base: &str| E::Load8U {
@@ -143,7 +146,10 @@ pub(crate) fn str_cmp_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
-    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_i32 = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let ptr_at = |base: &str| bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"));
     let byte_at = |base: &str| E::Load8U {
@@ -914,7 +920,10 @@ pub(in crate::wir_helpers) fn str_find_byte_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
-    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load_i32 = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let ptr_at = || bin(BinOp::Add, bin(BinOp::Add, getl("s"), i32c(4)), getl("i"));
     let byte_at = || E::Load8U { ptr: Box::new(ptr_at()), offset: 0 };
