@@ -17,6 +17,7 @@
 // `::new()`/`::with_capacity()` for the aliased types.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use std::fmt;
+use std::rc::Rc;
 
 use witchy_syntax::ast::{
     self, Block, CallableQualifiers, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
@@ -90,7 +91,7 @@ fn type_is_explicit_reference(ty: &ast::Type) -> bool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     Int,
     Float,
@@ -138,11 +139,21 @@ pub enum Ty {
     BuildEnv,
     BuildNet,
     BuildExec,
-    List(Box<Ty>),
-    Tuple(Vec<Ty>),
+    // RFC-0164 Phase 1: these five recursive variants used to own their
+    // payload directly (`Box<Ty>`/`String`/`Vec<Ty>`), so the derived `Clone`
+    // below did a full deep copy on every call -- profiled as a dominant
+    // compile-time cost (`Ty::clone` and its drop-glue as hot leaves, the
+    // checker's annotate/mono fixpoint re-cloning the same types across
+    // rounds). `Rc` makes `.clone()` here an O(1) refcount bump; every
+    // existing `.clone()` call site needed zero changes. Read-only usage
+    // (`match`, iteration, indexing, `==`) is unaffected by Deref coercion;
+    // a site that needs an OWNED `String`/`Vec<Ty>` uses `.to_string()`/
+    // `.to_vec()`, and a construction site uses `.into()`.
+    List(Rc<Ty>),
+    Tuple(Rc<[Ty]>),
     /// A user-declared type, possibly with type arguments: `Option(Int)`,
     /// `Result(String, Error)`. Non-generic types carry an empty argument list.
-    Named(String, Vec<Ty>),
+    Named(Rc<str>, Rc<[Ty]>),
     /// (RFC-0081) A first-class existential identity: the RESOLVED bare trait
     /// name plus its fully substituted type arguments (`dyn Render`,
     /// `dyn Convert(Int)`). Never a guessed type name: the head comes from the
@@ -152,12 +163,12 @@ pub enum Ty {
     /// share one identity. Two existentials unify only on the same head, same
     /// arity, and pairwise-unifying arguments — `dyn Sub` never unifies with
     /// `dyn Super` in this slice.
-    Dyn(String, Vec<Ty>),
+    Dyn(Rc<str>, Rc<[Ty]>),
     /// A function type: parameter types, return type, conventions, and explicit
     /// mutable-reference positions.  The final vector is semantic identity, not
     /// an ABI convention: `let x: &'a mut T` accepts `&mut place`, whereas a
     /// `var x: T` accepts a caller write-back place.
-    Fn(Vec<Ty>, Box<Ty>, Vec<Convention>, Vec<bool>, CallableQualifiers),
+    Fn(Rc<[Ty]>, Rc<Ty>, Rc<[Convention]>, Rc<[bool]>, CallableQualifiers),
     Var(u32),
 }
 
@@ -264,13 +275,13 @@ fn collect_callable_lifetime_markers(ty: &Ty, markers: &mut HashMap<String, Stri
             if let Ty::Named(name, arguments) = ty
                 && arguments.is_empty()
                 && name.starts_with('\'')
-                && !markers.contains_key(name)
+                && !markers.contains_key(name.as_ref())
             {
                 let canonical = format!("'__witchy_bound_{}", markers.len());
-                markers.insert(name.clone(), canonical);
+                markers.insert(name.to_string(), canonical);
                 return;
             }
-            for item in items {
+            for item in items.iter() {
                 collect_callable_lifetime_markers(item, markers);
             }
         }
@@ -312,7 +323,7 @@ fn normalize_callable_lifetime_markers(
     match ty {
         Ty::List(element) => Ty::List(Box::new(normalize_callable_lifetime_markers(
             element, markers,
-        ))),
+        )).into()),
         Ty::Tuple(items) => Ty::Tuple(
             items
                 .iter()
@@ -321,9 +332,9 @@ fn normalize_callable_lifetime_markers(
         ),
         Ty::Named(name, arguments) => {
             if arguments.is_empty()
-                && let Some(canonical) = markers.get(name)
+                && let Some(canonical) = markers.get(name.as_ref())
             {
-                return Ty::Named(canonical.clone(), Vec::new());
+                return Ty::Named(canonical.clone().into(), Vec::new().into());
             }
             Ty::Named(
                 name.clone(),
@@ -342,7 +353,7 @@ fn normalize_callable_lifetime_markers(
         ),
             Ty::Fn(parameters, result, conventions, reference_params, qualifiers) => {
             let (parameters, result) = alpha_normalize_callable(parameters, result);
-                Ty::Fn(parameters, Box::new(result), conventions.clone(), reference_params.clone(), *qualifiers)
+                Ty::Fn(parameters.into(), Box::new(result).into(), conventions.clone(), reference_params.clone(), *qualifiers)
         }
         other => other.clone(),
     }
@@ -2745,7 +2756,7 @@ enum FloatKeyKind {
 /// `Eq`. `None` when there is no such Float.
 fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
     match t {
-        Ty::Named(n, args) if n == "Dict" => {
+        Ty::Named(n, args) if **n == *"Dict" => {
             // args[0] = key, args[1] = value. A Float directly as the key is the
             // reject; otherwise recurse into BOTH (a nested dict/set anywhere).
             if matches!(args.first(), Some(Ty::Float)) {
@@ -2753,7 +2764,7 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
             }
             args.iter().find_map(float_key_position)
         }
-        Ty::Named(n, args) if n == "Set" => {
+        Ty::Named(n, args) if **n == *"Set" => {
             if matches!(args.first(), Some(Ty::Float)) {
                 return Some(FloatKeyKind::SetMember);
             }
@@ -2819,7 +2830,7 @@ fn equality_reject_message(kind: Uncomparable, ty: &Ty) -> String {
     // Tuple, or a generic like `Option`/`Result`) rather than the fn/capability
     // itself. `SecretStore` is the one capability spelled as a `Named` type.
     let nested = matches!(ty, Ty::List(_) | Ty::Tuple(_))
-        || matches!(ty, Ty::Named(n, _) if n != "SecretStore");
+        || matches!(ty, Ty::Named(n, _) if **n != *"SecretStore");
     let where_ = if nested { format!(" (found nested in `{ty}`)") } else { String::new() };
     match kind {
         Uncomparable::Function => format!(
@@ -3777,6 +3788,12 @@ enum SuspensionTransferKind {
 }
 
 struct Checker {
+    /// RFC-0164 Phase 3: memoizes `resolve`, invalidated by `bind_subst_var`/
+    /// `restore_subst` (the only two ways `subst` changes) rather than on
+    /// every read, so it survives across the many `resolve` calls between
+    /// mutations. `RefCell` because `resolve` takes `&self` -- most of its
+    /// callers hold other borrows of `self` alongside it.
+    resolve_cache: std::cell::RefCell<HashMap<u32, Ty>>,
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     type_record: Option<HashMap<usize, Ty>>,
@@ -4160,7 +4177,7 @@ impl Checker {
                     Some(a) => elem(self, a),
                     None => self.fresh(),
                 };
-                Ty::List(Box::new(e))
+                Ty::List(Box::new(e).into())
             }
             _ => return None,
         })
@@ -4176,7 +4193,7 @@ impl Checker {
             ast::Type::Qualified(_, inner) => return self.to_ty(inner),
             ast::Type::Slice(elem) => {
                 let inner = self.to_ty(elem);
-                return Ty::Named("Slice".into(), vec![inner]);
+                return Ty::Named("Slice".into(), vec![inner].into());
             }
             ast::Type::Named(name, args) => (name, args),
             ast::Type::Tuple(ts) => {
@@ -4188,8 +4205,8 @@ impl Checker {
             ast::Type::Fn(params, ret, conventions, qualifiers) => {
                 return Ty::Fn(
                     params.iter().map(|t| self.to_ty(t)).collect(),
-                    Box::new(self.to_ty(ret)),
-                    conventions.clone(),
+                    Box::new(self.to_ty(ret)).into(),
+                    conventions.clone().into(),
                     params.iter().map(type_is_exclusive_reference).collect(),
                     *qualifiers,
                 );
@@ -4199,7 +4216,7 @@ impl Checker {
             // resolution, so aliases normalize to the same identity).
             ast::Type::Dyn(name, args) => {
                 return Ty::Dyn(
-                    name.clone(),
+                    name.clone().into(),
                     args.iter().map(|a| self.to_ty(a)).collect(),
                 );
             }
@@ -4224,7 +4241,7 @@ impl Checker {
         {
             return Ty::Var(self.current_typarams[name.as_str()]);
         }
-        Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect())
+        Ty::Named(name.clone().into(), args.iter().map(|a| self.to_ty(a)).collect())
     }
 
     /// Like `to_ty`, but a lowercase, argument-less type name becomes a type
@@ -4235,7 +4252,7 @@ impl Checker {
             ast::Type::Qualified(_, inner) => self.to_ty_generic(inner, vars),
             ast::Type::Slice(elem) => {
                 let inner = self.to_ty_generic(elem, vars);
-                Ty::Named("Slice".into(), vec![inner])
+                Ty::Named("Slice".into(), vec![inner].into())
             }
             ast::Type::Tuple(ts) => {
                 if ts.is_empty() {
@@ -4245,8 +4262,8 @@ impl Checker {
             }
             ast::Type::Fn(params, ret, conventions, qualifiers) => Ty::Fn(
                 params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
-                Box::new(self.to_ty_generic(ret, vars)),
-                conventions.clone(),
+                Box::new(self.to_ty_generic(ret, vars)).into(),
+                conventions.clone().into(),
                 params.iter().map(type_is_exclusive_reference).collect(),
                 *qualifiers,
             ),
@@ -4254,7 +4271,7 @@ impl Checker {
             // a signature's generic vars inside `dyn T(a)` stay shared (the
             // existential validation pass separately rejects unresolved args).
             ast::Type::Dyn(name, args) => Ty::Dyn(
-                name.clone(),
+                name.clone().into(),
                 args.iter().map(|a| self.to_ty_generic(a, vars)).collect(),
             ),
             ast::Type::RecordCompose { .. } => unreachable!(
@@ -4279,7 +4296,7 @@ impl Checker {
                     return v;
                 }
                 Ty::Named(
-                    name.clone(),
+                    name.clone().into(),
                     args.iter()
                         .map(|a| self.to_ty_generic(a, vars))
                         .collect(),
@@ -4335,7 +4352,7 @@ impl Checker {
     fn subst_vars(&self, t: &Ty, map: &HashMap<u32, Ty>) -> Ty {
         match self.resolve(t) {
             Ty::Var(v) => map.get(&v).cloned().unwrap_or(Ty::Var(v)),
-            Ty::List(e) => Ty::List(Box::new(self.subst_vars(&e, map))),
+            Ty::List(e) => Ty::List(Box::new(self.subst_vars(&e, map)).into()),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|x| self.subst_vars(x, map)).collect()),
             Ty::Named(n, args) => {
                 Ty::Named(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
@@ -4345,7 +4362,7 @@ impl Checker {
             }
             Ty::Fn(params, ret, conventions, reference_params, qualifiers) => Ty::Fn(
                 params.iter().map(|x| self.subst_vars(x, map)).collect(),
-                Box::new(self.subst_vars(&ret, map)),
+                Box::new(self.subst_vars(&ret, map)).into(),
                 conventions,
                 reference_params,
                 qualifiers,
@@ -4354,25 +4371,71 @@ impl Checker {
         }
     }
 
+    // RFC-0164 Phase 3: `resolve` is the checker's single hottest call after
+    // Phase 1's Ty interning (sample-profiled, ~2nd-costliest leaf on an
+    // ordinary compile) -- it recurses over the WHOLE structure of every type
+    // it's handed and rebuilds a fresh value at every level, even for a type
+    // with no unresolved variable anywhere in it (the common case once
+    // unification has settled for that subtree). Phase 1 made `Ty::clone()`
+    // an O(1) Rc bump, but `resolve` still paid an O(size) *reconstruction*
+    // regardless of whether anything actually changed.
+    //
+    // First cut of this cache keyed on the whole input `Ty` (any structural
+    // duplicate hits): measured WORSE on a fresh profile -- hashing a large
+    // compound `Ty` costs about as much as rebuilding it, and most calls
+    // reach `resolve` with a structurally distinct argument (a different
+    // expression's type), so the miss path pays hashing on top of the
+    // unchanged rebuild cost with little hit-rate to amortize it.
+    //
+    // Keyed on the bound type VARIABLE instead: `Ty::Var(v)` is the only
+    // variant that can actually contain something unification changed, and a
+    // shared variable (a let-binding's inferred type, a callee's return type
+    // variable) is resolved from many call sites over the checker's
+    // lifetime, so THIS cache sees real repeat traffic. The key is a `u32`
+    // (hashes for free) rather than the type it's bound to, so a miss costs
+    // nothing beyond what resolving would have cost anyway.
     fn resolve(&self, t: &Ty) -> Ty {
         match t {
-            Ty::Var(v) => match self.subst.get(v) {
-                Some(bound) => self.resolve(bound),
-                None => t.clone(),
-            },
-            Ty::List(e) => Ty::List(Box::new(self.resolve(e))),
+            Ty::Var(v) => {
+                if let Some(cached) = self.resolve_cache.borrow().get(v) {
+                    return cached.clone();
+                }
+                let result = match self.subst.get(v) {
+                    Some(bound) => self.resolve(bound),
+                    None => t.clone(),
+                };
+                self.resolve_cache.borrow_mut().insert(*v, result.clone());
+                result
+            }
+            Ty::List(e) => Ty::List(Rc::new(self.resolve(e))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             Ty::Dyn(n, args) => Ty::Dyn(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             Ty::Fn(params, ret, conventions, reference_params, qualifiers) => Ty::Fn(
                 params.iter().map(|t| self.resolve(t)).collect(),
-                Box::new(self.resolve(ret)),
+                Rc::new(self.resolve(ret)),
                 conventions.clone(),
                 reference_params.clone(),
                 *qualifiers,
             ),
             _ => t.clone(),
         }
+    }
+
+    /// The only two ways `self.subst` may change: bind one more variable, or
+    /// roll back to an earlier snapshot (speculative unification's undo).
+    /// Both invalidate `resolve_cache` -- a stale entry would answer with a
+    /// type variable's PREVIOUS binding. Route every mutation through these
+    /// rather than `self.subst.insert`/`self.subst = ...` directly, so a
+    /// future write can't forget to invalidate.
+    fn bind_subst_var(&mut self, v: u32, ty: Ty) {
+        self.subst.insert(v, ty);
+        self.resolve_cache.borrow_mut().clear();
+    }
+
+    fn restore_subst(&mut self, saved: HashMap<u32, Ty>) {
+        self.subst = saved;
+        self.resolve_cache.borrow_mut().clear();
     }
 
     fn same_resolved_type(&self, a: &Ty, b: &Ty) -> bool {
@@ -4382,7 +4445,7 @@ impl Checker {
             (Ty::Named(x, xa), Ty::Named(y, ya))
                 if same_builtin_nominal_head(x, y) && xa.len() == ya.len() =>
             {
-                xa.iter().zip(ya).all(|(x, y)| self.same_resolved_type(x, y))
+                xa.iter().zip(ya.iter()).all(|(x, y)| self.same_resolved_type(x, y))
             }
             _ => a == b,
         }
@@ -4424,12 +4487,12 @@ impl Checker {
                     dst_tag == src_tag && dst_fields.len() == src_fields.len()
                 })
             else {
-                self.subst = saved_subst;
+                self.restore_subst(saved_subst);
                 return Ok(false);
             };
             for (dst_field, src_field) in dst_fields.iter().zip(src_fields) {
                 if self.unify(dst_field, src_field).is_err() {
-                    self.subst = saved_subst;
+                    self.restore_subst(saved_subst);
                     return Ok(false);
                 }
             }
@@ -4459,22 +4522,22 @@ impl Checker {
                 // so only its type arguments need checking.
                 Ty::Dyn(_, args) => args.iter().find_map(|a| go(c, a, seen)),
                 Ty::Named(n, args) => {
-                    if let Some(cap) = c.transparent_externref_brands.get(&n) {
+                    if let Some(cap) = c.transparent_externref_brands.get(n.as_ref()) {
                         return externref_cap_name(cap);
                     }
                     if let Some(hit) = args.iter().find_map(|a| go(c, a, seen)) {
                         return Some(hit);
                     }
-                    if !seen.insert(n.clone()) {
+                    if !seen.insert(n.to_string()) {
                         return None;
                     }
-                    let fields = c.record_fields.get(&n).map(|(_, fields)| fields.clone());
+                    let fields = c.record_fields.get(n.as_ref()).map(|(_, fields)| fields.clone());
                     let mut hit = fields
                         .into_iter()
                         .flatten()
                         .find_map(|(_, field)| go(c, &field, seen));
                     if hit.is_none()
-                        && let Some(variants) = c.adt_variants.get(&n)
+                        && let Some(variants) = c.adt_variants.get(n.as_ref())
                     {
                         hit = variants.iter().find_map(|variant| {
                             c.ctor_sigs.get(variant).and_then(|(payloads, _)| {
@@ -4482,7 +4545,7 @@ impl Checker {
                             })
                         });
                     }
-                    seen.remove(&n);
+                    seen.remove(n.as_ref());
                     hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
@@ -4507,20 +4570,20 @@ impl Checker {
                     if args.iter().any(|arg| go(c, arg, seen)) {
                         return true;
                     }
-                    if !seen.insert(name.clone()) {
+                    if !seen.insert(name.to_string()) {
                         return false;
                     }
-                    let record_hit = c.record_fields.get(&name).is_some_and(|(_, fields)| {
+                    let record_hit = c.record_fields.get(name.as_ref()).is_some_and(|(_, fields)| {
                         fields.iter().any(|(_, field)| go(c, field, seen))
                     });
-                    let variant_hit = c.adt_variants.get(&name).is_some_and(|variants| {
+                    let variant_hit = c.adt_variants.get(name.as_ref()).is_some_and(|variants| {
                         variants.iter().any(|variant| {
                             c.ctor_sigs.get(variant).is_some_and(|(payloads, _)| {
                                 payloads.iter().any(|payload| go(c, payload, seen))
                             })
                         })
                     });
-                    seen.remove(&name);
+                    seen.remove(name.as_ref());
                     record_hit || variant_hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
@@ -4562,7 +4625,7 @@ impl Checker {
                 Ty::BuildEnv => "BuildEnv",
                 Ty::BuildNet => "BuildNet",
                 Ty::BuildExec => "BuildExec",
-                Ty::Named(n, _) if n == "SecretStore" => "SecretStore",
+                Ty::Named(n, _) if **n == *"SecretStore" => "SecretStore",
                 _ => return None,
             })
         }
@@ -4582,22 +4645,22 @@ impl Checker {
                 // own construction; only its type arguments remain.
                 Ty::Dyn(_, args) => args.iter().find_map(|a| go(c, a, seen)),
                 Ty::Named(n, args) => {
-                    if let Some(cap) = c.transparent_externref_brands.get(&n) {
+                    if let Some(cap) = c.transparent_externref_brands.get(n.as_ref()) {
                         return externref_cap_name(cap);
                     }
                     if let Some(hit) = args.iter().find_map(|a| go(c, a, seen)) {
                         return Some(hit);
                     }
-                    if !seen.insert(n.clone()) {
+                    if !seen.insert(n.to_string()) {
                         return None;
                     }
-                    let fields = c.record_fields.get(&n).map(|(_, fields)| fields.clone());
+                    let fields = c.record_fields.get(n.as_ref()).map(|(_, fields)| fields.clone());
                     let mut hit = fields
                         .into_iter()
                         .flatten()
                         .find_map(|(_, field)| go(c, &field, seen));
                     if hit.is_none()
-                        && let Some(variants) = c.adt_variants.get(&n)
+                        && let Some(variants) = c.adt_variants.get(n.as_ref())
                     {
                         hit = variants.iter().find_map(|variant| {
                             c.ctor_sigs.get(variant).and_then(|(payloads, _)| {
@@ -4605,7 +4668,7 @@ impl Checker {
                             })
                         });
                     }
-                    seen.remove(&n);
+                    seen.remove(n.as_ref());
                     hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
@@ -4644,7 +4707,7 @@ impl Checker {
                 Ty::BuildEnv => "BuildEnv",
                 Ty::BuildNet => "BuildNet",
                 Ty::BuildExec => "BuildExec",
-                Ty::Named(name, _) if name == "SecretStore" => "SecretStore",
+                Ty::Named(name, _) if **name == *"SecretStore" => "SecretStore",
                 _ => return None,
             })
         }
@@ -4666,10 +4729,10 @@ impl Checker {
                 Ty::List(item) => go(checker, &item, visiting),
                 Ty::Tuple(items) => items.iter().find_map(|item| go(checker, item, visiting)),
                 Ty::Named(name, arguments) => {
-                    if checker.capability_types.contains(&name) {
+                    if checker.capability_types.contains(name.as_ref()) {
                         return Some(PureCaptureHazard::DeclaredCapability);
                     }
-                    if let Some(capability) = checker.transparent_externref_brands.get(&name) {
+                    if let Some(capability) = checker.transparent_externref_brands.get(name.as_ref()) {
                         return externref_cap_name(capability)
                             .map(PureCaptureHazard::Capability);
                     }
@@ -4680,10 +4743,10 @@ impl Checker {
                     // on exact instantiations would never converge. The owning
                     // position fixpoint tells us which arguments can actually
                     // enter the value; callable-only positions stay opaque.
-                    let argument_hazard = match checker.must_consume_parameters.get(&name) {
+                    let argument_hazard = match checker.must_consume_parameters.get(name.as_ref()) {
                         Some(stored) => stored
                             .iter()
-                            .zip(&arguments)
+                            .zip(arguments.iter())
                             .find_map(|(stored, argument)| {
                                 if *stored {
                                     go(checker, argument, visiting)
@@ -4698,11 +4761,11 @@ impl Checker {
                     if argument_hazard.is_some() {
                         return argument_hazard;
                     }
-                    if !visiting.insert(name.clone()) {
+                    if !visiting.insert(name.to_string()) {
                         return None;
                     }
 
-                    if let Some((parameters, fields)) = checker.record_fields.get(&name) {
+                    if let Some((parameters, fields)) = checker.record_fields.get(name.as_ref()) {
                         let substitution = parameters
                             .iter()
                             .copied()
@@ -4711,23 +4774,23 @@ impl Checker {
                         for (_, field) in fields {
                             let field = checker.subst_vars(field, &substitution);
                             if let Some(hazard) = go(checker, &field, visiting) {
-                                visiting.remove(&name);
+                                visiting.remove(name.as_ref());
                                 return Some(hazard);
                             }
                         }
                     }
-                    if let Some(variants) = checker.adt_variants.get(&name) {
+                    if let Some(variants) = checker.adt_variants.get(name.as_ref()) {
                         for variant in variants {
                             let Some((payloads, result)) = checker.ctor_sigs.get(variant) else {
                                 continue;
                             };
                             let result_arguments = match checker.resolve(result) {
                                 Ty::Named(_, result_arguments) => result_arguments,
-                                _ => Vec::new(),
+                                _ => Vec::new().into(),
                             };
                             let substitution = result_arguments
                                 .iter()
-                                .zip(&arguments)
+                                .zip(arguments.iter())
                                 .filter_map(|(parameter, argument)| match parameter {
                                     Ty::Var(id) => Some((*id, argument.clone())),
                                     _ => None,
@@ -4736,14 +4799,14 @@ impl Checker {
                             for payload in payloads {
                                 let payload = checker.subst_vars(payload, &substitution);
                                 if let Some(hazard) = go(checker, &payload, visiting) {
-                                    visiting.remove(&name);
+                                    visiting.remove(name.as_ref());
                                     return Some(hazard);
                                 }
                             }
                         }
                     }
 
-                    visiting.remove(&name);
+                    visiting.remove(name.as_ref());
                     None
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
@@ -4870,14 +4933,14 @@ impl Checker {
                 Ty::BuildEnv => "BuildEnv",
                 Ty::BuildNet => "BuildNet",
                 Ty::BuildExec => "BuildExec",
-                Ty::Named(name, _) if name == "SecretStore" => "SecretStore",
+                Ty::Named(name, _) if **name == *"SecretStore" => "SecretStore",
                 _ => return None,
             })
         }
         fn go(
             checker: &Checker,
             ty: &Ty,
-            visiting: &mut Vec<(String, Vec<Ty>)>,
+            visiting: &mut Vec<(Rc<str>, Rc<[Ty]>)>,
             path: &[String],
         ) -> Option<(&'static str, Vec<String>)> {
             let resolved = checker.resolve(ty);
@@ -4914,7 +4977,7 @@ impl Checker {
                     go(checker, arg, visiting, &child)
                 }),
                 Ty::Named(name, arguments) => {
-                    if let Some(capability) = checker.transparent_externref_brands.get(&name) {
+                    if let Some(capability) = checker.transparent_externref_brands.get(name.as_ref()) {
                         return externref_cap_name(capability)
                             .map(|capability| (capability, path.to_vec()));
                     }
@@ -4940,7 +5003,7 @@ impl Checker {
                             return Some(found);
                         }
                     }
-                    if let Some((parameters, fields)) = checker.record_fields.get(&name) {
+                    if let Some((parameters, fields)) = checker.record_fields.get(name.as_ref()) {
                         let substitution = parameters
                             .iter()
                             .copied()
@@ -4956,18 +5019,18 @@ impl Checker {
                             }
                         }
                     }
-                    if let Some(variants) = checker.adt_variants.get(&name) {
+                    if let Some(variants) = checker.adt_variants.get(name.as_ref()) {
                         for variant in variants {
                             let Some((payloads, result)) = checker.ctor_sigs.get(variant) else {
                                 continue;
                             };
                             let result_arguments = match checker.resolve(result) {
                                 Ty::Named(_, result_arguments) => result_arguments,
-                                _ => Vec::new(),
+                                _ => Vec::new().into(),
                             };
                             let substitution = result_arguments
                                 .iter()
-                                .zip(&arguments)
+                                .zip(arguments.iter())
                                 .filter_map(|(parameter, argument)| match parameter {
                                     Ty::Var(id) => Some((*id, argument.clone())),
                                     _ => None,
@@ -5010,7 +5073,7 @@ impl Checker {
             return true;
         }
         match resolved {
-            Ty::Named(n, args) => args.is_empty() && self.transparent_externref_brands.contains_key(&n),
+            Ty::Named(n, args) => args.is_empty() && self.transparent_externref_brands.contains_key(n.as_ref()),
             _ => false,
         }
     }
@@ -5048,20 +5111,20 @@ impl Checker {
             // capabilities are rejected at construction); check its args only.
             Ty::Dyn(_, args) => args.iter().find_map(|arg| self.ty_authority_taint(arg, seen)),
             Ty::Named(name, args) => {
-                if name == "SecretStore" || self.sealed_types.contains(&name) {
-                    return Some(name);
+                if name == "SecretStore".into() || self.sealed_types.contains(name.as_ref()) {
+                    return Some(name.to_string());
                 }
                 if let Some(hit) = args.iter().find_map(|arg| self.ty_authority_taint(arg, seen)) {
                     return Some(hit);
                 }
-                if !seen.insert(name.clone()) {
+                if !seen.insert(name.to_string()) {
                     return None;
                 }
-                let record_hit = self.record_fields.get(&name).and_then(|(_, fields)| {
+                let record_hit = self.record_fields.get(name.as_ref()).and_then(|(_, fields)| {
                     fields.iter().find_map(|(_, field)| self.ty_authority_taint(field, seen))
                 });
                 let hit = record_hit.or_else(|| {
-                    self.adt_variants.get(&name).and_then(|variants| {
+                    self.adt_variants.get(name.as_ref()).and_then(|variants| {
                         variants.iter().find_map(|variant| {
                             self.ctor_sigs.get(variant).and_then(|(payloads, _)| {
                                 payloads.iter().find_map(|payload| self.ty_authority_taint(payload, seen))
@@ -5069,7 +5132,7 @@ impl Checker {
                         })
                     })
                 });
-                seen.remove(&name);
+                seen.remove(name.as_ref());
                 hit
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
@@ -5143,7 +5206,7 @@ impl Checker {
                     matches!(self.resolve(argument), Ty::Named(lifetime, args)
                         if args.is_empty() && lifetime.starts_with('\''))
                 });
-                if self.borrowed_nominal_types.contains(&name) || has_lifetime_argument {
+                if self.borrowed_nominal_types.contains(name.as_ref()) || has_lifetime_argument {
                     Some(dequalify_home(&name, &self.cur_module))
                 } else {
                     arguments
@@ -5190,7 +5253,7 @@ impl Checker {
     fn is_direct_borrowed_nominal(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
             Ty::Named(name, arguments) => {
-                self.borrowed_nominal_types.contains(&name)
+                self.borrowed_nominal_types.contains(name.as_ref())
                     || arguments.iter().any(|argument| {
                         matches!(self.resolve(argument), Ty::Named(lifetime, args)
                             if args.is_empty() && lifetime.starts_with('\''))
@@ -5207,9 +5270,9 @@ impl Checker {
                 .iter()
                 .any(|item| self.contains_unsupported_borrowed_nominal(item)),
             Ty::Named(name, arguments) => {
-                let explicit = self.explicit_reference_nominal_types.contains(&name);
+                let explicit = self.explicit_reference_nominal_types.contains(name.as_ref());
                 let direct_legacy = !explicit
-                    && (self.borrowed_nominal_types.contains(&name)
+                    && (self.borrowed_nominal_types.contains(name.as_ref())
                         || arguments.iter().any(|argument| {
                             matches!(self.resolve(argument), Ty::Named(lifetime, args)
                                 if args.is_empty() && lifetime.starts_with('\''))
@@ -5377,11 +5440,11 @@ impl Checker {
                     .try_for_each(|item| self.reject_externref_cap_aggregate_ty(item, ctx))
             }
             Ty::Named(n, args)
-                if n == "Option" && args.len() == 1 && self.ty_is_direct_externref_value(&args[0]) =>
+                if n == "Option".into() && args.len() == 1 && self.ty_is_direct_externref_value(&args[0]) =>
             {
                 Ok(())
             }
-            Ty::Named(n, args) if n == "Dict" => {
+            Ty::Named(n, args) if n == "Dict".into() => {
                 if args.iter().any(|arg| self.ty_carries_function_value(arg)) {
                     return terr(format!(
                         "`{ctx}` stores a function value in `Dict`, whose key/value ABI \
@@ -5423,12 +5486,12 @@ impl Checker {
                         "cannot construct the infinite type: a type variable occurs within `{other}`"
                     ));
                 }
-                self.subst.insert(*x, other.clone());
+                self.bind_subst_var(*x, other.clone());
                 Ok(())
             }
             (Ty::List(x), Ty::List(y)) => self.unify(x, y),
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
-                for (x, y) in xs.iter().zip(ys) {
+                for (x, y) in xs.iter().zip(ys.iter()) {
                     self.unify(x, y)?;
                 }
                 Ok(())
@@ -5436,7 +5499,7 @@ impl Checker {
             (Ty::Named(x, xa), Ty::Named(y, ya))
                 if same_builtin_nominal_head(x, y) && xa.len() == ya.len() =>
             {
-                for (p, q) in xa.iter().zip(ya) {
+                for (p, q) in xa.iter().zip(ya.iter()) {
                     self.unify(p, q)?;
                 }
                 Ok(())
@@ -5447,7 +5510,7 @@ impl Checker {
             // unifies with `dyn Super` in this slice (supertrait upcasts are
             // the witness slice's directed coercion, not unification).
             (Ty::Dyn(x, xa), Ty::Dyn(y, ya)) if x == y && xa.len() == ya.len() => {
-                for (p, q) in xa.iter().zip(ya) {
+                for (p, q) in xa.iter().zip(ya.iter()) {
                     self.unify(p, q)?;
                 }
                 Ok(())
@@ -5582,12 +5645,12 @@ impl Checker {
             Ty::List(element) => self.ty_carries_must_consume(&element),
             Ty::Tuple(items) => items.iter().any(|item| self.ty_carries_must_consume(item)),
             Ty::Named(name, arguments) | Ty::Dyn(name, arguments) => {
-                self.must_consume_types.contains(&name)
+                self.must_consume_types.contains(name.as_ref())
                     || self
                         .must_consume_parameters
-                        .get(&name)
+                        .get(name.as_ref())
                         .is_some_and(|positions| {
-                            positions.iter().zip(&arguments).any(|(stored, argument)| {
+                            positions.iter().zip(arguments.iter()).any(|(stored, argument)| {
                                 *stored && self.ty_carries_must_consume(argument)
                             })
                         })
@@ -5620,9 +5683,9 @@ impl Checker {
                     }
                     let parameter_hit = checker
                         .must_consume_parameters
-                        .get(&name)
+                        .get(name.as_ref())
                         .is_some_and(|positions| {
-                            positions.iter().zip(&arguments).any(|(stored, argument)| {
+                            positions.iter().zip(arguments.iter()).any(|(stored, argument)| {
                                 *stored && go(checker, argument, seen)
                             })
                         });
@@ -5632,10 +5695,10 @@ impl Checker {
                     // Owning arguments are checked before this name-only guard:
                     // that detects `Grow(Grow(once fn()))` without following an
                     // argument-growing recursive field forever.
-                    if !seen.insert(name.clone()) {
+                    if !seen.insert(name.to_string()) {
                         return false;
                     }
-                    let field_hit = checker.record_fields.get(&name).is_some_and(|(params, fields)| {
+                    let field_hit = checker.record_fields.get(name.as_ref()).is_some_and(|(params, fields)| {
                         let bindings: HashMap<u32, Ty> = params
                             .iter()
                             .copied()
@@ -5645,16 +5708,16 @@ impl Checker {
                             go(checker, &checker.subst_vars(field, &bindings), seen)
                         })
                     });
-                    let variant_hit = checker.adt_variants.get(&name).is_some_and(|variants| {
+                    let variant_hit = checker.adt_variants.get(name.as_ref()).is_some_and(|variants| {
                         variants.iter().any(|variant| {
                             checker.ctor_sigs.get(variant).is_some_and(|(payloads, result)| {
                                 let result_arguments = match checker.resolve(result) {
                                     Ty::Named(_, result_arguments) => result_arguments,
-                                    _ => Vec::new(),
+                                    _ => Vec::new().into(),
                                 };
                                 let bindings = result_arguments
                                     .iter()
-                                    .zip(&arguments)
+                                    .zip(arguments.iter())
                                     .filter_map(|(parameter, argument)| match parameter {
                                         Ty::Var(id) => Some((*id, argument.clone())),
                                         _ => None,
@@ -5666,7 +5729,7 @@ impl Checker {
                             })
                         })
                     });
-                    seen.remove(&name);
+                    seen.remove(name.as_ref());
                     field_hit || variant_hit
                 }
                 _ => false,
@@ -6225,88 +6288,88 @@ impl Checker {
             S::GenericListPush => {
                 let elem = self.fresh();
                 Some((
-                    vec![Ty::List(Box::new(elem.clone())), elem.clone()],
-                    Ty::List(Box::new(elem)),
+                    vec![Ty::List(Box::new(elem.clone()).into()), elem.clone()],
+                    Ty::List(Box::new(elem).into()),
                 ))
             }
             S::CompilerQuoteItem => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("meta.ItemSyntax".into(), Vec::new()),
+                Ty::Named("meta.ItemSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteItemHoles => Some((
                 vec![
                     Ty::String,
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new().into())).into()),
                 ],
-                Ty::Named("meta.ItemSyntax".into(), Vec::new()),
+                Ty::Named("meta.ItemSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteExpr => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("meta.ExprSyntax".into(), Vec::new()),
+                Ty::Named("meta.ExprSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteExprHoles => Some((
                 vec![
                     Ty::String,
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new().into())).into()),
                 ],
-                Ty::Named("meta.ExprSyntax".into(), Vec::new()),
+                Ty::Named("meta.ExprSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteType => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("meta.TypeSyntax".into(), Vec::new()),
+                Ty::Named("meta.TypeSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteTypeHoles => Some((
                 vec![
                     Ty::String,
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.TypeSyntax".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::Named("meta.TypeSyntax".into(), Vec::new().into())).into()),
                 ],
-                Ty::Named("meta.TypeSyntax".into(), Vec::new()),
+                Ty::Named("meta.TypeSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuotePattern => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("meta.PatternSyntax".into(), Vec::new()),
+                Ty::Named("meta.PatternSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuotePatternHoles => Some((
                 vec![
                     Ty::String,
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.PatternSyntax".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::Named("meta.PatternSyntax".into(), Vec::new().into())).into()),
                 ],
-                Ty::Named("meta.PatternSyntax".into(), Vec::new()),
+                Ty::Named("meta.PatternSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteStmt => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("meta.StmtSyntax".into(), Vec::new()),
+                Ty::Named("meta.StmtSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteStmtHoles => Some((
                 vec![
                     Ty::String,
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new().into())).into()),
                 ],
-                Ty::Named("meta.StmtSyntax".into(), Vec::new()),
+                Ty::Named("meta.StmtSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteBlock => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("meta.BlockSyntax".into(), Vec::new()),
+                Ty::Named("meta.BlockSyntax".into(), Vec::new().into()),
             )),
             S::CompilerQuoteBlockHoles => Some((
                 vec![
                     Ty::String,
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new().into())).into()),
                 ],
-                Ty::Named("meta.BlockSyntax".into(), Vec::new()),
+                Ty::Named("meta.BlockSyntax".into(), Vec::new().into()),
             )),
             S::CompilerEmitItem => Some((
-                vec![Ty::Named("meta.ItemSyntax".into(), Vec::new())],
+                vec![Ty::Named("meta.ItemSyntax".into(), Vec::new().into())],
                 Ty::Unit,
             )),
             S::CompilerEmitExpr => Some((
-                vec![Ty::Named("meta.ExprSyntax".into(), Vec::new())],
+                vec![Ty::Named("meta.ExprSyntax".into(), Vec::new().into())],
                 Ty::Unit,
             )),
             S::GenericToMessage => {
@@ -6319,13 +6382,13 @@ impl Checker {
             }
             S::StringStringToRuntimeType => Some((
                 vec![Ty::String, Ty::String],
-                Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                Ty::Named("dynamic.RuntimeType".into(), Vec::new().into()),
             )),
             S::GenericToRuntimeType => {
                 let value = self.fresh();
                 Some((
                     vec![value],
-                    Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                    Ty::Named("dynamic.RuntimeType".into(), Vec::new().into()),
                 ))
             }
             S::GenericToInt => {
@@ -6333,97 +6396,97 @@ impl Checker {
                 Some((vec![value], Ty::Int))
             }
             S::RuntimeTypeToListRuntimeField => Some((
-                vec![Ty::Named("dynamic.RuntimeType".into(), Vec::new())],
+                vec![Ty::Named("dynamic.RuntimeType".into(), Vec::new().into())],
                 Ty::List(Box::new(Ty::Named(
                     "dynamic.RuntimeField".into(),
-                    Vec::new(),
-                ))),
+                    Vec::new().into(),
+                )).into()),
             )),
             S::RuntimeTypeStringToDynamicFieldStatus => Some((
                 vec![
-                    Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                    Ty::Named("dynamic.RuntimeType".into(), Vec::new().into()),
                     Ty::String,
                 ],
-                Ty::Named("dynamic.DynamicFieldStatus".into(), Vec::new()),
+                Ty::Named("dynamic.DynamicFieldStatus".into(), Vec::new().into()),
             )),
             S::RuntimeTypeToListRuntimeMethod => Some((
-                vec![Ty::Named("dynamic.RuntimeType".into(), Vec::new())],
+                vec![Ty::Named("dynamic.RuntimeType".into(), Vec::new().into())],
                 Ty::List(Box::new(Ty::Named(
                     "dynamic.RuntimeMethod".into(),
-                    Vec::new(),
-                ))),
+                    Vec::new().into(),
+                )).into()),
             )),
             S::DynamicStringListDynamicToResultDynamicDynamicError => {
-                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new());
+                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new().into());
                 Some((
-                    vec![dynamic.clone(), Ty::String, Ty::List(Box::new(dynamic.clone()))],
+                    vec![dynamic.clone(), Ty::String, Ty::List(Box::new(dynamic.clone()).into())],
                     Ty::Named(
                         "Result".into(),
                         vec![
                             dynamic,
-                            Ty::Named("dynamic.DynamicError".into(), Vec::new()),
-                        ],
+                            Ty::Named("dynamic.DynamicError".into(), Vec::new().into()),
+                        ].into(),
                     ),
                 ))
             }
             S::DynamicStringListDynamicGenericToResultDynamicDynamicError => {
-                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new());
+                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new().into());
                 let capabilities = self.fresh();
                 Some((
                     vec![
                         dynamic.clone(),
                         Ty::String,
-                        Ty::List(Box::new(dynamic.clone())),
+                        Ty::List(Box::new(dynamic.clone()).into()),
                         capabilities,
                     ],
                     Ty::Named(
                         "Result".into(),
                         vec![
                             dynamic,
-                            Ty::Named("dynamic.DynamicError".into(), Vec::new()),
-                        ],
+                            Ty::Named("dynamic.DynamicError".into(), Vec::new().into()),
+                        ].into(),
                     ),
                 ))
             }
             S::DynamicRuntimeTypeToBool => Some((
                 vec![
-                    Ty::Named("dynamic.Dynamic".into(), Vec::new()),
-                    Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                    Ty::Named("dynamic.Dynamic".into(), Vec::new().into()),
+                    Ty::Named("dynamic.RuntimeType".into(), Vec::new().into()),
                 ],
                 Ty::Bool,
             )),
             S::DynamicRuntimeTypeToResultDynamicDynamicError => {
-                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new());
+                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new().into());
                 Some((
                     vec![
                         dynamic.clone(),
-                        Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                        Ty::Named("dynamic.RuntimeType".into(), Vec::new().into()),
                     ],
                     Ty::Named(
                         "Result".into(),
                         vec![
                             dynamic,
-                            Ty::Named("dynamic.DynamicError".into(), Vec::new()),
-                        ],
+                            Ty::Named("dynamic.DynamicError".into(), Vec::new().into()),
+                        ].into(),
                     ),
                 ))
             }
             S::DynamicToOptionGeneric => {
                 let value = self.fresh();
                 Some((
-                    vec![Ty::Named("dynamic.Dynamic".into(), Vec::new())],
-                    Ty::Named("Option".into(), vec![value]),
+                    vec![Ty::Named("dynamic.Dynamic".into(), Vec::new().into())],
+                    Ty::Named("Option".into(), vec![value].into()),
                 ))
             }
             S::DynamicIntToOptionGeneric => {
                 let value = self.fresh();
                 Some((
-                    vec![Ty::Named("dynamic.Dynamic".into(), Vec::new()), Ty::Int],
-                    Ty::Named("Option".into(), vec![value]),
+                    vec![Ty::Named("dynamic.Dynamic".into(), Vec::new().into()), Ty::Int],
+                    Ty::Named("Option".into(), vec![value].into()),
                 ))
             }
             S::StringToBytes => Some((vec![Ty::String], Ty::Bytes)),
-            S::ListIntToBytes => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
+            S::ListIntToBytes => Some((vec![Ty::List(Box::new(Ty::Int).into())], Ty::Bytes)),
             S::BytesToString => Some((vec![Ty::Bytes], Ty::String)),
             S::BytesToInt => Some((vec![Ty::Bytes], Ty::Int)),
             S::BytesIntToInt => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
@@ -6435,11 +6498,11 @@ impl Checker {
             S::IntToBytes => Some((vec![Ty::Int], Ty::Bytes)),
             S::IntIntToBytes => Some((vec![Ty::Int, Ty::Int], Ty::Bytes)),
             S::SecretStoreStringToOptionSecret => Some((
-                vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
-                Ty::Named("Option".into(), vec![Ty::Secret(SecretRights::full())]),
+                vec![Ty::Named("SecretStore".into(), Vec::new().into()), Ty::String],
+                Ty::Named("Option".into(), vec![Ty::Secret(SecretRights::full())].into()),
             )),
             S::SecretStoreStringToSecret => Some((
-                vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
+                vec![Ty::Named("SecretStore".into(), Vec::new().into()), Ty::String],
                 Ty::Secret(SecretRights::full()),
             )),
             S::StringToString => Some((vec![Ty::String], Ty::String)),
@@ -6448,11 +6511,11 @@ impl Checker {
             S::StringStringToInt => Some((vec![Ty::String, Ty::String], Ty::Int)),
             S::StringStringToBool => Some((vec![Ty::String, Ty::String], Ty::Bool)),
             S::StringToListString => {
-                Some((vec![Ty::String], Ty::List(Box::new(Ty::String))))
+                Some((vec![Ty::String], Ty::List(Box::new(Ty::String).into())))
             }
             S::StringStringToListString => Some((
                 vec![Ty::String, Ty::String],
-                Ty::List(Box::new(Ty::String)),
+                Ty::List(Box::new(Ty::String).into()),
             )),
             S::StringStringStringToString => {
                 Some((vec![Ty::String, Ty::String, Ty::String], Ty::String))
@@ -6464,22 +6527,22 @@ impl Checker {
                 Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
             }
             S::StringToStr => {
-                Some((vec![Ty::String], Ty::Named("str".into(), Vec::new())))
+                Some((vec![Ty::String], Ty::Named("str".into(), Vec::new().into())))
             }
             S::StrIntIntToStr => {
-                let str_ty = Ty::Named("str".into(), Vec::new());
+                let str_ty = Ty::Named("str".into(), Vec::new().into());
                 Some((vec![str_ty.clone(), Ty::Int, Ty::Int], str_ty))
             }
             S::StrToString => {
-                Some((vec![Ty::Named("str".into(), Vec::new())], Ty::String))
+                Some((vec![Ty::Named("str".into(), Vec::new().into())], Ty::String))
             }
             S::StrToInt => {
-                Some((vec![Ty::Named("str".into(), Vec::new())], Ty::Int))
+                Some((vec![Ty::Named("str".into(), Vec::new().into())], Ty::Int))
             }
             S::ListStringListStringToString => Some((
                 vec![
-                    Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::String)),
+                    Ty::List(Box::new(Ty::String).into()),
+                    Ty::List(Box::new(Ty::String).into()),
                 ],
                 Ty::String,
             )),
@@ -6502,80 +6565,80 @@ impl Checker {
             S::FloatToFloat => Some((vec![Ty::Float], Ty::Float)),
             S::GenericListToInt => {
                 let elem = self.fresh();
-                Some((vec![Ty::List(Box::new(elem))], Ty::Int))
+                Some((vec![Ty::List(Box::new(elem).into())], Ty::Int))
             }
             S::GenericListIndex => {
                 let elem = self.fresh();
-                Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
+                Some((vec![Ty::List(Box::new(elem.clone()).into()), Ty::Int], elem))
             }
             S::GenericListSetAt => {
                 let elem = self.fresh();
-                let list = Ty::List(Box::new(elem.clone()));
+                let list = Ty::List(Box::new(elem.clone()).into());
                 Some((vec![list.clone(), Ty::Int, elem], list))
             }
             S::GenericListConcat => {
                 let elem = self.fresh();
-                let list = Ty::List(Box::new(elem));
+                let list = Ty::List(Box::new(elem).into());
                 Some((vec![list.clone(), list.clone()], list))
             }
             S::GenericListPopExtract => {
                 let elem = self.fresh();
                 Some((
-                    vec![Ty::List(Box::new(elem.clone()))],
-                    Ty::Named("Option".into(), vec![elem]),
+                    vec![Ty::List(Box::new(elem.clone()).into())],
+                    Ty::Named("Option".into(), vec![elem].into()),
                 ))
             }
             S::GenericListWithCapacity => {
                 let elem = self.fresh();
-                let list = Ty::List(Box::new(elem));
+                let list = Ty::List(Box::new(elem).into());
                 Some((vec![Ty::Int], list))
             }
             S::GenericDictNew => {
                 let key = self.fresh();
                 let value = self.fresh();
-                Some((vec![], Ty::Named("Dict".into(), vec![key, value])))
+                Some((vec![], Ty::Named("Dict".into(), vec![key, value].into())))
             }
             S::GenericDictWithCapacity => {
                 let key = self.fresh();
                 let value = self.fresh();
-                Some((vec![Ty::Int], Ty::Named("Dict".into(), vec![key, value])))
+                Some((vec![Ty::Int], Ty::Named("Dict".into(), vec![key, value].into())))
             }
             S::GenericDictInsert => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 Some((vec![dict.clone(), key, value], dict))
             }
             S::GenericDictInsertExtract => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 Some((
                     vec![dict, key, value.clone()],
-                    Ty::Named("Option".into(), vec![value]),
+                    Ty::Named("Option".into(), vec![value].into()),
                 ))
             }
             S::GenericDictGetOr => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 Some((vec![dict, key, value.clone()], value))
             }
             S::GenericDictIndex => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 Some((vec![dict, key], value))
             }
             S::GenericDictUpdate => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 let update = Ty::Fn(
-                    vec![value.clone()],
-                    Box::new(value.clone()),
-                    vec![Convention::Let],
-                    vec![false],
+                    vec![value.clone()].into(),
+                    Box::new(value.clone()).into(),
+                    vec![Convention::Let].into(),
+                    vec![false].into(),
                     CallableQualifiers::ORDINARY,
                 );
                 Some((vec![dict.clone(), key, value, update], dict))
@@ -6583,49 +6646,49 @@ impl Checker {
             S::GenericDictContainsKey => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value].into());
                 Some((vec![dict, key], Ty::Bool))
             }
             S::GenericDictRemove => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value].into());
                 Some((vec![dict.clone(), key], dict))
             }
             S::GenericDictRemoveExtract => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 Some((
                     vec![dict, key],
-                    Ty::Named("Option".into(), vec![value]),
+                    Ty::Named("Option".into(), vec![value].into()),
                 ))
             }
             S::GenericDictKeys => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value]);
-                Some((vec![dict], Ty::List(Box::new(key))))
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value].into());
+                Some((vec![dict], Ty::List(Box::new(key).into())))
             }
             S::GenericDictValues => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key, value.clone()]);
-                Some((vec![dict], Ty::List(Box::new(value))))
+                let dict = Ty::Named("Dict".into(), vec![key, value.clone()].into());
+                Some((vec![dict], Ty::List(Box::new(value).into())))
             }
             S::GenericDictPairs => {
                 let key = self.fresh();
                 let value = self.fresh();
-                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
                 Some((
                     vec![dict],
-                    Ty::List(Box::new(Ty::Tuple(vec![key, value]))),
+                    Ty::List(Box::new(Ty::Tuple(vec![key, value].into())).into()),
                 ))
             }
             S::GenericDictToInt => {
                 let key = self.fresh();
                 let value = self.fresh();
-                Some((vec![Ty::Named("Dict".into(), vec![key, value])], Ty::Int))
+                Some((vec![Ty::Named("Dict".into(), vec![key, value].into())], Ty::Int))
             }
             // These calls are checked by their dedicated frontend rule or by
             // the linked source declaration, not by the builtin signature path.
@@ -6668,10 +6731,10 @@ impl Checker {
             A::Int => Ty::Int,
             A::Bool => Ty::Bool,
             A::Secret => Ty::Secret(SecretRights::full()),
-            A::ListString => Ty::List(Box::new(Ty::String)),
+            A::ListString => Ty::List(Box::new(Ty::String).into()),
             A::Dir => Ty::Dir(DirRights::full()),
-            A::DirPolicy => Ty::Named("DirPolicy".into(), Vec::new()),
-            A::NetPolicy => Ty::Named("NetPolicy".into(), Vec::new()),
+            A::DirPolicy => Ty::Named("DirPolicy".into(), Vec::new().into()),
+            A::NetPolicy => Ty::Named("NetPolicy".into(), Vec::new().into()),
         }));
         let result = match operation.result {
             O::SameReceiver => receiver,
@@ -6680,13 +6743,13 @@ impl Checker {
             O::String => Ty::String,
             O::Bytes => Ty::Bytes,
             O::Bool => Ty::Bool,
-            O::ListString => Ty::List(Box::new(Ty::String)),
-            O::OptionString => Ty::Named("Option".into(), vec![Ty::String]),
+            O::ListString => Ty::List(Box::new(Ty::String).into()),
+            O::OptionString => Ty::Named("Option".into(), vec![Ty::String].into()),
             O::Dir => Ty::Dir(DirRights::full()),
             O::File => Ty::File(FileRights::full()),
             O::Fetch => Ty::Fetch,
             O::Socket => Ty::Socket,
-            O::OptionSocket => Ty::Named("Option".into(), vec![Ty::Socket]),
+            O::OptionSocket => Ty::Named("Option".into(), vec![Ty::Socket].into()),
             O::Listener => Ty::Listener,
         };
         (parameters, result)
@@ -6745,14 +6808,14 @@ impl Checker {
         let elem = self.fresh();
         let resolved = self.resolve(&oty);
         match &resolved {
-            Ty::Named(n, _) if n == "Option" => {
-                self.unify(&Ty::Named("Option".into(), vec![elem.clone()]), &oty).map_err(|e| {
+            Ty::Named(n, _) if **n == *"Option" => {
+                self.unify(&Ty::Named("Option".into(), vec![elem.clone()].into()), &oty).map_err(|e| {
                     TypeError { message: format!("in `? \"msg\"`: {}", e.message) }
                 })?;
             }
-            Ty::Named(n, _) if n == "Result" => {
+            Ty::Named(n, _) if **n == *"Result" => {
                 self.unify(
-                    &Ty::Named("Result".into(), vec![elem.clone(), Ty::String]),
+                    &Ty::Named("Result".into(), vec![elem.clone(), Ty::String].into()),
                     &oty,
                 )
                 .map_err(|_| TypeError {
@@ -6765,7 +6828,7 @@ impl Checker {
                 ));
             }
         }
-        Ok(Some(Ty::Named("Result".into(), vec![elem, Ty::String])))
+        Ok(Some(Ty::Named("Result".into(), vec![elem, Ty::String].into())))
     }
 
     /// Check a capability narrowing ascription (`src as target`): the target must
@@ -6948,15 +7011,15 @@ impl Checker {
         }
 
         let saved_subst = self.subst.clone();
-        for (field, expected_type) in expected_fields.iter().zip(expected_types) {
+        for (field, expected_type) in expected_fields.iter().zip(expected_types.iter()) {
             let Some(index) = actual_fields.iter().position(|candidate| candidate == field) else {
-                self.subst = saved_subst;
+                self.restore_subst(saved_subst);
                 return terr(format!(
                     "structural record `{actual}` does not conform to `{expected}`: missing required field `{field}`"
                 ));
             };
             if let Err(error) = self.unify(expected_type, &actual_types[index]) {
-                self.subst = saved_subst;
+                self.restore_subst(saved_subst);
                 return terr(format!(
                     "structural record `{actual}` does not conform to `{expected}`: field `{field}` has incompatible type: {}",
                     error.message
@@ -7165,7 +7228,7 @@ impl Checker {
             Ty::Tuple(ts) => ts.iter().find_map(|x| self.uncomparable_kind(x, seen)),
             Ty::Named(n, args) => {
                 // `SecretStore` is a capability the type checker models as a Named type.
-                if n == "SecretStore" {
+                if **n == *"SecretStore" {
                     return Some(Uncomparable::Capability);
                 }
                 // Generic arguments (`List(fn)`, `Option(File)`, `H(fn)`).
@@ -7176,11 +7239,11 @@ impl Checker {
                 // recursive type revisiting itself (which cannot make it
                 // uncomparable — the offending fn/cap would be found on the first
                 // visit).
-                if !seen.insert(n.clone()) {
+                if !seen.insert(n.to_string()) {
                     return None;
                 }
                 let found = self.named_field_uncomparable(n, seen);
-                seen.remove(n);
+                seen.remove(n.as_ref());
                 found
             }
             _ => None,
@@ -7643,7 +7706,7 @@ impl Checker {
             Expr::Tuple(items) => {
                 if let Ty::Tuple(slots) = self.resolve(expected) {
                     if slots.len() == items.len() {
-                        for (item, slot) in items.iter().zip(&slots) {
+                        for (item, slot) in items.iter().zip(slots.iter()) {
                             let at = self.infer_expected(item, slot)?;
                             self.coerce_arg(slot, &at)?;
                         }
@@ -7653,7 +7716,7 @@ impl Checker {
                             }
                         }
                         if self.ty_carries_once_callable(expected) {
-                            for (item, slot) in items.iter().zip(&slots) {
+                            for (item, slot) in items.iter().zip(slots.iter()) {
                                 self.reject_implicit_once_copy(
                                     item,
                                     slot,
@@ -7863,10 +7926,10 @@ impl Checker {
                     .copied()
                     .unwrap_or(CallableQualifiers::ORDINARY);
                 let function_ty = Ty::Fn(
-                    params,
-                    Box::new(ret),
-                    conventions,
-                    vec![false; args.len()],
+                    params.into(),
+                    Box::new(ret).into(),
+                    conventions.into(),
+                    vec![false; args.len()].into(),
                     qualifiers,
                 );
                 if call_name != "vm.with_dir"
@@ -7912,7 +7975,7 @@ impl Checker {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
                     }
-                    for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
+                    for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
                         let at = self
                             .infer_expected(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
@@ -7954,7 +8017,7 @@ impl Checker {
                         ret.as_ref(),
                         &format!("call to function value `{display}` result"),
                     )?;
-                    return Ok(*ret);
+                    return Ok((*ret).clone());
                 }
                 Ty::Var(_) => {
                     if self.current_pure {
@@ -7976,10 +8039,10 @@ impl Checker {
                     self.unify(
                         &vty,
                         &Ty::Fn(
-                            argtys,
-                            Box::new(ret.clone()),
-                            vec![Convention::Let; args.len()],
-                            vec![false; args.len()],
+                            argtys.into(),
+                            Box::new(ret.clone()).into(),
+                            vec![Convention::Let; args.len()].into(),
+                            vec![false; args.len()].into(),
                             CallableQualifiers::ORDINARY,
                         ),
                     )?;
@@ -8165,10 +8228,10 @@ impl Checker {
                     .unwrap_or_else(|| vec![Convention::Let; callback_params.len()]);
                 let callback_param_count = callback_params.len();
                 Ok(Ty::Fn(
-                    callback_params,
-                    Box::new(callback_ret),
-                    conventions,
-                    vec![false; callback_param_count],
+                    callback_params.into(),
+                    Box::new(callback_ret).into(),
+                    conventions.into(),
+                    vec![false; callback_param_count].into(),
                     self.fn_qualifiers
                         .get(function)
                         .copied()
@@ -8674,7 +8737,7 @@ impl Checker {
         self.fn_conventions.get(name).cloned().or_else(|| {
             let ty = self.lookup(name)?;
             match self.resolve(&ty) {
-                Ty::Fn(_, _, conventions, _, _) => Some(conventions.clone()),
+                Ty::Fn(_, _, conventions, _, _) => Some(conventions.to_vec()),
                 _ => None,
             }
         })
@@ -8964,7 +9027,7 @@ impl Checker {
             // the ordinary function signature enforces index/key types and bounds.
             Expr::Index { base, index } => {
                 let base_ty = self.infer(base)?;
-                let d = if matches!(base_ty, Ty::Named(ref name, _) if name == "Dict") {
+                let d = if matches!(base_ty, Ty::Named(ref name, _) if **name == *"Dict") {
                     Expr::Call {
                         name: intrinsics::DICT_AT.to_string(),
                         args: vec![(**base).clone(), (**index).clone()],
@@ -9091,7 +9154,7 @@ impl Checker {
                     let t = self.infer(it)?;
                     self.unify(&elem, &t)?;
                 }
-                let ty = Ty::List(Box::new(elem.clone()));
+                let ty = Ty::List(Box::new(elem.clone()).into());
                 if self.ty_carries_must_consume(&ty) {
                     for item in items {
                         self.reject_implicit_must_copy(item, "list construction")?;
@@ -9111,7 +9174,7 @@ impl Checker {
                     .iter()
                     .map(|e| self.infer(e))
                     .collect::<Result<Vec<_>, _>>()?;
-                let ty = Ty::Tuple(tys);
+                let ty = Ty::Tuple(tys.into());
                 if self.ty_carries_must_consume(&ty) {
                     for item in items {
                         self.reject_implicit_must_copy(item, "tuple construction")?;
@@ -9119,7 +9182,7 @@ impl Checker {
                 }
                 if self.ty_carries_once_callable(&ty) {
                     for (item, item_ty) in items.iter().zip(match &ty {
-                        Ty::Tuple(types) => types.as_slice(),
+                        Ty::Tuple(types) => types.as_ref(),
                         _ => &[],
                     }) {
                         self.reject_implicit_once_copy(item, item_ty, "tuple construction")?;
@@ -9174,10 +9237,10 @@ impl Checker {
                         .copied()
                         .unwrap_or(CallableQualifiers::ORDINARY);
                     let function_ty = Ty::Fn(
-                        params,
-                        Box::new(ret),
-                        conventions,
-                        reference_params,
+                        params.into(),
+                        Box::new(ret).into(),
+                        conventions.into(),
+                        reference_params.into(),
                         qualifiers,
                     );
                     self.reject_externref_cap_aggregate_ty(
@@ -9362,10 +9425,10 @@ impl Checker {
                 self.pure_var_parameters = saved_pure_var_parameters;
                 let conventions = params.iter().map(|p| p.convention).collect();
                 let function_ty = Ty::Fn(
-                    param_tys,
-                    Box::new(lambda_ret),
+                    param_tys.into(),
+                    Box::new(lambda_ret).into(),
                     conventions,
-                    vec![false; params.len()],
+                    vec![false; params.len()].into(),
                     *qualifiers,
                 );
                 if ret.is_none()
@@ -9400,7 +9463,7 @@ impl Checker {
                             args.len()
                         ));
                     }
-                    for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
+                    for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
                         let at = self.infer_expected(arg, pty)?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
@@ -9432,7 +9495,7 @@ impl Checker {
                         ret.as_ref(),
                         "function-value application result",
                     )?;
-                    return Ok(*ret);
+                    return Ok((*ret).clone());
                 }
                 if self.current_pure {
                     return terr(
@@ -9452,10 +9515,10 @@ impl Checker {
                 self.unify(
                     &fty,
                     &Ty::Fn(
-                        argtys,
-                        Box::new(ret.clone()),
-                        vec![Convention::Let; args.len()],
-                        vec![false; args.len()],
+                        argtys.into(),
+                        Box::new(ret.clone()).into(),
+                        vec![Convention::Let; args.len()].into(),
+                        vec![false; args.len()].into(),
                         CallableQualifiers::ORDINARY,
                     ),
                 )
@@ -9584,8 +9647,8 @@ impl Checker {
                         "pure callable cannot suspend with `await`; task scheduling is an observable effect",
                     ),
                     UnOp::Await => match self.resolve(&t) {
-                        Ty::Named(name, mut arguments)
-                            if (name == "Task" || name == "task.Task") && arguments.len() == 1 =>
+                        Ty::Named(name, arguments)
+                            if (name == "Task".into() || name == "task.Task".into()) && arguments.len() == 1 =>
                         {
                             if let Some((root, projected)) = self.affine_place(expr) {
                                 if projected {
@@ -9602,7 +9665,7 @@ impl Checker {
                                 self.mark_consumed_binding(&root);
                                 self.consume_must_binding(&root);
                             }
-                            Ok(arguments.remove(0))
+                            Ok(arguments[0].clone())
                         }
                         actual => terr(format!(
                             "`await` requires `Task(T)`, but this expression has type `{actual}`"
@@ -9711,13 +9774,13 @@ impl Checker {
                         "field access `.{field}` requires a record, found `{resolved}`"
                     ));
                 };
-                if self.sealed_types.contains(tyname) {
+                if self.sealed_types.contains(tyname.as_ref()) {
                     return terr(format!(
                         "`{tyname}` is a sealed capability — its fields are private; \
                          destructure it with `match` inside its own module"
                     ));
                 }
-                let Some((params, fields)) = self.record_fields.get(tyname).cloned() else {
+                let Some((params, fields)) = self.record_fields.get(tyname.as_ref()).cloned() else {
                     return terr(format!("type `{tyname}` is not a record, so it has no field `{field}`"));
                 };
                 let Some((_, fty)) = fields.iter().find(|(n, _)| n == field) else {
@@ -9742,8 +9805,8 @@ impl Checker {
                         return terr(format!("`update` requires a record, found `{other}`"))
                     }
                 };
-                let tyname = name.clone().unwrap_or_else(|| base_tyname.clone());
-                if tyname != base_tyname {
+                let tyname = name.clone().unwrap_or_else(|| base_tyname.to_string());
+                if *tyname != *base_tyname {
                     return terr(format!(
                         "`{tyname}(..base)` requires a `{tyname}` base, found `{base_tyname}`"
                     ));
@@ -9801,7 +9864,7 @@ impl Checker {
                         })?;
                     }
                 }
-                Ok(Ty::Named(tyname, base_args))
+                Ok(Ty::Named(tyname.into(), base_args))
             }
             Expr::Try(inner) => {
                 let it = self.infer(inner)?;
@@ -9811,9 +9874,9 @@ impl Checker {
                 };
                 let ret = self.resolve(&ret);
                 let value_ty = match &resolved {
-                    Ty::Named(n, args) if n == "Result" && args.len() == 2 => {
+                    Ty::Named(n, args) if **n == *"Result" && args.len() == 2 => {
                         match &ret {
-                            Ty::Named(rn, rargs) if rn == "Result" && rargs.len() == 2 => {
+                            Ty::Named(rn, rargs) if **rn == *"Result" && rargs.len() == 2 => {
                                 if !self.result_error_compatible(&rargs[1], &args[1])? {
                                     return terr(format!(
                                         "`?` propagates a `{}` error, but the enclosing function returns `{}` \
@@ -9830,9 +9893,9 @@ impl Checker {
                             }
                         }
                     }
-                    Ty::Named(n, args) if n == "Option" && args.len() == 1 => {
+                    Ty::Named(n, args) if **n == *"Option" && args.len() == 1 => {
                         let r = self.fresh();
-                        let expected_ret = Ty::Named("Option".into(), vec![r]);
+                        let expected_ret = Ty::Named("Option".into(), vec![r].into());
                         self.unify(&ret, &expected_ret).map_err(|e| TypeError {
                             message: format!(
                                 "`?` propagates from a `{resolved}`, but the enclosing function returns a different type: {}",
@@ -9982,7 +10045,7 @@ impl Checker {
             Expr::For { var, iter, body } => {
                 let it = self.infer(iter)?;
                 let elem = self.fresh();
-                self.unify(&Ty::List(Box::new(elem.clone())), &it).map_err(|e| TypeError {
+                self.unify(&Ty::List(Box::new(elem.clone()).into()), &it).map_err(|e| TypeError {
                     message: format!("`for` expects a List to iterate: {}", e.message),
                 })?;
                 self.reject_implicit_once_copy(iter, &it, "`for` iteration")?;
@@ -10158,7 +10221,7 @@ impl Checker {
                 // else is admissible — no truthiness, no same-typed fallback —
                 // so the result type is never ambiguous.
                 match self.resolve(&lt) {
-                    Ty::Named(ref n, ref args) if n == "Option" && args.len() == 1 => {
+                    Ty::Named(ref n, ref args) if **n == *"Option" && args.len() == 1 => {
                         let t = args[0].clone();
                         self.unify(&t, &rt).map_err(|e| TypeError {
                             message: format!(
@@ -10173,7 +10236,7 @@ impl Checker {
                         }
                         Ok(t)
                     }
-                    Ty::Named(ref n, ref args) if n == "Result" && args.len() == 2 => {
+                    Ty::Named(ref n, ref args) if **n == *"Result" && args.len() == 2 => {
                         let t = args[0].clone();
                         self.unify(&t, &rt).map_err(|e| TypeError {
                             message: format!(
@@ -10335,7 +10398,7 @@ impl Checker {
                     });
                 let variant_count = adt
                     .as_ref()
-                    .and_then(|a| self.adt_variants.get(a))
+                    .and_then(|a| self.adt_variants.get(a.as_ref()))
                     .map(|v| v.len());
                 match variant_count {
                     // A multi-variant type's constructor pattern can fail.
@@ -10432,7 +10495,7 @@ impl Checker {
             Pattern::Bool(_) => self.unify(expected, &Ty::Bool),
             Pattern::Tuple(pats) => {
                 let elem_tys: Vec<Ty> = (0..pats.len()).map(|_| self.fresh()).collect();
-                self.unify(expected, &Ty::Tuple(elem_tys.clone()))?;
+                self.unify(expected, &Ty::Tuple(elem_tys.clone().into()))?;
                 for (p, t) in pats.iter().zip(elem_tys) {
                     self.check_pattern(p, &t)?;
                 }
@@ -10440,12 +10503,12 @@ impl Checker {
             }
             Pattern::List { elems, rest } => {
                 let elem = self.fresh();
-                self.unify(expected, &Ty::List(Box::new(elem.clone())))?;
+                self.unify(expected, &Ty::List(Box::new(elem.clone()).into()))?;
                 for p in elems {
                     self.check_pattern(p, &elem)?;
                 }
                 if let Some(Some(name)) = rest {
-                    let rest_ty = Ty::List(Box::new(elem));
+                    let rest_ty = Ty::List(Box::new(elem).into());
                     self.define(name.clone(), rest_ty.clone(), false);
                     self.mark_must_consume_binding(name, &rest_ty);
                 }
@@ -10750,7 +10813,7 @@ impl Checker {
         let Ty::Named(adt, _) = resolved else {
             return Ok(());
         };
-        let Some(variants) = self.adt_variants.get(&adt) else {
+        let Some(variants) = self.adt_variants.get(adt.as_ref()) else {
             return Ok(());
         };
         // Top-level: every variant of the sum type must appear in an unguarded arm.
@@ -10829,7 +10892,7 @@ impl Checker {
                 ColCtor { key: "false".into(), args: Vec::new() },
             ]),
             Ty::Tuple(comps) => {
-                Some(vec![ColCtor { key: TUPLE_CTOR.into(), args: comps.clone() }])
+                Some(vec![ColCtor { key: TUPLE_CTOR.into(), args: comps.to_vec() }])
             }
             Ty::List(elem) => Some(vec![
                 ColCtor { key: LIST_NIL.into(), args: Vec::new() },
@@ -10844,7 +10907,7 @@ impl Checker {
                             .collect(),
                     );
                 }
-                let variants = self.adt_variants.get(adt)?;
+                let variants = self.adt_variants.get(adt.as_ref())?;
                 Some(
                     variants
                         .iter()
@@ -10958,7 +11021,7 @@ impl Checker {
             let Ty::Named(adt, _) = result else {
                 return true;
             };
-            let Some(variants) = self.adt_variants.get(adt) else {
+            let Some(variants) = self.adt_variants.get(adt.as_ref()) else {
                 return true;
             };
             for v in variants {
@@ -11793,18 +11856,18 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
             T::Tuple(ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?)
         }
         Ty::Named(n, args) => T::Named(
-            n.clone(),
+            n.to_string(),
             args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         ),
         // (RFC-0081) The existential surface form: `dyn Render(args…)`.
         Ty::Dyn(n, args) => T::Dyn(
-            n.clone(),
+            n.to_string(),
             args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         ),
         Ty::Fn(params, ret, conventions, _, qualifiers) => T::Fn(
             params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
             Box::new(ty_to_ast(ret)?),
-            conventions.clone(),
+            conventions.to_vec(),
             *qualifiers,
         ),
         Ty::Var(_) => return None,
@@ -12204,6 +12267,7 @@ fn run_check_selected(
         })
         .collect();
     let mut c = Checker {
+        resolve_cache: std::cell::RefCell::new(HashMap::new()),
         type_record: if record { Some(HashMap::new()) } else { None },
         // Construction requests are also retained during ordinary checking so
         // capability payloads resolved only by the ending substitution are
@@ -12344,7 +12408,7 @@ fn run_check_selected(
         Ty::Var(id) => id,
         _ => unreachable!("fresh type variable"),
     };
-    let option_result = Ty::Named("Option".into(), vec![option_a.clone()]);
+    let option_result = Ty::Named("Option".into(), vec![option_a.clone()].into());
     let mut option_typarams = HashSet::new();
     option_typarams.insert(option_id);
     c.ctor_sigs.insert("Some".into(), (vec![option_a.clone()], option_result.clone()));
@@ -12359,7 +12423,7 @@ fn run_check_selected(
         (Ty::Var(ok), Ty::Var(err)) => (*ok, *err),
         _ => unreachable!("fresh type variable"),
     };
-    let result = Ty::Named("Result".into(), vec![result_ok.clone(), result_err.clone()]);
+    let result = Ty::Named("Result".into(), vec![result_ok.clone(), result_err.clone()].into());
     let mut result_typarams = HashSet::new();
     result_typarams.insert(result_ok_id);
     result_typarams.insert(result_err_id);
@@ -12406,7 +12470,7 @@ fn run_check_selected(
                 };
                 let ret = if f.is_async {
                     c.async_body_returns.insert(f.name.clone(), body_ret.clone());
-                    Ty::Named(async_task_type.into(), vec![body_ret])
+                    Ty::Named(async_task_type.into(), vec![body_ret].into())
                 } else {
                     body_ret
                 };
@@ -12466,7 +12530,7 @@ fn run_check_selected(
                     vars.insert(pn.clone(), v.clone());
                     result_args.push(v);
                 }
-                let result = Ty::Named(t.name.clone(), result_args);
+                let result = Ty::Named(t.name.clone().into(), result_args.into());
                 if t.sealed {
                     c.construction_sealed_types.insert(t.name.clone());
                 }
@@ -12696,7 +12760,7 @@ fn run_check_selected(
                 (!params.iter().any(ty_has_var) && !ty_has_var(&result)).then(|| {
                     (
                         name.clone(),
-                        Ty::Fn(params, Box::new(result), conventions, references, qualifiers),
+                        Ty::Fn(params.into(), Box::new(result).into(), conventions.into(), references.into(), qualifiers),
                     )
                 })
             })

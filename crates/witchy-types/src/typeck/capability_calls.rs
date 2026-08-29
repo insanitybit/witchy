@@ -95,7 +95,7 @@ impl Checker {
             return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
         }
         let names = self.infer(&args[1])?;
-        self.unify(&Ty::List(Box::new(Ty::String)), &names)
+        self.unify(&Ty::List(Box::new(Ty::String).into()), &names)
             .map_err(|error| TypeError {
                 message: format!(
                     "in call to `only`: Env names must be a List(String): {}",
@@ -177,7 +177,7 @@ impl Checker {
                 return terr(format!("`only` needs `Read` but the capability is `{rights}`"));
             }
             let pt = self.infer(&args[1])?;
-            self.unify(&Ty::Named("DirPolicy".into(), Vec::new()), &pt)
+            self.unify(&Ty::Named("DirPolicy".into(), Vec::new().into()), &pt)
                 .map_err(|e| TypeError { message: format!("in call to `only`: {}", e.message) })?;
             return Ok(Some(Ty::Dir(rights)));
         }
@@ -239,7 +239,7 @@ impl Checker {
                 if !rights.read {
                     return terr(format!("`list` needs `Read` but the capability is `{rights}`"));
                 }
-                Ty::List(Box::new(Ty::String))
+                Ty::List(Box::new(Ty::String).into())
             }
             "write" | "append" => {
                 if !rights.write {
@@ -352,7 +352,7 @@ impl Checker {
                 return terr(format!("`only` expects {arity} argument(s) but got {}", args.len()));
             }
             let programs = self.infer(&args[1])?;
-            self.unify(&Ty::List(Box::new(Ty::String)), &programs)
+            self.unify(&Ty::List(Box::new(Ty::String).into()), &programs)
                 .map_err(|error| TypeError {
                     message: format!(
                         "in call to `only`: Exec programs must be a List(String): {}",
@@ -513,7 +513,7 @@ impl Checker {
             // RFC-0011), a `host:port` string for the address verbs (`connect`/`listen`/`restrict`),
             // a bare host string for `resolve`.
             let expected = if name == "only" || name == "deny" {
-                Ty::Named("NetPolicy".into(), Vec::new())
+                Ty::Named("NetPolicy".into(), Vec::new().into())
             } else {
                 Ty::String
             };
@@ -552,7 +552,7 @@ impl Checker {
                         "`try_connect` is only implemented over `Tcp`, but the capability is `{rights}`"
                     ));
                 }
-                Ty::Named("Option".into(), vec![Ty::Socket])
+                Ty::Named("Option".into(), vec![Ty::Socket].into())
             }
             "listen" => {
                 if !rights.listen {
@@ -591,7 +591,7 @@ impl Checker {
                         "`resolve` needs `Connect` but the capability is `{rights}`"
                     ));
                 }
-                Ty::List(Box::new(Ty::String))
+                Ty::List(Box::new(Ty::String).into())
             }
             // Pinned dials — same rights as `connect` (a literal-IP TCP dial), the hostname
             // carried only for SNI/Host. `try_` is total (`Option(Socket)`).
@@ -619,7 +619,7 @@ impl Checker {
                         "`try_connect_pinned` is only implemented over `Tcp`, but the capability is `{rights}`"
                     ));
                 }
-                Ty::Named("Option".into(), vec![Ty::Socket])
+                Ty::Named("Option".into(), vec![Ty::Socket].into())
             }
             // Attenuating the address set leaves the rights (verbs + transports) intact.
             // `only` narrows a `Net` to a `NetPolicy`'s address set; `deny` subtracts an

@@ -4517,7 +4517,7 @@ fn render_needs_show(ty: &crate::typeck::Ty, show_types: &HashSet<String>) -> bo
         Ty::List(elem) => render_needs_show(elem, show_types),
         Ty::Tuple(slots) => slots.iter().any(|slot| render_needs_show(slot, show_types)),
         Ty::Named(name, args) => {
-            let bare = name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s);
+            let bare = name.rsplit_once('.').map_or(name.as_ref(), |(_, s)| s);
             match bare {
                 "Option" | "Result" | "Dict" => {
                     args.iter().any(|arg| render_needs_show(arg, show_types))

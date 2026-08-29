@@ -12,7 +12,7 @@ use super::{terr, TypeError};
 
 /// The operations a `Console` capability permits. Bare `Console` is full
 /// read/write authority; bracketed markers narrow it independently.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConsoleRights {
     pub read: bool,
     pub write: bool,
@@ -39,7 +39,7 @@ impl fmt::Display for ConsoleRights {
 /// right makes the footprint distinguish read-only from writing code, and an op
 /// that needs a right it wasn't granted is a compile-time error. Bare `Dir` is
 /// the full set; `Dir[Read]`/`Dir[Write]` narrow it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DirRights {
     pub read: bool,
     pub write: bool,
@@ -104,7 +104,7 @@ pub(super) fn dir_rights(args: &[ast::Type]) -> DirRights {
 /// a `File` carries no path-scope to refine (it is already a leaf), so its only
 /// refinement axis is its rights. (`Exec` — folding ambient `Exec` into
 /// `File[Exec]` — is a later addition; today a `File` is read/write.)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileRights {
     pub read: bool,
     pub write: bool,
@@ -141,7 +141,7 @@ pub(super) fn file_rights(args: &[ast::Type]) -> FileRights {
 /// by opaque handle — sign, derive a public key, serve TLS), so holding `Reveal`
 /// implies holding `Seal`. Bare `Secret` is the full set; `Secret[Seal]` is the
 /// sealed handle whose `crypto.reveal` is a compile-time error.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SecretRights {
     pub reveal: bool,
     pub seal: bool,
@@ -201,7 +201,7 @@ pub(super) fn secret_rights(args: &[ast::Type]) -> SecretRights {
 /// Each axis defaults independently: an unmentioned axis is *full*. Bare `Net` is
 /// full verbs + full transports; `Net[Connect]` is connect-only over all
 /// transports; `Net[Tcp]` is all verbs over TCP only; `Net[Connect, Tcp]` is both.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetRights {
     pub connect: bool,
     pub listen: bool,

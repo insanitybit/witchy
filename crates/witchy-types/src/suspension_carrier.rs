@@ -2273,7 +2273,7 @@ fn fixed_select_payload_lane(endpoints: &[Option<&Ty>]) -> Option<CarrierLane> {
     (endpoints.len() >= 3
         && endpoints.iter().all(|endpoint| {
             matches!(endpoint, Some(Ty::Named(name, args))
-                if name.rsplit('.').next() == Some("Receiver") && args.as_slice() == [Ty::Int])
+                if name.rsplit('.').next() == Some("Receiver") && args.as_ref() == [Ty::Int])
         }))
     .then_some(CarrierLane::I64)
 }
@@ -2300,8 +2300,8 @@ fn select_payload_lane_types(first: Option<&Ty>, second: Option<&Ty>) -> Option<
         (Some(Ty::Named(first_name, first_args)), Some(Ty::Named(second_name, second_args)))
             if first_name.rsplit('.').next() == Some("Receiver")
                 && second_name.rsplit('.').next() == Some("Receiver")
-                && first_args.as_slice() == [Ty::Int]
-                && second_args.as_slice() == [Ty::Int] =>
+                && first_args.as_ref() == [Ty::Int]
+                && second_args.as_ref() == [Ty::Int] =>
         {
             Some(CarrierLane::I64)
         }
@@ -3235,8 +3235,8 @@ mod tests {
 
     #[test]
     fn one_way_channel_plan_keeps_direction_and_exact_message_layout() {
-        let sender = Ty::Named("Sender".into(), vec![Ty::String]);
-        let receiver = Ty::Named("Receiver".into(), vec![Ty::Int]);
+        let sender = Ty::Named("Sender".into(), vec![Ty::String].into());
+        let receiver = Ty::Named("Receiver".into(), vec![Ty::Int].into());
         assert_eq!(
             channel_endpoint_payload_layout(
                 &sender,
@@ -3266,8 +3266,8 @@ mod tests {
 
     #[test]
     fn select_payload_lane_requires_two_typed_integer_receivers() {
-        let receiver_int = Ty::Named("Receiver".into(), vec![Ty::Int]);
-        let receiver_string = Ty::Named("Receiver".into(), vec![Ty::String]);
+        let receiver_int = Ty::Named("Receiver".into(), vec![Ty::Int].into());
+        let receiver_string = Ty::Named("Receiver".into(), vec![Ty::String].into());
         assert_eq!(
             select_payload_lane_types(Some(&receiver_int), Some(&receiver_int)),
             Some(CarrierLane::I64)
