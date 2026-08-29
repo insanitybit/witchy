@@ -298,7 +298,12 @@ pub(crate) fn find_byte_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
+    let load_v128 = |base: &str| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl(base), getl("i"), i32c(16), getl("slen"), crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::V128,
+    };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))), offset: 4 };
     let sub_byte = E::SafeLoad8U {
@@ -364,7 +369,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
                         target: "vdone".into(),
                         cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("slen"))),
                     },
-                    setl("v", load_v128(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i")))),
+                    setl("v", load_v128("s")),
                     setl("mask", E::Vector {
                         op: VectorOp::I8x16Bitmask,
                         args: vec![E::Vector {
@@ -941,8 +946,12 @@ pub(in crate::wir_helpers) fn str_find_byte_helper() -> WirFunc {
         place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
         kind: Kind::I32,
     };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
-    let ptr_at = || bin(BinOp::Add, bin(BinOp::Add, getl("s"), i32c(4)), getl("i"));
+    let load_v128 = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl("s"), getl("i"), i32c(16), getl("len"), crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::V128,
+    };
     let byte_at = || E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
             getl("s"), getl("i"), getl("len"), crate::safewir::AccessMode::Read,
@@ -985,7 +994,7 @@ pub(in crate::wir_helpers) fn str_find_byte_helper() -> WirFunc {
                             target: "vdone".into(),
                             cond: Some(bin(BinOp::Gt, bin(BinOp::Add, getl("i"), i32c(16)), getl("len"))),
                         },
-                        N::SetLocal { local: "v".into(), value: load_v128(ptr_at()) },
+                        N::SetLocal { local: "v".into(), value: load_v128() },
                         N::SetLocal {
                             local: "mask".into(),
                             value: E::Vector {
