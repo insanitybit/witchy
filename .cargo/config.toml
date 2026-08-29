@@ -10,3 +10,15 @@
 # overflow 2 MiB and abort the test process. The production CLI is unaffected (it
 # runs on the 8 MiB main thread); this only sizes the test threads to match.
 RUST_MIN_STACK = "16777216"
+# sccache already wraps rustc (see [build] rustc-wrapper below) but that only
+# caches Rust compilation. cc-rs build scripts (libmimalloc-sys, blake3,
+# zstd-sys, wasmtime's bundled C deps, ...) invoke a separate C/C++ compiler
+# that rustc-wrapper never sees -- without this, every fresh target dir (this
+# repo's per-agent `target-<agent>` convention, the merge-gate's warm
+# worktree, CI) pays their C compile cost again even when the source hasn't
+# changed. sccache supports acting as a general compiler cache when invoked
+# as `sccache <compiler> <args>`, not just as RUSTC_WRAPPER; cc-rs splits CC/
+# CXX on whitespace, so this is the standard way to route it through the same
+# cache. A target-specific CC_<target>/CXX_<target> still overrides these.
+CC = "sccache cc"
+CXX = "sccache c++"

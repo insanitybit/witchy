@@ -17,6 +17,25 @@
 )]
 #![deny(unsafe_code)]
 
+// The compiler is allocation-heavy: typeck's `Ty`/AST `Expr`/`Type` clone
+// deeply on every checker fixpoint round (crates/witchy-types/src/typeck.rs),
+// and a `sample` profile of an ordinary compile showed ~45-50% of total CPU
+// in the system allocator (malloc/free/memset), not in any compiler
+// algorithm. Measured with an interleaved A/B (alternating binaries built
+// with each allocator, same fixture, same machine, same few minutes -- this
+// box's load average swings 10x within seconds, so a same-binary
+// before/after comparison is not trustworthy here): mimalloc won 9/9 rounds,
+// averaging ~30-45% less wall time per compile. This is the ONE place it can
+// be declared (a binary/cdylib may have at most one `#[global_allocator]` in
+// its whole dependency graph) so it covers the CLI binary AND every
+// integration test binary that links this lib -- where the gate's wall-clock
+// actually lives.
+// Native-only: unavailable (and pointless) on the wasm32 playground build,
+// which already disables the `native` feature this is gated behind.
+#[cfg(feature = "native")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
 pub use witchy_lower::codegen;
