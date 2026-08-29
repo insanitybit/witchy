@@ -125,9 +125,14 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
             els: vec![],
             result: None,
         },
-        N::MemoryCopy {
-            dest: b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("len")),
-            src: b(BinOp::Add, getl("piece"), i32c(4)),
+        N::SafeMemoryCopy {
+            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                getl("s"), getl("len"), getl("plen"), getl("cap"), crate::safewir::AccessMode::Write,
+            ),
+            source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                getl("piece"), i32c(0), getl("plen"), getl("plen"), crate::safewir::AccessMode::Read,
+            ),
             len: getl("plen"),
         },
         N::SafeStore {
@@ -153,14 +158,24 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
                 value: getl("need"),
                 kind: Kind::I32,
             },
-        N::MemoryCopy {
-            dest: b(BinOp::Add, getl("new"), i32c(4)),
-            src: b(BinOp::Add, getl("s"), i32c(4)),
+        N::SafeMemoryCopy {
+            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                getl("new"), i32c(0), getl("len"), getl("newcap"), crate::safewir::AccessMode::Write,
+            ),
+            source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                getl("s"), i32c(0), getl("len"), getl("cap"), crate::safewir::AccessMode::Read,
+            ),
             len: getl("len"),
         },
-        N::MemoryCopy {
-            dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("len")),
-            src: b(BinOp::Add, getl("piece"), i32c(4)),
+        N::SafeMemoryCopy {
+            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                getl("new"), getl("len"), getl("plen"), getl("newcap"), crate::safewir::AccessMode::Write,
+            ),
+            source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                getl("piece"), i32c(0), getl("plen"), getl("plen"), crate::safewir::AccessMode::Read,
+            ),
             len: getl("plen"),
         },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },

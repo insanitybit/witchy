@@ -269,6 +269,13 @@ fn strided_element_address(root: WirExpr, index: &WirExpr, payload: i32, stride:
         let offset = payload + n * stride;
         return add32(root, WirExpr::ConstI32(offset));
     }
+    // Stride one needs no multiply: the index IS the byte offset. Emitting
+    // `index * 1` cost two instructions per site, measured as +8 across three
+    // byte-buffer copies, which the migration may not spend. The builder's
+    // address grammar already treats a bare leaf as a stride-one index.
+    if stride == 1 {
+        return add32(add32(root, WirExpr::ConstI32(payload)), index.clone());
+    }
     add32(
         add32(root, WirExpr::ConstI32(payload)),
         WirExpr::Binary {
@@ -397,7 +404,15 @@ pub(crate) fn byte_buffer_payload_slice_place(
     // `validate_fixed_address` reconciles base and immediate by their total, so
     // it is accepted for a constant start as well as a dynamic one.
     let payload = payload_offset(layouts.byte_buffer);
-    let encoded_base = add32(add32(root.clone(), WirExpr::ConstI32(payload)), start.clone());
+    // Through the folding helper, so a constant start becomes part of the
+    // constant rather than an emitted `+ 0`: this accessor built the address
+    // unconditionally, which cost two instructions at every constant-start copy.
+    let encoded_base = strided_element_address(
+        root.clone(),
+        &start,
+        payload,
+        element_stride(layouts.byte_buffer),
+    );
     SafePlaceBuilder::new(
         &layouts.interner,
         layouts.byte_buffer,
