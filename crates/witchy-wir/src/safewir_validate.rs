@@ -2921,12 +2921,12 @@ impl Validator<'_> {
                     }
                 }
                 ProjectionStep::Element { index } => {
-                    let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
+                    let Some(element) = descriptor.kind().packed_element_layout() else {
                         return Err(self.function_error(
                             RuleId::ProjectedLayout,
                             function,
                             at,
-                            "element projection requires a packed-list descriptor",
+                            "element projection requires a packed element sequence",
                         ));
                     };
                     let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
@@ -2944,20 +2944,20 @@ impl Validator<'_> {
                                 "element projection arithmetic overflowed",
                             )
                         })?;
-                    layout = *element;
-                    scalar = self.scalar_layout_kind(*element);
+                    layout = element;
+                    scalar = self.scalar_layout_kind(element);
                     length = u128::from(stride);
                 }
                 ProjectionStep::Slice {
                     start,
                     length: slice_length,
                 } => {
-                    let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
+                    let Some(element) = descriptor.kind().packed_element_layout() else {
                         return Err(self.function_error(
                             RuleId::ProjectedLayout,
                             function,
                             at,
-                            "slice projection requires a packed-list descriptor",
+                            "slice projection requires a packed element sequence",
                         ));
                     };
                     let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
@@ -2985,9 +2985,9 @@ impl Validator<'_> {
                             "slice projection length overflowed",
                         )
                     })?;
-                    layout = *element;
+                    layout = element;
                     scalar = (count == 1)
-                        .then(|| self.scalar_layout_kind(*element))
+                        .then(|| self.scalar_layout_kind(element))
                         .flatten();
                 }
             }

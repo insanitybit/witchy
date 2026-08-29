@@ -303,6 +303,50 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
 
     /// Claim one descriptor-defined packed-list header component.
     /// Component zero is length and component one is capacity.
+    /// Claim a runtime buffer's length word.
+    ///
+    /// A runtime buffer carries its length as an ordinary descriptor field at
+    /// offset zero rather than in a `HeaderLayout`, so `header()` does not
+    /// apply to it and `fixed_field()` refuses it outright. This is the one
+    /// sanctioned way to reach that word.
+    ///
+    /// It emits the existing `ProjectionStep::Field { index: 0 }`. That is
+    /// deliberate: the validator's `Field` arm already derives exactly the
+    /// right offset, length, and scalar kind for it with no layout-kind guard,
+    /// so a new projection step would add arms across eight files for no new
+    /// expressive power, and extending `HeaderLayout` would change
+    /// `canonical_bytes` and re-mint every runtime buffer's `LayoutId`.
+    ///
+    /// The offset and width come from the descriptor's own field table.
+    /// Nothing here hardcodes zero, four, or a stride.
+    pub fn runtime_buffer_length(
+        &self,
+        encoded: SafeEncodedAddress,
+    ) -> Result<Box<SafePlaceExpr>, SafePlaceBuildError> {
+        let descriptor = self.descriptor(self.object.layout)?;
+        if !matches!(descriptor.kind(), LayoutKind::RuntimeBuffer { .. }) {
+            return Err(SafePlaceBuildError::ProjectionRequiresRuntimeBuffer {
+                projection: "runtime buffer length",
+            });
+        }
+        let field = descriptor
+            .fields()
+            .first()
+            .ok_or(SafePlaceBuildError::FieldOutOfBounds { index: 0 })?;
+        let FieldKind::Scalar(kind) = field.kind() else {
+            return Err(SafePlaceBuildError::ProjectionRequiresRuntimeBuffer {
+                projection: "runtime buffer length",
+            });
+        };
+        self.validate_fixed_address(&encoded, field.offset(), "runtime buffer length")?;
+        Ok(self.finish(
+            SafeProjectionExpr::from_steps([SafeProjectionStep::Field { index: 0 }]),
+            SafeSizeExpr::Constant(u64::from(field.offset())),
+            SafeSizeExpr::Constant(u64::from(kind.size())),
+            encoded,
+        ))
+    }
+
     pub fn header(
         &self,
         component: u32,
@@ -436,10 +480,11 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         projection: &'static str,
     ) -> Result<(u32, u32), SafePlaceBuildError> {
         let descriptor = self.descriptor(self.object.layout)?;
-        if matches!(descriptor.kind(), LayoutKind::RuntimeBuffer { .. }) {
-            return Err(SafePlaceBuildError::RuntimeBufferProjection(self.object.layout));
-        }
-        if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
+        // A runtime buffer is the same physical shape as a packed list -- a
+        // length word then stride-sized elements -- so it indexes identically.
+        // The element comes from `packed_element_layout` so this guard and the
+        // validator's Element/Slice arms cannot drift apart.
+        if descriptor.kind().packed_element_layout().is_none() {
             return Err(SafePlaceBuildError::ProjectionRequiresPackedList { projection });
         }
         let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
@@ -676,6 +721,8 @@ pub enum SafePlaceBuildError {
     RuntimeBufferProjection(LayoutId),
     PackedListFieldProjection(LayoutId),
     ProjectionRequiresPackedList { projection: &'static str },
+    /// A runtime-buffer-only projection was attempted on another layout.
+    ProjectionRequiresRuntimeBuffer { projection: &'static str },
     UnsupportedClaimOperand { role: &'static str },
     NegativeClaimValue { role: &'static str, value: i64 },
     EncodedBaseMismatch { projection: &'static str },
@@ -755,6 +802,9 @@ impl fmt::Display for SafePlaceBuildError {
                 formatter,
                 "packed-list layout {layout} requires header or element projection, not a raw field ordinal"
             ),
+            Self::ProjectionRequiresRuntimeBuffer { projection } => {
+                write!(formatter, "{projection} requires a runtime buffer descriptor")
+            }
             Self::ProjectionRequiresPackedList { projection } => {
                 write!(formatter, "{projection} projection requires a packed-list descriptor")
             }
@@ -793,6 +843,71 @@ impl std::error::Error for SafePlaceBuildError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // RFC-0162 S1: a runtime buffer keeps its length in an ordinary descriptor
+    // field, not a HeaderLayout, so `header()` does not apply and
+    // `fixed_field()` refuses it. This is the sanctioned accessor, and it emits
+    // the existing Field{0} step rather than a new projection kind.
+    #[test]
+    fn a_runtime_buffer_length_word_is_claimable_and_descriptor_derived() {
+        let mut interner = LayoutInterner::default();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        let buffer = interner.intern_runtime_buffer(byte).expect("runtime buffer");
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted"),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Write,
+        )
+        .expect("claimable");
+
+        let place = builder
+            .runtime_buffer_length(SafeEncodedAddress::new(WirExpr::GetLocal("res".into()), 0))
+            .expect("the length word is claimable");
+        assert_eq!(place.encoded_offset, 0, "offset comes from the field table");
+        assert!(
+            matches!(place.projection.steps(), [SafeProjectionStep::Field { index: 0 }]),
+            "emits the existing Field step: {:?}",
+            place.projection.steps(),
+        );
+
+        // The dedicated accessor is the only route: the generic one still refuses.
+        let refused = builder
+            .fixed_field(0, SafeEncodedAddress::new(WirExpr::GetLocal("res".into()), 0));
+        assert!(
+            matches!(refused, Err(SafePlaceBuildError::RuntimeBufferProjection(_))),
+            "fixed_field must keep refusing a runtime buffer",
+        );
+
+        // And a claimed address that disagrees with the descriptor is refused.
+        let wrong = builder
+            .runtime_buffer_length(SafeEncodedAddress::new(WirExpr::GetLocal("res".into()), 4));
+        assert!(wrong.is_err(), "an offset the descriptor does not justify is refused");
+    }
+
+    #[test]
+    fn a_packed_only_layout_refuses_the_runtime_buffer_length_accessor() {
+        let mut interner = LayoutInterner::default();
+        let int = interner.intern_scalar(ScalarKind::Int).expect("scalar");
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            int,
+            SafeExactExtent::fixed(8),
+            WirExpr::GetLocal("res".into()),
+            AccessMode::Read,
+        )
+        .expect("claimable");
+        let refused = builder
+            .runtime_buffer_length(SafeEncodedAddress::new(WirExpr::GetLocal("res".into()), 0));
+        assert!(
+            matches!(
+                refused,
+                Err(SafePlaceBuildError::ProjectionRequiresRuntimeBuffer { .. })
+            ),
+            "only a runtime buffer has a length word to claim",
+        );
+    }
 
     // RFC-0162 S0: a runtime-sized object could not be DESCRIBED before this.
     // `SafeExactExtent` offered only `fixed(bytes)`, so every dynamically sized
@@ -1062,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_buffers_require_length_and_reject_legacy_field_projection() {
+    fn runtime_buffers_require_a_checked_length_and_refuse_fixed_field() {
         let mut layouts = LayoutInterner::new();
         let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
         let buffer = layouts.intern_runtime_buffer(byte).unwrap();
@@ -1076,10 +1191,19 @@ mod tests {
             builder.fixed_field(1, address(4)),
             Err(SafePlaceBuildError::RuntimeBufferProjection(id)) if id == buffer
         ));
-        assert!(matches!(
-            builder.element(WirExpr::ConstI32(0), address(4)),
-            Err(SafePlaceBuildError::RuntimeBufferProjection(id)) if id == buffer
-        ));
+        // A runtime buffer is now indexable. It is the same physical shape as a
+        // packed list -- length word then stride-sized elements -- and both go
+        // through `packed_element_layout`, so the builder and the validator's
+        // Element/Slice arms cannot disagree about which layouts admit an index.
+        // Before S1 this was `RuntimeBufferProjection`, which left the payload
+        // of every helper buffer unreachable.
+        let element = builder
+            .element(WirExpr::ConstI32(0), address(4))
+            .expect("a runtime buffer payload is indexable");
+        assert_eq!(
+            element.encoded_offset, 4,
+            "the payload begins at the descriptor's own base",
+        );
     }
 
     #[test]

@@ -494,6 +494,21 @@ impl LayoutKind {
     ///
     /// Exhaustive on purpose: a new layout kind must decide whether ordinary
     /// lowering may touch it rather than inherit `true`.
+    /// The element layout of a dynamically sized, packed element sequence.
+    ///
+    /// `PackedList` and `RuntimeBuffer` are the same physical shape -- a length
+    /// word followed by `stride`-sized elements -- and every consumer that
+    /// indexes one must treat them alike. Returning the element from a single
+    /// place keeps the builder's projection guard and the validator's Element
+    /// and Slice arms from drifting apart, which is how one of them would come
+    /// to accept a shape the other rejects.
+    pub fn packed_element_layout(&self) -> Option<LayoutId> {
+        match self {
+            Self::PackedList { element, .. } | Self::RuntimeBuffer { element } => Some(*element),
+            _ => None,
+        }
+    }
+
     pub fn is_ordinary_inline_target(&self) -> bool {
         match self {
             Self::Scalar(scalar) => scalar.is_ordinary_lowering_target(),
