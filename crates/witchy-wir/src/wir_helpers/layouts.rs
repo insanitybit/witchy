@@ -619,13 +619,29 @@ mod final_validation {
     /// merely asserted "not yet validated" would keep passing while the reason
     /// silently changed.
     ///
-    /// What the two measurements establish: both refusals name the DEF-USE
-    /// ADAPTER, once for a returned value and once for a parameter extent that is
-    /// a function of another parameter. Neither is about the symbolic size/range
-    /// domain, and neither is about a missing projection or accessor. So the
-    /// single component between this migration and validated compilation is
-    /// def-use binding -- which is what the "a count must be a leaf" rule has
-    /// been preparing operands for all along.
+    /// The measured roadmap, in the order a helper meets it:
+    ///
+    ///   1. value-returning callables require the deferred return-value def-use
+    ///      adapter                     -- blocks nearly every helper, and is
+    ///                                     reached before any claim is examined
+    ///   2. symbolic counted parameter extents require the deferred def-use
+    ///      adapter                     -- blocks any runtime-sized memory
+    ///                                     parameter
+    ///   3. mutable local definitions require the deferred reaching-definition
+    ///      graph                       -- blocks every loop
+    ///
+    /// Gate 3 is only visible once gate 2 is cleared with a constant extent,
+    /// which is why the same helper appears twice with different contracts.
+    ///
+    /// All three name one component: the reaching-definition graph. None names a
+    /// missing projection, accessor, or layout -- so the accessor work this
+    /// migration has been doing is the precondition and not the blocker. Note
+    /// also what gate 3 implies: a mutable local written in a loop has more than
+    /// one definition reaching its use, so binding it needs a JOIN over merge
+    /// points, not merely a lookup. The representation for that already exists
+    /// (`SizeExpr::Definition`, and `CheckedIndex`'s `length_source`); what is
+    /// concrete today is the EVALUATION -- `layout_extent` and
+    /// `derive_projection` return `u128`.
     #[test]
     fn migrated_helpers_report_their_distance_from_validated_encoding() {
         // A value-returning callable is refused before any claim is examined, so
@@ -647,6 +663,25 @@ mod final_validation {
                 scalar_parameter(),
             ],
             "symbolic counted parameter extents require the deferred def-use adapter",
+        );
+        // The same helper with a CONSTANT extent clears the contract-level gate,
+        // which isolates what the OPERATIONS themselves stop at -- this helper's
+        // dense side uses the two-step row projection, so it exercises more than
+        // scalar access.
+        assert_distance(
+            crate::wir_helpers::dict_reindex_helper(),
+            vec![
+                ParameterMemoryContract {
+                    entry: ParameterMemoryEntry::BorrowedWrite,
+                    layout: Some(helper_layouts().dict_body),
+                    extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(4 + 16 * 8))),
+                    effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
+                        .with(ParameterMemoryEffect::Write),
+                },
+                scalar_parameter(),
+                scalar_parameter(),
+            ],
+            "mutable local definitions require the deferred reaching-definition graph",
         );
     }
 
