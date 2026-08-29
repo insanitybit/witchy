@@ -1062,8 +1062,31 @@ pub(crate) fn replace_helper() -> WirFunc {
         kind: Kind::I32,
     };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let s_off = |off: E| b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), off);
-    let to_bytes = b(BinOp::Add, getl("to"), i32c(4));
+    // The destination is addressed by a byte OFFSET (`dpos`) rather than a moving
+    // absolute pointer. A place is a root plus a projection, so an absolute
+    // cursor cannot be described by one at all -- but the offset form can, and it
+    // is what this helper already wanted: it used to recover `reslen` by
+    // subtracting the payload base back out of the cursor.
+    //
+    // This costs the two-instruction address computation per copy that a bare
+    // cursor avoided. That is ordinary loop strength reduction to recover later,
+    // not a property of the claim: erasure keeps only the encoded base and
+    // immediate, so the claim itself emits nothing.
+    let res_at = |off: E, len: E, access| {
+        crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("res"), off, len, getl("rescap"), access)
+    };
+    let s_at = |off: E, len: E| {
+        crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("s"), off, len, getl("slen"), crate::safewir::AccessMode::Read)
+    };
+    let to_all = || {
+        crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("to"), i32c(0), getl("tlen"), getl("tlen"), crate::safewir::AccessMode::Read)
+    };
+    let copy = |destination, source, len| N::SafeMemoryCopy {
+        kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+        destination,
+        source,
+        len,
+    };
     let match_here = || E::Call { func: "match_at".into(), args: vec![getl("s"), getl("from"), getl("src")] };
     // seqlen(b) into `clen` — UTF-8 lead-byte classification.
     let seqlen = N::If {
@@ -1096,10 +1119,10 @@ pub(crate) fn replace_helper() -> WirFunc {
                         ),
                     }),
                 seqlen,
-                N::MemoryCopy { dest: getl("dst"), src: s_off(getl("src")), len: getl("clen") },
-                setl("dst", b(BinOp::Add, getl("dst"), getl("clen"))),
-                N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
-                setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
+                copy(res_at(getl("dpos"), getl("clen"), crate::safewir::AccessMode::Write), s_at(getl("src"), getl("clen")), getl("clen")),
+                setl("dpos", b(BinOp::Add, getl("dpos"), getl("clen"))),
+                copy(res_at(getl("dpos"), getl("tlen"), crate::safewir::AccessMode::Write), to_all(), getl("tlen")),
+                setl("dpos", b(BinOp::Add, getl("dpos"), getl("tlen"))),
                 setl("src", b(BinOp::Add, getl("src"), getl("clen"))),
                 N::Br { target: "cl".into(), cond: None },
             ],
@@ -1107,12 +1130,12 @@ pub(crate) fn replace_helper() -> WirFunc {
     };
     let empty_branch = vec![
         // `res` is the buffer allocated up front through `$rc_alloc`.
-        setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
-        N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
-        setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
+        setl("dpos", i32c(0)),
+        copy(res_at(getl("dpos"), getl("tlen"), crate::safewir::AccessMode::Write), to_all(), getl("tlen")),
+        setl("dpos", b(BinOp::Add, getl("dpos"), getl("tlen"))),
         setl("src", i32c(0)),
         empty_loop,
-        setl("reslen", b(BinOp::Sub, getl("dst"), b(BinOp::Add, getl("res"), i32c(4)))),
+        setl("reslen", getl("dpos")),
         N::SafeStore {
                 place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("reslen")),
                 value: getl("reslen"),
@@ -1148,17 +1171,17 @@ pub(crate) fn replace_helper() -> WirFunc {
                 N::If {
                     cond: match_here(),
                     then_: vec![
-                        N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
-                        setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
+                        copy(res_at(getl("dpos"), getl("tlen"), crate::safewir::AccessMode::Write), to_all(), getl("tlen")),
+                        setl("dpos", b(BinOp::Add, getl("dpos"), getl("tlen"))),
                         setl("src", b(BinOp::Add, getl("src"), getl("flen"))),
                     ],
                     els: vec![
-                        N::Store8 { ptr: getl("dst"), value: E::SafeLoad8U {
+                        N::SafeStore8 { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), getl("dpos"), getl("rescap"), crate::safewir::AccessMode::Write), value: E::SafeLoad8U {
                         place: crate::wir_helpers::layouts::byte_buffer_element_place(
                             getl("s"), getl("src"), getl("slen"), crate::safewir::AccessMode::Read,
                         ),
-                    }, offset: 0 },
-                        setl("dst", b(BinOp::Add, getl("dst"), i32c(1))),
+                    } },
+                        setl("dpos", b(BinOp::Add, getl("dpos"), i32c(1))),
                         setl("src", b(BinOp::Add, getl("src"), i32c(1))),
                     ],
                     result: None,
@@ -1175,7 +1198,7 @@ pub(crate) fn replace_helper() -> WirFunc {
             WirLocal { name: "to".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Str],
-        locals: ["slen", "flen", "tlen", "cnt", "src", "dst", "res", "reslen", "b", "clen"]
+        locals: ["slen", "flen", "tlen", "cnt", "src", "dpos", "res", "reslen", "b", "clen", "rescap"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
@@ -1186,9 +1209,13 @@ pub(crate) fn replace_helper() -> WirFunc {
             // (RFC-0016) reserve the worst-case buffer (`4 + slen + (slen+1)*tlen`) through
             // `$rc_alloc` up front; both branches fill into `res` and write the true length
             // header (the block's size header stays the worst case; tail slack unused).
+            // Bound rather than inlined into the allocation: a claim operand must
+            // be a leaf, and this worst-case capacity bounds every write into
+            // `res`. Binding it also stops the expression being spelled twice.
+            setl("rescap", b(BinOp::Add, getl("slen"), b(BinOp::Mul, b(BinOp::Add, getl("slen"), i32c(1)), getl("tlen")))),
             setl("res", E::Call {
                 func: "rc_alloc".into(),
-                args: vec![b(BinOp::Add, b(BinOp::Add, i32c(4), getl("slen")), b(BinOp::Mul, b(BinOp::Add, getl("slen"), i32c(1)), getl("tlen")))],
+                args: vec![b(BinOp::Add, i32c(4), getl("rescap"))],
             }),
             N::If {
                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("flen")) },
@@ -1205,7 +1232,7 @@ pub(crate) fn replace_helper() -> WirFunc {
                 value: getl("reslen"),
                 kind: Kind::I32,
             },
-            setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
+            setl("dpos", i32c(0)),
             setl("src", i32c(0)),
             fill_loop,
             N::Push(getl("res")),

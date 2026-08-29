@@ -441,8 +441,13 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
                 value: getl("total_len"),
                 kind: Kind::I32,
             },
-                    N::MemoryCopy { dest: bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), src: bin(BinOp::Add, Kind::I32, getl("prefix"), i32c(4)), len: getl("plen") },
-                    N::Store8 { ptr: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("plen")), value: i32c(48), offset: 0 },
+                    N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("res"), i32c(0), getl("plen"), getl("total_len"), crate::safewir::AccessMode::Write),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("prefix"), i32c(0), getl("plen"), getl("plen"), crate::safewir::AccessMode::Read),
+                len: getl("plen"),
+            },
+                    N::SafeStore8 { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), getl("plen"), getl("total_len"), crate::safewir::AccessMode::Write), value: i32c(48) },
                     N::Push(getl("res")),
                 ],
                 els: vec![
@@ -477,10 +482,15 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
                 value: getl("total_len"),
                 kind: Kind::I32,
             },
-                    N::MemoryCopy { dest: bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), src: bin(BinOp::Add, Kind::I32, getl("prefix"), i32c(4)), len: getl("plen") },
+                    N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("res"), i32c(0), getl("plen"), getl("total_len"), crate::safewir::AccessMode::Write),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("prefix"), i32c(0), getl("plen"), getl("plen"), crate::safewir::AccessMode::Read),
+                len: getl("plen"),
+            },
                     N::If {
                         cond: getl("neg"),
-                        then_: vec![N::Store8 { ptr: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("plen")), value: i32c(45), offset: 0 }],
+                        then_: vec![N::SafeStore8 { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), getl("plen"), getl("total_len"), crate::safewir::AccessMode::Write), value: i32c(45) }],
                         els: vec![],
                         result: None,
                     },
