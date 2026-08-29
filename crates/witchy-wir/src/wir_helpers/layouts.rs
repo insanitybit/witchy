@@ -38,7 +38,27 @@ pub(crate) struct HelperLayouts {
     /// real `HeaderLayout::PackedList`. Distinct from the two runtime buffers
     /// above: it carries a CAPACITY word, so its payload starts at eight.
     bool_list: LayoutId,
+    /// `[u32 count][16-byte rows...]` -- the DENSE entry array a `Dict` handle
+    /// exposes, which is `Dynamic { base: 4, stride: 16 }` over a row of
+    /// `{ key@0, value@8 }`. The two eight-byte lanes are why a row needs its own
+    /// descriptor: a runtime buffer's element is one scalar, and no single-step
+    /// projection can name "row `i`'s value".
+    ///
+    /// This is NOT the Swiss carrier the same helpers also address. The carrier
+    /// is `RuntimeDictionaryIndex`, `Dynamic { base: 20, stride: 25 }`, and it is
+    /// section-major (all control bytes, then all indices, then all keys...), so
+    /// a section's base is a function of the slot count rather than a descriptor
+    /// constant. Its extent is expressible; its projections are not, and this
+    /// module deliberately offers no carrier accessor.
+    dict_body: LayoutId,
 }
+
+/// Field indices into a dictionary ROW, in descriptor order.
+pub(crate) const DICT_ROW_KEY: u32 = 0;
+pub(crate) const DICT_ROW_VALUE: u32 = 1;
+
+/// The dense entry array's own count word, field zero of the body descriptor.
+const DICT_BODY_COUNT: u32 = 0;
 
 fn helper_layouts() -> &'static HelperLayouts {
     static LAYOUTS: OnceLock<HelperLayouts> = OnceLock::new();
@@ -62,8 +82,91 @@ fn helper_layouts() -> &'static HelperLayouts {
         let bool_list = interner
             .intern_packed_list(bool_element, RcHeader::Required)
             .expect("a packed list over an exact fixed element is always internable");
-        HelperLayouts { interner, byte_buffer, slot_buffer, bool_list }
+        // A dense row's key and value lanes are raw tagged slots, which is the
+        // same `Int` scalar the slot buffer is built over.
+        let dict_body = interner
+            .intern_runtime_dictionary_body(slot, slot)
+            .expect("a dictionary body over exact scalar slots is always internable");
+        HelperLayouts { interner, byte_buffer, slot_buffer, bool_list, dict_body }
     })
+}
+
+/// A checked place for the dense entry array's count word.
+///
+/// `count` is the array's row CAPACITY -- the `cap` the `*_extract` helpers
+/// already carry -- not the entry count being stored. The stored value is data.
+pub(crate) fn dict_body_count_place(
+    root: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.dict_body,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root.clone(),
+        access,
+    )
+    .expect("the helper dictionary-body layout is claimable")
+    .fixed_field(DICT_BODY_COUNT, SafeEncodedAddress::new(root, 0))
+    .expect("the count word is field zero at offset zero")
+}
+
+/// A checked place for one lane of dense entry `index` -- its key or its value.
+///
+/// The row's stride and the lane's offset within it both come from the
+/// descriptor: `4 + index * 16` for a key and `12 + index * 16` for a value,
+/// which is what the helpers already emit, so the wasm immediate absorbs the
+/// whole constant part and the migration spends no instruction.
+///
+/// Both `index` and `count` must be leaves. In practice that means this serves
+/// the helpers that step the dense array by a bound `count`/`found` local while
+/// holding `cap`; a helper reaching a row through a loaded bucket index (as
+/// `dict/read.rs` does) has neither, and is not migratable here.
+pub(crate) fn dict_entry_lane_place(
+    root: WirExpr,
+    index: WirExpr,
+    lane: u32,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let payload = payload_offset(layouts.dict_body);
+    let stride = element_stride(layouts.dict_body);
+    let within = row_lane_offset(layouts.dict_body, lane);
+    let (encoded, immediate) = scaled_index_address(root.clone(), &index, payload + within, stride);
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.dict_body,
+        SafeExactExtent::counted(count).expect("a capacity local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper dictionary-body layout is claimable")
+    .element_field(index, lane, SafeEncodedAddress::new(encoded, immediate))
+    .expect("a descriptor-strided row lane reconciles against the descriptor")
+}
+
+/// A row lane's offset WITHIN its row, asked of the row descriptor.
+fn row_lane_offset(layout: LayoutId, lane: u32) -> i32 {
+    let layouts = helper_layouts();
+    let row = layouts
+        .interner
+        .get(layout)
+        .expect("the helper layout is interned in this module")
+        .kind()
+        .packed_element_layout()
+        .expect("a dictionary body describes a row element");
+    let offset = layouts
+        .interner
+        .get(row)
+        .expect("the row layout is interned alongside its body")
+        .fields()
+        .get(lane as usize)
+        .expect("a dictionary row defines a key lane and a value lane")
+        .offset();
+    i32::try_from(offset).expect("a row lane offset is a small width")
 }
 
 /// A checked place for the length word of a helper-allocated SLOT list.

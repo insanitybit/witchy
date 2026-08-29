@@ -583,6 +583,26 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let entry = |base: &str, index: E| b(BinOp::Add, getl(base), b(BinOp::Mul, index, i32c(16)));
+    // Checked places for the dense entry array. The count operand is the row
+    // CAPACITY of the object being addressed, and that is not the same local for
+    // both objects: `d` was allocated with `cap`, the reallocated `new` with
+    // `newcap`. Claiming `cap` for `new` would be a claim about the wrong object,
+    // so every call names the capacity that belongs to its base. The lane's
+    // offset within a row comes from the row descriptor, which leaves the wasm
+    // immediate at 4 for a key and 12 for a value -- exactly what the raw stores
+    // spelled by hand, so the emitted code is unchanged.
+    let lane = |base: &str, index: E, lane: u32, cap: &str, access| {
+        crate::wir_helpers::layouts::dict_entry_lane_place(getl(base), index, lane, getl(cap), access)
+    };
+    let count_word = |base: &str, cap: &str| {
+        crate::wir_helpers::layouts::dict_body_count_place(
+            getl(base),
+            getl(cap),
+            crate::safewir::AccessMode::Write,
+        )
+    };
+    let key_lane = crate::wir_helpers::layouts::DICT_ROW_KEY;
+    let value_lane = crate::wir_helpers::layouts::DICT_ROW_VALUE;
     let dup_leaf = |value: E, bias: &str| E::Call {
         func: "leaf_dup".into(),
         args: vec![value, getl(bias)],
@@ -657,11 +677,16 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                                     ],
                                 },
                             },
-                            N::Store {
-                                ptr: entry("d", getl("found")),
+                            N::SafeStore {
+                                place: lane(
+                                    "d",
+                                    getl("found"),
+                                    value_lane,
+                                    "cap",
+                                    crate::safewir::AccessMode::Write,
+                                ),
                                 value: dup_leaf(getl("v"), "value_bias"),
                                 kind: Kind::I64,
-                                offset: 12,
                             },
                             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
                             N::If {
@@ -677,9 +702,9 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                         els: vec![N::If {
                             cond: b(BinOp::Gt, getl("cap"), getl("count")),
                             then_: vec![
-                                N::Store { ptr: getl("d"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
-                                N::Store { ptr: entry("d", getl("count")), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64, offset: 4 },
-                                N::Store { ptr: entry("d", getl("count")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                                N::SafeStore { place: count_word("d", "cap"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32 },
+                                N::SafeStore { place: lane("d", getl("count"), key_lane, "cap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64 },
+                                N::SafeStore { place: lane("d", getl("count"), value_lane, "cap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64 },
                                 N::SetLocal {
                                     local: "idx".into(),
                                     value: E::Load {
@@ -743,9 +768,9 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                                         rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("bytes")) }),
                                     },
                                 },
-                                N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
-                                N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64, offset: 4 },
-                                N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                                N::SafeStore { place: count_word("new", "newcap"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32 },
+                                N::SafeStore { place: lane("new", getl("count"), key_lane, "newcap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64 },
+                                N::SafeStore { place: lane("new", getl("count"), value_lane, "newcap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64 },
                                 N::SetLocal { local: "out_cap".into(), value: getl("newcap") },
                                 N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), getl("newcap"), getl("mode")] }),
                                 N::Do(E::Call { func: "rc_free".into(), args: vec![b(BinOp::Sub, getl("d"), i32c(4))] }),
@@ -789,8 +814,8 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                             label: "dup_loop".into(),
                             body: vec![
                                 N::Br { target: "dup_done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
-                                N::Drop(dup_leaf(E::Load { ptr: Box::new(entry("new", getl("i"))), kind: Kind::I64, offset: 4 }, "key_bias")),
-                                N::Drop(dup_leaf(E::Load { ptr: Box::new(entry("new", getl("i"))), kind: Kind::I64, offset: 12 }, "value_bias")),
+                                N::Drop(dup_leaf(E::SafeLoad { place: lane("new", getl("i"), key_lane, "newcap", crate::safewir::AccessMode::Read), kind: Kind::I64 }, "key_bias")),
+                                N::Drop(dup_leaf(E::SafeLoad { place: lane("new", getl("i"), value_lane, "newcap", crate::safewir::AccessMode::Read), kind: Kind::I64 }, "value_bias")),
                                 N::SetLocal { local: "i".into(), value: b(BinOp::Add, getl("i"), i32c(1)) },
                                 N::Br { target: "dup_loop".into(), cond: None },
                             ],
@@ -814,16 +839,16 @@ pub(crate) fn dict_insert_extract_helper() -> WirFunc {
                             N::Do(E::Call {
                                 func: "leaf_drop".into(),
                                 args: vec![
-                                    E::Load { ptr: Box::new(entry("new", getl("found"))), kind: Kind::I64, offset: 12 },
+                                    E::SafeLoad { place: lane("new", getl("found"), value_lane, "newcap", crate::safewir::AccessMode::Read), kind: Kind::I64 },
                                     getl("value_bias"),
                                 ],
                             }),
-                            N::Store { ptr: entry("new", getl("found")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                            N::SafeStore { place: lane("new", getl("found"), value_lane, "newcap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64 },
                         ],
                         els: vec![
-                            N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
-                            N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64, offset: 4 },
-                            N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                            N::SafeStore { place: count_word("new", "newcap"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32 },
+                            N::SafeStore { place: lane("new", getl("count"), key_lane, "newcap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64 },
+                            N::SafeStore { place: lane("new", getl("count"), value_lane, "newcap", crate::safewir::AccessMode::Write), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64 },
                         ],
                         result: None,
                     },
