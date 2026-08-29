@@ -383,9 +383,18 @@ pub(in crate::wir_helpers) fn list_set_cap_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    // element slot pointer for `index` in buffer `base`: base + 4 + index*8.
-    let slot = |base: &str| b(BinOp::Add, b(BinOp::Add, getl(base), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8)));
-    let inplace = vec![N::Store { ptr: slot("list"), value: getl("x"), kind: Kind::I64, offset: 0 }];
+    // A checked slot place for `index` in buffer `base`, whose capacity is
+    // `count`. The payload offset and stride come from the descriptor, and the
+    // offset rides in the wasm immediate rather than the base -- two
+    // instructions cheaper than the `base + 4 + index*8` this replaces.
+    let slot_place = |base: &str, count: &str, access| {
+        crate::wir_helpers::layouts::slot_buffer_element_place(getl(base), getl("index"), getl(count), access)
+    };
+    let inplace = vec![N::SafeStore {
+        place: slot_place("list", "cap", crate::safewir::AccessMode::Write),
+        value: getl("x"),
+        kind: Kind::I64,
+    }];
     let grow = vec![
         N::SetGlobal {
             global: "__witchy_reowns".into(),
@@ -394,13 +403,29 @@ pub(in crate::wir_helpers) fn list_set_cap_helper() -> WirFunc {
         N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
         N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
         N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] } },
+        // This claimed the BYTE-buffer layout on a slot list, so its extent read
+        // as `4 + len` bytes rather than `4 + len*8` -- the wrong shape. The
+        // slot layout states the real one.
         N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("len")),
-                value: getl("len"),
-                kind: Kind::I32,
-            },
-        N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
-        N::Store { ptr: slot("new"), value: getl("x"), kind: Kind::I64, offset: 0 },
+            place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("newcap")),
+            value: getl("len"),
+            kind: Kind::I32,
+        },
+        N::SafeMemoryCopy {
+            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                getl("new"), i32c(0), getl("len"), getl("newcap"), crate::safewir::AccessMode::Write,
+            ),
+            source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                getl("list"), i32c(0), getl("len"), getl("cap"), crate::safewir::AccessMode::Read,
+            ),
+            len: b(BinOp::Mul, getl("len"), i32c(8)),
+        },
+        N::SafeStore {
+            place: slot_place("new", "newcap", crate::safewir::AccessMode::Write),
+            value: getl("x"),
+            kind: Kind::I64,
+        },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
     ];
@@ -422,7 +447,7 @@ pub(in crate::wir_helpers) fn list_set_cap_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
                 } },
             N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
