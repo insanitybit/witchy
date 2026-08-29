@@ -103,6 +103,7 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
             WirLocal { name: "out_cap".into(), ty: WirTy::Bool },
             WirLocal { name: "i".into(), ty: WirTy::Bool },
             WirLocal { name: "old".into(), ty: WirTy::Int },
+            WirLocal { name: "newlen".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal {
@@ -113,6 +114,10 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
                 },
             },
             N::SetLocal { local: "present".into(), value: b(BinOp::Gt, getl("len"), i32c(0)) },
+            // The popped-to length, bound once. It is the claim count for the
+            // shrunken buffer and is used four more times below; computing it
+            // once is measured as no more instructions than repeating it.
+            N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, getl("len"), i32c(1)) },
             N::SetLocal { local: "old".into(), value: i64c(0) },
             N::If {
                 cond: b(BinOp::Gt, getl("cap"), i32c(0)),
@@ -137,11 +142,10 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
                                     ],
                                 },
                             },
-                            N::Store {
-                                ptr: getl("list"),
-                                value: b(BinOp::Sub, getl("len"), i32c(1)),
+                            N::SafeStore {
+                                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("list"), getl("cap")),
+                                value: getl("newlen"),
                                 kind: Kind::I32,
-                                offset: 0,
                             },
                         ],
                         els: vec![],
@@ -158,20 +162,24 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
                                 args: vec![b(
                                     BinOp::Add,
                                     i32c(4),
-                                    b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                                    b(BinOp::Mul, getl("newlen"), i32c(8)),
                                 )],
                             },
                         },
-                        N::Store {
-                            ptr: getl("new"),
-                            value: b(BinOp::Sub, getl("len"), i32c(1)),
+                        N::SafeStore {
+                            place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("newlen")),
+                            value: getl("newlen"),
                             kind: Kind::I32,
-                            offset: 0,
                         },
-                        N::MemoryCopy {
-                            dest: b(BinOp::Add, getl("new"), i32c(4)),
-                            src: b(BinOp::Add, getl("list"), i32c(4)),
-                            len: b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                        N::SafeMemoryCopy {
+                            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                            destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                                getl("new"), i32c(0), getl("newlen"), getl("newlen"), crate::safewir::AccessMode::Write,
+                            ),
+                            source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                                getl("list"), i32c(0), getl("newlen"), getl("cap"), crate::safewir::AccessMode::Read,
+                            ),
+                            len: b(BinOp::Mul, getl("newlen"), i32c(8)),
                         },
                         N::SetGlobal {
                             global: "__witchy_extract_copied_bytes".into(),
@@ -199,23 +207,16 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
                                 body: vec![
                                     N::Br {
                                         target: "dup_done".into(),
-                                        cond: Some(b(
-                                            BinOp::Ge,
-                                            getl("i"),
-                                            b(BinOp::Sub, getl("len"), i32c(1)),
-                                        )),
+                                        cond: Some(b(BinOp::Ge, getl("i"), getl("newlen"))),
                                     },
                                     N::Drop(E::Call {
                                         func: "leaf_dup".into(),
                                         args: vec![
-                                            E::Load {
-                                                ptr: Box::new(b(
-                                                    BinOp::Add,
-                                                    b(BinOp::Add, getl("new"), i32c(4)),
-                                                    b(BinOp::Mul, getl("i"), i32c(8)),
-                                                )),
+                                            E::SafeLoad {
+                                                place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                                                    getl("new"), getl("i"), getl("newlen"), crate::safewir::AccessMode::Read,
+                                                ),
                                                 kind: Kind::I64,
-                                                offset: 0,
                                             },
                                             getl("rc_bias"),
                                         ],
