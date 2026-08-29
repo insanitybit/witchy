@@ -496,13 +496,12 @@ pub(crate) fn list_update_cap_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let slot = |base: &str| b(BinOp::Add, b(BinOp::Add, getl(base), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8)));
     // nv = clos(load(slot(list))): apply the updater to the current element.
     let call_clos = N::SetLocal {
         local: "nv".into(),
         value: E::CallIndirect {
             signature: gc_slot_closure_signature(1, 1),
-            args: vec![getl("clos"), E::Load { ptr: Box::new(slot("list")), kind: Kind::I64, offset: 0 }],
+            args: vec![getl("clos"), E::SafeLoad { place: crate::wir_helpers::layouts::slot_buffer_element_place(getl("list"), getl("index"), getl("cap"), crate::safewir::AccessMode::Read), kind: Kind::I64 }],
             index: Box::new(E::StructGet {
                 struct_id: 0,
                 field: CLOSURE_CODE_FIELD,
@@ -698,11 +697,10 @@ pub(crate) fn list_with_capacity_helper() -> WirFunc {
                     args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("c"), i32c(8)))],
                 },
             },
-            N::Store {
-                ptr: getl("ptr"),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("ptr"), getl("c")),
                 value: i32c(0),
                 kind: Kind::I32,
-                offset: 0,
             },
             N::Push(getl("ptr")),
         ],

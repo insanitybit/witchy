@@ -297,7 +297,10 @@ pub(crate) fn find_byte_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let load_v128 = |base: &str| E::SafeLoad {
         place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
             getl(base), getl("i"), i32c(16), getl("slen"), crate::safewir::AccessMode::Read,
@@ -353,7 +356,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
     };
     // Single-byte accelerated SIMD needle search
     let single_byte_branch = vec![
-        setl("needle", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sub"), i32c(4))), offset: 0 }),
+        setl("needle", E::SafeLoad8U { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("sub"), i32c(0), getl("sublen"), crate::safewir::AccessMode::Read) }),
         setl("target_splat", E::Vector {
             op: VectorOp::I8x16Splat,
             args: vec![getl("needle")],
@@ -406,7 +409,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
                         cond: Some(b(BinOp::Ge, getl("i"), getl("slen"))),
                     },
                     N::If {
-                        cond: b(BinOp::Eq, E::Load8U { ptr: Box::new(b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("i"))), offset: 0 }, getl("needle")),
+                        cond: b(BinOp::Eq, E::SafeLoad8U { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("s"), getl("i"), getl("slen"), crate::safewir::AccessMode::Read) }, getl("needle")),
                         then_: vec![N::Return(Some(getl("i")))],
                         els: vec![],
                         result: None,
@@ -725,7 +728,7 @@ pub(super) fn char_count_helper() -> WirFunc {
             func: "byte_to_char".into(),
             args: vec![
                 E::GetLocal("s".into()),
-                E::Load { ptr: Box::new(E::GetLocal("s".into())), kind: Kind::I32, offset: 0 },
+                E::SafeLoad { place: crate::wir_helpers::layouts::byte_buffer_length_read_place(E::GetLocal("s".into())), kind: Kind::I32 },
             ],
         })],
         raw_body: None,
@@ -739,7 +742,7 @@ pub(crate) fn byte_to_char_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
+    let byte = E::SafeLoad8U { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("s"), getl("i"), getl("bytelen"), crate::safewir::AccessMode::Read) };
     let scan_loop = N::Block {
         label: "done".into(),
         result: None,
@@ -832,7 +835,10 @@ pub(crate) fn char_to_byte_from_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let load = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
 
     let seqlen = N::If {
@@ -869,7 +875,7 @@ pub(crate) fn char_to_byte_from_helper() -> WirFunc {
                         rhs: Box::new(b64(BinOp::Le, b64(BinOp::Add, ext(getl("count")), i64c(8)), getl("n"))),
                     },
                     then_: vec![
-                        setl("w", E::Load { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), kind: Kind::I64, offset: 4 }),
+                        setl("w", E::SafeLoad { place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(getl("s"), getl("i"), i32c(8), getl("slen"), crate::safewir::AccessMode::Read), kind: Kind::I64 }),
                         N::If {
                             cond: b64(BinOp::Eq, b64(BinOp::And, getl("w"), i64c(0x8080808080808080u64 as i64)), i64c(0)),
                             then_: vec![
@@ -1210,7 +1216,7 @@ pub(crate) fn str_slice_view_helper() -> WirFunc {
             WirLocal { name: "hi".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            set("slen", E::Load { ptr: Box::new(get("s")), kind: Kind::I32, offset: 0 }),
+            set("slen", E::SafeLoad { place: crate::wir_helpers::layouts::byte_buffer_length_read_place(get("s")), kind: Kind::I32 }),
             set("lo", nar(get("start"))),
             N::If { cond: b64(BinOp::Lt, get("start"), E::ConstI64(0)), then_: vec![set("lo", i32c(0))], els: vec![N::If { cond: b64(BinOp::Gt, get("start"), ext(get("slen"))), then_: vec![set("lo", get("slen"))], els: vec![], result: None }], result: None },
             set("hi", nar(get("end"))),
