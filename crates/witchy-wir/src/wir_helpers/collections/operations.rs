@@ -351,7 +351,7 @@ pub(crate) fn list_push_cap_helper() -> WirFunc {
             N::SetLocal {
                 local: "len".into(),
                 value: E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
                 },
             },
@@ -493,7 +493,14 @@ pub(crate) fn list_update_cap_helper() -> WirFunc {
             }),
         },
     };
-    let inplace = vec![N::Store { ptr: slot("list"), value: getl("nv"), kind: Kind::I64, offset: 0 }];
+    let slot_place = |base: &str, count: &str, access| {
+        crate::wir_helpers::layouts::slot_buffer_element_place(getl(base), getl("index"), getl(count), access)
+    };
+    let inplace = vec![N::SafeStore {
+        place: slot_place("list", "cap", crate::safewir::AccessMode::Write),
+        value: getl("nv"),
+        kind: Kind::I64,
+    }];
     let grow = vec![
         N::SetGlobal {
             global: "__witchy_reowns".into(),
@@ -502,13 +509,29 @@ pub(crate) fn list_update_cap_helper() -> WirFunc {
         N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
         N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
         N::SetLocal { local: "nb".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] } },
+        // `nb` is allocated with `newcap` slots, so `newcap` is its capacity and
+        // therefore its claim count. This said `len`, which is an under-claim
+        // describing a smaller object than the one allocated.
         N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("nb"), getl("len")),
-                value: getl("len"),
-                kind: Kind::I32,
-            },
-        N::MemoryCopy { dest: b(BinOp::Add, getl("nb"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
-        N::Store { ptr: b(BinOp::Add, b(BinOp::Add, getl("nb"), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8))), value: getl("nv"), kind: Kind::I64, offset: 0 },
+            place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("nb"), getl("newcap")),
+            value: getl("len"),
+            kind: Kind::I32,
+        },
+        N::SafeMemoryCopy {
+            kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+            destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                getl("nb"), i32c(0), getl("len"), getl("newcap"), crate::safewir::AccessMode::Write,
+            ),
+            source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                getl("list"), i32c(0), getl("len"), getl("cap"), crate::safewir::AccessMode::Read,
+            ),
+            len: b(BinOp::Mul, getl("len"), i32c(8)),
+        },
+        N::SafeStore {
+            place: slot_place("nb", "newcap", crate::safewir::AccessMode::Write),
+            value: getl("nv"),
+            kind: Kind::I64,
+        },
         N::SetLocal { local: "ret_ptr".into(), value: getl("nb") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
     ];
@@ -531,7 +554,7 @@ pub(crate) fn list_update_cap_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
                 } },
             N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
@@ -579,7 +602,7 @@ pub(crate) fn list_push_helper() -> WirFunc {
             N::SetLocal {
                 local: "len".into(),
                 value: E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
                 },
             },
@@ -764,12 +787,12 @@ pub(in crate::wir_helpers) fn list_drop_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
                 }, getl("k")) },
             N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] } },
             N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("new"), getl("newlen")),
+                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("newlen")),
                 value: getl("newlen"),
                 kind: Kind::I32,
             },

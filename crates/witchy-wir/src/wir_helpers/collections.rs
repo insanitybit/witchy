@@ -109,7 +109,7 @@ pub(super) fn list_pop_extract_helper() -> WirFunc {
             N::SetLocal {
                 local: "len".into(),
                 value: E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("list")),
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
                 },
             },
