@@ -30,8 +30,16 @@ fn aggregate_reference_timing_reports_checker_and_execution_samples() {
     );
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn precision_telemetry_artifact_covers_each_reference_phase() {
+    if !is_nightly() {
+        return;
+    }
     assert!(PRECISION_ARTIFACT.contains(
         "schema=phase,fixture,mode,checker_time_us,execution_time_us,execution_throughput_batches_per_s"
     ));

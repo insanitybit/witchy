@@ -215,6 +215,9 @@ fn main(console: Console):
     /// rights-precise footprint as JSON, which composes with `std/json`.
     #[test]
     fn compiler_footprint_exposes_the_analyzer() {
+        if !is_nightly() {
+            return;
+        }
         // The rights-precise footprint comes back as JSON.
         let footprint = "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"pub fn load(d: Dir[Read]) -> String:\\n    d.read(\\\"x\\\")\\n\"))\n";
         let out = link_run(footprint);
@@ -253,6 +256,9 @@ fn main(console: Console):
     /// manager's core safety check), exposed to witchy as JSON.
     #[test]
     fn compiler_diff_is_the_widening_gate() {
+        if !is_nightly() {
+            return;
+        }
         let diff = |old: &str, new: &str| -> String {
             let source = format!(
                 "import compiler\nfn main(console: Console):\n    console.print(compiler.diff(\"{old}\", \"{new}\"))\n"
@@ -281,6 +287,9 @@ fn main(console: Console):
     /// so self-hosted gates can explain which axis caused a widening.
     #[test]
     fn compiler_diff_includes_build_and_user_cap_axes() {
+        if !is_nightly() {
+            return;
+        }
         let diff = |old: &str, new: &str| -> String {
             link_run(&format!(
                 "import compiler\nfn main(console: Console):\n    console.print(compiler.diff(\"{old}\", \"{new}\"))\n"

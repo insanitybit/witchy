@@ -120,6 +120,9 @@ fn main(console: Console):
     /// implicit generic record derives a parameterized `Reflect` impl with bounds.
     #[test]
     fn derives_use_normalized_typeinfo_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let src = "import json\nimport list\nimport reflect\n\ntype UserId = String\n\ntype Person derive(Deserialize):\n    id: UserId\n\ntype Box derive(Reflect):\n    value: a\n\nfn main(console: Console):\n    match Person.from_json(json.JsonObject([(\"id\", json.JsonString(\"ada\"))])):\n        Ok(p) -> console.print(p.id)\n        Err(e) -> console.print(json.deserialize_error_message(e))\n    match Box(3).reflect():\n        reflect.MRecord(_name, fields) -> console.print(\"${list.length(fields)}\")\n        _ -> console.print(\"bad\")\n";
         let expected = ["ada", "1"];
         assert_eq!(link_run(src), expected, "interp derive sees normalized TypeInfo");
@@ -137,6 +140,9 @@ fn main(console: Console):
     /// backends.
     #[test]
     fn public_state_derive_is_recursive_and_has_backend_parity() {
+        if !is_nightly() {
+            return;
+        }
         let src = r#"import json
 import public_state
 import reflect
@@ -230,6 +236,9 @@ fn main(console: Console):
 
     #[test]
     fn derive_deserialize_uses_typed_json_error_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let src = r#"import json
 import list
 
@@ -282,6 +291,9 @@ fn main(console: Console):
     /// `Box<Int>`, not the bare generic head `Box`.
     #[test]
     fn generic_constructor_calls_specialize_generated_helpers_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let src = "import json\nimport reflect\nimport show\n\ntype Box derive(Reflect, Show):\n    value: a\n\nfn main(console: Console):\n    console.print(show.render(Box(3)))\n    console.print(json.stringify(Box(3)))\n";
         let expected = ["Box(3)", "{\"value\":3}"];
         assert_eq!(link_run(src), expected, "interp generated helpers keep constructor type args");
@@ -344,6 +356,9 @@ fn main(console: Console):
     /// ordinary runtime construction or storage of `meta.*Syntax`.
     #[test]
     fn item_syntax_is_compile_time_only_outside_comptime() {
+        if !is_nightly() {
+            return;
+        }
         let runtime_value = "import meta\n\nfn main(console: Console):\n    let generated = meta.item(\"fn hidden() -> Int:\\n    1\")\n    console.print(\"runtime item\")\n";
         let err = typeck::check(&resolve_std_src(runtime_value))
             .expect_err("runtime meta.item must be rejected")
@@ -388,6 +403,9 @@ fn main(console: Console):
     /// `meta.Ident` values even before full quotation and hygiene land.
     #[test]
     fn meta_syntax_builders_emit_function_items_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let src = "import meta\n\nfn plus_one(x: Int) -> Int:\n    x + 1\n\ncomptime:\n    let x = meta.ident(\"x\")\n    let int = meta.type_named(meta.ident(\"Int\"), [])\n    emit_item(meta.function(true, meta.ident(\"generated\"), [meta.param(x, int)], Some(int), meta.expr_call(meta.expr_name(meta.ident(\"plus_one\")), [meta.expr_name(x)])))\n\nfn main(console: Console):\n    console.print(\"${generated(7)}\")\n";
         let expected = ["8"];
         assert_eq!(link_run(src), expected, "interp syntax-builder generated item");
@@ -407,6 +425,9 @@ fn main(console: Console):
     /// values instead of falling back to one whole-body string template.
     #[test]
     fn meta_body_and_pattern_builders_emit_block_items_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let src = r#"import meta
 
 type Size = .[Small | Big(Int)]
@@ -507,6 +528,9 @@ fn main(console: Console):
     /// remain supported by the previous test.
     #[test]
     fn custom_derives_can_return_typed_items_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let one = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_hello(t: TypeInfo) -> ItemSyntax:\n    item(\"pub fn generated_one() -> Int:\\n    3\")\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_one()}\")\n";
         let expected = ["3"];
         assert_eq!(link_run(one), expected, "interp typed custom derive item");

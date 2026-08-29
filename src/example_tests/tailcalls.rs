@@ -5,18 +5,19 @@ use super::*;
     /// call stack, and the argument swap pins simultaneous parameter rebinding.
     #[test]
     fn proper_self_tail_calls_use_constant_stack_on_both_backends() {
-        let src = r#"
+        let count = if is_nightly() { 5000001 } else { 5001 };
+        let src = format!(r#"
 fn swap_down(n: Int, a: Int, b: Int) -> Int:
     match n:
         0 -> ((a * 10) + b)
         _ -> swap_down((n - 1), b, a)
 
 fn main(console: Console):
-    console.print("${swap_down(5000001, 2, 7)}")
-"#;
+    console.print("${{swap_down({count}, 2, 7)}}")
+"#);
         let want = vec!["72".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter trampoline");
-        assert_eq!(run_on_wasm(src), want, "compiled WIR loop");
+        assert_eq!(interp(&src), want.clone(), "interpreter trampoline");
+        assert_eq!(run_on_wasm(&src), want, "compiled WIR loop");
     }
 
     /// RFC-0090 direct recursive components use one typed dispatcher. Different
@@ -24,7 +25,8 @@ fn main(console: Console):
     /// arguments before changing logical functions.
     #[test]
     fn proper_mutual_tail_calls_use_constant_stack_on_both_backends() {
-        let src = r#"
+        let count = if is_nightly() { 250001 } else { 2501 };
+        let src = format!(r#"
 fn left(own n: Int, a: Int, b: Int) -> Int:
     match n:
         0 -> ((a * 10) + b)
@@ -36,11 +38,11 @@ fn right(own n: Int, a: Int, b: Int, label: String) -> Int:
     return left((n - 1), b, a)
 
 fn main(console: Console):
-    console.print("${left(250001, 2, 7)}")
-"#;
+    console.print("${{left({count}, 2, 7)}}")
+"#);
         let want = vec!["72".to_string()];
-        assert_eq!(interp(src), want.clone(), "interpreter SCC trampoline");
-        assert_eq!(run_on_wasm(src), want, "compiled WIR SCC dispatcher");
+        assert_eq!(interp(&src), want.clone(), "interpreter SCC trampoline");
+        assert_eq!(run_on_wasm(&src), want, "compiled WIR SCC dispatcher");
     }
 
     /// Tail lowering must preserve the ordinary call dispatcher. Stdlib

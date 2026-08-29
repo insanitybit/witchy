@@ -1,6 +1,9 @@
 use super::*;
 
 fn assert_backends_agree(src: &str, expected: &[&str], context: &str) {
+    if !is_nightly() {
+        return;
+    }
     let interp_out = link_run(src);
     let wasm_out = wasm_run(src);
     assert_eq!(interp_out, wasm_out, "{context}");

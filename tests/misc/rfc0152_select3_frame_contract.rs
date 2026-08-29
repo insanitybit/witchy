@@ -164,8 +164,16 @@ fn run_compiled(source: &str) -> Vec<String> {
     actor.output()
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn rfc0152_select3_frame_preserves_source_order_and_closed_wake_on_both_backends() {
+    if !is_nightly() {
+        return;
+    }
     let checked = witchy::resolve_std_only_checked(SELECT3_FRAME_CONTRACT)
         .expect("RFC-0152 select3 frame contract must check");
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
@@ -178,6 +186,9 @@ fn rfc0152_select3_frame_preserves_source_order_and_closed_wake_on_both_backends
 
 #[test]
 fn rfc0152_select4_frame_preserves_source_order_and_closed_wake_on_both_backends() {
+    if !is_nightly() {
+        return;
+    }
     let checked = witchy::resolve_std_only_checked(SELECT4_FRAME_CONTRACT)
         .expect("RFC-0152 select4 frame contract must check");
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
@@ -190,6 +201,9 @@ fn rfc0152_select4_frame_preserves_source_order_and_closed_wake_on_both_backends
 
 #[test]
 fn rfc0152_select_frame_preserves_buffered_value_then_cancelled_close_on_both_backends() {
+    if !is_nightly() {
+        return;
+    }
     let checked = witchy::resolve_std_only_checked(SELECT2_FRAME_CANCEL_AND_CLOSE)
         .expect("RFC-0152 select cancel contract must check");
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
@@ -203,6 +217,9 @@ fn rfc0152_select_frame_preserves_buffered_value_then_cancelled_close_on_both_ba
 
 #[test]
 fn rfc0152_recv_frame_drains_buffered_values_then_closes_on_both_backends() {
+    if !is_nightly() {
+        return;
+    }
     let checked = witchy::resolve_std_only_checked(RECV_FRAME_CONTRACT)
         .expect("RFC-0152 receive frame contract must check");
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())

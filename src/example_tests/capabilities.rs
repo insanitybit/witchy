@@ -517,6 +517,9 @@ fn main(console: Console, root: Dir[Read]):
     /// so `kind` is additive and backward-compatible — all identical on both backends.
     #[test]
     fn dir_kind_policy_confines_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_dirkind_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

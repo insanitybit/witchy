@@ -176,8 +176,16 @@ fn expected_output(pulls: usize) -> Vec<String> {
     output
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn rfc0130_rows_1_to_3_generators_resume_owned_frames_once_with_linear_work_on_wasm() {
+    if !is_nightly() {
+        return;
+    }
     const SMALL_PULLS: usize = 8;
     const LARGE_PULLS: usize = 64;
 

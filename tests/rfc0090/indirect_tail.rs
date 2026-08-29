@@ -87,12 +87,22 @@ fn seed_root(tag: &str) -> std::path::PathBuf {
     root
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
+fn transitions() -> usize {
+    if is_nightly() { 250_000 } else { 2_500 }
+}
+
 // (1) A scalar closure-table cycle performs at least 250,000 transitions on both
 // backends. `driver` tail-calls the function value `k`; `bump -> make -> driver`
 // closes the cycle through the table, so the recursive edge is genuinely indirect.
 #[test]
 fn scalar_indirect_cycle_is_constant_stack_at_scale() {
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn driver(k: fn(Int) -> Int, n: Int) -> Int:
     if n <= 0:
         0
@@ -106,9 +116,9 @@ fn bump(n: Int) -> Int:
     make(n)
 
 fn main(console: Console):
-    console.print("${driver(bump, 250000)}")
-"#;
-    assert_both_backends(source, &["0"], None);
+    console.print("${{driver(bump, {n})}}")
+"#);
+    assert_both_backends(&source, &["0"], None);
 }
 
 // (2) An indirect cycle carries an ExternRef parameter (a `Dir[Read]` capability)
@@ -117,7 +127,8 @@ fn main(console: Console):
 #[test]
 fn externref_parameter_survives_indirect_cycle() {
     let root = seed_root("externref");
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn read_named(dir: Dir[Read], name: String) -> String:
     dir.read(name)
 
@@ -134,9 +145,9 @@ fn bump(dir: Dir[Read], n: Int) -> String:
     make(dir, n)
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(driver(bump, root, 250000))
-"#;
-    assert_both_backends(source, &["indirect-tail"], Some(&root));
+    console.print(driver(bump, root, {n}))
+"#);
+    assert_both_backends(&source, &["indirect-tail"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -145,7 +156,8 @@ fn main(console: Console, root: Dir[Read]):
 #[test]
 fn gc_reference_tuple_parameter_survives_indirect_cycle() {
     let root = seed_root("gctuple");
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn read_named(dir: Dir[Read], name: String) -> String:
     dir.read(name)
 
@@ -162,9 +174,9 @@ fn bump(pair: (Dir[Read], String), n: Int) -> String:
     make(pair, n)
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(driver(bump, (root, "value.txt"), 250000))
-"#;
-    assert_both_backends(source, &["indirect-tail"], Some(&root));
+    console.print(driver(bump, (root, "value.txt"), {n}))
+"#);
+    assert_both_backends(&source, &["indirect-tail"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -174,7 +186,8 @@ fn main(console: Console, root: Dir[Read]):
 #[test]
 fn reference_valued_result_survives_indirect_dispatcher() {
     let root = seed_root("refresult");
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn driver(k: fn((Dir[Read], String), Int) -> (Dir[Read], String), pair: (Dir[Read], String), n: Int) -> (Dir[Read], String):
     if n <= 0:
         pair
@@ -192,10 +205,10 @@ fn label(pair: (Dir[Read], String)) -> String:
         (_dir, name) -> name
 
 fn main(console: Console, root: Dir[Read]):
-    let out = driver(bump, (root, "kept"), 250000)
+    let out = driver(bump, (root, "kept"), {n})
     console.print(label(out))
-"#;
-    assert_both_backends(source, &["kept"], Some(&root));
+"#);
+    assert_both_backends(&source, &["kept"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -204,7 +217,8 @@ fn main(console: Console, root: Dir[Read]):
 #[test]
 fn mixed_scalar_reference_signature_keeps_exact_kinds() {
     let root = seed_root("mixed");
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn read_named(dir: Dir[Read], name: String) -> String:
     dir.read(name)
 
@@ -221,9 +235,9 @@ fn bump(dir: Dir[Read], n: Int, name: String) -> String:
     make(dir, n, name)
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(driver(bump, root, 250000, "value.txt"))
-"#;
-    assert_both_backends(source, &["indirect-tail"], Some(&root));
+    console.print(driver(bump, root, {n}, "value.txt"))
+"#);
+    assert_both_backends(&source, &["indirect-tail"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -234,7 +248,8 @@ fn main(console: Console, root: Dir[Read]):
 // return to their original positions, so `a - b` at the base is deterministic.
 #[test]
 fn simultaneous_rebind_across_indirect_swap() {
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn driver(k: fn(Int, Int, Int) -> Int, a: Int, b: Int, n: Int) -> Int:
     if n <= 0:
         a - b
@@ -248,12 +263,12 @@ fn bump(a: Int, b: Int, n: Int) -> Int:
     make(a, b, n)
 
 fn main(console: Console):
-    console.print("${driver(bump, 7, 3, 250000)}")
-"#;
+    console.print("${{driver(bump, 7, 3, {n})}}")
+"#);
     // 250,000 is even (as was the original 5,000,000), so the (a, b) swap count is
     // even and a=7,b=3 at the base:
     // 7 - 3 = 4. A non-simultaneous rebind would corrupt one side and diverge.
-    assert_both_backends(source, &["4"], None);
+    assert_both_backends(&source, &["4"], None);
 }
 
 // (8) A table target OUTSIDE the recursive component remains an ordinary indirect
@@ -262,7 +277,8 @@ fn main(console: Console):
 // without being pulled into the trampoline component.
 #[test]
 fn out_of_component_target_is_ordinary_indirect_exit() {
-    let source = r#"
+    let n = transitions();
+    let source = format!(r#"
 fn driver(k: fn(Int) -> Int, done: fn(Int) -> Int, n: Int) -> Int:
     if n <= 0:
         done(n)
@@ -279,11 +295,11 @@ fn finish(n: Int) -> Int:
     n + 42
 
 fn main(console: Console):
-    console.print("${driver(bump, finish, 250000)}")
-"#;
+    console.print("${{driver(bump, finish, {n})}}")
+"#);
     // Cycle runs to n <= 0 through `bump`, then the out-of-component `finish(0)`
     // exits with 0 + 42 = 42.
-    assert_both_backends(source, &["42"], None);
+    assert_both_backends(&source, &["42"], None);
 }
 
 // (9) A near-tail indirect call with residual computation (`1 + k(n)`) is NOT

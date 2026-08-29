@@ -5,12 +5,20 @@
 //! binary) and are attached here via `#[path]` since a test crate root
 //! resolves bare `mod` names against `tests/`, not the subdir.
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 fn assert_compiled_output(
     module: &witchy::ast::Module,
     expected: &[String],
     label: &str,
     stack_size: usize,
 ) {
+    if !is_nightly() {
+        return;
+    }
     let wasm = witchy::codegen::compile_module_binary(module).expect_lowered(label);
     let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
     let mut actor = runtime

@@ -215,6 +215,9 @@ use crate::{codegen, interpreter, parser, typeck};
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn jwt_verify_oidc_binds_issuer_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         use aws_lc_rs::signature::KeyPair;
         let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
         let pk_hex = hex_string(kp.public_key().as_ref());
@@ -381,6 +384,9 @@ fn main(console: Console):
     /// material needed — this exercises the JWKS-shape boundary. Both backends.
     #[test]
     fn jwt_rsa_key_for_kid_rejects_malformed_keys_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let run = |jwks_json: &str| -> Vec<String> {
             let lit = jwks_json.replace('"', "\\\"");
             let src = format!(

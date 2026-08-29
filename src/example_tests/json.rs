@@ -44,6 +44,9 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
     /// signed or emitted wire JSON silently.
     #[test]
     fn json_duplicate_object_keys_fail_at_encoding_boundaries_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let compile = |src: &str| -> (ast::Module, Vec<u8>) {
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
@@ -241,6 +244,9 @@ fn main(console: Console):
     /// guarded so recursive-type reflection can never stack-overflow the compiler.)
     #[test]
     fn recursive_types_and_json_reflect() {
+        if !is_nightly() {
+            return;
+        }
         let tree = "import json\nimport reflect\n\ntype Tree derive(Reflect):\n    Leaf(Int)\n    Node(List(Tree))\n\nfn main(console: Console):\n    console.print(json.stringify(Node([Leaf(1), Node([Leaf(2)])])))\n";
         let tw = vec!["{\"$variant\":\"Node\",\"$values\":[[{\"$variant\":\"Leaf\",\"$values\":[1]},{\"$variant\":\"Node\",\"$values\":[[{\"$variant\":\"Leaf\",\"$values\":[2]}]]}]]}".to_string()];
         assert_eq!(link_run(tree), tw, "interpreter (tree)");
@@ -314,6 +320,9 @@ fn main(console: Console):
     /// backends, including the typed field-accessor fixture.
     #[test]
     fn json_api_contracts_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         assert_json_contract_cases(&[
             (
                 "typed field accessors",
@@ -548,6 +557,9 @@ fn main(console: Console):
     /// must therefore be a loud boundary error, not silent data erasure to null.
     #[test]
     fn json_encode_rejects_nonfinite_floats_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let cases = [
             (
                 "encode_nan",

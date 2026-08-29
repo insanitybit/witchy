@@ -452,6 +452,9 @@ fn main(console: Console):
     /// interpreter and `WITCHY_OPT=none` correctly rejected every program.
     #[test]
     fn bounds_elision_rejects_unstable_loop_facts() {
+        if !is_nightly() {
+            return;
+        }
         let cases = [
             (
                 "increment before access",

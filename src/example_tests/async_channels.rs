@@ -7,6 +7,9 @@ use crate::{interpreter, parser, typeck};
     /// exercising the CPS lowering inside a method body. Both backends agree.
     #[test]
     fn async_method_in_impl_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let src = "type Doubler:\n    base: Int\n\nasync fn step(n: Int) -> Int:\n    n + n\n\nimpl Doubler:\n    async fn scaled(self, x: Int) -> Int:\n        let doubled = step(x).await\n        self.base + doubled\n\nasync fn main(console: Console):\n    let d = Doubler(100)\n    let r = d.scaled(5).await\n    console.print(\"${r}\")\n";
         let expected = ["110"];
         assert_eq!(link_run(src), expected, "interp");
@@ -44,6 +47,9 @@ use crate::{interpreter, parser, typeck};
     /// contract the docs describe.
     #[test]
     fn channel_quiescence_close_contract_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let recv_then_send = "import chan\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0).await\n    let r1 = chan.recv(rx).await\n    console.print(\"${r1}\")\n    chan.send(tx, 42).await\n    let r2 = chan.recv(rx).await\n    console.print(\"${r2}\")\n";
         let recv_expected = ["None", "Some(42)"];
         assert_eq!(link_run(recv_then_send), recv_expected, "interp recv quiescence");
@@ -149,6 +155,9 @@ use crate::{interpreter, parser, typeck};
     /// backends.
     #[test]
     fn chan_negative_capacity_is_unbounded_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let src = "from chan import Sender\nasync fn prod(tx: Sender(Int)) -> Nil:\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    chan.send(tx, 3).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0 - 1).await\n    chan.scope([prod(tx)]).await\n    let a = chan.recv(rx).await\n    let b = chan.recv(rx).await\n    let c = chan.recv(rx).await\n    console.print(\"${a}\" + \"${b}\" + \"${c}\")\n";
         let expected = ["Some(1)Some(2)Some(3)"];
         let linked = resolve_std_src(src);
@@ -163,6 +172,9 @@ use crate::{interpreter, parser, typeck};
     /// REGRESSION (BUG-396): `chan.par_map` returns results in INPUT order.
     #[test]
     fn chan_par_map_preserves_input_order_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let src = "import list\nasync fn sq(n: Int) -> Int:\n    n * n\nasync fn main(console: Console):\n    let m = chan.par_map([5, 3, 8, 1], fn(x): sq(x)).await\n    console.print(\"${m}\")\n";
         let expected = ["[25, 9, 64, 1]"];
         let linked = resolve_std_src(src);

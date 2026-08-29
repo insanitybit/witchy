@@ -111,6 +111,9 @@ use super::*;
     /// which the record-only corpus + fuzzer MISSED. This is why the executor is in the gate.
     #[test]
     fn rc_corpus_channel_executor_is_stable() {
+        if !is_nightly() {
+            return;
+        }
         let src = "import chan\nfrom chan import Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        let _ = chan.done(v)\n    console.print(\"100\")";
         assert_rc_corpus_stable(src, &["100"]);
     }

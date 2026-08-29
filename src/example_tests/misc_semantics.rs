@@ -372,6 +372,9 @@ fn main(console: Console):
     // repeating the annotation, and runs identically on both backends.
     #[test]
     fn trait_impl_return_inherited_from_trait_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let src = r#"
 from task import Task
 

@@ -206,8 +206,16 @@ fn migrated_fixtures_preserve_checked_loan_and_runtime_counters() {
     }
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn migrated_rfc0083_rfc0112_fixtures_preserve_full_parity() {
+    if !is_nightly() {
+        return;
+    }
     for (
         label,
         legacy,

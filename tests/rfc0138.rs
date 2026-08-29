@@ -142,8 +142,16 @@ fn main(console: Console):
     cancel_transaction(transaction_cancellation, console)
 "#;
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn higher_order_transport_has_interpreter_wasm_and_optimization_parity() {
+    if !is_nightly() {
+        return;
+    }
     let checked = witchy::resolve_std_only_checked(HIGHER_ORDER_TRANSPORT)
         .expect("RFC-0138 higher-order transport type-checks");
     let expected = vec![
@@ -217,6 +225,9 @@ struct Rejection {
 
 #[test]
 fn security_sensitive_callable_rejections_are_shared_frontend_evidence() {
+    if !is_nightly() {
+        return;
+    }
     let cases = [
         Rejection {
             name: "pure capability operation",

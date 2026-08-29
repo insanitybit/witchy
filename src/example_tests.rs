@@ -13,6 +13,12 @@
         link_run(src)
     }
 
+    pub(crate) fn is_nightly() -> bool {
+        std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+            || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+            || std::env::var_os("WITCHY_FULL_SOAK_TESTS").is_some_and(|v| v == "1")
+    }
+
     pub(crate) fn proptest_cases() -> u32 {
         std::env::var("PROPTEST_CASES")
             .ok()

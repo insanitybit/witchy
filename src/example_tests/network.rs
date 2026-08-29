@@ -133,6 +133,9 @@ fn main(console: Console):
     /// A clean value passes on both backends.
     #[test]
     fn http_crlf_header_validators_trap_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let prog = |call: &str| {
             format!("import http\n\nfn main(console: Console):\n    {call}\n    console.print(\"ok\")\n")
         };

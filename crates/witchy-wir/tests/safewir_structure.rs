@@ -508,8 +508,17 @@ fn reviewed_baseline() -> BTreeMap<&'static str, BTreeMap<RawKind, usize>> {
         .collect()
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_CENSUS").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn production_raw_constructor_surface_does_not_grow_during_migration() {
+    if !is_nightly() {
+        return;
+    }
     let baseline = reviewed_baseline();
     let current = current_census();
     let baseline_total: usize = baseline.values().flat_map(BTreeMap::values).sum();
@@ -537,6 +546,9 @@ fn production_raw_constructor_surface_does_not_grow_during_migration() {
 
 #[test]
 fn print_current_safewir_raw_constructor_census() {
+    if !is_nightly() {
+        return;
+    }
     let census = current_census();
     let total: usize = census.values().map(FileCensus::total).sum();
     eprintln!("SAFEWIR_CENSUS total={total} files={}", census.len());

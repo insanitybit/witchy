@@ -1627,8 +1627,16 @@ fn main(console: Console):
 /// branch (a RUNTIME count, not a would-lower count), and the same count under
 /// every optimization lever (the counter is driven by the checked access graph,
 /// not the `InPlace` lever).
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn boundary_reown_counter_is_exact_runtime_and_lever_invariant() {
+    if !is_nightly() {
+        return;
+    }
     fn reowns(source: &str, optimizations: OptSet) -> (Vec<String>, i64) {
         let checked = witchy::resolve_std_only_checked(source).expect("type-check repair fixture");
         opt::set_for_tests(Some(optimizations));

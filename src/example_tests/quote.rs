@@ -19,6 +19,9 @@ fn tagged_literal_in_hyphenated_module_expands() {
 /// `html` tag.
 #[test]
 fn tagged_literal_escaped_dollar_stays_literal_on_both_backends() {
+    if !is_nightly() {
+        return;
+    }
     let plain = r#"import meta
 
 comptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:

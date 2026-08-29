@@ -101,6 +101,9 @@ use crate::{ast, codegen, interpreter, typeck};
     /// non-lossy; reflection exposes raw byte values for debug/JSON consumers.
     #[test]
     fn bytes_are_showable_reflectable_and_renderable_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let src = "import bytes\nimport show\nimport reflect\nimport json\n\ntype Packet derive(Reflect):\n    payload: Bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi\")\n    show.say(console, b)\n    console.print(show.render([b]))\n    console.print(\"${b}\")\n    console.print(reflect.debug(b))\n    console.print(json.stringify(Packet(b)))\n";
         let expected = [
             "Bytes(len=2)",
@@ -285,6 +288,9 @@ use crate::{ast, codegen, interpreter, typeck};
     /// and out-of-bounds indices abort on both backends.
     #[test]
     fn bytes_validation_and_bounds_abort_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let compile = |src: &str| -> (ast::Module, Vec<u8>) {
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");

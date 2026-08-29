@@ -145,8 +145,16 @@ async fn main(console: Console):
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn structured_task_handle_aggregates_run_on_compiled_wasm() {
+    if !is_nightly() {
+        return;
+    }
     let source = r#"
 import chan
 

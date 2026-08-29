@@ -13,8 +13,16 @@ impl Drop for OptReset {
     }
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn named_polymorphic_function_values_specialize_across_value_flows() {
+    if !is_nightly() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!(
         "witchy_first_class_monomorphization_{}",
         std::process::id()

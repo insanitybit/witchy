@@ -12,8 +12,16 @@ impl Drop for OptReset {
     }
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn capability_captures_survive_aliases_aggregates_and_indirect_calls() {
+    if !is_nightly() {
+        return;
+    }
     let root = std::env::temp_dir().join(format!(
         "witchy_capability_closure_env_{}",
         std::process::id()
@@ -389,6 +397,9 @@ fn main(console: Console, root: Dir[Read]):
 
 #[test]
 fn reference_list_indices_are_checked_before_i32_narrowing() {
+    if !is_nightly() {
+        return;
+    }
     for index in ["0 - 1", "4294967296"] {
         for body in [
             format!(

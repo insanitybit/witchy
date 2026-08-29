@@ -19,8 +19,16 @@ impl Drop for OptOverride {
     }
 }
 
+fn is_nightly() -> bool {
+    std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
+        || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
+}
+
 #[test]
 fn adversarial_first_class_monomorphization_matches_both_backends() {
+    if !is_nightly() {
+        return;
+    }
     let source = r#"
 trait Numbered:
     fn number(self) -> Int

@@ -98,6 +98,9 @@ use crate::{codegen, interpreter};
     /// message). Each case pairs a program with its message core.
     #[test]
     fn std_contract_violations_abort_on_both_backends() {
+        if !is_nightly() {
+            return;
+        }
         let cases: &[(&str, &str)] = &[
             (
                 "import math\nfn main(console: Console):\n    console.print(\"${math.factorial(-5)}\")\n",
@@ -244,6 +247,9 @@ fn main(console: Console):
     /// oauth.authorize_url extends a query-bearing endpoint with `&`.
     #[test]
     fn stdlib_edge_contracts_batch2_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let src = r#"import semver
 import encoding
 import oauth
@@ -295,6 +301,9 @@ fn main(console: Console):
     /// keeping its Content-Length; a large `iter.drop` skips iteratively.
     #[test]
     fn stdlib_edge_contracts_batch3_backends_agree() {
+        if !is_nightly() {
+            return;
+        }
         let src = r#"import list
 import url
 import http
