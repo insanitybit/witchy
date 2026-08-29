@@ -372,22 +372,20 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
         "crates/witchy-wir/src/wir_encode.rs",
         &[
-            (RawKind::Load, 1),
-            (RawKind::Load8U, 1),
-            (RawKind::Store, 1),
-            (RawKind::Store8, 1),
-            (RawKind::MemoryCopy, 1),
-            (RawKind::MemoryFill, 1),
+            (RawKind::Load, 2),
+            (RawKind::Load8U, 2),
+            (RawKind::Store, 2),
+            (RawKind::Store8, 2),
+            (RawKind::MemoryCopy, 2),
+            (RawKind::MemoryFill, 2),
+
         ],
     ),
     (
         "crates/witchy-wir/src/wir_helpers/bytes.rs",
         &[
-            (RawKind::Load, 5),
-            (RawKind::Load8U, 3),
-            (RawKind::Store, 7),
-            (RawKind::Store8, 6),
-            (RawKind::MemoryCopy, 6),
+            (RawKind::Load, 2),
+
         ],
     ),
     (
@@ -423,6 +421,8 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
         &[
             (RawKind::Load, 20),
             (RawKind::Load8U, 9),
+
+
         ],
     ),
     (
@@ -451,17 +451,18 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
         "crates/witchy-wir/src/wir_helpers/numeric.rs",
         &[
             (RawKind::Load, 2),
-            (RawKind::Load8U, 1),
             (RawKind::Store8, 10),
             (RawKind::MemoryCopy, 2),
+
         ],
     ),
     (
         "crates/witchy-wir/src/wir_helpers/strings.rs",
         &[
             (RawKind::Load, 16),
-            (RawKind::Load8U, 13),
+            (RawKind::Load8U, 9),
             (RawKind::Store, 1),
+
         ],
     ),
     (
@@ -493,6 +494,42 @@ fn is_nightly() -> bool {
     std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1")
         || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
         || std::env::var_os("WITCHY_FULL_CENSUS").is_some_and(|v| v == "1")
+}
+
+/// The ceiling and the table must agree, checked in the BLOCKING suite.
+///
+/// The scan below is nightly because parsing every production file with `syn`
+/// costs ~16s. This check is arithmetic over two constants and costs
+/// microseconds, so it does not belong behind the same gate.
+///
+/// This guard has now been lost once already: it landed in "make the census
+/// ratchet actually run", and the next shard's rebase took its own copy of this
+/// file wholesale and deleted it, along with three of the row corrections. The
+/// ceiling then read 477 against a table summing 501 and nothing complained,
+/// because the only enforcing test early-returns outside nightly. A ratchet
+/// nobody runs is not a ratchet, and a shard that regenerates this file must
+/// keep this test.
+#[test]
+fn reviewed_census_is_internally_consistent() {
+    let baseline = reviewed_baseline();
+    let baseline_total: usize = baseline.values().flat_map(BTreeMap::values).sum();
+    assert_eq!(
+        baseline_total, REVIEWED_TOTAL,
+        "reviewed census is internally inconsistent: regenerate REVIEWED_BASELINE \
+         and REVIEWED_TOTAL together from print_current_safewir_raw_constructor_census",
+    );
+    assert_eq!(
+        baseline.len(),
+        REVIEWED_BASELINE.len(),
+        "REVIEWED_BASELINE lists a file twice; the map silently dropped an entry",
+    );
+    for (file, counts) in REVIEWED_BASELINE {
+        assert_eq!(
+            counts.len(),
+            baseline[*file].len(),
+            "REVIEWED_BASELINE repeats a RawKind for `{file}`; the map dropped a count",
+        );
+    }
 }
 
 #[test]
