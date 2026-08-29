@@ -598,20 +598,60 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         Ok((base, stride))
     }
 
+    /// Reconcile a constant projection's address against the descriptor.
+    ///
+    /// The descriptor-derived byte offset may ride in the wasm immediate, in the
+    /// base expression, or be split between them; only the SUM is the address.
+    /// The dynamic-index path below already answers it that way, and a constant
+    /// projection is the same question with no index term, so it answers it the
+    /// same way rather than insisting the base be the bare root leaf.
+    ///
+    /// This is not a convenience. A raw `memory.copy` has no immediate operand
+    /// at all, so `erase_node` rejects any bulk-copy place carrying a nonzero
+    /// one (`wir_encode.rs`, "a bulk-copy place retained a nonzero immediate
+    /// offset"). A bulk copy of a `[u32 length][payload]` buffer must therefore
+    /// spell its payload address as `root + 4` with immediate zero -- which the
+    /// leaf-only rule refused, leaving constant-start bulk copies unbuildable.
     fn validate_fixed_address(
         &self,
         encoded: &SafeEncodedAddress,
         expected: u32,
         projection: &'static str,
     ) -> Result<(), SafePlaceBuildError> {
-        if !same_address_leaf(&encoded.base, &self.object.root) {
+        // The common spelling: the bare root, with the whole offset immediate.
+        if same_address_leaf(&encoded.base, &self.object.root) {
+            if encoded.offset != expected {
+                return Err(SafePlaceBuildError::EncodedOffsetMismatch {
+                    projection,
+                    expected,
+                    actual: encoded.offset,
+                });
+            }
+            return Ok(());
+        }
+        // Otherwise decompose, exactly as the dynamic path does, and require the
+        // root plus a constant. A constant projection has no index, so a scaled
+        // term or a second bare leaf means this address denotes something else.
+        let Some(address) = AffineAddress::of(&encoded.base) else {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        let ([root], None) = (address.leaves.as_slice(), &address.scaled) else {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        if !same_address_leaf(root, &self.object.root) {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         }
-        if encoded.offset != expected {
+        let claimed = address
+            .constant
+            .checked_add(u64::from(encoded.offset))
+            .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+        if claimed != u64::from(expected) {
+            let actual = u32::try_from(claimed)
+                .map_err(|_| SafePlaceBuildError::NarrowingOverflow { value: claimed })?;
             return Err(SafePlaceBuildError::EncodedOffsetMismatch {
                 projection,
                 expected,
-                actual: encoded.offset,
+                actual,
             });
         }
         Ok(())
@@ -1297,6 +1337,112 @@ mod tests {
         assert!(wrong.is_err(), "an offset the descriptor does not justify is refused");
     }
 
+    /// A constant projection may carry the descriptor offset in the immediate,
+    /// in the base, or split -- only the sum is the address.
+    ///
+    /// The base spelling is not optional sugar. `erase_node` refuses a
+    /// bulk-copy place with a nonzero immediate, because raw `memory.copy` has
+    /// no immediate operand, so `root + 4` with immediate zero is the ONLY way
+    /// to express a constant-start copy of a `[u32 length][payload]` payload.
+    #[test]
+    fn a_constant_projection_accepts_the_descriptor_offset_in_base_or_immediate() {
+        let mut interner = LayoutInterner::default();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        let buffer = interner.intern_runtime_buffer(byte).expect("runtime buffer");
+        let root = || WirExpr::GetLocal("res".into());
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted"),
+            root(),
+            AccessMode::Read,
+        )
+        .expect("claimable");
+        let payload_base = || {
+            WirExpr::Binary {
+                op: BinOp::Add,
+                kind: Kind::I32,
+                lhs: Box::new(root()),
+                rhs: Box::new(WirExpr::ConstI32(4)),
+            }
+        };
+
+        // Payload element zero sits at descriptor offset 4. Both spellings of
+        // that one address are accepted, and they agree on the derived range.
+        let immediate = builder
+            .element(WirExpr::ConstI32(0), SafeEncodedAddress::new(root(), 4))
+            .expect("offset in the immediate is claimable");
+        let in_base = builder
+            .element(WirExpr::ConstI32(0), SafeEncodedAddress::new(payload_base(), 0))
+            .expect("offset folded into the base is claimable");
+        assert_eq!(immediate.encoded_offset, 4);
+        assert_eq!(
+            in_base.encoded_offset, 0,
+            "a bulk-copy place must be able to carry a zero immediate",
+        );
+        assert_eq!(
+            format!("{:?}", immediate.range.start),
+            format!("{:?}", in_base.range.start),
+            "the same address must derive the same byte range either way",
+        );
+
+        // The sum is what is checked: splitting it across both still resolves.
+        let split = builder.element(
+            WirExpr::ConstI32(1),
+            SafeEncodedAddress::new(payload_base(), 1),
+        );
+        assert!(split.is_ok(), "base 4 + immediate 1 denotes element one: {split:?}");
+
+        // A sum the descriptor does not justify is still refused, and the report
+        // names the total rather than whichever half the caller happened to use.
+        let wrong = builder
+            .element(WirExpr::ConstI32(0), SafeEncodedAddress::new(payload_base(), 4));
+        assert!(
+            matches!(
+                wrong,
+                Err(SafePlaceBuildError::EncodedOffsetMismatch { expected: 4, actual: 8, .. })
+            ),
+            "a wrong total must be refused with the total: {wrong:?}",
+        );
+
+        // A second bare leaf in a CONSTANT projection is an index the claim did
+        // not make, so the base no longer denotes the claimed projection.
+        let smuggled_index = builder.element(
+            WirExpr::ConstI32(0),
+            SafeEncodedAddress::new(
+                WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(payload_base()),
+                    rhs: Box::new(WirExpr::GetLocal("i".into())),
+                },
+                0,
+            ),
+        );
+        assert!(
+            matches!(smuggled_index, Err(SafePlaceBuildError::EncodedBaseMismatch { .. })),
+            "an unclaimed index term must be refused: {smuggled_index:?}",
+        );
+
+        // And the root itself is still checked, not merely the arithmetic.
+        let wrong_root = builder.element(
+            WirExpr::ConstI32(0),
+            SafeEncodedAddress::new(
+                WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::GetLocal("other".into())),
+                    rhs: Box::new(WirExpr::ConstI32(4)),
+                },
+                0,
+            ),
+        );
+        assert!(
+            matches!(wrong_root, Err(SafePlaceBuildError::EncodedBaseMismatch { .. })),
+            "a different root must be refused: {wrong_root:?}",
+        );
+    }
+
     #[test]
     fn a_packed_only_layout_refuses_the_runtime_buffer_length_accessor() {
         let mut interner = LayoutInterner::default();
@@ -1504,15 +1650,41 @@ mod tests {
         assert!(matches!(second.encoded_base.as_ref(), WirExpr::GetLocal(name) if name == "object"));
         assert_eq!(second.encoded_offset, 8);
 
+        // Folding the descriptor offset into the base denotes the same address,
+        // so it is accepted and derives the same range. This assertion used to
+        // require rejection; it was changed deliberately, because raw
+        // `memory.copy` carries no immediate operand and `erase_node` therefore
+        // refuses any bulk-copy place with a nonzero one -- which made a
+        // constant-start bulk copy unbuildable in either spelling.
+        //
+        // What still guards the original concern is the SUM check plus the
+        // root and index checks below: an address the descriptor does not
+        // justify is refused, and a constant projection may not smuggle in an
+        // index term. See
+        // `a_constant_projection_accepts_the_descriptor_offset_in_base_or_immediate`.
         let split_base = WirExpr::Binary {
             op: BinOp::Add,
             kind: Kind::I32,
             lhs: Box::new(root()),
             rhs: Box::new(WirExpr::ConstI32(8)),
         };
+        let folded = builder
+            .fixed_field(1, SafeEncodedAddress::new(split_base, 0))
+            .expect("the folded spelling denotes the same field address");
+        assert!(matches!(folded.range.start, SafeSizeExpr::Constant(8)));
+        assert!(matches!(folded.range.length, SafeSizeExpr::Constant(8)));
+        assert_eq!(folded.encoded_offset, 0);
+
+        // A wrong total is still refused in the folded spelling.
+        let wrong_total = WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(root()),
+            rhs: Box::new(WirExpr::ConstI32(12)),
+        };
         assert!(matches!(
-            builder.fixed_field(1, SafeEncodedAddress::new(split_base, 0)),
-            Err(SafePlaceBuildError::EncodedBaseMismatch { .. })
+            builder.fixed_field(1, SafeEncodedAddress::new(wrong_total, 0)),
+            Err(SafePlaceBuildError::EncodedOffsetMismatch { expected: 8, actual: 12, .. })
         ));
     }
 
