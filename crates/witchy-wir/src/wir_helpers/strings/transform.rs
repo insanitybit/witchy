@@ -465,7 +465,11 @@ pub(crate) fn split_helper() -> WirFunc {
         ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))),
         offset: 4,
     };
-    let sep_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sep"), getl("j"))), offset: 4 };
+    let sep_byte = E::SafeLoad8U {
+                        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                            getl("sep"), getl("j"), getl("seplen"), crate::safewir::AccessMode::Read,
+                        ),
+                    };
     let cmp_loop = N::Block {
         label: "cmpdone".into(),
         result: None,
@@ -621,7 +625,11 @@ pub(crate) fn str_chars_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("bi"), getl("slen"))) },
-                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("bi"))), offset: 4 }),
+                setl("b", E::SafeLoad8U {
+                        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                            getl("s"), getl("bi"), getl("slen"), crate::safewir::AccessMode::Read,
+                        ),
+                    }),
                 seqlen,
                 // result[count] = substr(s, bi, seqlen)  — the slot store's `offset: 4` skips the
                 // length header, so the effective address is `result + 4 + count*8`.
@@ -979,7 +987,11 @@ pub(crate) fn match_at_helper() -> WirFunc {
     };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("pos"), getl("j")))), offset: 4 };
-    let from_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("from"), getl("j"))), offset: 4 };
+    let from_byte = E::SafeLoad8U {
+                        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                            getl("from"), getl("j"), getl("flen"), crate::safewir::AccessMode::Read,
+                        ),
+                    };
     let scan = N::Block {
         label: "done".into(),
         result: None,
@@ -1061,7 +1073,11 @@ pub(crate) fn replace_helper() -> WirFunc {
             label: "cl".into(),
             body: vec![
                 N::Br { target: "cdone".into(), cond: Some(b(BinOp::Ge, getl("src"), getl("slen"))) },
-                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("src"))), offset: 4 }),
+                setl("b", E::SafeLoad8U {
+                        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                            getl("s"), getl("src"), getl("slen"), crate::safewir::AccessMode::Read,
+                        ),
+                    }),
                 seqlen,
                 N::MemoryCopy { dest: getl("dst"), src: s_off(getl("src")), len: getl("clen") },
                 setl("dst", b(BinOp::Add, getl("dst"), getl("clen"))),
@@ -1120,7 +1136,11 @@ pub(crate) fn replace_helper() -> WirFunc {
                         setl("src", b(BinOp::Add, getl("src"), getl("flen"))),
                     ],
                     els: vec![
-                        N::Store8 { ptr: getl("dst"), value: E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("src"))), offset: 4 }, offset: 0 },
+                        N::Store8 { ptr: getl("dst"), value: E::SafeLoad8U {
+                        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                            getl("s"), getl("src"), getl("slen"), crate::safewir::AccessMode::Read,
+                        ),
+                    }, offset: 0 },
                         setl("dst", b(BinOp::Add, getl("dst"), i32c(1))),
                         setl("src", b(BinOp::Add, getl("src"), i32c(1))),
                     ],
