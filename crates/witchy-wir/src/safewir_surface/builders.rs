@@ -102,6 +102,35 @@ struct DynamicShape {
     stride: u32,
 }
 
+/// How deep the pointer search walks before failing closed.
+///
+/// Descriptor graphs are acyclic and shallow; a bound means a malformed or
+/// adversarially deep graph costs a rejection rather than a stack.
+const POINTER_SEARCH_DEPTH: usize = 8;
+
+/// Whether a pointer slot is reachable by value from this descriptor.
+///
+/// Fails CLOSED: an unknown child or an exhausted budget answers "yes", because
+/// the question is whether to hand out scalar-buffer authority and an incomplete
+/// answer is not a yes.
+fn contains_pointer_slot(
+    layouts: &LayoutInterner,
+    descriptor: &crate::layout::LayoutDescriptor,
+    depth: usize,
+) -> bool {
+    if depth == 0 {
+        return true;
+    }
+    descriptor.fields().iter().any(|field| match field.kind() {
+        FieldKind::Pointer { .. } => true,
+        FieldKind::Inline(child) => match layouts.get(child) {
+            Some(child) => contains_pointer_slot(layouts, child, depth - 1),
+            None => true,
+        },
+        FieldKind::Scalar(_) => false,
+    })
+}
+
 /// Derive the checked dynamic shape of a runtime-sized descriptor.
 ///
 /// Deliberately an allowlist. A dynamically sized layout only gets a counted
@@ -115,18 +144,29 @@ fn dynamic_shape(
 ) -> Result<DynamicShape, SafePlaceBuildError> {
     let element = match descriptor.kind() {
         LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => *element,
+        // A dense dictionary body is a packed run of equal-stride rows. It is
+        // admitted only alongside the TRANSITIVE pointer check below: it is the
+        // one allowlisted kind that can legitimately hold a pointer out of
+        // top-level view, because `validate_runtime_dictionary_slot` accepts an
+        // owned pointer slot as a key or value and the body inlines those.
+        LayoutKind::RuntimeDictionaryBody { row, .. } => *row,
         _ => return Err(SafePlaceBuildError::UnsupportedDynamicLayout(layout)),
     };
     let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
         return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
     };
-    // A pointer slot anywhere in the object means a loaded pointer's
-    // provenance would ride on a byte range this builder cannot authenticate.
-    if descriptor
-        .fields()
-        .iter()
-        .any(|field| matches!(field.kind(), FieldKind::Pointer { .. }))
-    {
+    // A pointer slot anywhere in the object means a loaded pointer's provenance
+    // would ride on a byte range this builder cannot authenticate.
+    //
+    // "Anywhere" is transitive, and has to be. For a buffer or a packed list the
+    // top level alone would do -- a runtime buffer's element must be a scalar,
+    // and the layout model refuses to inline an owning reference into an
+    // aggregate (`ReferenceNotInline`), so a pointer cannot get deeper. A
+    // DICTIONARY body is the exception: its slot validator accepts an owned
+    // pointer slot as key or value, and the body holds those as `Inline` fields.
+    // Reading only the top level would hand a string-keyed dictionary
+    // scalar-buffer authority over owned pointers.
+    if contains_pointer_slot(layouts, descriptor, POINTER_SEARCH_DEPTH) {
         return Err(SafePlaceBuildError::UnsupportedDynamicLayout(layout));
     }
     let element_descriptor = layouts
@@ -542,6 +582,78 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             }]),
             start,
             SafeSizeExpr::Constant(u64::from(stride)),
+            encoded,
+        )
+    }
+
+    /// Claim one fixed field WITHIN one packed element -- `[Element, Field]`.
+    ///
+    /// The only two-step projection the builder emits, and it exists for the
+    /// dictionary row: row `i`'s key and value are fields at fixed offsets inside
+    /// a sixteen-byte row, and neither `element` (which claims the whole row) nor
+    /// `fixed_field` (which has no index) can name one. The validator already
+    /// walks multi-step chains -- `derive_projection` sets `layout` to the element
+    /// and then reads that descriptor's field table -- so this adds no validator
+    /// surface.
+    ///
+    /// Every offset is derived: base and stride from the object's descriptor, the
+    /// field's offset and width from the ELEMENT's descriptor.
+    pub fn element_field(
+        &self,
+        index: WirExpr,
+        field: u32,
+        encoded: SafeEncodedAddress,
+    ) -> Result<Box<SafePlaceExpr>, SafePlaceBuildError> {
+        validate_claim_operand(&index, "element index")?;
+        let (base, stride) = self.packed_elements("element field")?;
+        let element = self
+            .descriptor(self.object.layout)?
+            .kind()
+            .packed_element_layout()
+            .ok_or(SafePlaceBuildError::ProjectionRequiresPackedList {
+                projection: "element field",
+            })?;
+        let entry = *self
+            .descriptor(element)?
+            .fields()
+            .get(field as usize)
+            .ok_or(SafePlaceBuildError::FieldOutOfBounds { index: field })?;
+        let width = match entry.kind() {
+            FieldKind::Scalar(kind) => kind.size(),
+            FieldKind::Inline(child) => match self.descriptor(child)?.size() {
+                LayoutSize::Fixed(size) => size,
+                LayoutSize::Dynamic { .. } => {
+                    return Err(SafePlaceBuildError::DynamicInlineField(child));
+                }
+            },
+            FieldKind::Pointer { pointee, slot } => {
+                return Err(SafePlaceBuildError::PointerSlotProvenance {
+                    field,
+                    pointee,
+                    slot,
+                });
+            }
+        };
+        let within = entry.offset();
+        self.validate_indexed_address(
+            &encoded,
+            &index,
+            base.checked_add(within)
+                .ok_or(SafePlaceBuildError::ArithmeticOverflow)?,
+            stride,
+            "element field",
+        )?;
+        let start = checked_narrow(SafeSizeExpr::Add(
+            Box::new(indexed_start(&index, base, stride)?),
+            Box::new(SafeSizeExpr::Constant(u64::from(within))),
+        ));
+        self.finish(
+            SafeProjectionExpr::from_steps([
+                SafeProjectionStep::Element { index: Box::new(index) },
+                SafeProjectionStep::Field { index: field },
+            ]),
+            start,
+            SafeSizeExpr::Constant(u64::from(width)),
             encoded,
         )
     }
@@ -1440,6 +1552,117 @@ mod tests {
         assert!(
             matches!(wrong_root, Err(SafePlaceBuildError::EncodedBaseMismatch { .. })),
             "a different root must be refused: {wrong_root:?}",
+        );
+    }
+
+    /// A dictionary row's key and value are nameable, every offset is derived,
+    /// and a POINTER-bearing dictionary is still refused.
+    ///
+    /// The second half is the point. `validate_runtime_dictionary_slot` accepts an
+    /// owned pointer slot as a key or value, and the body holds those as `Inline`
+    /// fields -- so a top-level-only pointer check would grant a string-keyed
+    /// dictionary scalar-buffer authority over owned pointers. This is the one
+    /// allowlisted kind where that is reachable.
+    #[test]
+    fn dictionary_rows_are_claimable_and_pointer_keys_are_refused() {
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).expect("scalar");
+        let body = layouts
+            .intern_runtime_dictionary_body(int, int)
+            .expect("an Int-keyed body interns");
+
+        let descriptor = layouts.get(body).expect("interned");
+        assert_eq!(descriptor.size(), LayoutSize::Dynamic { base: 4, stride: 16 });
+        let row = descriptor
+            .kind()
+            .packed_element_layout()
+            .expect("a dense body indexes by row");
+        let row_descriptor = layouts.get(row).expect("the row interns with the body");
+        assert_eq!(row_descriptor.size(), LayoutSize::Fixed(16));
+        assert_eq!(row_descriptor.alignment(), 4, "a row address is 4-aligned");
+        assert_eq!(row_descriptor.fields()[0].offset(), 0, "key at row+0");
+        assert_eq!(row_descriptor.fields()[1].offset(), 8, "value at row+8");
+
+        let root = || WirExpr::GetLocal("d".into());
+        let builder = SafePlaceBuilder::new(
+            &layouts,
+            body,
+            SafeExactExtent::counted(WirExpr::GetLocal("count".into())).expect("counted"),
+            root(),
+            AccessMode::Read,
+        )
+        .expect("a pointer-free dictionary body is claimable");
+
+        let index = WirExpr::GetLocal("i".into());
+        let scaled = WirExpr::Binary {
+            op: BinOp::Mul,
+            kind: Kind::I32,
+            lhs: Box::new(index.clone()),
+            rhs: Box::new(WirExpr::ConstI32(16)),
+        };
+        let address = || WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(root()),
+            rhs: Box::new(scaled.clone()),
+        };
+
+        // Row i's key sits at the body's base of four; its value eight beyond.
+        let key = builder
+            .element_field(index.clone(), 0, SafeEncodedAddress::new(address(), 4))
+            .expect("row key is claimable");
+        assert!(
+            matches!(
+                key.projection.steps(),
+                [SafeProjectionStep::Element { .. }, SafeProjectionStep::Field { index: 0 }]
+            ),
+            "emits the two-step chain: {:?}",
+            key.projection.steps(),
+        );
+        assert!(matches!(key.range.length, SafeSizeExpr::Constant(8)), "a slot is eight bytes");
+        assert!(builder
+            .element_field(index.clone(), 1, SafeEncodedAddress::new(address(), 12))
+            .is_ok());
+
+        // Immediates the descriptors do not justify, and ordinals off the row.
+        assert!(builder
+            .element_field(index.clone(), 1, SafeEncodedAddress::new(address(), 8))
+            .is_err());
+        assert!(matches!(
+            builder.element_field(index, 2, SafeEncodedAddress::new(address(), 20)),
+            Err(SafePlaceBuildError::FieldOutOfBounds { index: 2 }),
+        ));
+
+        // A string key is an OWNED POINTER slot, inlined into the row. It must be
+        // refused a counted extent outright.
+        let raw = layouts.intern_scalar(ScalarKind::RawByte).expect("scalar");
+        let bytes = layouts.intern_runtime_buffer(raw).expect("byte buffer");
+        let owned = layouts
+            .intern_runtime_pointer_value_slot(bytes, PointerSlot::Owned)
+            .expect("owned pointer slot");
+        let pointer_body = layouts
+            .intern_runtime_dictionary_body(owned, int)
+            .expect("a string-keyed body interns");
+        assert!(
+            !layouts
+                .get(pointer_body)
+                .expect("interned")
+                .fields()
+                .iter()
+                .any(|field| matches!(field.kind(), FieldKind::Pointer { .. })),
+            "the body's own fields must be pointer-free, or this proves nothing",
+        );
+        let refused = SafePlaceBuilder::new(
+            &layouts,
+            pointer_body,
+            SafeExactExtent::counted(WirExpr::GetLocal("count".into())).expect("counted"),
+            root(),
+            AccessMode::Read,
+        )
+        .err();
+        assert!(
+            matches!(&refused, Some(SafePlaceBuildError::UnsupportedDynamicLayout(id)) if *id == pointer_body),
+            "a pointer-keyed dictionary must be refused, got {refused:?}",
         );
     }
 

@@ -369,6 +369,7 @@ fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
                 | LayoutKind::ScratchBuffer { .. }
                 | LayoutKind::RuntimePointerBuffer { .. }
                 | LayoutKind::RuntimeDictionaryBody { .. }
+            | LayoutKind::RuntimeDictionaryRow { .. }
                 | LayoutKind::RuntimeDictionaryIndex { .. }
                 | LayoutKind::RuntimeValueSlot { .. }
                 | LayoutKind::RuntimePointerValueSlot { .. }
@@ -468,7 +469,10 @@ fn children(kind: &LayoutKind) -> Vec<LayoutId> {
             vec![*element]
         }
         LayoutKind::RuntimePointerBuffer { pointee, .. } => vec![*pointee],
-        LayoutKind::RuntimeDictionaryBody { key, value }
+        // The row travels too: decoding the body references its id, so omitting
+        // it would emit a graph with an unknown child.
+        LayoutKind::RuntimeDictionaryBody { key, value, row } => vec![*key, *value, *row],
+        LayoutKind::RuntimeDictionaryRow { key, value }
         | LayoutKind::RuntimeDictionaryIndex { key, value } => vec![*key, *value],
         LayoutKind::RuntimeValueSlot { value } => vec![*value],
         LayoutKind::RuntimePointerValueSlot { pointee, .. } => vec![*pointee],

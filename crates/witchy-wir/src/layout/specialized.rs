@@ -436,6 +436,21 @@ pub enum LayoutKind {
     RuntimeDictionaryBody {
         key: LayoutId,
         value: LayoutId,
+        /// The exact row identity, so an indexed projection has an element to
+        /// resolve through. Minted by `intern_runtime_dictionary_body`; callers
+        /// do not supply it, and it is part of the canonical identity because a
+        /// row's shape is what an `Element` step means here.
+        row: LayoutId,
+    },
+    /// One dense dictionary row: `[key slot][value slot]`, sixteen bytes.
+    ///
+    /// Alignment is FOUR, not the eight its slots suggest. Rows begin at the
+    /// body's base of four and step by sixteen, so a row address is 4-aligned;
+    /// claiming eight would misstate the ABI. `RuntimeDictionaryBody` already
+    /// makes exactly this call, and this follows it.
+    RuntimeDictionaryRow {
+        key: LayoutId,
+        value: LayoutId,
     },
     /// The non-owning Swiss acceleration carrier reached through the raw hidden
     /// dictionary prefix pointer. Its exact extent is `20 + 25 * slot_count`;
@@ -505,6 +520,10 @@ impl LayoutKind {
     pub fn packed_element_layout(&self) -> Option<LayoutId> {
         match self {
             Self::PackedList { element, .. } | Self::RuntimeBuffer { element } => Some(*element),
+            // A dense body is a packed run of equal-stride rows, so it indexes
+            // like any other packed sequence; the row carries the key/value
+            // offsets a following `Field` step reads.
+            Self::RuntimeDictionaryBody { row, .. } => Some(*row),
             _ => None,
         }
     }
@@ -520,6 +539,7 @@ impl LayoutKind {
             | Self::ScratchBuffer { .. }
             | Self::RuntimePointerBuffer { .. }
             | Self::RuntimeDictionaryBody { .. }
+            | Self::RuntimeDictionaryRow { .. }
             | Self::RuntimeDictionaryIndex { .. }
             | Self::RuntimeValueSlot { .. }
             | Self::RuntimePointerValueSlot { .. }
@@ -1152,12 +1172,23 @@ impl LayoutInterner {
     /// Intern the exact ordered dictionary body. Both carriers must be exact
     /// fixed eight-byte runtime value slots; pointer-bearing slots retain their
     /// pointee and ownership semantics in their canonical child descriptor.
+    /// Intern one dense dictionary row. The body constructor mints this itself;
+    /// it is public so a row identity can be recovered independently.
+    pub fn intern_runtime_dictionary_row(
+        &mut self,
+        key: LayoutId,
+        value: LayoutId,
+    ) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::RuntimeDictionaryRow { key, value })
+    }
+
     pub fn intern_runtime_dictionary_body(
         &mut self,
         key: LayoutId,
         value: LayoutId,
     ) -> Result<LayoutId, LayoutError> {
-        self.intern_kind(LayoutKind::RuntimeDictionaryBody { key, value })
+        let row = self.intern_runtime_dictionary_row(key, value)?;
+        self.intern_kind(LayoutKind::RuntimeDictionaryBody { key, value, row })
     }
 
     /// Intern the exact raw Swiss carrier paired with one dictionary body.
@@ -1509,6 +1540,7 @@ fn validate_descriptor_item_counts(descriptor: &LayoutDescriptor) -> Result<(), 
         | LayoutKind::ScratchBuffer { .. }
         | LayoutKind::RuntimePointerBuffer { .. }
         | LayoutKind::RuntimeDictionaryBody { .. }
+        | LayoutKind::RuntimeDictionaryRow { .. }
         | LayoutKind::RuntimeDictionaryIndex { .. }
         | LayoutKind::RuntimeValueSlot { .. }
         | LayoutKind::RuntimePointerValueSlot { .. } => {}
@@ -1960,7 +1992,30 @@ fn build_descriptor<'a>(
                 },
             })
         }
-        LayoutKind::RuntimeDictionaryBody { key, value } => {
+        LayoutKind::RuntimeDictionaryRow { key, value } => {
+            validate_runtime_dictionary_slot(*key, lookup(*key))?;
+            validate_runtime_dictionary_slot(*value, lookup(*value))?;
+            Ok(LayoutDescriptor {
+                schema_version: LAYOUT_SCHEMA_VERSION,
+                kind: kind.clone(),
+                size: LayoutSize::Fixed(16),
+                // Four. A row begins at the body's base of four and steps by
+                // sixteen, so its address is 4-aligned; the eight its slots
+                // suggest would misstate the ABI, and the body already says four.
+                alignment: 4,
+                fields: vec![
+                    LayoutField { offset: 0, kind: FieldKind::Inline(*key) },
+                    LayoutField { offset: 8, kind: FieldKind::Inline(*value) },
+                ],
+                variants: Vec::new(),
+                ownership: Vec::new(),
+                header: HeaderLayout::None,
+                anchor: RootAnchor::AllocationBase,
+                operations: no_runtime_operations(),
+            })
+        }
+        LayoutKind::RuntimeDictionaryBody { key, value, row } => {
+            let _ = row;
             validate_runtime_dictionary_slot(*key, lookup(*key))?;
             validate_runtime_dictionary_slot(*value, lookup(*value))?;
             Ok(LayoutDescriptor {
@@ -2595,8 +2650,14 @@ impl Encoder {
                 self.id(*pointee);
                 self.pointer_slot(*semantics);
             }
-            LayoutKind::RuntimeDictionaryBody { key, value } => {
+            LayoutKind::RuntimeDictionaryBody { key, value, row } => {
                 self.byte(8);
+                self.id(*key);
+                self.id(*value);
+                self.id(*row);
+            }
+            LayoutKind::RuntimeDictionaryRow { key, value } => {
+                self.byte(15);
                 self.id(*key);
                 self.id(*value);
             }
@@ -2927,6 +2988,11 @@ impl<'a> Decoder<'a> {
                 semantics: self.pointer_slot()?,
             }),
             8 => Ok(LayoutKind::RuntimeDictionaryBody {
+                key: self.id()?,
+                value: self.id()?,
+                row: self.id()?,
+            }),
+            15 => Ok(LayoutKind::RuntimeDictionaryRow {
                 key: self.id()?,
                 value: self.id()?,
             }),
