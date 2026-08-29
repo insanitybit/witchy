@@ -14,7 +14,7 @@
 
 use std::sync::OnceLock;
 
-use crate::layout::{LayoutId, LayoutInterner, ScalarKind};
+use crate::layout::{LayoutId, LayoutInterner, LayoutSize, ScalarKind};
 use crate::safewir::AccessMode;
 use crate::safewir_surface::{
     SafeEncodedAddress, SafeExactExtent, SafePlaceBuilder, SafePlaceExpr,
@@ -138,18 +138,15 @@ pub(crate) fn byte_buffer_payload_slice_place(
     mode: AccessMode,
 ) -> Box<SafePlaceExpr> {
     let layouts = helper_layouts();
-    // The encoded address is `root + start` with offset 4 to account for the header.
-    // For constant 0, this simplifies to just `root` with offset 4.
-    let encoded_base = if matches!(start, WirExpr::ConstI32(0)) {
-        root.clone()
-    } else {
-        WirExpr::Binary {
-            op: crate::wir::BinOp::Add,
-            kind: crate::wir::Kind::I32,
-            lhs: Box::new(root.clone()),
-            rhs: Box::new(start.clone()),
-        }
-    };
+    // The payload offset rides in the BASE with a zero wasm immediate, never in
+    // the immediate. A raw `memory.copy` has no immediate operand, so
+    // `erase_node` refuses a bulk-copy place that kept one ("a bulk-copy place
+    // retained a nonzero immediate offset"). Emitting `root + payload + start`
+    // is the only spelling that serves scalar and bulk operations alike, and
+    // `validate_fixed_address` reconciles base and immediate by their total, so
+    // it is accepted for a constant start as well as a dynamic one.
+    let payload = payload_offset(layouts.byte_buffer);
+    let encoded_base = add32(add32(root.clone(), WirExpr::ConstI32(payload)), start.clone());
     SafePlaceBuilder::new(
         &layouts.interner,
         layouts.byte_buffer,
@@ -158,7 +155,7 @@ pub(crate) fn byte_buffer_payload_slice_place(
         mode,
     )
     .expect("the helper byte-buffer layout is claimable")
-    .slice(start, len, SafeEncodedAddress::new(encoded_base, 4))
+    .slice(start, len, SafeEncodedAddress::new(encoded_base, 0))
     .expect("a contiguous payload slice reconciles against the descriptor")
 }
 
@@ -169,6 +166,10 @@ pub(crate) fn byte_buffer_payload_slice_place(
 /// offset 0 through the full dynamic extent (header + `count` payload bytes).
 /// Used for operations that transfer or initialize the whole object rather than
 /// addressing individual elements.
+///
+/// The address is the root at immediate zero, so this shape already satisfied
+/// the bulk-copy rule that `byte_buffer_payload_slice_place` above had to be
+/// folded to meet.
 pub(crate) fn byte_buffer_root_place(
     root: WirExpr,
     count: WirExpr,
@@ -185,4 +186,33 @@ pub(crate) fn byte_buffer_root_place(
     .expect("the helper byte-buffer layout is claimable")
     .root(SafeEncodedAddress::new(root, 0))
     .expect("the root place at the buffer base is claimable")
+}
+
+fn add32(lhs: WirExpr, rhs: WirExpr) -> WirExpr {
+    WirExpr::Binary {
+        op: crate::wir::BinOp::Add,
+        kind: crate::wir::Kind::I32,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    }
+}
+
+/// Where the payload starts, asked of the descriptor rather than assumed.
+///
+/// A runtime buffer is `[u32 length][payload]`, so this is four today. Reading
+/// it from `LayoutSize::Dynamic` means a descriptor change moves the helpers
+/// with it instead of silently addressing the wrong byte.
+fn payload_offset(layout: LayoutId) -> i32 {
+    let descriptor = helper_layouts()
+        .interner
+        .get(layout)
+        .expect("the helper layout is interned in this module");
+    match descriptor.size() {
+        LayoutSize::Dynamic { base, .. } => {
+            i32::try_from(base).expect("a runtime buffer header is a small offset")
+        }
+        LayoutSize::Fixed(_) => {
+            unreachable!("a runtime buffer descriptor is dynamically sized")
+        }
+    }
 }

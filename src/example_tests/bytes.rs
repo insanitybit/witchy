@@ -284,6 +284,37 @@ use crate::{ast, codegen, interpreter, typeck};
         );
     }
 
+    /// (RFC-0162) A `from_list` buffer mutated and appended to from a SECOND
+    /// buffer still compiles.
+    ///
+    /// The mutator test above builds with `with_capacity` and appends a buffer to
+    /// itself, so it never reached the bulk-copy path that takes two distinct
+    /// roots. That path minted a place whose payload offset rode in the wasm
+    /// immediate, and raw `memory.copy` has no immediate operand, so erasure
+    /// rejected it: "a bulk-copy place retained a nonzero immediate offset". The
+    /// whole suite was green while this eight-line program would not compile.
+    #[test]
+    fn bytes_from_list_mutated_and_appended_compiles_on_both_backends() {
+        let src = "import bytes\n\
+                   import result\n\
+                   fn main(console: Console):\n\
+                   \x20   var b = result.unwrap_or(bytes.from_list([1, 2, 3]), bytes.from_string(\"\"))\n\
+                   \x20   let extra = result.unwrap_or(bytes.from_list([4, 5]), bytes.from_string(\"\"))\n\
+                   \x20   b.reserve(16)\n\
+                   \x20   b.append(extra)\n\
+                   \x20   b.set_at(0, 9)\n\
+                   \x20   b.swap(0, 1)\n\
+                   \x20   console.print(\"${b.length()}\")\n\
+                   \x20   console.print(\"${b.to_list()}\")\n";
+        let expected = ["5", "[2, 9, 3, 4, 5]"];
+        assert_eq!(link_run(src), expected, "interpreter: from_list then mutate");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "WASM: from_list then mutate",
+        );
+    }
+
     /// (RFC-0151) Negative capacity, invalid byte values, negative count/additional,
     /// and out-of-bounds indices abort on both backends.
     #[test]
