@@ -147,7 +147,18 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
-    let entry = |index: E| b(BinOp::Add, getl("d"), b(BinOp::Mul, index, i32c(16)));
+    // `cap` is the dense array's row capacity, which is what the claim needs;
+    // `count` is the live entry count and is data. The lane offset within a row
+    // comes from the row descriptor.
+    let lane = |index: E, lane: u32| {
+        crate::wir_helpers::layouts::dict_entry_lane_place(
+            getl("d"),
+            index,
+            lane,
+            getl("cap"),
+            crate::safewir::AccessMode::Read,
+        )
+    };
     let allocate_index = || N::SetLocal {
         local: "idx".into(),
         value: E::Call {
@@ -284,8 +295,8 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                                         getl("idx"),
                                         getl("slots"),
                                         getl("i"),
-                                        E::Load { ptr: Box::new(entry(getl("i"))), kind: Kind::I64, offset: 4 },
-                                        E::Load { ptr: Box::new(entry(getl("i"))), kind: Kind::I64, offset: 12 },
+                                        E::SafeLoad { place: lane(getl("i"), crate::wir_helpers::layouts::DICT_ROW_KEY), kind: Kind::I64 },
+                                        E::SafeLoad { place: lane(getl("i"), crate::wir_helpers::layouts::DICT_ROW_VALUE), kind: Kind::I64 },
                                         getl("mode"),
                                     ],
                                 }),
@@ -882,7 +893,22 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let entry = |base: &str, idx: &str| b(BinOp::Add, getl(base), b(BinOp::Mul, getl(idx), i32c(16)));
+    // `cap` is the row capacity of `d`, with zero meaning "not owned" -- which is
+    // why the same local reads as both `!cap` and `cap > count`. The in-place
+    // sites below sit under a `cap > 0` guard, so the claim is made where the
+    // capacity is real. `new` carries its own `newcap`.
+    let lane = |base: &str, index: E, lane: u32, cap: &str, access| {
+        crate::wir_helpers::layouts::dict_entry_lane_place(getl(base), index, lane, getl(cap), access)
+    };
+    let count_word = |base: &str, cap: &str| {
+        crate::wir_helpers::layouts::dict_body_count_place(
+            getl(base),
+            getl(cap),
+            crate::safewir::AccessMode::Write,
+        )
+    };
+    let key_lane = crate::wir_helpers::layouts::DICT_ROW_KEY;
+    let value_lane = crate::wir_helpers::layouts::DICT_ROW_VALUE;
     let reowns_bump = N::If {
         cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("cap")) },
         then_: vec![N::SetGlobal {
@@ -899,7 +925,7 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
     };
     // found >= 0 && cap > 0: overwrite the existing value slot in place.
     let update_inplace = vec![
-        N::Store { ptr: entry("d", "found"), value: getl("v"), kind: Kind::I64, offset: 12 },
+        N::SafeStore { place: lane("d", getl("found"), value_lane, "cap", crate::safewir::AccessMode::Write), value: getl("v"), kind: Kind::I64 },
         N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
         N::If {
             cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
@@ -935,9 +961,9 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
             els: vec![],
             result: None,
         },
-        N::Store { ptr: entry("d", "count"), value: getl("k"), kind: Kind::I64, offset: 4 },
-        N::Store { ptr: entry("d", "count"), value: getl("v"), kind: Kind::I64, offset: 12 },
-        N::Store { ptr: getl("d"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+        N::SafeStore { place: lane("d", getl("count"), key_lane, "cap", crate::safewir::AccessMode::Write), value: getl("k"), kind: Kind::I64 },
+        N::SafeStore { place: lane("d", getl("count"), value_lane, "cap", crate::safewir::AccessMode::Write), value: getl("v"), kind: Kind::I64 },
+        N::SafeStore { place: count_word("d", "cap"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32 },
         // Record the new entry (index == the old `count`) in the hash index. The
         // index was built at the last grow sized ≥ 2× cap, so it has a free slot.
         N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
@@ -1001,11 +1027,11 @@ pub(super) fn dict_insert_cap_helper() -> WirFunc {
         N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
         N::If {
             cond: b(BinOp::Ge, getl("found"), i32c(0)),
-            then_: vec![N::Store { ptr: entry("new", "found"), value: getl("v"), kind: Kind::I64, offset: 12 }],
+            then_: vec![N::SafeStore { place: lane("new", getl("found"), value_lane, "newcap", crate::safewir::AccessMode::Write), value: getl("v"), kind: Kind::I64 }],
             els: vec![
-                N::Store { ptr: entry("new", "count"), value: getl("k"), kind: Kind::I64, offset: 4 },
-                N::Store { ptr: entry("new", "count"), value: getl("v"), kind: Kind::I64, offset: 12 },
-                N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                N::SafeStore { place: lane("new", getl("count"), key_lane, "newcap", crate::safewir::AccessMode::Write), value: getl("k"), kind: Kind::I64 },
+                N::SafeStore { place: lane("new", getl("count"), value_lane, "newcap", crate::safewir::AccessMode::Write), value: getl("v"), kind: Kind::I64 },
+                N::SafeStore { place: count_word("new", "newcap"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32 },
             ],
             result: None,
         },
@@ -1436,6 +1462,12 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let entry = |base: &str, index: E| b(BinOp::Add, getl(base), b(BinOp::Mul, index, i32c(16)));
+    // Only `d`'s row capacity is available as a leaf here: `cap` is a parameter,
+    // while the reallocated `new` has no capacity local in this helper, so its
+    // sites stay raw rather than borrow a claim about the wrong object.
+    let d_lane = |index: E, lane: u32, access| {
+        crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), index, lane, getl("cap"), access)
+    };
     let dup_leaf = |value: E, bias: &str| E::Call {
         func: "leaf_dup".into(),
         args: vec![value, getl(bias)],
@@ -1511,11 +1543,11 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
                             N::Do(E::Call {
                                 func: "leaf_drop".into(),
                                 args: vec![
-                                    E::Load { ptr: Box::new(entry("d", getl("found"))), kind: Kind::I64, offset: 4 },
+                                    E::SafeLoad { place: d_lane(getl("found"), crate::wir_helpers::layouts::DICT_ROW_KEY, crate::safewir::AccessMode::Read), kind: Kind::I64 },
                                     getl("key_bias"),
                                 ],
                             }),
-                            N::Store { ptr: entry("d", getl("found")), value: i64c(0), kind: Kind::I64, offset: 4 },
+                            N::SafeStore { place: d_lane(getl("found"), crate::wir_helpers::layouts::DICT_ROW_KEY, crate::safewir::AccessMode::Write), value: i64c(0), kind: Kind::I64 },
                             N::SetLocal { local: "suffix".into(), value: b(BinOp::Mul, b(BinOp::Sub, b(BinOp::Sub, getl("count"), getl("found")), i32c(1)), i32c(16)) },
                             N::SetGlobal {
                                 global: "__witchy_dict_order_bytes_moved".into(),
@@ -1543,7 +1575,7 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
                                 kind: Kind::I64,
                                 offset: 12,
                             },
-                            N::Store { ptr: getl("d"), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                            N::SafeStore { place: crate::wir_helpers::layouts::dict_body_count_place(getl("d"), getl("cap"), crate::safewir::AccessMode::Write), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32 },
                             // Dense entries moved left, so every carrier bucket's
                             // logical entry index and order metadata must be rebuilt
                             // before the updated root is exposed to the next lookup.
