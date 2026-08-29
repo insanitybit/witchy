@@ -59,7 +59,7 @@ use crate::{codegen, interpreter};
                 "interpreter: {}",
                 ierr.message
             );
-            let linked = resolve_std_src(wrap_src);
+            let linked = prepared_module(wrap_src);
             let bytes = codegen::compile_module_binary(&linked)
                 .expect_lowered("binary");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort on the huge index");
@@ -80,7 +80,7 @@ use crate::{codegen, interpreter};
             );
             // Compiled: the routed abort surfaces `runtime error: <core>` via the
             // host `bail!` (root cause). It must equal the interpreter's core.
-            let linked = resolve_std_src(src);
+            let linked = prepared_module(src);
             let bytes = codegen::compile_module_binary(&linked)
                 .expect_lowered("the binary path lowers this program");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
@@ -159,7 +159,7 @@ use crate::{codegen, interpreter};
         for (src, want_core) in cases {
             // The interpreter resolves the std bodies at run time only when they are
             // linked in (these are real fn bodies, not builtins), so link first.
-            let linked = resolve_std_src(src);
+            let linked = prepared_module(src);
             let ierr = interpreter::run_module(linked.clone(), ".", Vec::new())
                 .expect_err("interpreter must abort");
             assert!(

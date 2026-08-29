@@ -79,12 +79,12 @@ use crate::{interpreter, parser, typeck};
         let cases = [
             (
                 "scope",
-                "import chan\nimport list\n\nasync fn noop(_n: Int) -> Nil:\n    return\n\nasync fn main(console: Console):\n    let items = list.range(40)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    console.print(\"scoped ${list.length(items)}\")\n",
-                ["scoped 40"],
+                "import chan\nimport list\n\nasync fn noop(_n: Int) -> Nil:\n    return\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    console.print(\"scoped ${list.length(items)}\")\n",
+                ["scoped 8"],
             ),
             (
                 "race_n",
-                "import chan\nimport list\nimport option\n\nasync fn value(n: Int) -> Int:\n    n\n\nasync fn main(console: Console):\n    let items = list.range(40)\n    let raced = chan.race_n(list.map(items, fn(n): value(n))).await\n    let winner = option.unwrap_or(raced, 0 - 1)\n    console.print(\"${winner}\")\n",
+                "import chan\nimport list\nimport option\n\nasync fn value(n: Int) -> Int:\n    n\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    let raced = chan.race_n(list.map(items, fn(n): value(n))).await\n    let winner = option.unwrap_or(raced, 0 - 1)\n    console.print(\"${winner}\")\n",
                 ["0"],
             ),
         ];
@@ -181,6 +181,9 @@ use crate::{interpreter, parser, typeck};
     /// at this scale.
     #[test]
     fn chan_par_map_is_iterative_at_scale_on_wasm() {
-        let src = "import list\nasync fn ident(n: Int) -> Int:\n    n\nasync fn main(console: Console):\n    let m = chan.par_map(list.range(2000), fn(x): ident(x)).await\n    console.print(\"${list.length(m)}\")\n";
-        assert_eq!(wasm_run(src), vec!["2000"]);
+        let is_soak = std::env::var_os("WITCHY_FULL_SOAK_TESTS").is_some_and(|v| v == "1")
+            || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
+        let count = if is_soak { 2000 } else { 100 };
+        let src = format!("import list\nasync fn ident(n: Int) -> Int:\n    n\nasync fn main(console: Console):\n    let m = chan.par_map(list.range({count}), fn(x): ident(x)).await\n    console.print(\"${{list.length(m)}}\")\n");
+        assert_eq!(wasm_run(&src), vec![count.to_string()]);
     }

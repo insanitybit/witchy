@@ -68,16 +68,19 @@ fn main(console: Console):
     /// constructing a borrowed value. Explicit type and lifetime parameters keep
     /// their source order, inferred ordinary parameters follow them, and borrowed
     /// fields remain structured owner relations rather than rendered strings.
+    /// (RFC-0112) Explicit shared and mutable reference fields and nominal
+    /// lifetime relations reach `module_types` as structured `meta.TReference`
+    /// values at the comptime boundary on both backends.
     #[test]
-    fn comptime_typeinfo_preserves_nominal_lifetime_relations_on_both_backends() {
+    fn comptime_typeinfo_preserves_reference_kinds_and_lifetime_relations_on_both_backends() {
         let src = r#"mode opt
 
 import list
 import meta
 
 type Pair(a, 'left, 'right):
-    first: View(a, 'left)
-    second: View(a, 'right)
+    shared: View(a, 'left)
+    mutable: &'right mut String
     metadata: b
 
 comptime:
@@ -88,70 +91,27 @@ comptime:
             let first = list.at(t.fields, 0)
             match first.type_expr:
                 meta.TReference("shared", inner, lifetime) ->
-                    emit("fn generated_first_relation() -> String:")
-                    emit("    \"" + meta.type_source(inner) + ":'" + lifetime + "\"")
-                _ -> emit("fn generated_first_relation() -> String:\n    \"not-borrowed\"")
-            let second = list.at(t.fields, 1)
-            match second.type_expr:
-                meta.TReference("shared", inner, lifetime) ->
-                    emit("fn generated_second_relation() -> String:")
-                    emit("    \"" + meta.type_source(inner) + ":'" + lifetime + "\"")
-                _ -> emit("fn generated_second_relation() -> String:\n    \"not-borrowed\"")
-
-fn main(console: Console):
-    console.print(generated_pair_params())
-    console.print(generated_first_relation())
-    console.print(generated_second_relation())
-"#;
-        let expected = ["a,'left,'right,b", "a:'left", "a:'right"];
-        assert_eq!(link_run(src), expected, "interp preserves nominal lifetime relations");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled code generated from nominal lifetime relations must agree",
-        );
-    }
-
-    /// Explicit shared and mutable reference fields must remain structured
-    /// `meta.TReference` values at the comptime boundary. This keeps access
-    /// kind and nominal lifetime distinct without relying on rendered syntax.
-    #[test]
-    fn comptime_typeinfo_preserves_shared_and_mutable_reference_kinds_on_both_backends() {
-        let src = r#"mode opt
-
-import list
-import meta
-
-type Pair('left, 'right):
-    shared: &'left String
-    mutable: &'right mut String
-
-comptime:
-    for t in module_types:
-        if t.name == "Pair":
-            let shared = list.at(t.fields, 0)
-            match shared.type_expr:
-                meta.TReference("shared", inner, lifetime) ->
                     emit("fn generated_shared_relation() -> String:")
                     emit("    \"shared:" + meta.type_source(inner) + ":'" + lifetime + "\"")
                 _ -> emit("fn generated_shared_relation() -> String:\n    \"wrong\"")
-            let mutable = list.at(t.fields, 1)
-            match mutable.type_expr:
+            let second = list.at(t.fields, 1)
+            match second.type_expr:
                 meta.TReference("mut", inner, lifetime) ->
                     emit("fn generated_mutable_relation() -> String:")
                     emit("    \"mut:" + meta.type_source(inner) + ":'" + lifetime + "\"")
                 _ -> emit("fn generated_mutable_relation() -> String:\n    \"wrong\"")
 
 fn main(console: Console):
+    console.print(generated_pair_params())
     console.print(generated_shared_relation())
     console.print(generated_mutable_relation())
 "#;
-        let expected = ["shared:String:'left", "mut:String:'right"];
-        assert_eq!(link_run(src), expected, "interp preserves explicit reference metadata");
+        let expected = ["a,'left,'right,b", "shared:a:'left", "mut:String:'right"];
+        assert_eq!(link_run(src), expected, "interp preserves reference metadata");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
-            "compiled code preserves explicit reference metadata",
+            "compiled code preserves reference metadata",
         );
     }
 

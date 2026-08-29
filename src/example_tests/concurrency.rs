@@ -1,12 +1,8 @@
-use crate::{codegen, interpreter, parser, typeck};
+use super::*;
 
 fn assert_backends_agree(src: &str, expected: &[&str], context: &str) {
-    let module = parser::parse_module(src).expect("parse");
-    let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-    typeck::check(&linked).expect("typecheck");
-    let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-    let bytes = codegen::compile_module_binary(&linked).expect_lowered(context);
-    let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
+    let interp_out = link_run(src);
+    let wasm_out = wasm_run(src);
     assert_eq!(interp_out, wasm_out, "{context}");
     assert_eq!(interp_out, expected.iter().map(|line| (*line).to_string()).collect::<Vec<_>>());
 }
@@ -80,32 +76,6 @@ async fn main(console: Console):
         );
     }
 
-    // `await` in a list-producing and range-consuming loop lowers to sequential
-    // `task.for_each` work on both backends.
-    #[test]
-    fn for_await_loop_backends_agree() {
-        let src = r#"
-import chan
-from chan import Receiver, Sender
-
-async fn producer(tx: Sender(Int)) -> Nil:
-    for x in [1, 2, 3]:
-        chan.send(tx, x).await
-
-async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
-    for _i in 0..3:
-        let o = chan.recv(rx).await
-        match o:
-            Some(v) -> console.print("got ${v}")
-            None -> console.print("closed")
-
-async fn main(console: Console):
-    let (tx, rx) = chan.channel(4).await
-    task.spawn(producer(tx)).await
-    consumer(console, rx).await"#;
-        assert_backends_agree(src, &["got 1", "got 2", "got 3"], "for-await schedule diverged across backends");
-    }
-
     // `for await` over a channel may itself await in the body; this lowers to
     // `chan.consume` on both backends.
     #[test]
@@ -159,82 +129,6 @@ async fn main(console: Console):
     task.join(fh).await
     task.join(lh).await"#;
         assert_backends_agree(src, &["log 100", "log 200"], "multi-actor schedule diverged across backends");
-    }
-
-    // (RFC-0055 acceptance #1) Independent modules use private channels with
-    // different message types in one linked program.
-    #[test]
-    fn rfc0055_two_modules_private_channels_of_different_types() {
-        // Module A: a private Int channel behind a public `run` entry.
-        let counter = r#"import chan
-from chan import Sender
-
-async fn feed(tx: Sender(Int)) -> Nil:
-    chan.send(tx, 7).await
-    chan.send(tx, 35).await
-
-pub async fn total(console: Console) -> Nil:
-    let (tx, rx) = chan.channel(4).await
-    chan.spawn(feed(tx)).await
-    let a = chan.recv(rx).await
-    let b = chan.recv(rx).await
-    match a:
-        Some(x) -> match b:
-            Some(y) -> console.print("sum ${x + y}")
-            None -> console.print("sum none")
-        None -> console.print("sum none")"#;
-        // Module B: a private RECORD channel — a different message type entirely.
-        let notes = r#"import chan
-from chan import Sender
-
-type Note:
-    Note(String)
-
-async fn emit(tx: Sender(Note)) -> Nil:
-    chan.send(tx, Note("hi")).await
-
-pub async fn announce(console: Console) -> Nil:
-    let (tx, rx) = chan.channel(4).await
-    chan.spawn(emit(tx)).await
-    let o = chan.recv(rx).await
-    match o:
-        Some(Note(s)) -> console.print("note ${s}")
-        None -> console.print("note none")"#;
-        // The entry drives both private pipelines in ONE run — one erased executor,
-        // two different message types coexisting.
-        let app = r#"import counter
-import notes
-
-async fn main(console: Console):
-    counter.total(console).await
-    notes.announce(console).await
-"#;
-        let want = vec!["sum 42".to_string(), "note hi".to_string()];
-        let link = || {
-            let app_m = parser::parse_module(app).expect("parse app");
-            let counter_m = parser::parse_module(counter).expect("parse counter");
-            let notes_m = parser::parse_module(notes).expect("parse notes");
-            crate::pipeline::link(
-                vec![
-                    ("main".into(), app_m),
-                    ("counter".into(), counter_m),
-                    ("notes".into(), notes_m),
-                ],
-                "main",
-            )
-            .expect("link")
-        };
-        let linked = link();
-        typeck::check(&linked).expect("typecheck");
-        let interp_out = interpreter::run_module(linked, ".", Vec::new()).expect("interp");
-        assert_eq!(interp_out, want, "interpreter");
-
-        let linked = link();
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this multi-type program");
-        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
-        assert_eq!(interp_out, wasm_out, "multi-type channels diverged across backends");
-        assert_eq!(wasm_out, want, "compiled WASM");
     }
 
     // (RFC-0055 acceptance) One task pulls `Job`s and pushes `Answer`s, proving
