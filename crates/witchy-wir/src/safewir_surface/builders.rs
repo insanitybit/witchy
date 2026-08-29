@@ -185,7 +185,10 @@ const ADDRESS_GRAMMAR_TERM_LIMIT: usize = 64;
 /// exactly the kind this codebase forbids. Flattening first means one rule.
 #[derive(Default)]
 struct AffineAddress<'expr> {
-    root: Option<&'expr WirExpr>,
+    /// Non-constant terms carrying no explicit scale. There are at most two:
+    /// the object root, and -- when the stride is one -- the index, which
+    /// helper code spells as a bare `buf + i` rather than `buf + i * 1`.
+    leaves: Vec<&'expr WirExpr>,
     scaled: Option<(&'expr WirExpr, u64)>,
     constant: u64,
 }
@@ -238,12 +241,14 @@ impl<'expr> AffineAddress<'expr> {
                 self.scaled = Some((operand, u64::from(scale)));
                 Ok(())
             }
-            // Anything else is the root, and there may be only one.
+            // Any other term is an unscaled leaf. Which one is the root and
+            // which is a stride-one index cannot be decided here; the caller
+            // knows the claimed index and settles it.
             other => {
-                if self.root.is_some() {
+                if self.leaves.len() == 2 {
                     return Err(SafePlaceBuildError::ArithmeticOverflow);
                 }
-                self.root = Some(other);
+                self.leaves.push(other);
                 Ok(())
             }
         }
@@ -646,13 +651,31 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             // reports.
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         };
-        let Some(root) = address.root else {
-            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        // Resolve which unscaled leaf is the root. With an explicit `* stride`
+        // there is one leaf and it must be the root. With stride one the index
+        // rides as a second bare leaf, and the claimed index picks it out.
+        let (root, implicit_index) = match (address.leaves.as_slice(), &address.scaled) {
+            ([only], Some(_)) => (*only, None),
+            ([first, second], None) => {
+                if same_address_leaf(first, index) {
+                    (*second, Some(*first))
+                } else if same_address_leaf(second, index) {
+                    (*first, Some(*second))
+                } else {
+                    return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+                }
+            }
+            _ => return Err(SafePlaceBuildError::EncodedBaseMismatch { projection }),
         };
         if !same_address_leaf(root, &self.object.root) {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         }
-        let Some((claimed_index, claimed_stride)) = address.scaled else {
+        // A bare index term denotes a stride of exactly one; anything else must
+        // carry its scale explicitly.
+        let Some((claimed_index, claimed_stride)) = address
+            .scaled
+            .or_else(|| implicit_index.map(|leaf| (leaf, 1)))
+        else {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         };
         // The scaled operand must be the very index being claimed, not merely
@@ -1090,6 +1113,59 @@ mod tests {
         }
     }
 
+    // Stride-one payload access is spelled `buf + i`, with no `* 1`. That is
+    // the single most common byte-access shape in the helper library, so the
+    // decomposition must resolve which bare leaf is the root and which is the
+    // index rather than refusing two unscaled terms.
+    #[test]
+    fn a_stride_one_index_needs_no_explicit_scale() {
+        let mut interner = LayoutInterner::default();
+        let buffer = dynamic_buffer(&mut interner);
+        let builder = SafePlaceBuilder::new(
+            &interner,
+            buffer,
+            SafeExactExtent::counted(WirExpr::GetLocal("n".into())).expect("counted"),
+            WirExpr::GetLocal("s".into()),
+            AccessMode::Read,
+        )
+        .expect("claimable");
+
+        // `s + i` with immediate 4 -- exactly how the helpers write it.
+        let bare = WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::GetLocal("s".into())),
+            rhs: Box::new(WirExpr::GetLocal("i".into())),
+        };
+        assert!(
+            builder
+                .element(
+                    WirExpr::GetLocal("i".into()),
+                    SafeEncodedAddress::new(bare, 4),
+                )
+                .is_ok(),
+            "a bare index term denotes stride one",
+        );
+
+        // But an unrelated second leaf is still refused: the claimed index is
+        // what disambiguates, not mere arity.
+        let unrelated = WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::GetLocal("s".into())),
+            rhs: Box::new(WirExpr::GetLocal("k".into())),
+        };
+        assert!(
+            builder
+                .element(
+                    WirExpr::GetLocal("i".into()),
+                    SafeEncodedAddress::new(unrelated, 4),
+                )
+                .is_err(),
+            "neither leaf matching the claimed index must not resolve",
+        );
+    }
+
     #[test]
     fn a_dynamic_index_address_is_reconciled_against_the_descriptor() {
         let mut interner = LayoutInterner::default();
@@ -1171,8 +1247,8 @@ mod tests {
         let address = AffineAddress::of(&commuted).expect("decomposes");
         assert_eq!(address.constant, 4, "split constants fold");
         assert!(
-            matches!(address.root, Some(WirExpr::GetLocal(name)) if name == "res"),
-            "the non-constant, non-scaled leaf is the root",
+            matches!(address.leaves.as_slice(), [WirExpr::GetLocal(name)] if name == "res"),
+            "the one unscaled leaf is the root when the index carries its scale",
         );
         let (operand, stride) = address.scaled.expect("a scaled term");
         assert_eq!(stride, 1, "the scale is read from either operand order");
