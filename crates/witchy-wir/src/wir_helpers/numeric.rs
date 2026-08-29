@@ -40,7 +40,7 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
                 value: i32c(1),
                 kind: Kind::I32,
             },
-        N::Store8 { ptr: getl("res"), value: i32c(48), offset: 4 },
+        N::SafeStore8 { place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), i32c(0), getl("len"), crate::safewir::AccessMode::Write), value: i32c(48) },
     ];
     if checked {
         then_zero.push(reg(getl("res"), bin(BinOp::Add, Kind::I32, getl("res"), i32c(5))));
@@ -124,19 +124,18 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
                     local: "next32".into(),
                     value: bin(BinOp::DivU, Kind::I32, getl("t32"), i32c(10)),
                 },
-                N::Store8 {
-                    ptr: getl("p"),
+                N::SafeStore8 {
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), getl("ppos"), getl("len"), crate::safewir::AccessMode::Write),
                     value: bin(
                         BinOp::Add,
                         Kind::I32,
                         bin(BinOp::Sub, Kind::I32, getl("t32"), bin(BinOp::Mul, Kind::I32, getl("next32"), i32c(10))),
                         i32c(48),
                     ),
-                    offset: 0,
                 },
                 N::SetLocal {
-                    local: "p".into(),
-                    value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)),
+                    local: "ppos".into(),
+                    value: bin(BinOp::Sub, Kind::I32, getl("ppos"), i32c(1)),
                 },
                 N::SetLocal { local: "t32".into(), value: getl("next32") },
                 N::Br { target: "l2_32".into(), cond: None },
@@ -151,8 +150,8 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             label: "l2_64".into(),
             body: vec![
                 N::Br { target: "b2_64".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
-                N::Store8 {
-                    ptr: getl("p"),
+                N::SafeStore8 {
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(getl("res"), getl("ppos"), getl("len"), crate::safewir::AccessMode::Write),
                     value: bin(
                         BinOp::Add,
                         Kind::I32,
@@ -163,11 +162,10 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
                         },
                         i32c(48),
                     ),
-                    offset: 0,
                 },
                 N::SetLocal {
-                    local: "p".into(),
-                    value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)),
+                    local: "ppos".into(),
+                    value: bin(BinOp::Sub, Kind::I32, getl("ppos"), i32c(1)),
                 },
                 N::SetLocal {
                     local: "t".into(),
@@ -221,15 +219,14 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             els: vec![],
             result: None,
         },
-        // p = res + 4 + len - 1 (the last digit's byte)
+        // `ppos` is the byte OFFSET of the last digit within the payload, where
+        // the old code tracked `res + 4 + len - 1` as an absolute pointer. A place
+        // is a root plus a projection, so the absolute form was undescribable; the
+        // offset form is an ordinary element index and the descriptor supplies the
+        // payload base.
         N::SetLocal {
-            local: "p".into(),
-            value: bin(
-                BinOp::Sub,
-                Kind::I32,
-                bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len")),
-                i32c(1),
-            ),
+            local: "ppos".into(),
+            value: bin(BinOp::Sub, Kind::I32, getl("len"), i32c(1)),
         },
         N::If {
             cond: bin(BinOp::LeU, Kind::I64, getl("mag"), i64c(0xFFFFFFFF)),
@@ -262,6 +259,7 @@ pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "res".into(), ty: WirTy::Bool },
             WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "ppos".into(), ty: WirTy::Bool },
             WirLocal { name: "neg".into(), ty: WirTy::Bool },
             WirLocal { name: "t32".into(), ty: WirTy::Bool },
             WirLocal { name: "next32".into(), ty: WirTy::Bool },
