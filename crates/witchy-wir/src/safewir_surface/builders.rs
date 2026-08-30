@@ -272,6 +272,13 @@ const ADDRESS_GRAMMAR_TERM_LIMIT: usize = 64;
 /// and a bound keeps a malformed address a rejection rather than a search.
 const MAX_SCALED_ADDRESS_TERMS: usize = 2;
 
+/// Unscaled leaves an address may carry: the root, and up to two terms whose
+/// scale is one and therefore ride bare. A packed stride-one projection has two
+/// (root and index); the carrier's mirrored control tail has three, because both
+/// its section multiple and its element width are one, so it spells
+/// `idx + 4 + slots + h`.
+const MAX_UNSCALED_ADDRESS_LEAVES: usize = 3;
+
 /// One address expression decomposed into `root + index * stride + constant`.
 ///
 /// This exists so the dynamic-index check can be a reconciliation against the
@@ -344,7 +351,7 @@ impl<'expr> AffineAddress<'expr> {
             // which is a stride-one index cannot be decided here; the caller
             // knows the claimed index and settles it.
             other => {
-                if self.leaves.len() == 2 {
+                if self.leaves.len() == MAX_UNSCALED_ADDRESS_LEAVES {
                     return Err(SafePlaceBuildError::ArithmeticOverflow);
                 }
                 self.leaves.push(other);

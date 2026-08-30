@@ -51,6 +51,15 @@ pub(crate) struct HelperLayouts {
     /// constant. Its extent is expressible; its projections are not, and this
     /// module deliberately offers no carrier accessor.
     dict_body: LayoutId,
+    /// The Swiss control/index carrier: `[u32 slots][ctrl: slots + 16]
+    /// [index: slots * 4][keys: slots * 8][values: slots * 8][order: slots * 4]`,
+    /// which is `RuntimeDictionaryIndex`, `Dynamic { base: 20, stride: 25 }`.
+    ///
+    /// SECTION-MAJOR: it stores all control bytes, then all entry indices, then
+    /// all key slots, so a section's base scales with the slot count and no
+    /// element/field chain can name a slot. Its accessor projects through the
+    /// descriptor's section table instead.
+    carrier: LayoutId,
 }
 
 /// Field indices into a dictionary ROW, in descriptor order.
@@ -87,7 +96,10 @@ fn helper_layouts() -> &'static HelperLayouts {
         let dict_body = interner
             .intern_runtime_dictionary_body(slot, slot)
             .expect("a dictionary body over exact scalar slots is always internable");
-        HelperLayouts { interner, byte_buffer, slot_buffer, bool_list, dict_body }
+        let carrier = interner
+            .intern_runtime_dictionary_index(slot, slot)
+            .expect("a dictionary carrier over exact scalar slots is always internable");
+        HelperLayouts { interner, byte_buffer, slot_buffer, bool_list, dict_body, carrier }
     })
 }
 
@@ -785,3 +797,83 @@ mod final_validation {
         }
     }
 }
+
+/// A checked place for slot `index` of carrier section `section`.
+///
+/// `count` is the carrier's slot count -- the `slots` every dict helper already
+/// carries. The section's base and element width come from the descriptor's
+/// section table, so this builds the address the helpers spelled by hand
+/// (`idx + 4 + h` for a control byte, `idx + 20 + slots * 5 + h * 8` for a key)
+/// without repeating any of those constants here.
+pub(crate) fn carrier_slot_place(
+    root: WirExpr,
+    section: u32,
+    index: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let spec = carrier_section(section);
+    let encoded = section_address(&root, spec, &count, &index);
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.carrier,
+        SafeExactExtent::counted(count).expect("a slot-count local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper carrier layout is claimable")
+    .section_element(section, index, SafeEncodedAddress::new(encoded, 0))
+    .expect("a descriptor-derived section address reconciles against the section table")
+}
+
+/// The descriptor's spec for one carrier section, asked rather than assumed.
+fn carrier_section(section: u32) -> crate::layout::SectionSpec {
+    let layouts = helper_layouts();
+    *layouts
+        .interner
+        .get(layouts.carrier)
+        .expect("the carrier layout is interned in this module")
+        .kind()
+        .sections()
+        .expect("the carrier is section-major")
+        .get(section as usize)
+        .expect("the caller names a section the table defines")
+}
+
+/// `root + constant_base + count * count_multiple + index * element_width`,
+/// with a multiple of zero contributing no term and a width or multiple of one
+/// riding as a bare leaf -- the same spelling the helpers used.
+fn section_address(
+    root: &WirExpr,
+    spec: crate::layout::SectionSpec,
+    count: &WirExpr,
+    index: &WirExpr,
+) -> WirExpr {
+    let mut address = add32(
+        root.clone(),
+        WirExpr::ConstI32(
+            i32::try_from(spec.constant_base).expect("a section base is a small offset"),
+        ),
+    );
+    if spec.count_multiple != 0 {
+        address = add32(address, scale(count, spec.count_multiple));
+    }
+    add32(address, scale(index, spec.element_width))
+}
+
+/// `operand * scale`, or the bare operand when the scale is one.
+fn scale(operand: &WirExpr, scale: u32) -> WirExpr {
+    if scale == 1 {
+        return operand.clone();
+    }
+    WirExpr::Binary {
+        op: crate::wir::BinOp::Mul,
+        kind: crate::wir::Kind::I32,
+        lhs: Box::new(operand.clone()),
+        rhs: Box::new(WirExpr::ConstI32(
+            i32::try_from(scale).expect("a section element width is a small width"),
+        )),
+    }
+}
+

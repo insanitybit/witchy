@@ -26,22 +26,25 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let ctrl_base = || b(BinOp::Add, getl("idx"), i32c(4));
-    let index_base = || b(BinOp::Add, ctrl_base(), b(BinOp::Add, getl("slots"), i32c(16)));
-    let ctrl_ptr = || b(BinOp::Add, ctrl_base(), getl("h"));
-    let index_ptr = || b(BinOp::Add, index_base(), b(BinOp::Mul, getl("h"), i32c(4)));
-    let key_ptr = || b(BinOp::Add, index_base(), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(8))));
-    let value_ptr = || b(BinOp::Add, index_base(), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(12)), b(BinOp::Mul, getl("h"), i32c(8))));
-    let order_ptr = || b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(21)), b(BinOp::Mul, getl("e"), i32c(4)))));
+    // The carrier is SECTION-MAJOR, so every address below is projected through
+    // the descriptor's section table rather than spelled from the section bases
+    // this helper used to compute by hand. `slots` is the slot count the sections
+    // scale with.
+    let slot = |section: u32, index: E, access| {
+        crate::wir_helpers::layouts::carrier_slot_place(getl("idx"), section, index, getl("slots"), access)
+    };
+    let write = |section: u32, index: E| slot(section, index, crate::safewir::AccessMode::Write);
     let store_and_exit = vec![
-        N::Store8 { ptr: ctrl_ptr(), value: getl("h2"), offset: 0 },
-        N::Store { ptr: index_ptr(), value: b(BinOp::Add, getl("e"), i32c(1)), kind: Kind::I32, offset: 0 },
-        N::Store { ptr: key_ptr(), value: getl("k"), kind: Kind::I64, offset: 0 },
-        N::Store { ptr: value_ptr(), value: getl("v"), kind: Kind::I64, offset: 0 },
-        N::Store { ptr: order_ptr(), value: getl("h"), kind: Kind::I32, offset: 0 },
+        N::SafeStore8 { place: write(crate::layout::CARRIER_CONTROL, getl("h")), value: getl("h2") },
+        N::SafeStore { place: write(crate::layout::CARRIER_ENTRY_INDEX, getl("h")), value: b(BinOp::Add, getl("e"), i32c(1)), kind: Kind::I32 },
+        N::SafeStore { place: write(crate::layout::CARRIER_KEY, getl("h")), value: getl("k"), kind: Kind::I64 },
+        N::SafeStore { place: write(crate::layout::CARRIER_VALUE, getl("h")), value: getl("v"), kind: Kind::I64 },
+        N::SafeStore { place: write(crate::layout::CARRIER_ORDER, getl("e")), value: getl("h"), kind: Kind::I32 },
         N::If {
             cond: b(BinOp::Lt, getl("h"), i32c(16)),
-            then_: vec![N::Store8 { ptr: b(BinOp::Add, ctrl_base(), b(BinOp::Add, getl("slots"), getl("h"))), value: getl("h2"), offset: 0 }],
+            // The mirrored control tail is its own section: its base is
+            // `4 + slots`, not `4`.
+            then_: vec![N::SafeStore8 { place: write(crate::layout::CARRIER_CONTROL_MIRROR, getl("h")), value: getl("h2") }],
             els: vec![],
             result: None,
         },
@@ -55,7 +58,7 @@ pub(crate) fn dict_index_put_helper() -> WirFunc {
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))) },
                 N::If {
-                    cond: b(BinOp::Eq, E::Load8U { ptr: Box::new(ctrl_ptr()), offset: 0 }, i32c(0x80)),
+                    cond: b(BinOp::Eq, E::SafeLoad8U { place: slot(crate::layout::CARRIER_CONTROL, getl("h"), crate::safewir::AccessMode::Read) }, i32c(0x80)),
                     then_: store_and_exit,
                     els: vec![],
                     result: None,
@@ -101,11 +104,10 @@ pub(crate) fn dict_index_update_value_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
-    let i32c = E::ConstI32;
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let order_ptr = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(21)), b(BinOp::Mul, getl("e"), i32c(4)))));
-    let value_base = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13))));
+    let slot = |section: u32, index: E, access| {
+        crate::wir_helpers::layouts::carrier_slot_place(getl("idx"), section, index, getl("slots"), access)
+    };
     WirFunc {
         name: "dict_index_update_value".into(),
         params: vec![
@@ -117,12 +119,14 @@ pub(crate) fn dict_index_update_value_helper() -> WirFunc {
         ret: vec![],
         locals: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
         body: vec![
-            setl("h", E::Load { ptr: Box::new(order_ptr), kind: Kind::I32, offset: 0 }),
-            N::Store {
-                ptr: b(BinOp::Add, value_base, b(BinOp::Mul, getl("h"), i32c(8))),
+            setl("h", E::SafeLoad {
+                place: slot(crate::layout::CARRIER_ORDER, getl("e"), crate::safewir::AccessMode::Read),
+                kind: Kind::I32,
+            }),
+            N::SafeStore {
+                place: slot(crate::layout::CARRIER_VALUE, getl("h"), crate::safewir::AccessMode::Write),
                 value: getl("v"),
                 kind: Kind::I64,
-                offset: 0,
             },
         ],
         raw_body: None,
