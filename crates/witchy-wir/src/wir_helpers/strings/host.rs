@@ -12,10 +12,16 @@ pub(in crate::wir_helpers) fn string_from_code_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let store8 = |offset: u32, val: E| N::Store8 {
-        ptr: getl("res"),
+    // The caller names a payload BYTE offset, which is an element index into the
+    // byte buffer; `n` is the encoded length `res` was allocated for.
+    let store8 = |offset: u32, val: E| N::SafeStore8 {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("res"),
+            i32c(i32::try_from(offset).expect("a UTF-8 byte offset is small")),
+            getl("n"),
+            crate::safewir::AccessMode::Write,
+        ),
         value: val,
-        offset: 4 + offset,
     };
 
     WirFunc {

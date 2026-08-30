@@ -48,7 +48,17 @@ pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
                 value: i32c(0),
                 kind: Kind::I32,
             },
-            N::Store { ptr: getl("res"), value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) }, kind: Kind::I64, offset: 4 },
+            N::SafeStore {
+                // A twelve-byte `[u32 tag][i64 slot]` block, which this helper
+                // already treats as byte-buffer-shaped: its tag goes through
+                // `byte_buffer_length_place`. The slot is therefore the whole
+                // eight-byte payload.
+                place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("res"), i32c(0), i32c(8), i32c(8), crate::safewir::AccessMode::Write,
+                ),
+                value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) },
+                kind: Kind::I64,
+            },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -108,11 +118,16 @@ pub(in crate::wir_helpers) fn build_get_env_helper() -> WirFunc {
                 value: i32c(0),
                 kind: Kind::I32,
             },
-            N::Store {
-                ptr: getl("res"),
+            N::SafeStore {
+                // A twelve-byte `[u32 tag][i64 slot]` block, which this helper
+                // already treats as byte-buffer-shaped: its tag goes through
+                // `byte_buffer_length_place`. The slot is therefore the whole
+                // eight-byte payload.
+                place: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("res"), i32c(0), i32c(8), i32c(8), crate::safewir::AccessMode::Write,
+                ),
                 value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) },
                 kind: Kind::I64,
-                offset: 4,
             },
             N::Push(getl("res")),
         ],
