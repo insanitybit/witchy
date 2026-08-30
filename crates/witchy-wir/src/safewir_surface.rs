@@ -145,6 +145,13 @@ pub enum SafeProjectionStep {
     Element {
         index: Box<WirExpr>,
     },
+    /// One slot of one section of a SECTION-MAJOR layout. The descriptor's
+    /// section table supplies the section's base and element width; the ordinal
+    /// identifies which section, and carries no claim about the slot's contents.
+    Section {
+        section: u32,
+        index: Box<WirExpr>,
+    },
     /// Untrusted marker for a pure executable i32 index expression. This is a
     /// transport shape only: construction does not prove the expression is in
     /// range, non-wrapping, or related to the object's live length. The final
@@ -210,6 +217,7 @@ impl SafeProjectionExpr {
                 | SafeProjectionStep::VariantField { .. }
                 | SafeProjectionStep::Field { .. } => {}
                 SafeProjectionStep::Element { index }
+                | SafeProjectionStep::Section { index, .. }
                 | SafeProjectionStep::DerivedElement { index } => visit(index),
                 SafeProjectionStep::Slice { start, length } => {
                     visit(start);
@@ -228,6 +236,7 @@ impl SafeProjectionExpr {
                 | SafeProjectionStep::VariantField { .. }
                 | SafeProjectionStep::Field { .. } => {}
                 SafeProjectionStep::Element { index }
+                | SafeProjectionStep::Section { index, .. }
                 | SafeProjectionStep::DerivedElement { index } => visit(index),
                 SafeProjectionStep::Slice { start, length } => {
                     visit(start);

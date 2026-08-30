@@ -2227,6 +2227,7 @@ fn visit_safe_projection_operands(
             | SafeProjectionStep::VariantField { .. }
             | SafeProjectionStep::Field { .. } => {}
             SafeProjectionStep::Element { index: element }
+            | SafeProjectionStep::Section { index: element, .. }
             | SafeProjectionStep::DerivedElement { index: element } => {
                 visit_operand(index, mode, element.as_ref(), visit)?;
             }

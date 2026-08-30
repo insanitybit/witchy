@@ -10,6 +10,7 @@ use std::fmt;
 
 use crate::layout::{
     FieldKind, HeaderLayout, LayoutId, LayoutInterner, LayoutKind, LayoutSize, RootAnchor,
+    SectionSpec,
 };
 use crate::safewir::AccessMode;
 use crate::wir::{BinOp, WirExpr};
@@ -142,6 +143,20 @@ fn dynamic_shape(
     descriptor: &crate::layout::LayoutDescriptor,
     layout: LayoutId,
 ) -> Result<DynamicShape, SafePlaceBuildError> {
+    // A SECTION-MAJOR layout has no single element, so the packed invariant
+    // below (stride == one element's size) does not apply to it. The equivalent
+    // statement is an algebraic identity between the section table and the
+    // descriptor's own size, checked in `validate_section_table`.
+    if descriptor.kind().sections().is_some() {
+        let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
+            return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
+        };
+        if contains_pointer_slot(layouts, descriptor, POINTER_SEARCH_DEPTH) {
+            return Err(SafePlaceBuildError::UnsupportedDynamicLayout(layout));
+        }
+        validate_section_table(descriptor, layout)?;
+        return Ok(DynamicShape { base, stride });
+    }
     let element = match descriptor.kind() {
         LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => *element,
         // A dense dictionary body is a packed run of equal-stride rows. It is
@@ -183,6 +198,42 @@ fn dynamic_shape(
     Ok(DynamicShape { base, stride })
 }
 
+/// The section table must describe exactly the object the descriptor describes.
+///
+/// The last section ends where the object ends, for EVERY element count:
+///
+///     last.constant_base + last.count_multiple * c + last.element_width * c
+///         == base + stride * c        for all c
+///
+/// which holds precisely when `last.constant_base == base` and
+/// `last.count_multiple + last.element_width == stride`. That identity is what
+/// makes the table a derivation of the descriptor rather than a second opinion
+/// about the same bytes -- if someone edits one without the other, every claim on
+/// this layout stops building.
+fn validate_section_table(
+    descriptor: &crate::layout::LayoutDescriptor,
+    layout: LayoutId,
+) -> Result<(), SafePlaceBuildError> {
+    let sections = descriptor
+        .kind()
+        .sections()
+        .ok_or(SafePlaceBuildError::NotSectionMajor(layout))?;
+    let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
+        return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
+    };
+    let last = sections
+        .last()
+        .ok_or(SafePlaceBuildError::DynamicDescriptorMismatch(layout))?;
+    let span = last
+        .count_multiple
+        .checked_add(last.element_width)
+        .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+    if last.constant_base != base || span != stride {
+        return Err(SafePlaceBuildError::DynamicDescriptorMismatch(layout));
+    }
+    Ok(())
+}
+
 /// `base + count * stride`, as a checked size expression.
 ///
 /// A constant count is folded and narrowed here so the common case carries no
@@ -216,6 +267,11 @@ fn counted_length(
 /// so a pathological expression cannot make this walk unboundedly.
 const ADDRESS_GRAMMAR_TERM_LIMIT: usize = 64;
 
+/// A packed projection scales one term; a section-major projection scales two,
+/// the section base and the slot index. Nothing in this grammar needs a third,
+/// and a bound keeps a malformed address a rejection rather than a search.
+const MAX_SCALED_ADDRESS_TERMS: usize = 2;
+
 /// One address expression decomposed into `root + index * stride + constant`.
 ///
 /// This exists so the dynamic-index check can be a reconciliation against the
@@ -229,7 +285,10 @@ struct AffineAddress<'expr> {
     /// the object root, and -- when the stride is one -- the index, which
     /// helper code spells as a bare `buf + i` rather than `buf + i * 1`.
     leaves: Vec<&'expr WirExpr>,
-    scaled: Option<(&'expr WirExpr, u64)>,
+    /// Scaled terms. A packed projection has at most one (`index * stride`); a
+    /// SECTION-MAJOR projection has two, because the section's own base is a
+    /// multiple of the element count (`count * count_multiple + index * width`).
+    scaled: Vec<(&'expr WirExpr, u64)>,
     constant: u64,
 }
 
@@ -275,10 +334,10 @@ impl<'expr> AffineAddress<'expr> {
                     // non-constants is not an affine address.
                     _ => return Err(SafePlaceBuildError::ArithmeticOverflow),
                 };
-                if self.scaled.is_some() {
+                if self.scaled.len() == MAX_SCALED_ADDRESS_TERMS {
                     return Err(SafePlaceBuildError::ArithmeticOverflow);
                 }
-                self.scaled = Some((operand, u64::from(scale)));
+                self.scaled.push((operand, u64::from(scale)));
                 Ok(())
             }
             // Any other term is an unscaled leaf. Which one is the root and
@@ -567,6 +626,50 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
 
     /// Claim one packed-list element. The index remains an executable scalar
     /// source for the final def-use adapter; no definition identity is invented.
+    /// A checked place for slot `index` of section `section`.
+    ///
+    /// A SECTION-MAJOR layout stores all of one field and then all of the next,
+    /// so a section's base is `constant_base + count_multiple * count` -- a
+    /// function of the element count rather than a descriptor constant. No
+    /// `Element`/`Field` chain can name a slot in one, which is why this exists.
+    ///
+    /// Every number is the descriptor's: the caller names only WHICH section and
+    /// which slot. The count is read from the object's own extent, not from an
+    /// argument, so a caller cannot claim one count and address another.
+    pub fn section_element(
+        &self,
+        section: u32,
+        index: WirExpr,
+        encoded: SafeEncodedAddress,
+    ) -> Result<Box<SafePlaceExpr>, SafePlaceBuildError> {
+        validate_claim_operand(&index, "section element index")?;
+        let descriptor = self.descriptor(self.object.layout)?;
+        let sections = descriptor
+            .kind()
+            .sections()
+            .ok_or(SafePlaceBuildError::NotSectionMajor(self.object.layout))?;
+        let spec = *sections
+            .get(section as usize)
+            .ok_or(SafePlaceBuildError::SectionOutOfBounds { section })?;
+        let SafeExtentExpr::Counted { count, .. } = &self.object.extent else {
+            return Err(SafePlaceBuildError::SectionRequiresCountedExtent(
+                self.object.layout,
+            ));
+        };
+        let count = count.as_ref().clone();
+        self.validate_section_address(&encoded, &count, &index, spec, "section element")?;
+        let start = section_start(&count, &index, spec)?;
+        self.finish(
+            SafeProjectionExpr::from_steps([SafeProjectionStep::Section {
+                section,
+                index: Box::new(index),
+            }]),
+            start,
+            SafeSizeExpr::Constant(u64::from(spec.element_width)),
+            encoded,
+        )
+    }
+
     pub fn element(
         &self,
         index: WirExpr,
@@ -747,7 +850,7 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         let Some(address) = AffineAddress::of(&encoded.base) else {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         };
-        let ([root], None) = (address.leaves.as_slice(), &address.scaled) else {
+        let ([root], []) = (address.leaves.as_slice(), address.scaled.as_slice()) else {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         };
         if !same_address_leaf(root, &self.object.root) {
@@ -765,6 +868,74 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
                 expected,
                 actual,
             });
+        }
+        Ok(())
+    }
+
+    /// Reconcile a section address against the descriptor's section spec.
+    ///
+    /// The address must decompose to exactly
+    /// `root + constant_base + count * count_multiple + index * element_width`,
+    /// where a multiple or width of one may ride as a bare leaf (helper code
+    /// spells `idx + 4 + h`, not `idx + 4 + h * 1`) and a multiple of zero
+    /// contributes no term at all. Anything left over means the address denotes
+    /// something other than the claimed slot.
+    fn validate_section_address(
+        &self,
+        encoded: &SafeEncodedAddress,
+        count: &WirExpr,
+        index: &WirExpr,
+        spec: SectionSpec,
+        projection: &'static str,
+    ) -> Result<(), SafePlaceBuildError> {
+        let Some(address) = AffineAddress::of(&encoded.base) else {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        let constant = address
+            .constant
+            .checked_add(u64::from(encoded.offset))
+            .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+        if constant != u64::from(spec.constant_base) {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        let mut leaves: Vec<&WirExpr> = address.leaves.clone();
+        let mut scaled: Vec<(&WirExpr, u64)> = address.scaled.clone();
+        // Account for each descriptor-required term. A term whose scale is one is
+        // accepted either explicitly scaled or as a bare leaf; a scale of zero
+        // requires no term.
+        for (operand, scale) in [
+            (count, u64::from(spec.count_multiple)),
+            (index, u64::from(spec.element_width)),
+        ] {
+            if scale == 0 {
+                continue;
+            }
+            if let Some(position) = scaled
+                .iter()
+                .position(|(term, term_scale)| *term_scale == scale && same_address_leaf(term, operand))
+            {
+                scaled.remove(position);
+                continue;
+            }
+            if scale == 1 {
+                if let Some(position) =
+                    leaves.iter().position(|leaf| same_address_leaf(leaf, operand))
+                {
+                    leaves.remove(position);
+                    continue;
+                }
+            }
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        // Exactly the root may remain.
+        if !scaled.is_empty() {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        let [root] = leaves.as_slice() else {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        };
+        if !same_address_leaf(root, &self.object.root) {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
         }
         Ok(())
     }
@@ -806,9 +977,9 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         // Resolve which unscaled leaf is the root. With an explicit `* stride`
         // there is one leaf and it must be the root. With stride one the index
         // rides as a second bare leaf, and the claimed index picks it out.
-        let (root, implicit_index) = match (address.leaves.as_slice(), &address.scaled) {
-            ([only], Some(_)) => (*only, None),
-            ([first, second], None) => {
+        let (root, implicit_index) = match (address.leaves.as_slice(), address.scaled.as_slice()) {
+            ([only], [_]) => (*only, None),
+            ([first, second], []) => {
                 if same_address_leaf(first, index) {
                     (*second, Some(*first))
                 } else if same_address_leaf(second, index) {
@@ -826,6 +997,8 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
         // carry its scale explicitly.
         let Some((claimed_index, claimed_stride)) = address
             .scaled
+            .first()
+            .copied()
             .or_else(|| implicit_index.map(|leaf| (leaf, 1)))
         else {
             return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
@@ -895,6 +1068,32 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             encoded_offset: encoded.offset,
         }))
     }
+}
+
+/// The byte start of section slot `index`, as a symbolic size.
+fn section_start(
+    count: &WirExpr,
+    index: &WirExpr,
+    spec: SectionSpec,
+) -> Result<SafeSizeExpr, SafePlaceBuildError> {
+    let mut start = SafeSizeExpr::Constant(u64::from(spec.constant_base));
+    if spec.count_multiple != 0 {
+        start = SafeSizeExpr::Add(
+            Box::new(start),
+            Box::new(SafeSizeExpr::Multiply(
+                Box::new(SafeSizeExpr::Value(Box::new(count.clone()))),
+                Box::new(SafeSizeExpr::Constant(u64::from(spec.count_multiple))),
+            )),
+        );
+    }
+    start = SafeSizeExpr::Add(
+        Box::new(start),
+        Box::new(SafeSizeExpr::Multiply(
+            Box::new(SafeSizeExpr::Value(Box::new(index.clone()))),
+            Box::new(SafeSizeExpr::Constant(u64::from(spec.element_width))),
+        )),
+    );
+    Ok(checked_narrow(start))
 }
 
 fn indexed_start(
@@ -1050,6 +1249,13 @@ pub enum SafePlaceBuildError {
         slot: crate::layout::PointerSlot,
     },
     RuntimeBufferProjection(LayoutId),
+    /// A section projection was attempted on a layout that is not section-major.
+    NotSectionMajor(LayoutId),
+    /// A section ordinal the descriptor's section table does not define.
+    SectionOutOfBounds { section: u32 },
+    /// A section's base is a multiple of the element count, so the count has to
+    /// come from a counted extent; a header-only or fixed claim cannot supply it.
+    SectionRequiresCountedExtent(LayoutId),
     PackedListFieldProjection(LayoutId),
     ProjectionRequiresPackedList { projection: &'static str },
     /// A runtime-buffer-only projection was attempted on another layout.
@@ -1126,6 +1332,18 @@ impl fmt::Display for SafePlaceBuildError {
             Self::PointerSlotProvenance { field, pointee, slot } => write!(
                 formatter,
                 "field {field} is a {slot:?} pointer slot to {pointee}; descriptor position cannot authenticate loaded-pointer provenance"
+            ),
+            Self::NotSectionMajor(layout) => write!(
+                formatter,
+                "layout {layout} is not section-major, so it defines no sections to project"
+            ),
+            Self::SectionOutOfBounds { section } => write!(
+                formatter,
+                "section {section} is not defined by the descriptor's section table"
+            ),
+            Self::SectionRequiresCountedExtent(layout) => write!(
+                formatter,
+                "a section of {layout} is based on its element count, which requires a counted extent"
             ),
             Self::RuntimeBufferProjection(layout) => write!(
                 formatter,
@@ -1402,9 +1620,88 @@ mod tests {
             matches!(address.leaves.as_slice(), [WirExpr::GetLocal(name)] if name == "res"),
             "the one unscaled leaf is the root when the index carries its scale",
         );
-        let (operand, stride) = address.scaled.expect("a scaled term");
+        let [(operand, stride)] = address.scaled.as_slice() else {
+            panic!("exactly one scaled term");
+        };
+        let (operand, stride) = (*operand, *stride);
         assert_eq!(stride, 1, "the scale is read from either operand order");
         assert!(matches!(operand, WirExpr::GetLocal(name) if name == "i"));
+    }
+
+    /// A section-major slot is claimable, and every constant is the descriptor's.
+    ///
+    /// The Swiss carrier is the shape: `[u32 slots][ctrl: slots + 16]
+    /// [index: slots * 4][keys: slots * 8][values: slots * 8][order: slots * 4]`.
+    /// A key slot therefore sits at `20 + slots * 5 + h * 8`, which is TWO runtime
+    /// products -- the section's own base scales with the element count, and the
+    /// slot scales with its width. That is why a section step exists at all: no
+    /// `Element`/`Field` chain can name it.
+    #[test]
+    fn a_section_major_slot_reconciles_and_a_wrong_section_does_not() {
+        let mut interner = LayoutInterner::new();
+        let slot = interner.intern_scalar(crate::layout::ScalarKind::Int).unwrap();
+        let carrier = interner.intern_runtime_dictionary_index(slot, slot).unwrap();
+        let root = WirExpr::GetLocal("idx".into());
+        let slots = WirExpr::GetLocal("slots".into());
+        let h = WirExpr::GetLocal("h".into());
+        let add = |lhs: WirExpr, rhs: WirExpr| WirExpr::Binary {
+            op: BinOp::Add,
+            kind: crate::wir::Kind::I32,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
+        let mul = |lhs: WirExpr, scale: i32| WirExpr::Binary {
+            op: BinOp::Mul,
+            kind: crate::wir::Kind::I32,
+            lhs: Box::new(lhs),
+            rhs: Box::new(WirExpr::ConstI32(scale)),
+        };
+        let builder = || {
+            SafePlaceBuilder::new(
+                &interner,
+                carrier,
+                SafeExactExtent::counted(slots.clone()).unwrap(),
+                root.clone(),
+                AccessMode::Write,
+            )
+            .expect("the carrier is claimable")
+        };
+        // The key section, spelled exactly as `dict_index_put` spells it.
+        let key_address = add(
+            add(root.clone(), WirExpr::ConstI32(20)),
+            add(mul(slots.clone(), 5), mul(h.clone(), 8)),
+        );
+        builder()
+            .section_element(
+                crate::layout::CARRIER_KEY,
+                h.clone(),
+                SafeEncodedAddress::new(key_address.clone(), 0),
+            )
+            .expect("a key slot address reconciles against the section table");
+        // The same address claimed as the VALUE section must be refused: the value
+        // section's base is `slots * 13`, not `slots * 5`.
+        let wrong = builder().section_element(
+            crate::layout::CARRIER_VALUE,
+            h.clone(),
+            SafeEncodedAddress::new(key_address, 0),
+        );
+        assert!(
+            matches!(wrong, Err(SafePlaceBuildError::EncodedBaseMismatch { .. })),
+            "a key address claimed as a value slot must be refused, got {wrong:?}",
+        );
+        // A control byte rides as a bare leaf, because its width is one.
+        builder()
+            .section_element(
+                crate::layout::CARRIER_CONTROL,
+                h.clone(),
+                SafeEncodedAddress::new(add(add(root.clone(), WirExpr::ConstI32(4)), h.clone()), 0),
+            )
+            .expect("a stride-one section slot needs no explicit multiply");
+        // An ordinal the table does not define is a refusal, not a silent zero.
+        assert!(matches!(
+            builder().section_element(99, h, SafeEncodedAddress::new(root, 0)),
+            Err(SafePlaceBuildError::SectionOutOfBounds { section: 99 }),
+        ));
     }
 
     // RFC-0162 S1: a runtime buffer keeps its length in an ordinary descriptor

@@ -353,6 +353,48 @@ pub enum RuntimePrefixSlot {
     },
 }
 
+/// One section of a section-major layout.
+///
+/// Byte base is `constant_base + count_multiple * count`; slot `i` within the
+/// section is `element_width * i` beyond that. Every field is a descriptor fact,
+/// so a projection derives an address from these rather than from caller
+/// arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionSpec {
+    pub constant_base: u32,
+    pub count_multiple: u32,
+    pub element_width: u32,
+}
+
+/// Section ordinals for the Swiss carrier, in physical order.
+pub const CARRIER_CONTROL: u32 = 0;
+pub const CARRIER_CONTROL_MIRROR: u32 = 1;
+pub const CARRIER_ENTRY_INDEX: u32 = 2;
+pub const CARRIER_KEY: u32 = 3;
+pub const CARRIER_VALUE: u32 = 4;
+pub const CARRIER_ORDER: u32 = 5;
+
+/// The carrier is `[u32 slots][ctrl: slots + 16][index: slots * 4]
+/// [keys: slots * 8][values: slots * 8][order: slots * 4]`.
+///
+/// The control region carries a sixteen-byte mirrored tail so a SIMD group load
+/// at any slot stays in bounds; the mirror is addressed as its own section
+/// because its base is `4 + slots` rather than `4`.
+const RUNTIME_DICTIONARY_SECTIONS: &[SectionSpec] = &[
+    // control bytes: 4 + 1 * i
+    SectionSpec { constant_base: 4, count_multiple: 0, element_width: 1 },
+    // mirrored control tail: 4 + slots + i
+    SectionSpec { constant_base: 4, count_multiple: 1, element_width: 1 },
+    // entry indices: 20 + slots + 4 * i
+    SectionSpec { constant_base: 20, count_multiple: 1, element_width: 4 },
+    // key slots: 20 + slots * 5 + 8 * i
+    SectionSpec { constant_base: 20, count_multiple: 5, element_width: 8 },
+    // value slots: 20 + slots * 13 + 8 * i
+    SectionSpec { constant_base: 20, count_multiple: 13, element_width: 8 },
+    // insertion order: 20 + slots * 21 + 4 * i
+    SectionSpec { constant_base: 20, count_multiple: 21, element_width: 4 },
+];
+
 /// Where the runtime-visible object handle lies within its allocation.
 /// Descriptor fields always remain relative to the allocation base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -524,6 +566,28 @@ impl LayoutKind {
             // like any other packed sequence; the row carries the key/value
             // offsets a following `Field` step reads.
             Self::RuntimeDictionaryBody { row, .. } => Some(*row),
+            _ => None,
+        }
+    }
+
+    /// The section table of a SECTION-MAJOR layout, or `None`.
+    ///
+    /// A packed sequence puts every field of element `i` together, so one stride
+    /// and one base describe it. A section-major layout is the transpose: it
+    /// stores all of one field, then all of the next. The Swiss carrier is that
+    /// shape -- every control byte, then every entry index, then every key slot --
+    /// so a section's base is a function of the ELEMENT COUNT rather than a
+    /// descriptor constant, and no `Element`/`Field` chain can name a slot in it.
+    ///
+    /// Each section's byte base is `constant_base + count_multiple * count`, and
+    /// slot `i` within it sits at `element_width * i` from there. The carrier's
+    /// five sections plus its mirrored control tail therefore sum to the
+    /// descriptor's own `Dynamic { base: 20, stride: 25 }`: the constants agree
+    /// with the size, which is what makes this a derivation and not a second
+    /// opinion.
+    pub fn sections(&self) -> Option<&'static [SectionSpec]> {
+        match self {
+            Self::RuntimeDictionaryIndex { .. } => Some(RUNTIME_DICTIONARY_SECTIONS),
             _ => None,
         }
     }

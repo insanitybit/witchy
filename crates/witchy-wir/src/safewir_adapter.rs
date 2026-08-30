@@ -1196,6 +1196,15 @@ impl FunctionAdapter<'_> {
                         "closed-sum projections require the deferred def-use adapter",
                     ));
                 }
+                // A section's base is `constant_base + count_multiple * count`,
+                // so its offset is a product of two runtime values. Discharging
+                // it needs the count bound to a reaching definition, which is the
+                // same adapter every other deferral here names.
+                SafeProjectionStep::Section { .. } => {
+                    return Err(FinalWirValidationError::module(
+                        "section-major projections require the deferred def-use adapter",
+                    ));
+                }
             });
         }
         Ok(Projection::from_steps(steps))
