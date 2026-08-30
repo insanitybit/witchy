@@ -12,31 +12,30 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let bucket_index = || E::Load {
-        ptr: Box::new(b(
-            BinOp::Add,
+    // `idx + 20 + slots + bucket * 4` is the Swiss carrier's entry-index
+    // section, whose base scales with the slot count, so it is projected
+    // through the descriptor's section table rather than spelled by hand.
+    let carrier_entry_index = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::carrier_slot_place(
             getl("idx"),
-            b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Mul, getl("bucket"), i32c(4)))),
-        )),
+            crate::layout::CARRIER_ENTRY_INDEX,
+            getl("bucket"),
+            getl("slots"),
+            crate::safewir::AccessMode::Read,
+        ),
         kind: Kind::I32,
-        offset: 0,
     };
-    let dense_value_at_bucket = || E::Load {
-        ptr: Box::new(b(
-            BinOp::Add,
+    // The carrier's entry index names a dense row; the dense entry is the
+    // owning source of truth for the value.
+    let dense_value_at_row = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(
             getl("d"),
-            b(
-                BinOp::Mul,
-                b(
-                    BinOp::Sub,
-                    bucket_index(),
-                    i32c(1),
-                ),
-                i32c(16),
-            ),
-        )),
+            getl("row"),
+            crate::wir_helpers::layouts::DICT_ROW_VALUE,
+            getl("dcount"),
+            crate::safewir::AccessMode::Read,
+        ),
         kind: Kind::I64,
-        offset: 12,
     };
     WirFunc {
         name: "dict_get_or".into(),
@@ -53,8 +52,12 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
             WirLocal { name: "bucket".into(), ty: WirTy::Bool },
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
             WirLocal { name: "dcount".into(), ty: WirTy::Bool },
+            WirLocal { name: "row".into(), ty: WirTy::Bool },
         ],
         body: vec![
+            // The rc header sits BEHIND the root at a negative offset; it is not
+            // part of any body's extent, so it stays a raw read (allocator
+            // territory, sealed like `memory.rs`).
             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
             N::If {
                 cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
@@ -66,7 +69,20 @@ pub(crate) fn dict_get_or_helper() -> WirFunc {
                     N::SetLocal { local: "bucket".into(), value: E::Call { func: "dict_find_bucket".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
                     N::If {
                         cond: b(BinOp::Ge, getl("bucket"), i32c(0)),
-                        then_: vec![N::Return(Some(dense_value_at_bucket()))],
+                        then_: vec![
+                            // The dense count bounds the row the carrier names.
+                            // Reading the length word ESTABLISHES that count, so
+                            // it is claimed `header_only` and bound to a local.
+                            N::SetLocal { local: "dcount".into(), value: E::SafeLoad {
+                                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                                kind: Kind::I32,
+                            } },
+                            // A claim's index must be a leaf, so the entry index
+                            // minus its `+1` encoding is bound before it
+                            // addresses a row.
+                            N::SetLocal { local: "row".into(), value: b(BinOp::Sub, carrier_entry_index(), i32c(1)) },
+                            N::Return(Some(dense_value_at_row())),
+                        ],
                         els: vec![N::Return(Some(getl("default")))],
                         result: None,
                     },
@@ -106,19 +122,27 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let bucket_index = || E::Load {
-        ptr: Box::new(b(
-            BinOp::Add,
+    // The Swiss carrier's entry-index section, projected through the
+    // descriptor's section table (its base scales with the slot count).
+    let carrier_entry_index = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::carrier_slot_place(
             getl("idx"),
-            b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Mul, getl("bucket"), i32c(4)))),
-        )),
+            crate::layout::CARRIER_ENTRY_INDEX,
+            getl("bucket"),
+            getl("slots"),
+            crate::safewir::AccessMode::Read,
+        ),
         kind: Kind::I32,
-        offset: 0,
     };
-    let dense_value_at_bucket = || E::Load {
-        ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, b(BinOp::Sub, bucket_index(), i32c(1)), i32c(16)))),
+    let dense_value_at_row = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(
+            getl("d"),
+            getl("row"),
+            crate::wir_helpers::layouts::DICT_ROW_VALUE,
+            getl("dcount"),
+            crate::safewir::AccessMode::Read,
+        ),
         kind: Kind::I64,
-        offset: 12,
     };
     WirFunc {
         name: "dict_at".into(),
@@ -134,8 +158,11 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
             WirLocal { name: "bucket".into(), ty: WirTy::Bool },
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
             WirLocal { name: "dcount".into(), ty: WirTy::Bool },
+            WirLocal { name: "row".into(), ty: WirTy::Bool },
         ],
         body: vec![
+            // The rc header sits BEHIND the root at a negative offset -- allocator
+            // territory, so it stays a raw read.
             N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
             N::If {
                 cond: b(BinOp::And, b(BinOp::Ne, getl("idx"), i32c(0)), b(BinOp::Le, getl("mode"), i32c(2))),
@@ -148,7 +175,18 @@ pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
                     N::If {
                         cond: b(BinOp::Lt, getl("bucket"), i32c(0)),
                         then_: abort_nodes(DiagTemplate::DictMissing, i64c(0), i64c(0), i32c(0)),
-                        els: vec![N::Return(Some(dense_value_at_bucket()))],
+                        els: vec![
+                            // Reading the dense length word ESTABLISHES the count
+                            // that bounds the row, so it is a `header_only` claim
+                            // bound to a local.
+                            N::SetLocal { local: "dcount".into(), value: E::SafeLoad {
+                                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                                kind: Kind::I32,
+                            } },
+                            // A claim's index must be a leaf.
+                            N::SetLocal { local: "row".into(), value: b(BinOp::Sub, carrier_entry_index(), i32c(1)) },
+                            N::Return(Some(dense_value_at_row())),
+                        ],
                         result: None,
                     },
                 ],
@@ -253,6 +291,8 @@ pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
                     place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
                     kind: Kind::I32,
                 }),
+            // The rc header sits BEHIND the root at a negative offset -- allocator
+            // territory, not part of any body's extent, so it stays a raw read.
             setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
             N::If {
                 cond: b(BinOp::Ne, getl("idx"), i32c(0)),
@@ -369,6 +409,8 @@ pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
                     place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
                     kind: Kind::I32,
                 }),
+            // The rc header sits BEHIND the root at a negative offset -- allocator
+            // territory, not part of any body's extent, so it stays a raw read.
             setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
             N::If {
                 cond: b(BinOp::Ne, getl("idx"), i32c(0)),
