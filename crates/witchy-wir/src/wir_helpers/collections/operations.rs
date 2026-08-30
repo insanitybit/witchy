@@ -68,10 +68,15 @@ fn view_clamp_setup(getl: &dyn Fn(&str) -> WirExpr) -> Vec<WirNode> {
         rhs: Box::new(r),
     };
     vec![
-        // srclen = len(src) (the i32 element-count header)
+        // srclen = len(src) (the i32 element-count header). Reading the word is
+        // what ESTABLISHES the count, so this claims only the descriptor's header
+        // region; the slot read in `$list_at_view` then claims `srclen` slots.
         WirNode::SetLocal {
             local: "srclen".into(),
-            value: WirExpr::Load { ptr: Box::new(getl("src")), kind: Kind::I32, offset: 0 },
+            value: WirExpr::SafeLoad {
+                place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("src")),
+                kind: Kind::I32,
+            },
         },
         // off = max(lo, 0)
         WirNode::SetLocal { local: "off".into(), value: getl("lo") },
@@ -119,8 +124,6 @@ pub(in crate::wir_helpers) fn list_at_view_helper() -> WirFunc {
     };
     // `len` (the clamped window size, i32) sign-extended for the i64 check/message.
     let len_i64 = || WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("len")) };
-    // `j` narrowed to i32 — valid only inside the checked range.
-    let j_i32 = || WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) };
     let mut body = view_clamp_setup(&getl);
     // A negative `len` (empty window) reads as 0 for both the bound and the message.
     body.push(WirNode::If {
@@ -144,14 +147,22 @@ pub(in crate::wir_helpers) fn list_at_view_helper() -> WirFunc {
         els: vec![],
         result: None,
     });
-    body.push(WirNode::Push(WirExpr::Load {
-        ptr: Box::new(bin(
+    // The window-relative index `off + j`, bound so the slot projection's index is
+    // a leaf. `srclen` is `src`'s OWN element count and so the count that bounds
+    // it; the clamp above establishes `off + j < end <= srclen`.
+    body.push(WirNode::SetLocal {
+        local: "idx".into(),
+        value: bin(
             BinOp::Add,
-            bin(BinOp::Add, getl("src"), i32c(4)),
-            bin(BinOp::Mul, bin(BinOp::Add, getl("off"), j_i32()), i32c(8)),
-        )),
+            getl("off"),
+            WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("j")) },
+        ),
+    });
+    body.push(WirNode::Push(WirExpr::SafeLoad {
+        place: crate::wir_helpers::layouts::slot_buffer_element_place(
+            getl("src"), getl("idx"), getl("srclen"), crate::safewir::AccessMode::Read,
+        ),
         kind: Kind::I64,
-        offset: 0,
     }));
     WirFunc {
         name: "list_at_view".into(),
@@ -167,6 +178,7 @@ pub(in crate::wir_helpers) fn list_at_view_helper() -> WirFunc {
             WirLocal { name: "off".into(), ty: WirTy::Bool },
             WirLocal { name: "end".into(), ty: WirTy::Bool },
             WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
         ],
         body,
         raw_body: None,
@@ -797,23 +809,33 @@ pub(in crate::wir_helpers) fn list_drop_helper() -> WirFunc {
         ],
         ret: vec![WirTy::Bool],
         locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "newlen".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::SafeLoad {
+            // Bound rather than folded into `newlen`: the tail copy claims `list`
+            // against ITS OWN element count, and a claim operand must be a leaf.
+            // `new` is claimed against `newlen`, the capacity it was allocated with.
+            N::SetLocal { local: "len".into(), value: E::SafeLoad {
                     place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
                     kind: Kind::I32,
-                }, getl("k")) },
+                } },
+            N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, getl("len"), getl("k")) },
             N::SetLocal { local: "new".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] } },
             N::SafeStore {
                 place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("new"), getl("newlen")),
                 value: getl("newlen"),
                 kind: Kind::I32,
             },
-            N::MemoryCopy {
-                dest: b(BinOp::Add, getl("new"), i32c(4)),
-                src: b(BinOp::Add, b(BinOp::Add, getl("list"), i32c(4)), b(BinOp::Mul, getl("k"), i32c(8))),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("new"), i32c(0), getl("newlen"), getl("newlen"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::slot_buffer_payload_slice_place(
+                    getl("list"), getl("k"), getl("newlen"), getl("len"), crate::safewir::AccessMode::Read,
+                ),
                 len: b(BinOp::Mul, getl("newlen"), i32c(8)),
             },
             N::Push(getl("new")),

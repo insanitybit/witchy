@@ -19,12 +19,6 @@ use witchy_syntax::diag::DiagTemplate;
 pub(super) fn list_at_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
-    let bin32 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
-        op,
-        kind: Kind::I32,
-        lhs: Box::new(l),
-        rhs: Box::new(r),
-    };
     let bin64 = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
         op,
         kind: Kind::I64,
@@ -32,13 +26,14 @@ pub(super) fn list_at_helper() -> WirFunc {
         rhs: Box::new(r),
     };
     // len as i64 (the i32 element-count header sign-extended) — the check's bound.
+    // The header read is bound to `len` rather than repeated: the slot read below
+    // claims the buffer against it, and a claim operand must be a leaf the final
+    // validator can bind to a reaching definition.
     let len_i64 = || WirExpr::Convert {
         from: Kind::I32,
         to: Kind::I64,
-        arg: Box::new(WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 }),
+        arg: Box::new(getl("len")),
     };
-    // i narrowed to i32 — valid only inside the checked range.
-    let i_i32 = || WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) };
     WirFunc {
         name: "list_at".into(),
         params: vec![
@@ -46,8 +41,18 @@ pub(super) fn list_at_helper() -> WirFunc {
             WirLocal { name: "i".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int], // i64 slot
-        locals: vec![],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+        ],
         body: vec![
+            WirNode::SetLocal {
+                local: "len".into(),
+                value: WirExpr::SafeLoad {
+                    place: crate::wir_helpers::layouts::slot_buffer_length_read_place(getl("list")),
+                    kind: Kind::I32,
+                },
+            },
             WirNode::If {
                 cond: bin64(BinOp::GeU, getl("i"), len_i64()),
                 // (RFC-0045) Route the OOB abort through `__witchy_abort` with the
@@ -57,14 +62,19 @@ pub(super) fn list_at_helper() -> WirFunc {
                 els: vec![],
                 result: None,
             },
-            WirNode::Push(WirExpr::Load {
-                ptr: Box::new(bin32(
-                    BinOp::Add,
-                    bin32(BinOp::Add, getl("list"), i32c(4)),
-                    bin32(BinOp::Mul, i_i32(), i32c(8)),
-                )),
+            // `i` narrowed to i32 — valid only inside the checked range, and bound
+            // so the slot projection's index is a leaf. The descriptor supplies the
+            // payload offset and the eight-byte stride, so the `list + 4` this
+            // spelled by hand rides in the wasm immediate instead.
+            WirNode::SetLocal {
+                local: "idx".into(),
+                value: WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("i")) },
+            },
+            WirNode::Push(WirExpr::SafeLoad {
+                place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                    getl("list"), getl("idx"), getl("len"), crate::safewir::AccessMode::Read,
+                ),
                 kind: Kind::I64,
-                offset: 0,
             }),
         ],
         raw_body: None,

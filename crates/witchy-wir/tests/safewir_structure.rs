@@ -289,7 +289,7 @@ fn current_census() -> BTreeMap<String, FileCensus> {
 /// migration sites to zero; the 12 are the permitted floor, not debt.
 ///
 /// This ceiling ratchets DOWN as the migration proceeds. It started at 584+6.
-const REVIEWED_TOTAL: usize = 320;
+const REVIEWED_TOTAL: usize = 304;
 
 const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
     (
@@ -381,18 +381,18 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
 
         ],
     ),
+    // `collections.rs` reached zero and its row is GONE. A zero row would make the
+    // table oversum its own ceiling, which the internal-consistency guard below
+    // catches -- but a file at zero also has nothing left to ratchet, so the row
+    // itself is the debt record and is deleted with the last site.
     (
-        "crates/witchy-wir/src/wir_helpers/collections.rs",
-        &[
-            (RawKind::Load, 2),
-
-        ],
-    ),
-    (
+        // The one remaining site is the allocation size word at `list - 4`, read
+        // through `RC_SIZE_MASK` to bound `$list_push_cap`'s in-place write. It sits
+        // BEHIND the root at a negative offset, so it is not part of any body's
+        // extent: allocator territory, like `memory.rs`.
         "crates/witchy-wir/src/wir_helpers/collections/operations.rs",
         &[
-            (RawKind::Load, 3),
-            (RawKind::MemoryCopy, 1),
+            (RawKind::Load, 1),
         ],
     ),
     (
@@ -434,21 +434,15 @@ const REVIEWED_BASELINE: &[(&str, &[(RawKind, usize)])] = &[
             (RawKind::Store8, 4),
         ],
     ),
+    // `strings.rs` reached zero and its row is GONE.
     (
-        "crates/witchy-wir/src/wir_helpers/strings.rs",
-        &[
-            (RawKind::Load, 1),
-            (RawKind::Load8U, 2),
-            (RawKind::Store, 1),
-        ],
-    ),
-    (
+        // The one remaining site is `$str_append_cap`'s rc size header at `s - 4`,
+        // masked with `RC_SIZE_MASK`. It shared a closure with two byte-buffer
+        // length reads; the closure is now split, because claiming that word as a
+        // string length would be false. Negative offsets are allocator territory.
         "crates/witchy-wir/src/wir_helpers/strings/transform.rs",
         &[
             (RawKind::Load, 1),
-            (RawKind::Load8U, 3),
-            (RawKind::Store, 3),
-            (RawKind::MemoryCopy, 1),
         ],
     ),
 ];

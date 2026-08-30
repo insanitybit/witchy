@@ -308,7 +308,18 @@ pub(crate) fn find_byte_helper() -> WirFunc {
         kind: Kind::V128,
     };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))), offset: 4 };
+    // `s`'s byte sits at the COMPUTED index `i + j`, and a claim's index must be a
+    // leaf, so the sum is bound to `k` at the top of the compare loop. The scan
+    // guard is `i > slen - sublen` and the compare guard is `j >= sublen`, so
+    // `i + j < slen` and `slen` -- `s`'s own length -- is the honest count.
+    let s_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"),
+            getl("k"),
+            getl("slen"),
+            crate::safewir::AccessMode::Read,
+        ),
+    };
     let sub_byte = E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
             getl("sub"),
@@ -324,6 +335,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
             label: "cmp".into(),
             body: vec![
                 N::Br { target: "cmpdone".into(), cond: Some(b(BinOp::Ge, getl("j"), getl("sublen"))) },
+                setl("k", b(BinOp::Add, getl("i"), getl("j"))),
                 N::If {
                     cond: b(BinOp::Ne, s_byte, sub_byte),
                     then_: vec![setl("match", i32c(0)), N::Br { target: "cmpdone".into(), cond: None }],
@@ -433,6 +445,7 @@ pub(crate) fn find_byte_helper() -> WirFunc {
             WirLocal { name: "sublen".into(), ty: WirTy::Bool },
             WirLocal { name: "i".into(), ty: WirTy::Bool },
             WirLocal { name: "j".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Bool },
             WirLocal { name: "match".into(), ty: WirTy::Bool },
             WirLocal { name: "needle".into(), ty: WirTy::Bool },
             WirLocal { name: "mask".into(), ty: WirTy::Bool },
@@ -603,20 +616,28 @@ pub(crate) fn ends_with_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    // Only the length reads migrate here. Every `s` access uses the index
-    // `off + i`, a computed expression, and a claim's index must be a leaf; the
-    // `p` side is already claimed. Binding `off + i` per iteration would put two
-    // instructions inside a hot loop to no benefit, so those sites stay raw and
-    // are reported rather than worked around.
     let load = |p: E| E::SafeLoad {
         place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
         kind: Kind::I32,
     };
-    let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let s_byte = E::Load8U {
-        ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("off"), getl("i")))),
-        offset: 4,
+    // Every `s` access sits at the COMPUTED index `off + i`, and a claim's index
+    // must be a leaf, so the sum is bound to `k` at the top of each loop. `s` is
+    // claimed against `slen` -- its OWN length, bound below rather than borrowed
+    // from `p`'s -- and `p` against `plen`. Both loops stop at `i >= plen`, and
+    // `off = slen - plen`, so `off + i < slen` and `off + i + 16 <= slen` hold.
+    let vec_lane = |root: &str, index: E, count: &str| {
+        crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+            getl(root), index, i32c(16), getl(count), crate::safewir::AccessMode::Read,
+        )
+    };
+    let s_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"),
+            getl("k"),
+            getl("slen"),
+            crate::safewir::AccessMode::Read,
+        ),
     };
     let p_byte = E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
@@ -636,8 +657,9 @@ pub(crate) fn ends_with_helper() -> WirFunc {
                     target: "vdone".into(),
                     cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("i"), i32c(16)), getl("plen"))),
                 },
-                setl("vs", load_v128(b(BinOp::Add, b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("off")), getl("i")))),
-                setl("vp", load_v128(b(BinOp::Add, b(BinOp::Add, getl("p"), i32c(4)), getl("i")))),
+                setl("k", b(BinOp::Add, getl("off"), getl("i"))),
+                setl("vs", E::SafeLoad { place: vec_lane("s", getl("k"), "slen"), kind: Kind::V128 }),
+                setl("vp", E::SafeLoad { place: vec_lane("p", getl("i"), "plen"), kind: Kind::V128 }),
                 setl(
                     "mask",
                     E::Vector {
@@ -666,6 +688,7 @@ pub(crate) fn ends_with_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("plen"))) },
+                setl("k", b(BinOp::Add, getl("off"), getl("i"))),
                 N::If {
                     cond: b(BinOp::Ne, s_byte, p_byte),
                     then_: vec![N::Return(Some(i32c(0)))],
@@ -686,15 +709,20 @@ pub(crate) fn ends_with_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "plen".into(), ty: WirTy::Bool },
+            WirLocal { name: "slen".into(), ty: WirTy::Bool },
             WirLocal { name: "off".into(), ty: WirTy::Bool },
             WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Bool },
             WirLocal { name: "mask".into(), ty: WirTy::Bool },
             WirLocal { name: "vs".into(), ty: WirTy::V128 },
             WirLocal { name: "vp".into(), ty: WirTy::V128 },
         ],
         body: vec![
             setl("plen", load(getl("p"))),
-            setl("off", b(BinOp::Sub, load(getl("s")), getl("plen"))),
+            // Bound rather than read inline: every `s` access below claims `s`'s own
+            // count, and a claim operand must be a leaf.
+            setl("slen", load(getl("s"))),
+            setl("off", b(BinOp::Sub, getl("slen"), getl("plen"))),
             N::If {
                 cond: b(BinOp::Lt, getl("off"), i32c(0)),
                 then_: vec![N::Return(Some(i32c(0)))],
@@ -1242,7 +1270,15 @@ pub(crate) fn str_view_to_string_helper() -> WirFunc {
         locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }],
         body: vec![
             N::SetLocal { local: "out".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(get("len"), E::ConstI32(4))] } },
-            N::Store { ptr: get("out"), value: get("len"), kind: Kind::I32, offset: 0 },
+            // `out` is this helper's own allocation, so it IS an authenticated root
+            // and its length word is an ordinary checked place. The `p` side is not:
+            // it is a raw payload pointer with no object handle behind it, which is
+            // why the copy still goes through `raw_buffer_copy`.
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::byte_buffer_length_place(get("out"), get("len")),
+                value: get("len"),
+                kind: Kind::I32,
+            },
             N::Do(E::Call { func: "raw_buffer_copy".into(), args: vec![add(get("out"), E::ConstI32(4)), get("p"), get("len")] }),
             N::Push(get("out")),
         ],

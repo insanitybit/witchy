@@ -97,7 +97,18 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    // Two DIFFERENT reads shared one closure here, and folding them together would
+    // have claimed the rc size header as a string length -- which is false. They are
+    // split: a byte-buffer length read is a checked header place, while the
+    // allocation's size word at `s - 4` sits BEHIND the root at a negative offset.
+    // It is not part of any body's extent, so it stays a raw load: the allocator
+    // owns that word, and reaching it needs authentication the place model
+    // deliberately does not give an interior or negative address.
+    let length_of = |p: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(p),
+        kind: Kind::I32,
+    };
+    let rc_size_header = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let reowns_bump = N::If {
         cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("cap")) },
         then_: vec![N::SetGlobal {
@@ -130,7 +141,7 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
                 cond: b(
                     BinOp::GtU,
                     b(BinOp::Add, i32c(4), getl("need")),
-                    b(BinOp::And, load(b(BinOp::Sub, getl("s"), i32c(4))), i32c(RC_SIZE_MASK)),
+                    b(BinOp::And, rc_size_header(b(BinOp::Sub, getl("s"), i32c(4))), i32c(RC_SIZE_MASK)),
                 ),
                 then_: vec![N::Unreachable],
                 els: vec![],
@@ -209,8 +220,8 @@ pub(crate) fn str_append_cap_helper() -> WirFunc {
             .collect(),
         body: vec![
             reowns_bump,
-            N::SetLocal { local: "len".into(), value: load(getl("s")) },
-            N::SetLocal { local: "plen".into(), value: load(getl("piece")) },
+            N::SetLocal { local: "len".into(), value: length_of(getl("s")) },
+            N::SetLocal { local: "plen".into(), value: length_of(getl("piece")) },
             N::SetLocal { local: "need".into(), value: b(BinOp::Add, getl("len"), getl("plen")) },
             N::If {
                 cond: b(BinOp::Ge, getl("cap"), getl("need")),
@@ -242,8 +253,22 @@ pub(crate) fn substr_helper() -> WirFunc {
             WirLocal { name: "len".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Str],
-        locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
+        locals: vec![
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "srclen".into(), ty: WirTy::Bool },
+        ],
         body: vec![
+            // Each side of the copy is claimed against the length that bounds ITS
+            // OWN object: `res` against `len`, the capacity it is allocated with,
+            // and `src` against its own header. `src`'s length is bound because a
+            // claim operand must be a leaf.
+            N::SetLocal {
+                local: "srclen".into(),
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("src")),
+                    kind: Kind::I32,
+                },
+            },
             // (RFC-0016) allocate through `$rc_alloc` (header + reuse).
             N::SetLocal {
                 local: "res".into(),
@@ -254,9 +279,14 @@ pub(crate) fn substr_helper() -> WirFunc {
                 value: getl("len"),
                 kind: Kind::I32,
             },
-            N::MemoryCopy {
-                dest: add(getl("res"), i32c(4)),
-                src: add(add(getl("src"), i32c(4)), getl("start")),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("res"), i32c(0), getl("len"), getl("len"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    getl("src"), getl("start"), getl("len"), getl("srclen"), crate::safewir::AccessMode::Read,
+                ),
                 len: getl("len"),
             },
             N::Push(getl("res")),
@@ -386,9 +416,16 @@ pub(crate) fn trim_helper() -> WirFunc {
     };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let not = |e: E| E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
+    // `len` is `s`'s own byte length and both cursors stay inside `[0, len)`, so a
+    // scalar payload claim at either is honest. The descriptor supplies the payload
+    // offset, which rides in the wasm immediate exactly as the hand-written `4` did.
     let is_ws_at = |idx: E| E::Call {
         func: "is_ws".into(),
-        args: vec![E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), idx)), offset: 4 }],
+        args: vec![E::SafeLoad8U {
+            place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                getl("s"), idx, getl("len"), crate::safewir::AccessMode::Read,
+            ),
+        }],
     };
     let lo_loop = N::Block {
         label: "lodone".into(),
@@ -410,11 +447,16 @@ pub(crate) fn trim_helper() -> WirFunc {
             label: "h".into(),
             body: vec![
                 N::Br { target: "hidone".into(), cond: Some(b(BinOp::Le, getl("hi"), getl("lo"))) },
+                // `hi - 1` was spelled inside the `Br` condition, an expression
+                // position a claim's index may not occupy. Binding it costs nothing:
+                // the decrement below now reuses the same value instead of
+                // recomputing it.
+                setl("hj", b(BinOp::Sub, getl("hi"), i32c(1))),
                 N::Br {
                     target: "hidone".into(),
-                    cond: Some(not(is_ws_at(b(BinOp::Sub, getl("hi"), i32c(1))))),
+                    cond: Some(not(is_ws_at(getl("hj")))),
                 },
-                setl("hi", b(BinOp::Sub, getl("hi"), i32c(1))),
+                setl("hi", getl("hj")),
                 N::Br { target: "h".into(), cond: None },
             ],
         }],
@@ -423,7 +465,7 @@ pub(crate) fn trim_helper() -> WirFunc {
         name: "trim".into(),
         params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
         ret: vec![WirTy::Str],
-        locals: ["len", "lo", "hi"]
+        locals: ["len", "lo", "hi", "hj"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
@@ -464,20 +506,31 @@ pub(crate) fn split_helper() -> WirFunc {
     // `result` buffer, then bump `count`. No `$list_push` reallocation (that allocated a fresh
     // `len+1` buffer and memcpy'd the whole list every piece — O(pieces²) to build); slots are
     // written directly, exactly like `$str_chars`.
+    // `result` is a SLOT list (`[u32 len][8-byte slots]`), so its slots are claimed
+    // through the slot descriptor -- which supplies both the payload offset and the
+    // eight-byte stride, so the `+ 4` and the `* 8` spelled by hand come from the
+    // descriptor now. `rescap` is the slot capacity it was allocated with; `count`
+    // never exceeds it because there are at most `slen + 1` pieces.
     let push_piece = |start: E, len: E| -> Vec<N> {
         vec![
-            N::Store {
-                ptr: b(BinOp::Add, getl("result"), b(BinOp::Mul, getl("count"), i32c(8))),
+            N::SafeStore {
+                place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                    getl("result"), getl("count"), getl("rescap"), crate::safewir::AccessMode::Write,
+                ),
                 value: ext(E::Call { func: "substr".into(), args: vec![getl("s"), start, len] }),
                 kind: Kind::I64,
-                offset: 4,
             },
             setl("count", b(BinOp::Add, getl("count"), i32c(1))),
         ]
     };
-    let s_byte = E::Load8U {
-        ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))),
-        offset: 4,
+    // `s`'s byte sits at the computed index `i + j`; a claim's index must be a leaf,
+    // so the sum is bound to `k` at the top of the compare loop. The scan guard
+    // (`i > slen - seplen`) and the compare guard (`j >= seplen`) together give
+    // `i + j < slen`.
+    let s_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"), getl("k"), getl("slen"), crate::safewir::AccessMode::Read,
+        ),
     };
     let sep_byte = E::SafeLoad8U {
                         place: crate::wir_helpers::layouts::byte_buffer_element_place(
@@ -491,6 +544,7 @@ pub(crate) fn split_helper() -> WirFunc {
             label: "cmp".into(),
             body: vec![
                 N::Br { target: "cmpdone".into(), cond: Some(b(BinOp::Ge, getl("j"), getl("seplen"))) },
+                setl("k", b(BinOp::Add, getl("i"), getl("j"))),
                 N::If {
                     cond: b(BinOp::Ne, s_byte, sep_byte),
                     then_: vec![setl("match", i32c(0)), N::Br { target: "cmpdone".into(), cond: None }],
@@ -537,32 +591,42 @@ pub(crate) fn split_helper() -> WirFunc {
             WirLocal { name: "sep".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Bool], // i32 list pointer
-        locals: ["slen", "seplen", "result", "count", "start", "i", "j", "match"]
+        locals: ["slen", "seplen", "result", "rescap", "count", "start", "i", "j", "k", "match"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
         body: {
-            // pieces <= slen + 1, so reserve that many slots up front (a `with_capacity`) and
-            // CLAIM the region — each piece's `substr` then allocates above the buffer and never
-            // clobbers a written slot.
-            let cap_slots = b(BinOp::Mul, b(BinOp::Add, getl("slen"), i32c(1)), i32c(8));
             let mut body = vec![
                 setl("slen", load(getl("s"))),
                 setl("seplen", load(getl("sep"))),
+                // pieces <= slen + 1, so reserve that many slots up front (a
+                // `with_capacity`) and CLAIM the region — each piece's `substr` then
+                // allocates above the buffer and never clobbers a written slot.
+                // Bound rather than inlined into the allocation: this is the capacity
+                // every slot claim below is measured against, and a claim operand must
+                // be a leaf.
+                setl("rescap", b(BinOp::Add, getl("slen"), i32c(1))),
                 // (RFC-0016) claim the buffer region through `$rc_alloc` (header + slots,
                 // bumps `$heap` past them) so each piece's `substr` allocates above it.
-                setl("result", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), cap_slots)] }),
+                setl("result", E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("rescap"), i32c(8)))] }),
                 setl("count", i32c(0)),
-                // empty sep -> [s]: slot 0 = s, length 1.
+                // empty sep -> [s]: slot 0 = s, length 1. The stored `1` is data; the
+                // claim's count is the buffer's capacity either way.
                 N::If {
                     cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("seplen")) },
                     then_: vec![
-                        N::Store { ptr: getl("result"), value: ext(getl("s")), kind: Kind::I64, offset: 4 },
                         N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("result"), i32c(1)),
-                value: i32c(1),
-                kind: Kind::I32,
-            },
+                            place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                                getl("result"), i32c(0), getl("rescap"), crate::safewir::AccessMode::Write,
+                            ),
+                            value: ext(getl("s")),
+                            kind: Kind::I64,
+                        },
+                        N::SafeStore {
+                            place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("result"), getl("rescap")),
+                            value: i32c(1),
+                            kind: Kind::I32,
+                        },
                         N::Return(Some(getl("result"))),
                     ],
                     els: vec![],
@@ -575,7 +639,7 @@ pub(crate) fn split_helper() -> WirFunc {
             // the trailing piece [start, slen), then write the real length.
             body.extend(push_piece(getl("start"), b(BinOp::Sub, getl("slen"), getl("start"))));
             body.push(N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("result"), getl("count")),
+                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("result"), getl("rescap")),
                 value: getl("count"),
                 kind: Kind::I32,
             });
@@ -645,16 +709,20 @@ pub(crate) fn str_chars_helper() -> WirFunc {
                         ),
                     }),
                 seqlen,
-                // result[count] = substr(s, bi, seqlen)  — the slot store's `offset: 4` skips the
-                // length header, so the effective address is `result + 4 + count*8`.
-                N::Store {
-                    ptr: b(BinOp::Add, getl("result"), b(BinOp::Mul, getl("count"), i32c(8))),
+                // result[count] = substr(s, bi, seqlen). `result` is a SLOT list, so
+                // the payload offset and the eight-byte stride come from the slot
+                // descriptor -- the same `result + 4 + count*8` this spelled by hand.
+                // `slen` is the slot capacity it was allocated with, and the character
+                // count never exceeds the byte length.
+                N::SafeStore {
+                    place: crate::wir_helpers::layouts::slot_buffer_element_place(
+                        getl("result"), getl("count"), getl("slen"), crate::safewir::AccessMode::Write,
+                    ),
                     value: ext(E::Call {
                         func: "substr".into(),
                         args: vec![getl("s"), getl("bi"), getl("seqlen")],
                     }),
                     kind: Kind::I64,
-                    offset: 4,
                 },
                 setl("count", b(BinOp::Add, getl("count"), i32c(1))),
                 setl("bi", b(BinOp::Add, getl("bi"), getl("seqlen"))),
@@ -685,9 +753,10 @@ pub(crate) fn str_chars_helper() -> WirFunc {
             setl("count", i32c(0)),
             setl("bi", i32c(0)),
             scan_loop,
-            // The real length is the actual character count.
+            // The real length is the actual character count. The claim's count is the
+            // buffer's slot CAPACITY (`slen`); the stored character count is data.
             N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("result"), getl("count")),
+                place: crate::wir_helpers::layouts::slot_buffer_length_place(getl("result"), getl("slen")),
                 value: getl("count"),
                 kind: Kind::I32,
             },
@@ -1017,7 +1086,15 @@ pub(crate) fn match_at_helper() -> WirFunc {
         kind: Kind::I32,
     };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("pos"), getl("j")))), offset: 4 };
+    // `s`'s byte sits at the computed index `pos + j`, and a claim's index must be a
+    // leaf, so the sum is bound to `k` at the top of the loop. The prologue rejects
+    // `pos + flen > slen` and the loop guard is `j >= flen`, so `pos + j < slen` --
+    // and `slen` is bound as a local because a claim's COUNT must be a leaf too.
+    let s_byte = E::SafeLoad8U {
+        place: crate::wir_helpers::layouts::byte_buffer_element_place(
+            getl("s"), getl("k"), getl("slen"), crate::safewir::AccessMode::Read,
+        ),
+    };
     let from_byte = E::SafeLoad8U {
                         place: crate::wir_helpers::layouts::byte_buffer_element_place(
                             getl("from"), getl("j"), getl("flen"), crate::safewir::AccessMode::Read,
@@ -1030,6 +1107,7 @@ pub(crate) fn match_at_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("j"), getl("flen"))) },
+                setl("k", b(BinOp::Add, getl("pos"), getl("j"))),
                 N::If { cond: b(BinOp::Ne, s_byte, from_byte), then_: vec![N::Return(Some(i32c(0)))], els: vec![], result: None },
                 setl("j", b(BinOp::Add, getl("j"), i32c(1))),
                 N::Br { target: "l".into(), cond: None },
@@ -1044,11 +1122,12 @@ pub(crate) fn match_at_helper() -> WirFunc {
             WirLocal { name: "pos".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool],
-        locals: ["flen", "j"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        locals: ["flen", "slen", "j", "k"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
             setl("flen", load(getl("from"))),
+            setl("slen", load(getl("s"))),
             N::If {
-                cond: b(BinOp::Gt, b(BinOp::Add, getl("pos"), getl("flen")), load(getl("s"))),
+                cond: b(BinOp::Gt, b(BinOp::Add, getl("pos"), getl("flen")), getl("slen")),
                 then_: vec![N::Return(Some(i32c(0)))],
                 els: vec![],
                 result: None,
