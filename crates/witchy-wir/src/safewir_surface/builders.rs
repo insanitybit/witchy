@@ -633,6 +633,47 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
 
     /// Claim one packed-list element. The index remains an executable scalar
     /// source for the final def-use adapter; no definition identity is invented.
+    /// A checked place for a contiguous RANGE inside section `section`.
+    ///
+    /// Same reconciliation as a single slot -- the range's first byte is slot
+    /// `start` -- but the place spans `length` bytes rather than one element, so a
+    /// bulk fill or copy over a whole section claims what it actually writes.
+    pub fn section_slice(
+        &self,
+        section: u32,
+        start: WirExpr,
+        length: WirExpr,
+        encoded: SafeEncodedAddress,
+    ) -> Result<Box<SafePlaceExpr>, SafePlaceBuildError> {
+        validate_claim_operand(&start, "section slice start")?;
+        validate_claim_operand(&length, "section slice length")?;
+        let descriptor = self.descriptor(self.object.layout)?;
+        let sections = descriptor
+            .kind()
+            .sections()
+            .ok_or(SafePlaceBuildError::NotSectionMajor(self.object.layout))?;
+        let spec = *sections
+            .get(section as usize)
+            .ok_or(SafePlaceBuildError::SectionOutOfBounds { section })?;
+        let SafeExtentExpr::Counted { count, .. } = &self.object.extent else {
+            return Err(SafePlaceBuildError::SectionRequiresCountedExtent(
+                self.object.layout,
+            ));
+        };
+        let count = count.as_ref().clone();
+        self.validate_section_address(&encoded, &count, &start, spec, "section slice")?;
+        let byte_start = section_start(&count, &start, spec)?;
+        self.finish(
+            SafeProjectionExpr::from_steps([SafeProjectionStep::Section {
+                section,
+                index: Box::new(start),
+            }]),
+            byte_start,
+            checked_narrow(SafeSizeExpr::Value(Box::new(length))),
+            encoded,
+        )
+    }
+
     /// A checked place for slot `index` of section `section`.
     ///
     /// A SECTION-MAJOR layout stores all of one field and then all of the next,
@@ -902,19 +943,38 @@ impl<'layouts> SafePlaceBuilder<'layouts> {
             .constant
             .checked_add(u64::from(encoded.offset))
             .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
-        if constant != u64::from(spec.constant_base) {
-            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
-        }
         let mut leaves: Vec<&WirExpr> = address.leaves.clone();
         let mut scaled: Vec<(&WirExpr, u64)> = address.scaled.clone();
-        // Account for each descriptor-required term. A term whose scale is one is
-        // accepted either explicitly scaled or as a bare leaf; a scale of zero
-        // requires no term.
+        // A CONSTANT operand contributes no term: its product is folded into the
+        // address constant, exactly as a constant element index is. Fold the same
+        // product into what is expected here, or the search below would hunt for a
+        // term that correctly does not exist.
+        let mut expected = u64::from(spec.constant_base);
         for (operand, scale) in [
             (count, u64::from(spec.count_multiple)),
             (index, u64::from(spec.element_width)),
         ] {
-            if scale == 0 {
+            if let Some(value) = constant_u32(operand)? {
+                expected = expected
+                    .checked_add(
+                        u64::from(value)
+                            .checked_mul(scale)
+                            .ok_or(SafePlaceBuildError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(SafePlaceBuildError::ArithmeticOverflow)?;
+            }
+        }
+        if constant != expected {
+            return Err(SafePlaceBuildError::EncodedBaseMismatch { projection });
+        }
+        // Account for each descriptor-required term. A term whose scale is one is
+        // accepted either explicitly scaled or as a bare leaf; a scale of zero, or
+        // a constant operand already folded above, requires no term.
+        for (operand, scale) in [
+            (count, u64::from(spec.count_multiple)),
+            (index, u64::from(spec.element_width)),
+        ] {
+            if scale == 0 || constant_u32(operand)?.is_some() {
                 continue;
             }
             if let Some(position) = scaled

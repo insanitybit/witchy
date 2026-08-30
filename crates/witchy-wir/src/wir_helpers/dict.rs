@@ -182,7 +182,7 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
         ],
         ret: vec![],
-        locals: ["count", "slots", "idx", "i"]
+        locals: ["count", "slots", "idx", "i", "fill_len"]
             .iter()
             .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
             .collect(),
@@ -251,30 +251,45 @@ pub(crate) fn dict_reindex_helper() -> WirFunc {
                 value: getl("slots"),
                 kind: Kind::I32,
             },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), i32c(4)),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Add, getl("slots"), i32c(16)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_CONTROL, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0x80),
-                        len: b(BinOp::Add, getl("slots"), i32c(16)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(4)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_ENTRY_INDEX, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(5)))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(8)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_KEY, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13)))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(8)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_VALUE, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(4)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_ORDER, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                        len: getl("fill_len"),
                     },
                     N::Store {
                         ptr: b(BinOp::Sub, getl("d"), i32c(4)),
@@ -379,6 +394,7 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
             WirLocal { name: "p".into(), ty: WirTy::Bool },
             WirLocal { name: "idx".into(), ty: WirTy::Bool },
             WirLocal { name: "slots".into(), ty: WirTy::Bool },
+            WirLocal { name: "fill_len".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::SetLocal {
@@ -442,30 +458,45 @@ pub(crate) fn dict_with_capacity_helper() -> WirFunc {
                 value: getl("slots"),
                 kind: Kind::I32,
             },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), i32c(4)),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Add, getl("slots"), i32c(16)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_CONTROL, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0x80),
-                        len: b(BinOp::Add, getl("slots"), i32c(16)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(4)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_ENTRY_INDEX, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(5)))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(8)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_KEY, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(13)))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(8)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_VALUE, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(8)),
+                        len: getl("fill_len"),
                     },
-                    N::MemoryFill {
-                        dest: b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Mul, getl("slots"), i32c(21)))),
+                    N::SetLocal { local: "fill_len".into(), value: b(BinOp::Mul, getl("slots"), i32c(4)) },
+                    N::SafeMemoryFill {
+                        destination: crate::wir_helpers::layouts::carrier_section_slice_place(
+                            getl("idx"), crate::layout::CARRIER_ORDER, i32c(0), getl("fill_len"), getl("slots"), crate::safewir::AccessMode::Write,
+                        ),
                         value: i32c(0),
-                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                        len: getl("fill_len"),
                     },
                     N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: getl("idx"), kind: Kind::I32, offset: 0 },
                 ],

@@ -859,6 +859,17 @@ fn section_address(
     if spec.count_multiple != 0 {
         address = add32(address, scale(count, spec.count_multiple));
     }
+    // A constant index folds into the address constant rather than emitting
+    // `0 * width`, which is not an affine term at all (both operands constant).
+    if let WirExpr::ConstI32(value) = index {
+        let folded = value
+            .checked_mul(i32::try_from(spec.element_width).expect("a small width"))
+            .expect("a constant section offset does not overflow");
+        if folded == 0 {
+            return address;
+        }
+        return add32(address, WirExpr::ConstI32(folded));
+    }
     add32(address, scale(index, spec.element_width))
 }
 
@@ -877,3 +888,31 @@ fn scale(operand: &WirExpr, scale: u32) -> WirExpr {
     }
 }
 
+
+/// A checked place spanning a contiguous run inside one carrier section.
+///
+/// `start` is a slot index within the section and `length` is the byte count the
+/// bulk op writes. The section's base still comes from the descriptor, so a fill
+/// over a whole section names the section rather than recomputing its base.
+pub(crate) fn carrier_section_slice_place(
+    root: WirExpr,
+    section: u32,
+    start: WirExpr,
+    length: WirExpr,
+    count: WirExpr,
+    access: AccessMode,
+) -> Box<SafePlaceExpr> {
+    let layouts = helper_layouts();
+    let spec = carrier_section(section);
+    let encoded = section_address(&root, spec, &count, &start);
+    SafePlaceBuilder::new(
+        &layouts.interner,
+        layouts.carrier,
+        SafeExactExtent::counted(count).expect("a slot-count local is an ordinary claim operand"),
+        root,
+        access,
+    )
+    .expect("the helper carrier layout is claimable")
+    .section_slice(section, start, length, SafeEncodedAddress::new(encoded, 0))
+    .expect("a descriptor-derived section range reconciles against the section table")
+}
