@@ -344,10 +344,14 @@ pub(crate) fn dict_find_helper() -> WirFunc {
             ],
         }],
     };
-    let slot_at_h = load(
-        b(BinOp::Add, b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))), b(BinOp::Mul, getl("h"), i32c(4))),
-        0,
-    );
+    // The Swiss carrier is SECTION-MAJOR: each section's base scales with the
+    // slot count, so a section address is projected through the descriptor's
+    // section table rather than spelled from `slots` by hand.
+    let slot = |section: u32, index: E| {
+        crate::wir_helpers::layouts::carrier_slot_place(getl("idx"), section, index, getl("slots"), crate::safewir::AccessMode::Read)
+    };
+    // The entry index of slot `h` -- `idx + 20 + slots + h*4`.
+    let slot_at_h = E::SafeLoad { place: slot(crate::layout::CARRIER_ENTRY_INDEX, getl("h")), kind: Kind::I32 };
     let probe = N::Block {
         label: "miss".into(),
         result: None,
@@ -361,10 +365,9 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                     els: vec![],
                     result: None,
                 },
-                setl("ctrl", E::Load8U {
-                    ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("h")))),
-                    offset: 0,
-                }),
+                // The control byte for slot `h` -- `idx + 4 + h`, the section
+                // whose base is the count word alone.
+                setl("ctrl", E::SafeLoad8U { place: slot(crate::layout::CARRIER_CONTROL, getl("h")) }),
                 N::Br { target: "miss".into(), cond: Some(b(BinOp::Eq, getl("ctrl"), i32c(0x80))) },
                 N::If {
                     cond: b(BinOp::Eq, getl("ctrl"), getl("h2")),
@@ -455,19 +458,16 @@ pub(crate) fn dict_find_bucket_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let index_at = |h: E| load(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Mul, h, i32c(4))))), 0);
-    let key_at = |h: E| {
-        let key_base = b(
-            BinOp::Add,
-            i32c(20),
-            b(BinOp::Add, getl("slots"), b(BinOp::Mul, getl("slots"), i32c(4))),
-        );
-        E::Load {
-            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, key_base, b(BinOp::Mul, h, i32c(8))))),
-            kind: Kind::I64,
-            offset: 0,
-        }
+    // Section-major carrier: the descriptor's section table derives every
+    // section base from the slot count, so this helper names a section and a
+    // slot rather than computing `20 + slots*5` for itself.
+    let slot = |section: u32, index: E| {
+        crate::wir_helpers::layouts::carrier_slot_place(getl("idx"), section, index, getl("slots"), crate::safewir::AccessMode::Read)
     };
+    // entry index: `idx + 20 + slots + h*4`; key: `idx + 20 + slots*5 + h*8`.
+    let index_at = |h: E| E::SafeLoad { place: slot(crate::layout::CARRIER_ENTRY_INDEX, h), kind: Kind::I32 };
+    let key_at = |h: E| E::SafeLoad { place: slot(crate::layout::CARRIER_KEY, h), kind: Kind::I64 };
+    let ctrl_at_h = || E::SafeLoad8U { place: slot(crate::layout::CARRIER_CONTROL, getl("h")) };
     let probe = N::Block {
         label: "miss".into(),
         result: None,
@@ -479,17 +479,10 @@ pub(crate) fn dict_find_bucket_helper() -> WirFunc {
                     cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))),
                 },
                 N::If {
-                    cond: b(
-                        BinOp::Eq,
-                        E::Load8U {
-                            ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("h")))),
-                            offset: 0,
-                        },
-                        i32c(0x80),
-                    ),
+                    cond: b(BinOp::Eq, ctrl_at_h(), i32c(0x80)),
                     then_: vec![N::Return(Some(i32c(-1)))],
                     els: vec![N::If {
-                        cond: b(BinOp::Eq, E::Load8U { ptr: Box::new(b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(4), getl("h")))), offset: 0 }, getl("h2")),
+                        cond: b(BinOp::Eq, ctrl_at_h(), getl("h2")),
                         then_: vec![
                             setl("e", index_at(getl("h"))),
                             N::If {
@@ -786,10 +779,15 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
         }),
         Kind::I32,
     );
-    let indexed_key_at = |h: E| {
-        let ptr = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, h, i32c(8))))));
-        E::FromSlot(Box::new(E::Load { ptr: Box::new(ptr), kind: Kind::I64, offset: 0 }), Kind::I32)
+    // Section-major carrier: the key section's base is `20 + slots*5`, a linear
+    // form in the slot count that the descriptor's section table owns.
+    let slot = |section: u32, index: E| {
+        crate::wir_helpers::layouts::carrier_slot_place(getl("idx"), section, index, getl("slots"), crate::safewir::AccessMode::Read)
     };
+    let indexed_key_at = |h: E| E::FromSlot(
+        Box::new(E::SafeLoad { place: slot(crate::layout::CARRIER_KEY, h), kind: Kind::I64 }),
+        Kind::I32,
+    );
     let keq = |e: E| E::Call { func: "dict_slice_eq".into(), args: vec![dense_key_at(e), getl("p"), getl("len")] };
     let indexed_keq = |h: E| E::Call { func: "dict_slice_eq".into(), args: vec![indexed_key_at(h), getl("p"), getl("len")] };
     let linear = N::Block {
@@ -805,14 +803,8 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
             ],
         }],
     };
-    let ctrl_at_h = E::Load8U {
-        ptr: Box::new(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), getl("h"))),
-        offset: 0,
-    };
-    let slot_at_h = load(
-        b(BinOp::Add, b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), getl("slots"))), b(BinOp::Mul, getl("h"), i32c(4))),
-        0,
-    );
+    let ctrl_at_h = || E::SafeLoad8U { place: slot(crate::layout::CARRIER_CONTROL, getl("h")) };
+    let slot_at_h = E::SafeLoad { place: slot(crate::layout::CARRIER_ENTRY_INDEX, getl("h")), kind: Kind::I32 };
     let probe = N::Block {
         label: "miss".into(),
         result: None,
@@ -821,12 +813,12 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
             body: vec![
                 N::Br { target: "miss".into(), cond: Some(b(BinOp::Ge, getl("attempt"), getl("slots"))) },
                 N::If {
-                    cond: b(BinOp::Eq, ctrl_at_h.clone(), i32c(0x80)),
+                    cond: b(BinOp::Eq, ctrl_at_h(), i32c(0x80)),
                     then_: vec![N::Return(Some(i32c(-1)))],
                     els: vec![N::If {
-                        cond: b(BinOp::Eq, ctrl_at_h.clone(), getl("h2")),
+                        cond: b(BinOp::Eq, ctrl_at_h(), getl("h2")),
                         then_: vec![
-                            setl("e", slot_at_h.clone()),
+                            setl("e", slot_at_h),
                             N::If {
                                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) },
                                 then_: vec![N::Return(Some(i32c(-1)))],
