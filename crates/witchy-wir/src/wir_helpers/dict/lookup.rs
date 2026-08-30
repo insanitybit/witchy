@@ -311,7 +311,10 @@ pub(crate) fn dict_find_helper() -> WirFunc {
     let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     // key slot of entry `e`: d + 4 + e*16.
-    let dense_key_at = |e: E| E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 };
+    let dense_key_at = |e: E| E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), e, crate::wir_helpers::layouts::DICT_ROW_KEY, getl("count"), crate::safewir::AccessMode::Read),
+        kind: Kind::I64,
+    };
     let keq = |e: E| E::Call { func: "key_eq".into(), args: vec![dense_key_at(e), getl("k"), getl("mode")] };
     let comparison_bump = || N::If {
         cond: E::GetGlobal("__witchy_extract_active".into()),
@@ -378,9 +381,15 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                             then_: vec![N::Br { target: "miss".into(), cond: None }],
                             els: vec![
                                 comparison_bump(),
+                                // The carrier stores an index as `e + 1` so that zero
+                                // means empty, which makes the dense row `e - 1`. Bind
+                                // it: a claim's index must be a leaf, and this is also
+                                // the row the successful branch returns, so the
+                                // expression was computed twice before.
+                                setl("row", b(BinOp::Sub, getl("e"), i32c(1))),
                                 N::If {
-                                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
-                                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
+                                    cond: keq(getl("row")),
+                                    then_: vec![N::Return(Some(getl("row")))],
                                     els: vec![],
                                     result: None,
                                 },
@@ -406,7 +415,7 @@ pub(crate) fn dict_find_helper() -> WirFunc {
         ],
         ret: vec![WirTy::Bool],
         locals: vec![
-            "idx", "count", "i", "slots", "h", "h2", "attempt", "e", "ctrl",
+            "idx", "count", "i", "slots", "h", "h2", "attempt", "e", "ctrl", "row",
         ].into_iter().map(|n| WirLocal { name: n.into(), ty: WirTy::Bool })
         .chain(std::iter::once(WirLocal { name: "hash".into(), ty: WirTy::Int }))
         .collect(),
@@ -770,7 +779,13 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let load = |ptr: E, off: u32| E::Load { ptr: Box::new(ptr), kind: Kind::I32, offset: off };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let dense_key_at = |e: E| E::FromSlot(Box::new(E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 }), Kind::I32);
+    let dense_key_at = |e: E| E::FromSlot(
+        Box::new(E::SafeLoad {
+            place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), e, crate::wir_helpers::layouts::DICT_ROW_KEY, getl("count"), crate::safewir::AccessMode::Read),
+            kind: Kind::I64,
+        }),
+        Kind::I32,
+    );
     let indexed_key_at = |h: E| {
         let ptr = b(BinOp::Add, getl("idx"), b(BinOp::Add, i32c(20), b(BinOp::Add, getl("slots"), b(BinOp::Add, b(BinOp::Mul, getl("slots"), i32c(4)), b(BinOp::Mul, h, i32c(8))))));
         E::FromSlot(Box::new(E::Load { ptr: Box::new(ptr), kind: Kind::I64, offset: 0 }), Kind::I32)
