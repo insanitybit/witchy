@@ -1129,7 +1129,6 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
     let val_at = |idx: &str| E::SafeLoad { place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl(idx), crate::wir_helpers::layouts::DICT_ROW_VALUE, getl("cap"), crate::safewir::AccessMode::Read), kind: Kind::I64 };
     let call_clos = |arg: E| E::CallIndirect {
         signature: gc_slot_closure_signature(1, 1),
@@ -1167,11 +1166,14 @@ pub(crate) fn dict_update_cap_helper() -> WirFunc {
                 cond: b(BinOp::Ge, getl("found"), i32c(0)),
                 then_: vec![
                     setl("new", call_clos(val_at("found"))),
-                    N::Store {
-                        ptr: entry("found"),
+                    N::SafeStore {
+                        place: crate::wir_helpers::layouts::dict_entry_lane_place(
+                            getl("d"), getl("found"),
+                            crate::wir_helpers::layouts::DICT_ROW_VALUE,
+                            getl("cap"), crate::safewir::AccessMode::Write,
+                        ),
                         value: getl("new"),
                         kind: Kind::I64,
-                        offset: 12,
                     },
                     setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
                     N::If {
@@ -1214,7 +1216,6 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
     let val_at = |idx: &str| E::SafeLoad { place: crate::wir_helpers::layouts::dict_entry_lane_place(getl("d"), getl(idx), crate::wir_helpers::layouts::DICT_ROW_VALUE, getl("cap"), crate::safewir::AccessMode::Read), kind: Kind::I64 };
     let call_clos = |arg: E| E::CallIndirect {
         signature: gc_slot_closure_signature(1, 1),
@@ -1255,11 +1256,14 @@ pub(crate) fn dict_update_slice_cap_helper() -> WirFunc {
                 cond: b(BinOp::Ge, getl("found"), i32c(0)),
                 then_: vec![
                     setl("new", call_clos(val_at("found"))),
-                    N::Store {
-                        ptr: entry("found"),
+                    N::SafeStore {
+                        place: crate::wir_helpers::layouts::dict_entry_lane_place(
+                            getl("d"), getl("found"),
+                            crate::wir_helpers::layouts::DICT_ROW_VALUE,
+                            getl("cap"), crate::safewir::AccessMode::Write,
+                        ),
                         value: getl("new"),
                         kind: Kind::I64,
-                        offset: 12,
                     },
                     setl("idx", E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 }),
                     N::If {
@@ -1350,8 +1354,18 @@ pub(crate) fn dict_update_helper() -> WirFunc {
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
-    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    // A lookup result names a dense row. Bind the dictionary length before the
+    // lookup so the hit load carries descriptor-derived extent and provenance.
+    let val_at = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(
+            getl("d"),
+            getl("found"),
+            crate::wir_helpers::layouts::DICT_ROW_VALUE,
+            getl("count"),
+            crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::I64,
+    };
     let call_clos = |arg: E| E::CallIndirect {
         signature: gc_slot_closure_signature(1, 1),
         args: vec![getl("clos"), arg],
@@ -1372,17 +1386,22 @@ pub(crate) fn dict_update_helper() -> WirFunc {
         ],
         ret: vec![WirTy::Bool],
         locals: vec![
+            WirLocal { name: "count".into(), ty: WirTy::Bool },
             WirLocal { name: "found".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Int },
         ],
         body: vec![
+            setl("count", E::SafeLoad {
+                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                kind: Kind::I32,
+            }),
             setl("found", E::Call {
                 func: "dict_find".into(),
                 args: vec![getl("d"), getl("k"), getl("mode")],
             }),
             N::If {
                 cond: b(BinOp::Ge, getl("found"), i32c(0)),
-                then_: vec![setl("new", call_clos(val_at("found")))],
+                then_: vec![setl("new", call_clos(val_at()))],
                 els: vec![setl("new", call_clos(getl("default")))],
                 result: None,
             },
@@ -1720,5 +1739,48 @@ pub(crate) fn dict_remove_extract_helper() -> WirFunc {
             N::Push(getl("out_cap")),
         ],
         raw_body: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_hit_value_store_is_safe(helper: WirFunc) {
+        let Some(WirNode::If { then_, .. }) = helper.body.iter().find(|node| matches!(node, WirNode::If { .. })) else {
+            panic!("{} must branch on its lookup result", helper.name);
+        };
+        assert!(matches!(
+            then_.get(1),
+            Some(WirNode::SafeStore { kind: Kind::I64, .. })
+        ), "{} must replace the dense value through SafeStore", helper.name);
+    }
+
+    #[test]
+    fn capacity_carrying_updates_store_dense_value_lanes_through_descriptors() {
+        assert_hit_value_store_is_safe(dict_update_cap_helper());
+        assert_hit_value_store_is_safe(dict_update_slice_cap_helper());
+    }
+
+    #[test]
+    fn ordinary_update_binds_length_before_loading_the_found_value_lane() {
+        let helper = dict_update_helper();
+        assert!(matches!(
+            helper.body.first(),
+            Some(WirNode::SetLocal {
+                local,
+                value: WirExpr::SafeLoad { kind: Kind::I32, .. },
+            }) if local == "count"
+        ));
+        let Some(WirNode::If { then_, .. }) = helper.body.get(2) else {
+            panic!("ordinary dictionary update must branch on its lookup result");
+        };
+        assert!(matches!(
+            then_.first(),
+            Some(WirNode::SetLocal {
+                local,
+                value: WirExpr::CallIndirect { args, .. },
+            }) if local == "new" && matches!(args.get(1), Some(WirExpr::SafeLoad { kind: Kind::I64, .. }))
+        ));
     }
 }

@@ -887,8 +887,20 @@ pub(crate) fn dict_get_slice_or_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let entry = |idx: &str| b(BinOp::Add, getl("d"), b(BinOp::Mul, getl(idx), i32c(16)));
-    let val_at = |idx: &str| E::Load { ptr: Box::new(entry(idx)), kind: Kind::I64, offset: 12 };
+    // This is the same dense value-lane access as scalar `dict_get_or`.
+    // `dict_find_slice` returns a dense row index, and the length word is the
+    // extent that authenticates that row. Keep both facts explicit rather than
+    // reconstituting `d + found * 16 + 12` as a raw address.
+    let val_at = || E::SafeLoad {
+        place: crate::wir_helpers::layouts::dict_entry_lane_place(
+            getl("d"),
+            getl("found"),
+            crate::wir_helpers::layouts::DICT_ROW_VALUE,
+            getl("count"),
+            crate::safewir::AccessMode::Read,
+        ),
+        kind: Kind::I64,
+    };
 
     WirFunc {
         name: "dict_get_slice_or".into(),
@@ -899,8 +911,18 @@ pub(crate) fn dict_get_slice_or_helper() -> WirFunc {
             WirLocal { name: "default".into(), ty: WirTy::Int },
         ],
         ret: vec![WirTy::Int],
-        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        locals: vec![
+            WirLocal { name: "count".into(), ty: WirTy::Bool },
+            WirLocal { name: "found".into(), ty: WirTy::Bool },
+        ],
         body: vec![
+            N::SetLocal {
+                local: "count".into(),
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                    kind: Kind::I32,
+                },
+            },
             N::SetLocal {
                 local: "found".into(),
                 value: E::Call {
@@ -910,7 +932,7 @@ pub(crate) fn dict_get_slice_or_helper() -> WirFunc {
             },
             N::If {
                 cond: b(BinOp::Ge, getl("found"), i32c(0)),
-                then_: vec![N::Push(val_at("found"))],
+                then_: vec![N::Push(val_at())],
                 els: vec![N::Push(getl("default"))],
                 result: Some(WirTy::Int),
             },
@@ -947,5 +969,36 @@ pub(crate) fn dict_contains_slice_helper() -> WirFunc {
             N::Push(b(BinOp::Ge, getl("found"), i32c(0))),
         ],
         raw_body: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_lookup_value_lane_binds_extent_and_never_rebuilds_a_raw_address() {
+        let helper = dict_get_slice_or_helper();
+        assert!(matches!(
+            helper.body.first(),
+            Some(WirNode::SetLocal {
+                local,
+                value: WirExpr::SafeLoad { kind: Kind::I32, .. },
+            }) if local == "count"
+        ));
+        assert!(matches!(
+            helper.body.get(1),
+            Some(WirNode::SetLocal {
+                local,
+                value: WirExpr::Call { func, .. },
+            }) if local == "found" && func == "dict_find_slice"
+        ));
+        let Some(WirNode::If { then_, .. }) = helper.body.get(2) else {
+            panic!("slice dictionary lookup must branch on the found row");
+        };
+        assert!(matches!(
+            then_.as_slice(),
+            [WirNode::Push(WirExpr::SafeLoad { kind: Kind::I64, .. })]
+        ));
     }
 }
