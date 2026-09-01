@@ -27,7 +27,7 @@ use crate::layout::{
 };
 use crate::safewir_call::{check_callable_contracts, CheckedCallableContracts};
 use crate::safewir::{
-    AccessMode, ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent,
+    AccessMode, AuthenticatedReallocationTemplates, ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent,
     ContractProjection, ContractProjectionStep, ContractSizeExpr, DefinitionId, DynamicHeaderInvariant, Extent,
     ObjectIdentity, ObjectRef, Ownership,
     ParameterMemoryEffect, ParameterMemoryEntry, Place, ProjectionStep, Provenance, RuleId,
@@ -66,6 +66,10 @@ pub struct CandidateModule {
     pub layouts: LayoutBundle,
     pub imports: BTreeMap<String, CallableMemoryContract>,
     pub host_imports: BTreeMap<String, CallableMemoryContract>,
+    /// Opaque certificates for the only reallocation templates which may
+    /// transfer coupled root/capacity authority.  The public default is empty;
+    /// stage 1 therefore rejects every reallocation contract.
+    pub reallocation_templates: AuthenticatedReallocationTemplates,
     pub functions: Vec<CandidateFunction>,
     /// Exact target GC declarations and every declaration-sensitive use in the
     /// executable candidate. These are untrusted input to SWIR-GC-001; encoder
@@ -4448,6 +4452,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "main".into(),
                 contract: no_memory_contract(),
@@ -4495,6 +4500,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "main".into(),
                 contract: no_memory_contract(),
@@ -4529,6 +4535,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "main".into(),
                 contract: no_memory_contract(),
@@ -4770,6 +4777,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "dynamic_extent".into(),
                 contract: CallableMemoryContract {
@@ -4857,6 +4865,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "checked_dynamic_element".into(),
                 contract: CallableMemoryContract {
@@ -4966,6 +4975,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "counted".into(),
                 contract: CallableMemoryContract {
@@ -5493,6 +5503,7 @@ mod tests {
             layouts,
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
             functions: vec![CandidateFunction {
                 name: "copy".into(),
                 contract: no_memory_contract(),

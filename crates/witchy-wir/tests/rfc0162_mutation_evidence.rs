@@ -79,6 +79,7 @@ fn base_module() -> CandidateModule {
         layouts,
         imports: BTreeMap::new(),
         host_imports: BTreeMap::new(),
+        reallocation_templates: Default::default(),
         functions: vec![CandidateFunction {
             name: "main".into(),
             contract: CallableMemoryContract {

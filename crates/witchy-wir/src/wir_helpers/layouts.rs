@@ -781,6 +781,7 @@ mod final_validation {
             )]),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
         };
         match validate_final_wir_report(&module, &[], &[], inputs, ValidationBudget::default()) {
             Ok(report) => panic!(

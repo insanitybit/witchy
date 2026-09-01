@@ -11,7 +11,7 @@ use crate::safewir::{
     ContractProjection, ContractProjectionStep, ContractSizeExpr, DefinitionId, Extent,
     GenerationId, ObjectIdentity, ObjectRef, ParameterMemoryContract, ParameterMemoryEffect,
     ParameterMemoryEffects, ParameterMemoryEntry, Place, Projection, ProjectionStep, Provenance,
-    RuleId, SizeExpr,
+    ReallocationContract, ReallocationTemplateId, ResultCountedExtent, RuleId, SizeExpr,
 };
 use crate::safewir_validate::{
     validate_candidate, CallArgument, CandidateFunction, CandidateModule, HostArgument,
@@ -176,6 +176,7 @@ fn module(layouts: LayoutBundle) -> CandidateModule {
         layouts,
         imports: BTreeMap::new(),
         host_imports: BTreeMap::new(),
+        reallocation_templates: Default::default(),
         functions: vec![CandidateFunction {
             name: "main".into(),
             contract: no_memory_contract(),
@@ -187,6 +188,120 @@ fn module(layouts: LayoutBundle) -> CandidateModule {
         contains_raw_body: false,
         post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
     }
+}
+
+fn reallocation_function(
+    list: LayoutId,
+    base: u32,
+    stride: u32,
+    root_result: usize,
+    capacity_result: usize,
+) -> CandidateFunction {
+    let root = ObjectRef {
+        identity: identity(1, 1),
+        layout: list,
+        extent: Extent::Counted {
+            header: SizeExpr::Constant(u64::from(base)),
+            count: DefinitionId::new(2),
+            stride: SizeExpr::Constant(u64::from(stride)),
+        },
+        provenance: Provenance::Unknown,
+    };
+    CandidateFunction {
+        name: "reallocate".into(),
+        contract: CallableMemoryContract {
+            parameters: vec![
+                ParameterMemoryContract {
+                    entry: ParameterMemoryEntry::BorrowedRead,
+                    layout: Some(list),
+                    extent: Some(ContractExtent::Counted {
+                        header: ContractSizeExpr::Constant(u64::from(base)),
+                        count: ContractSizeExpr::Parameter(1),
+                        stride: ContractSizeExpr::Constant(u64::from(stride)),
+                    }),
+                    dynamic_header: Some(
+                        crate::safewir::DynamicHeaderInvariant::BoundedByCountedExtent {
+                            component: 0,
+                        },
+                    ),
+                    effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
+                },
+                ParameterMemoryContract {
+                    entry: ParameterMemoryEntry::NoMemory,
+                    layout: None,
+                    extent: None,
+                    dynamic_header: None,
+                    effects: ParameterMemoryEffects::none(),
+                },
+            ],
+            result: CallableMemoryResult::Reallocated(ReallocationContract {
+                source_parameter: 0,
+                capacity_parameter: 1,
+                root_result,
+                capacity_result,
+                layout: list,
+                extent: ResultCountedExtent {
+                    header_bytes: u64::from(base),
+                    capacity_result,
+                    stride_bytes: u64::from(stride),
+                },
+                dynamic_header_components: vec![0],
+                template: ReallocationTemplateId::new(7),
+            }),
+        },
+        scalar_results: vec![crate::wir::Kind::I32, crate::wir::Kind::I32],
+        parameters: vec![
+            ParameterBinding { definition: DefinitionId::new(1), object: Some(root) },
+            ParameterBinding { definition: DefinitionId::new(2), object: None },
+        ],
+        operations: Vec::new(),
+    }
+}
+
+#[test]
+fn reallocation_contract_requires_an_opaque_fixed_template_certificate() {
+    let (layouts, list, _, base, stride) = list_layouts();
+    let mut candidate = module(layouts);
+    candidate.functions = vec![reallocation_function(list, base, stride, 0, 1)];
+    let error = validate_candidate(&candidate, ValidationBudget::default()).unwrap_err();
+    assert_eq!(error.diagnostic, ValidationDiagnostic::Rule(RuleId::CheckedCallableContract));
+    assert!(error.to_string().contains("no authenticated fixed-template certificate"), "{error}");
+}
+
+#[test]
+fn reallocation_contract_rejects_colliding_result_slots_before_template_lookup() {
+    let (layouts, list, _, base, stride) = list_layouts();
+    let mut candidate = module(layouts);
+    candidate.functions = vec![reallocation_function(list, base, stride, 0, 0)];
+    let error = validate_candidate(&candidate, ValidationBudget::default()).unwrap_err();
+    assert_eq!(error.diagnostic, ValidationDiagnostic::Rule(RuleId::CheckedCallableContract));
+    assert!(error.to_string().contains("colliding or out-of-range"), "{error}");
+}
+
+#[test]
+fn reallocation_contract_rejects_noncanonical_extent_and_header_components() {
+    let (layouts, list, _, base, stride) = list_layouts();
+    let mut bad_extent = module(layouts.clone());
+    let mut function = reallocation_function(list, base, stride, 0, 1);
+    let CallableMemoryResult::Reallocated(contract) = &mut function.contract.result else {
+        panic!("fixture must carry a reallocation contract");
+    };
+    contract.extent.header_bytes += 1;
+    bad_extent.functions = vec![function];
+    let error = validate_candidate(&bad_extent, ValidationBudget::default()).unwrap_err();
+    assert_eq!(error.diagnostic, ValidationDiagnostic::Rule(RuleId::CheckedCallableContract));
+    assert!(error.to_string().contains("extent contradicts its canonical layout"), "{error}");
+
+    let mut bad_header = module(layouts);
+    let mut function = reallocation_function(list, base, stride, 0, 1);
+    let CallableMemoryResult::Reallocated(contract) = &mut function.contract.result else {
+        panic!("fixture must carry a reallocation contract");
+    };
+    contract.dynamic_header_components = vec![2];
+    bad_header.functions = vec![function];
+    let error = validate_candidate(&bad_header, ValidationBudget::default()).unwrap_err();
+    assert_eq!(error.diagnostic, ValidationDiagnostic::Rule(RuleId::CheckedCallableContract));
+    assert!(error.to_string().contains("noncanonical dynamic header component"), "{error}");
 }
 
 fn alias_function(name: &str, layout: LayoutId, extent: u64) -> CandidateFunction {

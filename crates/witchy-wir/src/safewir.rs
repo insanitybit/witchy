@@ -6,7 +6,7 @@
 //! normative meaning of each rule is specified independently in
 //! `rfcs/0162-safewir-judgment.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::layout::LayoutId;
 
@@ -368,6 +368,78 @@ pub enum ContractExtent {
     },
 }
 
+/// Closed identifier for one fixed, validator-authenticated reallocation
+/// template.  Naming an identifier is only an untrusted contract claim: the
+/// matching [`AuthenticatedReallocationTemplates`] capability is the sole
+/// authority that can admit it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReallocationTemplateId(u32);
+
+impl ReallocationTemplateId {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// The descriptor-derived allocation extent of a reallocation result.  The
+/// capacity is a particular Wasm result slot, never a caller-provided size
+/// expression, so a future template checker must bind that scalar result to
+/// the same allocation generation as the returned root.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResultCountedExtent {
+    pub header_bytes: u64,
+    pub capacity_result: usize,
+    pub stride_bytes: u64,
+}
+
+/// A coupled root/capacity result produced by a direct reallocation helper.
+///
+/// This is deliberately only a contract shape in schema 2.  It does not
+/// authorize a call, allocation, reuse, or result binding until a fixed
+/// template certificate is installed.  In particular, a nonzero scalar
+/// capacity is not reusable-storage authority by itself.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReallocationContract {
+    pub source_parameter: usize,
+    pub capacity_parameter: usize,
+    pub root_result: usize,
+    pub capacity_result: usize,
+    pub layout: LayoutId,
+    pub extent: ResultCountedExtent,
+    /// Descriptor header components whose post-call bounds must be supplied
+    /// by the certified template.  Components are ordinal, descriptor-owned
+    /// facts; the vector is checked for duplicates and canonical membership.
+    pub dynamic_header_components: Vec<u32>,
+    pub template: ReallocationTemplateId,
+}
+
+/// Opaque authentication capability for reallocation templates.
+///
+/// The public default is intentionally empty and there is no public issuer.
+/// A future fixed-template implementation may issue entries inside the WIR
+/// crate after proving its executable allocator metadata, generation, and
+/// capacity transitions.  Until then every reallocation contract fails
+/// closed, even if it names a familiar template ID.
+#[derive(Debug, Clone, Default)]
+pub struct AuthenticatedReallocationTemplates {
+    entries: BTreeMap<ReallocationTemplateId, AuthenticatedReallocationTemplate>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthenticatedReallocationTemplate {
+    _private: (),
+}
+
+impl AuthenticatedReallocationTemplates {
+    pub(crate) fn authenticates(&self, contract: &ReallocationContract) -> bool {
+        self.entries.contains_key(&contract.template)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Definition-free projection steps for callable results.
 pub enum ContractProjectionStep {
@@ -407,6 +479,10 @@ pub enum CallableMemoryResult {
         projection: ContractProjection,
     },
     Shared(BTreeSet<usize>),
+    /// A conditional reuse-or-fresh result paired with an authenticated
+    /// capacity witness.  No current template is authenticated, so this
+    /// variant is deliberately rejected by validation in schema 2 stage 1.
+    Reallocated(ReallocationContract),
     NoMemory,
     Unknown,
 }
@@ -452,6 +528,7 @@ impl CallableMemoryContract {
                 !parameters.is_empty() && parameters.iter().copied().all(escapes)
             }
             CallableMemoryResult::Fresh { .. }
+            | CallableMemoryResult::Reallocated(_)
             | CallableMemoryResult::NoMemory
             | CallableMemoryResult::Unknown => true,
         }

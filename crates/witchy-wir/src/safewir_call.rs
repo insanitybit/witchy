@@ -142,6 +142,7 @@ pub(crate) fn check_callable_contracts(
     layouts: &LayoutInterner,
     budget: ValidationBudget,
 ) -> Result<CheckedCallableContracts, ValidationError> {
+    check_reallocation_contracts(module, layouts)?;
     let imports = authenticate_catalog(module, layouts, false)?;
     let host_imports = authenticate_catalog(module, layouts, true)?;
     let mut inferred = module
@@ -203,6 +204,93 @@ pub(crate) fn check_callable_contracts(
         local.insert(function.name.clone(), effective);
     }
     Ok(CheckedCallableContracts { local, imports, host_imports })
+}
+
+/// Validate the public shape of every coupled reallocation result before any
+/// body inference can accidentally treat it as an ordinary fresh/alias result.
+/// A shape is still untrusted until the opaque template catalog authenticates
+/// it; schema-2 stage 1 deliberately has no such certificates.
+fn check_reallocation_contracts(
+    module: &CandidateModule,
+    layouts: &LayoutInterner,
+) -> Result<(), ValidationError> {
+    for function in &module.functions {
+        let CallableMemoryResult::Reallocated(contract) = &function.contract.result else {
+            continue;
+        };
+        if contract.source_parameter >= function.parameters.len()
+            || contract.capacity_parameter >= function.parameters.len()
+            || contract.source_parameter == contract.capacity_parameter
+            || contract.root_result >= function.scalar_results.len()
+            || contract.capacity_result >= function.scalar_results.len()
+            || contract.root_result == contract.capacity_result
+            || contract.extent.capacity_result != contract.capacity_result
+        {
+            return Err(function_error(function, "reallocation contract has colliding or out-of-range parameter/result slots"));
+        }
+        if function.parameters[contract.source_parameter].object.is_none()
+            || function.parameters[contract.capacity_parameter].object.is_some()
+        {
+            return Err(function_error(function, "reallocation contract must pair one memory root parameter with one scalar capacity parameter"));
+        }
+        if function.scalar_results[contract.root_result] != crate::wir::Kind::I32
+            || function.scalar_results[contract.capacity_result] != crate::wir::Kind::I32
+        {
+            return Err(function_error(function, "reallocation root and capacity results must be exact i32 ABI slots"));
+        }
+        let descriptor = layouts.get(contract.layout).ok_or_else(|| {
+            function_error(function, "reallocation contract names an unknown canonical layout")
+        })?;
+        let crate::layout::LayoutSize::Dynamic { base, stride } = descriptor.size() else {
+            return Err(function_error(function, "reallocation contract requires a canonical dynamic layout extent"));
+        };
+        if contract.extent.header_bytes != u64::from(base)
+            || contract.extent.stride_bytes != u64::from(stride)
+        {
+            return Err(function_error(function, "reallocation extent contradicts its canonical layout"));
+        }
+        let mut headers = BTreeSet::new();
+        for component in &contract.dynamic_header_components {
+            if !headers.insert(*component) {
+                return Err(function_error(function, "reallocation contract repeats a dynamic header component"));
+            }
+            if !matches!(
+                descriptor.header(),
+                crate::layout::HeaderLayout::PackedList { .. }
+            ) || *component > 1
+            {
+                return Err(function_error(function, "reallocation contract names a noncanonical dynamic header component"));
+            }
+        }
+        if !module.reallocation_templates.authenticates(contract) {
+            return Err(function_error(
+                function,
+                "reallocation contract has no authenticated fixed-template certificate",
+            ));
+        }
+    }
+
+    for (name, contract) in module.imports.iter().chain(&module.host_imports) {
+        let CallableMemoryResult::Reallocated(reallocation) = &contract.result else {
+            continue;
+        };
+        if reallocation.source_parameter == reallocation.capacity_parameter
+            || reallocation.root_result == reallocation.capacity_result
+            || reallocation.extent.capacity_result != reallocation.capacity_result
+        {
+            return Err(module_error(
+                RuleId::CheckedCallableContract,
+                format!("reallocation import `{name}` has colliding coupled-result slots"),
+            ));
+        }
+        if !module.reallocation_templates.authenticates(reallocation) {
+            return Err(module_error(
+                RuleId::CheckedCallableContract,
+                format!("reallocation import `{name}` has no authenticated fixed-template certificate"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn authenticate_catalog(
@@ -764,7 +852,13 @@ fn apply_call(
                 .unwrap_or_else(|| Origin::Unknown(argument_sources(arguments, facts)));
             join_origins(joined, origin)
         }),
-        CallableMemoryResult::NoMemory | CallableMemoryResult::Unknown => {
+        // Reallocation contracts are rejected before callable inference until
+        // a fixed template certificate exists.  Keep this conservative arm so
+        // a future call path cannot accidentally treat one as fresh while the
+        // result-transfer operation is still absent.
+        CallableMemoryResult::Reallocated(_)
+        | CallableMemoryResult::NoMemory
+        | CallableMemoryResult::Unknown => {
             Origin::Unknown(argument_sources(arguments, facts))
         }
     };

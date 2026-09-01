@@ -14,7 +14,7 @@ use std::fmt;
 
 use crate::layout::{LayoutBundle, LayoutInterner, LayoutSize};
 use crate::safewir::{
-    ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent, ContractSizeExpr,
+    AuthenticatedReallocationTemplates, ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent, ContractSizeExpr,
     DefinitionId, Extent, GenerationId, ObjectIdentity, ObjectRef, ParameterMemoryEntry, Place,
     Projection, ProjectionStep, Provenance, SizeExpr,
 };
@@ -48,6 +48,10 @@ pub struct FinalWirValidationInputs {
     pub functions: BTreeMap<String, CallableMemoryContract>,
     pub imports: BTreeMap<String, CallableMemoryContract>,
     pub host_imports: BTreeMap<String, CallableMemoryContract>,
+    /// Opaque fixed-template certificates for coupled reallocation results.
+    /// No issuer exists in the current stage, so the default empty catalog
+    /// makes every such declared result reject before adaptation.
+    pub reallocation_templates: AuthenticatedReallocationTemplates,
 }
 
 /// Final WIR and GC declarations authorized for the mechanical encoder.
@@ -274,6 +278,7 @@ pub fn validate_final_wir_report(
         layouts: inputs.layouts,
         imports: inputs.imports,
         host_imports: inputs.host_imports,
+        reallocation_templates: inputs.reallocation_templates,
         functions,
         gc: CandidateGcDeclarations {
             structs: gc_structs.to_vec(),
@@ -2429,6 +2434,7 @@ mod tests {
                 functions: BTreeMap::from([("dynamic_access".into(), contract.clone())]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         ).expect("the exact header/load/guard pattern must elaborate");
@@ -2446,6 +2452,7 @@ mod tests {
                 functions: BTreeMap::from([("dynamic_access".into(), contract)]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         ).expect_err("signed guards stay outside the dynamic admission subset");
@@ -2639,6 +2646,7 @@ mod tests {
             )]),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
         }
     }
 
@@ -3673,6 +3681,7 @@ mod tests {
                 functions: BTreeMap::from([("sink".into(), contract()), ("main".into(), contract())]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         )
@@ -3746,6 +3755,7 @@ mod tests {
                 ]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         )
@@ -3763,6 +3773,7 @@ mod tests {
                 ]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         )
@@ -3781,6 +3792,7 @@ mod tests {
                 ]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         )
@@ -3843,6 +3855,7 @@ mod tests {
                 functions: BTreeMap::from([("sink".into(), contract()), ("main".into(), contract())]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         )
@@ -3904,6 +3917,7 @@ mod tests {
                 functions: BTreeMap::from([("sink".into(), contract()), ("main".into(), contract())]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
         )
@@ -3957,6 +3971,7 @@ mod tests {
             )]),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::from([(host.into(), canonical.clone())]),
+            reallocation_templates: Default::default(),
         };
         let report = validate_final_wir_report(
             &module,
@@ -4031,6 +4046,7 @@ mod tests {
             )]),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::from([(host.into(), canonical)]),
+            reallocation_templates: Default::default(),
         };
         let error = validate_final_wir_report(
             &module,
@@ -4092,6 +4108,7 @@ mod tests {
                     result: CallableMemoryResult::NoMemory,
                 },
             )]),
+            reallocation_templates: Default::default(),
         };
         let error = validate_final_wir_report(
             &module,
@@ -4162,6 +4179,7 @@ mod tests {
             )]),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
         };
         validate_final_wir_report(
             &module,
@@ -4213,6 +4231,7 @@ mod tests {
             )]),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::new(),
+            reallocation_templates: Default::default(),
         };
         let error = validate_final_wir_report(
             &module, &[], &[], inputs(), ValidationBudget::default(),
