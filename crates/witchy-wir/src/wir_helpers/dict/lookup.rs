@@ -464,7 +464,10 @@ pub(crate) fn dict_find_helper() -> WirFunc {
             N::If {
                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("idx")) },
                 then_: vec![
-                    setl("count", load(getl("d"), 0)),
+                    setl("count", E::SafeLoad {
+                        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                        kind: Kind::I32,
+                    }),
                     setl("i", i32c(0)),
                     linear,
                     N::Return(Some(i32c(-1))),
@@ -472,7 +475,10 @@ pub(crate) fn dict_find_helper() -> WirFunc {
                 els: vec![],
                 result: None,
             },
-            setl("slots", load(getl("idx"), 0)),
+            setl("slots", E::SafeLoad {
+                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                kind: Kind::I32,
+            }),
             setl("hash", E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }),
             setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
             setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
@@ -555,7 +561,10 @@ pub(crate) fn dict_find_bucket_helper() -> WirFunc {
         body: vec![
             setl("idx", load(b(BinOp::Sub, getl("d"), i32c(4)), 0)),
             N::If { cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("idx")) }, then_: vec![N::Return(Some(i32c(-1)))], els: vec![], result: None },
-            setl("slots", load(getl("idx"), 0)),
+            setl("slots", E::SafeLoad {
+                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                kind: Kind::I32,
+            }),
             setl("hash", E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }),
             setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
             setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
@@ -906,7 +915,10 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
             N::If {
                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("idx")) },
                 then_: vec![
-                    setl("count", load(getl("d"), 0)),
+                    setl("count", E::SafeLoad {
+                        place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("d")),
+                        kind: Kind::I32,
+                    }),
                     setl("i", i32c(0)),
                     linear,
                     N::Return(Some(i32c(-1))),
@@ -914,7 +926,10 @@ pub(crate) fn dict_find_slice_helper() -> WirFunc {
                 els: vec![],
                 result: None,
             },
-            setl("slots", load(getl("idx"), 0)),
+            setl("slots", E::SafeLoad {
+                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("idx")),
+                kind: Kind::I32,
+            }),
             setl("hash", E::Call { func: "dict_hash_slice".into(), args: vec![getl("p"), getl("len")] }),
             setl("h", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("hash")) }, b(BinOp::Sub, getl("slots"), i32c(1)))),
             setl("h2", b(BinOp::And, E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(E::Binary { op: BinOp::ShrU, kind: Kind::I64, lhs: Box::new(getl("hash")), rhs: Box::new(E::ConstI64(57)) }) }, i32c(0x7f))),
@@ -1046,5 +1061,43 @@ mod tests {
             then_.as_slice(),
             [WirNode::Push(WirExpr::SafeLoad { kind: Kind::I64, .. })]
         ));
+    }
+
+    #[test]
+    fn dictionary_searches_bind_canonical_body_headers_through_safe_places() {
+        let is_i32_header = |node: Option<&WirNode>, local: &str| {
+            matches!(
+                node,
+                Some(WirNode::SetLocal {
+                    local: actual,
+                    value: WirExpr::SafeLoad { kind: Kind::I32, .. },
+                }) if actual == local
+            )
+        };
+
+        for helper in [dict_find_helper(), dict_find_bucket_helper(), dict_find_slice_helper()] {
+            // The first node is deliberately the authenticated allocator probe
+            // at `d - 4`. All ordinary body-header reads must use SafeLoad.
+            assert!(matches!(
+                helper.body.get(0),
+                Some(WirNode::SetLocal {
+                    local,
+                    value: WirExpr::Load { .. },
+                }) if local == "idx"
+            ));
+            assert!(is_i32_header(helper.body.get(2), "slots"));
+        }
+
+        let dict_find = dict_find_helper();
+        let Some(WirNode::If { then_, .. }) = dict_find.body.get(1) else {
+            panic!("dictionary search must branch on its authenticated index");
+        };
+        assert!(is_i32_header(then_.first(), "count"));
+
+        let dict_find_slice = dict_find_slice_helper();
+        let Some(WirNode::If { then_, .. }) = dict_find_slice.body.get(1) else {
+            panic!("slice dictionary search must branch on its authenticated index");
+        };
+        assert!(is_i32_header(then_.first(), "count"));
     }
 }
