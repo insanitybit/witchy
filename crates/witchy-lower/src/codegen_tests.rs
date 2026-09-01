@@ -66,6 +66,31 @@ fn packed_list_capacity_helper_emits_checked_header_stores() {
 }
 
 #[test]
+fn indexed_packed_list_length_header_emits_safe_load() {
+    let module = parse_module(
+        "mode opt\n\n\
+         type Point packed:\n    x: Int\n\nfn sum(let n: Int) -> Int:\n    var values = [Point(10), Point(20), Point(30)]\n    var total = 0\n    for i in 0..n:\n        total = total + values[i].x\n    total\n\nfn main() -> Int:\n    sum(3)\n",
+    )
+    .expect("parse indexed packed-list fixture");
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::default_set()));
+    let wir = assemble_wir_module(&module)
+        .expect_lowered("indexed packed-list fixture must lower through its descriptor helper");
+    witchy_syntax::opt::set_for_tests(None);
+    let sum = wir
+        .funcs
+        .iter()
+        .find(|function| function.name == "sum")
+        .expect("sum is emitted");
+    let rendered = format!("{:#?}", sum.body);
+    let header = rendered
+        .find("local: \"__seq_len_")
+        .map(|offset| &rendered[offset..])
+        .expect("indexed lowering hoists the stable list length");
+    assert!(header.starts_with("local: \"__seq_len_") && header.contains("SafeLoad"),
+        "a descriptor-specialized indexed list must authenticate its hoisted length header:\n{header}");
+}
+
+#[test]
 fn packed_list_scalar_element_places_require_descriptor_authenticated_addresses() {
     use witchy_wir::wir::WirExpr as W;
 

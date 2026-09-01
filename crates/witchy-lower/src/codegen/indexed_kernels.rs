@@ -1473,8 +1473,8 @@ impl<'types> Codegen<'types> {
                 continue;
             }
             let element_kind = Self::wir_kind(self.list_elem_kind(&root_expr));
-            let (data_offset, stride) = self
-                .specialized_layout_of_expr(&root_expr)
+            let specialized_layout = self.specialized_layout_of_expr(&root_expr);
+            let (data_offset, stride) = specialized_layout
                 .and_then(|id| self.specialized_layouts.get(id))
                 .and_then(|descriptor| match (descriptor.header(), descriptor.size()) {
                     (
@@ -1526,11 +1526,28 @@ impl<'types> Codegen<'types> {
                     setup.extend(self.increment_sequence_counter("__witchy_list_header_loads"));
                     setup.push(N::SetLocal {
                         local: length.clone(),
-                        value: W::Load {
-                            ptr: Box::new(W::GetLocal(owner_root.clone())),
-                            kind: WirKind::I32,
-                            offset: 0,
-                        },
+                        // A specialized packed-list descriptor authenticates
+                        // the length header independently of the dynamic body
+                        // extent it establishes. Unmatched layouts retain the
+                        // raw candidate and are rejected by final admission.
+                        value: specialized_layout
+                            .and_then(|layout| {
+                                packed_list_header_read_place(
+                                    &self.specialized_layouts,
+                                    layout,
+                                    W::GetLocal(owner_root.clone()),
+                                    0,
+                                )
+                            })
+                            .map(|place| W::SafeLoad {
+                                place,
+                                kind: WirKind::I32,
+                            })
+                            .unwrap_or(W::Load {
+                                ptr: Box::new(W::GetLocal(owner_root.clone())),
+                                kind: WirKind::I32,
+                                offset: 0,
+                            }),
                     });
                 }
                 (payload_base, length, needs_length)
