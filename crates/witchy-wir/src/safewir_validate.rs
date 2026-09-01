@@ -1783,7 +1783,11 @@ impl Validator<'_> {
                 )?;
             }
             Operation::If { condition, then_operations, else_operations } => {
-                self.require_scalar(state, *condition, function, at)?;
+                // Control only needs an in-scope scalar operand. It does not
+                // discharge a numeric range, so a stable parameter definition
+                // is sufficient here while accesses and extents keep requiring
+                // exact non-negative scalar facts below.
+                self.require_scalar_definition(state, *condition, function, at)?;
                 let nested_depth =
                     self.nested_control_depth(function, at, control_depth)?;
                 let mut then_state = state.clone();
@@ -1886,7 +1890,7 @@ impl Validator<'_> {
                     ));
                 }
                 if let Some(condition) = condition {
-                    self.require_scalar(state, *condition, function, at)?;
+                    self.require_scalar_definition(state, *condition, function, at)?;
                 }
                 self.merge_branch_state(function, at, flows, *target, state.clone())?;
                 if condition.is_none() {
@@ -4122,6 +4126,126 @@ mod tests {
             },
         );
         assert_rule(duplicated, RuleId::CheckedCallableContract);
+    }
+
+    #[test]
+    fn scalar_parameter_can_drive_control_but_not_memory_range_facts() {
+        let scalar = DefinitionId::new(40);
+        let scalar_parameter = ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            effects: ParameterMemoryEffects::none(),
+        };
+
+        let mut control = base_module();
+        control.functions[0].contract = CallableMemoryContract {
+            parameters: vec![scalar_parameter.clone()],
+            result: CallableMemoryResult::NoMemory,
+        };
+        control.functions[0].parameters = vec![ParameterBinding {
+            definition: scalar,
+            object: None,
+        }];
+        control.functions[0].operations.insert(
+            2,
+            Operation::If {
+                condition: scalar,
+                then_operations: Vec::new(),
+                else_operations: Vec::new(),
+            },
+        );
+        control.functions[0].operations.insert(
+            3,
+            Operation::Block {
+                control: ControlId::new(1),
+                body: vec![Operation::Branch {
+                    target: ControlId::new(1),
+                    condition: Some(scalar),
+                }],
+            },
+        );
+        validate_candidate(&control, ValidationBudget::default()).unwrap();
+
+        let mut index = base_module();
+        index.functions[0].contract = CallableMemoryContract {
+            parameters: vec![scalar_parameter],
+            result: CallableMemoryResult::NoMemory,
+        };
+        index.functions[0].parameters = vec![ParameterBinding {
+            definition: scalar,
+            object: None,
+        }];
+        let allocated = object(3, 1, Provenance::Fresh);
+        index.functions[0].operations[3] = Operation::CheckedIndex {
+            object: allocated.identity,
+            index: scalar,
+            length_source: DefinitionId::new(2),
+            place: place(allocated, AccessMode::Read, 0, 8),
+        };
+        assert_rule(index, RuleId::ExactRangeSource);
+
+        let (layouts, list, base, stride) = list_layouts();
+        let object_definition = DefinitionId::new(41);
+        let dynamic_object = ObjectRef {
+            identity: ObjectIdentity {
+                root: object_definition,
+                generation: GenerationId::new(1),
+            },
+            layout: list,
+            extent: Extent::Counted {
+                header: SizeExpr::Constant(u64::from(base)),
+                count: scalar,
+                stride: SizeExpr::Constant(u64::from(stride)),
+            },
+            provenance: Provenance::Unknown,
+        };
+        let dynamic_extent = CandidateModule {
+            checked_source_entries: 1,
+            layouts,
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+            functions: vec![CandidateFunction {
+                name: "dynamic_extent".into(),
+                contract: CallableMemoryContract {
+                    parameters: vec![
+                        ParameterMemoryContract {
+                            entry: ParameterMemoryEntry::NoMemory,
+                            layout: None,
+                            extent: None,
+                            effects: ParameterMemoryEffects::none(),
+                        },
+                        ParameterMemoryContract {
+                            entry: ParameterMemoryEntry::BorrowedRead,
+                            layout: Some(list),
+                            extent: Some(ContractExtent::Counted {
+                                header: ContractSizeExpr::Constant(u64::from(base)),
+                                count: ContractSizeExpr::Parameter(0),
+                                stride: ContractSizeExpr::Constant(u64::from(stride)),
+                            }),
+                            effects: ParameterMemoryEffects::none(),
+                        },
+                    ],
+                    result: CallableMemoryResult::NoMemory,
+                },
+                parameters: vec![
+                    ParameterBinding {
+                        definition: scalar,
+                        object: None,
+                    },
+                    ParameterBinding {
+                        definition: object_definition,
+                        object: Some(dynamic_object),
+                    },
+                ],
+                operations: Vec::new(),
+            }],
+            gc: CandidateGcDeclarations::default(),
+            contains_raw_memory: false,
+            contains_raw_body: false,
+            post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
+        };
+        assert_unsupported(dynamic_extent, UnsupportedForm::SymbolicParameterExtent);
     }
 
     #[test]
