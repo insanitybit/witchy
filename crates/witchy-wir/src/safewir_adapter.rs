@@ -2432,4 +2432,68 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("mutable local definitions"), "{error}");
     }
+
+    #[test]
+    fn final_wir_host_call_rejects_i32_pointer_or_descriptor_abi() {
+        let (layouts, _layout) = layouts();
+        // `print` is cataloged but takes `(i32 ptr, i32 len)`. Name lookup
+        // must never promote those pointer-shaped values to scalar authority.
+        assert!(crate::safewir_call::canonical_host_import_contract("print").is_none());
+        let no_memory = || ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            effects: ParameterMemoryEffects::none(),
+        };
+        let module = WirModule {
+            imports: vec![crate::wir::WirImport {
+                name: "print".into(),
+                params: vec![Kind::I32, Kind::I32],
+                results: Vec::new(),
+            }],
+            funcs: vec![WirFunc {
+                name: "host_call".into(),
+                params: Vec::new(),
+                ret: Vec::new(),
+                locals: Vec::new(),
+                body: vec![WirNode::Do(WirExpr::CallHost {
+                    import: "print".into(),
+                    args: vec![WirExpr::ConstI32(0), WirExpr::ConstI32(0)],
+                })],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let inputs = FinalWirValidationInputs {
+            layouts,
+            functions: BTreeMap::from([(
+                "host_call".into(),
+                CallableMemoryContract {
+                    parameters: Vec::new(),
+                    result: CallableMemoryResult::NoMemory,
+                },
+            )]),
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::from([(
+                "print".into(),
+                CallableMemoryContract {
+                    parameters: vec![no_memory(), no_memory()],
+                    result: CallableMemoryResult::NoMemory,
+                },
+            )]),
+        };
+        let error = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs,
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no canonical ABI memory contract"), "{error}");
+    }
 }

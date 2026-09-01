@@ -302,10 +302,12 @@ fn catalog_contract(
 
 /// The memory contract mechanically implied by one canonical host ABI entry.
 ///
-/// Scalar and `externref` ABI operands never carry linear-memory authority.
-/// Buffer-bearing imports deliberately have no entry here yet: they need a
-/// descriptor-specific `ParameterMemoryContract`, and accepting them as
+/// `i64`, floating-point, and `externref` ABI operands never carry
+/// linear-memory authority. `i32` deliberately has no entry: in Witchy's ABI
+/// it may be a pointer, length, or descriptor component, and accepting it as
 /// `NoMemory` would erase exactly the proof this boundary is meant to carry.
+/// Such buffer-bearing imports need a descriptor-specific
+/// `ParameterMemoryContract`.
 /// The adapter separately checks the exact Wasm signature from the same
 /// prelude entry, so this function is not a name-only allowlist.
 pub(crate) fn canonical_host_import_contract(name: &str) -> Option<CallableMemoryContract> {
@@ -314,6 +316,14 @@ pub(crate) fn canonical_host_import_contract(name: &str) -> Option<CallableMemor
         .iter()
         .find(|import| import.name == name)?;
     crate::wir_prelude::abi_import_info(name)?;
+    if import
+        .params
+        .iter()
+        .chain(&import.results)
+        .any(|kind| matches!(kind, crate::wir_prelude::WasmTy::I32))
+    {
+        return None;
+    }
     Some(CallableMemoryContract {
         parameters: (0..import.params.len())
             .map(|_| ParameterMemoryContract {
