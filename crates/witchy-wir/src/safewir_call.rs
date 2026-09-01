@@ -464,6 +464,7 @@ fn infer_operations(
                     facts.scalar_constants.insert(*definition, value);
                 }
             }
+            Operation::BindCallScalarResults { .. } => {}
             Operation::BindHeaderCount { object, .. } => {
                 add_object_effect(facts, *object, ParameterMemoryEffect::Read)
             }

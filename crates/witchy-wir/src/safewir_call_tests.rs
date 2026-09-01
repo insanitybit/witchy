@@ -179,6 +179,7 @@ fn module(layouts: LayoutBundle) -> CandidateModule {
         functions: vec![CandidateFunction {
             name: "main".into(),
             contract: no_memory_contract(),
+            scalar_results: Vec::new(),
             parameters: Vec::new(),
             operations: Vec::new(),
         }],
@@ -208,6 +209,7 @@ fn alias_function(name: &str, layout: LayoutId, extent: u64) -> CandidateFunctio
             definition: input.identity.root,
             object: Some(input.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![Operation::ReturnObject { object: input.identity }],
     }
 }
@@ -246,6 +248,7 @@ fn fresh_function(
         } else {
             Vec::new()
         },
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::Alloc { result: result.clone() },
             Operation::ReturnObject { object: result.identity },
@@ -335,6 +338,7 @@ fn stale_fresh_summaries_and_missing_result_authority_never_mint_storage() {
     unknown.functions.push(CandidateFunction {
         name: "unknown".into(),
         contract: CallableMemoryContract::unknown(0),
+        scalar_results: Vec::new(),
         parameters: Vec::new(),
         operations: Vec::new(),
     });
@@ -375,6 +379,7 @@ fn fresh_dynamic_extents_resolve_checked_local_constant_definitions() {
             },
         },
         parameters: Vec::new(),
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::DefineScalar { definition: count, value: 2 },
             Operation::Alloc { result: allocated.clone() },
@@ -444,6 +449,7 @@ fn recursive_components_reach_a_conservative_deterministic_fixpoint() {
     recursive.functions.push(CandidateFunction {
         name: "recursive_no_memory".into(),
         contract: no_memory_contract(),
+        scalar_results: Vec::new(),
         parameters: Vec::new(),
         operations: vec![Operation::Call {
             callable: "recursive_no_memory".into(),
@@ -463,6 +469,7 @@ fn recursive_components_reach_a_conservative_deterministic_fixpoint() {
             result: CallableMemoryResult::Fresh { layout, extent: exact_extent(8) },
         },
         parameters: Vec::new(),
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::Call {
                 callable: "recursive_fresh".into(),
@@ -508,6 +515,7 @@ fn projection_results_use_descriptor_identity_not_candidate_shape() {
             definition: source.identity.root,
             object: Some(source.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::ProjectObject {
                 source: source.identity,
@@ -691,6 +699,7 @@ fn chained_projection_and_reuse_effect_ancestry_are_transitive() {
             definition: source.identity.root,
             object: Some(source.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::ProjectObject {
                 source: source.identity,
@@ -728,6 +737,7 @@ fn chained_projection_and_reuse_effect_ancestry_are_transitive() {
             definition: input.identity.root,
             object: Some(input.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::Reuse { old: input.identity, new: reused.clone() },
             Operation::ReturnObject { object: reused.identity },
@@ -771,6 +781,7 @@ fn shared_results_and_transitive_alias_effects_are_checked() {
             ParameterBinding { definition: left.identity.root, object: Some(left.clone()) },
             ParameterBinding { definition: right.identity.root, object: Some(right.clone()) },
         ],
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::MergeObjectAliases {
                 sources: vec![left.identity, right.identity],
@@ -831,6 +842,7 @@ fn shared_results_and_transitive_alias_effects_are_checked() {
             ParameterBinding { definition: first.identity.root, object: Some(first.clone()) },
             ParameterBinding { definition: second.identity.root, object: Some(second.clone()) },
         ],
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::Store { place: place(first, AccessMode::Write), width: MemoryWidth::I64 },
             Operation::Store { place: place(second, AccessMode::Write), width: MemoryWidth::I64 },
@@ -938,6 +950,7 @@ fn consume_retain_escape_and_sec078_alias_laundering_matrix_rejects() {
             definition: input.identity.root,
             object: Some(input.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![Operation::Retain { object: input.identity }],
     });
     assert_rule(stale_effect, RuleId::CheckedCallableContract);
@@ -962,6 +975,7 @@ fn transitive_retain_effects_are_recomputed_through_the_final_call_graph() {
             definition: leaf_input.identity.root,
             object: Some(leaf_input.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![Operation::Retain { object: leaf_input.identity }],
     };
     let wrapper_input = object(1, 1, layout, 8, Provenance::Unknown);
@@ -980,6 +994,7 @@ fn transitive_retain_effects_are_recomputed_through_the_final_call_graph() {
             definition: wrapper_input.identity.root,
             object: Some(wrapper_input.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![Operation::Call {
             callable: "retain_leaf".into(),
             arguments: vec![CallArgument::Object(wrapper_input.identity)],
@@ -1018,6 +1033,7 @@ fn projected_borrow_cannot_be_promoted_to_retained_authority() {
             definition: input.identity.root,
             object: Some(input.clone()),
         }],
+        scalar_results: Vec::new(),
         operations: vec![
             Operation::ProjectObject {
                 source: input.identity,
@@ -1076,6 +1092,7 @@ fn call_rule_mutation_matrix_kills_each_authority_weakening() {
             result: CallableMemoryResult::Shared(BTreeSet::new()),
         },
         parameters: Vec::new(),
+        scalar_results: Vec::new(),
         operations: Vec::new(),
     });
     mutations.push(("accept-empty-shared", empty_shared, RuleId::CheckedCallableContract));
@@ -1084,6 +1101,7 @@ fn call_rule_mutation_matrix_kills_each_authority_weakening() {
     unknown_fresh.functions.push(CandidateFunction {
         name: "unknown".into(),
         contract: CallableMemoryContract::unknown(0),
+        scalar_results: Vec::new(),
         parameters: Vec::new(),
         operations: Vec::new(),
     });

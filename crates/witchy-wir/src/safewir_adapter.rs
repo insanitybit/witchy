@@ -179,7 +179,27 @@ pub fn validate_final_wir_report(
     inputs: FinalWirValidationInputs,
     budget: ValidationBudget,
 ) -> Result<ValidationReport, FinalWirValidationError> {
-    let functions = derive_final_function_contracts(module, &inputs.functions)?;
+    let function_contracts = derive_final_function_contracts(module, &inputs.functions)?;
+    let scalar_result_signatures = module
+        .funcs
+        .iter()
+        .map(|function| {
+            let results = function
+                .ret
+                .iter()
+                .map(|result| {
+                    if !is_scalar_result_type(result) {
+                        return Err(FinalWirValidationError::function(
+                            &function.name,
+                            "value-returning callables require the deferred return-value def-use adapter",
+                        ));
+                    }
+                    Ok(result.kind())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((function.name.clone(), results))
+        })
+        .collect::<Result<BTreeMap<_, _>, FinalWirValidationError>>()?;
     let declared_imports = module
         .imports
         .iter()
@@ -235,11 +255,18 @@ pub fn validate_final_wir_report(
                     &function.name,
                     format!("reaching-definition preflight rejected final WIR: {error}"),
                 ))?;
-            let contract = functions
+            let contract = function_contracts
                 .get(&function.name)
                 .expect("derived and declared function contract census was checked")
                 .clone();
-            FunctionAdapter::new(function, contract, reaching, &inputs.layouts)?.adapt()
+            FunctionAdapter::new(
+                function,
+                contract,
+                reaching,
+                &inputs.layouts,
+                &function_contracts,
+                &scalar_result_signatures,
+            )?.adapt()
         })
         .collect::<Result<Vec<_>, _>>()?;
     let candidate = CandidateModule {
@@ -258,6 +285,17 @@ pub fn validate_final_wir_report(
         post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
     };
     Ok(safewir_validate::validate_candidate(&candidate, budget)?)
+}
+
+fn is_scalar_result_type(ty: &crate::wir::WirTy) -> bool {
+    matches!(
+        ty,
+        crate::wir::WirTy::Int
+            | crate::wir::WirTy::Float
+            | crate::wir::WirTy::Bool
+            | crate::wir::WirTy::V128
+            | crate::wir::WirTy::Slot
+    )
 }
 
 /// Derive the only callable contract which final WIR determines without a
@@ -610,6 +648,8 @@ struct FunctionAdapter<'a> {
     function: &'a WirFunc,
     layouts: LayoutInterner,
     contract: CallableMemoryContract,
+    function_contracts: &'a BTreeMap<String, CallableMemoryContract>,
+    scalar_result_signatures: &'a BTreeMap<String, Vec<Kind>>,
     reaching: ReachingDefinitions,
     next_definition: u32,
     next_control: u32,
@@ -637,6 +677,8 @@ impl<'a> FunctionAdapter<'a> {
         contract: CallableMemoryContract,
         reaching: ReachingDefinitions,
         layouts: &LayoutBundle,
+        function_contracts: &'a BTreeMap<String, CallableMemoryContract>,
+        scalar_result_signatures: &'a BTreeMap<String, Vec<Kind>>,
     ) -> Result<Self, FinalWirValidationError> {
         if function.raw_body.is_some() {
             return Err(FinalWirValidationError::function(
@@ -650,12 +692,10 @@ impl<'a> FunctionAdapter<'a> {
                 "WIR parameters contradict the checked callable contract",
             ));
         }
-        if !function.ret.is_empty()
-            || !matches!(contract.result, CallableMemoryResult::NoMemory)
-        {
+        if !matches!(contract.result, CallableMemoryResult::NoMemory) {
             return Err(FinalWirValidationError::function(
                 &function.name,
-                "value-returning callables require the deferred return-value def-use adapter",
+                "callable object results require the deferred result-definition adapter",
             ));
         }
         let (_, layouts) = LayoutBundle::decode_canonical(&layouts.canonical_bytes()).map_err(|error| {
@@ -668,6 +708,8 @@ impl<'a> FunctionAdapter<'a> {
             function,
             layouts,
             contract,
+            function_contracts,
+            scalar_result_signatures,
             reaching,
             next_definition: 1,
             next_control: 1,
@@ -743,6 +785,7 @@ impl<'a> FunctionAdapter<'a> {
         Ok(CandidateFunction {
             name: self.function.name.clone(),
             contract: self.contract,
+            scalar_results: self.function.ret.iter().map(crate::wir::WirTy::kind).collect(),
             parameters: self.parameters,
             operations: self.operations,
         })
@@ -1037,6 +1080,108 @@ impl<'a> FunctionAdapter<'a> {
         Ok(())
     }
 
+    /// Elaborate a direct multi-result call only when every result is a
+    /// mechanically typed scalar and the callee has a checked no-memory
+    /// contract. Results receive fresh scalar DefinitionIds tied to the
+    /// shared reaching-definition graph; they never become object roots.
+    fn direct_scalar_call_results(
+        &mut self,
+        callable: &str,
+        args: &[WirExpr],
+        destinations: &[String],
+        site: &StructuralSite,
+    ) -> Result<(), FinalWirValidationError> {
+        if destinations.is_empty() {
+            return Err(self.error("multi-result call must bind at least one scalar result"));
+        }
+        let contract = self.function_contracts.get(callable).ok_or_else(|| {
+            self.error(format!(
+                "multi-result call `{callable}` requires one checked direct local callee contract"
+            ))
+        })?;
+        if !matches!(contract.result, CallableMemoryResult::NoMemory) {
+            return Err(self.error(format!(
+                "multi-result call `{callable}` has a memory-bearing result contract"
+            )));
+        }
+        let results = self.scalar_result_signatures.get(callable).ok_or_else(|| {
+            self.error(format!(
+                "multi-result call `{callable}` has no exact final-WIR scalar signature"
+            ))
+        })?;
+        if results.is_empty() || results.len() != destinations.len() {
+            return Err(self.error(format!(
+                "multi-result call `{callable}` destination arity contradicts its exact scalar signature"
+            )));
+        }
+        let mut seen_destinations = BTreeSet::new();
+        let mut definitions = Vec::with_capacity(destinations.len());
+        for (index, destination) in destinations.iter().enumerate() {
+            if !seen_destinations.insert(destination) {
+                return Err(self.error(format!(
+                    "multi-result call `{callable}` repeats destination `{destination}`"
+                )));
+            }
+            let binding = self.local(destination)?;
+            if binding.memory_root {
+                return Err(self.error(format!(
+                    "multi-result call `{callable}` destination `{destination}` is an authenticated memory root"
+                )));
+            }
+            let actual = self.local_type(destination)?;
+            if !is_scalar_result_type(actual) || actual.kind() != results[index] {
+                return Err(self.error(format!(
+                    "multi-result call `{callable}` destination `{destination}` contradicts scalar result {index}"
+                )));
+            }
+            let result = u32::try_from(index).map_err(|_| self.error("call result index space exhausted"))?;
+            let destination_site = site.projected(
+                crate::safewir_reaching_defs::SiteStep::Destination(result),
+            );
+            let reaching = self.reaching.definition_at(&destination_site).ok_or_else(|| {
+                self.error("multi-result call destination has no structural reaching-definition identity")
+            })?;
+            if !matches!(
+                self.reaching.definition(reaching).map(|definition| &definition.kind),
+                Some(ReachingDefinitionKind::CallResult { local, result: found, indirect: false })
+                    if local == destination && *found == result
+            ) {
+                return Err(self.error(format!(
+                    "multi-result call `{callable}` destination `{destination}` does not match its exact direct call result"
+                )));
+            }
+            let definition = self.fresh_definition()?;
+            if self.reaching_scalar_definitions.insert(reaching, definition).is_some() {
+                return Err(self.error("multi-result call result reaching definition was bound twice"));
+            }
+            definitions.push(definition);
+        }
+        let arguments = args
+            .iter()
+            .map(|argument| self.direct_call_argument(argument))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.operations.push(Operation::Call {
+            callable: callable.into(),
+            arguments,
+            result: None,
+        });
+        self.operations.push(Operation::BindCallScalarResults {
+            callable: callable.into(),
+            results: definitions,
+        });
+        Ok(())
+    }
+
+    fn local_type(&self, name: &str) -> Result<&crate::wir::WirTy, FinalWirValidationError> {
+        self.function
+            .params
+            .iter()
+            .chain(self.function.locals.iter())
+            .find(|local| local.name == name)
+            .map(|local| &local.ty)
+            .ok_or_else(|| self.error(format!("unknown local `{name}`")))
+    }
+
     fn error(&self, message: impl Into<String>) -> FinalWirValidationError {
         FinalWirValidationError::function(&self.function.name, message)
     }
@@ -1243,6 +1388,9 @@ impl<'a> FunctionAdapter<'a> {
                     )));
                 }
                 let reaching = read.reaching.iter().next().expect("length checked");
+                if let Some(definition) = self.reaching_scalar_definitions.get(&reaching) {
+                    return Ok(*definition);
+                }
                 let parameter_index = self
                     .function
                     .params
@@ -1258,11 +1406,6 @@ impl<'a> FunctionAdapter<'a> {
                         "branch condition requires an unchanged scalar parameter; local `{name}` reaches a write, initializer, or join"
                     )));
                 }
-                // The graph has proved the producer identity, but the
-                // candidate validator currently admits scalar facts only via
-                // literal `DefineScalar`.  Do not smuggle a runtime parameter
-                // through that literal-only fact domain: a future symbolic
-                // scalar lattice must carry its range/width contract first.
                 Err(self.error(
                     "dynamic scalar parameters require the deferred validator scalar-fact lattice",
                 ))
@@ -1488,7 +1631,10 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::SetLocal { local, value: WirExpr::SafeLoad { place, kind: Kind::I32 } } => {
                 self.bind_header_count_local(local, place, site)
             }
-            WirNode::SetLocal { .. } | WirNode::CallStoreMulti { .. } => Err(self.error(
+            WirNode::CallStoreMulti { func, args, dests } => {
+                self.direct_scalar_call_results(func, args, dests, site)
+            }
+            WirNode::SetLocal { .. } => Err(self.error(
                 "mutable local definitions require the deferred reaching-definition graph",
             )),
             WirNode::CallIndirectStoreMulti { .. } => Err(self.error(
@@ -1576,9 +1722,7 @@ impl<'a> FunctionAdapter<'a> {
                 self.operations.push(Operation::Branch { target, condition });
                 Ok(())
             }
-            WirNode::Push(_) | WirNode::Return(Some(_)) => Err(self.error(
-                "value returns require the deferred return-value def-use adapter",
-            )),
+            WirNode::Push(value) | WirNode::Return(Some(value)) => self.expr(value),
             WirNode::Drop(WirExpr::Call { func, args }) | WirNode::Do(WirExpr::Call { func, args }) => {
                 self.direct_void_call(func, args)
             }
@@ -2368,8 +2512,17 @@ mod tests {
                 parameters: Vec::new(),
                 result: CallableMemoryResult::NoMemory,
             };
+            let contracts = BTreeMap::from([(function.name.clone(), contract.clone())]);
+            let signatures = BTreeMap::from([(function.name.clone(), Vec::new())]);
             let reaching = analyze_reaching_definitions(&function, ReachingDefinitionBudget::default()).unwrap();
-            FunctionAdapter::new(&function, contract, reaching, &layouts).unwrap().adapt()
+            FunctionAdapter::new(
+                &function,
+                contract,
+                reaching,
+                &layouts,
+                &contracts,
+                &signatures,
+            ).unwrap().adapt()
                 .expect_err("a source mutation must not receive SafeWIR admission")
                 .to_string()
         };
@@ -3258,9 +3411,17 @@ mod tests {
         });
         let function = &conditional.funcs[0];
         let contract = checked.functions.get("read").unwrap().clone();
+        let signatures = BTreeMap::from([("read".into(), Vec::new())]);
         let reaching = analyze_reaching_definitions(function, ReachingDefinitionBudget::default())
             .expect("the structural graph must model the cfg join");
-        let mut adapter = FunctionAdapter::new(function, contract, reaching, &layouts)
+        let mut adapter = FunctionAdapter::new(
+            function,
+            contract,
+            reaching,
+            &layouts,
+            &checked.functions,
+            &signatures,
+        )
             .expect("the adapter setup must not trust a mutable-local binding");
         let site = StructuralSite::root()
             .projected(crate::safewir_reaching_defs::SiteStep::Node(1))
@@ -3941,5 +4102,134 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("no canonical ABI memory contract"), "{error}");
+    }
+
+    #[test]
+    fn final_wir_binds_direct_scalar_multi_call_results_to_exact_reaching_definitions() {
+        let (layouts, _) = layouts();
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![
+                WirFunc {
+                    name: "pair".into(),
+                    params: Vec::new(),
+                    ret: vec![WirTy::Int, WirTy::Bool],
+                    locals: Vec::new(),
+                    body: vec![
+                        WirNode::Push(WirExpr::ConstI64(7)),
+                        WirNode::Push(WirExpr::ConstI32(1)),
+                    ],
+                    raw_body: None,
+                },
+                WirFunc {
+                    name: "run".into(),
+                    params: Vec::new(),
+                    ret: Vec::new(),
+                    locals: vec![
+                        WirLocal { name: "value".into(), ty: WirTy::Int },
+                        WirLocal { name: "flag".into(), ty: WirTy::Bool },
+                    ],
+                    body: vec![
+                        WirNode::CallStoreMulti {
+                            func: "pair".into(),
+                            args: Vec::new(),
+                            dests: vec!["value".into(), "flag".into()],
+                        },
+                        WirNode::If {
+                            cond: WirExpr::GetLocal("flag".into()),
+                            then_: Vec::new(),
+                            els: Vec::new(),
+                            result: None,
+                        },
+                    ],
+                    raw_body: None,
+                },
+            ],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let inputs = FinalWirValidationInputs {
+            layouts,
+            functions: BTreeMap::from([(
+                "pair".into(),
+                CallableMemoryContract {
+                    parameters: Vec::new(),
+                    result: CallableMemoryResult::NoMemory,
+                },
+            )]),
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+        };
+        validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs,
+            ValidationBudget::default(),
+        ).expect("scalar direct call results must bind exact reaching definitions");
+    }
+
+    #[test]
+    fn final_wir_rejects_scalar_multi_call_result_type_or_destination_forgery() {
+        let (layouts, _) = layouts();
+        let mut module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![
+                WirFunc {
+                    name: "value".into(),
+                    params: Vec::new(),
+                    ret: vec![WirTy::Int],
+                    locals: Vec::new(),
+                    body: vec![WirNode::Push(WirExpr::ConstI64(1))],
+                    raw_body: None,
+                },
+                WirFunc {
+                    name: "run".into(),
+                    params: Vec::new(),
+                    ret: Vec::new(),
+                    locals: vec![WirLocal { name: "out".into(), ty: WirTy::Float }],
+                    body: vec![WirNode::CallStoreMulti {
+                        func: "value".into(),
+                        args: Vec::new(),
+                        dests: vec!["out".into()],
+                    }],
+                    raw_body: None,
+                },
+            ],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let inputs = || FinalWirValidationInputs {
+            layouts: layouts.clone(),
+            functions: BTreeMap::from([(
+                "value".into(),
+                CallableMemoryContract { parameters: Vec::new(), result: CallableMemoryResult::NoMemory },
+            )]),
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+        };
+        let error = validate_final_wir_report(
+            &module, &[], &[], inputs(), ValidationBudget::default(),
+        ).unwrap_err();
+        assert!(error.to_string().contains("contradicts scalar result"), "{error}");
+
+        module.funcs[1].locals[0].ty = WirTy::Int;
+        module.funcs[0].ret = vec![WirTy::Int, WirTy::Int];
+        module.funcs[0].body.push(WirNode::Push(WirExpr::ConstI64(2)));
+        module.funcs[1].body = vec![WirNode::CallStoreMulti {
+            func: "value".into(),
+            args: Vec::new(),
+            dests: vec!["out".into(), "out".into()],
+        }];
+        let error = validate_final_wir_report(
+            &module, &[], &[], inputs(), ValidationBudget::default(),
+        ).unwrap_err();
+        assert!(error.to_string().contains("repeats destination"), "{error}");
     }
 }

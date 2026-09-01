@@ -75,6 +75,7 @@ fn callable_checker_recomputes_parameter_effects() {
                 definition: identity.root,
                 object: Some(parameter),
             }],
+            scalar_results: Vec::new(),
             operations: vec![Operation::Release { object: identity }],
         }],
         contains_raw_memory: false,

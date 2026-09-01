@@ -102,6 +102,9 @@ pub enum CandidateGcUse {
 pub struct CandidateFunction {
     pub name: String,
     pub contract: CallableMemoryContract,
+    /// Exact final-WIR result signature for scalar-only direct calls.  This is
+    /// mechanical signature data, never a memory-result claim.
+    pub scalar_results: Vec<Kind>,
     pub parameters: Vec<ParameterBinding>,
     pub operations: Vec<Operation>,
 }
@@ -178,6 +181,13 @@ pub enum Operation {
     DefineScalar {
         definition: DefinitionId,
         value: i128,
+    },
+    /// Bind the scalar stack results of a direct call.  The callee's exact
+    /// final-WIR signature and checked no-memory contract authenticate this
+    /// operation; it cannot mint a memory root or numeric range fact.
+    BindCallScalarResults {
+        callable: String,
+        results: Vec<DefinitionId>,
     },
     BindCountParameter {
         definition: DefinitionId,
@@ -406,6 +416,9 @@ struct State {
 #[derive(Clone, PartialEq, Eq)]
 enum ScalarFact {
     Exact(i128),
+    /// An in-scope runtime scalar returned by an authenticated no-memory
+    /// direct callee. It supports control and scalar ABI use only.
+    Runtime,
     CountParameter { parameter: usize },
     HeaderCount {
         object: ObjectIdentity,
@@ -1446,6 +1459,9 @@ impl Validator<'_> {
                 self.define(state, *definition, function, at)?;
                 state.scalars.insert(*definition, ScalarFact::Exact(*value));
             }
+            Operation::BindCallScalarResults { callable, results } => {
+                self.bind_call_scalar_results(function, at, callable, results, state)?;
+            }
             Operation::BindCountParameter { definition, parameter } => {
                 self.bind_count_parameter(function, state, *definition, *parameter, at)?;
             }
@@ -2410,6 +2426,72 @@ impl Validator<'_> {
                     format!("call `{callable}` result contradicts its contract"),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn bind_call_scalar_results(
+        &self,
+        function: &CandidateFunction,
+        at: Option<usize>,
+        callable: &str,
+        results: &[DefinitionId],
+        state: &mut State,
+    ) -> Result<(), ValidationError> {
+        let callee = self.module.functions.iter().find(|candidate| candidate.name == callable).ok_or_else(|| {
+            self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                format!("scalar result binding `{callable}` has no checked direct local callee"),
+            )
+        })?;
+        let contract = self.checked_callables().ordinary(callable).ok_or_else(|| {
+            self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                format!("scalar result binding `{callable}` has no checked callable contract"),
+            )
+        })?;
+        if !matches!(contract.result, CallableMemoryResult::NoMemory)
+            || !matches!(callee.contract.result, CallableMemoryResult::NoMemory)
+        {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                format!("scalar result binding `{callable}` contradicts a memory-bearing result contract"),
+            ));
+        }
+        if results.is_empty() || results.len() != callee.scalar_results.len() {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                format!("scalar result binding `{callable}` contradicts its exact direct result arity"),
+            ));
+        }
+        if callee.scalar_results.iter().any(|kind| kind.is_ref()) {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                format!("scalar result binding `{callable}` contains a non-scalar result kind"),
+            ));
+        }
+        let mut unique = BTreeSet::new();
+        for definition in results {
+            if !unique.insert(*definition) {
+                return Err(self.function_error(
+                    RuleId::CheckedCallableContract,
+                    function,
+                    at,
+                    format!("scalar result binding `{callable}` repeats a DefinitionId"),
+                ));
+            }
+            self.define(state, *definition, function, at)?;
+            state.scalars.insert(*definition, ScalarFact::Runtime);
         }
         Ok(())
     }
@@ -3704,7 +3786,8 @@ impl Validator<'_> {
     ) -> Result<i128, ValidationError> {
         state.scalars.get(&definition).and_then(|fact| match fact {
             ScalarFact::Exact(value) => Some(*value),
-            ScalarFact::CountParameter { .. }
+            ScalarFact::Runtime
+            | ScalarFact::CountParameter { .. }
             | ScalarFact::HeaderCount { .. }
             | ScalarFact::Induction { .. } => None,
         }).ok_or_else(|| {
@@ -4026,7 +4109,8 @@ fn ranges_overlap(
             SizeExpr::Definition(definition) => {
                 match state.scalars.get(definition)? {
                     ScalarFact::Exact(value) => u128::try_from(*value).ok(),
-                    ScalarFact::CountParameter { .. }
+                    ScalarFact::Runtime
+                    | ScalarFact::CountParameter { .. }
                     | ScalarFact::HeaderCount { .. }
                     | ScalarFact::Induction { .. } => None,
                 }
@@ -4116,6 +4200,10 @@ fn definition_sites(input: &[Operation]) -> Vec<DefinitionId> {
     let mut definitions = Vec::new();
     for operation in operations(input) {
         let definition = match operation {
+            Operation::BindCallScalarResults { results, .. } => {
+                definitions.extend(results.iter().copied());
+                continue;
+            }
             Operation::DefineScalar { definition, .. }
             | Operation::BindHeaderCount { definition, .. } => Some(*definition),
             Operation::Alloc { result } => Some(result.identity.root),
@@ -4327,6 +4415,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![Operation::ReturnObject { object: parameter.identity }],
         }
     }
@@ -4362,6 +4451,7 @@ mod tests {
             functions: vec![CandidateFunction {
                 name: "main".into(),
                 contract: no_memory_contract(),
+                scalar_results: Vec::new(),
                 parameters: Vec::new(),
                 operations: vec![
                     Operation::DefineScalar { definition: DefinitionId::new(1), value: 0 },
@@ -4408,6 +4498,7 @@ mod tests {
             functions: vec![CandidateFunction {
                 name: "main".into(),
                 contract: no_memory_contract(),
+                scalar_results: Vec::new(),
                 parameters: Vec::new(),
                 operations: vec![
                     Operation::DefineScalar { definition: DefinitionId::new(1), value: 2 },
@@ -4441,6 +4532,7 @@ mod tests {
             functions: vec![CandidateFunction {
                 name: "main".into(),
                 contract: no_memory_contract(),
+                scalar_results: Vec::new(),
                 parameters: Vec::new(),
                 operations: vec![
                     Operation::Alloc { result: object },
@@ -4471,6 +4563,53 @@ mod tests {
             ValidationDiagnostic::Unsupported(expected),
             "unexpected diagnostic: {error}"
         );
+    }
+
+    #[test]
+    fn scalar_call_result_bindings_require_a_checked_direct_no_memory_scalar_signature() {
+        let mut valid = base_module();
+        valid.functions.push(CandidateFunction {
+            name: "scalar_pair".into(),
+            contract: no_memory_contract(),
+            scalar_results: vec![Kind::I64, Kind::I32],
+            parameters: Vec::new(),
+            operations: Vec::new(),
+        });
+        valid.functions[0].operations.push(Operation::BindCallScalarResults {
+            callable: "scalar_pair".into(),
+            results: vec![DefinitionId::new(40), DefinitionId::new(41)],
+        });
+        validate_candidate(&valid, ValidationBudget::default())
+            .expect("checked scalar result bindings must remain non-memory definitions");
+
+        let mut missing = valid.clone();
+        let Operation::BindCallScalarResults { callable, .. } = missing.functions[0].operations.last_mut().unwrap() else {
+            unreachable!();
+        };
+        *callable = "missing".into();
+        assert_rule(missing, RuleId::CheckedCallableContract);
+
+        let mut arity = valid.clone();
+        let Operation::BindCallScalarResults { results, .. } = arity.functions[0].operations.last_mut().unwrap() else {
+            unreachable!();
+        };
+        results.pop();
+        assert_rule(arity, RuleId::CheckedCallableContract);
+
+        let mut reference = valid.clone();
+        reference.functions[1].scalar_results = vec![Kind::ExternRef];
+        assert_rule(reference, RuleId::CheckedCallableContract);
+
+        let mut memory_result = valid.clone();
+        memory_result.functions[1].contract.result = CallableMemoryResult::Unknown;
+        assert_rule(memory_result, RuleId::CheckedCallableContract);
+
+        let mut duplicate = valid;
+        let Operation::BindCallScalarResults { results, .. } = duplicate.functions[0].operations.last_mut().unwrap() else {
+            unreachable!();
+        };
+        results[1] = results[0];
+        assert_rule(duplicate, RuleId::CheckedCallableContract);
     }
 
     #[test]
@@ -4666,6 +4805,7 @@ mod tests {
                         object: Some(dynamic_object),
                     },
                 ],
+                scalar_results: Vec::new(),
                 operations: Vec::new(),
             }],
             gc: CandidateGcDeclarations::default(),
@@ -4742,6 +4882,7 @@ mod tests {
                     ParameterBinding { definition: object.identity.root, object: Some(object.clone()) },
                     ParameterBinding { definition: index, object: None },
                 ],
+                scalar_results: Vec::new(),
                 operations: vec![
                     Operation::BindCountParameter { definition: capacity, parameter: 0 },
                     Operation::BindHeaderCount { definition: header_count, object: object.identity, component: 0 },
@@ -4848,6 +4989,7 @@ mod tests {
                     ParameterBinding { definition: capacity, object: None },
                     ParameterBinding { definition: root, object: Some(object.clone()) },
                 ],
+                scalar_results: Vec::new(),
                 operations: vec![
                     Operation::BindCountParameter { definition: capacity, parameter: 0 },
                     Operation::BindHeaderCount { definition: header_count, object: object.identity, component: 0 },
@@ -4947,6 +5089,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![
                 Operation::DefineScalar {
                     definition: DefinitionId::new(1),
@@ -5225,6 +5368,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![
                 Operation::Call {
                     callable: "escape".into(),
@@ -5352,6 +5496,7 @@ mod tests {
             functions: vec![CandidateFunction {
                 name: "copy".into(),
                 contract: no_memory_contract(),
+                scalar_results: Vec::new(),
                 parameters: Vec::new(),
                 operations: vec![
                     Operation::Alloc { result: source.clone() },
@@ -5394,6 +5539,7 @@ mod tests {
                 },
             },
             parameters: Vec::new(),
+            scalar_results: Vec::new(),
             operations: vec![
                 Operation::Alloc { result: produced.clone() },
                 Operation::ReturnObject { object: produced.identity },
@@ -5432,6 +5578,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![Operation::ReturnObject { object: parameter.identity }],
         });
         assert_rule(module, RuleId::CheckedCallableContract);
@@ -5498,6 +5645,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter),
             }],
+            scalar_results: Vec::new(),
             operations: Vec::new(),
         });
         assert_rule(module, RuleId::CheckedCallableContract);
@@ -5523,6 +5671,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![Operation::ReturnObject { object: parameter.identity }],
         });
         assert_rule(module, RuleId::CheckedCallableContract);
@@ -5542,6 +5691,7 @@ mod tests {
                 },
             },
             parameters: Vec::new(),
+            scalar_results: Vec::new(),
             operations: vec![
                 Operation::Alloc { result: produced.clone() },
                 Operation::Retain { object: produced.identity },
@@ -5718,6 +5868,7 @@ mod tests {
                 },
             },
             parameters: Vec::new(),
+            scalar_results: Vec::new(),
             operations: Vec::new(),
         });
         assert_rule(module, RuleId::CheckedCallableContract);
@@ -5736,6 +5887,7 @@ mod tests {
                 result: CallableMemoryResult::Shared(BTreeSet::from([0])),
             },
             parameters: Vec::new(),
+            scalar_results: Vec::new(),
             operations: Vec::new(),
         });
         assert_rule(module, RuleId::CheckedCallableContract);
@@ -5779,6 +5931,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![Operation::Store {
                 place: place(parameter, AccessMode::Write, 0, 8),
                 width: MemoryWidth::I64,
@@ -5817,6 +5970,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![
                 Operation::Call {
                     callable: "identity".into(),
@@ -5902,6 +6056,7 @@ mod tests {
         module.functions.push(CandidateFunction {
             name: "unknown".into(),
             contract: CallableMemoryContract::unknown(0),
+            scalar_results: Vec::new(),
             parameters: Vec::new(),
             operations: Vec::new(),
         });
@@ -6047,6 +6202,7 @@ mod tests {
                 definition: parameter.identity.root,
                 object: Some(parameter.clone()),
             }],
+            scalar_results: Vec::new(),
             operations: vec![Operation::Release { object: parameter.identity }],
         });
         validate_candidate(&owned, ValidationBudget::default()).unwrap();

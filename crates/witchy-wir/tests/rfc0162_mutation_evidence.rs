@@ -86,6 +86,7 @@ fn base_module() -> CandidateModule {
                 result: CallableMemoryResult::NoMemory,
             },
             parameters: Vec::new(),
+            scalar_results: Vec::new(),
             operations: vec![Operation::Alloc { result: object(layout) }],
         }],
         contains_raw_memory: false,
@@ -242,6 +243,7 @@ fn initial_parameter_facts_respect_the_fact_budget() {
             definition: DefinitionId::new(1),
             object: None,
         }],
+        scalar_results: Vec::new(),
         operations: Vec::new(),
     }];
     let error = validate_candidate(
