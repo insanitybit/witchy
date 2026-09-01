@@ -931,12 +931,161 @@ impl<'a> FunctionAdapter<'a> {
         sequence: &WirSeq,
         parent: &StructuralSite,
     ) -> Result<(), FinalWirValidationError> {
-        for (index, node) in sequence.iter().enumerate() {
-            let index = u32::try_from(index)
+        let mut index = 0;
+        while index < sequence.len() {
+            if self.try_counted_loop_at(sequence, index, parent)? {
+                index += 2;
+                continue;
+            }
+            let node = &sequence[index];
+            let node_index = u32::try_from(index)
                 .map_err(|_| self.error("structured node index space exhausted"))?;
-            self.node_at(node, &parent.projected(crate::safewir_reaching_defs::SiteStep::Node(index)))?;
+            self.node_at(node, &parent.projected(crate::safewir_reaching_defs::SiteStep::Node(node_index)))?;
+            index += 1;
         }
         Ok(())
+    }
+
+    /// Recognize exactly the one source-minted counted-loop shape.  This is a
+    /// structural WIR pattern, not a helper-name policy: every spelling must
+    /// prove the same init, signed exit, unit step, backedge, and def-use join.
+    fn try_counted_loop_at(
+        &mut self,
+        sequence: &WirSeq,
+        index: usize,
+        parent: &StructuralSite,
+    ) -> Result<bool, FinalWirValidationError> {
+        let Some(WirNode::SetLocal { local, value: WirExpr::ConstI32(0) }) = sequence.get(index) else {
+            return Ok(false);
+        };
+        let Some(WirNode::Block { label: exit, result: None, body }) = sequence.get(index + 1) else {
+            return Ok(false);
+        };
+        let [WirNode::Loop { label: again, body: loop_body }] = body.as_slice() else {
+            return Ok(false);
+        };
+        if loop_body.len() < 3 {
+            return Err(self.error("counted loop requires exit, body, unit step, and backedge"));
+        }
+        let Some(WirNode::Br { target, cond: Some(condition) }) = loop_body.first() else {
+            return Err(self.error("counted loop requires its signed exit branch first"));
+        };
+        if target != exit {
+            return Err(self.error("counted loop exit must branch to its immediately enclosing block"));
+        }
+        let WirExpr::Binary { op: crate::wir::BinOp::Ge, kind: Kind::I32, lhs, rhs } = condition else {
+            return Err(self.error("counted loop requires exact signed i32 `induction >= bound` exit semantics"));
+        };
+        if !matches!(lhs.as_ref(), WirExpr::GetLocal(name) if name == local) {
+            return Err(self.error("counted loop exit lhs must be its induction local"));
+        }
+        let Some(WirNode::SetLocal { local: stepped, value: WirExpr::Binary { op: crate::wir::BinOp::Add, kind: Kind::I32, lhs: step_lhs, rhs: step_rhs } }) = loop_body.get(loop_body.len() - 2) else {
+            return Err(self.error("counted loop requires exact unit induction update before its backedge"));
+        };
+        if stepped != local
+            || !matches!(step_lhs.as_ref(), WirExpr::GetLocal(name) if name == local)
+            || !matches!(step_rhs.as_ref(), WirExpr::ConstI32(1))
+        {
+            return Err(self.error("counted loop requires exact `induction = induction + 1` update"));
+        }
+        if !matches!(loop_body.last(), Some(WirNode::Br { target, cond: None }) if target == again) {
+            return Err(self.error("counted loop requires an unconditional backedge after its unit update"));
+        }
+
+        let init_site = parent.projected(crate::safewir_reaching_defs::SiteStep::Node(
+            u32::try_from(index).map_err(|_| self.error("counted-loop init index exhausted"))?,
+        ));
+        let block_site = parent.projected(crate::safewir_reaching_defs::SiteStep::Node(
+            u32::try_from(index + 1).map_err(|_| self.error("counted-loop block index exhausted"))?,
+        ));
+        let loop_site = block_site
+            .projected(crate::safewir_reaching_defs::SiteStep::Region(
+                crate::safewir_reaching_defs::StructuredRegion::BlockBody,
+            ))
+            .projected(crate::safewir_reaching_defs::SiteStep::Node(0));
+        let init = self.reaching.definition_at(&init_site.projected(
+            crate::safewir_reaching_defs::SiteStep::Write,
+        )).ok_or_else(|| self.error("counted-loop init has no structural write definition"))?;
+        let step_site = loop_site
+            .projected(crate::safewir_reaching_defs::SiteStep::Region(
+                crate::safewir_reaching_defs::StructuredRegion::LoopBody,
+            ))
+            .projected(crate::safewir_reaching_defs::SiteStep::Node(
+                u32::try_from(loop_body.len() - 2).map_err(|_| self.error("counted-loop step index exhausted"))?,
+            ))
+            .projected(crate::safewir_reaching_defs::SiteStep::Write);
+        let step = self.reaching.definition_at(&step_site)
+            .ok_or_else(|| self.error("counted-loop step has no structural write definition"))?;
+        let local_ordinal = self.function.params.len().checked_add(
+            self.function.locals.iter().position(|candidate| candidate.name == *local)
+                .ok_or_else(|| self.error("counted-loop induction is not a declared local"))?,
+        ).and_then(|ordinal| u32::try_from(ordinal).ok())
+            .ok_or_else(|| self.error("counted-loop induction local ordinal exhausted"))?;
+        let expected_join_site = loop_site.projected(crate::safewir_reaching_defs::SiteStep::Join {
+            kind: crate::safewir_reaching_defs::JoinKind::LoopHeader,
+            local: local_ordinal,
+        });
+        let join = self.reaching.joins().values().find(|join| {
+            join.local == *local
+                && join.kind == crate::safewir_reaching_defs::JoinKind::LoopHeader
+                && join.site == expected_join_site
+        }).ok_or_else(|| self.error("counted-loop induction has no exact loop-header join"))?;
+        if join.predecessors.len() != 2
+            || !join.predecessors[0].contains(init)
+            || !join.predecessors[1].contains(step)
+            || join.predecessors.iter().any(|predecessor| predecessor.len() != 1)
+        {
+            return Err(self.error("counted-loop induction join must have only init and unit-step predecessors"));
+        }
+        let local_binding = self.local(local)?;
+        if local_binding.memory_root {
+            return Err(self.error("counted-loop induction cannot be a memory root"));
+        }
+        let exit_operand = self.node_operand_site(
+            &loop_body[0],
+            &loop_site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                crate::safewir_reaching_defs::StructuredRegion::LoopBody,
+            )).projected(crate::safewir_reaching_defs::SiteStep::Node(0)),
+            condition,
+        )?;
+        let condition_operands = crate::safewir_reaching_defs::structural_expr_operands(condition, &exit_operand)
+            .ok_or_else(|| self.error("counted-loop exit has no structural operands"))?;
+        let executable = condition_operands.into_iter().filter(|operand| !operand.claim_only).collect::<Vec<_>>();
+        if executable.len() != 2 {
+            return Err(self.error("counted-loop exit has ambiguous structural operands"));
+        }
+        let induction_read = self.reaching.reads().iter().find(|read| read.site == executable[0].site)
+            .ok_or_else(|| self.error("counted-loop induction exit read is absent from reaching definitions"))?;
+        if induction_read.reaching.len() != 1 || !induction_read.reaching.contains(join.definition) {
+            return Err(self.error("counted-loop induction exit read does not reach its loop-header join"));
+        }
+        let bound = self.scalar_at_read(rhs, &executable[1].site, "counted-loop bound")?;
+
+        self.operations.push(Operation::DefineScalar { definition: local_binding.definition, value: 0 });
+        if self.reaching_scalar_definitions.insert(join.definition, local_binding.definition).is_some() {
+            return Err(self.error("counted-loop loop-header join was bound twice"));
+        }
+        let control = self.push_control(again)?;
+        let previous = self.active_index_guard.replace((local_binding.definition, bound));
+        let body_site = loop_site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+            crate::safewir_reaching_defs::StructuredRegion::LoopBody,
+        ));
+        let outer = std::mem::take(&mut self.operations);
+        for (body_index, node) in loop_body.iter().enumerate().skip(1).take(loop_body.len() - 3) {
+            let body_index = u32::try_from(body_index)
+                .map_err(|_| self.error("counted-loop body index exhausted"))?;
+            self.node_at(node, &body_site.projected(crate::safewir_reaching_defs::SiteStep::Node(body_index)))?;
+        }
+        let body = std::mem::replace(&mut self.operations, outer);
+        self.active_index_guard = previous;
+        self.controls.pop();
+        self.operations.push(Operation::CountedLoop {
+            control,
+            induction: local_binding.definition,
+            bound,
+            body,
+        });
+        Ok(true)
     }
 
     fn nested_seq_at(
@@ -1735,7 +1884,14 @@ impl FunctionAdapter<'_> {
         role: &'static str,
     ) -> Result<DefinitionId, FinalWirValidationError> {
         match expression {
-            WirExpr::GetLocal(name) => self.stable_scalar_parameter_definition(name, role),
+            WirExpr::GetLocal(name) => {
+                if let Some((induction, _)) = self.active_index_guard {
+                    if self.local(name)?.definition == induction {
+                        return Ok(induction);
+                    }
+                }
+                self.stable_scalar_parameter_definition(name, role)
+            }
             _ => {
                 let Some(value) = constant_operand(expression) else {
                     return Err(FinalWirValidationError::module(format!(
@@ -2041,6 +2197,84 @@ mod tests {
             ValidationBudget::default(),
         ).expect_err("signed guards stay outside the dynamic admission subset");
         assert!(error.to_string().contains("branch conditions require one exact reaching scalar definition"), "{error}");
+    }
+
+    #[test]
+    fn counted_loop_matcher_rejects_mutated_source_shapes_before_admission() {
+        let loop_function = |init: i32, exit_op: crate::wir::BinOp, step: i32, extra_write: bool| WirFunc {
+            name: "counted".into(),
+            params: Vec::new(),
+            ret: Vec::new(),
+            locals: vec![
+                WirLocal { name: "i".into(), ty: WirTy::Bool },
+                WirLocal { name: "bound".into(), ty: WirTy::Bool },
+            ],
+            body: vec![
+                WirNode::SetLocal { local: "i".into(), value: WirExpr::ConstI32(init) },
+                WirNode::Block {
+                    label: "done".into(),
+                    result: None,
+                    body: vec![WirNode::Loop {
+                        label: "again".into(),
+                        body: [
+                            vec![WirNode::Br {
+                                target: "done".into(),
+                                cond: Some(WirExpr::Binary {
+                                    op: exit_op,
+                                    kind: Kind::I32,
+                                    lhs: Box::new(WirExpr::GetLocal("i".into())),
+                                    rhs: Box::new(WirExpr::GetLocal("bound".into())),
+                                }),
+                            }],
+                            extra_write.then_some(WirNode::If {
+                                cond: WirExpr::ConstI32(1),
+                                then_: vec![
+                                    WirNode::SetLocal { local: "i".into(), value: WirExpr::ConstI32(7) },
+                                    WirNode::Br { target: "again".into(), cond: None },
+                                ],
+                                els: Vec::new(),
+                                result: None,
+                            }).into_iter().collect(),
+                            vec![
+                                WirNode::SetLocal {
+                                    local: "i".into(),
+                                    value: WirExpr::Binary {
+                                        op: crate::wir::BinOp::Add,
+                                        kind: Kind::I32,
+                                        lhs: Box::new(WirExpr::GetLocal("i".into())),
+                                        rhs: Box::new(WirExpr::ConstI32(step)),
+                                    },
+                                },
+                                WirNode::Br { target: "again".into(), cond: None },
+                            ],
+                        ].concat(),
+                    }],
+                },
+            ],
+            raw_body: None,
+        };
+        let check = |function: WirFunc| {
+            let (layouts, _) = layouts();
+            let contract = CallableMemoryContract {
+                parameters: Vec::new(),
+                result: CallableMemoryResult::NoMemory,
+            };
+            let reaching = analyze_reaching_definitions(&function, ReachingDefinitionBudget::default()).unwrap();
+            FunctionAdapter::new(&function, contract, reaching, &layouts).unwrap().adapt()
+                .expect_err("a source mutation must not receive SafeWIR admission")
+                .to_string()
+        };
+
+        assert!(check(loop_function(1, crate::wir::BinOp::Ge, 1, false))
+            .contains("mutable local definitions"));
+        assert!(check(loop_function(0, crate::wir::BinOp::GeU, 1, false))
+            .contains("exact signed i32"));
+        assert!(check(loop_function(0, crate::wir::BinOp::Ge, 2, false))
+            .contains("exact `induction = induction + 1`"));
+        let bad_bound = check(loop_function(0, crate::wir::BinOp::Ge, 1, false));
+        assert!(bad_bound.contains("counted-loop bound reaches a write, initializer, call result, or join"), "{bad_bound}");
+        let bad_join = check(loop_function(0, crate::wir::BinOp::Ge, 1, true));
+        assert!(bad_join.contains("only init and unit-step predecessors"), "{bad_join}");
     }
 
     fn semantic_place(layout: LayoutId) -> Box<SafePlaceExpr> {

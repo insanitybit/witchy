@@ -193,6 +193,15 @@ pub enum Operation {
         bound: DefinitionId,
         body: Vec<Operation>,
     },
+    /// A mechanically recognized `i = 0; loop { break if i >=_s bound;
+    /// body; i = i + 1; continue }` region.  The source adapter, rather than
+    /// a candidate declaration, supplies the fixed init/step/exit semantics.
+    CountedLoop {
+        control: ControlId,
+        induction: DefinitionId,
+        bound: DefinitionId,
+        body: Vec<Operation>,
+    },
     Alloc {
         result: ObjectRef,
     },
@@ -403,6 +412,9 @@ enum ScalarFact {
         component: u32,
         capacity: DefinitionId,
     },
+    /// Scoped to the body of [`Operation::CountedLoop`].  It is deliberately
+    /// not an exact value and is removed when the loop exits.
+    Induction { bound: DefinitionId },
 }
 
 #[derive(Default)]
@@ -1000,7 +1012,8 @@ impl Validator<'_> {
                         nested,
                     )?;
                 }
-                Operation::Block { control, body } | Operation::Loop { control, body } => {
+                Operation::Block { control, body } | Operation::Loop { control, body }
+                | Operation::CountedLoop { control, body, .. } => {
                     let nested = depth.checked_add(1).ok_or_else(|| {
                         self.function_error(
                             RuleId::BudgetExhaustionFailsClosed,
@@ -1447,6 +1460,19 @@ impl Validator<'_> {
                     body,
                     state,
                     control_depth,
+                    at,
+                )?;
+            }
+            Operation::CountedLoop { control, induction, bound, body } => {
+                self.validate_counted_loop(
+                    function,
+                    *control,
+                    *induction,
+                    *bound,
+                    body,
+                    state,
+                    control_depth,
+                    controls,
                     at,
                 )?;
             }
@@ -3211,18 +3237,120 @@ impl Validator<'_> {
         if !matches!(state.scalars.get(&bound), Some(ScalarFact::HeaderCount { .. })) {
             return Err(self.function_error(RuleId::ExactRangeSource, function, at, "index guard bound is not an authenticated header count"));
         }
-        if body.iter().any(|operation| !matches!(operation, Operation::CheckedIndex { .. } | Operation::Load { .. } | Operation::Store { .. } | Operation::Project { .. })) {
-            return Err(self.function_error(RuleId::ConservativeJoin, function, at, "index proof body contains control, lifetime, call, or definition transfer"));
-        }
         let mut guarded = state.clone();
         guarded.index_below.insert((index, bound));
+        self.validate_index_region(function, index, bound, body, &mut guarded, control_depth, at)
+    }
+
+    /// Check the deliberately tiny body vocabulary shared by explicit guards
+    /// and canonical counted loops.  Calling the generic structured validator
+    /// here would make later additions to `Operation` silently widen a range
+    /// proof's authority surface.
+    fn validate_index_region(
+        &mut self,
+        function: &CandidateFunction,
+        index: DefinitionId,
+        bound: DefinitionId,
+        body: &[Operation],
+        state: &mut State,
+        control_depth: usize,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        if body.iter().any(|operation| !matches!(operation,
+            Operation::CheckedIndex { .. } | Operation::Load { .. } | Operation::Store { .. } | Operation::Project { .. }
+        )) {
+            return Err(self.function_error(
+                RuleId::ConservativeJoin,
+                function,
+                at,
+                "index proof body contains control, lifetime, call, or definition transfer",
+            ));
+        }
         let mut flows = ControlFlows::default();
         let falls_through = self.validate_operations(
-            function, body, &mut guarded, control_depth, &mut Vec::new(), &mut flows,
+            function, body, state, control_depth, &mut Vec::new(), &mut flows,
         )?;
         if !falls_through || !flows.branches.is_empty() || flows.returned.is_some() {
-            return Err(self.function_error(RuleId::ConservativeJoin, function, at, "index proof body may not escape its true-edge scope"));
+            return Err(self.function_error(
+                RuleId::ConservativeJoin,
+                function,
+                at,
+                "index proof body may not escape its true-edge scope",
+            ));
         }
+        // Every checked index must be the theorem granted by this exact
+        // region, rather than a concrete index which happens to validate.
+        if body.iter().any(|operation| matches!(operation,
+            Operation::CheckedIndex { index: actual, length_source, .. }
+                if *actual != index || *length_source != bound
+        )) {
+            return Err(self.function_error(
+                RuleId::ExactRangeSource,
+                function,
+                at,
+                "index proof body checked an index or bound outside its scoped theorem",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_counted_loop(
+        &mut self,
+        function: &CandidateFunction,
+        control: ControlId,
+        induction: DefinitionId,
+        bound: DefinitionId,
+        body: &[Operation],
+        state: &mut State,
+        control_depth: usize,
+        controls: &mut Vec<ControlId>,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        self.require_scalar_definition(state, induction, function, at)?;
+        if !matches!(state.scalars.get(&induction), Some(ScalarFact::Exact(0))) {
+            return Err(self.function_error(
+                RuleId::ExactRangeSource,
+                function,
+                at,
+                "counted-loop induction must enter with the source-minted exact zero fact",
+            ));
+        }
+        if !matches!(state.scalars.get(&bound), Some(ScalarFact::HeaderCount { .. })) {
+            return Err(self.function_error(
+                RuleId::ExactRangeSource,
+                function,
+                at,
+                "counted-loop bound is not an authenticated header count",
+            ));
+        }
+        if controls.contains(&control) {
+            return Err(self.function_error(
+                RuleId::ConservativeJoin,
+                function,
+                at,
+                "counted-loop control identity shadows an enclosing control",
+            ));
+        }
+        let nested_depth = self.nested_control_depth(function, at, control_depth)?;
+        let mut iteration = state.clone();
+        iteration.scalars.insert(induction, ScalarFact::Induction { bound });
+        iteration.index_below.insert((induction, bound));
+        controls.push(control);
+        let result = self.validate_index_region(
+            function,
+            induction,
+            bound,
+            body,
+            &mut iteration,
+            nested_depth,
+            at,
+        );
+        controls.pop();
+        result?;
+        // The executable local leaves at `i >=_s bound`; it is neither zero
+        // nor below the bound after the loop.  Do not leak either fact.
+        state.scalars.remove(&induction);
+        state.index_below.retain(|(index, _)| *index != induction);
         Ok(())
     }
 
@@ -3576,7 +3704,9 @@ impl Validator<'_> {
     ) -> Result<i128, ValidationError> {
         state.scalars.get(&definition).and_then(|fact| match fact {
             ScalarFact::Exact(value) => Some(*value),
-            ScalarFact::CountParameter { .. } | ScalarFact::HeaderCount { .. } => None,
+            ScalarFact::CountParameter { .. }
+            | ScalarFact::HeaderCount { .. }
+            | ScalarFact::Induction { .. } => None,
         }).ok_or_else(|| {
             self.function_error(
                 RuleId::ExactRangeSource,
@@ -3896,7 +4026,9 @@ fn ranges_overlap(
             SizeExpr::Definition(definition) => {
                 match state.scalars.get(definition)? {
                     ScalarFact::Exact(value) => u128::try_from(*value).ok(),
-                    ScalarFact::CountParameter { .. } | ScalarFact::HeaderCount { .. } => None,
+                    ScalarFact::CountParameter { .. }
+                    | ScalarFact::HeaderCount { .. }
+                    | ScalarFact::Induction { .. } => None,
                 }
             }
             SizeExpr::Add(lhs, rhs) => evaluate(lhs, state, remaining - 1)?
@@ -3926,7 +4058,8 @@ fn operation_count(operations: &[Operation]) -> Option<usize> {
                 pending.extend(else_operations.iter().rev());
                 pending.extend(then_operations.iter().rev());
             }
-            Operation::Block { body, .. } | Operation::Loop { body, .. } => {
+            Operation::Block { body, .. } | Operation::Loop { body, .. }
+            | Operation::CountedLoop { body, .. } => {
                 pending.extend(body.iter().rev());
             }
             Operation::GuardIndexBelow { body, .. } => pending.extend(body.iter().rev()),
@@ -3946,7 +4079,8 @@ fn operations(input: &[Operation]) -> Vec<&Operation> {
                 pending.extend(else_operations.iter().rev());
                 pending.extend(then_operations.iter().rev());
             }
-            Operation::Block { body, .. } | Operation::Loop { body, .. } => {
+            Operation::Block { body, .. } | Operation::Loop { body, .. }
+            | Operation::CountedLoop { body, .. } => {
                 pending.extend(body.iter().rev());
             }
             Operation::GuardIndexBelow { body, .. } => pending.extend(body.iter().rev()),
@@ -3970,7 +4104,8 @@ fn has_branch_local_object_return(input: &[Operation]) -> bool {
                 || has_branch_local_object_return(then_operations)
                 || has_branch_local_object_return(else_operations)
         }
-        Operation::Block { body, .. } | Operation::Loop { body, .. } => {
+        Operation::Block { body, .. } | Operation::Loop { body, .. }
+        | Operation::CountedLoop { body, .. } => {
             has_branch_local_object_return(body)
         }
         _ => false,
@@ -4024,7 +4159,8 @@ fn control_sites(input: &[Operation]) -> Vec<ControlId> {
     operations(input)
         .into_iter()
         .filter_map(|operation| match operation {
-            Operation::Block { control, .. } | Operation::Loop { control, .. } => {
+            Operation::Block { control, .. } | Operation::Loop { control, .. }
+            | Operation::CountedLoop { control, .. } => {
                 Some(*control)
             }
             _ => None,
@@ -4645,6 +4781,131 @@ mod tests {
         let Operation::GuardIndexBelow { bound, .. } = &mut wrong_bound.functions[0].operations[2] else { panic!() };
         *bound = capacity;
         assert_rule(wrong_bound, RuleId::ExactRangeSource);
+    }
+
+    #[test]
+    fn counted_loop_scopes_its_induction_theorem_and_rejects_mutations() {
+        let (layouts, list, base, stride) = list_layouts();
+        let capacity = DefinitionId::new(40);
+        let root = DefinitionId::new(41);
+        let induction = DefinitionId::new(42);
+        let header_count = DefinitionId::new(43);
+        let object = ObjectRef {
+            identity: ObjectIdentity { root, generation: GenerationId::new(1) },
+            layout: list,
+            extent: Extent::Counted {
+                header: SizeExpr::Constant(u64::from(base)),
+                count: capacity,
+                stride: SizeExpr::Constant(u64::from(stride)),
+            },
+            provenance: Provenance::Unknown,
+        };
+        let place = Place {
+            object: object.clone(),
+            projection: Projection::root().project(ProjectionStep::Element { index: induction }),
+            range: ByteRange {
+                object: object.identity,
+                start: SizeExpr::narrow_u32(SizeExpr::add(
+                    SizeExpr::Constant(u64::from(base)),
+                    SizeExpr::multiply(SizeExpr::Definition(induction), SizeExpr::Constant(u64::from(stride))),
+                )),
+                length: SizeExpr::Constant(u64::from(stride)),
+            },
+            access: AccessMode::Read,
+        };
+        let no_memory = || ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            dynamic_header: None,
+            effects: ParameterMemoryEffects::none(),
+        };
+        let module = CandidateModule {
+            checked_source_entries: 1,
+            layouts,
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+            functions: vec![CandidateFunction {
+                name: "counted".into(),
+                contract: CallableMemoryContract {
+                    parameters: vec![
+                        no_memory(),
+                        ParameterMemoryContract {
+                            entry: ParameterMemoryEntry::BorrowedRead,
+                            layout: Some(list),
+                            extent: Some(ContractExtent::Counted {
+                                header: ContractSizeExpr::Constant(u64::from(base)),
+                                count: ContractSizeExpr::Parameter(0),
+                                stride: ContractSizeExpr::Constant(u64::from(stride)),
+                            }),
+                            dynamic_header: Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
+                            effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
+                        },
+                    ],
+                    result: CallableMemoryResult::NoMemory,
+                },
+                parameters: vec![
+                    ParameterBinding { definition: capacity, object: None },
+                    ParameterBinding { definition: root, object: Some(object.clone()) },
+                ],
+                operations: vec![
+                    Operation::BindCountParameter { definition: capacity, parameter: 0 },
+                    Operation::BindHeaderCount { definition: header_count, object: object.identity, component: 0 },
+                    Operation::DefineScalar { definition: induction, value: 0 },
+                    Operation::CountedLoop {
+                        control: ControlId::new(1),
+                        induction,
+                        bound: header_count,
+                        body: vec![Operation::CheckedIndex {
+                            object: object.identity,
+                            index: induction,
+                            length_source: header_count,
+                            place,
+                        }],
+                    },
+                ],
+            }],
+            gc: CandidateGcDeclarations::default(),
+            contains_raw_memory: false,
+            contains_raw_body: false,
+            post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
+        };
+        validate_candidate(&module, ValidationBudget::default()).unwrap();
+
+        let mut bad_init = module.clone();
+        bad_init.functions[0].operations[2] = Operation::DefineScalar { definition: induction, value: 1 };
+        assert_rule(bad_init, RuleId::ExactRangeSource);
+
+        let mut bad_bound = module.clone();
+        let Operation::CountedLoop { bound, .. } = &mut bad_bound.functions[0].operations[3] else { panic!() };
+        *bound = capacity;
+        assert_rule(bad_bound, RuleId::ExactRangeSource);
+
+        let mut escaped = module.clone();
+        let Operation::CountedLoop { body, .. } = &mut escaped.functions[0].operations[3] else { panic!() };
+        body.push(Operation::ReturnVoid);
+        assert_rule(escaped, RuleId::ConservativeJoin);
+
+        let mut post_loop = module;
+        post_loop.functions[0].operations.push(Operation::CheckedIndex {
+            object: object.identity,
+            index: induction,
+            length_source: header_count,
+            place: Place {
+                object: object.clone(),
+                projection: Projection::root().project(ProjectionStep::Element { index: induction }),
+                range: ByteRange {
+                    object: object.identity,
+                    start: SizeExpr::narrow_u32(SizeExpr::add(
+                        SizeExpr::Constant(u64::from(base)),
+                        SizeExpr::multiply(SizeExpr::Definition(induction), SizeExpr::Constant(u64::from(stride))),
+                    )),
+                    length: SizeExpr::Constant(u64::from(stride)),
+                },
+                access: AccessMode::Read,
+            },
+        });
+        assert_rule(post_loop, RuleId::ExactRangeSource);
     }
 
     #[test]

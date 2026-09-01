@@ -634,6 +634,28 @@ fn infer_operations(
                     nested,
                 )?;
             }
+            // The validator seals this body to indexed reads/writes and
+            // projections, but those accesses still contribute to the
+            // callable's derived parameter effect contract.
+            Operation::CountedLoop { body, .. } => {
+                let nested = depth.checked_add(1).ok_or_else(|| {
+                    module_error(
+                        RuleId::BudgetExhaustionFailsClosed,
+                        "counted-loop call summary depth overflowed",
+                    )
+                })?;
+                infer_operations(
+                    function,
+                    body,
+                    local,
+                    imports,
+                    host_imports,
+                    facts,
+                    budget,
+                    work,
+                    nested,
+                )?;
+            }
             Operation::Loop { body, .. } => {
                 let nested = depth.checked_add(1).ok_or_else(|| {
                     module_error(
