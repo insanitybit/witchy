@@ -168,6 +168,284 @@ fn packed_list_header_place(
     .ok()
 }
 
+/// Build the header-only claim which establishes a packed list's dynamic
+/// extent.  The capacity word cannot be reached through the payload extent it
+/// establishes, so this deliberately claims only descriptor-defined header
+/// bytes.  Callers must bind its result before constructing body places.
+fn packed_list_header_read_place(
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    component: u32,
+) -> Option<Box<SafePlaceExpr>> {
+    let descriptor = layouts.get(layout)?;
+    if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
+        return None;
+    }
+    let HeaderLayout::PackedList {
+        length_offset,
+        capacity_offset,
+        ..
+    } = descriptor.header() else {
+        return None;
+    };
+    let offset = match component {
+        0 => length_offset,
+        1 => capacity_offset,
+        _ => return None,
+    };
+    SafePlaceBuilder::new(
+        layouts,
+        layout,
+        SafeExactExtent::header_only(),
+        root.clone(),
+        AccessMode::Read,
+    )
+    .ok()?
+    .header(component, SafeEncodedAddress::new(root, offset))
+    .ok()
+}
+
+/// Claim a scalar field within a packed-list element.  The descriptor supplies
+/// both the payload offset/stride and the field offset/width; the caller only
+/// supplies the checked index and capacity identity.
+fn packed_list_element_field_place(
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    index: witchy_wir::wir::WirExpr,
+    capacity: witchy_wir::wir::WirExpr,
+    field: u32,
+    access: AccessMode,
+) -> Option<Box<SafePlaceExpr>> {
+    let descriptor = layouts.get(layout)?;
+    if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
+        return None;
+    }
+    let HeaderLayout::PackedList { data_offset, .. } = descriptor.header() else {
+        return None;
+    };
+    let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+        return None;
+    };
+    let element = descriptor.kind().packed_element_layout()?;
+    let field_offset = layouts.get(element)?.fields().get(field as usize)?.offset();
+    let encoded = witchy_wir::wir::WirExpr::Binary {
+        op: witchy_wir::wir::BinOp::Add,
+        kind: witchy_wir::wir::Kind::I32,
+        lhs: Box::new(witchy_wir::wir::WirExpr::Binary {
+            op: witchy_wir::wir::BinOp::Add,
+            kind: witchy_wir::wir::Kind::I32,
+            lhs: Box::new(root.clone()),
+            rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(data_offset as i32)),
+        }),
+        rhs: Box::new(witchy_wir::wir::WirExpr::Binary {
+            op: witchy_wir::wir::BinOp::Mul,
+            kind: witchy_wir::wir::Kind::I32,
+            lhs: Box::new(index.clone()),
+            rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(stride as i32)),
+        }),
+    };
+    SafePlaceBuilder::new(
+        layouts,
+        layout,
+        SafeExactExtent::counted(capacity).ok()?,
+        root,
+        access,
+    )
+    .ok()?
+    .element_field(index, field, SafeEncodedAddress::new(encoded, field_offset))
+    .ok()
+}
+
+/// Claim one whole scalar packed-list element at a descriptor-strided address.
+fn packed_list_element_place(
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    index: witchy_wir::wir::WirExpr,
+    capacity: witchy_wir::wir::WirExpr,
+    access: AccessMode,
+) -> Option<Box<SafePlaceExpr>> {
+    let descriptor = layouts.get(layout)?;
+    if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
+        return None;
+    }
+    let HeaderLayout::PackedList { data_offset, .. } = descriptor.header() else {
+        return None;
+    };
+    let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+        return None;
+    };
+    let encoded = witchy_wir::wir::WirExpr::Binary {
+        op: witchy_wir::wir::BinOp::Add,
+        kind: witchy_wir::wir::Kind::I32,
+        lhs: Box::new(witchy_wir::wir::WirExpr::Binary {
+            op: witchy_wir::wir::BinOp::Add,
+            kind: witchy_wir::wir::Kind::I32,
+            lhs: Box::new(root.clone()),
+            rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(data_offset as i32)),
+        }),
+        rhs: Box::new(witchy_wir::wir::WirExpr::Binary {
+            op: witchy_wir::wir::BinOp::Mul,
+            kind: witchy_wir::wir::Kind::I32,
+            lhs: Box::new(index.clone()),
+            rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(stride as i32)),
+        }),
+    };
+    SafePlaceBuilder::new(
+        layouts,
+        layout,
+        SafeExactExtent::counted(capacity).ok()?,
+        root,
+        access,
+    )
+    .ok()?
+    .element(index, SafeEncodedAddress::new(encoded, 0))
+    .ok()
+}
+
+/// Claim a descriptor-strided contiguous payload range for `memory.copy`.
+/// The WIR `len` remains bytes, while the SafePlace slice deliberately retains
+/// the corresponding element count for final range validation.
+fn packed_list_payload_slice_place(
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    start: witchy_wir::wir::WirExpr,
+    length: witchy_wir::wir::WirExpr,
+    capacity: witchy_wir::wir::WirExpr,
+    access: AccessMode,
+) -> Option<Box<SafePlaceExpr>> {
+    let descriptor = layouts.get(layout)?;
+    if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
+        return None;
+    }
+    let HeaderLayout::PackedList { data_offset, .. } = descriptor.header() else {
+        return None;
+    };
+    let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+        return None;
+    };
+    let payload_base = witchy_wir::wir::WirExpr::Binary {
+        op: witchy_wir::wir::BinOp::Add,
+        kind: witchy_wir::wir::Kind::I32,
+        lhs: Box::new(root.clone()),
+        rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(data_offset as i32)),
+    };
+    let encoded = match &start {
+        witchy_wir::wir::WirExpr::ConstI32(value) if *value >= 0 => {
+            let offset = u32::try_from(*value).ok()?.checked_mul(stride)?;
+            witchy_wir::wir::WirExpr::Binary {
+                op: witchy_wir::wir::BinOp::Add,
+                kind: witchy_wir::wir::Kind::I32,
+                lhs: Box::new(payload_base),
+                rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(offset as i32)),
+            }
+        }
+        _ => witchy_wir::wir::WirExpr::Binary {
+            op: witchy_wir::wir::BinOp::Add,
+            kind: witchy_wir::wir::Kind::I32,
+            lhs: Box::new(payload_base),
+            rhs: Box::new(witchy_wir::wir::WirExpr::Binary {
+            op: witchy_wir::wir::BinOp::Mul,
+            kind: witchy_wir::wir::Kind::I32,
+            lhs: Box::new(start.clone()),
+            rhs: Box::new(witchy_wir::wir::WirExpr::ConstI32(stride as i32)),
+            }),
+        },
+    };
+    SafePlaceBuilder::new(
+        layouts,
+        layout,
+        SafeExactExtent::counted(capacity).ok()?,
+        root,
+        access,
+    )
+    .ok()?
+    .slice(start, length, SafeEncodedAddress::new(encoded, 0))
+    .ok()
+}
+
+/// Append one descriptor-authenticated scalar element-field store.  Pointer
+/// slots, inline aggregates, and two-byte tags intentionally have no claim
+/// here: their copy/provenance contracts are different from a scalar store and
+/// the packed helper must decline them rather than retain a raw fallback.
+fn push_packed_list_scalar_store(
+    nodes: &mut Vec<witchy_wir::wir::WirNode>,
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    index: witchy_wir::wir::WirExpr,
+    capacity: witchy_wir::wir::WirExpr,
+    field_index: u32,
+    value: witchy_wir::wir::WirExpr,
+) -> Option<()> {
+    use witchy_wir::wir::{Kind as WK, WirNode as N};
+    let descriptor = layouts.get(layout)?;
+    let element = descriptor.kind().packed_element_layout()?;
+    let field = *layouts.get(element)?.fields().get(field_index as usize)?;
+    let place = packed_list_element_field_place(
+        layouts,
+        layout,
+        root,
+        index,
+        capacity,
+        field_index,
+        AccessMode::Write,
+    )?;
+    match field.kind() {
+        FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte) => {
+            nodes.push(N::SafeStore8 { place, value });
+        }
+        FieldKind::Scalar(ScalarKind::Int | ScalarKind::Duration) => {
+            nodes.push(N::SafeStore { place, value, kind: WK::I64 });
+        }
+        FieldKind::Scalar(ScalarKind::Float) => {
+            nodes.push(N::SafeStore { place, value, kind: WK::F64 });
+        }
+        FieldKind::Scalar(ScalarKind::U32 | ScalarKind::Tag32) => {
+            nodes.push(N::SafeStore { place, value, kind: WK::I32 });
+        }
+        FieldKind::Scalar(ScalarKind::Tag16 | ScalarKind::BoolValueSlot | ScalarKind::V128)
+        | FieldKind::Inline(_)
+        | FieldKind::Pointer { .. } => return None,
+    }
+    Some(())
+}
+
+/// Append one whole scalar packed-list element store.  Unlike a record field,
+/// a scalar element has no child descriptor field to project through.
+fn push_packed_list_scalar_element_store(
+    nodes: &mut Vec<witchy_wir::wir::WirNode>,
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    index: witchy_wir::wir::WirExpr,
+    capacity: witchy_wir::wir::WirExpr,
+    scalar: ScalarKind,
+    value: witchy_wir::wir::WirExpr,
+) -> Option<()> {
+    use witchy_wir::wir::{Kind as WK, WirNode as N};
+    let place = packed_list_element_place(layouts, layout, root, index, capacity, AccessMode::Write)?;
+    match scalar {
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => {
+            nodes.push(N::SafeStore8 { place, value });
+        }
+        ScalarKind::Int | ScalarKind::Duration => {
+            nodes.push(N::SafeStore { place, value, kind: WK::I64 });
+        }
+        ScalarKind::Float => {
+            nodes.push(N::SafeStore { place, value, kind: WK::F64 });
+        }
+        ScalarKind::U32 | ScalarKind::Tag32 => {
+            nodes.push(N::SafeStore { place, value, kind: WK::I32 });
+        }
+        ScalarKind::Tag16 | ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
+    }
+    Some(())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenError {
     pub message: String,
@@ -6159,9 +6437,9 @@ impl<'types> Codegen<'types> {
         let element_descriptor = self.specialized_layouts.get(*element)?.clone();
         let HeaderLayout::PackedList {
             rc,
-            length_offset,
-            capacity_offset,
-            data_offset,
+            length_offset: _,
+            capacity_offset: _,
+            data_offset: _,
             ..
         } = descriptor.header() else { return None };
         let LayoutSize::Dynamic { base, stride } = descriptor.size() else { return None };
@@ -6188,41 +6466,45 @@ impl<'types> Codegen<'types> {
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         };
-        let element_base = |root: W| {
-            binary(
-                WB::Add,
-                binary(WB::Add, root, W::ConstI32(data_offset as i32)),
-                binary(
-                    WB::Mul,
-                    W::GetLocal("len".into()),
-                    W::ConstI32(stride as i32),
-                ),
-            )
-        };
         let mut hot = Vec::new();
         if fields.is_empty() {
-            let base = element_base(W::GetLocal("root".into()));
             match element_descriptor.kind() {
-                LayoutKind::Scalar(ScalarKind::Bool) => hot.push(N::Store8 { ptr: base, value: W::GetLocal("value".into()), offset: 0 }),
-                LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration) => hot.push(N::Store { ptr: base, value: W::GetLocal("value".into()), kind: WK::I64, offset: 0 }),
-                LayoutKind::Scalar(ScalarKind::Float) => hot.push(N::Store { ptr: base, value: W::GetLocal("value".into()), kind: WK::F64, offset: 0 }),
+                LayoutKind::Scalar(scalar) => push_packed_list_scalar_element_store(
+                    &mut hot,
+                    &self.specialized_layouts,
+                    id,
+                    W::GetLocal("root".into()),
+                    W::GetLocal("len".into()),
+                    W::GetLocal("cap".into()),
+                    *scalar,
+                    W::GetLocal("value".into()),
+                )?,
                 _ => return None,
             }
         } else {
-            for (index, field) in fields.iter().copied().enumerate() {
-                self.push_layout_store(
+            for (index, _) in fields.iter().enumerate() {
+                push_packed_list_scalar_store(
                     &mut hot,
-                    element_base(W::GetLocal("root".into())),
-                    field,
+                    &self.specialized_layouts,
+                    id,
+                    W::GetLocal("root".into()),
+                    W::GetLocal("len".into()),
+                    W::GetLocal("cap".into()),
+                    index as u32,
                     W::GetLocal(format!("f{index}")),
                 )?;
             }
         }
-        hot.push(N::Store {
-            ptr: W::GetLocal("root".into()),
+        hot.push(N::SafeStore {
+            place: packed_list_header_place(
+                &self.specialized_layouts,
+                id,
+                W::GetLocal("root".into()),
+                W::GetLocal("cap".into()),
+                0,
+            )?,
             value: binary(WB::Add, W::GetLocal("len".into()), W::ConstI32(1)),
             kind: WK::I32,
-            offset: length_offset,
         });
         hot.push(N::SetLocal {
             local: "out_root".into(),
@@ -6264,52 +6546,81 @@ impl<'types> Codegen<'types> {
             local: "new_root".into(),
             value: new_root,
         });
-        cold.push(N::MemoryCopy {
-            dest: binary(
-                WB::Add,
+        cold.push(N::SafeMemoryCopy {
+            destination: packed_list_payload_slice_place(
+                &self.specialized_layouts,
+                id,
                 W::GetLocal("new_root".into()),
-                W::ConstI32(data_offset as i32),
-            ),
-            src: binary(
-                WB::Add,
+                W::ConstI32(0),
+                W::GetLocal("len".into()),
+                W::GetLocal("new_cap".into()),
+                AccessMode::Write,
+            )?,
+            source: packed_list_payload_slice_place(
+                &self.specialized_layouts,
+                id,
                 W::GetLocal("root".into()),
-                W::ConstI32(data_offset as i32),
-            ),
+                W::ConstI32(0),
+                W::GetLocal("len".into()),
+                W::GetLocal("old_cap".into()),
+                AccessMode::Read,
+            )?,
             len: binary(
                 WB::Mul,
                 W::GetLocal("len".into()),
                 W::ConstI32(stride as i32),
             ),
+            kind: witchy_wir::safewir_surface::SafeCopyKind::Disjoint,
         });
         if fields.is_empty() {
-            let base = element_base(W::GetLocal("new_root".into()));
             match element_descriptor.kind() {
-                LayoutKind::Scalar(ScalarKind::Bool) => cold.push(N::Store8 { ptr: base, value: W::GetLocal("value".into()), offset: 0 }),
-                LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration) => cold.push(N::Store { ptr: base, value: W::GetLocal("value".into()), kind: WK::I64, offset: 0 }),
-                LayoutKind::Scalar(ScalarKind::Float) => cold.push(N::Store { ptr: base, value: W::GetLocal("value".into()), kind: WK::F64, offset: 0 }),
+                LayoutKind::Scalar(scalar) => push_packed_list_scalar_element_store(
+                    &mut cold,
+                    &self.specialized_layouts,
+                    id,
+                    W::GetLocal("new_root".into()),
+                    W::GetLocal("len".into()),
+                    W::GetLocal("new_cap".into()),
+                    *scalar,
+                    W::GetLocal("value".into()),
+                )?,
                 _ => return None,
             }
         } else {
-            for (index, field) in fields.iter().copied().enumerate() {
-                self.push_layout_store(
+            for (index, _) in fields.iter().enumerate() {
+                push_packed_list_scalar_store(
                     &mut cold,
-                    element_base(W::GetLocal("new_root".into())),
-                    field,
+                    &self.specialized_layouts,
+                    id,
+                    W::GetLocal("new_root".into()),
+                    W::GetLocal("len".into()),
+                    W::GetLocal("new_cap".into()),
+                    index as u32,
                     W::GetLocal(format!("f{index}")),
                 )?;
             }
         }
-        cold.push(N::Store {
-            ptr: W::GetLocal("new_root".into()),
+        cold.push(N::SafeStore {
+            place: packed_list_header_place(
+                &self.specialized_layouts,
+                id,
+                W::GetLocal("new_root".into()),
+                W::GetLocal("new_cap".into()),
+                0,
+            )?,
             value: binary(WB::Add, W::GetLocal("len".into()), W::ConstI32(1)),
             kind: WK::I32,
-            offset: length_offset,
         });
-        cold.push(N::Store {
-            ptr: W::GetLocal("new_root".into()),
+        cold.push(N::SafeStore {
+            place: packed_list_header_place(
+                &self.specialized_layouts,
+                id,
+                W::GetLocal("new_root".into()),
+                W::GetLocal("new_cap".into()),
+                1,
+            )?,
             value: W::GetLocal("new_cap".into()),
             kind: WK::I32,
-            offset: capacity_offset,
         });
         cold.push(N::SetLocal {
             local: "out_root".into(),
@@ -6323,10 +6634,26 @@ impl<'types> Codegen<'types> {
         let body = vec![
             N::SetLocal {
                 local: "len".into(),
-                value: W::Load {
-                    ptr: Box::new(W::GetLocal("root".into())),
+                value: W::SafeLoad {
+                    place: packed_list_header_read_place(
+                        &self.specialized_layouts,
+                        id,
+                        W::GetLocal("root".into()),
+                        0,
+                    )?,
                     kind: WK::I32,
-                    offset: length_offset,
+                },
+            },
+            N::SetLocal {
+                local: "old_cap".into(),
+                value: W::SafeLoad {
+                    place: packed_list_header_read_place(
+                        &self.specialized_layouts,
+                        id,
+                        W::GetLocal("root".into()),
+                        1,
+                    )?,
+                    kind: WK::I32,
                 },
             },
             N::If {
@@ -6345,6 +6672,7 @@ impl<'types> Codegen<'types> {
             locals: vec![
                 WirLocal { name: "p".into(), ty: WirTy::Bool },
                 WirLocal { name: "len".into(), ty: WirTy::Bool },
+                WirLocal { name: "old_cap".into(), ty: WirTy::Bool },
                 WirLocal { name: "new_cap".into(), ty: WirTy::Bool },
                 WirLocal { name: "logical_size".into(), ty: WirTy::Bool },
                 WirLocal { name: "new_root".into(), ty: WirTy::Bool },
@@ -6561,35 +6889,78 @@ impl<'types> Codegen<'types> {
         let d = self.specialized_layouts.get(id)?.clone();
         let LayoutKind::PackedList { element, rc } = d.kind() else { return None };
         let LayoutKind::Scalar(scalar) = self.specialized_layouts.get(*element)?.kind() else { return None };
-        let HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, .. } = d.header() else { return None };
+        let HeaderLayout::PackedList { .. } = d.header() else { return None };
         let LayoutSize::Dynamic { base, stride } = d.size() else { return None };
         let add = |a, b| W::Binary { op: B::Add, kind: K::I32, lhs: Box::new(a), rhs: Box::new(b) };
         let mul = |a, b| W::Binary { op: B::Mul, kind: K::I32, lhs: Box::new(a), rhs: Box::new(b) };
-        let addr = |root: W, idx: W| add(add(root, W::ConstI32(data_offset as i32)), mul(idx, W::ConstI32(stride as i32)));
         let (mut body, _root) = self.layout_alloc_expr_nodes_with_header(W::ConstI32(0), *rc);
         // Fast path mutates the existing packed byte when the ownership token is live.
         body.clear();
+        body.push(N::SetLocal {
+            local: "len".into(),
+            value: W::SafeLoad {
+                place: packed_list_header_read_place(
+                    &self.specialized_layouts, id, W::GetLocal("root".into()), 0,
+                )?,
+                kind: K::I32,
+            },
+        });
+        body.push(N::SetLocal {
+            local: "old_cap".into(),
+            value: W::SafeLoad {
+                place: packed_list_header_read_place(
+                    &self.specialized_layouts, id, W::GetLocal("root".into()), 1,
+                )?,
+                kind: K::I32,
+            },
+        });
         body.push(N::If {
             cond: W::Binary { op: B::Gt, kind: K::I32, lhs: Box::new(W::GetLocal("cap".into())), rhs: Box::new(W::ConstI32(0)) },
-            then_: vec![match scalar {
-                ScalarKind::Bool => N::Store8 { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), offset: 0 },
-                ScalarKind::Int | ScalarKind::Duration => N::Store { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::I64, offset: 0 },
-                ScalarKind::Float => N::Store { ptr: addr(W::GetLocal("root".into()), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::F64, offset: 0 },
-                _ => return None,
-            }, N::SetLocal { local: "out_root".into(), value: W::GetLocal("root".into()) }, N::SetLocal { local: "out_cap".into(), value: W::GetLocal("cap".into()) }],
+            then_: {
+                let mut fast = Vec::new();
+                push_packed_list_scalar_element_store(
+                    &mut fast,
+                    &self.specialized_layouts,
+                    id,
+                    W::GetLocal("root".into()),
+                    W::GetLocal("index".into()),
+                    W::GetLocal("cap".into()),
+                    *scalar,
+                    W::GetLocal("value".into()),
+                )?;
+                fast.push(N::SetLocal { local: "out_root".into(), value: W::GetLocal("root".into()) });
+                fast.push(N::SetLocal { local: "out_cap".into(), value: W::GetLocal("cap".into()) });
+                fast
+            },
             els: {
-                let new_cap = W::Load { ptr: Box::new(W::GetLocal("root".into())), kind: K::I32, offset: capacity_offset };
+                let new_cap = W::GetLocal("old_cap".into());
                 let size = add(W::ConstI32(base as i32), mul(new_cap.clone(), W::ConstI32(stride as i32)));
                 let (mut alloc, nr) = self.layout_alloc_expr_nodes_with_header(size, *rc);
-                alloc.push(N::MemoryCopy { dest: add(nr.clone(), W::ConstI32(data_offset as i32)), src: add(W::GetLocal("root".into()), W::ConstI32(data_offset as i32)), len: mul(W::Load { ptr: Box::new(W::GetLocal("root".into())), kind: K::I32, offset: length_offset }, W::ConstI32(stride as i32)) });
-                alloc.push(N::Store { ptr: nr.clone(), value: W::Load { ptr: Box::new(W::GetLocal("root".into())), kind: K::I32, offset: length_offset }, kind: K::I32, offset: length_offset });
-                alloc.push(N::Store { ptr: nr.clone(), value: new_cap, kind: K::I32, offset: capacity_offset });
-                alloc.push(match scalar {
-                    ScalarKind::Bool => N::Store8 { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), offset: 0 },
-                    ScalarKind::Int | ScalarKind::Duration => N::Store { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::I64, offset: 0 },
-                    ScalarKind::Float => N::Store { ptr: addr(nr.clone(), W::GetLocal("index".into())), value: W::GetLocal("value".into()), kind: K::F64, offset: 0 },
-                    _ => return None,
+                let new_root = nr.clone();
+                alloc.push(N::SafeMemoryCopy {
+                    destination: packed_list_payload_slice_place(
+                        &self.specialized_layouts, id, new_root.clone(), W::ConstI32(0),
+                        W::GetLocal("len".into()), new_cap.clone(), AccessMode::Write,
+                    )?,
+                    source: packed_list_payload_slice_place(
+                        &self.specialized_layouts, id, W::GetLocal("root".into()), W::ConstI32(0),
+                        W::GetLocal("len".into()), W::GetLocal("old_cap".into()), AccessMode::Read,
+                    )?,
+                    len: mul(W::GetLocal("len".into()), W::ConstI32(stride as i32)),
+                    kind: witchy_wir::safewir_surface::SafeCopyKind::Disjoint,
                 });
+                alloc.push(N::SafeStore {
+                    place: packed_list_header_place(&self.specialized_layouts, id, new_root.clone(), new_cap.clone(), 0)?,
+                    value: W::GetLocal("len".into()), kind: K::I32,
+                });
+                alloc.push(N::SafeStore {
+                    place: packed_list_header_place(&self.specialized_layouts, id, new_root.clone(), new_cap.clone(), 1)?,
+                    value: new_cap.clone(), kind: K::I32,
+                });
+                push_packed_list_scalar_element_store(
+                    &mut alloc, &self.specialized_layouts, id, new_root.clone(), W::GetLocal("index".into()),
+                    new_cap, *scalar, W::GetLocal("value".into()),
+                )?;
                 alloc.push(N::SetLocal { local: "out_root".into(), value: nr });
                 alloc.push(N::SetLocal { local: "out_cap".into(), value: W::ConstI32(0) });
                 alloc
@@ -6598,7 +6969,7 @@ impl<'types> Codegen<'types> {
         });
         body.push(N::Push(W::GetLocal("out_root".into())));
         body.push(N::Push(W::GetLocal("out_cap".into())));
-        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "root".into(), ty: WirTy::Bool }, WirLocal { name: "index".into(), ty: WirTy::Bool }, WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)?) }, WirLocal { name: "cap".into(), ty: WirTy::Bool }], ret: vec![WirTy::Bool, WirTy::Bool], locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }, WirLocal { name: "out_root".into(), ty: WirTy::Bool }, WirLocal { name: "out_cap".into(), ty: WirTy::Bool }], body, raw_body: None });
+        self.layout_wir_funcs.insert(name.clone(), WirFunc { name: name.clone(), params: vec![WirLocal { name: "root".into(), ty: WirTy::Bool }, WirLocal { name: "index".into(), ty: WirTy::Bool }, WirLocal { name: "value".into(), ty: Self::wir_ty_for_kind(Self::scalar_layout_kind(*scalar)?) }, WirLocal { name: "cap".into(), ty: WirTy::Bool }], ret: vec![WirTy::Bool, WirTy::Bool], locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }, WirLocal { name: "len".into(), ty: WirTy::Bool }, WirLocal { name: "old_cap".into(), ty: WirTy::Bool }, WirLocal { name: "out_root".into(), ty: WirTy::Bool }, WirLocal { name: "out_cap".into(), ty: WirTy::Bool }], body, raw_body: None });
         Some(name)
     }
 

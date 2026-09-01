@@ -65,6 +65,42 @@ fn packed_list_capacity_helper_emits_checked_header_stores() {
         "the capacity helper must not retain raw header-store fallback");
 }
 
+#[test]
+fn packed_list_scalar_element_places_require_descriptor_authenticated_addresses() {
+    use witchy_wir::wir::WirExpr as W;
+
+    let mut layouts = LayoutInterner::new();
+    let scalar = layouts
+        .intern_scalar(ScalarKind::Int)
+        .expect("an Int scalar descriptor");
+    let packed = layouts
+        .intern_packed_list(scalar, RcHeader::Required)
+        .expect("a packed Int list descriptor");
+    let root = W::GetLocal("root".into());
+    let index = W::GetLocal("index".into());
+    let capacity = W::GetLocal("cap".into());
+
+    assert!(packed_list_element_place(
+        &layouts,
+        packed,
+        root.clone(),
+        index.clone(),
+        capacity.clone(),
+        AccessMode::Write,
+    )
+    .is_some(), "a scalar element has an exact descriptor-derived place");
+    assert!(packed_list_payload_slice_place(
+        &layouts,
+        packed,
+        root,
+        W::ConstI32(0),
+        index,
+        capacity,
+        AccessMode::Read,
+    )
+    .is_some(), "a descriptor-strided payload prefix has an exact SafeWIR slice");
+}
+
     #[test]
     fn projected_place_from_a_direct_dict_root_keeps_the_dict_layout_bias() {
         use witchy_types::loans::{

@@ -1239,9 +1239,38 @@ fn main() -> Int:
         assert_eq!(counters["__witchy_packed_alloc_calls"], 3);
         assert_eq!(counters["__witchy_packed_alloc_bytes"], 88);
 
-        let wat = witchy_wir::wir::to_wat(
-            &assemble_wir_module(&mutation).expect_lowered("descriptor list mutation lowers"),
-        );
+        let wir = assemble_wir_module(&mutation)
+            .expect_lowered("descriptor list mutation lowers");
+        let push = wir
+            .funcs
+            .iter()
+            .find(|function| function.name.starts_with("__witchy_packed_list_push_"))
+            .expect("the descriptor push helper is emitted");
+        fn count_safe_memory(nodes: &[witchy_wir::wir::WirNode]) -> (usize, usize, usize) {
+            use witchy_wir::wir::WirNode;
+            nodes.iter().fold((0, 0, 0), |(loads, stores, copies), node| match node {
+                WirNode::If { then_, els, .. } => {
+                    let left = count_safe_memory(then_);
+                    let right = count_safe_memory(els);
+                    (loads + left.0 + right.0, stores + left.1 + right.1, copies + left.2 + right.2)
+                }
+                WirNode::Block { body, .. } | WirNode::Loop { body, .. } | WirNode::Source { body, .. } => {
+                    let nested = count_safe_memory(body);
+                    (loads + nested.0, stores + nested.1, copies + nested.2)
+                }
+                WirNode::SafeStore { .. } | WirNode::SafeStore8 { .. } => (loads, stores + 1, copies),
+                WirNode::SafeMemoryCopy { .. } => (loads, stores, copies + 1),
+                WirNode::SetLocal { value, .. } if matches!(value, witchy_wir::wir::WirExpr::SafeLoad { .. }) => {
+                    (loads + 1, stores, copies)
+                }
+                _ => (loads, stores, copies),
+            })
+        }
+        let (safe_loads, safe_stores, safe_copies) = count_safe_memory(&push.body);
+        assert!(safe_loads >= 2, "header-only reads establish both packed-list facts: {push:#?}");
+        assert!(safe_stores >= 4, "both paths use descriptor-authenticated body/header stores: {push:#?}");
+        assert_eq!(safe_copies, 1, "growth must use one descriptor-authenticated payload copy: {push:#?}");
+        let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("__witchy_packed_list_push_"), "descriptor push helper is reachable: {wat}");
         assert!(wat.contains("memory.copy"), "growth copies packed bytes at descriptor stride: {wat}");
         assert!(!wat.contains("call $list_push_cap"), "legacy slot push is absent: {wat}");
@@ -1351,6 +1380,36 @@ fn main() -> Int:
         );
         let (result, _) = run_int_module_with_i64_globals(&module, &[]);
         assert_eq!(result, 7);
+        let wir = assemble_wir_module(&module).expect_lowered("lower bool set through packed helper");
+        let set = wir
+            .funcs
+            .iter()
+            .find(|function| function.name.starts_with("__witchy_packed_scalar_set_"))
+            .expect("the packed scalar set helper is emitted");
+        fn count_safe_memory(nodes: &[witchy_wir::wir::WirNode]) -> (usize, usize, usize) {
+            use witchy_wir::wir::WirNode;
+            nodes.iter().fold((0, 0, 0), |(loads, stores, copies), node| match node {
+                WirNode::If { then_, els, .. } => {
+                    let left = count_safe_memory(then_);
+                    let right = count_safe_memory(els);
+                    (loads + left.0 + right.0, stores + left.1 + right.1, copies + left.2 + right.2)
+                }
+                WirNode::Block { body, .. } | WirNode::Loop { body, .. } | WirNode::Source { body, .. } => {
+                    let nested = count_safe_memory(body);
+                    (loads + nested.0, stores + nested.1, copies + nested.2)
+                }
+                WirNode::SafeStore { .. } | WirNode::SafeStore8 { .. } => (loads, stores + 1, copies),
+                WirNode::SafeMemoryCopy { .. } => (loads, stores, copies + 1),
+                WirNode::SetLocal { value, .. } if matches!(value, witchy_wir::wir::WirExpr::SafeLoad { .. }) => {
+                    (loads + 1, stores, copies)
+                }
+                _ => (loads, stores, copies),
+            })
+        }
+        let (safe_loads, safe_stores, safe_copies) = count_safe_memory(&set.body);
+        assert!(safe_loads >= 2, "header-only reads establish set's source extent: {set:#?}");
+        assert!(safe_stores >= 3, "both set paths use descriptor-authenticated stores: {set:#?}");
+        assert_eq!(safe_copies, 1, "copy-on-write set uses one descriptor-authenticated payload copy: {set:#?}");
     }
 
     #[test]
