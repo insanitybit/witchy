@@ -134,14 +134,13 @@ pub(crate) fn dict_hash_helper() -> WirFunc {
                 setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), E::Convert {
                     from: Kind::I32,
                     to: Kind::I64,
-                    arg: Box::new(E::SafeLoad {
+                    arg: Box::new(E::SafeLoad8U {
                         place: crate::wir_helpers::layouts::byte_buffer_element_place(
                             getl("p"),
                             getl("i"),
                             getl("len"),
                             crate::safewir::AccessMode::Read,
                         ),
-                        kind: Kind::I32,
                     }),
                 }), c1.clone())),
                 setl("i", b32(BinOp::Add, getl("i"), i32c(1))),
@@ -588,14 +587,13 @@ pub(crate) fn dict_slice_eq_helper() -> WirFunc {
     };
     let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let load_v128 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::V128, offset: 0 };
-    let str_byte_at = |off: &str| E::SafeLoad {
+    let str_byte_at = |off: &str| E::SafeLoad8U {
         place: crate::wir_helpers::layouts::byte_buffer_element_place(
             getl("str_ptr"),
             getl(off),
             getl("slice_len"),
             crate::safewir::AccessMode::Read,
         ),
-        kind: Kind::I32,
     };
     let slice_byte_at = |off: &str| E::Load8U {
         ptr: Box::new(bin(BinOp::Add, getl("slice_ptr"), getl(off))),
@@ -1099,5 +1097,16 @@ mod tests {
             panic!("slice dictionary search must branch on its authenticated index");
         };
         assert!(is_i32_header(then_.first(), "count"));
+    }
+
+    #[test]
+    fn dictionary_payload_byte_patterns_remain_byte_loads() {
+        let hash = format!("{:#?}", dict_hash_helper().body);
+        assert!(hash.contains("SafeLoad8U"),
+            "the hash tail must preserve the original load8_u width, not widen a byte read to i32.load: {hash}");
+
+        let equality = format!("{:#?}", dict_slice_eq_helper().body);
+        assert!(equality.contains("SafeLoad8U"),
+            "slice equality must preserve byte-wise comparison loads: {equality}");
     }
 }
