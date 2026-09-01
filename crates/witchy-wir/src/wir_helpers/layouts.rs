@@ -674,7 +674,7 @@ mod final_validation {
                 scalar_parameter(),
                 scalar_parameter(),
             ],
-            "symbolic counted parameter extents require the deferred def-use adapter",
+            "counted parameter extent has no authenticated header-capacity invariant",
         );
         // The same helper with a CONSTANT extent clears the contract-level gate,
         // which isolates what the OPERATIONS themselves stop at -- this helper's
