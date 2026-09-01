@@ -1413,7 +1413,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn borrowed_string_slice_keeps_pointer_and_length_without_substr() {
+    fn borrowed_string_slice_materializes_from_its_authenticated_root_range() {
         let string_module = parse_module(
             witchy_syntax::linker::bundled_source("string").expect("bundled string module"),
         ).expect("parse string module");
@@ -1435,9 +1435,11 @@ fn main() -> Int:
         let (result, _) = run_int_module_with_i64_globals(&module, &[]);
         assert_eq!(result, 3);
         let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower borrowed slice"));
-        assert!(wat.contains("str_slice_view"), "slice binding should use pair helper: {wat}");
+        assert!(wat.contains("str_slice_view"), "slice binding should preserve its view tuple: {wat}");
         assert!(!wat.contains("call $substr"), "borrowed slice must not allocate via substr: {wat}");
-        assert!(wat.contains("v128.load") && wat.contains("v128.store"), "view materialization should use SIMD raw-buffer copy: {wat}");
+        assert!(wat.contains("call $str_view_to_string"), "materialization should use the root/start/len helper: {wat}");
+        assert!(wat.contains("memory.copy"), "materialization should lower its checked bulk-copy operation: {wat}");
+        assert!(!wat.contains("raw_buffer_copy"), "materialization must not retain the unauthenticated payload-copy helper: {wat}");
     }
 
     #[test]

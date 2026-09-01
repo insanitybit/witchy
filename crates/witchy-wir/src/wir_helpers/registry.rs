@@ -318,7 +318,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "str_view_to_string" => Some(WirHelperSpec {
             func: str_view_to_string_helper(),
-            helper_deps: &["rc_alloc", "raw_buffer_copy"],
+            helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

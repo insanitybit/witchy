@@ -744,16 +744,22 @@ impl<'types> Codegen<'types> {
                         } else if executable_reference_result {
                             self.locals.insert(name.clone(), Kind::GcRef(PLACE_REFERENCE_ID));
                         }
-                        // RFC-0144 borrowed string slices carry their payload
-                        // pointer and byte length as two locals. Keep the view
-                        // out of the owning `[len][bytes]` representation; later
-                        // string/dict lowering can consume the pair directly.
+                        // RFC-0144 borrowed string slices keep the executable
+                        // payload pointer for legacy slice consumers, but retain
+                        // the authenticated `(root, start, len)` proof tuple
+                        // beside it.  A payload pointer can name an interior byte
+                        // and therefore may never be treated as a buffer root by
+                        // materialization.
                         if let Expr::Call { name: callee, args } = value
                             && callee == intrinsics::STRING_SLICE
                             && args.len() == 3
                         {
+                            let root_local = format!("{name}__slice_root");
+                            let start_local = format!("{name}__slice_start");
                             let len_local = format!("{name}__slice_len");
                             self.locals.insert(name.clone(), Kind::I32);
+                            self.locals.insert(root_local.clone(), Kind::I32);
+                            self.locals.insert(start_local.clone(), Kind::I32);
                             self.locals.insert(len_local.clone(), Kind::I32);
                             let sk = self.kind_of(&args[1]);
                             let ek = self.kind_of(&args[2]);
@@ -764,7 +770,7 @@ impl<'types> Codegen<'types> {
                                     Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
                                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                                 ],
-                                dests: vec![name.clone(), len_local],
+                                dests: vec![root_local, start_local, len_local, name.clone()],
                             });
                             tail_is_value = false;
                             continue;

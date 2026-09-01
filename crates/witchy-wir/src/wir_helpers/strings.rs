@@ -1217,9 +1217,12 @@ pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
     }
 }
 
-/// `$str_slice_view(s, start, end) -> (ptr, len)` — byte-indexed borrowed view.
-/// The returned pointer addresses the first payload byte; unlike `str_slice_fast`
-/// this helper never allocates or constructs an owning string header.
+/// `$str_slice_view(s, start, end) -> (root, start, len, ptr)` — byte-indexed
+/// borrowed view. The final pointer is retained only for existing direct-view
+/// consumers. Ownership-taking consumers must use the first three values,
+/// which preserve the source allocation identity and the checked payload range.
+/// Unlike `str_slice_fast` this helper never allocates or constructs an owning
+/// string header.
 pub(crate) fn str_slice_view_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -1237,7 +1240,7 @@ pub(crate) fn str_slice_view_helper() -> WirFunc {
             WirLocal { name: "start".into(), ty: WirTy::Int },
             WirLocal { name: "end".into(), ty: WirTy::Int },
         ],
-        ret: vec![WirTy::Bool, WirTy::Bool],
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Bool, WirTy::Bool],
         locals: vec![
             WirLocal { name: "slen".into(), ty: WirTy::Bool },
             WirLocal { name: "lo".into(), ty: WirTy::Bool },
@@ -1249,15 +1252,20 @@ pub(crate) fn str_slice_view_helper() -> WirFunc {
             N::If { cond: b64(BinOp::Lt, get("start"), E::ConstI64(0)), then_: vec![set("lo", i32c(0))], els: vec![N::If { cond: b64(BinOp::Gt, get("start"), ext(get("slen"))), then_: vec![set("lo", get("slen"))], els: vec![], result: None }], result: None },
             set("hi", nar(get("end"))),
             N::If { cond: b64(BinOp::Lt, get("end"), ext(get("lo"))), then_: vec![set("hi", get("lo"))], els: vec![N::If { cond: b64(BinOp::Gt, get("end"), ext(get("slen"))), then_: vec![set("hi", get("slen"))], els: vec![], result: None }], result: None },
-            N::Push(b(BinOp::Add, b(BinOp::Add, get("s"), i32c(4)), get("lo"))),
+            N::Push(get("s")),
+            N::Push(get("lo")),
             N::Push(b(BinOp::Sub, get("hi"), get("lo"))),
+            N::Push(b(BinOp::Add, b(BinOp::Add, get("s"), i32c(4)), get("lo"))),
         ],
         raw_body: None,
     }
 }
 
-/// `$str_view_to_string(p, len) -> String` — materialize an owning string from
-/// a borrowed payload view when an API explicitly requests ownership.
+/// `$str_view_to_string(root, start, len) -> String` — materialize an owning
+/// string from an authenticated borrowed range when an API explicitly requests
+/// ownership. `root` remains the source allocation identity; `start` and `len`
+/// are carried from `str_slice_view`, rather than reconstructed from an interior
+/// payload address.
 pub(crate) fn str_view_to_string_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -1265,21 +1273,43 @@ pub(crate) fn str_view_to_string_helper() -> WirFunc {
     let add = |l, r| E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "str_view_to_string".into(),
-        params: vec![WirLocal { name: "p".into(), ty: WirTy::Str }, WirLocal { name: "len".into(), ty: WirTy::Bool }],
+        params: vec![
+            WirLocal { name: "root".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
         ret: vec![WirTy::Str],
-        locals: vec![WirLocal { name: "out".into(), ty: WirTy::Bool }],
+        locals: vec![
+            WirLocal { name: "out".into(), ty: WirTy::Bool },
+            // Establish the dynamic extent of the source object before
+            // claiming its payload slice. The validator binds this local to
+            // the exact SafeLoad reaching definition.
+            WirLocal { name: "root_len".into(), ty: WirTy::Bool },
+        ],
         body: vec![
+            N::SetLocal {
+                local: "root_len".into(),
+                value: E::SafeLoad {
+                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(get("root")),
+                    kind: Kind::I32,
+                },
+            },
             N::SetLocal { local: "out".into(), value: E::Call { func: "rc_alloc".into(), args: vec![add(get("len"), E::ConstI32(4))] } },
-            // `out` is this helper's own allocation, so it IS an authenticated root
-            // and its length word is an ordinary checked place. The `p` side is not:
-            // it is a raw payload pointer with no object handle behind it, which is
-            // why the copy still goes through `raw_buffer_copy`.
             N::SafeStore {
                 place: crate::wir_helpers::layouts::byte_buffer_length_place(get("out"), get("len")),
                 value: get("len"),
                 kind: Kind::I32,
             },
-            N::Do(E::Call { func: "raw_buffer_copy".into(), args: vec![add(get("out"), E::ConstI32(4)), get("p"), get("len")] }),
+            N::SafeMemoryCopy {
+                kind: crate::safewir_surface::SafeCopyKind::Disjoint,
+                destination: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    get("out"), E::ConstI32(0), get("len"), get("len"), crate::safewir::AccessMode::Write,
+                ),
+                source: crate::wir_helpers::layouts::byte_buffer_payload_slice_place(
+                    get("root"), get("start"), get("len"), get("root_len"), crate::safewir::AccessMode::Read,
+                ),
+                len: get("len"),
+            },
             N::Push(get("out")),
         ],
         raw_body: None,
@@ -1290,17 +1320,9 @@ pub(crate) fn str_view_to_string_helper() -> WirFunc {
 mod borrowed_view_tests {
     use super::*;
 
-    /// A borrowed string view is intentionally NOT admitted as a byte-buffer
-    /// root. `str_slice_view` returns `s + 4 + lo`, so the returned `p` may
-    /// point into the body, not at the `[len][bytes]` header. Treating `p` as a
-    /// `RuntimeBuffer` root would let a SafeMemoryCopy claim bytes belonging to
-    /// a different object (or its header at the wrong address).
-    ///
-    /// The coordinated migration is an ABI change: carry `(root, start, len)`
-    /// from lowering to materialization, then build both places from `root`
-    /// and their descriptor-derived extents. Until that contract exists, this
-    /// helper deliberately retains the explicitly named raw boundary rather
-    /// than forging provenance with a SafePlace rooted at `p`.
+    /// A borrowed string view keeps its allocation identity independently from
+    /// its interior payload address. Materialization must copy the precise
+    /// descriptor-derived payload slice, never promote `ptr` to a buffer root.
     #[test]
     fn borrowed_payload_view_is_not_a_byte_buffer_root() {
         use WirExpr as E;
@@ -1308,7 +1330,7 @@ mod borrowed_view_tests {
 
         let view = str_slice_view_helper();
         assert!(matches!(
-            &view.body[5],
+            &view.body[8],
             N::Push(E::Binary {
                 op: BinOp::Add,
                 kind: Kind::I32,
@@ -1331,12 +1353,24 @@ mod borrowed_view_tests {
             )
         ), "str_slice_view must expose an interior payload pointer, not a byte-buffer root");
 
+        assert!(matches!(&view.body[5], N::Push(E::GetLocal(root)) if root == "s"));
+        assert!(matches!(&view.body[6], N::Push(E::GetLocal(start)) if start == "lo"));
+
         let materialize = str_view_to_string_helper();
         assert!(matches!(
-            &materialize.body[2],
-            N::Do(E::Call { func, args })
-                if func == "raw_buffer_copy"
-                    && matches!(args.as_slice(), [_, E::GetLocal(source), E::GetLocal(length)] if source == "p" && length == "len")
-        ), "do not replace the unauthenticated borrowed payload with a forged SafeMemoryCopy; migrate the root/start/len ABI first");
+            &materialize.body[3],
+            N::SafeMemoryCopy { source, len, .. }
+                if matches!(
+                    (source.object.root.as_ref(), source.projection.steps(), len),
+                    (
+                        E::GetLocal(root),
+                        [crate::safewir_surface::SafeProjectionStep::Slice { start, length }],
+                        E::GetLocal(copy_length),
+                    ) if root == "root"
+                        && matches!(start.as_ref(), E::GetLocal(start) if start == "start")
+                        && matches!(length.as_ref(), E::GetLocal(length) if length == "len")
+                        && copy_length == "len"
+                )
+        ), "materialization must use the carried root/start/len proof tuple");
     }
 }

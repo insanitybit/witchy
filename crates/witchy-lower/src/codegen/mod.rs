@@ -5943,6 +5943,36 @@ impl<'types> Codegen<'types> {
         roots
     }
 
+    /// Materialize a locally-bound borrowed string view only when lowering has
+    /// retained its source allocation identity and checked byte range.  A view
+    /// represented solely by `(payload_ptr, len)` is deliberately rejected:
+    /// its pointer may address the middle of a buffer, so it cannot soundly
+    /// supply SafeWIR provenance for a bulk copy.
+    pub(crate) fn lower_borrowed_string_view_materialization(
+        &mut self,
+        view: &str,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+        let len = format!("{view}__slice_len");
+        let root = format!("{view}__slice_root");
+        let start = format!("{view}__slice_start");
+        if !self.locals.contains_key(&len) {
+            return None;
+        }
+        if !self.locals.contains_key(&root) || !self.locals.contains_key(&start) {
+            self.reject_reason.get_or_insert_with(|| CodegenError {
+                message: format!(
+                    "SafeWIR: borrowed string view `{view}` lacks authenticated root/start provenance for materialization"
+                ),
+            });
+            return None;
+        }
+        Some(W::Call {
+            func: "str_view_to_string".into(),
+            args: vec![W::GetLocal(root), W::GetLocal(start), W::GetLocal(len)],
+        })
+    }
+
     fn loan_root_is_carrier(&self, root: &LoanRoot) -> bool {
         matches!(self.locals.get(&root.value), Some(Kind::GcRef(PLACE_REFERENCE_ID)))
     }
@@ -8615,7 +8645,6 @@ impl<'types> Codegen<'types> {
         args: &[Expr],
         access: &witchy_types::access::AccessSignature,
     ) -> Option<witchy_wir::wir::WirExpr> {
-        use witchy_wir::wir::WirExpr as W;
         // A generic call target is a physical specialization whose ABI retains
         // the checked callable's compatibility state channels. The logical name
         // may also have a callable layout entry, but applying that exact-layout
@@ -8670,13 +8699,7 @@ impl<'types> Codegen<'types> {
                         (true, true, Expr::Var(view))
                             if self.locals.contains_key(&format!("{view}__slice_len")) =>
                         {
-                            Some(W::Call {
-                                func: "str_view_to_string".into(),
-                                args: vec![
-                                    self.lower_expr(arg)?,
-                                    W::GetLocal(format!("{view}__slice_len")),
-                                ],
-                            })
+                            self.lower_borrowed_string_view_materialization(view)
                         }
                         _ => self.lower_expr(arg),
                     };
@@ -9265,10 +9288,7 @@ impl<'types> Codegen<'types> {
                     && let Expr::Var(view) = arg
                     && self.locals.contains_key(&format!("{view}__slice_len"))
                 {
-                    W::Call {
-                        func: "str_view_to_string".into(),
-                        args: vec![self.lower_expr(arg)?, W::GetLocal(format!("{view}__slice_len"))],
-                    }
+                    self.lower_borrowed_string_view_materialization(view)?
                 } else {
                     self.lower_expr(arg)?
                 }

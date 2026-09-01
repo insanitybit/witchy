@@ -32,9 +32,13 @@ impl Codegen<'_> {
         let level = self.assign_level;
         let ptr = assign_scratch("dict_slice_ptr", level);
         let len = assign_scratch("dict_slice_len", level);
+        let root = assign_scratch("dict_slice_root", level);
+        let start = assign_scratch("dict_slice_start", level);
         let wm = assign_scratch("dict_slice_wm", level);
         self.locals.insert(ptr.clone(), Kind::I32);
         self.locals.insert(len.clone(), Kind::I32);
+        self.locals.insert(root.clone(), Kind::I32);
+        self.locals.insert(start.clone(), Kind::I32);
         self.locals.insert(wm.clone(), Kind::I32);
         let mut setup = Vec::new();
         let mut cleanup = Vec::new();
@@ -76,7 +80,7 @@ impl Codegen<'_> {
                 setup.push(N::CallStoreMulti {
                     func: "str_slice_view".into(),
                     args: vec![base, Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64), Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64)],
-                    dests: vec![ptr.clone(), len.clone()],
+                    dests: vec![root, start, len.clone(), ptr.clone()],
                 });
             }
             Expr::Binary { op: witchy_syntax::ast::BinOp::Concat | witchy_syntax::ast::BinOp::Add, lhs, rhs, .. }
@@ -1282,10 +1286,7 @@ impl Codegen<'_> {
                     && let Expr::Var(slice) = &args[0]
                     && self.locals.contains_key(&format!("{slice}__slice_len"))
                 {
-                    return Some(call("str_view_to_string", vec![
-                        self.lower_expr(&args[0])?,
-                        W::GetLocal(format!("{slice}__slice_len")),
-                    ]));
+                    return self.lower_borrowed_string_view_materialization(slice);
                 }
                 if self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID) {
                     self.lower_place_reference_read(&args[0], Kind::I32, &args[0])?
