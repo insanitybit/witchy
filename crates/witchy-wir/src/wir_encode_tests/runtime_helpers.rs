@@ -596,6 +596,56 @@
         assert_agrees(&module, &["0", "7", "4096", "-123"]);
     }
 
+    /// The fused owned formatter writes its decimal suffix through checked
+    /// byte-buffer payload places. This exercises both digit loops after the
+    /// cursor changed from an unmodelled absolute address to a payload index.
+    #[test]
+    fn str_fmt_prefix_int_helper_renders_checked_suffixes() {
+        use crate::wir_helpers::{
+            bump_alloc_helper, ensure_helper, print_str_helper, rc_alloc_helper,
+            str_fmt_prefix_int_helper,
+        };
+        let mut body = Vec::new();
+        for n in [0_i64, 7, 4096, -123] {
+            body.push(WirNode::Do(WirExpr::Call {
+                func: "print_str".into(),
+                args: vec![WirExpr::Call {
+                    func: "str_fmt_prefix_int".into(),
+                    args: vec![WirExpr::ConstI32(100), WirExpr::ConstI64(n)],
+                }],
+            }));
+        }
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body,
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print".into(),
+                params: vec![Kind::I32, Kind::I32],
+                results: vec![],
+            }],
+            funcs: vec![
+                ensure_helper(false),
+                bump_alloc_helper(),
+                rc_alloc_helper(),
+                str_fmt_prefix_int_helper(false),
+                print_str_helper(),
+                run,
+            ],
+            memory_pages: 1,
+            data: vec![DataSegment { offset: 100, bytes: encoded_string("id:") }],
+            globals: rc_test_globals(),
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["id:0", "id:7", "id:4096", "id:-123"]);
+    }
+
     /// The WIR-native `$ensure` helper grows memory correctly: with `$heap = 0`,
     /// `ensure(100000)` needs >1 page (65536 bytes), so memory grows from 1 to 2
     /// pages. Runs identically through the encoder and the WAT path.

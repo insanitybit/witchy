@@ -359,17 +359,21 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
             body: vec![
                 N::Br { target: "b2_32".into(), cond: Some(bin(BinOp::Eq, Kind::I32, getl("t32"), i32c(0))) },
                 N::SetLocal { local: "next32".into(), value: bin(BinOp::DivU, Kind::I32, getl("t32"), i32c(10)) },
-                N::Store8 {
-                    ptr: getl("p"),
+                N::SafeStore8 {
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                        getl("res"),
+                        getl("ppos"),
+                        getl("total_len"),
+                        crate::safewir::AccessMode::Write,
+                    ),
                     value: bin(
                         BinOp::Add,
                         Kind::I32,
                         bin(BinOp::Sub, Kind::I32, getl("t32"), bin(BinOp::Mul, Kind::I32, getl("next32"), i32c(10))),
                         i32c(48),
                     ),
-                    offset: 0,
                 },
-                N::SetLocal { local: "p".into(), value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)) },
+                N::SetLocal { local: "ppos".into(), value: bin(BinOp::Sub, Kind::I32, getl("ppos"), i32c(1)) },
                 N::SetLocal { local: "t32".into(), value: getl("next32") },
                 N::Br { target: "l2_32".into(), cond: None },
             ],
@@ -383,8 +387,13 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
             label: "l2_64".into(),
             body: vec![
                 N::Br { target: "b2_64".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
-                N::Store8 {
-                    ptr: getl("p"),
+                N::SafeStore8 {
+                    place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                        getl("res"),
+                        getl("ppos"),
+                        getl("total_len"),
+                        crate::safewir::AccessMode::Write,
+                    ),
                     value: bin(
                         BinOp::Add,
                         Kind::I32,
@@ -395,9 +404,8 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
                         },
                         i32c(48),
                     ),
-                    offset: 0,
                 },
-                N::SetLocal { local: "p".into(), value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)) },
+                N::SetLocal { local: "ppos".into(), value: bin(BinOp::Sub, Kind::I32, getl("ppos"), i32c(1)) },
                 N::SetLocal { local: "t".into(), value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)) },
                 N::Br { target: "l2_64".into(), cond: None },
             ],
@@ -419,7 +427,7 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "total_len".into(), ty: WirTy::Bool },
             WirLocal { name: "res".into(), ty: WirTy::Bool },
-            WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "ppos".into(), ty: WirTy::Bool },
             WirLocal { name: "neg".into(), ty: WirTy::Bool },
             WirLocal { name: "t32".into(), ty: WirTy::Bool },
             WirLocal { name: "next32".into(), ty: WirTy::Bool },
@@ -492,14 +500,12 @@ pub(crate) fn str_fmt_prefix_int_helper(checked: bool) -> WirFunc {
                         els: vec![],
                         result: None,
                     },
+                    // Keep the write cursor as a payload index. The descriptor
+                    // owns the `res + 4` header adjustment, so the store is
+                    // mechanically checked against the exact final extent.
                     N::SetLocal {
-                        local: "p".into(),
-                        value: bin(
-                            BinOp::Sub,
-                            Kind::I32,
-                            bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("total_len")),
-                            i32c(1),
-                        ),
+                        local: "ppos".into(),
+                        value: bin(BinOp::Sub, Kind::I32, getl("total_len"), i32c(1)),
                     },
                     N::If {
                         cond: bin(BinOp::LeU, Kind::I64, getl("mag"), i64c(0xFFFFFFFF)),
