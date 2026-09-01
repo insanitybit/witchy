@@ -922,6 +922,121 @@ impl<'a> FunctionAdapter<'a> {
         Ok(local.definition)
     }
 
+    /// Bind an executable object argument to its parameter root only when the
+    /// reaching-definition graph proves the parameter was never replaced or
+    /// joined.  A plain i32 is not object authority: this is deliberately
+    /// available only for locals the checked caller contract established as
+    /// memory roots.
+    fn stable_object_parameter_identity(
+        &self,
+        name: &str,
+        role: &'static str,
+    ) -> Result<ObjectIdentity, FinalWirValidationError> {
+        let local = self.local(name)?;
+        if !local.memory_root {
+            return Err(self.error(format!(
+                "{role} names a scalar instead of an authenticated memory root"
+            )));
+        }
+        let Some(parameter_index) = self
+            .function
+            .params
+            .iter()
+            .position(|parameter| parameter.name == name)
+        else {
+            return Err(self.error(format!(
+                "{role} requires an authenticated parameter root; local `{name}` is not a parameter"
+            )));
+        };
+        let parameter_index = u32::try_from(parameter_index)
+            .map_err(|_| self.error("parameter index space exhausted"))?;
+        let Some(entry) = self.reaching.entry_environment().get(name) else {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` has no entry definition"
+            )));
+        };
+        let mut definitions = entry.iter();
+        let Some(reaching_definition) = definitions.next() else {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` has no entry definition"
+            )));
+        };
+        if definitions.next().is_some()
+            || !matches!(
+                self.reaching.definition(reaching_definition).map(|definition| &definition.kind),
+                Some(ReachingDefinitionKind::Parameter { local, index })
+                    if local == name && *index == parameter_index
+            )
+        {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` has an invalid entry binding"
+            )));
+        }
+        let stable_read = |reaching: &crate::safewir_reaching_defs::ReachingSet, reachable| {
+            reachable && reaching.len() == 1 && reaching.contains(reaching_definition)
+        };
+        if self
+            .reaching
+            .reads_of(name)
+            .any(|read| !stable_read(&read.reaching, read.reachable))
+            || self
+                .reaching
+                .claim_local_uses_of(name)
+                .any(|claim| !stable_read(&claim.reaching, claim.reachable))
+        {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` is reassigned or joined"
+            )));
+        }
+        Ok(ObjectIdentity { root: local.definition, generation: GenerationId::new(1) })
+    }
+
+    /// The only direct-call operands the current final-WIR adapter can bind:
+    /// literals and exact scalar parameters, plus exact parameter roots whose
+    /// object shape came from the caller's checked contract.  In particular,
+    /// arithmetic, conversions, locals written by a call, and raw pointer
+    /// expressions cannot cross this boundary as callable arguments.
+    fn direct_call_argument(
+        &mut self,
+        expression: &WirExpr,
+    ) -> Result<crate::safewir_validate::CallArgument, FinalWirValidationError> {
+        use crate::safewir_validate::CallArgument;
+
+        match expression {
+            WirExpr::ConstI32(value) => Ok(CallArgument::Scalar(self.constant_definition(i128::from(*value))?)),
+            WirExpr::ConstI64(value) => Ok(CallArgument::Scalar(self.constant_definition(i128::from(*value))?)),
+            WirExpr::GetLocal(name) if self.local(name)?.memory_root => Ok(CallArgument::Object(
+                self.stable_object_parameter_identity(name, "direct call argument")?,
+            )),
+            WirExpr::GetLocal(name) => Ok(CallArgument::Scalar(
+                self.stable_scalar_parameter_definition(name, "direct call argument")?,
+            )),
+            _ => Err(self.error(
+                "direct call arguments require a literal, stable scalar parameter, or authenticated parameter root",
+            )),
+        }
+    }
+
+    /// Elaborate a statement-position direct local call.  Results are not
+    /// represented by this stage: calls in value position and multi-result
+    /// calls stay fail-closed until their result def-use adapter exists.
+    fn direct_void_call(
+        &mut self,
+        func: &str,
+        args: &[WirExpr],
+    ) -> Result<(), FinalWirValidationError> {
+        let arguments = args
+            .iter()
+            .map(|argument| self.direct_call_argument(argument))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.operations.push(Operation::Call {
+            callable: func.into(),
+            arguments,
+            result: None,
+        });
+        Ok(())
+    }
+
     fn error(&self, message: impl Into<String>) -> FinalWirValidationError {
         FinalWirValidationError::function(&self.function.name, message)
     }
@@ -1464,6 +1579,9 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::Push(_) | WirNode::Return(Some(_)) => Err(self.error(
                 "value returns require the deferred return-value def-use adapter",
             )),
+            WirNode::Drop(WirExpr::Call { func, args }) | WirNode::Do(WirExpr::Call { func, args }) => {
+                self.direct_void_call(func, args)
+            }
             WirNode::Drop(expression) | WirNode::Do(expression) => self.expr(expression),
             WirNode::Return(None) => {
                 self.operations.push(Operation::ReturnVoid);
@@ -1509,19 +1627,9 @@ impl<'a> FunctionAdapter<'a> {
             WirExpr::Load { .. } | WirExpr::Load8U { .. } | WirExpr::MemoryGrow(_) => Err(
                 self.error("raw linear-memory expression bypasses the semantic SafeWIR dialect"),
             ),
-            WirExpr::Call { func, args } => {
-                if !args.is_empty() {
-                    return Err(self.error(
-                        "memory/scalar call arguments require the deferred def-use adapter",
-                    ));
-                }
-                self.operations.push(Operation::Call {
-                    callable: func.clone(),
-                    arguments: Vec::new(),
-                    result: None,
-                });
-                Ok(())
-            }
+            WirExpr::Call { .. } => Err(self.error(
+                "direct calls require statement position; value results require the deferred return-value def-use adapter",
+            )),
             WirExpr::CallHost { import, args } => {
                 let arguments = args
                     .iter()
@@ -2037,6 +2145,7 @@ mod tests {
             Some(match name {
                 "Bool" => ResolvedNamed::Scalar(ScalarKind::Bool),
                 "Int" => ResolvedNamed::Scalar(ScalarKind::Int),
+                "Float" => ResolvedNamed::Scalar(ScalarKind::Float),
                 "List" => ResolvedNamed::PackedList { rc: RcHeader::Required },
                 "String" => ResolvedNamed::Reference(ReferenceKind::Owning),
                 _ => return None,
@@ -3347,6 +3456,298 @@ mod tests {
             error.to_string().contains("supplied declaration is forbidden"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn final_wir_direct_void_call_binds_literal_and_stable_scalar_arguments() {
+        let (layouts, _) = layouts();
+        let scalar = || ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            dynamic_header: None,
+            effects: ParameterMemoryEffects::none(),
+        };
+        let contract = || CallableMemoryContract {
+            parameters: vec![scalar()],
+            result: CallableMemoryResult::NoMemory,
+        };
+        let sink = WirFunc {
+            name: "sink".into(),
+            params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![WirNode::Return(None)],
+            raw_body: None,
+        };
+        let main = WirFunc {
+            name: "main".into(),
+            params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![
+                WirNode::Do(WirExpr::Call {
+                    func: "sink".into(),
+                    args: vec![WirExpr::GetLocal("value".into())],
+                }),
+                WirNode::Do(WirExpr::Call { func: "sink".into(), args: vec![WirExpr::ConstI64(7)] }),
+                WirNode::Return(None),
+            ],
+            raw_body: None,
+        };
+        let report = validate_final_wir_report(
+            &WirModule {
+                imports: Vec::new(),
+                funcs: vec![sink, main],
+                memory_pages: 1,
+                data: Vec::new(),
+                globals: Vec::new(),
+                table: None,
+                exports: Vec::new(),
+            },
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts,
+                functions: BTreeMap::from([("sink".into(), contract()), ("main".into(), contract())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        )
+        .expect("direct calls must retain exact scalar argument definitions");
+        assert_eq!(report.metrics().operations, 5);
+    }
+
+    #[test]
+    fn final_wir_direct_void_call_binds_authenticated_object_root_and_checks_authority() {
+        let mut interner = LayoutInterner::new();
+        let layout = interner
+            .intern_type(&Type::Named("Int".into(), Vec::new()), &Resolver)
+            .expect("Int layout");
+        let mismatched_layout = interner
+            .intern_type(&Type::Named("Float".into(), Vec::new()), &Resolver)
+            .expect("Float layout");
+        let layouts = LayoutBundle::from_interner(&interner, [layout, mismatched_layout])
+            .expect("canonical layouts");
+        let object_contract = |entry, object_layout, extent| CallableMemoryContract {
+            parameters: vec![ParameterMemoryContract {
+                entry,
+                layout: Some(object_layout),
+                extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(extent))),
+                dynamic_header: None,
+                effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
+            }],
+            result: CallableMemoryResult::NoMemory,
+        };
+        let function = |name: &str| WirFunc {
+            name: name.into(),
+            params: vec![WirLocal { name: "object".into(), ty: WirTy::Str }],
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: if name == "main" {
+                vec![
+                    WirNode::Do(WirExpr::Call {
+                        func: "sink".into(),
+                        args: vec![WirExpr::GetLocal("object".into())],
+                    }),
+                    WirNode::Return(None),
+                ]
+            } else {
+                vec![
+                    WirNode::Drop(WirExpr::SafeLoad {
+                        place: semantic_place(layout),
+                        kind: Kind::I64,
+                    }),
+                    WirNode::Return(None),
+                ]
+            },
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![function("sink"), function("main")],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: layouts.clone(),
+                functions: BTreeMap::from([
+                    ("sink".into(), object_contract(ParameterMemoryEntry::BorrowedRead, layout, 8)),
+                    ("main".into(), object_contract(ParameterMemoryEntry::BorrowedRead, layout, 8)),
+                ]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        )
+        .expect("a checked parameter root must elaborate as an object argument");
+
+        let authority = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: layouts.clone(),
+                functions: BTreeMap::from([
+                    ("sink".into(), object_contract(ParameterMemoryEntry::Unique, layout, 8)),
+                    ("main".into(), object_contract(ParameterMemoryEntry::BorrowedRead, layout, 8)),
+                ]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        )
+        .expect_err("a borrowed root must not satisfy a unique call parameter");
+        assert!(authority.to_string().contains("lacks required authority"), "{authority}");
+
+        let extent = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts,
+                functions: BTreeMap::from([
+                    ("sink".into(), object_contract(ParameterMemoryEntry::BorrowedRead, mismatched_layout, 8)),
+                    ("main".into(), object_contract(ParameterMemoryEntry::BorrowedRead, layout, 8)),
+                ]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        )
+        .expect_err("a call cannot substitute a root with a contradictory extent");
+        assert!(extent.to_string().contains("layout or extent"), "{extent}");
+    }
+
+    #[test]
+    fn final_wir_direct_void_call_rejects_computed_and_value_position_calls() {
+        let (layouts, _) = layouts();
+        let scalar = || ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            dynamic_header: None,
+            effects: ParameterMemoryEffects::none(),
+        };
+        let contract = || CallableMemoryContract {
+            parameters: vec![scalar()],
+            result: CallableMemoryResult::NoMemory,
+        };
+        let sink = WirFunc {
+            name: "sink".into(),
+            params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![WirNode::Return(None)],
+            raw_body: None,
+        };
+        let main = WirFunc {
+            name: "main".into(),
+            params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![WirNode::Do(WirExpr::Binary {
+                op: crate::wir::BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(WirExpr::Call {
+                    func: "sink".into(),
+                    args: vec![WirExpr::GetLocal("value".into())],
+                }),
+                rhs: Box::new(WirExpr::ConstI64(1)),
+            })],
+            raw_body: None,
+        };
+        let error = validate_final_wir_report(
+            &WirModule {
+                imports: Vec::new(),
+                funcs: vec![sink, main],
+                memory_pages: 1,
+                data: Vec::new(),
+                globals: Vec::new(),
+                table: None,
+                exports: Vec::new(),
+            },
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts,
+                functions: BTreeMap::from([("sink".into(), contract()), ("main".into(), contract())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        )
+        .expect_err("a value-position call must not discard an unmodeled result");
+        assert!(error.to_string().contains("statement position"), "{error}");
+    }
+
+    #[test]
+    fn final_wir_direct_void_call_rejects_reassigned_scalar_argument() {
+        let (layouts, _) = layouts();
+        let contract = || CallableMemoryContract {
+            parameters: vec![ParameterMemoryContract {
+                entry: ParameterMemoryEntry::NoMemory,
+                layout: None,
+                extent: None,
+                dynamic_header: None,
+                effects: ParameterMemoryEffects::none(),
+            }],
+            result: CallableMemoryResult::NoMemory,
+        };
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![
+                WirFunc {
+                    name: "sink".into(),
+                    params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+                    ret: Vec::new(),
+                    locals: Vec::new(),
+                    body: vec![WirNode::Return(None)],
+                    raw_body: None,
+                },
+                WirFunc {
+                    name: "main".into(),
+                    params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+                    ret: Vec::new(),
+                    locals: Vec::new(),
+                    body: vec![
+                        WirNode::SetLocal { local: "value".into(), value: WirExpr::ConstI64(9) },
+                        WirNode::Do(WirExpr::Call {
+                            func: "sink".into(),
+                            args: vec![WirExpr::GetLocal("value".into())],
+                        }),
+                    ],
+                    raw_body: None,
+                },
+            ],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let error = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts,
+                functions: BTreeMap::from([("sink".into(), contract()), ("main".into(), contract())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        )
+        .expect_err("a direct call must not bind a reassigned parameter as its original definition");
+        assert!(error.to_string().contains("mutable local definitions"), "{error}");
     }
 
     #[test]
