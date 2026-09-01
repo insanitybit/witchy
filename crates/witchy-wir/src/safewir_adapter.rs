@@ -23,7 +23,8 @@ use crate::safewir_surface::{
     SafeSizeExpr,
 };
 use crate::safewir_reaching_defs::{
-    analyze_reaching_definitions, ReachingDefinitionBudget,
+    analyze_reaching_definitions, DefinitionKind as ReachingDefinitionKind, ReachingDefinitionBudget,
+    ReachingDefinitions,
 };
 use crate::safewir_validate::{
     self, CandidateFunction, CandidateGcDeclarations, CandidateGcUse, CandidateModule, ControlId,
@@ -228,7 +229,7 @@ pub fn validate_final_wir_report(
             // patterns that need them. Running the common analysis here makes
             // that refusal a coverage limitation, never permission to guess a
             // reaching definition while the production elaborator expands.
-            analyze_reaching_definitions(function, ReachingDefinitionBudget::default())
+            let reaching = analyze_reaching_definitions(function, ReachingDefinitionBudget::default())
                 .map_err(|error| FinalWirValidationError::function(
                     &function.name,
                     format!("reaching-definition preflight rejected final WIR: {error}"),
@@ -238,7 +239,7 @@ pub fn validate_final_wir_report(
                 .get(&function.name)
                 .expect("function contract census was checked")
                 .clone();
-            FunctionAdapter::new(function, contract)?.adapt()
+            FunctionAdapter::new(function, contract, reaching)?.adapt()
         })
         .collect::<Result<Vec<_>, _>>()?;
     let candidate = CandidateModule {
@@ -504,6 +505,7 @@ fn collect_gc_uses_expr(expression: &WirExpr, uses: &mut Vec<CandidateGcUse>) {
 struct FunctionAdapter<'a> {
     function: &'a WirFunc,
     contract: CallableMemoryContract,
+    reaching: ReachingDefinitions,
     next_definition: u32,
     next_control: u32,
     local_names: BTreeMap<String, LocalId>,
@@ -526,6 +528,7 @@ impl<'a> FunctionAdapter<'a> {
     fn new(
         function: &'a WirFunc,
         contract: CallableMemoryContract,
+        reaching: ReachingDefinitions,
     ) -> Result<Self, FinalWirValidationError> {
         if function.raw_body.is_some() {
             return Err(FinalWirValidationError::function(
@@ -550,6 +553,7 @@ impl<'a> FunctionAdapter<'a> {
         let mut adapter = Self {
             function,
             contract,
+            reaching,
             next_definition: 1,
             next_control: 1,
             local_names: BTreeMap::new(),
@@ -679,6 +683,76 @@ impl<'a> FunctionAdapter<'a> {
             .get(local.0 as usize)
             .copied()
             .ok_or_else(|| self.error("resolved local index is outside the local table"))
+    }
+
+    /// Bind an executable scalar read to its parameter definition only when
+    /// the shared structural graph proves that every reachable read and claim
+    /// of that name still reaches the same parameter. This deliberately does
+    /// not use a mutable "last assignment" map: writes, joins, calls, and
+    /// loop-carried values stay unsupported until their exact graph binding is
+    /// elaborated.
+    fn stable_scalar_parameter_definition(
+        &self,
+        name: &str,
+        role: &'static str,
+    ) -> Result<DefinitionId, FinalWirValidationError> {
+        let local = self.local(name)?;
+        if local.memory_root {
+            return Err(self.error(format!(
+                "{role} names a memory root instead of a scalar reaching definition"
+            )));
+        }
+        let Some(parameter_index) = self
+            .function
+            .params
+            .iter()
+            .position(|parameter| parameter.name == name)
+        else {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; local `{name}` is not an unchanged scalar parameter"
+            )));
+        };
+        let parameter_index = u32::try_from(parameter_index)
+            .map_err(|_| self.error("parameter index space exhausted"))?;
+        let Some(entry) = self.reaching.entry_environment().get(name) else {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` has no entry definition"
+            )));
+        };
+        let mut definitions = entry.iter();
+        let Some(reaching_definition) = definitions.next() else {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` has no entry definition"
+            )));
+        };
+        if definitions.next().is_some()
+            || !matches!(
+                self.reaching.definition(reaching_definition).map(|definition| &definition.kind),
+                Some(ReachingDefinitionKind::Parameter { local, index })
+                    if local == name && *index == parameter_index
+            )
+        {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` has an invalid entry binding"
+            )));
+        }
+        let stable_read = |reaching: &crate::safewir_reaching_defs::ReachingSet, reachable| {
+            reachable && reaching.len() == 1 && reaching.contains(reaching_definition)
+        };
+        if self
+            .reaching
+            .reads_of(name)
+            .any(|read| !stable_read(&read.reaching, read.reachable))
+            || self
+                .reaching
+                .claim_local_uses_of(name)
+                .any(|claim| !stable_read(&claim.reaching, claim.reachable))
+        {
+            return Err(self.error(format!(
+                "{role} requires exact reaching definitions; parameter `{name}` is reassigned or joined"
+            )));
+        }
+        Ok(local.definition)
     }
 
     fn error(&self, message: impl Into<String>) -> FinalWirValidationError {
@@ -1122,17 +1196,22 @@ impl FunctionAdapter<'_> {
         expression: &WirExpr,
         role: &'static str,
     ) -> Result<DefinitionId, FinalWirValidationError> {
-        let Some(value) = constant_operand(expression) else {
-            return Err(FinalWirValidationError::module(format!(
-                "{role} is not a literal; a runtime operand requires exact reaching definitions"
-            )));
-        };
-        if value < 0 {
-            return Err(FinalWirValidationError::module(format!(
-                "{role} must not be negative"
-            )));
+        match expression {
+            WirExpr::GetLocal(name) => self.stable_scalar_parameter_definition(name, role),
+            _ => {
+                let Some(value) = constant_operand(expression) else {
+                    return Err(FinalWirValidationError::module(format!(
+                        "{role} is not a literal or stable scalar parameter; a runtime operand requires exact reaching definitions"
+                    )));
+                };
+                if value < 0 {
+                    return Err(FinalWirValidationError::module(format!(
+                        "{role} must not be negative"
+                    )));
+                }
+                self.constant_definition(value)
+            }
         }
-        self.constant_definition(value)
     }
 
     fn extent_at(
@@ -1445,6 +1524,43 @@ mod tests {
         assert!(
             error.to_string().contains("exact reaching definitions"),
             "the runtime case must say what it is missing: {error}",
+        );
+    }
+
+    #[test]
+    fn a_stable_scalar_parameter_binds_to_its_structural_definition() {
+        let (layout_bundle, layout) = layouts();
+        let mut place = semantic_place(layout);
+        place.projection = SafeProjectionExpr::from_steps([SafeProjectionStep::Element {
+            index: Box::new(WirExpr::GetLocal("index".into())),
+        }]);
+        let mut final_module = module(WirExpr::SafeLoad { place, kind: Kind::I64 });
+        final_module.funcs[0]
+            .params
+            .push(WirLocal { name: "index".into(), ty: WirTy::Bool });
+        let mut final_inputs = inputs(layout_bundle, layout);
+        final_inputs
+            .functions
+            .get_mut("read")
+            .expect("read contract")
+            .parameters
+            .push(ParameterMemoryContract {
+                entry: ParameterMemoryEntry::NoMemory,
+                layout: None,
+                extent: None,
+                effects: ParameterMemoryEffects::none(),
+            });
+        let error = validate_final_wir_report(
+            &final_module,
+            &[],
+            &[],
+            final_inputs,
+            ValidationBudget::default(),
+        )
+        .expect_err("the scalar-layout fixture must reach projected-layout validation");
+        assert!(
+            error.to_string().contains("packed element sequence"),
+            "the adapter must bind the stable parameter before the validator sees the projection: {error}",
         );
     }
 
