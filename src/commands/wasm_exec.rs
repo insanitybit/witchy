@@ -146,6 +146,17 @@ pub(crate) fn run_wasm_module(
     use crate::runtime::Capabilities;
     use witchy_wir::wir_prelude::{abi_import_uses_authority, AbiImportAuthority as Authority};
 
+    // This is the distribution boundary for user-supplied precompiled guests.
+    // WAT has no authenticated binary metadata section, and `Runtime::spawn`
+    // deliberately continues to accept it for compiler/runtime tests. Never
+    // let the production runner derive grants from an unauthenticated textual
+    // import list and then hand it to that developer boundary.
+    if !bytes.starts_with(b"\0asm") {
+        return Err(
+            "precompiled execution requires a binary WebAssembly artifact; textual WAT is not an authenticated production artifact"
+                .to_string(),
+        );
+    }
     let needs = witchy_imports(bytes)?;
     let declared = artifact::launch_contract(bytes)?.unwrap_or_default();
     let declares = |name: &str| declared.contains_key(name);
@@ -432,4 +443,39 @@ pub(crate) fn run_wasm_test_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(vm.output())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precompiled_runner_rejects_textual_wat_before_import_grant_derivation() {
+        // This import would otherwise cause the legacy runner to derive a
+        // Clock grant from textual input before Runtime::spawn gets a chance
+        // to link it. Production precompiled execution must admit only binary
+        // artifacts whose import and layout metadata have the authenticated
+        // Wasm path.
+        let wat = br#"(module
+            (import "witchy" "now" (func (result i64)))
+            (memory (export "memory") 1)
+            (func (export "run")))"#;
+        let error = run_wasm_module(
+            wat,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            false,
+            witchy_confinement::EnforcementMode::Disabled,
+        )
+        .expect_err("textual imports must not reach the production guest runner");
+        assert!(
+            error.contains("textual WAT is not an authenticated production artifact"),
+            "{error}"
+        );
+    }
 }
