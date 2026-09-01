@@ -1444,19 +1444,16 @@ fn encode_with_gc_source_map(
     name_section.functions(&func_names);
     wasm.section(&name_section);
 
-    // RFC-0146: a compiler-selected backend boundary. The internal marker
-    // global keeps the WIR contract source-neutral; only the binary artifact
-    // exposes the versioned policy consumed by the native runtime.
-    if module.globals.iter().any(|global| {
-        global.name == crate::optimizer_policy::MARKER_GLOBAL
-            && !global.mutable
-            && global.export.is_none()
-    }) {
-        wasm.section(&CustomSection {
-            name: Cow::Borrowed(crate::optimizer_policy::SECTION_NAME),
-            data: Cow::Borrowed(&crate::optimizer_policy::PRESERVE_RAW_PAYLOAD),
-        });
-    }
+    // A compiler-encoded artifact is the exact output of the WIR admission
+    // boundary. Native Binaryen operates on bytes and cannot carry SafeWIR
+    // provenance, range, lifetime, or callable-contract judgments through a
+    // rewrite, so it must not transform this artifact after encoding. Keep the
+    // policy versioned and machine-readable for the runtime; external WAT and
+    // non-Witchy binaries are unaffected because they cannot carry it.
+    wasm.section(&CustomSection {
+        name: Cow::Borrowed(crate::optimizer_policy::SECTION_NAME),
+        data: Cow::Borrowed(&crate::optimizer_policy::PRESERVE_RAW_PAYLOAD),
+    });
 
     EncodedModule { wasm: wasm.finish(), source_instructions, source_expressions }
 }

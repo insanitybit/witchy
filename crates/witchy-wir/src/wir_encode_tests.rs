@@ -259,6 +259,45 @@
         }
     }
 
+    #[test]
+    fn compiler_encoded_modules_forbid_post_encoding_byte_optimization() {
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![WirFunc {
+                name: "main".into(),
+                params: Vec::new(),
+                ret: Vec::new(),
+                locals: Vec::new(),
+                body: Vec::new(),
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let encoded = crate::wir_encode::try_encode_with_gc_source_map(&module, &[], &[])
+            .expect("the compiler encoder accepts an empty module");
+        let policies = wasmparser::Parser::new(0)
+            .parse_all(&encoded.wasm)
+            .filter_map(Result::ok)
+            .filter_map(|payload| match payload {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == crate::optimizer_policy::SECTION_NAME =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            policies,
+            vec![crate::optimizer_policy::PRESERVE_RAW_PAYLOAD.to_vec()],
+            "every compiler-encoded artifact must prevent byte-level post-admission optimization",
+        );
+    }
+
 
     mod runtime_helpers {
         use super::*;
