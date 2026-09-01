@@ -1753,23 +1753,12 @@ impl<'a> FunctionAdapter<'a> {
         match expression {
             WirExpr::SafeLoad { place, kind } => {
                 let place = self.place(place)?;
-                if let Some((index, bound)) = self.active_index_guard {
-                    if matches!(place.projection.steps(), [ProjectionStep::Element { index: projected }] if *projected == index) {
-                        self.operations.push(Operation::CheckedIndex {
-                            object: place.object.identity,
-                            index,
-                            length_source: bound,
-                            place,
-                        });
-                        return Ok(());
-                    }
-                }
-                self.operations.push(Operation::Load { place, width: memory_width(*kind)? });
+                self.emit_indexed_load(place, memory_width(*kind)?);
                 Ok(())
             }
             WirExpr::SafeLoad8U { place } => {
                 let place = self.place(place)?;
-                self.operations.push(Operation::Load { place, width: MemoryWidth::I8 });
+                self.emit_indexed_load(place, MemoryWidth::I8);
                 Ok(())
             }
             WirExpr::SafeKernel(operation) => Err(self.kernel_expr_contract_error(operation)),
@@ -1929,6 +1918,28 @@ impl<'a> FunctionAdapter<'a> {
             },
             access: place.access,
         })
+    }
+
+    /// Emit the one current dynamic-index read operation when the access's
+    /// single element projection names the guard's exact induction or index
+    /// definition.  `CheckedIndex` is presently a read-only validator event:
+    /// it has no memory width or write-authority field, so stores deliberately
+    /// remain on the ordinary range-validation path until that contract grows.
+    /// The shared handler covers word and byte loads without a helper-name
+    /// allowlist; unmatched dynamic expressions never receive this theorem.
+    fn emit_indexed_load(&mut self, place: Place, width: MemoryWidth) {
+        if let Some((index, bound)) = self.active_index_guard {
+            if matches!(place.projection.steps(), [ProjectionStep::Element { index: projected }] if *projected == index) {
+                self.operations.push(Operation::CheckedIndex {
+                    object: place.object.identity,
+                    index,
+                    length_source: bound,
+                    place,
+                });
+                return;
+            }
+        }
+        self.operations.push(Operation::Load { place, width });
     }
 
     fn matches_dynamic_element_base(&self, place: &SafePlaceExpr) -> bool {
@@ -2439,6 +2450,47 @@ mod tests {
             ValidationBudget::default(),
         ).expect("the exact header/load/guard pattern must elaborate");
         assert!(report.metrics().operations >= 4);
+
+        // Word and byte reads share the same structural theorem.  The access
+        // kind is changed without changing the layout, guard, or helper name.
+        let mut byte_module = module.clone();
+        let WirNode::If { then_, .. } = &mut byte_module.funcs[0].body[1] else { panic!() };
+        let [WirNode::Drop(WirExpr::SafeLoad { place, .. })] = then_.as_slice() else { panic!() };
+        then_[0] = WirNode::Drop(WirExpr::SafeLoad8U {
+            place: place.clone(),
+        });
+        let report = validate_final_wir_report(
+            &byte_module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: dynamic_list_layouts().1,
+                functions: BTreeMap::from([("dynamic_access".into(), contract.clone())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
+            },
+            ValidationBudget::default(),
+        ).expect("the exact header/guard pattern must elaborate an indexed byte load too");
+        assert!(report.metrics().operations >= 4);
+
+        let mut unguarded_byte = byte_module;
+        let WirNode::If { then_, .. } = unguarded_byte.funcs[0].body.remove(1) else { panic!() };
+        unguarded_byte.funcs[0].body.extend(then_);
+        let error = validate_final_wir_report(
+            &unguarded_byte,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: dynamic_list_layouts().1,
+                functions: BTreeMap::from([("dynamic_access".into(), contract.clone())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
+            },
+            ValidationBudget::default(),
+        ).expect_err("a dynamic byte load outside its unsigned header guard must reject");
+        assert!(error.to_string().contains("SWIR-RNG-002"), "{error}");
 
         let mut signed = module;
         let WirNode::If { cond: WirExpr::Binary { op, .. }, .. } = &mut signed.funcs[0].body[1] else { panic!() };
