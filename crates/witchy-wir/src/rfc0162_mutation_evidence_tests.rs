@@ -66,6 +66,7 @@ fn callable_checker_recomputes_parameter_effects() {
                     entry: ParameterMemoryEntry::Unique,
                     layout: Some(layout),
                     extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
+                    dynamic_header: None,
                     effects: ParameterMemoryEffects::none(),
                 }],
                 result: CallableMemoryResult::NoMemory,

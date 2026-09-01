@@ -79,6 +79,7 @@ impl InferredContract {
                     entry: parameter.entry,
                     layout: parameter.layout,
                     extent: parameter.extent.clone(),
+                    dynamic_header: None,
                     effects: *effects,
                 })
                 .collect(),
@@ -289,6 +290,7 @@ fn catalog_contract(
                 entry: ParameterMemoryEntry::Shared,
                 layout: Some(i64_layout?),
                 extent: Some(exact_eight()),
+                dynamic_header: None,
                 effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Escape),
             }],
             result: CallableMemoryResult::NoMemory,
@@ -330,6 +332,7 @@ pub(crate) fn canonical_host_import_contract(name: &str) -> Option<CallableMemor
                 entry: ParameterMemoryEntry::NoMemory,
                 layout: None,
                 extent: None,
+                dynamic_header: None,
                 effects: ParameterMemoryEffects::none(),
             })
             .collect(),
@@ -370,6 +373,7 @@ fn identity_shape_contract(
             entry: ParameterMemoryEntry::BorrowedRead,
             layout: Some(layout),
             extent: Some(exact_eight()),
+            dynamic_header: None,
             effects,
         }],
         result,
@@ -459,6 +463,9 @@ fn infer_operations(
                 if let Ok(value) = u64::try_from(*value) {
                     facts.scalar_constants.insert(*definition, value);
                 }
+            }
+            Operation::BindHeaderCount { object, .. } => {
+                add_object_effect(facts, *object, ParameterMemoryEffect::Read)
             }
             Operation::Alloc { result } => {
                 let origin = extent_to_contract(&result.extent, facts)
@@ -608,6 +615,25 @@ fn infer_operations(
                     nested,
                 )?;
             }
+            Operation::GuardIndexBelow { body, .. } => {
+                let nested = depth.checked_add(1).ok_or_else(|| {
+                    module_error(
+                        RuleId::BudgetExhaustionFailsClosed,
+                        "call summary guarded-index depth overflowed",
+                    )
+                })?;
+                infer_operations(
+                    function,
+                    body,
+                    local,
+                    imports,
+                    host_imports,
+                    facts,
+                    budget,
+                    work,
+                    nested,
+                )?;
+            }
             Operation::Loop { body, .. } => {
                 let nested = depth.checked_add(1).ok_or_else(|| {
                     module_error(
@@ -650,7 +676,8 @@ fn infer_operations(
                 );
             }
             Operation::Branch { condition: None, .. } | Operation::ReturnVoid => return Ok(()),
-            Operation::Project { .. }
+            Operation::BindCountParameter { .. }
+            | Operation::Project { .. }
             | Operation::CheckedIndex { .. }
             | Operation::ProvenIndex { .. }
             | Operation::Branch { condition: Some(_), .. }
@@ -772,6 +799,7 @@ fn conservative_declared_contract(
                 entry: declared.entry,
                 layout: declared.layout,
                 extent: declared.extent.clone(),
+                dynamic_header: None,
                 effects: if declared.effects.is_unknown() {
                     ParameterMemoryEffects::unknown()
                 } else {

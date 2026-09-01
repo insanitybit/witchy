@@ -160,6 +160,7 @@ fn parameter(
         entry,
         layout: Some(layout),
         extent: Some(exact_extent(extent)),
+        dynamic_header: None,
         effects,
     }
 }

@@ -687,6 +687,7 @@ mod final_validation {
                     entry: ParameterMemoryEntry::BorrowedWrite,
                     layout: Some(helper_layouts().dict_body),
                     extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(4 + 16 * 8))),
+                    dynamic_header: None,
                     effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
                         .with(ParameterMemoryEffect::Write),
                 },
@@ -703,6 +704,7 @@ mod final_validation {
             entry: ParameterMemoryEntry::NoMemory,
             layout: None,
             extent: None,
+            dynamic_header: None,
             effects: ParameterMemoryEffects::none(),
         }
     }
@@ -732,6 +734,7 @@ mod final_validation {
                 count: ContractSizeExpr::Parameter(count),
                 stride: ContractSizeExpr::Constant(stride),
             }),
+            dynamic_header: None,
             effects: if write {
                 ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
                     .with(ParameterMemoryEffect::Write)

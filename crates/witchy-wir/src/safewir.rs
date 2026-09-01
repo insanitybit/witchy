@@ -292,7 +292,22 @@ pub struct ParameterMemoryContract {
     pub layout: Option<LayoutId>,
     /// Caller-substitutable extent from the checked source signature.
     pub extent: Option<ContractExtent>,
+    /// An authenticated invariant for a descriptor-defined dynamic header.
+    ///
+    /// This is deliberately separate from the allocation extent. A length
+    /// word read from linear memory is data, not proof that it fits the
+    /// allocation; this source contract is what authorizes the final adapter
+    /// to bind that word as bounded by the counted extent.
+    pub dynamic_header: Option<DynamicHeaderInvariant>,
     pub effects: ParameterMemoryEffects,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DynamicHeaderInvariant {
+    /// Descriptor header component `component` is an unsigned count no larger
+    /// than the parameter's authenticated `ContractExtent::Counted` count.
+    /// No caller-selected bound travels with this claim.
+    BoundedByCountedExtent { component: u32 },
 }
 
 impl ParameterMemoryContract {
@@ -301,6 +316,7 @@ impl ParameterMemoryContract {
             entry: ParameterMemoryEntry::Unknown,
             layout: None,
             extent: None,
+            dynamic_header: None,
             effects: ParameterMemoryEffects::unknown(),
         }
     }
@@ -308,12 +324,24 @@ impl ParameterMemoryContract {
     pub fn shape_is_consistent(&self) -> bool {
         match self.entry {
             ParameterMemoryEntry::NoMemory | ParameterMemoryEntry::Unknown => {
-                self.layout.is_none() && self.extent.is_none()
+                self.layout.is_none() && self.extent.is_none() && self.dynamic_header.is_none()
             }
             ParameterMemoryEntry::BorrowedRead
             | ParameterMemoryEntry::BorrowedWrite
             | ParameterMemoryEntry::Shared
-            | ParameterMemoryEntry::Unique => self.layout.is_some() && self.extent.is_some(),
+            | ParameterMemoryEntry::Unique => {
+                self.layout.is_some()
+                    && self.extent.is_some()
+                    && self.dynamic_header.as_ref().is_none_or(|invariant| {
+                        matches!(
+                            (invariant, self.extent.as_ref()),
+                            (
+                                DynamicHeaderInvariant::BoundedByCountedExtent { .. },
+                                Some(ContractExtent::Counted { .. }),
+                            )
+                        )
+                    })
+            }
         }
     }
 }
@@ -632,6 +660,7 @@ mod tests {
                 entry: ParameterMemoryEntry::Shared,
                 layout: Some(layout(3)),
                 extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
+                dynamic_header: None,
                 effects: ParameterMemoryEffects::none(),
             }],
             result: CallableMemoryResult::Shared(BTreeSet::new()),
@@ -668,6 +697,7 @@ mod tests {
                 entry: ParameterMemoryEntry::BorrowedRead,
                 layout: Some(layout(5)),
                 extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
+                dynamic_header: None,
                 effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
             }],
             result: CallableMemoryResult::Aliases { parameter: 0, projection },

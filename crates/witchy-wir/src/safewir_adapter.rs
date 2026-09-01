@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::layout::LayoutBundle;
+use crate::layout::{LayoutBundle, LayoutInterner, LayoutSize};
 use crate::safewir::{
     ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent, ContractSizeExpr,
     DefinitionId, Extent, GenerationId, ObjectIdentity, ObjectRef, ParameterMemoryEntry, Place,
@@ -24,7 +24,7 @@ use crate::safewir_surface::{
 };
 use crate::safewir_reaching_defs::{
     analyze_reaching_definitions, DefinitionKind as ReachingDefinitionKind, ReachingDefinitionBudget,
-    structural_node_operands, ReachingDefinitions, StructuralSite,
+    structural_node_operands, ReachingDefinitionId, ReachingDefinitions, StructuralSite,
 };
 use crate::safewir_validate::{
     self, CandidateFunction, CandidateGcDeclarations, CandidateGcUse, CandidateModule, ControlId,
@@ -239,7 +239,7 @@ pub fn validate_final_wir_report(
                 .get(&function.name)
                 .expect("derived and declared function contract census was checked")
                 .clone();
-            FunctionAdapter::new(function, contract, reaching)?.adapt()
+            FunctionAdapter::new(function, contract, reaching, &inputs.layouts)?.adapt()
         })
         .collect::<Result<Vec<_>, _>>()?;
     let candidate = CandidateModule {
@@ -608,6 +608,7 @@ fn collect_gc_uses_expr(expression: &WirExpr, uses: &mut Vec<CandidateGcUse>) {
 
 struct FunctionAdapter<'a> {
     function: &'a WirFunc,
+    layouts: LayoutInterner,
     contract: CallableMemoryContract,
     reaching: ReachingDefinitions,
     next_definition: u32,
@@ -617,6 +618,8 @@ struct FunctionAdapter<'a> {
     controls: Vec<(String, ControlId)>,
     parameters: Vec<ParameterBinding>,
     operations: Vec<Operation>,
+    reaching_scalar_definitions: BTreeMap<ReachingDefinitionId, DefinitionId>,
+    active_index_guard: Option<(DefinitionId, DefinitionId)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -633,6 +636,7 @@ impl<'a> FunctionAdapter<'a> {
         function: &'a WirFunc,
         contract: CallableMemoryContract,
         reaching: ReachingDefinitions,
+        layouts: &LayoutBundle,
     ) -> Result<Self, FinalWirValidationError> {
         if function.raw_body.is_some() {
             return Err(FinalWirValidationError::function(
@@ -654,8 +658,15 @@ impl<'a> FunctionAdapter<'a> {
                 "value-returning callables require the deferred return-value def-use adapter",
             ));
         }
+        let (_, layouts) = LayoutBundle::decode_canonical(&layouts.canonical_bytes()).map_err(|error| {
+            FinalWirValidationError::function(
+                &function.name,
+                format!("invalid canonical layout bundle: {error}"),
+            )
+        })?;
         let mut adapter = Self {
             function,
+            layouts,
             contract,
             reaching,
             next_definition: 1,
@@ -665,10 +676,19 @@ impl<'a> FunctionAdapter<'a> {
             controls: Vec::new(),
             parameters: Vec::new(),
             operations: Vec::new(),
+            reaching_scalar_definitions: BTreeMap::new(),
+            active_index_guard: None,
         };
         let parameter_contracts = adapter.contract.parameters.clone();
-        for (parameter, memory) in function.params.iter().zip(&parameter_contracts) {
-            let definition = adapter.fresh_definition()?;
+        let parameter_definitions = (0..function.params.len())
+            .map(|_| adapter.fresh_definition())
+            .collect::<Result<Vec<_>, _>>()?;
+        for ((parameter, memory), definition) in function
+            .params
+            .iter()
+            .zip(&parameter_contracts)
+            .zip(parameter_definitions.iter().copied())
+        {
             let object = match memory.entry {
                 ParameterMemoryEntry::NoMemory => None,
                 ParameterMemoryEntry::Unknown => {
@@ -688,9 +708,9 @@ impl<'a> FunctionAdapter<'a> {
                     let layout = memory
                         .layout
                         .ok_or_else(|| adapter.error("memory parameter has no LayoutId"))?;
-                    let extent = contract_extent(memory.extent.as_ref().ok_or_else(|| {
+                    let extent = adapter.contract_extent(memory.extent.as_ref().ok_or_else(|| {
                         adapter.error("memory parameter has no authenticated extent")
-                    })?)?;
+                    })?, &parameter_definitions)?;
                     Some(ObjectRef {
                         identity: ObjectIdentity {
                             root: definition,
@@ -704,6 +724,11 @@ impl<'a> FunctionAdapter<'a> {
             };
             adapter.declare_local(&parameter.name, definition, object.is_some())?;
             adapter.parameters.push(ParameterBinding { definition, object });
+        }
+        for (index, definition) in parameter_definitions.iter().copied().enumerate() {
+            if adapter.count_parameter_is_authenticated(index) {
+                adapter.operations.push(Operation::BindCountParameter { definition, parameter: index });
+            }
         }
         for local in &function.locals {
             let definition = adapter.fresh_definition()?;
@@ -787,6 +812,44 @@ impl<'a> FunctionAdapter<'a> {
             .get(local.0 as usize)
             .copied()
             .ok_or_else(|| self.error("resolved local index is outside the local table"))
+    }
+
+    fn count_parameter_is_authenticated(&self, parameter: usize) -> bool {
+        self.contract.parameters.iter().any(|memory| {
+            matches!(
+                (&memory.extent, &memory.dynamic_header),
+                (
+                    Some(ContractExtent::Counted { count: ContractSizeExpr::Parameter(index), .. }),
+                    Some(crate::safewir::DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
+                ) if *index == parameter
+            )
+        })
+    }
+
+    fn contract_extent(
+        &self,
+        extent: &ContractExtent,
+        parameters: &[DefinitionId],
+    ) -> Result<Extent, FinalWirValidationError> {
+        match extent {
+            ContractExtent::Exact(size) => Ok(Extent::Exact(contract_size(size)?)),
+            ContractExtent::Counted { header, count, stride } => {
+                let ContractSizeExpr::Parameter(index) = count else {
+                    return Err(self.error("counted parameter extent requires one source parameter count"));
+                };
+                if !self.count_parameter_is_authenticated(*index) {
+                    return Err(self.error("counted parameter extent has no authenticated header-capacity invariant"));
+                }
+                let definition = parameters.get(*index).copied().ok_or_else(|| {
+                    self.error("counted parameter extent names a parameter outside the callable")
+                })?;
+                Ok(Extent::Counted {
+                    header: contract_size(header)?,
+                    count: definition,
+                    stride: contract_size(stride)?,
+                })
+            }
+        }
     }
 
     /// Bind an executable scalar read to its parameter definition only when
@@ -986,6 +1049,101 @@ impl<'a> FunctionAdapter<'a> {
         Ok(site)
     }
 
+    fn scalar_at_read(
+        &self,
+        expression: &WirExpr,
+        site: &StructuralSite,
+        role: &'static str,
+    ) -> Result<DefinitionId, FinalWirValidationError> {
+        let WirExpr::GetLocal(name) = expression else {
+            return Err(self.error(format!("{role} requires one local scalar read")));
+        };
+        let local = self.local(name)?;
+        if local.memory_root {
+            return Err(self.error(format!("{role} names a memory root")));
+        }
+        let read = self.reaching.reads().iter().find(|read| read.site == *site).ok_or_else(|| {
+            self.error(format!("{role} has no structural reaching-definition read"))
+        })?;
+        if !read.reachable || read.local != *name || read.reaching.len() != 1 {
+            return Err(self.error(format!("{role} requires one exact reaching scalar definition")));
+        }
+        let reaching = read.reaching.iter().next().expect("length checked");
+        if let Some(definition) = self.reaching_scalar_definitions.get(&reaching) {
+            return Ok(*definition);
+        }
+        let parameter_index = self.function.params.iter().position(|parameter| parameter.name == *name)
+            .and_then(|index| u32::try_from(index).ok());
+        if matches!(
+            self.reaching.definition(reaching).map(|definition| &definition.kind),
+            Some(ReachingDefinitionKind::Parameter { local: parameter, index })
+                if parameter == name && Some(*index) == parameter_index
+        ) {
+            return Ok(local.definition);
+        }
+        Err(self.error(format!("{role} reaches a write, initializer, call result, or join without an authenticated scalar binding")))
+    }
+
+    fn bind_header_count_local(
+        &mut self,
+        local: &str,
+        place: &SafePlaceExpr,
+        site: &StructuralSite,
+    ) -> Result<(), FinalWirValidationError> {
+        let local_binding = self.local(local)?;
+        if local_binding.memory_root {
+            return Err(self.error("header count destination cannot be a memory root"));
+        }
+        let write = site.projected(crate::safewir_reaching_defs::SiteStep::Write);
+        let reaching = self.reaching.definition_at(&write).ok_or_else(|| {
+            self.error("header count write has no structural reaching-definition identity")
+        })?;
+        if !matches!(self.reaching.definition(reaching).map(|definition| &definition.kind),
+            Some(ReachingDefinitionKind::LocalWrite { local: written }) if written == local)
+        {
+            return Err(self.error("header count destination does not match its structural local write"));
+        }
+        let candidate = self.place(place)?;
+        let [ProjectionStep::Header { component }] = candidate.projection.steps() else {
+            return Err(self.error("header count load requires one canonical header projection"));
+        };
+        if !matches!(candidate.object.extent, Extent::Exact(SizeExpr::Constant(_)))
+            || candidate.access != crate::safewir::AccessMode::Read
+        {
+            return Err(self.error("header count load requires a read-only header-only extent"));
+        }
+        let definition = self.fresh_definition()?;
+        if self.reaching_scalar_definitions.insert(reaching, definition).is_some() {
+            return Err(self.error("header count reaching definition was bound twice"));
+        }
+        self.operations.push(Operation::BindHeaderCount {
+            definition,
+            object: candidate.object.identity,
+            component: *component,
+        });
+        Ok(())
+    }
+
+    fn index_below_condition(
+        &self,
+        node: &WirNode,
+        condition: &WirExpr,
+        site: &StructuralSite,
+    ) -> Option<(DefinitionId, DefinitionId)> {
+        let WirExpr::Binary { op: crate::wir::BinOp::LtU, kind: Kind::I32, lhs, rhs } = condition else {
+            return None;
+        };
+        let condition_site = self.node_operand_site(node, site, condition).ok()?;
+        let operands = crate::safewir_reaching_defs::structural_expr_operands(condition, &condition_site)?;
+        let executable = operands.into_iter().filter(|operand| !operand.claim_only).collect::<Vec<_>>();
+        if executable.len() != 2 {
+            return None;
+        }
+        let index = self.scalar_at_read(lhs, &executable[0].site, "unsigned index guard").ok()?;
+        let bound = self.scalar_at_read(rhs, &executable[1].site, "unsigned index guard").ok()?;
+        Some((index, bound))
+    }
+
     /// A host call may consume only an exact scalar identity from the shared
     /// reaching-definition graph. Mutable locals and computed expressions need
     /// richer elaboration; rejecting them keeps this ABI boundary fail closed.
@@ -1063,6 +1221,9 @@ impl<'a> FunctionAdapter<'a> {
             | WirNode::MemoryFill { .. } => Err(self.error(
                 "raw linear-memory operation bypasses the semantic SafeWIR dialect",
             )),
+            WirNode::SetLocal { local, value: WirExpr::SafeLoad { place, kind: Kind::I32 } } => {
+                self.bind_header_count_local(local, place, site)
+            }
             WirNode::SetLocal { .. } | WirNode::CallStoreMulti { .. } => Err(self.error(
                 "mutable local definitions require the deferred reaching-definition graph",
             )),
@@ -1072,6 +1233,21 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::SetGlobal { .. } => Err(self.error(
                 "global writes require the sealed kernel/global contract boundary",
             )),
+            WirNode::If { cond, then_, els, result: None }
+                if els.is_empty() && self.index_below_condition(node, cond, site).is_some() =>
+            {
+                let (index, bound) = self.index_below_condition(node, cond, site).expect("guard was checked");
+                let previous = self.active_index_guard.replace((index, bound));
+                let body = self.nested_seq_at(
+                    then_,
+                    &site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                        crate::safewir_reaching_defs::StructuredRegion::Then,
+                    )),
+                )?;
+                self.active_index_guard = previous;
+                self.operations.push(Operation::GuardIndexBelow { index, bound, body });
+                Ok(())
+            }
             WirNode::If { cond, then_, els, result: None } => {
                 let operand = self.node_operand_site(node, site, cond)?;
                 let condition = self.scalar_definition_at(cond, &operand)?;
@@ -1161,10 +1337,18 @@ impl<'a> FunctionAdapter<'a> {
         match expression {
             WirExpr::SafeLoad { place, kind } => {
                 let place = self.place(place)?;
-                self.operations.push(Operation::Load {
-                    place,
-                    width: memory_width(*kind)?,
-                });
+                if let Some((index, bound)) = self.active_index_guard {
+                    if matches!(place.projection.steps(), [ProjectionStep::Element { index: projected }] if *projected == index) {
+                        self.operations.push(Operation::CheckedIndex {
+                            object: place.object.identity,
+                            index,
+                            length_source: bound,
+                            place,
+                        });
+                        return Ok(());
+                    }
+                }
+                self.operations.push(Operation::Load { place, width: memory_width(*kind)? });
                 Ok(())
             }
             WirExpr::SafeLoad8U { place } => {
@@ -1258,11 +1442,9 @@ impl<'a> FunctionAdapter<'a> {
     }
 
     fn place(&mut self, place: &SafePlaceExpr) -> Result<Place, FinalWirValidationError> {
-        if self.scalar_key(&place.object.root)? != self.scalar_key(&place.range.object_root)?
-            || self.scalar_key(&place.object.root)? != self.scalar_key(&place.encoded_base)?
-        {
+        if self.scalar_key(&place.object.root)? != self.scalar_key(&place.range.object_root)? {
             return Err(self.error(
-                "object root, range root, and executable base are not the same final value",
+                "object root and range root are not the same final value",
             ));
         }
         let root_name = match place.object.root.as_ref() {
@@ -1279,16 +1461,45 @@ impl<'a> FunctionAdapter<'a> {
                 "object roots require a checked memory-bearing parameter binding",
             ));
         }
-        let start = self.size_at(&place.range.start)?;
-        if start != SizeExpr::Constant(u64::from(place.encoded_offset)) {
-            return Err(self.error(
-                "executable immediate offset contradicts the claimed byte-range start",
-            ));
-        }
         let identity = ObjectIdentity {
             root: root.definition,
             generation: GenerationId::new(1),
         };
+        let projection = self.projection_at(place)?;
+        let canonical_dynamic_element = self.matches_dynamic_element_base(place);
+        let encoded_root = if canonical_dynamic_element {
+            false
+        } else {
+            self.scalar_key(&place.object.root)? == self.scalar_key(&place.encoded_base)?
+        };
+        if !encoded_root && !canonical_dynamic_element {
+            return Err(self.error(
+                "object root and range root are not the same final value",
+            ));
+        }
+        let start = self.size_at(&place.range.start)?;
+        let expected_start = if canonical_dynamic_element {
+            let [ProjectionStep::Element { index }] = projection.steps() else {
+                return Err(self.error("canonical dynamic element address requires one element projection"));
+            };
+            let Some(descriptor) = self.contract_layout(place.object.layout) else {
+                return Err(self.error("dynamic element layout is absent from the canonical bundle"));
+            };
+            let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
+                return Err(self.error("dynamic element address contradicts a fixed layout"));
+            };
+            SizeExpr::narrow_u32(SizeExpr::add(
+                SizeExpr::Constant(u64::from(base)),
+                SizeExpr::multiply(SizeExpr::Definition(*index), SizeExpr::Constant(u64::from(stride))),
+            ))
+        } else {
+            SizeExpr::Constant(u64::from(place.encoded_offset))
+        };
+        if start != expected_start {
+            return Err(self.error(
+                "executable immediate offset contradicts the claimed byte-range start",
+            ));
+        }
         let provenance = match &place.object.provenance {
             SafeProvenanceExpr::Unknown => Provenance::Unknown,
             _ => {
@@ -1304,7 +1515,7 @@ impl<'a> FunctionAdapter<'a> {
                 extent: self.extent_at(&place.object.extent)?,
                 provenance,
             },
-            projection: self.projection_at(place)?,
+            projection,
             range: ByteRange {
                 object: identity,
                 start,
@@ -1312,6 +1523,40 @@ impl<'a> FunctionAdapter<'a> {
             },
             access: place.access,
         })
+    }
+
+    fn matches_dynamic_element_base(&self, place: &SafePlaceExpr) -> bool {
+        let [SafeProjectionStep::Element { index }] = place.projection.steps() else {
+            return false;
+        };
+        let Some(descriptor) = self.contract_layout(place.object.layout) else { return false };
+        let LayoutSize::Dynamic { base, stride } = descriptor.size() else { return false };
+        if place.encoded_offset != base {
+            return false;
+        }
+        let WirExpr::GetLocal(root) = place.object.root.as_ref() else {
+            return false;
+        };
+        let WirExpr::GetLocal(index) = index.as_ref() else {
+            return false;
+        };
+        let Some(stride) = i32::try_from(stride).ok() else {
+            return false;
+        };
+        let scaled = |expression: &WirExpr| matches!(expression,
+            WirExpr::Binary { op: crate::wir::BinOp::Mul, kind: Kind::I32, lhs, rhs }
+                if ((matches!(lhs.as_ref(), WirExpr::GetLocal(name) if name == index) && matches!(rhs.as_ref(), WirExpr::ConstI32(value) if *value == stride))
+                    || (matches!(rhs.as_ref(), WirExpr::GetLocal(name) if name == index) && matches!(lhs.as_ref(), WirExpr::ConstI32(value) if *value == stride)))
+        );
+        matches!(place.encoded_base.as_ref(),
+            WirExpr::Binary { op: crate::wir::BinOp::Add, kind: Kind::I32, lhs, rhs }
+                if (matches!(lhs.as_ref(), WirExpr::GetLocal(name) if name == root) && scaled(rhs))
+                    || (matches!(rhs.as_ref(), WirExpr::GetLocal(name) if name == root) && scaled(lhs))
+        )
+    }
+
+    fn contract_layout(&self, layout: crate::layout::LayoutId) -> Option<&crate::layout::LayoutDescriptor> {
+        self.layouts.get(layout)
     }
 
     fn require_constant_bulk_length(
@@ -1446,15 +1691,6 @@ fn memory_width(kind: Kind) -> Result<MemoryWidth, FinalWirValidationError> {
                 "Wasm references cannot be loaded from linear memory",
             ))
         }
-    }
-}
-
-fn contract_extent(extent: &ContractExtent) -> Result<Extent, FinalWirValidationError> {
-    match extent {
-        ContractExtent::Exact(size) => Ok(Extent::Exact(contract_size(size)?)),
-        ContractExtent::Counted { .. } => Err(FinalWirValidationError::module(
-            "symbolic counted parameter extents require the deferred def-use adapter",
-        )),
     }
 }
 
@@ -1620,14 +1856,16 @@ mod tests {
         ScalarKind,
     };
     use crate::safewir::{
-        AccessMode, CallableMemoryResult, ParameterMemoryContract, ParameterMemoryEffect,
+        AccessMode, CallableMemoryResult, ContractExtent, ContractSizeExpr, DynamicHeaderInvariant,
+        ParameterMemoryContract, ParameterMemoryEffect,
         ParameterMemoryEffects,
     };
     use crate::safewir_kernel::{
         SafeAllocationClass, SafeKernelExpr, SafeKernelNode, SafeKernelResultClaim, SafeKernelSize,
     };
     use crate::safewir_surface::{
-        SafeObjectExpr, SafeProjectionExpr, SafeRangeExpr,
+        SafeEncodedAddress, SafeExactExtent, SafeObjectExpr, SafePlaceBuilder, SafeProjectionExpr,
+        SafeRangeExpr,
     };
     use crate::wir::{WirLocal, WirStructDef, WirTy};
     use witchy_syntax::ast::Type;
@@ -1664,6 +1902,145 @@ mod tests {
             .intern_type(&Type::Named(name.into(), Vec::new()), &Resolver)
             .unwrap();
         (LayoutBundle::from_interner(&interner, [layout]).unwrap(), layout)
+    }
+
+    fn dynamic_list_layouts() -> (LayoutInterner, LayoutBundle, LayoutId, u32, u32) {
+        let mut interner = LayoutInterner::new();
+        let element = interner
+            .intern_type(&Type::Named("Int".into(), Vec::new()), &Resolver)
+            .expect("Int layout");
+        let list = interner
+            .intern_packed_list(element, RcHeader::Required)
+            .expect("packed list layout");
+        let crate::layout::LayoutSize::Dynamic { base, stride } = interner.get(list).unwrap().size() else {
+            panic!("list must be dynamic")
+        };
+        let bundle = LayoutBundle::from_interner(&interner, [list, element]).unwrap();
+        (interner, bundle, list, base, stride)
+    }
+
+    #[test]
+    fn final_wir_elaborates_only_canonical_header_and_unsigned_guarded_dynamic_element() {
+        let (interner, layouts, list, base, stride) = dynamic_list_layouts();
+        let get = |name: &str| WirExpr::GetLocal(name.into());
+        let header = SafePlaceBuilder::new(
+            &interner,
+            list,
+            SafeExactExtent::header_only(),
+            get("list"),
+            AccessMode::Read,
+        ).unwrap().header(0, SafeEncodedAddress::new(get("list"), 0)).unwrap();
+        let address = WirExpr::Binary {
+            op: crate::wir::BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(get("list")),
+            rhs: Box::new(WirExpr::Binary {
+                op: crate::wir::BinOp::Mul,
+                kind: Kind::I32,
+                lhs: Box::new(get("index")),
+                rhs: Box::new(WirExpr::ConstI32(i32::try_from(stride).unwrap())),
+            }),
+        };
+        let element = SafePlaceBuilder::new(
+            &interner,
+            list,
+            SafeExactExtent::counted(get("cap")).unwrap(),
+            get("list"),
+            AccessMode::Read,
+        ).unwrap().element(get("index"), SafeEncodedAddress::new(address, base)).unwrap();
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![WirFunc {
+                name: "dynamic_access".into(),
+                params: vec![
+                    WirLocal { name: "cap".into(), ty: WirTy::Bool },
+                    WirLocal { name: "list".into(), ty: WirTy::Bool },
+                    WirLocal { name: "index".into(), ty: WirTy::Bool },
+                ],
+                ret: Vec::new(),
+                locals: vec![WirLocal { name: "len".into(), ty: WirTy::Bool }],
+                body: vec![
+                    WirNode::SetLocal { local: "len".into(), value: WirExpr::SafeLoad { place: header, kind: Kind::I32 } },
+                    WirNode::If {
+                        cond: WirExpr::Binary {
+                            op: crate::wir::BinOp::LtU,
+                            kind: Kind::I32,
+                            lhs: Box::new(get("index")),
+                            rhs: Box::new(get("len")),
+                        },
+                        then_: vec![WirNode::Drop(WirExpr::SafeLoad { place: element, kind: Kind::I64 })],
+                        els: Vec::new(),
+                        result: None,
+                    },
+                ],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let contract = CallableMemoryContract {
+            parameters: vec![
+                ParameterMemoryContract {
+                    entry: ParameterMemoryEntry::NoMemory,
+                    layout: None,
+                    extent: None,
+                    dynamic_header: None,
+                    effects: ParameterMemoryEffects::none(),
+                },
+                ParameterMemoryContract {
+                    entry: ParameterMemoryEntry::BorrowedRead,
+                    layout: Some(list),
+                    extent: Some(ContractExtent::Counted {
+                        header: ContractSizeExpr::Constant(u64::from(base)),
+                        count: ContractSizeExpr::Parameter(0),
+                        stride: ContractSizeExpr::Constant(u64::from(stride)),
+                    }),
+                    dynamic_header: Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
+                    effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
+                },
+                ParameterMemoryContract {
+                    entry: ParameterMemoryEntry::NoMemory,
+                    layout: None,
+                    extent: None,
+                    dynamic_header: None,
+                    effects: ParameterMemoryEffects::none(),
+                },
+            ],
+            result: CallableMemoryResult::NoMemory,
+        };
+        let report = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts,
+                functions: BTreeMap::from([("dynamic_access".into(), contract.clone())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        ).expect("the exact header/load/guard pattern must elaborate");
+        assert!(report.metrics().operations >= 4);
+
+        let mut signed = module;
+        let WirNode::If { cond: WirExpr::Binary { op, .. }, .. } = &mut signed.funcs[0].body[1] else { panic!() };
+        *op = crate::wir::BinOp::Lt;
+        let error = validate_final_wir_report(
+            &signed,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: dynamic_list_layouts().1,
+                functions: BTreeMap::from([("dynamic_access".into(), contract)]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+            },
+            ValidationBudget::default(),
+        ).expect_err("signed guards stay outside the dynamic admission subset");
+        assert!(error.to_string().contains("branch conditions require one exact reaching scalar definition"), "{error}");
     }
 
     fn semantic_place(layout: LayoutId) -> Box<SafePlaceExpr> {
@@ -1758,6 +2135,7 @@ mod tests {
                         entry: ParameterMemoryEntry::BorrowedRead,
                         layout: Some(layout),
                         extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(extent))),
+                        dynamic_header: None,
                         effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
                     }],
                     result: CallableMemoryResult::NoMemory,
@@ -1852,6 +2230,7 @@ mod tests {
                 entry: ParameterMemoryEntry::NoMemory,
                 layout: None,
                 extent: None,
+                dynamic_header: None,
                 effects: ParameterMemoryEffects::none(),
             });
         let error = validate_final_wir_report(
@@ -2489,6 +2868,7 @@ mod tests {
             entry: ParameterMemoryEntry::NoMemory,
             layout: None,
             extent: None,
+            dynamic_header: None,
             effects: ParameterMemoryEffects::none(),
         });
         let error = validate_final_wir_report(&nested, &[], &[], checked, ValidationBudget::default())
@@ -2525,18 +2905,19 @@ mod tests {
                 result: None,
             },
         ];
-        let mut checked = inputs(layouts, layout);
+        let mut checked = inputs(layouts.clone(), layout);
         checked.functions.get_mut("read").unwrap().parameters.push(ParameterMemoryContract {
             entry: ParameterMemoryEntry::NoMemory,
             layout: None,
             extent: None,
+            dynamic_header: None,
             effects: ParameterMemoryEffects::none(),
         });
         let function = &conditional.funcs[0];
         let contract = checked.functions.get("read").unwrap().clone();
         let reaching = analyze_reaching_definitions(function, ReachingDefinitionBudget::default())
             .expect("the structural graph must model the cfg join");
-        let mut adapter = FunctionAdapter::new(function, contract, reaching)
+        let mut adapter = FunctionAdapter::new(function, contract, reaching, &layouts)
             .expect("the adapter setup must not trust a mutable-local binding");
         let site = StructuralSite::root()
             .projected(crate::safewir_reaching_defs::SiteStep::Node(1))
@@ -2772,6 +3153,7 @@ mod tests {
                         entry: ParameterMemoryEntry::NoMemory,
                         layout: None,
                         extent: None,
+                        dynamic_header: None,
                         effects: ParameterMemoryEffects::none(),
                     }],
                     result: CallableMemoryResult::NoMemory,
@@ -2845,6 +3227,7 @@ mod tests {
                         entry: ParameterMemoryEntry::NoMemory,
                         layout: None,
                         extent: None,
+                        dynamic_header: None,
                         effects: ParameterMemoryEffects::none(),
                     }],
                     result: CallableMemoryResult::NoMemory,
@@ -2874,6 +3257,7 @@ mod tests {
             entry: ParameterMemoryEntry::NoMemory,
             layout: None,
             extent: None,
+            dynamic_header: None,
             effects: ParameterMemoryEffects::none(),
         };
         let module = WirModule {

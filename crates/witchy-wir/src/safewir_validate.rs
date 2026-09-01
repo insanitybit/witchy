@@ -28,7 +28,7 @@ use crate::layout::{
 use crate::safewir_call::{check_callable_contracts, CheckedCallableContracts};
 use crate::safewir::{
     AccessMode, ByteRange, CallableMemoryContract, CallableMemoryResult, ContractExtent,
-    ContractProjection, ContractProjectionStep, ContractSizeExpr, DefinitionId, Extent,
+    ContractProjection, ContractProjectionStep, ContractSizeExpr, DefinitionId, DynamicHeaderInvariant, Extent,
     ObjectIdentity, ObjectRef, Ownership,
     ParameterMemoryEffect, ParameterMemoryEntry, Place, ProjectionStep, Provenance, RuleId,
     SizeExpr,
@@ -178,6 +178,20 @@ pub enum Operation {
     DefineScalar {
         definition: DefinitionId,
         value: i128,
+    },
+    BindCountParameter {
+        definition: DefinitionId,
+        parameter: usize,
+    },
+    BindHeaderCount {
+        definition: DefinitionId,
+        object: ObjectIdentity,
+        component: u32,
+    },
+    GuardIndexBelow {
+        index: DefinitionId,
+        bound: DefinitionId,
+        body: Vec<Operation>,
     },
     Alloc {
         result: ObjectRef,
@@ -371,12 +385,24 @@ struct ReturnedObject {
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct State {
-    scalars: BTreeMap<DefinitionId, i128>,
+    scalars: BTreeMap<DefinitionId, ScalarFact>,
+    index_below: BTreeSet<(DefinitionId, DefinitionId)>,
     objects: BTreeMap<ObjectIdentity, ObjectState>,
     aliases: BTreeMap<ObjectIdentity, BTreeSet<ObjectIdentity>>,
     definitions: BTreeSet<DefinitionId>,
     minted: BTreeSet<ObjectIdentity>,
     returned: Option<ReturnedObject>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ScalarFact {
+    Exact(i128),
+    CountParameter { parameter: usize },
+    HeaderCount {
+        object: ObjectIdentity,
+        component: u32,
+        capacity: DefinitionId,
+    },
 }
 
 #[derive(Default)]
@@ -398,6 +424,7 @@ impl ControlFlows {
 impl State {
     fn fact_count(&self) -> usize {
         self.scalars.len()
+            + self.index_below.len()
             + self.objects.len()
             + self.aliases.values().map(BTreeSet::len).sum::<usize>()
             + self.definitions.len()
@@ -831,7 +858,9 @@ impl Validator<'_> {
             }
         }
         for contract in &function.contract.parameters {
-            if contract.extent.as_ref().is_some_and(|extent| !contract_extent_is_constant(extent)) {
+            if contract.extent.as_ref().is_some_and(|extent| {
+                !contract_extent_is_constant(extent) && !is_authenticated_counted_header_contract(contract)
+            }) {
                 return Err(self.function_unsupported(
                     UnsupportedForm::SymbolicParameterExtent,
                     function,
@@ -1287,6 +1316,11 @@ impl Validator<'_> {
                 };
             }
             match operation {
+                Operation::BindHeaderCount { object, .. }
+                    if identities_may_alias(state, *object, identity) =>
+                {
+                    add!(ParameterMemoryEffect::Read);
+                }
                 Operation::Load { place, .. }
                     if identities_may_alias(state, place.object.identity, identity) =>
                 {
@@ -1397,7 +1431,24 @@ impl Validator<'_> {
         match operation {
             Operation::DefineScalar { definition, value } => {
                 self.define(state, *definition, function, at)?;
-                state.scalars.insert(*definition, *value);
+                state.scalars.insert(*definition, ScalarFact::Exact(*value));
+            }
+            Operation::BindCountParameter { definition, parameter } => {
+                self.bind_count_parameter(function, state, *definition, *parameter, at)?;
+            }
+            Operation::BindHeaderCount { definition, object, component } => {
+                self.bind_header_count(function, state, *definition, *object, *component, at)?;
+            }
+            Operation::GuardIndexBelow { index, bound, body } => {
+                self.validate_guard_index_below(
+                    function,
+                    *index,
+                    *bound,
+                    body,
+                    state,
+                    control_depth,
+                    at,
+                )?;
             }
             Operation::Alloc { result } => {
                 self.validate_object_claim(result, function, at)?;
@@ -1442,10 +1493,20 @@ impl Validator<'_> {
                 }
             }
             Operation::CheckedIndex { object, index, length_source, place } => {
-                self.require_scalar(state, *index, function, at)?;
-                self.require_scalar(state, *length_source, function, at)?;
                 self.require_live(state, *object, function, at)?;
-                self.validate_place(place, state, function, at)?;
+                if !self.validate_guarded_index_place(
+                    place,
+                    *object,
+                    *index,
+                    *length_source,
+                    state,
+                    function,
+                    at,
+                )? {
+                    self.require_scalar(state, *index, function, at)?;
+                    self.require_scalar(state, *length_source, function, at)?;
+                    self.validate_place(place, state, function, at)?;
+                }
                 if place.object.identity != *object {
                     return Err(self.function_error(
                         RuleId::ExactRangeSource,
@@ -2039,7 +2100,7 @@ impl Validator<'_> {
             .scalars
             .iter()
             .filter_map(|(definition, value)| {
-                (right.scalars.get(definition) == Some(value)).then_some((*definition, *value))
+                (right.scalars.get(definition) == Some(value)).then_some((*definition, value.clone()))
             })
             .collect();
         let mut objects = BTreeMap::new();
@@ -2070,6 +2131,11 @@ impl Validator<'_> {
 
         Ok(State {
             scalars,
+            index_below: left
+                .index_below
+                .intersection(&right.index_below)
+                .copied()
+                .collect(),
             objects,
             aliases,
             definitions,
@@ -2729,7 +2795,9 @@ impl Validator<'_> {
         state
             .scalars
             .iter()
-            .find_map(|(definition, actual)| (*actual == value).then_some(*definition))
+            .find_map(|(definition, actual)| {
+                matches!(actual, ScalarFact::Exact(actual) if *actual == value).then_some(*definition)
+            })
             .ok_or_else(|| {
                 self.function_error(
                     RuleId::CheckedCallableContract,
@@ -3032,6 +3100,175 @@ impl Validator<'_> {
         Ok(())
     }
 
+    fn bind_count_parameter(
+        &self,
+        function: &CandidateFunction,
+        state: &mut State,
+        definition: DefinitionId,
+        parameter: usize,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        let Some(binding) = function.parameters.get(parameter) else {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "count parameter binding is outside the callable parameter list",
+            ));
+        };
+        if binding.definition != definition || binding.object.is_some() || !state.definitions.contains(&definition) {
+            return Err(self.function_error(
+                RuleId::ExactRangeSource,
+                function,
+                at,
+                "count parameter binding does not name its exact scalar parameter definition",
+            ));
+        }
+        let authenticated = function.contract.parameters.iter().any(|contract| {
+            matches!(
+                (&contract.extent, &contract.dynamic_header),
+                (
+                    Some(ContractExtent::Counted { count: ContractSizeExpr::Parameter(index), .. }),
+                    Some(DynamicHeaderInvariant::BoundedByCountedExtent { .. }),
+                ) if *index == parameter
+            )
+        });
+        if !authenticated || state.scalars.insert(definition, ScalarFact::CountParameter { parameter }).is_some() {
+            return Err(self.function_error(
+                RuleId::CheckedCallableContract,
+                function,
+                at,
+                "count parameter lacks one authenticated counted-header contract",
+            ));
+        }
+        Ok(())
+    }
+
+    fn bind_header_count(
+        &self,
+        function: &CandidateFunction,
+        state: &mut State,
+        definition: DefinitionId,
+        object: ObjectIdentity,
+        component: u32,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        self.define(state, definition, function, at)?;
+        let parameter = function.parameters.iter().enumerate().find_map(|(index, binding)| {
+            (binding.object.as_ref().map(|candidate| candidate.identity) == Some(object)).then_some(index)
+        }).ok_or_else(|| self.function_error(
+            RuleId::CheckedCallableContract,
+            function,
+            at,
+            "header count must bind a checked memory parameter object",
+        ))?;
+        let contract = function.contract.parameters.get(parameter).expect("binding arity checked");
+        let (Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: expected }),
+            Some(ContractExtent::Counted { count: ContractSizeExpr::Parameter(count_parameter), .. })) =
+            (&contract.dynamic_header, &contract.extent) else {
+                return Err(self.function_error(
+                    RuleId::CheckedCallableContract,
+                    function,
+                    at,
+                    "header count has no authenticated counted-header source contract",
+                ));
+            };
+        if *expected != component {
+            return Err(self.function_error(
+                RuleId::ExactRangeSource,
+                function,
+                at,
+                "header count component contradicts the authenticated source contract",
+            ));
+        }
+        let capacity = function.parameters.get(*count_parameter).map(|binding| binding.definition)
+            .ok_or_else(|| self.function_error(
+                RuleId::CheckedCallableContract, function, at, "counted header contract names no scalar parameter"
+            ))?;
+        if !matches!(state.scalars.get(&capacity), Some(ScalarFact::CountParameter { parameter }) if parameter == count_parameter) {
+            return Err(self.function_error(
+                RuleId::ExactRangeSource,
+                function,
+                at,
+                "header count requires its counted-extent parameter fact first",
+            ));
+        }
+        state.scalars.insert(definition, ScalarFact::HeaderCount { object, component, capacity });
+        Ok(())
+    }
+
+    fn validate_guard_index_below(
+        &mut self,
+        function: &CandidateFunction,
+        index: DefinitionId,
+        bound: DefinitionId,
+        body: &[Operation],
+        state: &mut State,
+        control_depth: usize,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        self.require_scalar_definition(state, index, function, at)?;
+        if !matches!(state.scalars.get(&bound), Some(ScalarFact::HeaderCount { .. })) {
+            return Err(self.function_error(RuleId::ExactRangeSource, function, at, "index guard bound is not an authenticated header count"));
+        }
+        if body.iter().any(|operation| !matches!(operation, Operation::CheckedIndex { .. } | Operation::Load { .. } | Operation::Store { .. } | Operation::Project { .. })) {
+            return Err(self.function_error(RuleId::ConservativeJoin, function, at, "index proof body contains control, lifetime, call, or definition transfer"));
+        }
+        let mut guarded = state.clone();
+        guarded.index_below.insert((index, bound));
+        let mut flows = ControlFlows::default();
+        let falls_through = self.validate_operations(
+            function, body, &mut guarded, control_depth, &mut Vec::new(), &mut flows,
+        )?;
+        if !falls_through || !flows.branches.is_empty() || flows.returned.is_some() {
+            return Err(self.function_error(RuleId::ConservativeJoin, function, at, "index proof body may not escape its true-edge scope"));
+        }
+        Ok(())
+    }
+
+    /// Returns `true` only for the one descriptor-derived indexed form this
+    /// foundation can prove symbolically. Other dynamic forms stay on the
+    /// existing concrete path and therefore reject.
+    fn validate_guarded_index_place(
+        &self,
+        place: &Place,
+        object: ObjectIdentity,
+        index: DefinitionId,
+        bound: DefinitionId,
+        state: &State,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<bool, ValidationError> {
+        let Some(ScalarFact::HeaderCount { object: header_object, component, capacity }) = state.scalars.get(&bound) else { return Ok(false) };
+        let Some((proof_index, proof_bound)) = state.index_below.iter().find(|(proof_index, proof_bound)| *proof_index == index && *proof_bound == bound) else { return Ok(false) };
+        let _ = (proof_index, proof_bound);
+        if *header_object != object || *component != 0 {
+            return Err(self.function_error(RuleId::ExactRangeSource, function, at, "index proof header belongs to a different object or non-count component"));
+        }
+        let live = self.require_live(state, object, function, at)?;
+        if live.object.layout != place.object.layout || live.object.extent != place.object.extent || place.object.identity != object {
+            return Err(self.function_error(RuleId::ProjectedLayout, function, at, "guarded index place contradicts the live object"));
+        }
+        let Extent::Counted { header, count, stride } = &place.object.extent else { return Ok(false) };
+        if !matches!(count, definition if *definition == *capacity) {
+            return Err(self.function_error(RuleId::ExactRangeSource, function, at, "header bound is not the indexed object's counted extent"));
+        }
+        let descriptor = self.layouts.get(place.object.layout).ok_or_else(|| self.function_error(RuleId::CanonicalLayout, function, at, "guarded index references an unknown layout"))?;
+        let (LayoutSize::Dynamic { base, stride: descriptor_stride }, [ProjectionStep::Element { index: projected }]) = (descriptor.size(), place.projection.steps()) else { return Ok(false) };
+        if *projected != index || self.evaluate_size(header, state, function, at, 0)? != u128::from(base)
+            || self.evaluate_size(stride, state, function, at, 0)? != u128::from(descriptor_stride) {
+            return Err(self.function_error(RuleId::ProjectedLayout, function, at, "guarded index place is not descriptor-derived"));
+        }
+        let expected_start = SizeExpr::narrow_u32(SizeExpr::add(
+            SizeExpr::Constant(u64::from(base)),
+            SizeExpr::multiply(SizeExpr::Definition(index), SizeExpr::Constant(u64::from(descriptor_stride))),
+        ));
+        if place.range.start != expected_start || place.range.length != SizeExpr::Constant(u64::from(descriptor_stride)) {
+            return Err(self.function_error(RuleId::ProjectedLayout, function, at, "guarded index byte range is not the descriptor-derived element range"));
+        }
+        Ok(true)
+    }
+
     fn layout_extent(
         &self,
         layout: LayoutId,
@@ -3112,7 +3349,8 @@ impl Validator<'_> {
             ) if self.evaluate_size(header, state, function, at, 0)? == u128::from(base)
                 && self.evaluate_size(actual_stride, state, function, at, 0)?
                     == u128::from(stride)
-                && self.require_nonnegative_scalar(state, *count, function, at).is_ok() =>
+                && (self.require_nonnegative_scalar(state, *count, function, at).is_ok()
+                    || self.is_authenticated_count_parameter(function, *count)) =>
             {
                 Ok(())
             }
@@ -3123,6 +3361,26 @@ impl Validator<'_> {
                 "object extent contradicts its canonical layout descriptor",
             )),
         }
+    }
+
+    fn is_authenticated_count_parameter(
+        &self,
+        function: &CandidateFunction,
+        definition: DefinitionId,
+    ) -> bool {
+        function.parameters.iter().enumerate().any(|(parameter, binding)| {
+            binding.definition == definition
+                && binding.object.is_none()
+                && function.contract.parameters.iter().any(|contract| {
+                    matches!(
+                        (&contract.extent, &contract.dynamic_header),
+                        (
+                            Some(ContractExtent::Counted { count: ContractSizeExpr::Parameter(index), .. }),
+                            Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
+                        ) if *index == parameter
+                    )
+                })
+        })
     }
 
     fn validate_range(
@@ -3207,19 +3465,26 @@ impl Validator<'_> {
             }
             Extent::Counted { header, count, stride } => {
                 let header = self.evaluate_size(header, state, function, at, 0)?;
-                let count = self.require_nonnegative_scalar(state, *count, function, at)?;
                 let stride = self.evaluate_size(stride, state, function, at, 0)?;
-                count
-                    .checked_mul(stride)
-                    .and_then(|payload| header.checked_add(payload))
-                    .ok_or_else(|| {
-                        self.function_error(
-                            RuleId::NonWrappingSize,
-                            function,
-                            at,
-                            "extent arithmetic overflowed mathematical validation domain",
-                        )
-                    })?;
+                match state.scalars.get(count) {
+                    Some(ScalarFact::CountParameter { .. }) => {
+                        let _ = (header, stride);
+                    }
+                    _ => {
+                        let count = self.require_nonnegative_scalar(state, *count, function, at)?;
+                        count
+                            .checked_mul(stride)
+                            .and_then(|payload| header.checked_add(payload))
+                            .ok_or_else(|| {
+                                self.function_error(
+                                    RuleId::NonWrappingSize,
+                                    function,
+                                    at,
+                                    "extent arithmetic overflowed mathematical validation domain",
+                                )
+                            })?;
+                    }
+                }
                 Ok(())
             }
         }
@@ -3309,7 +3574,10 @@ impl Validator<'_> {
         function: &CandidateFunction,
         at: Option<usize>,
     ) -> Result<i128, ValidationError> {
-        state.scalars.get(&definition).copied().ok_or_else(|| {
+        state.scalars.get(&definition).and_then(|fact| match fact {
+            ScalarFact::Exact(value) => Some(*value),
+            ScalarFact::CountParameter { .. } | ScalarFact::HeaderCount { .. } => None,
+        }).ok_or_else(|| {
             self.function_error(
                 RuleId::ExactRangeSource,
                 function,
@@ -3513,6 +3781,20 @@ impl Validator<'_> {
     }
 }
 
+fn is_authenticated_counted_header_contract(contract: &crate::safewir::ParameterMemoryContract) -> bool {
+    matches!(
+        (&contract.extent, &contract.dynamic_header),
+        (
+            Some(ContractExtent::Counted {
+                header: ContractSizeExpr::Constant(_),
+                count: ContractSizeExpr::Parameter(_),
+                stride: ContractSizeExpr::Constant(_),
+            }),
+            Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
+        )
+    )
+}
+
 fn contract_extent_is_constant(extent: &ContractExtent) -> bool {
     fn size_is_constant(size: &ContractSizeExpr) -> bool {
         match size {
@@ -3585,7 +3867,7 @@ fn contract_size_matches(
         (ContractSizeExpr::Constant(expected), SizeExpr::Definition(actual)) => state
             .scalars
             .get(actual)
-            .and_then(|actual| u64::try_from(*actual).ok())
+            .and_then(|actual| match actual { ScalarFact::Exact(value) => u64::try_from(*value).ok(), _ => None })
             == Some(*expected),
         (ContractSizeExpr::Parameter(parameter), SizeExpr::Definition(actual)) => {
             matches!(arguments.get(*parameter), Some(CallArgument::Scalar(expected)) if expected == actual)
@@ -3612,7 +3894,10 @@ fn ranges_overlap(
         match expression {
             SizeExpr::Constant(value) => Some(u128::from(*value)),
             SizeExpr::Definition(definition) => {
-                u128::try_from(*state.scalars.get(definition)?).ok()
+                match state.scalars.get(definition)? {
+                    ScalarFact::Exact(value) => u128::try_from(*value).ok(),
+                    ScalarFact::CountParameter { .. } | ScalarFact::HeaderCount { .. } => None,
+                }
             }
             SizeExpr::Add(lhs, rhs) => evaluate(lhs, state, remaining - 1)?
                 .checked_add(evaluate(rhs, state, remaining - 1)?),
@@ -3644,6 +3929,7 @@ fn operation_count(operations: &[Operation]) -> Option<usize> {
             Operation::Block { body, .. } | Operation::Loop { body, .. } => {
                 pending.extend(body.iter().rev());
             }
+            Operation::GuardIndexBelow { body, .. } => pending.extend(body.iter().rev()),
             _ => {}
         }
     }
@@ -3663,6 +3949,7 @@ fn operations(input: &[Operation]) -> Vec<&Operation> {
             Operation::Block { body, .. } | Operation::Loop { body, .. } => {
                 pending.extend(body.iter().rev());
             }
+            Operation::GuardIndexBelow { body, .. } => pending.extend(body.iter().rev()),
             _ => {}
         }
     }
@@ -3694,7 +3981,8 @@ fn definition_sites(input: &[Operation]) -> Vec<DefinitionId> {
     let mut definitions = Vec::new();
     for operation in operations(input) {
         let definition = match operation {
-            Operation::DefineScalar { definition, .. } => Some(*definition),
+            Operation::DefineScalar { definition, .. }
+            | Operation::BindHeaderCount { definition, .. } => Some(*definition),
             Operation::Alloc { result } => Some(result.identity.root),
             Operation::Call { result, .. }
             | Operation::IndirectCall { result, .. }
@@ -3880,6 +4168,7 @@ mod tests {
             entry,
             layout: Some(layout()),
             extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
+            dynamic_header: None,
             effects,
         }
     }
@@ -4135,6 +4424,7 @@ mod tests {
             entry: ParameterMemoryEntry::NoMemory,
             layout: None,
             extent: None,
+            dynamic_header: None,
             effects: ParameterMemoryEffects::none(),
         };
 
@@ -4213,6 +4503,7 @@ mod tests {
                             entry: ParameterMemoryEntry::NoMemory,
                             layout: None,
                             extent: None,
+                            dynamic_header: None,
                             effects: ParameterMemoryEffects::none(),
                         },
                         ParameterMemoryContract {
@@ -4223,6 +4514,7 @@ mod tests {
                                 count: ContractSizeExpr::Parameter(0),
                                 stride: ContractSizeExpr::Constant(u64::from(stride)),
                             }),
+                            dynamic_header: None,
                             effects: ParameterMemoryEffects::none(),
                         },
                     ],
@@ -4246,6 +4538,113 @@ mod tests {
             post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
         };
         assert_unsupported(dynamic_extent, UnsupportedForm::SymbolicParameterExtent);
+    }
+
+    #[test]
+    fn authenticated_header_count_and_unsigned_guard_prove_one_dynamic_element() {
+        let (layouts, list, base, stride) = list_layouts();
+        let capacity = DefinitionId::new(40);
+        let object = ObjectRef {
+            identity: ObjectIdentity { root: DefinitionId::new(41), generation: GenerationId::new(1) },
+            layout: list,
+            extent: Extent::Counted {
+                header: SizeExpr::Constant(u64::from(base)),
+                count: capacity,
+                stride: SizeExpr::Constant(u64::from(stride)),
+            },
+            provenance: Provenance::Unknown,
+        };
+        let index = DefinitionId::new(42);
+        let header_count = DefinitionId::new(43);
+        let place = Place {
+            object: object.clone(),
+            projection: Projection::root().project(ProjectionStep::Element { index }),
+            range: ByteRange {
+                object: object.identity,
+                start: SizeExpr::narrow_u32(SizeExpr::add(
+                    SizeExpr::Constant(u64::from(base)),
+                    SizeExpr::multiply(SizeExpr::Definition(index), SizeExpr::Constant(u64::from(stride))),
+                )),
+                length: SizeExpr::Constant(u64::from(stride)),
+            },
+            access: AccessMode::Read,
+        };
+        let no_memory = || ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            dynamic_header: None,
+            effects: ParameterMemoryEffects::none(),
+        };
+        let module = CandidateModule {
+            checked_source_entries: 1,
+            layouts,
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::new(),
+            functions: vec![CandidateFunction {
+                name: "checked_dynamic_element".into(),
+                contract: CallableMemoryContract {
+                    parameters: vec![
+                        no_memory(),
+                        ParameterMemoryContract {
+                            entry: ParameterMemoryEntry::BorrowedRead,
+                            layout: Some(list),
+                            extent: Some(ContractExtent::Counted {
+                                header: ContractSizeExpr::Constant(u64::from(base)),
+                                count: ContractSizeExpr::Parameter(0),
+                                stride: ContractSizeExpr::Constant(u64::from(stride)),
+                            }),
+                            dynamic_header: Some(DynamicHeaderInvariant::BoundedByCountedExtent { component: 0 }),
+                            effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
+                        },
+                        no_memory(),
+                    ],
+                    result: CallableMemoryResult::NoMemory,
+                },
+                parameters: vec![
+                    ParameterBinding { definition: capacity, object: None },
+                    ParameterBinding { definition: object.identity.root, object: Some(object.clone()) },
+                    ParameterBinding { definition: index, object: None },
+                ],
+                operations: vec![
+                    Operation::BindCountParameter { definition: capacity, parameter: 0 },
+                    Operation::BindHeaderCount { definition: header_count, object: object.identity, component: 0 },
+                    Operation::GuardIndexBelow {
+                        index,
+                        bound: header_count,
+                        body: vec![Operation::CheckedIndex {
+                            object: object.identity,
+                            index,
+                            length_source: header_count,
+                            place,
+                        }],
+                    },
+                ],
+            }],
+            gc: CandidateGcDeclarations::default(),
+            contains_raw_memory: false,
+            contains_raw_body: false,
+            post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
+        };
+        validate_candidate(&module, ValidationBudget::default()).unwrap();
+
+        let mut wrong_component = module.clone();
+        wrong_component.functions[0].operations[1] = Operation::BindHeaderCount {
+            definition: header_count,
+            object: object.identity,
+            component: 1,
+        };
+        assert_rule(wrong_component, RuleId::ExactRangeSource);
+
+        let mut escaped = module.clone();
+        let Operation::GuardIndexBelow { body, .. } = &mut escaped.functions[0].operations[2] else { panic!() };
+        body.push(Operation::ReturnVoid);
+        assert_rule(escaped, RuleId::ConservativeJoin);
+
+        let mut wrong_bound = module;
+        let Operation::GuardIndexBelow { bound, .. } = &mut wrong_bound.functions[0].operations[2] else { panic!() };
+        *bound = capacity;
+        assert_rule(wrong_bound, RuleId::ExactRangeSource);
     }
 
     #[test]
@@ -4992,6 +5391,7 @@ mod tests {
                         entry: ParameterMemoryEntry::NoMemory,
                         layout: None,
                         extent: None,
+                        dynamic_header: None,
                         effects: ParameterMemoryEffects::none(),
                     },
                     ParameterMemoryContract {
@@ -5002,6 +5402,7 @@ mod tests {
                             count: ContractSizeExpr::Parameter(0),
                             stride: ContractSizeExpr::Constant(stride),
                         }),
+                        dynamic_header: None,
                         effects: ParameterMemoryEffects::only(ParameterMemoryEffect::Read),
                     },
                 ],
@@ -5108,6 +5509,7 @@ mod tests {
                     entry: ParameterMemoryEntry::BorrowedWrite,
                     layout: Some(layout()),
                     extent: Some(ContractExtent::Exact(ContractSizeExpr::Constant(8))),
+                    dynamic_header: None,
                     effects: ParameterMemoryEffects::none(),
                 }],
                 result: CallableMemoryResult::NoMemory,
