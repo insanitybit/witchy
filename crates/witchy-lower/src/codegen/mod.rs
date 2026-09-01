@@ -111,6 +111,8 @@ use witchy_wir::layout::{
     type_tag_of, CallableLayoutSignature, FieldKind, HeaderLayout,
     LayoutId, LayoutInterner, LayoutKind, LayoutSize, RcHeader, ScalarKind, DATA_BASE,
 };
+use witchy_wir::safewir::AccessMode;
+use witchy_wir::safewir_surface::{SafeEncodedAddress, SafeExactExtent, SafePlaceBuilder, SafePlaceExpr};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -123,6 +125,48 @@ use witchy_syntax::ast::{
 };
 use witchy_types::storage::externref_cap_name;
 use specialization::{CallableSpecializationKey, GenericCallableInstances};
+
+/// Build the only SafeWIR form accepted for a packed-list header store.
+///
+/// The descriptor supplies the header offset and its four-byte width.  The
+/// generated capacity helper supplies only its fresh allocation root and
+/// checked capacity parameter.  Any non-packed layout or malformed header is
+/// rejected with `None`, so callers cannot silently emit raw linear-memory
+/// operations for an unmatched layout pattern.
+fn packed_list_header_place(
+    layouts: &LayoutInterner,
+    layout: LayoutId,
+    root: witchy_wir::wir::WirExpr,
+    capacity: witchy_wir::wir::WirExpr,
+    component: u32,
+) -> Option<Box<SafePlaceExpr>> {
+    let descriptor = layouts.get(layout)?;
+    if !matches!(descriptor.kind(), LayoutKind::PackedList { .. }) {
+        return None;
+    }
+    let HeaderLayout::PackedList {
+        length_offset,
+        capacity_offset,
+        ..
+    } = descriptor.header() else {
+        return None;
+    };
+    let offset = match component {
+        0 => length_offset,
+        1 => capacity_offset,
+        _ => return None,
+    };
+    SafePlaceBuilder::new(
+        layouts,
+        layout,
+        SafeExactExtent::counted(capacity).ok()?,
+        root.clone(),
+        AccessMode::Write,
+    )
+    .ok()?
+    .header(component, SafeEncodedAddress::new(root, offset))
+    .ok()
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenError {
@@ -6466,13 +6510,39 @@ impl<'types> Codegen<'types> {
         if self.layout_wir_funcs.contains_key(&name) { return Some(name); }
         let descriptor = self.specialized_layouts.get(id)?.clone();
         let LayoutKind::PackedList { rc, .. } = descriptor.kind() else { return None };
-        let HeaderLayout::PackedList { length_offset, capacity_offset, .. } = descriptor.header() else { return None };
+        let HeaderLayout::PackedList { .. } = descriptor.header() else { return None };
         let LayoutSize::Dynamic { base, stride } = descriptor.size() else { return None };
         let cap = W::GetLocal("cap".into());
         let size = W::Binary { op: WB::Add, kind: WK::I32, lhs: Box::new(W::ConstI32(base as i32)), rhs: Box::new(W::Binary { op: WB::Mul, kind: WK::I32, lhs: Box::new(cap.clone()), rhs: Box::new(W::ConstI32(stride as i32)) }) };
         let (mut body, root) = self.layout_alloc_expr_nodes_with_header(size, *rc);
-        body.push(N::Store { ptr: root.clone(), value: W::ConstI32(0), kind: WK::I32, offset: length_offset });
-        body.push(N::Store { ptr: root.clone(), value: cap, kind: WK::I32, offset: capacity_offset });
+        // The allocated carrier and both header components are determined by
+        // the checked packed-list descriptor.  Do not fall back to a raw
+        // store if that relationship cannot be expressed: this helper has no
+        // other valid header shape.
+        let length_place = packed_list_header_place(
+            &self.specialized_layouts,
+            id,
+            root.clone(),
+            W::GetLocal("cap".into()),
+            0,
+        )?;
+        let capacity_place = packed_list_header_place(
+            &self.specialized_layouts,
+            id,
+            root.clone(),
+            W::GetLocal("cap".into()),
+            1,
+        )?;
+        body.push(N::SafeStore {
+            place: length_place,
+            value: W::ConstI32(0),
+            kind: WK::I32,
+        });
+        body.push(N::SafeStore {
+            place: capacity_place,
+            value: cap,
+            kind: WK::I32,
+        });
         body.push(N::Push(root));
         self.layout_wir_funcs.insert(name.clone(), WirFunc {
             name: name.clone(),
@@ -6484,7 +6554,6 @@ impl<'types> Codegen<'types> {
         });
         Some(name)
     }
-
     fn ensure_packed_scalar_set_helper(&mut self, id: LayoutId) -> Option<String> {
         use witchy_wir::wir::{BinOp as B, Kind as K, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let name = Self::layout_helper_name("packed_scalar_set", id, None);

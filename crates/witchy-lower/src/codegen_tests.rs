@@ -1,5 +1,69 @@
-    use super::*;
-    use witchy_syntax::parser::parse_module;
+use super::*;
+use witchy_syntax::parser::parse_module;
+
+#[test]
+fn packed_list_header_places_refuse_non_header_or_non_packed_claims() {
+    use witchy_wir::wir::WirExpr as W;
+
+    let mut layouts = LayoutInterner::new();
+    let scalar = layouts
+        .intern_scalar(ScalarKind::Int)
+        .expect("an Int scalar descriptor");
+    let packed = layouts
+        .intern_packed_list(scalar, RcHeader::Required)
+        .expect("a packed Int list descriptor");
+    let root = W::GetLocal("root".into());
+    let capacity = W::GetLocal("cap".into());
+
+    assert!(packed_list_header_place(
+        &layouts,
+        packed,
+        root.clone(),
+        capacity.clone(),
+        0,
+    )
+    .is_some(), "the descriptor-authenticated length header is claimable");
+    assert!(packed_list_header_place(
+        &layouts,
+        packed,
+        root.clone(),
+        capacity.clone(),
+        1,
+    )
+    .is_some(), "the descriptor-authenticated capacity header is claimable");
+    assert!(packed_list_header_place(&layouts, packed, root.clone(), capacity.clone(), 2).is_none(),
+        "an invented third header component must not mint a SafeWIR place");
+    assert!(packed_list_header_place(&layouts, scalar, root, capacity, 0).is_none(),
+        "a scalar descriptor must not be reinterpreted as a packed-list header");
+}
+
+#[test]
+fn packed_list_capacity_helper_emits_checked_header_stores() {
+    use witchy_wir::wir::WirNode;
+
+    let module = parse_module(
+        "mode opt\n\n\
+         type Point packed:\n    x: Int\n\n\
+         fn main() -> Int:\n    let values: List(Point) = list.with_capacity(4)\n    values.length()\n",
+    )
+    .expect("parse packed-list capacity fixture");
+    let wir = assemble_wir_module(&module)
+        .expect_lowered("typed packed-list capacity must lower through its descriptor helper");
+    let helper = wir
+        .funcs
+        .iter()
+        .find(|function| function.name.starts_with("__witchy_packed_list_capacity_"))
+        .expect("the descriptor-specific capacity helper is emitted");
+    let headers = helper
+        .body
+        .iter()
+        .filter(|node| matches!(node, WirNode::SafeStore { .. }))
+        .count();
+    assert_eq!(headers, 2,
+        "length and capacity must each be a descriptor-backed SafeStore, not raw stores");
+    assert!(!helper.body.iter().any(|node| matches!(node, WirNode::Store { .. })),
+        "the capacity helper must not retain raw header-store fallback");
+}
 
     #[test]
     fn projected_place_from_a_direct_dict_root_keeps_the_dict_layout_bias() {

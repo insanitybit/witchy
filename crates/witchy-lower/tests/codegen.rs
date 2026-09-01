@@ -5711,7 +5711,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn mixed_recursive_and_closure_modules_reject_sequence_raw_policy() {
+    fn recursive_and_closure_modules_forbid_post_encoding_byte_optimization() {
         let recursive = r#"
 fn kernel() -> Int:
     let source = [10, 20, 30]
@@ -5726,9 +5726,10 @@ fn recurse(n: Int) -> Int:
 fn main() -> Int:
     kernel() + recurse(2)
 "#;
-        assert!(
-            optimizer_policy_payloads(recursive).is_empty(),
-            "a source/user call-graph cycle keeps Binaryen enabled",
+        assert_eq!(
+            optimizer_policy_payloads(recursive),
+            vec![witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD.to_vec()],
+            "a source/user call-graph cycle is still a compiler artifact and must not permit byte-level post-admission optimization",
         );
 
         let closure = r#"
@@ -5740,9 +5741,10 @@ fn main() -> Int:
     let add = fn(n: Int): n + 1
     add(destination[0] + destination[1])
 "#;
-        assert!(
-            optimizer_policy_payloads(closure).is_empty(),
-            "a module with lifted closure structure keeps Binaryen enabled",
+        assert_eq!(
+            optimizer_policy_payloads(closure),
+            vec![witchy_wir::optimizer_policy::PRESERVE_RAW_PAYLOAD.to_vec()],
+            "a module with lifted closure structure is still a compiler artifact and must not permit byte-level post-admission optimization",
         );
     }
 

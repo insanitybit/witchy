@@ -8182,10 +8182,20 @@ mod diagnostic_site_tests {
         let mut helper = witchy_wir::wir_helpers::wir_helper("list_at").unwrap().func;
         prepare_diagnostic_helper("list_at", &mut helper);
         assert_eq!(helper.params.last().unwrap().name, DIAGNOSTIC_SITE_PARAM);
-        let N::If { then_, .. } = &helper.body[0] else { panic!("list_at guard") };
+        let then_ = helper
+            .body
+            .iter()
+            .find_map(|node| match node {
+                // `list_at` first establishes its descriptor-authenticated
+                // length before checking the index. The diagnostic invariant is
+                // about the abort edge, not an incidental body position.
+                N::If { then_, .. } => Some(then_),
+                _ => None,
+            })
+            .expect("list_at guard");
         assert!(matches!(
-            &then_[0],
-            N::SetGlobal { global, value: E::GetLocal(local) }
+            then_.first(),
+            Some(N::SetGlobal { global, value: E::GetLocal(local) })
                 if global == "__witchy_diagnostic_site" && local == DIAGNOSTIC_SITE_PARAM
         ));
 
