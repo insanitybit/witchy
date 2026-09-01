@@ -1285,3 +1285,58 @@ pub(crate) fn str_view_to_string_helper() -> WirFunc {
         raw_body: None,
     }
 }
+
+#[cfg(test)]
+mod borrowed_view_tests {
+    use super::*;
+
+    /// A borrowed string view is intentionally NOT admitted as a byte-buffer
+    /// root. `str_slice_view` returns `s + 4 + lo`, so the returned `p` may
+    /// point into the body, not at the `[len][bytes]` header. Treating `p` as a
+    /// `RuntimeBuffer` root would let a SafeMemoryCopy claim bytes belonging to
+    /// a different object (or its header at the wrong address).
+    ///
+    /// The coordinated migration is an ABI change: carry `(root, start, len)`
+    /// from lowering to materialization, then build both places from `root`
+    /// and their descriptor-derived extents. Until that contract exists, this
+    /// helper deliberately retains the explicitly named raw boundary rather
+    /// than forging provenance with a SafePlace rooted at `p`.
+    #[test]
+    fn borrowed_payload_view_is_not_a_byte_buffer_root() {
+        use WirExpr as E;
+        use WirNode as N;
+
+        let view = str_slice_view_helper();
+        assert!(matches!(
+            &view.body[5],
+            N::Push(E::Binary {
+                op: BinOp::Add,
+                kind: Kind::I32,
+                lhs,
+                rhs,
+            }) if matches!(
+                (lhs.as_ref(), rhs.as_ref()),
+                (
+                    E::Binary {
+                        op: BinOp::Add,
+                        kind: Kind::I32,
+                        lhs: base,
+                        rhs: header,
+                    },
+                    E::GetLocal(lo),
+                ) if matches!(
+                    (base.as_ref(), header.as_ref(), lo.as_str()),
+                    (E::GetLocal(root), E::ConstI32(4), "lo") if root == "s"
+                )
+            )
+        ), "str_slice_view must expose an interior payload pointer, not a byte-buffer root");
+
+        let materialize = str_view_to_string_helper();
+        assert!(matches!(
+            &materialize.body[2],
+            N::Do(E::Call { func, args })
+                if func == "raw_buffer_copy"
+                    && matches!(args.as_slice(), [_, E::GetLocal(source), E::GetLocal(length)] if source == "p" && length == "len")
+        ), "do not replace the unauthenticated borrowed payload with a forged SafeMemoryCopy; migrate the root/start/len ABI first");
+    }
+}
