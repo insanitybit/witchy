@@ -24,7 +24,7 @@ use crate::safewir_surface::{
 };
 use crate::safewir_reaching_defs::{
     analyze_reaching_definitions, DefinitionKind as ReachingDefinitionKind, ReachingDefinitionBudget,
-    ReachingDefinitions,
+    structural_node_operands, ReachingDefinitions, StructuralSite,
 };
 use crate::safewir_validate::{
     self, CandidateFunction, CandidateGcDeclarations, CandidateGcUse, CandidateModule, ControlId,
@@ -668,7 +668,7 @@ impl<'a> FunctionAdapter<'a> {
 
     fn adapt(mut self) -> Result<CandidateFunction, FinalWirValidationError> {
         let body = self.function.body.clone();
-        self.seq(&body)?;
+        self.seq_at(&body, &StructuralSite::root())?;
         Ok(CandidateFunction {
             name: self.function.name.clone(),
             contract: self.contract,
@@ -817,23 +817,38 @@ impl<'a> FunctionAdapter<'a> {
         FinalWirValidationError::function(&self.function.name, message)
     }
 
-    fn seq(&mut self, sequence: &WirSeq) -> Result<(), FinalWirValidationError> {
-        for node in sequence {
-            self.node(node)?;
+    fn seq_at(
+        &mut self,
+        sequence: &WirSeq,
+        parent: &StructuralSite,
+    ) -> Result<(), FinalWirValidationError> {
+        for (index, node) in sequence.iter().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| self.error("structured node index space exhausted"))?;
+            self.node_at(node, &parent.projected(crate::safewir_reaching_defs::SiteStep::Node(index)))?;
         }
         Ok(())
     }
 
-    fn nested_seq(&mut self, sequence: &WirSeq) -> Result<Vec<Operation>, FinalWirValidationError> {
+    fn nested_seq_at(
+        &mut self,
+        sequence: &WirSeq,
+        parent: &StructuralSite,
+    ) -> Result<Vec<Operation>, FinalWirValidationError> {
         let outer = std::mem::take(&mut self.operations);
-        self.seq(sequence)?;
+        self.seq_at(sequence, parent)?;
         let nested = std::mem::replace(&mut self.operations, outer);
         Ok(nested)
     }
 
-    fn scalar_definition(
+    /// Bind a control condition to the one scalar definition structurally
+    /// reaching this exact executable read.  The site is supplied by the
+    /// shared reaching-definition traversal rather than reconstructed from
+    /// the adapter's traversal, so erased claim operands cannot shift it.
+    fn scalar_definition_at(
         &mut self,
         expression: &WirExpr,
+        site: &StructuralSite,
     ) -> Result<DefinitionId, FinalWirValidationError> {
         match expression {
             WirExpr::GetLocal(name) => {
@@ -841,7 +856,43 @@ impl<'a> FunctionAdapter<'a> {
                 if local.memory_root {
                     return Err(self.error("branch conditions require scalar definitions"));
                 }
-                Ok(local.definition)
+                let read = self
+                    .reaching
+                    .reads()
+                    .iter()
+                    .find(|read| read.site == *site)
+                    .ok_or_else(|| self.error(
+                        "branch condition has no structural reaching-definition read",
+                    ))?;
+                if !read.reachable || read.local != *name || read.reaching.len() != 1 {
+                    return Err(self.error(format!(
+                        "branch condition requires one exact reaching scalar definition for local `{name}`"
+                    )));
+                }
+                let reaching = read.reaching.iter().next().expect("length checked");
+                let parameter_index = self
+                    .function
+                    .params
+                    .iter()
+                    .position(|parameter| parameter.name == *name)
+                    .and_then(|index| u32::try_from(index).ok());
+                if !matches!(
+                    self.reaching.definition(reaching).map(|definition| &definition.kind),
+                    Some(ReachingDefinitionKind::Parameter { local: parameter, index })
+                        if parameter == name && Some(*index) == parameter_index
+                ) {
+                    return Err(self.error(format!(
+                        "branch condition requires an unchanged scalar parameter; local `{name}` reaches a write, initializer, or join"
+                    )));
+                }
+                // The graph has proved the producer identity, but the
+                // candidate validator currently admits scalar facts only via
+                // literal `DefineScalar`.  Do not smuggle a runtime parameter
+                // through that literal-only fact domain: a future symbolic
+                // scalar lattice must carry its range/width contract first.
+                Err(self.error(
+                    "dynamic scalar parameters require the deferred validator scalar-fact lattice",
+                ))
             }
             WirExpr::ConstI32(value) => {
                 let definition = self.fresh_definition()?;
@@ -865,6 +916,30 @@ impl<'a> FunctionAdapter<'a> {
         }
     }
 
+    fn node_operand_site(
+        &self,
+        node: &WirNode,
+        node_site: &StructuralSite,
+        expression: &WirExpr,
+    ) -> Result<StructuralSite, FinalWirValidationError> {
+        let expression = std::ptr::from_ref(expression);
+        let operands = structural_node_operands(node, node_site).ok_or_else(|| {
+            self.error("structured operand site space exhausted while binding a scalar read")
+        })?;
+        let mut matches = operands
+            .into_iter()
+            .filter(|operand| !operand.claim_only && operand.expression == expression);
+        let Some(site) = matches.next().map(|operand| operand.site) else {
+            return Err(self.error("scalar read is not an executable operand at its structural site"));
+        };
+        if matches.next().is_some() {
+            return Err(self.error(
+                "scalar read occurs more than once in one node; its structural operand is ambiguous",
+            ));
+        }
+        Ok(site)
+    }
+
     /// A host call may consume only an exact scalar identity from the shared
     /// reaching-definition graph. Mutable locals and computed expressions need
     /// richer elaboration; rejecting them keeps this ABI boundary fail closed.
@@ -876,7 +951,7 @@ impl<'a> FunctionAdapter<'a> {
             WirExpr::GetLocal(name) => {
                 self.stable_scalar_parameter_definition(name, "host argument")?
             }
-            WirExpr::ConstI32(_) | WirExpr::ConstI64(_) => self.scalar_definition(expression)?,
+            WirExpr::ConstI32(_) | WirExpr::ConstI64(_) => self.scalar_definition_at(expression, &StructuralSite::root())?,
             _ => {
                 return Err(self.error(
                     "host arguments require an exact scalar parameter or literal definition",
@@ -886,9 +961,18 @@ impl<'a> FunctionAdapter<'a> {
         Ok(HostArgument::Scalar(definition))
     }
 
-    fn node(&mut self, node: &WirNode) -> Result<(), FinalWirValidationError> {
+    fn node_at(
+        &mut self,
+        node: &WirNode,
+        site: &StructuralSite,
+    ) -> Result<(), FinalWirValidationError> {
         match node {
-            WirNode::Source { body, .. } => self.seq(body),
+            WirNode::Source { body, .. } => self.seq_at(
+                body,
+                &site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                    crate::safewir_reaching_defs::StructuredRegion::SourceBody,
+                )),
+            ),
             WirNode::SafeStore { place, value, kind } => {
                 self.expr(value)?;
                 let place = self.place(place)?;
@@ -943,9 +1027,20 @@ impl<'a> FunctionAdapter<'a> {
                 "global writes require the sealed kernel/global contract boundary",
             )),
             WirNode::If { cond, then_, els, result: None } => {
-                let condition = self.scalar_definition(cond)?;
-                let then_operations = self.nested_seq(then_)?;
-                let else_operations = self.nested_seq(els)?;
+                let operand = self.node_operand_site(node, site, cond)?;
+                let condition = self.scalar_definition_at(cond, &operand)?;
+                let then_operations = self.nested_seq_at(
+                    then_,
+                    &site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                        crate::safewir_reaching_defs::StructuredRegion::Then,
+                    )),
+                )?;
+                let else_operations = self.nested_seq_at(
+                    els,
+                    &site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                        crate::safewir_reaching_defs::StructuredRegion::Else,
+                    )),
+                )?;
                 self.operations.push(Operation::If {
                     condition,
                     then_operations,
@@ -961,14 +1056,24 @@ impl<'a> FunctionAdapter<'a> {
             )),
             WirNode::Block { label, result: None, body } => {
                 let control = self.push_control(label)?;
-                let body = self.nested_seq(body)?;
+                let body = self.nested_seq_at(
+                    body,
+                    &site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                        crate::safewir_reaching_defs::StructuredRegion::BlockBody,
+                    )),
+                )?;
                 self.controls.pop();
                 self.operations.push(Operation::Block { control, body });
                 Ok(())
             }
             WirNode::Loop { label, body } => {
                 let control = self.push_control(label)?;
-                let body = self.nested_seq(body)?;
+                let body = self.nested_seq_at(
+                    body,
+                    &site.projected(crate::safewir_reaching_defs::SiteStep::Region(
+                        crate::safewir_reaching_defs::StructuredRegion::LoopBody,
+                    )),
+                )?;
                 self.controls.pop();
                 self.operations.push(Operation::Loop { control, body });
                 Ok(())
@@ -977,7 +1082,10 @@ impl<'a> FunctionAdapter<'a> {
                 let target = self.resolve_control(target)?;
                 let condition = cond
                     .as_ref()
-                    .map(|condition| self.scalar_definition(condition))
+                    .map(|condition| {
+                        let operand = self.node_operand_site(node, site, condition)?;
+                        self.scalar_definition_at(condition, &operand)
+                    })
                     .transpose()?;
                 self.operations.push(Operation::Branch { target, condition });
                 Ok(())
@@ -2310,6 +2418,87 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.metrics().operations, 3);
+    }
+
+    #[test]
+    fn final_wir_report_rejects_scalar_parameter_control_through_nested_control_without_a_fact_lattice() {
+        let (layouts, layout) = layouts();
+        let mut nested = module(WirExpr::ConstI32(0));
+        nested.funcs[0].params.push(WirLocal { name: "gate".into(), ty: WirTy::Bool });
+        nested.funcs[0].body = vec![WirNode::Block {
+            label: "exit".into(),
+            result: None,
+            body: vec![WirNode::Loop {
+                label: "again".into(),
+                body: vec![WirNode::If {
+                    cond: WirExpr::GetLocal("gate".into()),
+                    then_: Vec::new(),
+                    els: Vec::new(),
+                    result: None,
+                }],
+            }],
+        }];
+        let mut checked = inputs_without_parameter_effects(layouts, layout);
+        checked.functions.get_mut("read").unwrap().parameters.push(ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            effects: ParameterMemoryEffects::none(),
+        });
+        let error = validate_final_wir_report(&nested, &[], &[], checked, ValidationBudget::default())
+            .expect_err("a runtime scalar parameter must not be admitted as a literal scalar fact");
+        assert!(
+            error.to_string().contains("deferred validator scalar-fact lattice"),
+            "the nested adapter path must reject before candidate validation: {error}",
+        );
+    }
+
+    #[test]
+    fn branch_condition_rejects_an_ambiguous_cfg_join_even_before_node_elaboration() {
+        let (layouts, layout) = layouts();
+        let mut conditional = module(WirExpr::ConstI32(0));
+        conditional.funcs[0].params.push(WirLocal { name: "gate".into(), ty: WirTy::Bool });
+        conditional.funcs[0].locals.push(WirLocal { name: "flag".into(), ty: WirTy::Bool });
+        conditional.funcs[0].body = vec![
+            WirNode::If {
+                cond: WirExpr::GetLocal("gate".into()),
+                then_: vec![WirNode::SetLocal {
+                    local: "flag".into(),
+                    value: WirExpr::ConstI32(1),
+                }],
+                els: vec![WirNode::SetLocal {
+                    local: "flag".into(),
+                    value: WirExpr::ConstI32(0),
+                }],
+                result: None,
+            },
+            WirNode::If {
+                cond: WirExpr::GetLocal("flag".into()),
+                then_: Vec::new(),
+                els: Vec::new(),
+                result: None,
+            },
+        ];
+        let mut checked = inputs(layouts, layout);
+        checked.functions.get_mut("read").unwrap().parameters.push(ParameterMemoryContract {
+            entry: ParameterMemoryEntry::NoMemory,
+            layout: None,
+            extent: None,
+            effects: ParameterMemoryEffects::none(),
+        });
+        let function = &conditional.funcs[0];
+        let contract = checked.functions.get("read").unwrap().clone();
+        let reaching = analyze_reaching_definitions(function, ReachingDefinitionBudget::default())
+            .expect("the structural graph must model the cfg join");
+        let mut adapter = FunctionAdapter::new(function, contract, reaching)
+            .expect("the adapter setup must not trust a mutable-local binding");
+        let site = StructuralSite::root()
+            .projected(crate::safewir_reaching_defs::SiteStep::Node(1))
+            .projected(crate::safewir_reaching_defs::SiteStep::Operand(0));
+        let error = adapter
+            .scalar_definition_at(&WirExpr::GetLocal("flag".into()), &site)
+            .expect_err("a control read after divergent writes must not choose either predecessor");
+        assert!(error.to_string().contains("write, initializer, or join"), "{error}");
     }
 
     #[test]
