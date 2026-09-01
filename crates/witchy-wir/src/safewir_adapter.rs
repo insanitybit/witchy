@@ -213,6 +213,7 @@ pub fn validate_final_wir_report(
             "callable object results require the deferred result-definition adapter",
         ));
     }
+    authenticate_final_host_imports(module, &inputs)?;
 
     let functions = module
         .funcs
@@ -258,6 +259,63 @@ pub fn validate_final_wir_report(
         post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
     };
     Ok(safewir_validate::validate_candidate(&candidate, budget)?)
+}
+
+/// Bind each production host contract to the same canonical ABI entry that
+/// declares its Wasm import. A familiar string alone is not authority: both
+/// its exact signature and no-memory contract must be mechanically derived.
+/// Descriptor-bearing buffer imports remain rejected until their dedicated
+/// SafeWIR contract elaborator is available.
+fn authenticate_final_host_imports(
+    module: &WirModule,
+    inputs: &FinalWirValidationInputs,
+) -> Result<(), FinalWirValidationError> {
+    for import in &module.imports {
+        let Some(contract) = inputs.host_imports.get(&import.name) else {
+            continue;
+        };
+        let Some(canonical) = crate::safewir_call::canonical_host_import_contract(&import.name)
+        else {
+            return Err(FinalWirValidationError::module(format!(
+                "host import `{}` has no canonical ABI memory contract",
+                import.name
+            )));
+        };
+        let Some(abi) = crate::wir_prelude::prelude()
+            .imports
+            .iter()
+            .find(|candidate| candidate.name == import.name)
+        else {
+            return Err(FinalWirValidationError::module(format!(
+                "host import `{}` is absent from the canonical ABI table",
+                import.name
+            )));
+        };
+        let params = abi.params.iter().copied().map(wasm_kind).collect::<Vec<_>>();
+        let results = abi.results.iter().copied().map(wasm_kind).collect::<Vec<_>>();
+        if import.params != params || import.results != results {
+            return Err(FinalWirValidationError::module(format!(
+                "host import `{}` contradicts its canonical ABI signature",
+                import.name
+            )));
+        }
+        if contract != &canonical {
+            return Err(FinalWirValidationError::module(format!(
+                "host import `{}` contract is not the canonical no-memory ABI contract",
+                import.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn wasm_kind(kind: crate::wir_prelude::WasmTy) -> Kind {
+    match kind {
+        crate::wir_prelude::WasmTy::I32 => Kind::I32,
+        crate::wir_prelude::WasmTy::I64 => Kind::I64,
+        crate::wir_prelude::WasmTy::F32 | crate::wir_prelude::WasmTy::F64 => Kind::F64,
+        crate::wir_prelude::WasmTy::ExternRef => Kind::ExternRef,
+    }
 }
 
 fn collect_encoded_gc_uses(module: &WirModule) -> Vec<CandidateGcUse> {
@@ -807,6 +865,27 @@ impl<'a> FunctionAdapter<'a> {
         }
     }
 
+    /// A host call may consume only an exact scalar identity from the shared
+    /// reaching-definition graph. Mutable locals and computed expressions need
+    /// richer elaboration; rejecting them keeps this ABI boundary fail closed.
+    fn host_scalar_argument(
+        &mut self,
+        expression: &WirExpr,
+    ) -> Result<HostArgument, FinalWirValidationError> {
+        let definition = match expression {
+            WirExpr::GetLocal(name) => {
+                self.stable_scalar_parameter_definition(name, "host argument")?
+            }
+            WirExpr::ConstI32(_) | WirExpr::ConstI64(_) => self.scalar_definition(expression)?,
+            _ => {
+                return Err(self.error(
+                    "host arguments require an exact scalar parameter or literal definition",
+                ));
+            }
+        };
+        Ok(HostArgument::Scalar(definition))
+    }
+
     fn node(&mut self, node: &WirNode) -> Result<(), FinalWirValidationError> {
         match node {
             WirNode::Source { body, .. } => self.seq(body),
@@ -961,14 +1040,13 @@ impl<'a> FunctionAdapter<'a> {
                 Ok(())
             }
             WirExpr::CallHost { import, args } => {
-                if !args.is_empty() {
-                    return Err(self.error(
-                        "host arguments require authenticated scalar or buffer bindings",
-                    ));
-                }
+                let arguments = args
+                    .iter()
+                    .map(|argument| self.host_scalar_argument(argument))
+                    .collect::<Result<Vec<_>, _>>()?;
                 self.operations.push(Operation::HostCall {
                     import: import.clone(),
-                    arguments: Vec::<HostArgument>::new(),
+                    arguments,
                     result: None,
                 });
                 Ok(())
@@ -2223,5 +2301,135 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("exactly once"));
+    }
+
+    #[test]
+    fn final_wir_host_call_requires_the_canonical_abi_and_exact_scalar_binding() {
+        let (layouts, _layout) = layouts();
+        let host = "print_int";
+        let canonical = crate::safewir_call::canonical_host_import_contract(host)
+            .expect("print_int is a cataloged no-memory host ABI");
+        let mut module = WirModule {
+            imports: vec![crate::wir::WirImport {
+                name: host.into(),
+                params: vec![Kind::I64],
+                results: Vec::new(),
+            }],
+            funcs: vec![WirFunc {
+                name: "host_call".into(),
+                params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+                ret: Vec::new(),
+                locals: Vec::new(),
+                body: vec![WirNode::Do(WirExpr::CallHost {
+                    import: host.into(),
+                    args: vec![WirExpr::GetLocal("value".into())],
+                })],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let inputs = FinalWirValidationInputs {
+            layouts,
+            functions: BTreeMap::from([(
+                "host_call".into(),
+                CallableMemoryContract {
+                    parameters: vec![ParameterMemoryContract {
+                        entry: ParameterMemoryEntry::NoMemory,
+                        layout: None,
+                        extent: None,
+                        effects: ParameterMemoryEffects::none(),
+                    }],
+                    result: CallableMemoryResult::NoMemory,
+                },
+            )]),
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::from([(host.into(), canonical.clone())]),
+        };
+        let report = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs.clone(),
+            ValidationBudget::default(),
+        )
+        .expect("canonical scalar host call must elaborate");
+        assert_eq!(report.metrics().operations, 1);
+
+        module.imports[0].params = vec![Kind::I32];
+        let error = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs,
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("canonical ABI signature"), "{error}");
+    }
+
+    #[test]
+    fn final_wir_host_call_rejects_reassigned_scalar_argument() {
+        let (layouts, _layout) = layouts();
+        let host = "print_int";
+        let canonical = crate::safewir_call::canonical_host_import_contract(host).unwrap();
+        let module = WirModule {
+            imports: vec![crate::wir::WirImport {
+                name: host.into(),
+                params: vec![Kind::I64],
+                results: Vec::new(),
+            }],
+            funcs: vec![WirFunc {
+                name: "host_call".into(),
+                params: vec![WirLocal { name: "value".into(), ty: WirTy::Int }],
+                ret: Vec::new(),
+                locals: vec![WirLocal { name: "copy".into(), ty: WirTy::Int }],
+                body: vec![
+                    WirNode::SetLocal {
+                        local: "copy".into(),
+                        value: WirExpr::GetLocal("value".into()),
+                    },
+                    WirNode::Do(WirExpr::CallHost {
+                        import: host.into(),
+                        args: vec![WirExpr::GetLocal("copy".into())],
+                    }),
+                ],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let inputs = FinalWirValidationInputs {
+            layouts,
+            functions: BTreeMap::from([(
+                "host_call".into(),
+                CallableMemoryContract {
+                    parameters: vec![ParameterMemoryContract {
+                        entry: ParameterMemoryEntry::NoMemory,
+                        layout: None,
+                        extent: None,
+                        effects: ParameterMemoryEffects::none(),
+                    }],
+                    result: CallableMemoryResult::NoMemory,
+                },
+            )]),
+            imports: BTreeMap::new(),
+            host_imports: BTreeMap::from([(host.into(), canonical)]),
+        };
+        let error = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs,
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("mutable local definitions"), "{error}");
     }
 }

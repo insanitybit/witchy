@@ -235,6 +235,13 @@ fn catalog_contract(
 ) -> Option<CallableMemoryContract> {
     let exact = |expected: CallableMemoryContract| (candidate == &expected).then_some(expected);
     if host {
+        // The final-WIR adapter authenticates a production host edge against
+        // the canonical prelude ABI before it constructs a candidate module.
+        // Keep the same catalog check here: an attached declaration must not
+        // manufacture a host contract merely by choosing a familiar name.
+        if let Some(expected) = canonical_host_import_contract(name) {
+            return exact(expected);
+        }
         return match name {
             "safewir.host.no_memory" | "host" => exact(no_memory_contract()),
             "safewir.host.read_i64" | "read" => {
@@ -291,6 +298,33 @@ fn catalog_contract(
         }
         _ => None,
     }
+}
+
+/// The memory contract mechanically implied by one canonical host ABI entry.
+///
+/// Scalar and `externref` ABI operands never carry linear-memory authority.
+/// Buffer-bearing imports deliberately have no entry here yet: they need a
+/// descriptor-specific `ParameterMemoryContract`, and accepting them as
+/// `NoMemory` would erase exactly the proof this boundary is meant to carry.
+/// The adapter separately checks the exact Wasm signature from the same
+/// prelude entry, so this function is not a name-only allowlist.
+pub(crate) fn canonical_host_import_contract(name: &str) -> Option<CallableMemoryContract> {
+    let import = crate::wir_prelude::prelude()
+        .imports
+        .iter()
+        .find(|import| import.name == name)?;
+    crate::wir_prelude::abi_import_info(name)?;
+    Some(CallableMemoryContract {
+        parameters: (0..import.params.len())
+            .map(|_| ParameterMemoryContract {
+                entry: ParameterMemoryEntry::NoMemory,
+                layout: None,
+                extent: None,
+                effects: ParameterMemoryEffects::none(),
+            })
+            .collect(),
+        result: CallableMemoryResult::NoMemory,
+    })
 }
 
 fn packed_list_contract_is_authenticated(

@@ -1741,7 +1741,6 @@ impl Validator<'_> {
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         HostArgument::Scalar(definition) => {
-                            self.require_scalar(state, *definition, function, at)?;
                             call_arguments.push(CallArgument::Scalar(*definition));
                         }
                         HostArgument::Buffer(place) => {
@@ -2123,7 +2122,12 @@ impl Validator<'_> {
         {
             match (argument, parameter.entry) {
                 (CallArgument::Scalar(definition), ParameterMemoryEntry::NoMemory) => {
-                    self.require_scalar(state, *definition, function, at)?;
+                    // A scalar-only ABI has no byte-range arithmetic to
+                    // discharge. Parameters are therefore permitted to carry
+                    // an unknown runtime scalar, but it must still be an
+                    // in-scope definition; callers cannot forge an operand
+                    // identifier or substitute an object root.
+                    self.require_scalar_definition(state, *definition, function, at)?;
                 }
                 (CallArgument::Scalar(definition), ParameterMemoryEntry::Unknown) => {
                     self.require_scalar(state, *definition, function, at)?;
@@ -3309,6 +3313,26 @@ impl Validator<'_> {
                 format!("DefinitionId {} has no exact scalar fact", definition.get()),
             )
         })
+    }
+
+    fn require_scalar_definition(
+        &self,
+        state: &State,
+        definition: DefinitionId,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        if state.definitions.contains(&definition)
+            && !state.objects.keys().any(|identity| identity.root == definition)
+        {
+            return Ok(());
+        }
+        Err(self.function_error(
+            RuleId::ExactRangeSource,
+            function,
+            at,
+            format!("DefinitionId {} has no scalar definition", definition.get()),
+        ))
     }
 
     fn require_nonnegative_scalar(
