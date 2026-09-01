@@ -1262,7 +1262,10 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find" => Some(WirHelperSpec {
             func: dict_find_helper(),
-            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2", "dict_ctrl_h2_mask"],
+            // The scalar probe has no call to the SIMD experimental helpers.
+            // Do not inject their unauthenticated vector loads into ordinary
+            // dictionary modules merely because they share carrier metadata.
+            helper_deps: &["key_eq", "dict_hash"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1283,7 +1286,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find_slice" => Some(WirHelperSpec {
             func: dict_find_slice_helper(),
-            helper_deps: &["dict_slice_eq", "dict_hash_slice", "dict_ctrl_h2", "dict_ctrl_h2_mask"],
+            helper_deps: &["dict_slice_eq", "dict_hash_slice"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1398,7 +1401,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_find_bucket" => Some(WirHelperSpec {
             func: dict_find_bucket_helper(),
-            helper_deps: &["key_eq", "dict_hash", "dict_ctrl_h2", "dict_ctrl_h2_mask"],
+            helper_deps: &["key_eq", "dict_hash"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
@@ -1674,6 +1677,19 @@ mod intrinsic_catalog_tests {
                     helper
                 );
             }
+        }
+    }
+
+    #[test]
+    fn ordinary_dictionary_searches_do_not_inject_unmodeled_simd_helpers() {
+        for helper in ["dict_find", "dict_find_slice", "dict_find_bucket"] {
+            let spec = wir_helper(helper).expect("dictionary helper is cataloged");
+            assert!(
+                !spec.helper_deps.iter().any(|dependency| {
+                    matches!(*dependency, "dict_ctrl_h2" | "dict_ctrl_h2_mask" | "dict_index_eq4")
+                }),
+                "{helper} must not inject an unmodeled SIMD carrier helper",
+            );
         }
     }
 }
