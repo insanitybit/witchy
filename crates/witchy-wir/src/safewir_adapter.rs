@@ -1950,6 +1950,36 @@ mod tests {
     }
 
     #[test]
+    fn final_wir_report_rejects_forged_rc_header_as_live_object_access() {
+        // `$rc_alloc` and `$rc_free` repeatedly read the allocation-size word
+        // at `object - 4`. That word is allocator metadata, outside the live
+        // object's layout extent; a producer must not be able to disguise it
+        // as an ordinary root-relative SafeWIR access merely by retaining the
+        // object's descriptor and extent. Such a migration would make the
+        // range claim untrue precisely at storage reuse.
+        let (layouts, layout) = layouts();
+        let mut forged = semantic_place(layout);
+        forged.encoded_base = Box::new(WirExpr::Binary {
+            op: crate::wir::BinOp::Sub,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::GetLocal("object".into())),
+            rhs: Box::new(WirExpr::ConstI32(4)),
+        });
+        let error = validate_final_wir_report(
+            &module(WirExpr::SafeLoad { place: forged, kind: Kind::I32 }),
+            &[],
+            &[],
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .expect_err("allocator-header arithmetic cannot mint live-object range authority");
+        assert!(
+            error.to_string().contains("claim expressions must be pure scalar leaves"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn final_wir_report_rejects_kernel_operations_until_contracts_are_checked() {
         let (layouts, layout) = layouts();
         let object = semantic_place(layout).object.clone();
