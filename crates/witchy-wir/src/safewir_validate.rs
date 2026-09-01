@@ -228,6 +228,13 @@ pub enum Operation {
         index: DefinitionId,
         length_source: DefinitionId,
         place: Place,
+        /// The exact linear-memory width emitted at this indexed access.
+        width: MemoryWidth,
+        /// Redundant with `place.access` by design: candidate construction
+        /// must not turn a read place into a write merely by selecting the
+        /// checked-index operation. The validator compares both before it
+        /// grants write ownership.
+        access: AccessMode,
     },
     ProvenIndex {
         object: ObjectIdentity,
@@ -1538,9 +1545,9 @@ impl Validator<'_> {
                     ));
                 }
             }
-            Operation::CheckedIndex { object, index, length_source, place } => {
-                self.require_live(state, *object, function, at)?;
-                if !self.validate_guarded_index_place(
+            Operation::CheckedIndex { object, index, length_source, place, width, access } => {
+                let ownership = self.require_live(state, *object, function, at)?.ownership;
+                let guarded = self.validate_guarded_index_place(
                     place,
                     *object,
                     *index,
@@ -1548,10 +1555,14 @@ impl Validator<'_> {
                     state,
                     function,
                     at,
-                )? {
+                )?;
+                if !guarded {
                     self.require_scalar(state, *index, function, at)?;
                     self.require_scalar(state, *length_source, function, at)?;
                     self.validate_place(place, state, function, at)?;
+                    self.validate_memory_width(place, *width, state, function, at)?;
+                } else {
+                    self.validate_guarded_index_width(place, *width, function, at)?;
                 }
                 if place.object.identity != *object {
                     return Err(self.function_error(
@@ -1559,6 +1570,24 @@ impl Validator<'_> {
                         function,
                         at,
                         "checked index uses a different object generation",
+                    ));
+                }
+                if place.access != *access {
+                    return Err(self.function_error(
+                        RuleId::ObjectRange,
+                        function,
+                        at,
+                        "checked index access mode contradicts its checked place",
+                    ));
+                }
+                if *access == AccessMode::Write
+                    && !matches!(ownership, Ownership::Unique | Ownership::BorrowedWrite)
+                {
+                    return Err(self.function_error(
+                        RuleId::ConsumeOnce,
+                        function,
+                        at,
+                        "checked indexed store requires unique or exclusive borrowed authority",
                     ));
                 }
             }
@@ -2044,6 +2073,40 @@ impl Validator<'_> {
             }
         }
         Ok(true)
+    }
+
+    /// The guarded dynamic path cannot call `derive_projection`: that generic
+    /// routine deliberately requires an exact concrete index, while this
+    /// theorem proves a symbolic index bounded by an authenticated header.
+    /// It still checks the full emitted memory width against the descriptor's
+    /// packed-element scalar, so `load8` cannot be relabeled as `load64` (or
+    /// vice versa) under an otherwise valid guard.
+    fn validate_guarded_index_width(
+        &self,
+        place: &Place,
+        width: MemoryWidth,
+        function: &CandidateFunction,
+        at: Option<usize>,
+    ) -> Result<(), ValidationError> {
+        let descriptor = self.layouts.get(place.object.layout).ok_or_else(|| {
+            self.function_error(RuleId::CanonicalLayout, function, at, "guarded index references an unknown layout")
+        })?;
+        let Some(element) = descriptor.kind().packed_element_layout() else {
+            return Err(self.function_error(RuleId::ProjectedLayout, function, at, "guarded index requires a packed element layout"));
+        };
+        let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+            return Err(self.function_error(RuleId::ProjectedLayout, function, at, "guarded index requires a dynamic packed layout"));
+        };
+        let scalar = self.scalar_layout_kind(element);
+        if u128::from(stride) != width.bytes() || scalar.is_none_or(|kind| !width.matches_scalar(kind)) {
+            return Err(self.function_error(
+                RuleId::ProjectedLayout,
+                function,
+                at,
+                format!("guarded indexed access {width:?} contradicts packed element scalar {scalar:?} with {stride} bytes"),
+            ));
+        }
+        Ok(())
     }
 
     fn merge_branch_state(
@@ -4754,6 +4817,8 @@ mod tests {
             index: scalar,
             length_source: DefinitionId::new(2),
             place: place(allocated, AccessMode::Read, 0, 8),
+            width: MemoryWidth::I64,
+            access: AccessMode::Read,
         };
         assert_rule(index, RuleId::ExactRangeSource);
 
@@ -4903,6 +4968,8 @@ mod tests {
                             index,
                             length_source: header_count,
                             place,
+                            width: MemoryWidth::I64,
+                            access: AccessMode::Read,
                         }],
                     },
                 ],
@@ -5013,6 +5080,8 @@ mod tests {
                             index: induction,
                             length_source: header_count,
                             place,
+                            width: MemoryWidth::I64,
+                            access: AccessMode::Read,
                         }],
                     },
                 ],
@@ -5056,6 +5125,8 @@ mod tests {
                 },
                 access: AccessMode::Read,
             },
+            width: MemoryWidth::I64,
+            access: AccessMode::Read,
         });
         assert_rule(post_loop, RuleId::ExactRangeSource);
     }
@@ -6056,6 +6127,8 @@ mod tests {
             object: allocated.identity,
             length_source: DefinitionId::new(2),
             place: place(second, AccessMode::Read, 0, 8),
+            width: MemoryWidth::I64,
+            access: AccessMode::Read,
         };
         assert_rule(module, RuleId::ExactRangeSource);
 

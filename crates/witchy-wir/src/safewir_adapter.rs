@@ -1592,16 +1592,13 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::SafeStore { place, value, kind } => {
                 self.expr(value)?;
                 let place = self.place(place)?;
-                self.operations.push(Operation::Store {
-                    place,
-                    width: memory_width(*kind)?,
-                });
+                self.emit_indexed_access(place, memory_width(*kind)?, crate::safewir::AccessMode::Write);
                 Ok(())
             }
             WirNode::SafeStore8 { place, value } => {
                 self.expr(value)?;
                 let place = self.place(place)?;
-                self.operations.push(Operation::Store { place, width: MemoryWidth::I8 });
+                self.emit_indexed_access(place, MemoryWidth::I8, crate::safewir::AccessMode::Write);
                 Ok(())
             }
             WirNode::SafeMemoryCopy { destination, source, len, kind } => {
@@ -1753,12 +1750,12 @@ impl<'a> FunctionAdapter<'a> {
         match expression {
             WirExpr::SafeLoad { place, kind } => {
                 let place = self.place(place)?;
-                self.emit_indexed_load(place, memory_width(*kind)?);
+                self.emit_indexed_access(place, memory_width(*kind)?, crate::safewir::AccessMode::Read);
                 Ok(())
             }
             WirExpr::SafeLoad8U { place } => {
                 let place = self.place(place)?;
-                self.emit_indexed_load(place, MemoryWidth::I8);
+                self.emit_indexed_access(place, MemoryWidth::I8, crate::safewir::AccessMode::Read);
                 Ok(())
             }
             WirExpr::SafeKernel(operation) => Err(self.kernel_expr_contract_error(operation)),
@@ -1920,14 +1917,19 @@ impl<'a> FunctionAdapter<'a> {
         })
     }
 
-    /// Emit the one current dynamic-index read operation when the access's
+    /// Emit the one current dynamic-index operation when the access's
     /// single element projection names the guard's exact induction or index
-    /// definition.  `CheckedIndex` is presently a read-only validator event:
-    /// it has no memory width or write-authority field, so stores deliberately
-    /// remain on the ordinary range-validation path until that contract grows.
-    /// The shared handler covers word and byte loads without a helper-name
-    /// allowlist; unmatched dynamic expressions never receive this theorem.
-    fn emit_indexed_load(&mut self, place: Place, width: MemoryWidth) {
+    /// definition. The checked operation carries the exact width and mode,
+    /// which the validator independently compares with the descriptor and
+    /// checked place before it permits a store. The shared handler covers word
+    /// and byte reads/writes without a helper-name allowlist; unmatched dynamic
+    /// expressions never receive this theorem.
+    fn emit_indexed_access(
+        &mut self,
+        place: Place,
+        width: MemoryWidth,
+        access: crate::safewir::AccessMode,
+    ) {
         if let Some((index, bound)) = self.active_index_guard {
             if matches!(place.projection.steps(), [ProjectionStep::Element { index: projected }] if *projected == index) {
                 self.operations.push(Operation::CheckedIndex {
@@ -1935,11 +1937,16 @@ impl<'a> FunctionAdapter<'a> {
                     index,
                     length_source: bound,
                     place,
+                    width,
+                    access,
                 });
                 return;
             }
         }
-        self.operations.push(Operation::Load { place, width });
+        match access {
+            crate::safewir::AccessMode::Read => self.operations.push(Operation::Load { place, width }),
+            crate::safewir::AccessMode::Write => self.operations.push(Operation::Store { place, width }),
+        }
     }
 
     fn matches_dynamic_element_base(&self, place: &SafePlaceExpr) -> bool {
@@ -2459,7 +2466,7 @@ mod tests {
         then_[0] = WirNode::Drop(WirExpr::SafeLoad8U {
             place: place.clone(),
         });
-        let report = validate_final_wir_report(
+        let error = validate_final_wir_report(
             &byte_module,
             &[],
             &[],
@@ -2471,26 +2478,94 @@ mod tests {
                 reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
-        ).expect("the exact header/guard pattern must elaborate an indexed byte load too");
-        assert!(report.metrics().operations >= 4);
+        ).expect_err("a byte load must not use an Int-element indexed theorem");
+        assert!(error.to_string().contains("guarded indexed access I8"), "{error}");
 
-        let mut unguarded_byte = byte_module;
-        let WirNode::If { then_, .. } = unguarded_byte.funcs[0].body.remove(1) else { panic!() };
-        unguarded_byte.funcs[0].body.extend(then_);
-        let error = validate_final_wir_report(
-            &unguarded_byte,
+        // A dynamic store uses the same address/guard recognizer, but the
+        // adapter carries Write and I64 into CheckedIndex. The validator must
+        // therefore check exclusive authority and the descriptor width rather
+        // than inheriting read admission from the nearby load pattern.
+        let mut store_module = module.clone();
+        let WirNode::If { then_, .. } = &mut store_module.funcs[0].body[1] else { panic!() };
+        let [WirNode::Drop(WirExpr::SafeLoad { place, .. })] = then_.as_slice() else { panic!() };
+        let mut store_place = place.clone();
+        store_place.access = AccessMode::Write;
+        then_[0] = WirNode::SafeStore {
+            place: store_place,
+            value: WirExpr::ConstI64(7),
+            kind: Kind::I64,
+        };
+        let mut store_contract = contract.clone();
+        store_contract.parameters[1].entry = ParameterMemoryEntry::BorrowedWrite;
+        store_contract.parameters[1].effects = ParameterMemoryEffects::only(ParameterMemoryEffect::Read)
+            .with(ParameterMemoryEffect::Write);
+        validate_final_wir_report(
+            &store_module,
             &[],
             &[],
             FinalWirValidationInputs {
                 layouts: dynamic_list_layouts().1,
-                functions: BTreeMap::from([("dynamic_access".into(), contract.clone())]),
+                functions: BTreeMap::from([("dynamic_access".into(), store_contract.clone())]),
                 imports: BTreeMap::new(),
                 host_imports: BTreeMap::new(),
                 reallocation_templates: Default::default(),
             },
             ValidationBudget::default(),
-        ).expect_err("a dynamic byte load outside its unsigned header guard must reject");
+        ).expect("an authenticated exclusive guarded dynamic store must elaborate");
+
+        let mut readonly_store = store_contract.clone();
+        readonly_store.parameters[1].entry = ParameterMemoryEntry::BorrowedRead;
+        let error = validate_final_wir_report(
+            &store_module,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: dynamic_list_layouts().1,
+                functions: BTreeMap::from([("dynamic_access".into(), readonly_store)]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
+            },
+            ValidationBudget::default(),
+        ).expect_err("a read-only dynamic parameter must not gain checked-index write authority");
+        assert!(error.to_string().contains("checked indexed store requires unique"), "{error}");
+
+        let mut unguarded_store = store_module.clone();
+        let WirNode::If { then_, .. } = unguarded_store.funcs[0].body.remove(1) else { panic!() };
+        unguarded_store.funcs[0].body.extend(then_);
+        let error = validate_final_wir_report(
+            &unguarded_store,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: dynamic_list_layouts().1,
+                functions: BTreeMap::from([("dynamic_access".into(), store_contract.clone())]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
+            },
+            ValidationBudget::default(),
+        ).expect_err("a guarded indexed-store theorem must not escape its unsigned true edge");
         assert!(error.to_string().contains("SWIR-RNG-002"), "{error}");
+
+        let mut narrow_store = store_module;
+        let WirNode::If { then_, .. } = &mut narrow_store.funcs[0].body[1] else { panic!() };
+        let [WirNode::SafeStore { kind, .. }] = then_.as_mut_slice() else { panic!() };
+        *kind = Kind::I32;
+        let error = validate_final_wir_report(
+            &narrow_store,
+            &[],
+            &[],
+            FinalWirValidationInputs {
+                layouts: dynamic_list_layouts().1,
+                functions: BTreeMap::from([("dynamic_access".into(), store_contract)]),
+                imports: BTreeMap::new(),
+                host_imports: BTreeMap::new(),
+                reallocation_templates: Default::default(),
+            },
+            ValidationBudget::default(),
+        ).expect_err("a guarded store width must match the descriptor-derived element width");
+        assert!(error.to_string().contains("guarded indexed access I32"), "{error}");
 
         let mut signed = module;
         let WirNode::If { cond: WirExpr::Binary { op, .. }, .. } = &mut signed.funcs[0].body[1] else { panic!() };

@@ -586,6 +586,14 @@ fn infer_operations(
             Operation::Store { place, .. } | Operation::Fill { destination: place } => {
                 add_object_effect(facts, place.object.identity, ParameterMemoryEffect::Write)
             }
+            Operation::CheckedIndex { place, access, .. } => add_object_effect(
+                facts,
+                place.object.identity,
+                match access {
+                    crate::safewir::AccessMode::Read => ParameterMemoryEffect::Read,
+                    crate::safewir::AccessMode::Write => ParameterMemoryEffect::Write,
+                },
+            ),
             Operation::Copy { source, destination, .. } => {
                 add_object_effect(facts, source.object.identity, ParameterMemoryEffect::Read);
                 add_object_effect(facts, destination.object.identity, ParameterMemoryEffect::Write);
@@ -789,7 +797,6 @@ fn infer_operations(
             Operation::Branch { condition: None, .. } | Operation::ReturnVoid => return Ok(()),
             Operation::BindCountParameter { .. }
             | Operation::Project { .. }
-            | Operation::CheckedIndex { .. }
             | Operation::ProvenIndex { .. }
             | Operation::Branch { condition: Some(_), .. }
             | Operation::ReferenceCastFromScalar => {}
