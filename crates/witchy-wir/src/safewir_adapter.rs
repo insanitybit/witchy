@@ -22,6 +22,9 @@ use crate::safewir_surface::{
     SafeCopyKind, SafeExtentExpr, SafePlaceExpr, SafeProjectionStep, SafeProvenanceExpr,
     SafeSizeExpr,
 };
+use crate::safewir_reaching_defs::{
+    analyze_reaching_definitions, ReachingDefinitionBudget,
+};
 use crate::safewir_validate::{
     self, CandidateFunction, CandidateGcDeclarations, CandidateGcUse, CandidateModule, ControlId,
     CopyKind, HostArgument, MemoryWidth, Operation, ParameterBinding, PostValidationTransform,
@@ -214,6 +217,22 @@ pub fn validate_final_wir_report(
         .funcs
         .iter()
         .map(|function| {
+            // This graph is deliberately produced before semantic-pattern
+            // elaboration. It assigns identities from WIR structure, checks
+            // every local read and structured edge, and reaches a bounded loop
+            // fixpoint without trusting an adapter-maintained "current local"
+            // table. Pattern handlers may only bind a scalar, range, object,
+            // or callable fact to a definition supplied by this graph.
+            //
+            // The current narrow adapter still rejects mutable locals and the
+            // patterns that need them. Running the common analysis here makes
+            // that refusal a coverage limitation, never permission to guess a
+            // reaching definition while the production elaborator expands.
+            analyze_reaching_definitions(function, ReachingDefinitionBudget::default())
+                .map_err(|error| FinalWirValidationError::function(
+                    &function.name,
+                    format!("reaching-definition preflight rejected final WIR: {error}"),
+                ))?;
             let contract = inputs
                 .functions
                 .get(&function.name)
@@ -1411,8 +1430,12 @@ mod tests {
         runtime.projection = SafeProjectionExpr::from_steps([SafeProjectionStep::Element {
             index: Box::new(WirExpr::GetLocal("i".into())),
         }]);
+        let mut runtime_module = module(WirExpr::SafeLoad { place: runtime, kind: Kind::I64 });
+        runtime_module.funcs[0]
+            .locals
+            .push(WirLocal { name: "i".into(), ty: WirTy::Bool });
         let error = validate_final_wir_report(
-            &module(WirExpr::SafeLoad { place: runtime, kind: Kind::I64 }),
+            &runtime_module,
             &[],
             &[],
             inputs(layout_bundle, layout),
@@ -1440,6 +1463,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.metrics().operations, 1);
+    }
+
+    #[test]
+    fn final_wir_report_runs_structural_reaching_preflight_before_elaboration() {
+        let (layout_bundle, layout) = layouts();
+        let error = validate_final_wir_report(
+            &module(WirExpr::GetLocal("missing".into())),
+            &[],
+            &[],
+            inputs(layout_bundle, layout),
+            ValidationBudget::default(),
+        )
+        .expect_err("a final WIR local read without a reaching definition must reject");
+        assert!(
+            error.to_string().contains("reaching-definition preflight"),
+            "the generic structural analysis must run before a pattern handler: {error}",
+        );
     }
 
     #[test]
