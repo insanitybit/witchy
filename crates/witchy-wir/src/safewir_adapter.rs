@@ -36,6 +36,15 @@ use crate::wir::{Kind, WirArrayDef, WirExpr, WirFunc, WirModule, WirNode, WirSeq
 #[derive(Debug, Clone)]
 pub struct FinalWirValidationInputs {
     pub layouts: LayoutBundle,
+    /// Source-backed contracts for parameter- or result-bearing local
+    /// functions. The adapter has not yet derived the facts needed to prove
+    /// those shapes from executable WIR, so their declarations remain a
+    /// separately checked input path.
+    ///
+    /// In contrast, a zero-parameter, void local helper has exactly one
+    /// possible memory contract. It is mechanically derived from final WIR
+    /// and must not appear here: supplying a duplicate declaration is
+    /// rejected rather than treated as authority.
     pub functions: BTreeMap<String, CallableMemoryContract>,
     pub imports: BTreeMap<String, CallableMemoryContract>,
     pub host_imports: BTreeMap<String, CallableMemoryContract>,
@@ -170,16 +179,7 @@ pub fn validate_final_wir_report(
     inputs: FinalWirValidationInputs,
     budget: ValidationBudget,
 ) -> Result<ValidationReport, FinalWirValidationError> {
-    if module.funcs.len() != inputs.functions.len()
-        || module
-            .funcs
-            .iter()
-            .any(|function| !inputs.functions.contains_key(&function.name))
-    {
-        return Err(FinalWirValidationError::module(
-            "checked callable contracts must name every and only final function",
-        ));
-    }
+    let functions = derive_final_function_contracts(module, &inputs.functions)?;
     let declared_imports = module
         .imports
         .iter()
@@ -235,10 +235,9 @@ pub fn validate_final_wir_report(
                     &function.name,
                     format!("reaching-definition preflight rejected final WIR: {error}"),
                 ))?;
-            let contract = inputs
-                .functions
+            let contract = functions
                 .get(&function.name)
-                .expect("function contract census was checked")
+                .expect("derived and declared function contract census was checked")
                 .clone();
             FunctionAdapter::new(function, contract, reaching)?.adapt()
         })
@@ -259,6 +258,53 @@ pub fn validate_final_wir_report(
         post_validation_transform: PostValidationTransform::FixedTemplateExpansionAndErasure,
     };
     Ok(safewir_validate::validate_candidate(&candidate, budget)?)
+}
+
+/// Derive the only callable contract which final WIR determines without a
+/// source-range or result-definition elaborator: a zero-argument, void local
+/// helper is memory-free. Its supplied declaration is therefore not an input
+/// to trust. Parameter-bearing functions remain on the explicitly distinct
+/// source-backed path until their object/scalar roots, layouts, extents, and
+/// return definitions can be derived from final WIR.
+fn derive_final_function_contracts(
+    module: &WirModule,
+    declared: &BTreeMap<String, CallableMemoryContract>,
+) -> Result<BTreeMap<String, CallableMemoryContract>, FinalWirValidationError> {
+    let mut contracts = BTreeMap::new();
+    for function in &module.funcs {
+        let helper_only = function.params.is_empty() && function.ret.is_empty();
+        let contract = if helper_only {
+            if declared.contains_key(&function.name) {
+                return Err(FinalWirValidationError::function(
+                    &function.name,
+                    "zero-argument void helper contract is derived from final WIR; supplied declaration is forbidden",
+                ));
+            }
+            CallableMemoryContract {
+                parameters: Vec::new(),
+                result: CallableMemoryResult::NoMemory,
+            }
+        } else {
+            declared.get(&function.name).cloned().ok_or_else(|| {
+                FinalWirValidationError::function(
+                    &function.name,
+                    "parameter- or result-bearing function requires its separately checked source-backed callable contract",
+                )
+            })?
+        };
+        if contracts.insert(function.name.clone(), contract).is_some() {
+            return Err(FinalWirValidationError::module(format!(
+                "final WIR contains duplicate function `{}`",
+                function.name
+            )));
+        }
+    }
+    if declared.keys().any(|name| !contracts.contains_key(name)) {
+        return Err(FinalWirValidationError::module(
+            "source-backed callable contracts must name only final parameter- or result-bearing functions",
+        ));
+    }
+    Ok(contracts)
 }
 
 /// Bind each production host contract to the same canonical ABI entry that
@@ -2617,6 +2663,78 @@ mod tests {
     }
 
     #[test]
+    fn final_wir_derives_void_helper_contracts_but_keeps_parameter_roots_source_backed() {
+        let (layouts, layout) = layouts();
+        let helper = WirFunc {
+            name: "helper".into(),
+            params: Vec::new(),
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![WirNode::Return(None)],
+            raw_body: None,
+        };
+        let main = WirFunc {
+            name: "main".into(),
+            params: vec![WirLocal { name: "object".into(), ty: WirTy::Str }],
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: vec![
+                WirNode::Do(WirExpr::Call { func: "helper".into(), args: Vec::new() }),
+                WirNode::Drop(WirExpr::SafeLoad {
+                    place: semantic_place(layout),
+                    kind: Kind::I64,
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![helper, main],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: Vec::new(),
+        };
+        let mut inputs = inputs(layouts, layout);
+        let read = inputs.functions.remove("read").expect("the parameter-root contract");
+        inputs.functions.insert("main".into(), read);
+
+        let report = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs.clone(),
+            ValidationBudget::default(),
+        )
+        .expect("the helper must derive while the parameter root stays separately checked");
+        assert_eq!(report.metrics().operations, 3);
+
+        inputs.functions.insert(
+            "helper".into(),
+            CallableMemoryContract {
+                parameters: Vec::new(),
+                result: CallableMemoryResult::Fresh {
+                    layout,
+                    extent: ContractExtent::Exact(ContractSizeExpr::Constant(8)),
+                },
+            },
+        );
+        let error = validate_final_wir_report(
+            &module,
+            &[],
+            &[],
+            inputs,
+            ValidationBudget::default(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("supplied declaration is forbidden"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn final_wir_host_call_requires_the_canonical_abi_and_exact_scalar_binding() {
         let (layouts, _layout) = layouts();
         let host = "print_int";
@@ -2783,13 +2901,9 @@ mod tests {
         };
         let inputs = FinalWirValidationInputs {
             layouts,
-            functions: BTreeMap::from([(
-                "host_call".into(),
-                CallableMemoryContract {
-                    parameters: Vec::new(),
-                    result: CallableMemoryResult::NoMemory,
-                },
-            )]),
+            // The zero-argument void function contract is mechanically
+            // derived from this final WIR shape.
+            functions: BTreeMap::new(),
             imports: BTreeMap::new(),
             host_imports: BTreeMap::from([(
                 "print".into(),
