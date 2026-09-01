@@ -926,9 +926,7 @@ impl<'a> FunctionAdapter<'a> {
             WirNode::SafeMemoryFill { .. } => Err(self.error(
                 "typed memory fill requires the deferred valid-byte-pattern contract",
             )),
-            WirNode::SafeKernel(_) => Err(self.error(
-                "opaque kernel operations require the deferred checked kernel-contract adapter",
-            )),
+            WirNode::SafeKernel(operation) => Err(self.kernel_node_contract_error(operation)),
             WirNode::Store { .. }
             | WirNode::Store8 { .. }
             | WirNode::MemoryCopy { .. }
@@ -1020,9 +1018,7 @@ impl<'a> FunctionAdapter<'a> {
                 self.operations.push(Operation::Load { place, width: MemoryWidth::I8 });
                 Ok(())
             }
-            WirExpr::SafeKernel(_) => Err(self.error(
-                "opaque kernel operations require the deferred checked kernel-contract adapter",
-            )),
+            WirExpr::SafeKernel(operation) => Err(self.kernel_expr_contract_error(operation)),
             WirExpr::Load { .. } | WirExpr::Load8U { .. } | WirExpr::MemoryGrow(_) => Err(
                 self.error("raw linear-memory expression bypasses the semantic SafeWIR dialect"),
             ),
@@ -1192,6 +1188,80 @@ impl<'a> FunctionAdapter<'a> {
                 "claim expressions must be pure scalar leaves in the current adapter subset",
             )),
         }
+    }
+
+    /// Kernel operations are deliberately opaque candidate nodes.  It is not
+    /// sound to turn them into the superficially similar `Operation::{Alloc,
+    /// Reuse, Retain, Release}` facts until the fixed template contract binds
+    /// the executable allocator metadata accesses to the same root and
+    /// generation as the ghost claim.  In particular, RC templates address
+    /// `object - 4`, which is *not* a live-object `Place`; treating this as an
+    /// ordinary `Release` would silently discard the load-bearing header
+    /// range.  Keep the rejection per operation so a future elaborator has a
+    /// precise, test-pinned contract to discharge rather than a generic escape
+    /// hatch around the final boundary.
+    fn kernel_expr_contract_error(
+        &self,
+        operation: &crate::safewir_kernel::SafeKernelExpr,
+    ) -> FinalWirValidationError {
+        use crate::safewir_kernel::{SafeAllocationClass, SafeKernelExpr};
+
+        let message = match operation {
+            SafeKernelExpr::RegionMark => {
+                "region mark requires the checked kernel-contract adapter to bind its watermark result"
+            }
+            SafeKernelExpr::ScratchMark => {
+                "scratch mark requires the checked kernel-contract adapter to bind its watermark result"
+            }
+            SafeKernelExpr::Allocate { class: SafeAllocationClass::Bump, .. } => {
+                "bump allocation requires the checked kernel-contract adapter to bind its allocation result and fresh generation"
+            }
+            SafeKernelExpr::Allocate {
+                class: SafeAllocationClass::ReferenceCounted,
+                ..
+            } => {
+                "reference-counted allocation requires the checked kernel-contract adapter to bind its allocator-metadata header range, allocation result, and fresh generation"
+            }
+            SafeKernelExpr::ScratchAllocate { .. } => {
+                "scratch allocation requires the checked kernel-contract adapter to bind its scope, borrowed range, and fresh generation"
+            }
+            SafeKernelExpr::Retain { .. } => {
+                "retain requires the checked kernel-contract adapter to bind its alias group and reference-count metadata range"
+            }
+            SafeKernelExpr::Reuse { .. } => {
+                "storage reuse requires the checked kernel-contract adapter to bind its allocator-metadata header range and old/new generation transfer"
+            }
+        };
+        self.error(message)
+    }
+
+    fn kernel_node_contract_error(
+        &self,
+        operation: &crate::safewir_kernel::SafeKernelNode,
+    ) -> FinalWirValidationError {
+        use crate::safewir_kernel::{SafeKernelNode, SafeRegionRewind};
+
+        let message = match operation {
+            SafeKernelNode::RegionRewind(SafeRegionRewind::Iteration { .. }) => {
+                "iteration region rewind requires the checked kernel-contract adapter to bind its watermark and invalidated generations"
+            }
+            SafeKernelNode::RegionRewind(SafeRegionRewind::Lexical { .. }) => {
+                "lexical region rewind requires the checked kernel-contract adapter to bind its watermark and invalidated generations"
+            }
+            SafeKernelNode::RegionRewind(SafeRegionRewind::CopyOut { .. }) => {
+                "copy-out region rewind requires the checked kernel-contract adapter to bind its watermark, escaping range, and generation transfer"
+            }
+            SafeKernelNode::ScratchRewind { .. } => {
+                "scratch rewind requires the checked kernel-contract adapter to bind its watermark and borrowed-generation lifetime"
+            }
+            SafeKernelNode::Release { .. } => {
+                "reference-counted release requires the checked kernel-contract adapter to bind its allocator-metadata header range and live object generation"
+            }
+            SafeKernelNode::Reclaim { .. } => {
+                "reference-counted reclaim requires the checked kernel-contract adapter to bind its allocator-metadata header range and consumed object generation"
+            }
+        };
+        self.error(message)
     }
 }
 
@@ -1399,7 +1469,9 @@ mod tests {
         AccessMode, CallableMemoryResult, ParameterMemoryContract, ParameterMemoryEffect,
         ParameterMemoryEffects,
     };
-    use crate::safewir_kernel::{SafeKernelExpr, SafeKernelNode};
+    use crate::safewir_kernel::{
+        SafeAllocationClass, SafeKernelExpr, SafeKernelNode, SafeKernelResultClaim, SafeKernelSize,
+    };
     use crate::safewir_surface::{
         SafeObjectExpr, SafeProjectionExpr, SafeRangeExpr,
     };
@@ -2085,6 +2157,58 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("checked kernel-contract adapter"), "{error}");
+    }
+
+    #[test]
+    fn final_wir_report_names_allocator_metadata_and_generation_contract_gaps() {
+        // `Operation::Alloc` and `Operation::Release` check object-lifetime
+        // facts, but the RC templates also access allocator-owned metadata at
+        // `object - 4`.  Until fixed-template expansion can bind that range to
+        // the same result/old generation, adapting the opaque nodes into those
+        // operations would lose a memory access.  Pin the exact rejection so a
+        // later kernel elaborator must add the missing proof instead of mapping
+        // these nodes through a raw helper or a live-object Place.
+        let (layouts, layout) = layouts();
+        let result = SafeKernelResultClaim {
+            layout,
+            extent: SafeExtentExpr::Exact(SafeSizeExpr::Constant(8)),
+        };
+        let size = SafeKernelSize {
+            checked: SafeSizeExpr::Constant(8),
+            encoded: Box::new(WirExpr::ConstI32(8)),
+        };
+        let error = validate_final_wir_report(
+            &module(WirExpr::SafeKernel(SafeKernelExpr::Allocate {
+                class: SafeAllocationClass::ReferenceCounted,
+                result,
+                size,
+            })),
+            &[],
+            &[],
+            inputs(layouts.clone(), layout),
+            ValidationBudget::default(),
+        )
+        .expect_err("RC allocation must not erase its allocator header access");
+        let message = error.to_string();
+        assert!(message.contains("reference-counted allocation"), "{message}");
+        assert!(message.contains("allocator-metadata header range"), "{message}");
+        assert!(message.contains("fresh generation"), "{message}");
+
+        let object = semantic_place(layout).object.clone();
+        let mut release = module(WirExpr::ConstI32(0));
+        release.funcs[0].body = vec![WirNode::SafeKernel(SafeKernelNode::Release { object })];
+        let error = validate_final_wir_report(
+            &release,
+            &[],
+            &[],
+            inputs(layouts, layout),
+            ValidationBudget::default(),
+        )
+        .expect_err("RC release must not erase its allocator header access");
+        let message = error.to_string();
+        assert!(message.contains("reference-counted release"), "{message}");
+        assert!(message.contains("allocator-metadata header range"), "{message}");
+        assert!(message.contains("live object generation"), "{message}");
     }
 
     #[test]
