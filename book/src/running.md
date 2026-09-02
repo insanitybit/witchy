@@ -106,6 +106,27 @@ There's no fallback to execution in the main page.
 
 ## Choose the boundary
 
+```text
+                    ┌─────────────────────────┐
+                    │  Compiled WASM Module   │
+                    └────────────┬────────────┘
+                                 │
+                 ┌───────────────┼───────────────┐
+                 ▼               ▼               ▼
+           [Developer]      [Operator]      [Distributor]
+           `witchy run`  `witchy sandbox` `trusted-publisher`
+           (Auto-grants   (User specifies  (Grants pre-baked
+             local cwd)     explicit CLI     in standalone
+                               flags)           binary)
+                 │               │               │
+                 └───────────────┼───────────────┘
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │   Wasmtime Sandbox    │
+                     └───────────────────────┘
+```
+
 | Form | Authority comes from | Appropriate use |
 |---|---|---|
 | Direct source or `witchy run` | developer host defaults and flags | local development |

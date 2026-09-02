@@ -31,6 +31,27 @@ executable authority floor - a module cannot call a host op it doesn't import -
 while the launch section preserves declared capability parameters even when
 lowering eliminates every use.
 
+```text
+                    ┌─────────────────────────┐
+                    │  Compiled WASM Module   │
+                    └────────────┬────────────┘
+                                 │
+                 ┌───────────────┼───────────────┐
+                 ▼               ▼               ▼
+           [Developer]      [Operator]      [Distributor]
+           `witchy run`  `witchy sandbox` `trusted-publisher`
+           (Auto-grants   (User specifies  (Grants pre-baked
+             local cwd)     explicit CLI     in standalone
+                               flags)           binary)
+                 │               │               │
+                 └───────────────┼───────────────┘
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │   Wasmtime Sandbox    │
+                     └───────────────────────┘
+```
+
 ```
 codegen:  checked AST → WirModule → wasm binary        (no WAT anywhere)
 artifact: app.wasm     ("witchy" host imports)
