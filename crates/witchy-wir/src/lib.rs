@@ -20,6 +20,7 @@ pub mod wir_helpers;
 pub mod layout;
 pub mod optimizer_policy;
 pub mod runtime_layout_catalog;
+pub mod canonical_safewir;
 pub mod safewir;
 pub mod safewir_adapter;
 mod safewir_call;
