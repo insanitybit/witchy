@@ -64,10 +64,14 @@ pub(crate) fn derive_layout_bundle(
             continue;
         }
 
-        let signature = typed
-            .table()
-            .function_type(&function.name)
-            .ok_or_else(|| CanonicalLayoutError::MissingCheckedFunctionType(function.name.clone()))?;
+        // Generic declarations are templates, not executable callables.  The
+        // checked linker emits a concrete, monomorphized function item for
+        // every resolved use site and records its finalized signature in the
+        // same authoritative table.  Do not try to invent a layout for the
+        // unresolved template (its `a`/`b` types have no physical layout).
+        let Some(signature) = typed.table().function_type(&function.name) else {
+            continue;
+        };
         projection.visit_type(&signature)?;
 
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {

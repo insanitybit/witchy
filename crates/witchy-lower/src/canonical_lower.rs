@@ -123,10 +123,15 @@ pub fn lower_typed_module(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
-        let function_type = typed
-            .table()
-            .function_type(&function.name)
-            .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone()))?;
+        // A generic source declaration is a template, not a callable with a
+        // physical ABI.  Its concrete uses are represented by checked
+        // monomorphized items (for example `map__List__Int__Int`) and only
+        // those items have a finalized function type in the checked table.
+        // Keeping templates out of the executable map makes the table, not a
+        // source-name convention, the authority for canonical callables.
+        let Some(function_type) = typed.table().function_type(&function.name) else {
+            continue;
+        };
         function_types.insert(function_type, signature_id);
         signatures.push(FunctionSignature {
             id: signature_id,
