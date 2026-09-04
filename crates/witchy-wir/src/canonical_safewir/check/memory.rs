@@ -27,11 +27,28 @@ struct ObjectState {
 #[derive(Debug, Clone, Copy)]
 struct CheckedRange {
     object: ValueId,
+    start: ValueId,
     length: ValueId,
     layout: crate::layout::LayoutId,
     element: crate::layout::LayoutId,
     identity: ValueId,
     ownership: Ownership,
+    allocation_class: Option<AllocationClass>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct RangeIdentity {
+    object: ValueId,
+    start: ValueId,
+    length: ValueId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RangeState {
+    element: crate::layout::LayoutId,
+    ownership: Ownership,
+    allocation_class: Option<AllocationClass>,
+    initialized: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +65,7 @@ struct Comparison {
 pub(super) struct MemoryState {
     objects: BTreeMap<ValueId, ObjectState>,
     stored_objects: BTreeMap<(ValueId, SlotIdentity), ObjectState>,
+    range_states: BTreeMap<RangeIdentity, RangeState>,
     constants: BTreeMap<ValueId, u64>,
     exact_additions: BTreeMap<ValueId, (ValueId, ValueId)>,
     comparisons: BTreeMap<ValueId, Comparison>,
@@ -80,6 +98,7 @@ impl<'a> MemoryChecker<'a> {
             state: MemoryState {
                 objects: BTreeMap::new(),
                 stored_objects: BTreeMap::new(),
+                range_states: BTreeMap::new(),
                 constants: BTreeMap::new(),
                 exact_additions: BTreeMap::new(),
                 comparisons: BTreeMap::new(),
@@ -162,6 +181,21 @@ impl<'a> MemoryChecker<'a> {
                             },
                         ),
                         state.clone(),
+                    )
+                })
+                .collect(),
+            range_states: self
+                .state
+                .range_states
+                .iter()
+                .map(|(identity, state)| {
+                    (
+                        RangeIdentity {
+                            object: remap_value(&renames, identity.object),
+                            start: remap_value(&renames, identity.start),
+                            length: remap_value(&renames, identity.length),
+                        },
+                        *state,
                     )
                 })
                 .collect(),
@@ -262,6 +296,7 @@ impl<'a> MemoryChecker<'a> {
         Ok(MemoryState {
             objects,
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
+            range_states: intersect_map(&existing.range_states, &incoming.range_states),
             constants: intersect_map(&existing.constants, &incoming.constants),
             exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
             comparisons: intersect_map(&existing.comparisons, &incoming.comparisons),
@@ -530,19 +565,88 @@ impl<'a> MemoryChecker<'a> {
         let source = self.check_typed_range(source, AccessMode::Read, "MoveRange")?;
         self.check_range_pair(destination, source, count, "MoveRange")?;
 
-        // A range move consumes the initialized elements. The v1 IR has no
-        // per-element initialization map or clear operation, so admitting a
-        // pointer-bearing element would leave physical owners duplicated or
-        // uncleared. Scalar elements have no ownership state to transfer.
-        self.require_scalar_range_element(destination.element, "MoveRange")?;
+        if self.value_type_for_layout(destination.element)?.is_memory_bearing() {
+            let moved = self.require_initialized_range(source, destination.element)?;
+            self.require_destination_range_empty(destination)?;
+            self.state.stored_objects.retain(|(object, _), _| *object != source.object);
+            self.state.range_states.insert(
+                RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
+                RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: moved.allocation_class, initialized: true },
+            );
+            self.state.range_states.insert(
+                RangeIdentity { object: source.object, start: source.start, length: source.length },
+                RangeState { element: source.element, ownership: Ownership::Consumed, allocation_class: moved.allocation_class, initialized: false },
+            );
+        } else {
+            self.require_scalar_range_element(destination.element, "MoveRange")?;
+        }
         if destination.ownership != Ownership::Unique
             || source.ownership != Ownership::Unique
+            || destination.allocation_class != Some(AllocationClass::ReferenceCounted)
+            || source.allocation_class != Some(AllocationClass::ReferenceCounted)
             || self.state.static_data_objects.contains(&destination.object)
         {
             return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,
                 object: destination.object,
             });
+        }
+        Ok(())
+    }
+
+    fn require_initialized_range(
+        &self,
+        range: CheckedRange,
+        element: crate::layout::LayoutId,
+    ) -> Result<RangeState, InitialCheckError> {
+        if let Some(state) = self.state.range_states.iter().find_map(|(identity, state)| {
+            (identity.object == range.object
+                && self.same_scalar(identity.start, range.start)
+                && self.same_scalar(identity.length, range.length)
+                && state.element == element
+                && state.ownership == Ownership::Unique
+                && state.initialized)
+                .then_some(*state)
+        }) {
+            return Ok(state);
+        }
+        let Some(start) = self.state.constants.get(&range.start).copied() else {
+            return self.unsupported("MoveRange(uninitialized-source)");
+        };
+        let Some(length) = self.state.constants.get(&range.length).copied() else {
+            return self.unsupported("MoveRange(uninitialized-source)");
+        };
+        let end = start.checked_add(length).ok_or(InitialCheckError::UnsupportedMemoryOperation {
+            function: self.function.id,
+            operation: "MoveRange(uninitialized-source)",
+        })?;
+        let mut allocation_class = None;
+        for index in start..end {
+            let Some(stored) = self.state.stored_objects.get(&(range.object, SlotIdentity::Constant(index))) else {
+                return self.unsupported("MoveRange(uninitialized-source)");
+            };
+            if stored.ownership != Ownership::Unique || stored.layout != element {
+                return self.unsupported("MoveRange(uninitialized-source)");
+            }
+            if allocation_class.is_some() && allocation_class != stored.allocation_class {
+                return self.unsupported("MoveRange(incompatible element storage)");
+            }
+            allocation_class = stored.allocation_class;
+        }
+        Ok(RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true })
+    }
+
+    fn require_destination_range_empty(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
+        if !self.is_zero(range.start)
+            || self.state.stored_objects.keys().any(|(object, _)| *object == range.object)
+            || !self.state.range_states.iter().any(|(identity, state)| {
+                identity.object == range.object
+                    && state.initialized
+                    && self.is_zero(identity.start)
+                    && self.is_zero(identity.length)
+            })
+        {
+            return self.unsupported("MoveRange(destination-initialized)");
         }
         Ok(())
     }
@@ -602,6 +706,7 @@ impl<'a> MemoryChecker<'a> {
         self.require_type(*length, ValueType::Size)?;
         let Extent::Counted {
             count: logical_count,
+            capacity,
             stride_bytes,
             ..
         } = state.extent
@@ -627,7 +732,8 @@ impl<'a> MemoryChecker<'a> {
                 object: place.object(),
             });
         }
-        if !self.range_within(*start, *length, logical_count) {
+        let bound = if required_access == AccessMode::Write { capacity } else { logical_count };
+        if !self.range_within(*start, *length, bound) {
             return Err(InitialCheckError::MissingBoundsGuard {
                 function: self.function.id,
                 index: *start,
@@ -637,11 +743,13 @@ impl<'a> MemoryChecker<'a> {
         let _ = operation;
         Ok(CheckedRange {
             object: place.object(),
+            start: *start,
             length: *length,
             layout: state.layout,
             element,
             identity: state.identity,
             ownership: state.ownership,
+            allocation_class: state.allocation_class,
         })
     }
 
@@ -953,6 +1061,10 @@ impl<'a> MemoryChecker<'a> {
         self.require_ref_type(destination, layout)?;
         let descriptor = self.descriptor(layout)?;
         self.check_extent(destination, extent, descriptor, false)?;
+        let pointer_element = descriptor
+            .kind()
+            .packed_element_layout()
+            .filter(|element| self.value_type_for_layout(*element).is_ok_and(ValueType::is_memory_bearing));
         self.state.objects.insert(
             destination,
             ObjectState {
@@ -963,6 +1075,22 @@ impl<'a> MemoryChecker<'a> {
                 allocation_class: Some(class),
             },
         );
+        if let Some(element) = pointer_element {
+            let Extent::Counted { count, .. } = extent else {
+                return self.unsupported("Alloc(pointer collection without counted extent)");
+            };
+            if self.is_zero(*count) {
+                self.state.range_states.insert(
+                    RangeIdentity { object: destination, start: *count, length: *count },
+                    RangeState {
+                        element,
+                        ownership: Ownership::Unique,
+                        allocation_class: None,
+                        initialized: true,
+                    },
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1077,15 +1205,49 @@ impl<'a> MemoryChecker<'a> {
         };
         self.require_ref_type(destination, layout)?;
         let key = self.reference_slot(place)?;
-        let mut stored = self
-            .state
-            .stored_objects
-            .get(&key)
-            .cloned()
-            .ok_or(InitialCheckError::UnsupportedMemoryOperation {
+        let mut stored = if let Some(stored) = self.state.stored_objects.get(&key).cloned() {
+            stored
+        } else {
+            if transfer != LoadTransfer::CloneShared {
+                return self.unsupported("Load(dynamic unique move)");
+            }
+            let index = match place.projection() {
+                Projection::Element { index } => *index,
+                _ => return self.unsupported("Load(uninitialized reference)"),
+            };
+            let range = self.state.range_states.iter().find_map(|(identity, state)| {
+                (identity.object == place.object()
+                    && state.initialized
+                    && self.is_zero(identity.start)
+                    && self.strict_less(index, identity.length))
+                    .then_some((*identity, *state))
+            }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
                 function: self.function.id,
                 operation: "Load(uninitialized reference)",
             })?;
+            if !matches!(range.1.ownership, Ownership::Unique | Ownership::Shared)
+                || range.1.allocation_class != Some(AllocationClass::ReferenceCounted)
+            {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: place.object(),
+                });
+            }
+            self.state.range_states.get_mut(&range.0).expect("range exists").ownership = Ownership::Shared;
+            let extent = match self.descriptor(layout)?.size() {
+                LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
+                LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
+            };
+            let stored = ObjectState {
+                identity: destination,
+                layout,
+                extent,
+                ownership: Ownership::Shared,
+                allocation_class: range.1.allocation_class,
+            };
+            self.state.objects.insert(destination, stored);
+            return Ok(());
+        };
         match transfer {
             LoadTransfer::CloneShared => {
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
@@ -1156,6 +1318,16 @@ impl<'a> MemoryChecker<'a> {
         let key = self.reference_slot(place)?;
         if self.state.stored_objects.contains_key(&key) {
             return self.unsupported("Store(overwrite reference)");
+        }
+        if let Projection::Element { index } = place.projection() {
+            if self.state.range_states.iter().any(|(identity, state)| {
+                identity.object == place.object()
+                    && state.initialized
+                    && self.is_zero(identity.start)
+                    && self.strict_less(*index, identity.length)
+            }) {
+                return self.unsupported("Store(overwrite initialized prefix)");
+            }
         }
         let mut stored = self.live_object(value)?.clone();
         match transfer {
@@ -1239,14 +1411,17 @@ impl<'a> MemoryChecker<'a> {
                 ValueType::Size
             }
             Projection::Element { index } => {
-                let Extent::Counted { count, .. } = &object.extent else {
+                let Extent::Counted { count, capacity, .. } = &object.extent else {
                     return self.invalid_projection(place.object());
                 };
-                let count = self
-                    .state
-                    .header_values
-                    .get(&(place.object(), HeaderField::Length))
-                    .unwrap_or(count);
+                let count = if place.access() == AccessMode::Write {
+                    capacity
+                } else {
+                    self.state
+                        .header_values
+                        .get(&(place.object(), HeaderField::Length))
+                        .unwrap_or(count)
+                };
                 self.require_type(*index, ValueType::Size)?;
                 if !self.less_than(*index, *count) {
                     return Err(InitialCheckError::MissingBoundsGuard {
@@ -1348,6 +1523,7 @@ impl<'a> MemoryChecker<'a> {
                 maximum: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
             });
         }
+        self.consolidate_pointer_prefix(object, count)?;
         self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
             header_bytes: base,
             count,
@@ -1403,6 +1579,107 @@ impl<'a> MemoryChecker<'a> {
         };
         self.state.header_values.insert((object, HeaderField::Length), count);
         Ok(())
+    }
+
+    fn consolidate_pointer_prefix(
+        &mut self,
+        object: ValueId,
+        count: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        let layout = self.live_object(object)?.layout;
+        let Some(element) = self.descriptor(layout)?.kind().packed_element_layout() else {
+            return Ok(());
+        };
+        if !self.value_type_for_layout(element)?.is_memory_bearing() {
+            return Ok(());
+        }
+        let existing = self.state.range_states.iter().find_map(|(identity, state)| {
+            (identity.object == object && state.initialized && self.is_zero(identity.start))
+                .then_some((*identity, *state))
+        }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
+            function: self.function.id,
+            operation: "UpdateCount(pointer prefix missing)",
+        })?;
+        if self.same_scalar(existing.0.length, count) {
+            return Ok(());
+        }
+
+        let one_step = self.state.exact_additions.get(&count).is_some_and(|(left, right)| {
+            (self.same_scalar(*left, existing.0.length) && self.state.constants.get(right) == Some(&1))
+                || (self.same_scalar(*right, existing.0.length) && self.state.constants.get(left) == Some(&1))
+        });
+        if one_step {
+            let key = self.slot_key(object, existing.0.length);
+            let stored = self.state.stored_objects.remove(&key).ok_or(
+                InitialCheckError::UnsupportedMemoryOperation {
+                    function: self.function.id,
+                    operation: "UpdateCount(pointer slot uninitialized)",
+                },
+            )?;
+            if stored.layout != element || stored.ownership != Ownership::Unique {
+                return self.unsupported("UpdateCount(pointer slot ownership)");
+            }
+            if existing.1.allocation_class.is_some()
+                && existing.1.allocation_class != stored.allocation_class
+            {
+                return self.unsupported("UpdateCount(pointer allocation class)");
+            }
+            self.state.range_states.remove(&existing.0);
+            self.state.range_states.insert(
+                RangeIdentity { object, start: existing.0.start, length: count },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: stored.allocation_class,
+                    initialized: true,
+                },
+            );
+            return Ok(());
+        }
+
+        let Some(total) = self.state.constants.get(&count).copied() else {
+            return self.unsupported("UpdateCount(pointer prefix gap)");
+        };
+        if !self.is_zero(existing.0.length) {
+            return self.unsupported("UpdateCount(pointer prefix gap)");
+        }
+        let mut allocation_class = None;
+        let mut keys = Vec::new();
+        for index in 0..total {
+            let key = (object, SlotIdentity::Constant(index));
+            let stored = self.state.stored_objects.get(&key).ok_or(
+                InitialCheckError::UnsupportedMemoryOperation {
+                    function: self.function.id,
+                    operation: "UpdateCount(pointer slot uninitialized)",
+                },
+            )?;
+            if stored.layout != element || stored.ownership != Ownership::Unique {
+                return self.unsupported("UpdateCount(pointer slot ownership)");
+            }
+            if allocation_class.is_some() && allocation_class != stored.allocation_class {
+                return self.unsupported("UpdateCount(pointer allocation class)");
+            }
+            allocation_class = stored.allocation_class;
+            keys.push(key);
+        }
+        for key in keys {
+            self.state.stored_objects.remove(&key);
+        }
+        self.state.range_states.remove(&existing.0);
+        self.state.range_states.insert(
+            RangeIdentity { object, start: existing.0.start, length: count },
+            RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true },
+        );
+        Ok(())
+    }
+
+    fn slot_key(&self, object: ValueId, index: ValueId) -> (ValueId, SlotIdentity) {
+        (
+            object,
+            self.state.constants.get(&index).copied()
+                .map(SlotIdentity::Constant)
+                .unwrap_or(SlotIdentity::Dynamic(index)),
+        )
     }
 
     fn move_value(&mut self, destination: ValueId, source: ValueId) -> Result<(), InitialCheckError> {
@@ -1468,6 +1745,14 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
+        if self.state.range_states.iter().any(|(range, state)| {
+            range.object == object && state.initialized && !self.is_zero(range.length)
+        }) {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object,
+            });
+        }
         self.state.objects.get_mut(&object).expect("live object exists").ownership = Ownership::Consumed;
         Ok(())
     }
@@ -1489,6 +1774,21 @@ impl<'a> MemoryChecker<'a> {
     fn less_than(&self, left: ValueId, right: ValueId) -> bool {
         self.state.guards
             .contains(&(ComparisonOperator::LessUnsigned, left, right))
+    }
+
+    fn strict_less(&self, left: ValueId, right: ValueId) -> bool {
+        self.constant_relation(left, right, |left, right| left < right)
+            || self.less_than(left, right)
+    }
+
+    fn same_scalar(&self, left: ValueId, right: ValueId) -> bool {
+        left == right
+            || self.state.constants.get(&left).zip(self.state.constants.get(&right))
+                .is_some_and(|(left, right)| left == right)
+    }
+
+    fn is_zero(&self, value: ValueId) -> bool {
+        self.state.constants.get(&value) == Some(&0)
     }
 
     fn less_equal(&self, left: ValueId, right: ValueId) -> bool {
@@ -1791,6 +2091,7 @@ mod tests {
                 (CHILD, ValueType::Ref(pointee)),
                 (LOADED, ValueType::Ref(pointee)),
                 (SOURCE, ValueType::Ref(list)),
+                (DESTINATION, ValueType::Ref(list)),
                 (CONDITION, ValueType::Bool),
             ]
             .into_iter()
@@ -1860,6 +2161,19 @@ mod tests {
                 class: AllocationClass::ReferenceCounted,
             })
             .expect("child allocation is accepted");
+        checker
+            .check(&Operation::Alloc {
+                destination: DESTINATION,
+                layout: list,
+                extent: Extent::Counted {
+                    header_bytes: base,
+                    count: COUNT,
+                    capacity: CAPACITY,
+                    stride_bytes: stride,
+                },
+                class: AllocationClass::ReferenceCounted,
+            })
+            .expect("destination allocation is accepted");
         test(&mut checker, list, pointee);
     }
 
@@ -1934,6 +2248,107 @@ mod tests {
                 result,
                 Err(InitialCheckError::UnsupportedMemoryOperation {
                     operation: "CloneRange(pointer-bearing element)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    fn pointer_range_place(object: ValueId, list: crate::layout::LayoutId, count: ValueId, access: AccessMode) -> Place {
+        Place::projected(
+            object,
+            Projection::Slice { start: START, length: count },
+            ValueType::Ref(list),
+            access,
+        )
+    }
+
+    #[test]
+    fn dynamic_pointer_move_range_transfers_initialized_ownership_once() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.constants.remove(&COUNT);
+            checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY));
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+            );
+            assert_eq!(
+                checker.check(&Operation::MoveRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Ok(true)
+            );
+            assert_eq!(
+                checker.state.range_states[&RangeIdentity { object: DESTINATION, start: START, length: COUNT }],
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true }
+            );
+            assert_eq!(
+                checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
+                RangeState { element: pointer_element, ownership: Ownership::Consumed, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: false }
+            );
+        });
+    }
+
+    #[test]
+    fn pointer_move_range_rejects_uninitialized_source() {
+        with_pointer_slot_checker(|checker, list, _pointee| {
+            assert!(matches!(
+                checker.check(&Operation::MoveRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "MoveRange(uninitialized-source)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_move_range_rejects_source_reuse_after_consumption() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+            );
+            let operation = Operation::MoveRange {
+                destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                count: COUNT,
+            };
+            assert_eq!(checker.check(&operation), Ok(true));
+            assert!(matches!(
+                checker.check(&operation),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "MoveRange(uninitialized-source)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_move_range_rejects_overlapping_storage_before_transfer() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+            );
+            assert!(matches!(
+                checker.check(&Operation::MoveRange {
+                    destination: pointer_range_place(SOURCE, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "MoveRange(overlap)",
                     ..
                 })
             ));
