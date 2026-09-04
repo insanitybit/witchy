@@ -92,7 +92,8 @@ impl OptimizationSession {
     fn initial_view(
         module: &CanonicalModule<OptimizedValid>,
     ) -> Result<CanonicalModule<InitialValid>, OptimizationError> {
-        super::check_initial(CanonicalModule::from_lowering(LoweredModuleParts {
+        let catalog = module.abi_catalog().cloned();
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: module.revision(),
             checked_source: module.checked_source(),
             layouts: module.layouts().clone(),
@@ -100,7 +101,9 @@ impl OptimizationSession {
             imports: module.imports().to_vec(),
             functions: module.functions().to_vec(),
             proper_tail_sites: module.proper_tail_sites().to_vec(),
-        }))
+        });
+        let candidate = catalog.map_or(candidate.clone(), |catalog| candidate.with_abi_catalog(catalog));
+        super::check_initial(candidate)
         .map_err(OptimizationError::Safety)
     }
 

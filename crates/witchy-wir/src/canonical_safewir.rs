@@ -424,15 +424,80 @@ pub struct ImportContract {
     pub reentrancy: HostReentrancy,
 }
 
-/// Trusted ABI facts are supplied by the canonical host catalog, never by a
-/// candidate module. The constructor is intentionally private to this module;
-/// production callers must obtain the catalog from the canonical host layer.
-pub(crate) struct CanonicalAbiCatalog {
+/// Trusted ABI facts are supplied by the canonical generated host catalog,
+/// never by a candidate module or a helper-name registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalAbiCatalog {
     imports: BTreeMap<ImportId, ImportContract>,
 }
 
-#[cfg(test)]
 impl CanonicalAbiCatalog {
+    /// Project the canonical `print` import from the generated prelude and its
+    /// authenticated ABI metadata. The canonical signature is semantic: the
+    /// backend representation remains an implementation detail.
+    pub fn from_authenticated_prelude(
+        signature: FunctionSignatureId,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
+
+        let (index, import) = prelude()
+            .imports
+            .iter()
+            .enumerate()
+            .find(|(_, import)| import.module == "witchy" && import.name == "print")
+            .ok_or_else(|| "generated ABI has no witchy.print import".to_string())?;
+        if import.params != [WasmTy::I32, WasmTy::I32] || !import.results.is_empty() {
+            return Err("generated witchy.print ABI is not a read-only byte sink".to_string());
+        }
+        let info = abi_import_info(&import.name)
+            .ok_or_else(|| "generated ABI print import has no authenticated metadata".to_string())?;
+        if info.class != AbiImportClass::PureInfrastructure || !info.authorities.is_empty() {
+            return Err("generated witchy.print ABI is authority-bearing".to_string());
+        }
+
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"witchy.canonical-abi-import.v1");
+        digest.update(&WITCHY_ABI_VERSION.to_le_bytes());
+        digest.update(import.module.as_bytes());
+        digest.update(&[0]);
+        digest.update(import.name.as_bytes());
+        digest.update(&[0, import.params.len() as u8, import.results.len() as u8]);
+        for ty in import.params.iter().chain(&import.results) {
+            digest.update(&[match ty {
+                WasmTy::I32 => 0,
+                WasmTy::I64 => 1,
+                WasmTy::F32 => 2,
+                WasmTy::F64 => 3,
+                WasmTy::ExternRef => 4,
+            }]);
+        }
+        digest.update(info.class.label().as_bytes());
+        for authority in info.authorities {
+            digest.update(authority.label().as_bytes());
+            digest.update(&[0]);
+        }
+
+        let import_id = ImportId::new(u32::try_from(index).map_err(|_| "ABI import index overflow")?);
+        Ok(Self::from_imports(vec![ImportContract {
+            id: import_id,
+            signature,
+            abi_identity: ImportContractIdentity::AuthenticatedAbi(*digest.finalize().as_bytes()),
+            parameter_roles: vec![HostParameterRole::Buffer {
+                value_type: ValueType::Ref(string_layout),
+                access: AccessMode::Read,
+                extent: HostBufferExtent::Slice,
+            }],
+            result_roles: Vec::new(),
+            mutation: HostMutation::ReadOnly,
+            reentrancy: HostReentrancy::Forbidden,
+        }]))
+    }
+
+    pub fn imports(&self) -> Vec<ImportContract> {
+        self.imports.values().cloned().collect()
+    }
+
     fn from_imports(imports: Vec<ImportContract>) -> Self {
         Self {
             imports: imports.into_iter().map(|import| (import.id, import)).collect(),
@@ -646,6 +711,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     functions: Vec<Function>,
     proper_tail_sites: Vec<ProperTailSite>,
     static_data_segments: Vec<StaticDataSegment>,
+    abi_catalog: Option<CanonicalAbiCatalog>,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -670,8 +736,14 @@ impl CanonicalModule<LoweredCandidate> {
             functions: parts.functions,
             proper_tail_sites: parts.proper_tail_sites,
             static_data_segments,
+            abi_catalog: None,
             stage: PhantomData,
         }
+    }
+
+    pub fn with_abi_catalog(mut self, catalog: CanonicalAbiCatalog) -> Self {
+        self.abi_catalog = Some(catalog);
+        self
     }
 
     fn into_initial_valid(self) -> CanonicalModule<InitialValid> {
@@ -684,6 +756,7 @@ impl CanonicalModule<LoweredCandidate> {
             functions: self.functions,
             proper_tail_sites: self.proper_tail_sites,
             static_data_segments: self.static_data_segments,
+            abi_catalog: self.abi_catalog,
             stage: PhantomData,
         }
     }
@@ -704,6 +777,7 @@ impl CanonicalModule<InitialValid> {
             functions,
             proper_tail_sites: self.proper_tail_sites,
             static_data_segments: self.static_data_segments,
+            abi_catalog: self.abi_catalog,
             stage: PhantomData,
         }
     }
@@ -720,6 +794,7 @@ impl CanonicalModule<TransformedCandidate> {
             functions: self.functions,
             proper_tail_sites: self.proper_tail_sites,
             static_data_segments: self.static_data_segments,
+            abi_catalog: self.abi_catalog,
             stage: PhantomData,
         }
     }
@@ -756,5 +831,9 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn static_data_segments(&self) -> &[StaticDataSegment] {
         &self.static_data_segments
+    }
+
+    pub(crate) fn abi_catalog(&self) -> Option<&CanonicalAbiCatalog> {
+        self.abi_catalog.as_ref()
     }
 }

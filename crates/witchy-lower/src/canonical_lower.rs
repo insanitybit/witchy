@@ -12,14 +12,15 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Stmt, Type};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
-    ProperTailSiteKey, ProperTailSiteManifest, TypeTable, TypedModule,
+    ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, TypeTable, TypedModule,
 };
 use witchy_wir::canonical_safewir::{
-    ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
-    BorrowMode, CallArgument, CallBorrow, CheckedSourceIdentity, ComparisonOperator, Function,
-    FunctionId, FunctionSignature, FunctionSignatureId, LoweredCandidate, LoweredModuleParts,
-    MemoryEffect, Operation, OverflowBehavior, ParameterContract, ParameterOwnership, ResultContract,
-    Revision,
+    AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, BorrowMode,
+    CallArgument, CallBorrow, CallableContract, CanonicalAbiCatalog, CanonicalModule,
+    CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
+    FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
+    LoweredModuleParts, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
+    ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, ValueId, ValueType,
 };
 use witchy_wir::layout::{HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, ScalarKind};
@@ -53,6 +54,7 @@ pub enum CanonicalLoweringError {
     UnsupportedCallOwnership { callee: String, parameter: usize, ownership: ParameterOwnership },
     IdOverflow,
     TailManifest(String),
+    InvalidAuthenticatedAbiCatalog(String),
 }
 
 impl fmt::Display for CanonicalLoweringError {
@@ -120,6 +122,39 @@ pub fn lower_typed_module(
         signatures.push(signature);
     }
 
+    let mut imports = Vec::new();
+    let mut abi_catalog = None;
+    let mut print_import = None;
+    if contains_console_print(typed.module()) {
+        let string_layout = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            &layouts,
+            &layout_catalog,
+        )?;
+        let signature_id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        signatures.push(FunctionSignature {
+            id: signature_id,
+            parameters: vec![ValueType::Ref(string_layout)],
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Ref(string_layout),
+                    ownership: ParameterOwnership::CallBorrow { mode: BorrowMode::Read },
+                    non_escaping: true,
+                }],
+                results: Vec::new(),
+                parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read])]),
+            },
+        });
+        let catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, string_layout)
+            .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        print_import = catalog.imports().first().map(|import| import.id);
+        imports = catalog.imports();
+        abi_catalog = Some(catalog);
+    }
+
     let mut functions = Vec::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
@@ -140,6 +175,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &string_data_ids,
+            print_import,
         )?);
     }
 
@@ -162,17 +198,21 @@ pub fn lower_typed_module(
 
     refine_reference_result_contracts(&mut signatures, &functions)?;
 
-    Ok(CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
+    let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest(
             source.source_witness().source_bundle_digest(),
         ),
         layouts,
         signatures,
-        imports: Vec::new(),
+        imports,
         functions,
         proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module())?,
-    }, static_data_segments))
+    }, static_data_segments);
+    Ok(match abi_catalog {
+        Some(catalog) => candidate.with_abi_catalog(catalog),
+        None => candidate,
+    })
 }
 
 fn checked_signature(
@@ -270,12 +310,14 @@ fn lower_function(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
+    print_import: Option<witchy_wir::canonical_safewir::ImportId>,
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
         next_value: 0,
         values: BTreeMap::new(),
         bindings: HashMap::new(),
+        string_lengths: HashMap::new(),
         list_counts: HashMap::new(),
         known_list_lengths: HashMap::new(),
         blocks: Vec::new(),
@@ -288,6 +330,7 @@ fn lower_function(
         layout_bundle,
         layouts,
         string_data_ids,
+        print_import,
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     let parameters = lowerer.blocks[entry.get() as usize].parameters.clone();
@@ -333,6 +376,7 @@ struct FunctionLowerer<'a> {
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
+    string_lengths: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     blocks: Vec<BlockBuilder>,
@@ -345,6 +389,7 @@ struct FunctionLowerer<'a> {
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
+    print_import: Option<witchy_wir::canonical_safewir::ImportId>,
 }
 
 impl FunctionLowerer<'_> {
@@ -385,6 +430,16 @@ impl FunctionLowerer<'_> {
                         return Err(CanonicalLoweringError::UnsupportedStatement("early return"));
                     }
                     if let Some(Expr::Call { name, args }) = value {
+                        if is_console_print(name) {
+                            if !results.is_empty() {
+                                return Err(CanonicalLoweringError::UnsupportedExpression(
+                                    "console.print in value-returning function",
+                                ));
+                            }
+                            self.lower_console_print(args)?;
+                            self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
                         let terminator = self.lower_direct_tail_call(
                             name,
                             args,
@@ -400,6 +455,16 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Expr(value) if final_statement => {
                     if let Expr::Call { name, args } = value {
+                        if is_console_print(name) {
+                            if !results.is_empty() {
+                                return Err(CanonicalLoweringError::UnsupportedExpression(
+                                    "console.print in value-returning function",
+                                ));
+                            }
+                            self.lower_console_print(args)?;
+                            self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
                         let terminator = self.lower_direct_tail_call(
                             name,
                             args,
@@ -440,6 +505,7 @@ impl FunctionLowerer<'_> {
         match expression {
             Expr::While { cond, body } => self.lower_while(cond, body),
             Expr::Block(block) => self.lower_block_effect(block),
+            Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
             Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
                 self.lower_list_push(args)
             }
@@ -924,6 +990,9 @@ impl FunctionLowerer<'_> {
                 .get(name)
                 .copied()
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())),
+            Expr::Call { name, args } if is_console_print(name) => Err(
+                CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
+            ),
             Expr::Call { name, args } => {
                 let results = self.lower_direct_call(name, args)?;
                 match results.as_slice() {
@@ -982,6 +1051,48 @@ impl FunctionLowerer<'_> {
             .type_of(expression)
             .and_then(witchy_types::typeck::ty_to_ast)
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
+    }
+
+    fn lower_console_print(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
+        let [receiver, message] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("console.print arguments"));
+        };
+        if !matches!(self.expression_type(receiver)?.unqualified(), Type::Named(name, args) if name == "Console" && args.is_empty()) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("console.print receiver"));
+        }
+        let object = self.lower_expr(message)?;
+        let layout = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            self.layout_bundle,
+            self.layouts,
+        )?;
+        if self.values.get(&object).copied() != Some(ValueType::Ref(layout)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("console.print string"));
+        }
+        let import = self.print_import.ok_or_else(|| {
+            CanonicalLoweringError::InvalidAuthenticatedAbiCatalog(
+                "console.print has no projected ABI import".into(),
+            )
+        })?;
+        let start = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: start, value: 0 });
+        let length = self.string_lengths.get(&object).copied().ok_or(
+            CanonicalLoweringError::UnsupportedExpression("console.print dynamic string length"),
+        )?;
+        self.push_operation(Operation::HostCall {
+            destinations: Vec::new(),
+            import,
+            arguments: vec![HostCallArgument::Buffer {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    Projection::Slice { start, length },
+                    ValueType::Ref(layout),
+                    AccessMode::Read,
+                ),
+                extent: HostBufferExtent::Slice,
+            }],
+        });
+        Ok(())
     }
 
     fn lower_list_literal(
@@ -1085,6 +1196,7 @@ impl FunctionLowerer<'_> {
             },
             data,
         });
+        self.string_lengths.insert(object, count);
         Ok(object)
     }
 
@@ -1479,6 +1591,9 @@ fn source_value_type(
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
             string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
         }
+        Type::Named(name, arguments) if name == "Console" && arguments.is_empty() => {
+            Ok(ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)))
+        }
         _ => scalar_type(source),
     }
 }
@@ -1521,6 +1636,28 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module) -> Vec<Vec<u8>> 
         }).expect("string payload visitor cannot fail");
     }
     payloads.into_iter().collect()
+}
+
+fn contains_console_print(module: &witchy_syntax::ast::Module) -> bool {
+    module.items.iter().filter_map(|item| match item {
+        Item::Function(function) if is_canonical_source_function(module, &function.name) => {
+            Some(&function.body)
+        }
+        _ => None,
+    }).any(|body| {
+        let mut found = false;
+        witchy_syntax::ast::visit::visit_block(body, &mut |expression| {
+            if matches!(expression, Expr::Call { name, .. } if is_console_print(name)) {
+                found = true;
+            }
+            Ok::<(), ()>(())
+        }).expect("canonical expression visitor cannot fail");
+        found
+    })
+}
+
+fn is_console_print(name: &str) -> bool {
+    name == "__capop.print"
 }
 
 fn refine_reference_result_contracts(
@@ -1663,6 +1800,7 @@ fn canonical_tail_sites(
                 .is_some_and(|item| match item {
                     Item::Function(function) => {
                         is_canonical_source_function(module, &function.name)
+                            && !is_console_print_tail_site(site, function)
                     }
                     _ => false,
                 })
@@ -1702,6 +1840,23 @@ fn canonical_tail_sites(
             })
         })
         .collect()
+}
+
+fn is_console_print_tail_site(
+    site: &ProperTailSite,
+    function: &witchy_syntax::ast::Function,
+) -> bool {
+    let Some(statement) = site.key.path.iter().find_map(|step| match step {
+        ProperTailPathStep::Statement(index) => Some(*index as usize),
+        _ => None,
+    }) else {
+        return false;
+    };
+    match function.body.stmts.get(statement) {
+        Some(Stmt::Expr(Expr::Call { name, .. })) if is_console_print(name) => true,
+        Some(Stmt::Return(Some(Expr::Call { name, .. }))) if is_console_print(name) => true,
+        _ => false,
+    }
 }
 
 fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str) -> bool {

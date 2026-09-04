@@ -91,6 +91,49 @@ mod tests {
     }
 
     #[test]
+    fn console_print_reaches_final_safewir_validation() {
+        let source = "fn main(console: Console):\n    console.print(\"ok\")\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("canonical layouts");
+        let candidate = lower_typed_module(canonical, layouts).expect("canonical lowering");
+        let host_call = candidate.functions()[0].blocks[0]
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                witchy_wir::canonical_safewir::Operation::HostCall { arguments, .. } => {
+                    Some(arguments)
+                }
+                _ => None,
+            })
+            .expect("console.print HostCall");
+        assert_eq!(host_call.len(), 1);
+        let witchy_wir::canonical_safewir::HostCallArgument::Buffer { place, extent } = &host_call[0]
+        else {
+            panic!("console.print must pass a checked buffer");
+        };
+        assert_eq!(*extent, witchy_wir::canonical_safewir::HostBufferExtent::Slice);
+        let witchy_wir::canonical_safewir::Projection::Slice { start, length } = place.projection()
+        else {
+            panic!("console.print must pass a UTF-8 body slice");
+        };
+        assert_ne!(start, length);
+        assert!(candidate.functions()[0].blocks[0].operations.iter().any(|operation| {
+            matches!(operation, witchy_wir::canonical_safewir::Operation::ConstSize {
+                destination, value: 0
+            } if destination == start)
+        }));
+
+        validate_checked_module(&checked).expect("console.print reaches final SafeWIR validation");
+    }
+
+    #[test]
     fn scalar_checked_source_reaches_exact_canonical_artifact() {
         let source = "fn main() -> Int:\n    40 + 2\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

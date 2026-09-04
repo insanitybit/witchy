@@ -116,7 +116,7 @@ impl LayoutProjection {
                 self.visit_type(result)
             }
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
-                "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" => Ok(()),
+                "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" => Ok(()),
                 "String" => {
                     self.roots.push(ty.clone());
                     Ok(())

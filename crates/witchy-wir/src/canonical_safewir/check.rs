@@ -136,7 +136,7 @@ impl Error for InitialCheckError {}
 pub fn check_initial(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    check_candidate(&candidate, None)?;
+    check_candidate(&candidate, candidate.abi_catalog())?;
     Ok(candidate.into_initial_valid())
 }
 
@@ -151,14 +151,14 @@ pub(crate) fn check_initial_with_catalog(
 pub fn check_transform(
     candidate: CanonicalModule<TransformedCandidate>,
 ) -> Result<CanonicalModule<OptimizedValid>, InitialCheckError> {
-    check_candidate(&candidate, None)?;
+    check_candidate(&candidate, candidate.abi_catalog())?;
     Ok(candidate.into_optimized_valid())
 }
 
 pub(crate) fn recheck_final(
     candidate: &CanonicalModule<OptimizedValid>,
 ) -> Result<(), InitialCheckError> {
-    check_candidate(candidate, None)
+    check_candidate(candidate, candidate.abi_catalog())
 }
 
 fn check_candidate<S: ModuleStage>(

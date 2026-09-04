@@ -12087,6 +12087,10 @@ fn collect_expr(
 
 fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
     match expr {
+        // Effect-only canonical host operations are not callable tail
+        // transfers. In particular, console.print must lower to HostCall
+        // followed by Return, not to a TailCall terminator.
+        Expr::Call { name, .. } if name == "__capop.print" => None,
         Expr::Call { .. } | Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } | Expr::MethodCall { .. } => Some(ProperTailDispatchKind::Direct),
         Expr::Apply { .. } | Expr::ExistentialCall { .. } => Some(ProperTailDispatchKind::Indirect),
         _ => None,
