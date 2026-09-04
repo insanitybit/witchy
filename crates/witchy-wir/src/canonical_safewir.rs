@@ -511,6 +511,48 @@ impl CanonicalAbiCatalog {
     }
 }
 
+/// Stable identity for every judgment in the canonical SafeWIR kernel.
+///
+/// The checker and its evidence ledger key tests by this identity rather than
+/// by diagnostic strings or backend instruction shapes. The exhaustive
+/// `rule_id` matches below make adding an operation or terminator a compile
+/// error until it is assigned a checker judgment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CanonicalRuleId {
+    ConstInt,
+    ConstFloat,
+    ConstBool,
+    ConstSize,
+    Arithmetic,
+    Compare,
+    NarrowSize,
+    Guard,
+    Alloc,
+    StaticData,
+    Load,
+    Store,
+    CopyBytes,
+    MoveRange,
+    CloneRange,
+    UpdateCount,
+    MoveValue,
+    Share,
+    Retain,
+    Release,
+    Reclaim,
+    FunctionValue,
+    Call,
+    VarCall,
+    HostCall,
+    Branch,
+    BranchIf,
+    Return,
+    TailCall,
+    VarTailCall,
+    Trap,
+    Unreachable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
     ConstInt { destination: ValueId, value: i64 },
@@ -613,6 +655,52 @@ pub enum Terminator {
     },
     Trap,
     Unreachable,
+}
+
+impl Operation {
+    pub const fn rule_id(&self) -> CanonicalRuleId {
+        match self {
+            Self::ConstInt { .. } => CanonicalRuleId::ConstInt,
+            Self::ConstFloat { .. } => CanonicalRuleId::ConstFloat,
+            Self::ConstBool { .. } => CanonicalRuleId::ConstBool,
+            Self::ConstSize { .. } => CanonicalRuleId::ConstSize,
+            Self::Arithmetic { .. } => CanonicalRuleId::Arithmetic,
+            Self::Compare { .. } => CanonicalRuleId::Compare,
+            Self::NarrowSize { .. } => CanonicalRuleId::NarrowSize,
+            Self::Guard { .. } => CanonicalRuleId::Guard,
+            Self::Alloc { .. } => CanonicalRuleId::Alloc,
+            Self::StaticData { .. } => CanonicalRuleId::StaticData,
+            Self::Load { .. } => CanonicalRuleId::Load,
+            Self::Store { .. } => CanonicalRuleId::Store,
+            Self::CopyBytes { .. } => CanonicalRuleId::CopyBytes,
+            Self::MoveRange { .. } => CanonicalRuleId::MoveRange,
+            Self::CloneRange { .. } => CanonicalRuleId::CloneRange,
+            Self::UpdateCount { .. } => CanonicalRuleId::UpdateCount,
+            Self::MoveValue { .. } => CanonicalRuleId::MoveValue,
+            Self::Share { .. } => CanonicalRuleId::Share,
+            Self::Retain { .. } => CanonicalRuleId::Retain,
+            Self::Release { .. } => CanonicalRuleId::Release,
+            Self::Reclaim { .. } => CanonicalRuleId::Reclaim,
+            Self::FunctionValue { .. } => CanonicalRuleId::FunctionValue,
+            Self::Call { .. } => CanonicalRuleId::Call,
+            Self::VarCall { .. } => CanonicalRuleId::VarCall,
+            Self::HostCall { .. } => CanonicalRuleId::HostCall,
+        }
+    }
+}
+
+impl Terminator {
+    pub const fn rule_id(&self) -> CanonicalRuleId {
+        match self {
+            Self::Branch { .. } => CanonicalRuleId::Branch,
+            Self::BranchIf { .. } => CanonicalRuleId::BranchIf,
+            Self::Return { .. } => CanonicalRuleId::Return,
+            Self::TailCall { .. } => CanonicalRuleId::TailCall,
+            Self::VarTailCall { .. } => CanonicalRuleId::VarTailCall,
+            Self::Trap => CanonicalRuleId::Trap,
+            Self::Unreachable => CanonicalRuleId::Unreachable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
