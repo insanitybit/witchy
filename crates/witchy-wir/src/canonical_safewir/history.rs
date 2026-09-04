@@ -36,6 +36,10 @@ pub enum OptimizationPassId {
     ConstantFolding,
 }
 
+impl OptimizationPassId {
+    pub const ALL: [Self; 2] = [Self::UnreachableBlockPruning, Self::ConstantFolding];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DischargedObligation {
     PrunedBlocks { function: FunctionId, blocks: Vec<u32> },
@@ -78,6 +82,14 @@ impl RefinementReceipt {
 
     pub const fn after_revision(&self) -> Revision {
         self.after_revision
+    }
+
+    pub(crate) const fn before_tail_digest(&self) -> ModuleDigest {
+        self.before_tail_digest
+    }
+
+    pub(crate) const fn after_tail_digest(&self) -> ModuleDigest {
+        self.after_tail_digest
     }
 
     pub fn discharged_obligations(&self) -> &[DischargedObligation] {
@@ -186,17 +198,8 @@ impl OptimizationHistoryWitness {
         let mut expected_digest = initial_digest;
         let mut expected_revision = initial.revision();
         for (index, receipt) in self.body.ordered.iter().enumerate() {
-            match receipt.pass {
-                OptimizationPassId::UnreachableBlockPruning => {}
-                OptimizationPassId::ConstantFolding
-                    if receipt.discharged_obligations.len() == 1
-                        && matches!(
-                            receipt.discharged_obligations.first(),
-                            Some(DischargedObligation::FoldedScalarOperation { .. })
-                        ) => {}
-                OptimizationPassId::ConstantFolding => {
-                    return Err(HistoryError::InvalidPass { index });
-                }
+            if !super::assurance::receipt_matches_registered(receipt) {
+                return Err(HistoryError::InvalidPass { index });
             }
             if receipt.before_digest != expected_digest
                 || receipt.before_revision != expected_revision
@@ -348,7 +351,7 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
 }
 
 fn policy_and_route_digest() -> ModuleDigest {
-    digest_bytes(POLICY_DIGEST_DOMAIN, b"unreachable-block-pruning\0constant-folding")
+    digest_bytes(POLICY_DIGEST_DOMAIN, &super::assurance::policy_digest_bytes())
 }
 
 const MODULE_SERIALIZATION_VERSION: u32 = 1;

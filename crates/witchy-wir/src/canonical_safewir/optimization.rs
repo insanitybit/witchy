@@ -1,9 +1,10 @@
 mod constant_fold;
 
+use super::assurance::{self, AssuranceError};
 use super::history::{HistoryError, OptimizationHistoryWitness};
 use super::refinement::{self, RefinementError};
 use super::{
-    check_transform, CanonicalModule, DischargedObligation, InitialCheckError, InitialValid,
+    CanonicalModule, DischargedObligation, InitialCheckError, InitialValid,
     OptimizedValid,
 };
 
@@ -12,7 +13,15 @@ pub enum OptimizationError {
     RevisionOverflow,
     Refinement(RefinementError),
     Safety(InitialCheckError),
+    Assurance(AssuranceError),
     History(HistoryError),
+}
+
+fn map_assurance_error(error: AssuranceError) -> OptimizationError {
+    match error {
+        AssuranceError::Safety(error) => OptimizationError::Safety(error),
+        error => OptimizationError::Assurance(error),
+    }
 }
 
 pub struct OptimizationOutcome {
@@ -43,6 +52,10 @@ impl OptimizationOutcome {
 pub fn optimize_unreachable_blocks(
     initial: CanonicalModule<InitialValid>,
 ) -> Result<OptimizationOutcome, OptimizationError> {
+    assurance::registered(
+        crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+    )
+    .map_err(map_assurance_error)?;
     let before = initial.clone();
     let (functions, changed) = refinement::prune_functions(&before);
     let revision = if changed {
@@ -59,12 +72,29 @@ pub fn optimize_unreachable_blocks(
     let candidate = initial.into_transformed_candidate(revision, functions);
     let receipt = refinement::prove_unreachable_pruning(&before, &candidate)
         .map_err(OptimizationError::Refinement)?;
-    let optimized = check_transform(candidate).map_err(OptimizationError::Safety)?;
-    let history = match receipt {
-        Some(receipt) => OptimizationHistoryWitness::from_receipt(&before, &optimized, receipt)
-            .map_err(OptimizationError::History)?,
-        None => OptimizationHistoryWitness::zero_pass(&before, &optimized)
-            .map_err(OptimizationError::History)?,
+    let (optimized, history) = match receipt {
+        Some(receipt) => {
+            let (optimized, receipt) = assurance::accept_transform(
+                crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+                &before,
+                candidate,
+                receipt,
+            )
+            .map_err(map_assurance_error)?;
+            let history = OptimizationHistoryWitness::from_receipt(&before, &optimized, receipt)
+                .map_err(OptimizationError::History)?;
+            (optimized, history)
+        }
+        None => {
+            let optimized = assurance::recheck(
+                crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+                candidate,
+            )
+            .map_err(map_assurance_error)?;
+            let history = OptimizationHistoryWitness::zero_pass(&before, &optimized)
+                .map_err(OptimizationError::History)?;
+            (optimized, history)
+        }
     };
     history
         .validate(&before, &optimized)
@@ -81,6 +111,8 @@ pub fn optimize_unreachable_blocks(
 pub fn optimize_constant_folding(
     initial: CanonicalModule<InitialValid>,
 ) -> Result<OptimizationOutcome, OptimizationError> {
+    assurance::registered(crate::canonical_safewir::OptimizationPassId::ConstantFolding)
+        .map_err(map_assurance_error)?;
     let before = initial.clone();
     let mut functions = initial.functions().to_vec();
     let mut revision = initial.revision();
@@ -99,11 +131,7 @@ pub fn optimize_constant_folding(
         let candidate = initial
             .clone()
             .into_transformed_candidate(next_revision, next_functions.clone());
-        let checked = match check_transform(candidate.clone()) {
-            Ok(checked) => checked,
-            Err(_) => break,
-        };
-        receipts.push(OptimizationHistoryWitness::constant_folding_receipt(
+        let receipt = OptimizationHistoryWitness::constant_folding_receipt(
             &previous,
             &candidate,
             DischargedObligation::FoldedScalarOperation {
@@ -111,9 +139,21 @@ pub fn optimize_constant_folding(
                 block: folded.block,
                 operation_index: folded.operation_index,
             },
-        ));
+        );
+        let candidate_for_next = candidate.clone();
+        let (checked, receipt) = match assurance::accept_transform(
+            crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+            &previous,
+            candidate,
+            receipt,
+        ) {
+            Ok(result) => result,
+            Err(AssuranceError::Safety(_)) => break,
+            Err(error) => return Err(map_assurance_error(error)),
+        };
+        receipts.push(receipt);
         optimized = Some(checked);
-        previous = candidate;
+        previous = candidate_for_next;
         functions = next_functions;
         revision = next_revision;
     }
@@ -122,7 +162,11 @@ pub fn optimize_constant_folding(
         Some(optimized) => optimized,
         None => {
             let candidate = initial.into_transformed_candidate(revision, functions);
-            check_transform(candidate).map_err(OptimizationError::Safety)?
+            assurance::recheck(
+                crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+                candidate,
+            )
+            .map_err(map_assurance_error)?
         }
     };
     let history = OptimizationHistoryWitness::from_receipts(&before, &optimized, receipts)
@@ -224,6 +268,9 @@ mod tests {
             outcome.history().ordered()[0].pass(),
             crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning
         );
+        assert!(crate::canonical_safewir::production_registry()
+            .iter()
+            .any(|record| record.pass() == outcome.history().ordered()[0].pass()));
     }
 
     #[test]
@@ -310,7 +357,12 @@ mod tests {
             .history()
             .ordered()
             .iter()
-            .all(|receipt| receipt.pass() == crate::canonical_safewir::OptimizationPassId::ConstantFolding));
+            .all(|receipt| {
+                receipt.pass() == crate::canonical_safewir::OptimizationPassId::ConstantFolding
+                    && crate::canonical_safewir::production_registry()
+                        .iter()
+                        .any(|record| record.pass() == receipt.pass())
+            }));
     }
 
     #[test]
