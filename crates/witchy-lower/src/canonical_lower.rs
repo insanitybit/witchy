@@ -68,7 +68,7 @@ pub fn lower_typed_module(
     let tail_manifest = source.proper_tail_manifest();
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
-    for (item_index, item) in typed.module().items.iter().enumerate() {
+    for item in &typed.module().items {
         let Item::Function(function) = item else {
             match item {
                 Item::Type(_) => continue,
@@ -88,7 +88,7 @@ pub fn lower_typed_module(
             continue;
         }
         let function_id = FunctionId::new(
-            u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
         let signature_id = FunctionSignatureId::new(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
@@ -1089,9 +1089,34 @@ fn canonical_tail_sites(
             if site.key.callable.method.is_some() || !site.key.callable.lambda_path.is_empty() {
                 return Err(CanonicalLoweringError::UnsupportedExpression("method or closure tail site"));
             }
+            let expected_function = module
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(item_index, item)| {
+                    let Item::Function(function) = item else { return None };
+                    if is_canonical_source_function(module, &function.name) {
+                        Some((item_index, function))
+                    } else {
+                        None
+                    }
+                })
+                .position(|(item_index, _)| {
+                    u32::try_from(item_index).ok() == Some(site.key.callable.item)
+                })
+                .ok_or(CanonicalLoweringError::MissingProperTailSite(
+                    "proper-tail callable is not a canonical function".to_string(),
+                ))?;
+            if u32::try_from(expected_function).map_err(|_| CanonicalLoweringError::IdOverflow)?
+                != site.canonical_function
+            {
+                return Err(CanonicalLoweringError::TailManifest(
+                    "proper-tail callable identity does not match canonical function mapping".to_string(),
+                ));
+            }
             Ok(witchy_wir::canonical_safewir::ProperTailSite {
                 id: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
-                function: FunctionId::new(site.key.callable.item),
+                function: FunctionId::new(site.canonical_function),
             })
         })
         .collect()

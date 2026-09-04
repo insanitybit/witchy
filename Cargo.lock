@@ -3084,6 +3084,7 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "witchy-syntax",
+ "witchy-types",
 ]
 
 [[package]]

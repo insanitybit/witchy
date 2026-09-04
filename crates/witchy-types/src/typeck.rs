@@ -11776,6 +11776,10 @@ impl fmt::Display for ProperTailManifestError {
 pub struct ProperTailSite {
     pub id: ProperTailSiteId,
     pub key: ProperTailSiteKey,
+    /// Ordinal in the canonical linked-function sequence. This is not the
+    /// source item index: non-function and excluded items must not perturb the
+    /// identity consumed by SafeWIR lowering.
+    pub canonical_function: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -11789,7 +11793,13 @@ impl ProperTailSiteManifest {
     }
 
     pub fn digest(&self) -> [u8; 32] {
-        *blake3::hash(&self.canonical_bytes()).as_bytes()
+        canonical_proper_tail_manifest_digest(
+            &self
+                .sites
+                .iter()
+                .map(|site| (site.id.as_bytes(), site.canonical_function))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Retain the obligations belonging to the canonical function scope that
@@ -11797,41 +11807,50 @@ impl ProperTailSiteManifest {
     /// while the frontend still owns the checked typed module; lowering only
     /// transports the resulting witness and cannot choose its expected digest.
     pub fn for_canonical_functions(&self, module: &Module) -> Self {
-        let Some(entry) = module.linked_entry.as_deref() else {
-            return self.clone();
-        };
+        let entry = module.linked_entry.as_deref();
+        let mut canonical_ordinals = HashMap::default();
+        let mut ordinal = 0u32;
+        for (item_index, item) in module.items.iter().enumerate() {
+            let Item::Function(function) = item else { continue };
+            if entry.is_none_or(|entry| {
+                function.name == entry || function.name.starts_with(&format!("{entry}."))
+            }) {
+                let item_index = u32::try_from(item_index).expect("validated item index");
+                canonical_ordinals.insert(item_index, ordinal);
+                ordinal = ordinal.checked_add(1).expect("validated function count");
+            }
+        }
         Self {
             sites: self
                 .sites
                 .iter()
-                .filter(|site| {
-                    module
-                        .items
-                        .get(site.key.callable.item as usize)
-                        .is_some_and(|item| match item {
-                            Item::Function(function) => {
-                                function.name == entry || function.name.starts_with(&format!("{entry}."))
-                            }
-                            _ => false,
+                .filter_map(|site| {
+                    canonical_ordinals
+                        .get(&site.key.callable.item)
+                        .map(|&canonical_function| ProperTailSite {
+                            canonical_function,
+                            ..site.clone()
                         })
                 })
-                .cloned()
                 .collect(),
         }
     }
+}
 
-    fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = b"witchy.proper-tail-manifest.v1".to_vec();
-        put_u32(
-            &mut bytes,
-            u32::try_from(self.sites.len()).expect("validated proper-tail manifest site count"),
-        );
-        for site in &self.sites {
-            bytes.extend_from_slice(&site.id.0);
-            put_u32(&mut bytes, site.key.callable.item);
-        }
-        bytes
+/// Canonical serialization shared by the checked frontend witness and the
+/// SafeWIR history. Callers provide stable site identities and canonical
+/// function ordinals, never source item positions.
+pub fn canonical_proper_tail_manifest_digest(sites: &[([u8; 32], u32)]) -> [u8; 32] {
+    let mut bytes = b"witchy.proper-tail-manifest.v1".to_vec();
+    put_u32(
+        &mut bytes,
+        u32::try_from(sites.len()).expect("validated proper-tail manifest site count"),
+    );
+    for (site_id, canonical_function) in sites {
+        bytes.extend_from_slice(site_id);
+        put_u32(&mut bytes, *canonical_function);
     }
+    *blake3::hash(&bytes).as_bytes()
 }
 
 impl TypedModule {
@@ -11881,7 +11900,11 @@ fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest
         if !ids.insert(id) {
             return Err(ProperTailManifestError::DuplicateId);
         }
-        sites.push(ProperTailSite { id, key });
+        sites.push(ProperTailSite {
+            id,
+            canonical_function: key.callable.item,
+            key,
+        });
     }
     Ok(ProperTailSiteManifest { sites })
 }

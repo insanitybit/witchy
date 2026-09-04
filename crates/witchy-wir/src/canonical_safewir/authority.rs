@@ -87,10 +87,20 @@ impl std::error::Error for FinalValidationError {}
 
 pub fn check_initial_with_witness(
     candidate: CanonicalModule<LoweredCandidate>,
-    expected_proper_tail_manifest_digest: [u8; 32],
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<CheckedInitialSafeWir, InitialCheckError> {
-    let expected = ModuleDigest::from_bytes(expected_proper_tail_manifest_digest);
+    let source_digest = source.source_witness().source_bundle_digest();
+    let expected_source = source_digest;
     let module = super::check::check_initial(candidate)?;
+    if module.checked_source().digest() != expected_source {
+        return Err(InitialCheckError::CheckedSourceWitnessMismatch {
+            expected: expected_source,
+            actual: module.checked_source().digest(),
+        });
+    }
+    let expected = ModuleDigest::from_bytes(
+        source.source_witness().proper_tail_manifest_digest(),
+    );
     let actual = tail_digest(&module);
     if actual != expected {
         return Err(InitialCheckError::TailManifestDigestMismatch {
@@ -146,7 +156,31 @@ pub(crate) fn check_initial_with_test_witness(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CheckedInitialSafeWir, InitialCheckError> {
     let expected = tail_digest(&candidate).bytes();
-    check_initial_with_witness(candidate, expected)
+    check_initial_with_expected_digest(candidate, expected)
+}
+
+#[cfg(test)]
+fn check_initial_with_expected_digest(
+    candidate: CanonicalModule<LoweredCandidate>,
+    expected_proper_tail_manifest_digest: [u8; 32],
+) -> Result<CheckedInitialSafeWir, InitialCheckError> {
+    let expected = ModuleDigest::from_bytes(expected_proper_tail_manifest_digest);
+    let module = super::check::check_initial(candidate)?;
+    let actual = tail_digest(&module);
+    if actual != expected {
+        return Err(InitialCheckError::TailManifestDigestMismatch {
+            expected: expected.bytes(),
+            actual: actual.bytes(),
+            actual_site_count: module.proper_tail_sites().len(),
+        });
+    }
+    let witness = CheckedLoweringWitness {
+        checked_source: module.checked_source(),
+        revision: module.revision(),
+        module_digest: module_digest(&module),
+        proper_tail_manifest_digest: expected,
+    };
+    Ok(CheckedInitialSafeWir { module, witness })
 }
 
 #[cfg(test)]
@@ -226,7 +260,7 @@ mod tests {
     fn initial_checker_rejects_an_independent_tail_manifest_mismatch() {
         let candidate = candidate();
         assert!(matches!(
-            check_initial_with_witness(candidate, [0xff; 32]),
+            check_initial_with_expected_digest(candidate, [0xff; 32]),
             Err(InitialCheckError::TailManifestDigestMismatch { .. })
         ));
     }
@@ -235,7 +269,7 @@ mod tests {
     fn tail_manifest_digest_is_bound_into_zero_pass_history() {
         let candidate = candidate();
         let expected = tail_digest(&candidate).bytes();
-        let checked = check_initial_with_witness(candidate, expected).unwrap();
+        let checked = check_initial_with_expected_digest(candidate, expected).unwrap();
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = super::super::optimize_unreachable_blocks(initial).unwrap();

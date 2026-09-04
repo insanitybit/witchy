@@ -323,17 +323,14 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
 }
 
 pub(crate) fn tail_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> ModuleDigest {
-    let mut bytes = b"witchy.proper-tail-manifest.v1".to_vec();
-    bytes.extend_from_slice(
-        &u32::try_from(module.proper_tail_sites().len())
-            .expect("validated proper-tail site count")
-            .to_le_bytes(),
-    );
-    for site in module.proper_tail_sites() {
-        bytes.extend_from_slice(&site.id.digest());
-        bytes.extend_from_slice(&site.function.get().to_le_bytes());
-    }
-    ModuleDigest(*blake3::hash(&bytes).as_bytes())
+    let sites = module
+        .proper_tail_sites()
+        .iter()
+        .map(|site| (site.id.digest(), site.function.get()))
+        .collect::<Vec<_>>();
+    ModuleDigest::from_bytes(
+        witchy_types::typeck::canonical_proper_tail_manifest_digest(&sites),
+    )
 }
 
 fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {

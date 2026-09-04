@@ -8,8 +8,8 @@ use std::fmt;
 
 use witchy_types::pipeline::CheckedModule;
 use witchy_wir::canonical_safewir::{
-    FinalValidationError, InitialCheckError, OptimizationError,
-    ValidatedSafeWir, check_initial_with_witness, optimize_unreachable_blocks, validate_final,
+    FinalValidationError, InitialCheckError, OptimizationError, ValidatedSafeWir,
+    check_initial_with_witness, optimize_unreachable_blocks, validate_final,
 };
 use witchy_wir::layout::LayoutBundle;
 
@@ -41,10 +41,7 @@ pub(crate) fn validate_checked_module(
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?;
-    let checked = check_initial_with_witness(
-        candidate,
-        source.source_witness().proper_tail_manifest_digest(),
-    )
+    let checked = check_initial_with_witness(candidate, source)
         .map_err(CanonicalPipelineError::InitialValidation)?;
     let initial_snapshot = checked.module().clone();
     let (initial, lowering_witness) = checked.into_parts();
@@ -94,5 +91,21 @@ mod tests {
             validate_checked_module(&checked, layouts),
             Err(CanonicalPipelineError::MissingCheckedSourceWitness)
         ));
+    }
+
+    #[test]
+    fn proper_tail_mapping_ignores_prefix_items_and_noncanonical_functions() {
+        let source = "type Marker:\n    Value\n\nfn helper() -> Int:\n    7\n\nfn recurse() -> Int:\n    recurse()\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source with prefix items");
+        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("empty scalar layout bundle");
+
+        validate_checked_module(&checked, layouts)
+            .expect("proper-tail source mapping should use canonical function ordinals");
     }
 }

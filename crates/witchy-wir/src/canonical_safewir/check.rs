@@ -73,6 +73,10 @@ pub enum InitialCheckError {
         actual: [u8; 32],
         actual_site_count: usize,
     },
+    CheckedSourceWitnessMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
     MissingTailObligation(TailSiteId),
     UnexpectedTailSite(TailSiteId),
     TailSiteFunctionMismatch {
@@ -1691,6 +1695,39 @@ mod tests {
         );
 
         assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn duplicate_tail_terminators_cannot_discharge_one_obligation() {
+        let mut module = lowered(
+            BTreeMap::new(),
+            Vec::new(),
+            Terminator::TailCall {
+                site: TAIL_SITE,
+                callee: FUNCTION,
+                arguments: Vec::new(),
+            },
+            Vec::new(),
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION,
+            }],
+        );
+        module.functions[0].blocks.push(BasicBlock {
+            id: BlockId::new(1),
+            parameters: Vec::new(),
+            operations: Vec::new(),
+            terminator: Terminator::TailCall {
+                site: TAIL_SITE,
+                callee: FUNCTION,
+                arguments: Vec::new(),
+            },
+        });
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::DuplicateTailObligation(TAIL_SITE)
+        );
     }
 
     #[test]
