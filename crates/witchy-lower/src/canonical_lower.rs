@@ -8,16 +8,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
 
-use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
+use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Stmt, Type};
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
     ProperTailSiteKey, ProperTailSiteManifest, TypedModule,
 };
 use witchy_wir::canonical_safewir::{
-    BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
-    CheckedSourceIdentity, Function, FunctionId, FunctionSignature, FunctionSignatureId,
-    LoweredCandidate, LoweredModuleParts, Operation, ParameterContract, ParameterOwnership,
-    ResultContract, Revision, Terminator, ValueId, ValueType,
+    ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
+    CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
+    FunctionSignatureId, LoweredCandidate, LoweredModuleParts, Operation, OverflowBehavior,
+    ParameterContract, ParameterOwnership, ResultContract, Revision, Terminator, ValueId,
+    ValueType,
 };
 use witchy_wir::layout::LayoutBundle;
 
@@ -433,7 +434,7 @@ impl FunctionLowerer<'_> {
                 Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
             }
             Expr::Unary { .. } => Err(CanonicalLoweringError::UnsupportedExpression("unary")),
-            Expr::Binary { .. } => Err(CanonicalLoweringError::UnsupportedExpression("binary")),
+            Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
             Expr::Field { .. } => Err(CanonicalLoweringError::UnsupportedExpression("field")),
             Expr::Lambda { .. } => Err(CanonicalLoweringError::UnsupportedExpression("lambda")),
             Expr::RecordUpdate { .. } | Expr::Record { .. } => {
@@ -470,6 +471,92 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::IdOverflow)?;
         self.values.insert(value, value_type);
         Ok(value)
+    }
+
+    fn lower_binary(
+        &mut self,
+        operator: BinOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let left = self.lower_expr(left)?;
+        let right = self.lower_expr(right)?;
+        let left_type = self.values[&left];
+        let right_type = self.values[&right];
+        if left_type != right_type {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "mixed-type binary operation",
+            ));
+        }
+        let comparison = match operator {
+            BinOp::Eq => Some(ComparisonOperator::Equal),
+            BinOp::NotEq => Some(ComparisonOperator::NotEqual),
+            BinOp::Lt => Some(ComparisonOperator::LessSigned),
+            BinOp::LtEq => Some(ComparisonOperator::LessEqualSigned),
+            BinOp::Gt => Some(ComparisonOperator::GreaterSigned),
+            BinOp::GtEq => Some(ComparisonOperator::GreaterEqualSigned),
+            _ => None,
+        };
+        if let Some(operator) = comparison {
+            if !matches!(left_type, ValueType::Int | ValueType::Bool) {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "comparison type",
+                ));
+            }
+            if left_type == ValueType::Bool
+                && !matches!(operator, ComparisonOperator::Equal | ComparisonOperator::NotEqual)
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "ordered boolean comparison",
+                ));
+            }
+            let destination = self.fresh(ValueType::Bool)?;
+            self.operations.push(Operation::Compare {
+                destination,
+                operator,
+                left,
+                right,
+            });
+            return Ok(destination);
+        }
+
+        if left_type != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "non-integer arithmetic",
+            ));
+        }
+        let (operator, overflow) = match operator {
+            BinOp::Add => (ArithmeticOperator::Add, OverflowBehavior::Wrap),
+            BinOp::Sub => (ArithmeticOperator::Subtract, OverflowBehavior::Wrap),
+            BinOp::Mul => (ArithmeticOperator::Multiply, OverflowBehavior::Wrap),
+            BinOp::Div => (ArithmeticOperator::DivideSigned, OverflowBehavior::Trap),
+            BinOp::Mod => (ArithmeticOperator::RemainderSigned, OverflowBehavior::Trap),
+            BinOp::BitAnd => (ArithmeticOperator::BitAnd, OverflowBehavior::Wrap),
+            BinOp::BitOr => (ArithmeticOperator::BitOr, OverflowBehavior::Wrap),
+            BinOp::BitXor => (ArithmeticOperator::BitXor, OverflowBehavior::Wrap),
+            BinOp::Shl => (ArithmeticOperator::ShiftLeft, OverflowBehavior::Wrap),
+            BinOp::Shr => (ArithmeticOperator::ShiftRightSigned, OverflowBehavior::Wrap),
+            BinOp::Concat | BinOp::And | BinOp::Or | BinOp::Coalesce => {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "short-circuit or concatenating binary operation",
+                ));
+            }
+            BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::Lt
+            | BinOp::LtEq
+            | BinOp::Gt
+            | BinOp::GtEq => unreachable!(),
+        };
+        let destination = self.fresh(ValueType::Int)?;
+        self.operations.push(Operation::Arithmetic {
+            destination,
+            operator,
+            left,
+            right,
+            overflow,
+        });
+        Ok(destination)
     }
 }
 
@@ -524,7 +611,7 @@ mod tests {
 
     #[test]
     fn checked_scalar_source_lowers_and_validates_without_wir() {
-        let module = parse_module("fn answer() -> Int:\n    let x = 42\n    x\n")
+        let module = parse_module("fn answer() -> Int:\n    let x = 40\n    x + 2\n")
             .expect("parse scalar fixture");
         let typed = witchy_types::typeck::annotate_checked(module).expect("type check fixture");
         let candidate = lower_typed_module(
