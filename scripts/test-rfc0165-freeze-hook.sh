@@ -56,13 +56,30 @@ invalid="$(run_hook tests/fixtures/rfc0162-sec/tiny_invalid.witchy)"
 if native_error="$(WITCHY_SAFEWIR_ROOT="$tmp" WITCHY_SAFEWIR_FIXTURE_METADATA="$metadata" \
     WITCHY_SAFEWIR_WITCHY_BIN="$binary" scripts/rfc0165-freeze-hook.sh \
     --source examples/tiny.witchy --profile native 2>&1)"; then
-    echo "test-rfc0165-freeze-hook: native profile unexpectedly used a release route" >&2
+    echo "test-rfc0165-freeze-hook: native profile unexpectedly used a wasm route" >&2
     exit 1
 fi
-case "$native_error" in
-    *"no distinct native-feature/runtime route"*) ;;
-    *) echo "test-rfc0165-freeze-hook: native profile failed for the wrong reason: $native_error" >&2; exit 1 ;;
-esac
+for expected in \
+    "native profile has no executable distinct route" \
+    "route_status=missing" \
+    "cargo_feature=native (host CLI/runtime build feature)" \
+    "program_backends=interpreter,wasm,both" \
+    "missing_prerequisite=distinct native program compiler/runtime invocation"; do
+    case "$native_error" in
+        *"$expected"*) ;;
+        *) echo "test-rfc0165-freeze-hook: native profile failed for the wrong reason: $native_error" >&2; exit 1 ;;
+    esac
+done
+native_route="$(scripts/rfc0165-native-route-gate.sh)"
+for expected in \
+    "rfc0165-native-route-gate: unavailable" \
+    "route_status=missing" \
+    "missing_prerequisite=distinct native program compiler/runtime invocation"; do
+    case "$native_route" in
+        *"$expected"*) ;;
+        *) echo "test-rfc0165-freeze-hook: native route gate reported an unexpected result: $native_route" >&2; exit 1 ;;
+    esac
+done
 HOOK_VALID="$valid" HOOK_LIBRARY="$library" HOOK_EXTERNAL="$external" \
 HOOK_NONDETERMINISTIC="$nondeterministic" HOOK_INVALID="$invalid" python3 - <<'PY'
 import base64
@@ -85,6 +102,7 @@ def check(raw, classification, admitted, fixture_kind, step_count, freeze_class)
     assert record["steps"][0]["argv"][0] == "witchy"
     assert record["route"] == "witchy-current-adapter-ordinary-production-cli"
     assert "binary_path" not in record["environment_domain"]["actual"]
+    assert record["environment_domain"]["actual"]["build_identity"] == "witchy-cli:cargo-feature-native;program-backend=wasm;runner=wasmtime"
     assert len(record["environment_domain"]["actual"]["binary_sha256"]) == 64
     digest = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert trace["digest"] == digest

@@ -19,6 +19,7 @@ METADATA = Path(os.environ.get(
 ))
 PROFILE_OPT = {"normal": "none", "opt": "release"}
 ROUTE_LABEL = "witchy-current-adapter-ordinary-production-cli"
+BUILD_IDENTITY = "witchy-cli:cargo-feature-native;program-backend=wasm;runner=wasmtime"
 KIND_CLASSIFICATION = {
     "runnable-deterministic": "known-valid",
     "library": "known-valid",
@@ -111,12 +112,31 @@ def binary_path():
             return candidate.resolve()
     fail("no current witchy binary; set WITCHY_SAFEWIR_WITCHY_BIN or build with CARGO_TARGET_DIR")
 
+def reject_native_profile():
+    gate = REPO / "scripts/rfc0165-native-route-gate.sh"
+    if not gate.is_file() or not os.access(gate, os.X_OK):
+        fail("native profile prerequisite audit is missing: scripts/rfc0165-native-route-gate.sh")
+    try:
+        result = subprocess.run(
+            [str(gate)], cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False,
+        )
+    except OSError as error:
+        fail(f"cannot execute native profile prerequisite audit: {error}")
+    if result.returncode != 0:
+        fail(f"native profile prerequisite audit failed: {result.stdout.strip()}")
+    detail = result.stdout.strip().replace("\n", "; ")
+    fail(
+        "native profile has no executable distinct route; "
+        f"{detail}; refusing to record the wasm route as native"
+    )
+
 def main():
     if len(sys.argv) != 5 or sys.argv[1] != "--source" or sys.argv[3] != "--profile":
         fail("usage: scripts/rfc0165-freeze-hook.sh --source PATH --profile normal|opt|native")
     source, profile = sys.argv[2], sys.argv[4]
     if profile == "native":
-        fail("native profile has no distinct native-feature/runtime route; refusing to record the release route as native")
+        reject_native_profile()
     if profile not in PROFILE_OPT:
         fail(f"unsupported profile {profile}")
     path = ROOT / source
@@ -133,6 +153,7 @@ def main():
         "witchy_opt": PROFILE_OPT[profile],
         "cwd": ".",
         "route_label": ROUTE_LABEL,
+        "build_identity": BUILD_IDENTITY,
         "binary_sha256": sha256(binary.read_bytes()),
     }
     steps = [run_step("check", binary, ["check", source], env)]
