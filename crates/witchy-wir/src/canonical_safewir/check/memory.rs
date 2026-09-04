@@ -566,9 +566,13 @@ impl<'a> MemoryChecker<'a> {
         self.check_range_pair(destination, source, count, "MoveRange")?;
 
         if self.value_type_for_layout(destination.element)?.is_memory_bearing() {
+            self.require_source_range_complete(source)?;
             let moved = self.require_initialized_range(source, destination.element)?;
             self.require_destination_range_empty(destination)?;
             self.state.stored_objects.retain(|(object, _), _| *object != source.object);
+            self.state.range_states.retain(|identity, _| {
+                identity.object != source.object && identity.object != destination.object
+            });
             self.state.range_states.insert(
                 RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
                 RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: moved.allocation_class, initialized: true },
@@ -592,6 +596,34 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         Ok(())
+    }
+
+    fn require_source_range_complete(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
+        if self.state.stored_objects.iter().any(|((object, slot), _)| {
+            *object == range.object && !self.slot_in_range(*slot, range)
+        }) || self.state.range_states.iter().any(|(identity, state)| {
+            identity.object == range.object
+                && state.initialized
+                && !self.is_zero(identity.length)
+                && !(self.same_scalar(identity.start, range.start)
+                    && self.same_scalar(identity.length, range.length))
+        }) {
+            return self.unsupported("MoveRange(source-partial)");
+        }
+        Ok(())
+    }
+
+    fn slot_in_range(&self, slot: SlotIdentity, range: CheckedRange) -> bool {
+        let SlotIdentity::Constant(index) = slot else {
+            return false;
+        };
+        let Some(start) = self.state.constants.get(&range.start) else {
+            return false;
+        };
+        let Some(length) = self.state.constants.get(&range.length) else {
+            return false;
+        };
+        index >= *start && index - *start < *length
     }
 
     fn require_initialized_range(
@@ -639,6 +671,11 @@ impl<'a> MemoryChecker<'a> {
     fn require_destination_range_empty(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
         if !self.is_zero(range.start)
             || self.state.stored_objects.keys().any(|(object, _)| *object == range.object)
+            || self.state.range_states.iter().any(|(identity, state)| {
+                identity.object == range.object
+                    && state.initialized
+                    && !self.is_zero(identity.length)
+            })
             || !self.state.range_states.iter().any(|(identity, state)| {
                 identity.object == range.object
                     && state.initialized
@@ -1064,7 +1101,10 @@ impl<'a> MemoryChecker<'a> {
         let pointer_element = descriptor
             .kind()
             .packed_element_layout()
-            .filter(|element| self.value_type_for_layout(*element).is_ok_and(ValueType::is_memory_bearing));
+            .filter(|element| {
+                self.value_type_for_layout(*element)
+                    .is_ok_and(|value_type| value_type.is_memory_bearing())
+            });
         self.state.objects.insert(
             destination,
             ObjectState {
@@ -1972,6 +2012,9 @@ mod tests {
     const CHILD: ValueId = ValueId::new(8);
     const LOADED: ValueId = ValueId::new(9);
     const CONDITION: ValueId = ValueId::new(10);
+    const ALIAS_START: ValueId = ValueId::new(11);
+    const ALIAS_LENGTH: ValueId = ValueId::new(12);
+    const ZERO: ValueId = ValueId::new(13);
 
     fn with_checker(
         pointer_element: bool,
@@ -2088,10 +2131,14 @@ mod tests {
                 (COUNT, ValueType::Size),
                 (CAPACITY, ValueType::Size),
                 (START, ValueType::Size),
+                (LENGTH, ValueType::Size),
                 (CHILD, ValueType::Ref(pointee)),
                 (LOADED, ValueType::Ref(pointee)),
                 (SOURCE, ValueType::Ref(list)),
                 (DESTINATION, ValueType::Ref(list)),
+                (ALIAS_START, ValueType::Size),
+                (ALIAS_LENGTH, ValueType::Size),
+                (ZERO, ValueType::Size),
                 (CONDITION, ValueType::Bool),
             ]
             .into_iter()
@@ -2115,7 +2162,15 @@ mod tests {
         };
         let mut checker = MemoryChecker::new(&function, &layouts, &signature)
             .expect("checker construction");
-        for (destination, value) in [(COUNT, 1), (CAPACITY, 1), (START, 0)] {
+        for (destination, value) in [
+            (COUNT, 1),
+            (CAPACITY, 1),
+            (START, 0),
+            (LENGTH, 1),
+            (ALIAS_START, 0),
+            (ALIAS_LENGTH, 1),
+            (ZERO, 0),
+        ] {
             checker
                 .check(&Operation::ConstSize { destination, value })
                 .expect("constant is accepted");
@@ -2267,6 +2322,10 @@ mod tests {
     fn dynamic_pointer_move_range_transfers_initialized_ownership_once() {
         with_pointer_slot_checker(|checker, list, pointee| {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true },
+            );
             checker.state.constants.remove(&COUNT);
             checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY));
             checker.state.range_states.insert(
@@ -2317,6 +2376,10 @@ mod tests {
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
                 RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
             );
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true },
+            );
             let operation = Operation::MoveRange {
                 destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
                 source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
@@ -2349,6 +2412,76 @@ mod tests {
                 }),
                 Err(InitialCheckError::UnsupportedMemoryOperation {
                     operation: "MoveRange(overlap)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_move_range_rejects_initialized_destination() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+            );
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: COUNT },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+            );
+            assert!(matches!(
+                checker.check(&Operation::MoveRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "MoveRange(destination-initialized)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_move_range_rejects_reload_through_old_equal_constant_identity() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: LENGTH },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+            );
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true },
+            );
+            assert_eq!(
+                checker.check(&Operation::MoveRange {
+                    destination: pointer_range_place(DESTINATION, list, ALIAS_LENGTH, AccessMode::Write),
+                    source: Place::projected(
+                        SOURCE,
+                        Projection::Slice { start: ALIAS_START, length: ALIAS_LENGTH },
+                        ValueType::Ref(list),
+                        AccessMode::Read,
+                    ),
+                    count: ALIAS_LENGTH,
+                }),
+                Ok(true)
+            );
+            assert!(matches!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(
+                        SOURCE,
+                        Projection::Element { index: START },
+                        ValueType::Ref(pointee),
+                        AccessMode::Read,
+                    ),
+                    transfer: LoadTransfer::CloneShared,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Load(uninitialized reference)",
                     ..
                 })
             ));
