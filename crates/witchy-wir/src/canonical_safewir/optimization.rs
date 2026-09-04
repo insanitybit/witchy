@@ -1,6 +1,11 @@
+mod constant_fold;
+
 use super::history::{HistoryError, OptimizationHistoryWitness};
 use super::refinement::{self, RefinementError};
-use super::{check_transform, CanonicalModule, InitialCheckError, InitialValid, OptimizedValid};
+use super::{
+    check_transform, CanonicalModule, DischargedObligation, InitialCheckError, InitialValid,
+    OptimizedValid,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OptimizationError {
@@ -61,6 +66,64 @@ pub fn optimize_unreachable_blocks(
         None => OptimizationHistoryWitness::zero_pass(&before, &optimized)
             .map_err(OptimizationError::History)?,
     };
+    history
+        .validate(&before, &optimized)
+        .map_err(OptimizationError::History)?;
+    Ok(OptimizationOutcome { optimized, history })
+}
+
+/// Fold independently executable scalar operations one at a time.
+///
+/// Each replacement is checked as its own transformed candidate, and each
+/// accepted replacement extends the ordered refinement chain. The reference
+/// evaluator deliberately knows nothing about analyses or metadata: those
+/// inputs can guide a future candidate search, but cannot authorize a fold.
+pub fn optimize_constant_folding(
+    initial: CanonicalModule<InitialValid>,
+) -> Result<OptimizationOutcome, OptimizationError> {
+    let before = initial.clone();
+    let mut functions = initial.functions().to_vec();
+    let mut revision = initial.revision();
+    let mut previous = initial
+        .clone()
+        .into_transformed_candidate(revision, functions.clone());
+    let mut receipts = Vec::new();
+    let mut optimized = None;
+
+    while let Some((next_functions, folded)) = constant_fold::first_fold(&functions) {
+        let next_revision = revision
+            .get()
+            .checked_add(1)
+            .map(super::Revision::new)
+            .ok_or(OptimizationError::RevisionOverflow)?;
+        let candidate = initial
+            .clone()
+            .into_transformed_candidate(next_revision, next_functions.clone());
+        let checked = check_transform(candidate.clone()).map_err(OptimizationError::Safety)?;
+        receipts.push(OptimizationHistoryWitness::constant_folding_receipt(
+            &previous,
+            &candidate,
+            DischargedObligation::FoldedScalarOperation {
+                function: folded.function,
+                block: folded.block,
+                operation_index: folded.operation_index,
+            },
+        ));
+        optimized = Some(checked);
+        previous = candidate;
+        functions = next_functions;
+        revision = next_revision;
+    }
+
+    let optimized = match optimized {
+        Some(optimized) => optimized,
+        None => {
+            let candidate = initial.into_transformed_candidate(revision, functions);
+            check_transform(candidate).map_err(OptimizationError::Safety)?
+        }
+    };
+    let history = OptimizationHistoryWitness::from_receipts(&before, &optimized, receipts)
+        .map_err(OptimizationError::History)?;
     history
         .validate(&before, &optimized)
         .map_err(OptimizationError::History)?;
@@ -167,5 +230,163 @@ mod tests {
         let mut forged = outcome.history().clone();
         forged.tamper_first_after_digest();
         assert!(forged.validate(&before, outcome.optimized()).is_err());
+    }
+
+    fn scalar_fixture(operations: Vec<Operation>, value_types: BTreeMap<ValueId, ValueType>) -> CanonicalModule<InitialValid> {
+        let lowered = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(4),
+            checked_source: CheckedSourceIdentity::from_digest([5; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: Vec::new(),
+                    results: Vec::<ResultContract>::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types,
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        crate::canonical_safewir::check_initial(lowered).unwrap()
+    }
+
+    #[test]
+    fn constant_folding_uses_reference_semantics_and_orders_receipts_per_instance() {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let sum = ValueId::new(2);
+        let comparison = ValueId::new(3);
+        let module = scalar_fixture(
+            vec![
+                Operation::ConstInt { destination: left, value: 40 },
+                Operation::ConstInt { destination: right, value: 2 },
+                Operation::Arithmetic {
+                    destination: sum,
+                    operator: super::super::ArithmeticOperator::Add,
+                    left,
+                    right,
+                    overflow: super::super::OverflowBehavior::Wrap,
+                },
+                Operation::Compare {
+                    destination: comparison,
+                    operator: super::super::ComparisonOperator::Equal,
+                    left: sum,
+                    right,
+                },
+            ],
+            [
+                (left, ValueType::Int),
+                (right, ValueType::Int),
+                (sum, ValueType::Int),
+                (comparison, ValueType::Bool),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let outcome = optimize_constant_folding(module).unwrap();
+        let operations = &outcome.optimized().functions()[0].blocks[0].operations;
+        assert!(matches!(operations[2], Operation::ConstInt { value: 42, .. }));
+        assert!(matches!(operations[3], Operation::ConstBool { value: false, .. }));
+        assert_eq!(outcome.history().ordered().len(), 2);
+        assert!(outcome
+            .history()
+            .ordered()
+            .iter()
+            .all(|receipt| receipt.pass() == crate::canonical_safewir::OptimizationPassId::ConstantFolding));
+    }
+
+    #[test]
+    fn constant_folding_preserves_wrapping_overflow() {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let result = ValueId::new(2);
+        let module = scalar_fixture(
+            vec![
+                Operation::ConstInt { destination: left, value: i64::MAX },
+                Operation::ConstInt { destination: right, value: 1 },
+                Operation::Arithmetic {
+                    destination: result,
+                    operator: super::super::ArithmeticOperator::Add,
+                    left,
+                    right,
+                    overflow: super::super::OverflowBehavior::Wrap,
+                },
+            ],
+            [
+                (left, ValueType::Int),
+                (right, ValueType::Int),
+                (result, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let outcome = optimize_constant_folding(module).unwrap();
+        assert!(matches!(
+            outcome.optimized().functions()[0].blocks[0].operations[2],
+            Operation::ConstInt { value: i64::MIN, .. }
+        ));
+    }
+
+    #[test]
+    fn constant_folding_refuses_traps_division_by_zero_and_narrowing() {
+        let max = ValueId::new(0);
+        let one = ValueId::new(1);
+        let zero = ValueId::new(2);
+        let trapped = ValueId::new(3);
+        let divided = ValueId::new(4);
+        let narrowed = ValueId::new(5);
+        let module = scalar_fixture(
+            vec![
+                Operation::ConstInt { destination: max, value: i64::MAX },
+                Operation::ConstInt { destination: one, value: 1 },
+                Operation::ConstInt { destination: zero, value: 0 },
+                Operation::Arithmetic {
+                    destination: trapped,
+                    operator: super::super::ArithmeticOperator::Add,
+                    left: max,
+                    right: one,
+                    overflow: super::super::OverflowBehavior::Trap,
+                },
+                Operation::Arithmetic {
+                    destination: divided,
+                    operator: super::super::ArithmeticOperator::DivideSigned,
+                    left: max,
+                    right: zero,
+                    overflow: super::super::OverflowBehavior::Wrap,
+                },
+                Operation::NarrowSize { destination: narrowed, value: max },
+            ],
+            [
+                (max, ValueType::Int),
+                (one, ValueType::Int),
+                (zero, ValueType::Int),
+                (trapped, ValueType::Int),
+                (divided, ValueType::Int),
+                (narrowed, ValueType::Size),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let outcome = optimize_constant_folding(module).unwrap();
+        let operations = &outcome.optimized().functions()[0].blocks[0].operations;
+        assert!(matches!(operations[3], Operation::Arithmetic { .. }));
+        assert!(matches!(operations[4], Operation::Arithmetic { .. }));
+        assert!(matches!(operations[5], Operation::NarrowSize { .. }));
+        assert!(outcome.history().is_zero_pass());
     }
 }

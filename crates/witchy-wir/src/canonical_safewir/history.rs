@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use crate::layout::LayoutBundle;
 
-use super::{AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BorrowMode,
+use super::{AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BlockId, BorrowMode,
     CallArgument, CallBorrow, CallableContract, CanonicalModule, ComparisonOperator, Extent,
     Function, FunctionId, FunctionSignature, FunctionSignatureId, HostBufferExtent,
     HostCallArgument, HostMutation, HostParameterRole, HostReentrancy, HostResultRole,
@@ -29,11 +29,17 @@ impl ModuleDigest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OptimizationPassId {
     UnreachableBlockPruning,
+    ConstantFolding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DischargedObligation {
     PrunedBlocks { function: FunctionId, blocks: Vec<u32> },
+    FoldedScalarOperation {
+        function: FunctionId,
+        block: BlockId,
+        operation_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +89,20 @@ pub struct OptimizationHistoryBody {
     optimizer_policy_and_route_digest: ModuleDigest,
 }
 
+impl OptimizationHistoryBody {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut writer = CanonicalWriter::new(HISTORY_SERIALIZATION_VERSION, HISTORY_DOMAIN);
+        writer.module_digest(self.checked_lowering_revision_digest);
+        writer.len(self.ordered.len());
+        for receipt in &self.ordered {
+            writer.receipt(receipt);
+        }
+        writer.module_digest(self.final_safewir_revision_digest);
+        writer.module_digest(self.optimizer_policy_and_route_digest);
+        writer.finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptimizationHistoryWitness {
     body: OptimizationHistoryBody,
@@ -121,6 +141,14 @@ impl OptimizationHistoryWitness {
         &self.body
     }
 
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.body.canonical_bytes()
+    }
+
+    pub fn digest(&self) -> ModuleDigest {
+        digest_bytes(HISTORY_DIGEST_DOMAIN, &self.canonical_bytes())
+    }
+
     pub fn validate(
         &self,
         initial: &CanonicalModule<InitialValid>,
@@ -137,8 +165,17 @@ impl OptimizationHistoryWitness {
         let mut expected_digest = initial_digest;
         let mut expected_revision = initial.revision();
         for (index, receipt) in self.body.ordered.iter().enumerate() {
-            if receipt.pass != OptimizationPassId::UnreachableBlockPruning {
-                return Err(HistoryError::InvalidPass { index });
+            match receipt.pass {
+                OptimizationPassId::UnreachableBlockPruning => {}
+                OptimizationPassId::ConstantFolding
+                    if receipt.discharged_obligations.len() == 1
+                        && matches!(
+                            receipt.discharged_obligations.first(),
+                            Some(DischargedObligation::FoldedScalarOperation { .. })
+                        ) => {}
+                OptimizationPassId::ConstantFolding => {
+                    return Err(HistoryError::InvalidPass { index });
+                }
             }
             if receipt.before_digest != expected_digest
                 || receipt.before_revision != expected_revision
@@ -192,10 +229,18 @@ impl OptimizationHistoryWitness {
         final_module: &CanonicalModule<OptimizedValid>,
         receipt: RefinementReceipt,
     ) -> Result<Self, HistoryError> {
+        Self::from_receipts(initial, final_module, vec![receipt])
+    }
+
+    pub(crate) fn from_receipts(
+        initial: &CanonicalModule<InitialValid>,
+        final_module: &CanonicalModule<OptimizedValid>,
+        receipts: Vec<RefinementReceipt>,
+    ) -> Result<Self, HistoryError> {
         let witness = Self {
             body: OptimizationHistoryBody {
                 checked_lowering_revision_digest: module_digest(initial),
-                ordered: vec![receipt],
+                ordered: receipts,
                 final_safewir_revision_digest: module_digest(final_module),
                 optimizer_policy_and_route_digest: policy_and_route_digest(),
             },
@@ -219,6 +264,24 @@ impl OptimizationHistoryWitness {
             after_tail_digest: tail_digest(after),
             observation_model_version: OBSERVATION_MODEL_VERSION,
             discharged_obligations: obligations,
+        }
+    }
+
+    pub(crate) fn constant_folding_receipt<S: ModuleStage>(
+        before: &CanonicalModule<S>,
+        after: &CanonicalModule<TransformedCandidate>,
+        obligation: DischargedObligation,
+    ) -> RefinementReceipt {
+        RefinementReceipt {
+            pass: OptimizationPassId::ConstantFolding,
+            before_digest: module_digest(before),
+            after_digest: module_digest(after),
+            before_revision: before.revision(),
+            after_revision: after.revision(),
+            before_tail_digest: tail_digest(before),
+            after_tail_digest: tail_digest(after),
+            observation_model_version: OBSERVATION_MODEL_VERSION,
+            discharged_obligations: vec![obligation],
         }
     }
 
@@ -257,15 +320,19 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
 }
 
 fn policy_and_route_digest() -> ModuleDigest {
-    digest_bytes(POLICY_DIGEST_DOMAIN, b"unreachable-block-pruning")
+    digest_bytes(POLICY_DIGEST_DOMAIN, b"unreachable-block-pruning\0constant-folding")
 }
 
 const MODULE_SERIALIZATION_VERSION: u32 = 1;
 const TAIL_SERIALIZATION_VERSION: u32 = 1;
+const HISTORY_SERIALIZATION_VERSION: u32 = 1;
 const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v1";
 const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v1";
 const TAIL_DOMAIN: &[u8] = b"witchy/canonical-safewir/tail-sites/v1";
 const TAIL_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/tail-sites-sha256/v1";
+const HISTORY_DOMAIN: &[u8] = b"witchy/canonical-safewir/optimization-history/v1";
+const HISTORY_DIGEST_DOMAIN: &[u8] =
+    b"witchy/canonical-safewir/optimization-history-sha256/v1";
 const POLICY_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/optimization-policy-sha256/v1";
 
 /// Deterministic, tagged serialization for the fields that define a
@@ -310,6 +377,51 @@ impl CanonicalWriter {
 
     fn fixed_bytes(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
+    }
+
+    fn module_digest(&mut self, digest: ModuleDigest) {
+        self.fixed_bytes(&digest.bytes());
+    }
+
+    fn receipt(&mut self, receipt: &RefinementReceipt) {
+        self.u8(match receipt.pass {
+            OptimizationPassId::UnreachableBlockPruning => 0,
+            OptimizationPassId::ConstantFolding => 1,
+        });
+        self.module_digest(receipt.before_digest);
+        self.module_digest(receipt.after_digest);
+        self.u64(receipt.before_revision.get());
+        self.u64(receipt.after_revision.get());
+        self.module_digest(receipt.before_tail_digest);
+        self.module_digest(receipt.after_tail_digest);
+        self.u32(receipt.observation_model_version);
+        self.len(receipt.discharged_obligations.len());
+        for obligation in &receipt.discharged_obligations {
+            self.obligation(obligation);
+        }
+    }
+
+    fn obligation(&mut self, obligation: &DischargedObligation) {
+        match obligation {
+            DischargedObligation::PrunedBlocks { function, blocks } => {
+                self.u8(0);
+                self.u32(function.get());
+                self.len(blocks.len());
+                for block in blocks {
+                    self.u32(*block);
+                }
+            }
+            DischargedObligation::FoldedScalarOperation {
+                function,
+                block,
+                operation_index,
+            } => {
+                self.u8(1);
+                self.u32(function.get());
+                self.u32(block.get());
+                self.u64(u64::try_from(*operation_index).expect("operation index fits u64"));
+            }
+        }
     }
 
     fn bytes(&mut self, bytes: &[u8]) {

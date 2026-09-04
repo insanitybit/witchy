@@ -30,7 +30,9 @@ pub use history::{
     DischargedObligation, HistoryError, ModuleDigest, OptimizationHistoryBody,
     OptimizationHistoryWitness, OptimizationPassId, RefinementReceipt,
 };
-pub use optimization::{OptimizationError, OptimizationOutcome, optimize_unreachable_blocks};
+pub use optimization::{
+    OptimizationError, OptimizationOutcome, optimize_constant_folding, optimize_unreachable_blocks,
+};
 pub use refinement::RefinementError;
 
 macro_rules! id_type {
