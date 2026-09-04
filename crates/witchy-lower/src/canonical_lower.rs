@@ -2215,7 +2215,13 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
             }
             if matches!(element_type, ValueType::Ref(_)) {
-                value = self.clone_string_for_storage(value)?;
+                if self.string_lengths.contains_key(&value) {
+                    value = self.clone_string_for_storage(value)?;
+                } else if !matches!(item, Expr::List(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "non-literal nested list needs explicit ownership",
+                    ));
+                }
             }
             let index = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize {
@@ -3096,8 +3102,16 @@ fn list_layout(
     if name != "List" || arguments.len() != 1 {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     }
-    let element_name = match arguments[0].unqualified() {
-        Type::Named(element, args) if args.is_empty() => element.as_str(),
+    let expected_element = match arguments[0].unqualified() {
+        Type::Named(element, args) if element == "Int" && args.is_empty() => ValueType::Int,
+        Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
+        Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
+        Type::Named(element, args) if element == "String" && args.is_empty() => {
+            ValueType::Ref(string_layout(&arguments[0], layout_bundle, layouts)?)
+        }
+        Type::Named(element, _) if element == "List" => {
+            ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts)?.0)
+        }
         _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
     };
 
@@ -3106,18 +3120,17 @@ fn list_layout(
         let Some(descriptor) = layouts.get(*root) else { continue };
         let LayoutKind::PackedList { element, .. } = descriptor.kind() else { continue };
         let Some(element_descriptor) = layouts.get(*element) else { continue };
-        let element_type = match (element_name, element_descriptor.kind()) {
-            ("Int", LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
+        let element_type = match (expected_element, element_descriptor.kind()) {
+            (ValueType::Int, LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
+            (ValueType::Float, LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
+            (ValueType::Bool, LayoutKind::Scalar(ScalarKind::BoolValueSlot)) => ValueType::Bool,
             (
-                "String",
+                ValueType::Ref(expected),
                 LayoutKind::RuntimePointerValueSlot {
                     pointee,
                     semantics: PointerSlot::Owned,
                 },
-            ) if layouts.get(*pointee).is_some_and(|descriptor| {
-                matches!(descriptor.kind(), LayoutKind::RuntimeBuffer { element }
-                    if layouts.get(*element).is_some_and(|element| element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)))
-            }) => ValueType::Ref(*pointee),
+            ) if *pointee == expected => ValueType::Ref(expected),
             _ => continue,
         };
         let LayoutSize::Dynamic { base, stride } = descriptor.size() else { continue };
@@ -3661,6 +3674,27 @@ mod tests {
         )));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "list length candidate rejected: {result:?}");
+    }
+
+    #[test]
+    fn nested_list_literals_move_fresh_inner_aggregates() {
+        let candidate = lower_with_derived_layouts(
+            "fn main() -> Int:\n    let nested = [[\"a\"], [\"b\"]]\n    0\n",
+        );
+        assert!(candidate
+            .functions()
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.operations)
+            .any(|operation| matches!(
+                operation,
+                Operation::Store {
+                    transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+                    ..
+                }
+            )));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "nested list literal rejected: {result:?}");
     }
 
     #[test]
