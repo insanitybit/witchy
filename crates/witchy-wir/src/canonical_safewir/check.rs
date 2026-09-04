@@ -101,6 +101,12 @@ pub fn check_transform(
     Ok(candidate.into_optimized_valid())
 }
 
+pub(crate) fn recheck_final(
+    candidate: &CanonicalModule<OptimizedValid>,
+) -> Result<(), InitialCheckError> {
+    check_candidate(candidate)
+}
+
 fn check_candidate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
 ) -> Result<(), InitialCheckError> {

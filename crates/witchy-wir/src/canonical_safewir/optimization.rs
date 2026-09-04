@@ -27,6 +27,12 @@ impl OptimizationOutcome {
     pub fn history(&self) -> &OptimizationHistoryWitness {
         &self.history
     }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (CanonicalModule<OptimizedValid>, OptimizationHistoryWitness) {
+        (self.optimized, self.history)
+    }
 }
 
 pub fn optimize_unreachable_blocks(

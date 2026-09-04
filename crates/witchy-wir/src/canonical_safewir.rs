@@ -17,6 +17,11 @@ use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
 pub use check::{InitialCheckError, check_initial, check_transform};
+mod authority;
+pub use authority::{
+    CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, ValidatedSafeWir,
+    check_initial_with_witness, validate_final,
+};
 mod history;
 mod optimization;
 mod refinement;

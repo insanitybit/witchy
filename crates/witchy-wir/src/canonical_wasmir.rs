@@ -3,8 +3,8 @@
 //! This module is deliberately not public.  The current canonical checker
 //! mints `InitialValid`, but there is no final SafeWIR/authority typestate yet,
 //! so the lowering entry is test-only.  When that authority exists, the entry
-//! point must take `CanonicalModule<ValidatedSafeWir>` by reference (or an
-//! equivalent final validated typestate), and no weaker state may be accepted.
+//! point takes final `ValidatedSafeWir` authority, and no weaker state is
+//! accepted.
 //!
 //! The target is an IR, not wasm bytes.  It has no raw constructors visible to
 //! callers and no encoder.  Every scalar source item emits exactly one target
@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::canonical_safewir::{
     ArithmeticOperator, BasicBlock, CallArgument, CanonicalModule, ComparisonOperator,
-    Function, FunctionId, InitialValid, Operation, Terminator, ValueId,
+    Function, FunctionId, ModuleStage, Operation, OptimizedValid, Terminator, ValidatedSafeWir,
+    ValueId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -333,8 +334,8 @@ fn lower_function(function: &Function) -> Result<WasmFunction, LoweringError> {
     })
 }
 
-#[cfg(test)]
-fn lower_initial_for_test(module: &CanonicalModule<InitialValid>) -> Result<WasmIr, LoweringError> {
+fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
+    let module = module.module();
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
@@ -410,7 +411,7 @@ fn matches_terminator(terminator: &Terminator, target: &ScalarTerminator) -> boo
     }
 }
 
-fn expected_source_items(module: &CanonicalModule<InitialValid>) -> BTreeSet<SourceItemId> {
+fn expected_source_items<S: ModuleStage>(module: &CanonicalModule<S>) -> BTreeSet<SourceItemId> {
     module
         .functions()
         .iter()
@@ -429,7 +430,7 @@ fn expected_source_items(module: &CanonicalModule<InitialValid>) -> BTreeSet<Sou
 /// This matcher does not call the lowering functions above: it validates the
 /// source claim, position, semantic payload, and ownership rule directly.
 fn check_correspondence(
-    source: &CanonicalModule<InitialValid>,
+    source: &CanonicalModule<OptimizedValid>,
     target: &WasmIr,
 ) -> Result<CorrespondenceReceipt, CorrespondenceError> {
     if source.revision() != target.revision || source.checked_source() != target.checked_source {
@@ -526,12 +527,13 @@ fn check_correspondence(
 mod tests {
     use super::*;
     use crate::canonical_safewir::{
-        check_initial, CallableContract, CheckedSourceIdentity, FunctionSignature,
-        FunctionSignatureId, LoweredModuleParts, Revision, ResultContract,
+        CallableContract, CheckedSourceIdentity, FunctionSignature, FunctionSignatureId,
+        LoweredModuleParts, Revision, ResultContract, check_initial_with_witness,
+        optimize_unreachable_blocks, validate_final,
     };
     use crate::layout::{LayoutBundle, LayoutInterner};
 
-    fn checked_scalar() -> CanonicalModule<InitialValid> {
+    fn checked_scalar() -> ValidatedSafeWir {
         let value = ValueId::new(1);
         let signature = FunctionSignature {
             id: FunctionSignatureId::new(1),
@@ -564,39 +566,43 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         });
-        check_initial(candidate).expect("scalar fixture is initially valid")
+        let checked = check_initial_with_witness(candidate).expect("scalar fixture is initially valid");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).expect("scalar fixture optimizes");
+        validate_final(&initial_snapshot, witness, optimized).expect("scalar fixture is final-valid")
     }
 
     #[test]
     fn scalar_lowering_has_one_mapping_per_operation_and_terminator() {
         let source = checked_scalar();
-        let target = lower_initial_for_test(&source).unwrap();
-        let receipt = check_correspondence(&source, &target).unwrap();
+        let target = lower_validated(&source).unwrap();
+        let receipt = check_correspondence(source.module(), &target).unwrap();
         assert_eq!(receipt.mappings.len(), 2);
     }
 
     #[test]
     fn correspondence_rejects_semantic_mismatch() {
         let source = checked_scalar();
-        let mut target = lower_initial_for_test(&source).unwrap();
+        let mut target = lower_validated(&source).unwrap();
         target.functions[0].blocks[0].instructions[0].operation = ScalarInstruction::IntConst { destination: ValueId::new(1), value: 10 };
-        assert!(matches!(check_correspondence(&source, &target), Err(CorrespondenceError::InstructionMismatch(_))));
+        assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::InstructionMismatch(_))));
     }
 
     #[test]
     fn correspondence_rejects_omission() {
         let source = checked_scalar();
-        let mut target = lower_initial_for_test(&source).unwrap();
+        let mut target = lower_validated(&source).unwrap();
         target.functions[0].blocks[0].instructions.clear();
-        assert!(matches!(check_correspondence(&source, &target), Err(CorrespondenceError::MissingSourceItem(_))));
+        assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::MissingSourceItem(_))));
     }
 
     #[test]
     fn correspondence_rejects_duplication() {
         let source = checked_scalar();
-        let mut target = lower_initial_for_test(&source).unwrap();
+        let mut target = lower_validated(&source).unwrap();
         let duplicate = target.functions[0].blocks[0].instructions[0].clone();
         target.functions[0].blocks[0].instructions.push(duplicate);
-        assert!(matches!(check_correspondence(&source, &target), Err(CorrespondenceError::DuplicateSourceItem(_))));
+        assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::DuplicateSourceItem(_))));
     }
 }
