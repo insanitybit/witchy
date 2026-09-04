@@ -278,6 +278,19 @@ impl AuthorityWirWitness {
     }
 }
 
+/// Private encoder authority minted only after final SafeWIR authority,
+/// independently checked correspondence, and the AuthorityWIR witness agree
+/// on one exact SafeWIR/WasmIR pair. Unchecked `WasmIr` cannot cross the
+/// encoding boundary.
+struct CheckedWasmIr {
+    source: CanonicalModule<OptimizedValid>,
+    target: WasmIr,
+    receipt: CorrespondenceReceipt,
+    checked_source: crate::canonical_safewir::CheckedSourceIdentity,
+    final_module_digest: crate::canonical_safewir::ModuleDigest,
+    history_digest: crate::canonical_safewir::ModuleDigest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoweringError {
     UnsupportedOperation { function: FunctionId, operation: &'static str },
@@ -3016,20 +3029,46 @@ fn encode_function(
     Ok(body)
 }
 
-/// Encode only final canonical SafeWIR authority. The correspondence receipt
-/// is independently minted immediately before bytes exist; no candidate or
-/// private WasmIR value can enter this function.
-fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError> {
+fn authorize_wasm_ir(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, EncodeError> {
+    validated.validate_pre_admission().map_err(|_| {
+        EncodeError::Correspondence(CorrespondenceError::ModuleIdentityMismatch)
+    })?;
+    let source = validated.module().clone();
+    let checked_source = validated.checked_source();
+    let final_module_digest = validated.final_module_digest();
+    let history_digest = validated.history_digest();
     let target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
-    let source = validated.module();
-    let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
-        .map_err(|_| EncodeError::Lowering(LoweringError::InvalidLayoutBundle))?;
-    let receipt = check_correspondence(source, &target).map_err(EncodeError::Correspondence)?;
-    if receipt.mappings.len() != expected_source_items(source).len() {
+    let receipt = check_correspondence(&source, &target).map_err(EncodeError::Correspondence)?;
+    if receipt.mappings.len() != expected_source_items(&source).len() {
         return Err(EncodeError::Correspondence(CorrespondenceError::MissingSourceItem(
-            expected_source_items(source).into_iter().next().expect("nonempty canonical module"),
+            expected_source_items(&source)
+                .into_iter()
+                .next()
+                .expect("nonempty canonical module"),
         )));
     }
+    let digest = correspondence_digest(&receipt);
+    let authority_wir = AuthorityWirWitness::from_correspondence(&validated, &receipt);
+    validated.validate_authority_wir(&authority_wir, digest).map_err(|_| {
+        EncodeError::Correspondence(CorrespondenceError::ModuleIdentityMismatch)
+    })?;
+    Ok(CheckedWasmIr {
+        source,
+        target,
+        receipt,
+        checked_source,
+        final_module_digest,
+        history_digest,
+    })
+}
+
+/// Encode only correspondence-checked private WasmIR authority. This function
+/// cannot lower SafeWIR or accept an unchecked backend value.
+fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
+    let source = &checked.source;
+    let target = &checked.target;
+    let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
+        .map_err(|_| EncodeError::Lowering(LoweringError::InvalidLayoutBundle))?;
     let import_count = u32::try_from(source.imports().len()).map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import count" }))?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, import_count + index as u32)).collect();
     let import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
@@ -3142,6 +3181,12 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         .validate_all(&bytes)
         .map_err(|error| EncodeError::WasmValidation(error.to_string()))?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError> {
+    let checked = authorize_wasm_ir(validated)?;
+    encode_checked(&checked)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5057,19 +5102,21 @@ fn admit_parts(
 }
 
 pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    validated.validate_pre_admission().map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let source = validated.module().clone();
-    let checked_source = validated.checked_source();
-    let final_module_digest = validated.final_module_digest();
-    let history_digest = validated.history_digest();
-    let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
-    let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let correspondence_digest = correspondence_digest(&receipt);
-    let authority_wir = AuthorityWirWitness::from_correspondence(&validated, &receipt);
-    validated
-        .validate_authority_wir(&authority_wir, correspondence_digest)
-        .map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let bytes = encode_validated(validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    let checked = authorize_wasm_ir(validated).map_err(|error| match error {
+        EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => CanonicalAdmissionError::Lowering,
+        EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
+        EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
+        _ => CanonicalAdmissionError::UnsupportedPlan,
+    })?;
+    let bytes = encode_checked(&checked).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    let CheckedWasmIr {
+        source,
+        target,
+        receipt,
+        checked_source,
+        final_module_digest,
+        history_digest,
+    } = checked;
     admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
 }
 
@@ -5078,18 +5125,15 @@ fn admit_canonical_with_bytes_for_test(
     validated: ValidatedSafeWir,
     bytes: Vec<u8>,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    validated.validate_pre_admission().map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let source = validated.module().clone();
-    let checked_source = validated.checked_source();
-    let final_module_digest = validated.final_module_digest();
-    let history_digest = validated.history_digest();
-    let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
-    let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let correspondence_digest = correspondence_digest(&receipt);
-    let authority_wir = AuthorityWirWitness::from_correspondence(&validated, &receipt);
-    validated
-        .validate_authority_wir(&authority_wir, correspondence_digest)
-        .map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let checked = authorize_wasm_ir(validated).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let CheckedWasmIr {
+        source,
+        target,
+        receipt,
+        checked_source,
+        final_module_digest,
+        history_digest,
+    } = checked;
     admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
 }
 #[cfg(test)]
