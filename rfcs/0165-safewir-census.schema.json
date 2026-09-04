@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RFC-0165 SafeWIR frozen adapter census",
+  "type": "object",
+  "required": ["schema_version", "schema", "source_roots", "profiles", "classifications", "freeze", "entries"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "schema": { "const": "rfcs/0165-safewir-census.schema.json" },
+    "source_roots": { "const": ["examples", "projects", "std", "tests"] },
+    "profiles": { "const": ["normal", "opt", "native"] },
+    "classifications": { "const": ["known-valid", "intentionally-invalid", "external-fixture"] },
+    "freeze": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["pending", "frozen"] },
+        "adapter_route": { "const": "ordinary-production-cli" },
+        "adapter_id": { "type": ["string", "null"], "minLength": 1 },
+        "adapter_commit": { "type": ["string", "null"], "minLength": 1 },
+        "snapshot_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["entry_id", "source", "profile", "classification", "adapter_admitted", "freeze_class", "source_digest", "config_path", "config_digest", "input_domain", "environment_domain", "observation_contract", "trace"],
+        "properties": {
+          "entry_id": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "profile": { "enum": ["normal", "opt", "native"] },
+          "classification": { "enum": ["known-valid", "intentionally-invalid", "external-fixture"] },
+          "adapter_admitted": { "type": "boolean" },
+          "freeze_class": { "enum": ["v1-direct", "v1-materialized", "v2-required", null] },
+          "source_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "config_path": { "type": ["string", "null"] },
+          "config_digest": { "type": ["string", "null"] },
+          "input_domain": { "type": "object", "minProperties": 1 },
+          "environment_domain": { "type": "object", "minProperties": 1 },
+          "observation_contract": { "type": "string", "minLength": 1 },
+          "trace": { "type": "object", "minProperties": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,55 @@
+# RFC-0165 performance baseline manifest.
+#
+# This is intentionally pending. Timing and counter values must be produced by
+# matched runtime hooks and committed with their source/input digests; this file
+# never accepts guessed zeros or aggregate-only results.
+schema_version = 1
+status = "pending-runtime-hooks"
+census_manifest = "rfcs/0165-safewir-census.json"
+runtime_metric = "bench_ns"
+sample_protocol = "matched-quiet-runs; record raw samples; rerun noisy samples"
+baseline_commit = ""
+toolchain = ""
+host = ""
+
+# RFC-0165 requires these observations per workload and input.
+counter_schema = [
+  "in_place_mutations",
+  "copy_on_write_repairs",
+  "retain_count",
+  "release_count",
+  "allocations",
+  "reallocations",
+  "storage_reuse",
+  "peak_live_bytes"
+]
+
+# Workload inventory from spec/performance.md. Each row remains unmeasured until
+# adapter/interpreter/SafeWIR execution and counter hooks are available.
+[[workloads]]
+name = "compute-bound-loops"
+status = "pending-runtime-hooks"
+
+[[workloads]]
+name = "list-dict-building-and-traversal"
+status = "pending-runtime-hooks"
+
+[[workloads]]
+name = "string-building-and-scanning"
+status = "pending-runtime-hooks"
+
+[[workloads]]
+name = "channel-ping-pong-and-fan-out"
+status = "pending-runtime-hooks"
+
+[[workloads]]
+name = "http-server-requests-per-second"
+status = "pending-runtime-hooks"
+
+[[workloads]]
+name = "cold-start-latency"
+status = "pending-runtime-hooks"
+
+# A measured row must add source_digest, input_digest, profile, opt_set,
+# bench_ns_samples, wall_time_samples, peak_memory_bytes, compile_time_samples,
+# counters, and numeric_budget. No row is claimed before those values exist.

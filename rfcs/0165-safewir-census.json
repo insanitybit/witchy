@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "schema": "rfcs/0165-safewir-census.schema.json",
+  "source_roots": ["examples", "projects", "std", "tests"],
+  "profiles": ["normal", "opt", "native"],
+  "classifications": ["known-valid", "intentionally-invalid", "external-fixture"],
+  "freeze": {
+    "state": "pending",
+    "adapter_route": "ordinary-production-cli",
+    "adapter_id": null,
+    "adapter_commit": null,
+    "snapshot_digest": null
+  },
+  "entries": []
+}
