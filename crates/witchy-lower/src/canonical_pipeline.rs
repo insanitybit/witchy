@@ -278,6 +278,39 @@ mod tests {
     }
 
     #[test]
+    fn checked_function_value_tail_call_reaches_admitted_execution() {
+        let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    let f = answer\n    f()\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked function-value tail-call source");
+
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("canonical layouts");
+        let candidate = lower_typed_module(canonical, layouts).expect("canonical lowering");
+        assert!(matches!(
+            candidate.functions()[1].blocks[0].terminator,
+            witchy_wir::canonical_safewir::Terminator::VarTailCall { .. }
+        ));
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical function-value tail-call artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted function-value tail-call artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted function-value tail-call artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical function value tail call"), 42);
+    }
+
+    #[test]
     fn checked_variable_call_rejects_memory_bearing_result() {
         let source = "fn answer() -> String:\n    \"ok\"\nfn main() -> Int:\n    let f = answer\n    let result = f()\n    1\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

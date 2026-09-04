@@ -234,8 +234,42 @@ fn derive_summary(
                 )?;
                 derive_call_needs(*callee, arguments, functions, summaries, &origins, &mut summary)?;
             }
-            Terminator::VarTailCall { .. } => {
-                return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+            Terminator::VarTailCall {
+                signature,
+                arguments,
+                ..
+            } => {
+                let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
+                let signature = signatures
+                    .get(signature)
+                    .copied()
+                    .ok_or(InitialCheckError::MissingSignature(*signature))?;
+                if target.results.len() != summary.results.len()
+                    || signature.results.len() != summary.results.len()
+                    || target.results.iter().any(|result| {
+                        !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
+                    })
+                    || signature
+                        .parameters
+                        .iter()
+                        .chain(&signature.results)
+                        .copied()
+                        .any(|value_type| value_type.is_memory_bearing())
+                {
+                    return Err(InitialCheckError::UnsupportedIndirectCall {
+                        function: function.id,
+                    });
+                }
+                for (slot, result) in summary.results.iter_mut().zip(&target.results) {
+                    slot.join(result.clone());
+                }
+                if arguments.len() != signature.parameters.len() {
+                    return Err(InitialCheckError::ArityMismatch {
+                        context: "derived indirect tail-call arguments",
+                        expected: signature.parameters.len(),
+                        actual: arguments.len(),
+                    });
+                }
             }
             Terminator::Branch { .. } | Terminator::BranchIf { .. } | Terminator::Trap | Terminator::Unreachable => {}
         }

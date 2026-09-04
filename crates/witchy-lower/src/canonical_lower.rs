@@ -481,9 +481,42 @@ impl FunctionLowerer<'_> {
                             )?;
                             self.finish_current(terminator)?;
                         } else {
-                            let value = self.lower_expr(value.as_ref().unwrap())?;
-                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            let callee = self.bindings[name];
+                            let ValueType::Callable(signature) = self.values[&callee] else {
+                                return Err(CanonicalLoweringError::IndirectCalleeType(
+                                    self.values[&callee],
+                                ));
+                            };
+                            let terminator = self.lower_indirect_tail_call(
+                                callee,
+                                args,
+                                signature,
+                                index,
+                                ProperTailPathStep::ReturnValue,
+                                ProperTailExprKind::Call,
+                                ProperTailDispatchKind::Direct,
+                            )?;
+                            self.finish_current(terminator)?;
                         }
+                        return Ok(());
+                    }
+                    if let Some(Expr::Apply { func, args }) = value {
+                        let callee = self.lower_expr(func)?;
+                        let ValueType::Callable(signature) = self.values[&callee] else {
+                            return Err(CanonicalLoweringError::IndirectCalleeType(
+                                self.values[&callee],
+                            ));
+                        };
+                        let terminator = self.lower_indirect_tail_call(
+                            callee,
+                            args,
+                            signature,
+                            index,
+                            ProperTailPathStep::ReturnValue,
+                            ProperTailExprKind::Apply,
+                            ProperTailDispatchKind::Indirect,
+                        )?;
+                        self.finish_current(terminator)?;
                         return Ok(());
                     }
                     let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
@@ -511,9 +544,42 @@ impl FunctionLowerer<'_> {
                             )?;
                             self.finish_current(terminator)?;
                         } else {
-                            let value = self.lower_expr(value)?;
-                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            let callee = self.bindings[name];
+                            let ValueType::Callable(signature) = self.values[&callee] else {
+                                return Err(CanonicalLoweringError::IndirectCalleeType(
+                                    self.values[&callee],
+                                ));
+                            };
+                            let terminator = self.lower_indirect_tail_call(
+                                callee,
+                                args,
+                                signature,
+                                index,
+                                ProperTailPathStep::Value,
+                                ProperTailExprKind::Call,
+                                ProperTailDispatchKind::Direct,
+                            )?;
+                            self.finish_current(terminator)?;
                         }
+                        return Ok(());
+                    }
+                    if let Expr::Apply { func, args } = value {
+                        let callee = self.lower_expr(func)?;
+                        let ValueType::Callable(signature) = self.values[&callee] else {
+                            return Err(CanonicalLoweringError::IndirectCalleeType(
+                                self.values[&callee],
+                            ));
+                        };
+                        let terminator = self.lower_indirect_tail_call(
+                            callee,
+                            args,
+                            signature,
+                            index,
+                            ProperTailPathStep::Value,
+                            ProperTailExprKind::Apply,
+                            ProperTailDispatchKind::Indirect,
+                        )?;
+                        self.finish_current(terminator)?;
                         return Ok(());
                     }
                     if results.is_empty() && matches!(value, Expr::While { .. }) {
@@ -937,6 +1003,64 @@ impl FunctionLowerer<'_> {
             arguments,
         });
         Ok(destinations)
+    }
+
+    fn lower_indirect_tail_call(
+        &mut self,
+        callee: ValueId,
+        arguments: &[Expr],
+        signature_id: FunctionSignatureId,
+        statement: usize,
+        position: ProperTailPathStep,
+        expression: ProperTailExprKind,
+        dispatch: ProperTailDispatchKind,
+    ) -> Result<Terminator, CanonicalLoweringError> {
+        let signature = self
+            .signatures
+            .get(signature_id.get() as usize)
+            .cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression(
+                "indirect tail-call signature",
+            ))?;
+        if signature
+            .parameters
+            .iter()
+            .chain(&signature.results)
+            .copied()
+            .any(|value_type| !is_indirect_scalar(value_type))
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "memory-bearing indirect tail call",
+            ));
+        }
+        let key = ProperTailSiteKey {
+            callable: ProperTailCallableId {
+                item: self.item,
+                method: None,
+                lambda_path: Vec::new(),
+            },
+            path: vec![
+                ProperTailPathStep::Statement(
+                    u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+                position,
+                ProperTailPathStep::Node(expression),
+            ],
+            dispatch,
+        };
+        let site = self
+            .tail_manifest
+            .sites()
+            .iter()
+            .find(|site| site.key == key)
+            .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
+        let arguments = self.lower_call_arguments("<indirect tail>", arguments, &signature)?;
+        Ok(Terminator::VarTailCall {
+            site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
+            callee,
+            signature: signature_id,
+            arguments,
+        })
     }
 
     fn lower_indirect_call(

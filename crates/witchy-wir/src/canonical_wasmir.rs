@@ -841,11 +841,12 @@ fn operation_name(operation: &Operation) -> &'static str {
 }
 
 fn lower_terminator(
-    function: FunctionId,
+    function: &Function,
     block: crate::canonical_safewir::BlockId,
     terminator: &Terminator,
+    signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
 ) -> Result<WasmTerminator, LoweringError> {
-    let source = SourceItemId::Terminator { function, block };
+    let source = SourceItemId::Terminator { function: function.id, block };
     let operation = match terminator {
         Terminator::Branch { target, arguments } => ScalarTerminator::Branch { target: *target, arguments: arguments.clone() },
         Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => ScalarTerminator::BranchIf {
@@ -859,10 +860,34 @@ fn lower_terminator(
         Terminator::TailCall { site, callee, arguments } => ScalarTerminator::TailCall {
             site: *site,
             callee: *callee,
-            arguments: scalar_arguments(function, arguments)?,
+            arguments: scalar_arguments(function.id, arguments)?,
         },
-        Terminator::VarTailCall { .. } => {
-            return Err(LoweringError::UnsupportedOperation { function, operation: "VarTailCall" });
+        Terminator::VarTailCall { site, callee, signature, arguments } => {
+            let signature_def = signatures.get(signature).ok_or(
+                LoweringError::UnsupportedOperation {
+                    function: function.id,
+                    operation: "VarTailCall signature",
+                },
+            )?;
+            if function.value_types.get(callee) != Some(&ValueType::Callable(*signature))
+                || signature_def
+                    .parameters
+                    .iter()
+                    .chain(&signature_def.results)
+                    .copied()
+                    .any(|value_type| !is_indirect_scalar(value_type))
+            {
+                return Err(LoweringError::UnsupportedOperation {
+                    function: function.id,
+                    operation: "VarTailCall memory-bearing or mismatched signature",
+                });
+            }
+            ScalarTerminator::VarTailCall {
+                site: *site,
+                callee: *callee,
+                signature: *signature,
+                arguments: scalar_arguments(function.id, arguments)?,
+            }
         }
         Terminator::Trap => ScalarTerminator::Trap,
         Terminator::Unreachable => ScalarTerminator::Unreachable,
@@ -888,7 +913,7 @@ fn lower_block(
     Ok(WasmBlock {
         id: block.id,
         instructions,
-        terminator: lower_terminator(function.id, block.id, &block.terminator)?,
+        terminator: lower_terminator(function, block.id, &block.terminator, signatures)?,
     })
 }
 
@@ -2364,6 +2389,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &terminator,
                 self.function_indices,
+                self.signature_indices,
             )?,
         }
         Ok(())
@@ -2478,6 +2504,7 @@ fn emit_terminator(
     layout: &LocalLayout,
     terminator: &ScalarTerminator,
     function_indices: &BTreeMap<FunctionId, u32>,
+    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
 ) -> Result<(), EncodeError> {
     match terminator {
         ScalarTerminator::Branch { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { function: source_function.id, operation: "Branch" })),
@@ -2491,7 +2518,17 @@ fn emit_terminator(
             let index = function_indices.get(callee).copied().ok_or(EncodeError::MissingFunction(*callee))?;
             body.instruction(&wasm_encoder::Instruction::ReturnCall(index));
         }
-        ScalarTerminator::VarTailCall { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: source_function.id, operation: "VarTailCall" })),
+        ScalarTerminator::VarTailCall { callee, signature, arguments, .. } => {
+            emit_call_arguments(body, layout, source_function.id, arguments)?;
+            emit_get(body, layout, source_function.id, *callee)?;
+            let type_index = signature_indices.get(signature).copied().ok_or(
+                EncodeError::UnsupportedSignature { signature: *signature },
+            )?;
+            body.instruction(&wasm_encoder::Instruction::ReturnCallIndirect {
+                type_index,
+                table_index: 0,
+            });
+        }
         ScalarTerminator::Trap | ScalarTerminator::Unreachable => { body.instruction(&wasm_encoder::Instruction::Unreachable); }
     }
     Ok(())
@@ -2711,6 +2748,7 @@ enum PlanToken {
     Call(u32),
     CallIndirect { type_index: u32, table_index: u32 },
     ReturnCall(u32),
+    ReturnCallIndirect { type_index: u32, table_index: u32 },
     End,
 }
 
@@ -2764,6 +2802,9 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::Call { function_index } => PlanToken::Call(function_index),
         wasmparser::Operator::CallIndirect { type_index, table_index } => PlanToken::CallIndirect { type_index, table_index },
         wasmparser::Operator::ReturnCall { function_index } => PlanToken::ReturnCall(function_index),
+        wasmparser::Operator::ReturnCallIndirect { type_index, table_index } => {
+            PlanToken::ReturnCallIndirect { type_index, table_index }
+        }
         wasmparser::Operator::End => PlanToken::End,
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     })
@@ -3431,6 +3472,18 @@ fn expected_linear_function_plan(
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
             plan.push(PlanToken::ReturnCall(index));
         }
+        Terminator::VarTailCall { callee, signature, arguments, .. } => {
+            for argument in arguments {
+                push_get(&mut plan, &layout, plan_call_argument(argument)?)?;
+            }
+            push_get(&mut plan, &layout, *callee)?;
+            plan.push(PlanToken::ReturnCallIndirect {
+                type_index: *signature_indices
+                    .get(signature)
+                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)?,
+                table_index: 0,
+            });
+        }
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     }
     plan.push(PlanToken::End);
@@ -3657,8 +3710,21 @@ impl PlanEmitter<'_> {
                 }
                 self.plan.push(PlanToken::ReturnCall(self.function_indices.get(callee).copied().ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
             }
+            Terminator::VarTailCall { callee, signature, arguments, .. } => {
+                for argument in arguments {
+                    push_get(&mut self.plan, self.layout, plan_call_argument(argument)?)?;
+                }
+                push_get(&mut self.plan, self.layout, *callee)?;
+                self.plan.push(PlanToken::ReturnCallIndirect {
+                    type_index: *self
+                        .signature_indices
+                        .get(signature)
+                        .ok_or(CanonicalAdmissionError::UnsupportedPlan)?,
+                    table_index: 0,
+                });
+            }
             Terminator::Trap | Terminator::Unreachable => self.plan.push(PlanToken::Unreachable),
-            Terminator::Branch { .. } | Terminator::BranchIf { .. } | Terminator::VarTailCall { .. } => {
+            Terminator::Branch { .. } | Terminator::BranchIf { .. } => {
                 return Err(CanonicalAdmissionError::UnsupportedPlan);
             }
         }
@@ -4617,6 +4683,68 @@ mod tests {
         }))
     }
 
+    fn checked_var_tail_call() -> ValidatedSafeWir {
+        let callable = ValueId::new(10);
+        let callee_result = ValueId::new(11);
+        let tail_site = crate::canonical_safewir::TailSiteId::from_digest([0x21; 32]);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(21),
+            checked_source: CheckedSourceIdentity::from_digest([0x21; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![
+                scalar_signature(FunctionSignatureId::new(22)),
+                scalar_signature(FunctionSignatureId::new(23)),
+            ],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FunctionId::new(22),
+                    signature: FunctionSignatureId::new(22),
+                    entry: crate::canonical_safewir::BlockId::new(22),
+                    value_types: [(
+                        callable,
+                        ValueType::Callable(FunctionSignatureId::new(23)),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(22),
+                        parameters: Vec::new(),
+                        operations: vec![Operation::FunctionValue {
+                            destination: callable,
+                            function: FunctionId::new(23),
+                        }],
+                        terminator: Terminator::VarTailCall {
+                            site: tail_site,
+                            callee: callable,
+                            signature: FunctionSignatureId::new(23),
+                            arguments: Vec::new(),
+                        },
+                    }],
+                },
+                Function {
+                    id: FunctionId::new(23),
+                    signature: FunctionSignatureId::new(23),
+                    entry: crate::canonical_safewir::BlockId::new(23),
+                    value_types: [(callee_result, ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(23),
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt {
+                            destination: callee_result,
+                            value: 42,
+                        }],
+                        terminator: Terminator::Return { values: vec![callee_result] },
+                    }],
+                },
+            ],
+            proper_tail_sites: vec![crate::canonical_safewir::ProperTailSite {
+                id: tail_site,
+                function: FunctionId::new(22),
+            }],
+        }))
+    }
+
     #[cfg(feature = "native")]
     #[test]
     fn admitted_scalar_var_call_uses_authenticated_table_and_executes() {
@@ -4628,6 +4756,19 @@ mod tests {
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let function = instance.get_typed_func::<(), i64>(&mut store, "f20").unwrap();
+        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn admitted_scalar_var_tail_call_executes_with_return_call_indirect() {
+        let artifact = admit_canonical(checked_var_tail_call())
+            .expect("scalar indirect proper-tail call artifact admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<(), i64>(&mut store, "f22").unwrap();
         assert_eq!(function.call(&mut store, ()).unwrap(), 42);
     }
 
