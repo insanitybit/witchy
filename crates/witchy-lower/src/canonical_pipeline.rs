@@ -244,6 +244,78 @@ mod tests {
     }
 
     #[test]
+    fn public_production_entry_emits_executable_checked_wasm() {
+        let source = "fn main() -> Int:\n    40 + 2\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+
+        let bytes = crate::codegen::compile_checked_module_binary(&checked)
+            .expect_lowered("public production entry must emit Wasm");
+        wasmparser::validate(&bytes).expect("public production bytes must be valid Wasm");
+
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        let engine = wasmtime::Engine::new(&config)
+            .expect("configure public production Wasm engine");
+        let module = wasmtime::Module::new(&engine, &bytes)
+            .expect("compile public production Wasm");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "__witchy_abort",
+                |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                    wasmtime::bail!("unexpected abort in public production probe")
+                },
+            )
+            .expect("bind public production abort ABI");
+        linker
+            .func_wrap(
+                "witchy",
+                "print_int",
+                |_: wasmtime::Caller<'_, ()>, _: i64| {},
+            )
+            .expect("bind public production integer output ABI");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&output);
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "__witchy_abort",
+                |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
+                    wasmtime::bail!("unexpected abort in public production probe")
+                },
+            )
+            .expect("bind public production abort ABI");
+        linker
+            .func_wrap(
+                "witchy",
+                "print_int",
+                move |_: wasmtime::Caller<'_, ()>, value: i64| {
+                    sink.lock().expect("public production output lock").push(value);
+                },
+            )
+            .expect("bind public production integer output ABI");
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate public production Wasm");
+        let run = instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("public production run export");
+
+        run.call(&mut store, ()).expect("run public production Wasm");
+        assert_eq!(*output.lock().expect("public production output lock"), [42]);
+    }
+
+    #[test]
     fn checked_scalar_direct_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    answer()\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
