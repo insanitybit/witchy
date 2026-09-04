@@ -19,9 +19,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use sha2::{Digest, Sha256};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection,
-    EntityType, Function as WasmFunctionEncoder, FunctionSection, GlobalSection, GlobalType,
-    Ieee64, ImportSection, MemArg, MemorySection, MemoryType, Module as WasmModule, TypeSection,
-    ValType,
+    ElementSection, Elements, EntityType, Function as WasmFunctionEncoder, FunctionSection,
+    GlobalSection, GlobalType, Ieee64, ImportSection, MemArg, MemorySection, MemoryType,
+    Module as WasmModule, RefType, TableSection, TableType, TypeSection, ValType,
 };
 
 use crate::canonical_safewir::{
@@ -178,8 +178,17 @@ struct WasmIr {
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     static_data: Vec<WasmStaticData>,
     imports: Vec<WasmImport>,
+    table: Option<WasmTable>,
     heap_start: u32,
     functions: Vec<WasmFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WasmTable {
+    /// Entries are the exact checked module functions, in module order. A
+    /// callable value is only a private table index; `call_indirect` still
+    /// checks the authenticated signature at execution.
+    functions: Vec<FunctionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,12 +557,20 @@ fn resolve_memory_place_for_values(
     }
 }
 
+fn is_indirect_scalar(value_type: ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Size | ValueType::V128
+    )
+}
+
 fn lower_operation(
     function: FunctionId,
     block: crate::canonical_safewir::BlockId,
     index: usize,
     operation: &Operation,
     value_types: &BTreeMap<ValueId, ValueType>,
+    signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
     allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
@@ -650,8 +667,51 @@ fn lower_operation(
             callee: *callee,
             arguments: scalar_arguments(function, arguments)?,
         },
-        Operation::VarCall { .. } => {
-            return Err(LoweringError::UnsupportedOperation { function, operation: "VarCall" });
+        Operation::VarCall { destinations, callee, signature, arguments } => {
+            let signature_def = signatures.get(signature).ok_or(LoweringError::UnsupportedOperation {
+                function,
+                operation: "VarCall signature",
+            })?;
+            if value_types.get(callee) != Some(&ValueType::Callable(*signature))
+                || signature_def.parameters.len() != arguments.len()
+                || signature_def.results.len() != destinations.len()
+                || signature_def.parameters.iter().copied().any(|value_type| !is_indirect_scalar(value_type))
+                || signature_def.results.iter().copied().any(|value_type| !is_indirect_scalar(value_type))
+            {
+                return Err(LoweringError::UnsupportedOperation {
+                    function,
+                    operation: "VarCall memory-bearing or mismatched signature",
+                });
+            }
+            for (argument, expected) in arguments.iter().zip(&signature_def.parameters) {
+                let value = match argument {
+                    CallArgument::Value(value) => *value,
+                    CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => borrow.source(),
+                    CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
+                        return Err(LoweringError::UnsupportedCallArgument { function });
+                    }
+                };
+                if value_types.get(&value) != Some(expected) {
+                    return Err(LoweringError::UnsupportedOperation {
+                        function,
+                        operation: "VarCall argument type",
+                    });
+                }
+            }
+            for (destination, expected) in destinations.iter().zip(&signature_def.results) {
+                if value_types.get(destination) != Some(expected) {
+                    return Err(LoweringError::UnsupportedOperation {
+                        function,
+                        operation: "VarCall result type",
+                    });
+                }
+            }
+            ScalarInstruction::VarCall {
+                destinations: destinations.clone(),
+                callee: *callee,
+                signature: *signature,
+                arguments: scalar_arguments(function, arguments)?,
+            }
         }
         Operation::HostCall { destinations, import, arguments } => {
             let contract = imports.get(import).ok_or(LoweringError::UnsupportedOperation { function, operation: "HostCall contract" })?;
@@ -740,13 +800,14 @@ fn lower_block(
     block: &BasicBlock,
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
+    signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
     allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmBlock, LoweringError> {
     let instructions = block
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, layouts, imports, allocation_classes))
+        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, layouts, imports, allocation_classes))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(WasmBlock {
         id: block.id,
@@ -755,7 +816,12 @@ fn lower_block(
     })
 }
 
-fn lower_function(function: &Function, layouts: &LayoutInterner, imports: &BTreeMap<ImportId, ImportContract>) -> Result<WasmFunction, LoweringError> {
+fn lower_function(
+    function: &Function,
+    layouts: &LayoutInterner,
+    imports: &BTreeMap<ImportId, ImportContract>,
+    signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
+) -> Result<WasmFunction, LoweringError> {
     let mut allocation_classes = allocation_classes_across_cfg(function);
     Ok(WasmFunction {
         id: function.id,
@@ -764,7 +830,7 @@ fn lower_function(function: &Function, layouts: &LayoutInterner, imports: &BTree
         blocks: function
             .blocks
             .iter()
-            .map(|block| lower_block(function, block, layouts, imports, &mut allocation_classes))
+            .map(|block| lower_block(function, block, layouts, imports, signatures, &mut allocation_classes))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -831,16 +897,23 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
         .map_err(|_| LoweringError::InvalidLayoutBundle)?;
     let (static_data, heap_start) = static_data_plan(module.static_data_segments())?;
     let imports = module.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
+    let signatures = module.signatures().iter().map(|signature| (signature.id, signature.clone())).collect::<BTreeMap<_, _>>();
+    let has_var_call = module.functions().iter().flat_map(|function| function.blocks.iter()).any(|block| {
+        block.operations.iter().any(|operation| matches!(operation, Operation::VarCall { .. }))
+    });
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
         static_data,
         imports: module.imports().iter().map(|import| WasmImport { id: import.id, signature: import.signature }).collect(),
+        table: has_var_call.then(|| WasmTable {
+            functions: module.functions().iter().map(|function| function.id).collect(),
+        }),
         heap_start,
         functions: module
             .functions()
             .iter()
-            .map(|function| lower_function(function, &layouts, &imports))
+            .map(|function| lower_function(function, &layouts, &imports, &signatures))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -1119,6 +1192,9 @@ fn wasm_value_type(
         crate::canonical_safewir::ValueType::Ref(_) => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Capability(_) => Ok(ValType::EXTERNREF),
         crate::canonical_safewir::ValueType::V128 => Ok(ValType::V128),
+        // SafeWIR never exposes this representation. The callable is an
+        // authenticated table-index value only after private WasmIR lowering.
+        crate::canonical_safewir::ValueType::Callable(_) => Ok(ValType::I32),
         unsupported => Err(EncodeError::UnsupportedValueType { function, value, value_type: unsupported }),
     }
 }
@@ -1794,6 +1870,7 @@ fn emit_instruction(
     layout: &LocalLayout,
     instruction: &ScalarInstruction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     import_indices: &BTreeMap<ImportId, u32>,
     imports: &BTreeMap<ImportId, ImportContract>,
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -1858,7 +1935,13 @@ fn emit_instruction(
             emit_results(body, layout, function.id, destinations)?;
         }
         ScalarInstruction::HostCall { destinations, import, arguments } => emit_host_call(body, function, layout, destinations, *import, arguments, imports, import_indices, layouts)?,
-        ScalarInstruction::VarCall { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "VarCall" })),
+        ScalarInstruction::VarCall { destinations, callee, signature, arguments } => {
+            emit_call_arguments(body, layout, function.id, arguments)?;
+            emit_get(body, layout, function.id, *callee)?;
+            let type_index = signature_indices.get(signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: *signature })?;
+            body.instruction(&wasm_encoder::Instruction::CallIndirect { type_index, table_index: 0 });
+            emit_results(body, layout, function.id, destinations)?;
+        }
     }
     Ok(())
 }
@@ -1876,6 +1959,7 @@ struct StructuredEmitter<'a> {
     target_function: &'a WasmFunction,
     layout: &'a LocalLayout,
     function_indices: &'a BTreeMap<FunctionId, u32>,
+    signature_indices: &'a BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     import_indices: &'a BTreeMap<ImportId, u32>,
     imports: &'a BTreeMap<ImportId, ImportContract>,
     static_data: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -2136,6 +2220,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.signature_indices,
                 self.import_indices,
                 self.imports,
                 self.static_data,
@@ -2260,6 +2345,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.signature_indices,
                 self.import_indices,
                 self.imports,
                 self.static_data,
@@ -2317,6 +2403,7 @@ fn encode_function(
     signature: &FunctionSignature,
     target_function: &WasmFunction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     import_indices: &BTreeMap<ImportId, u32>,
     imports: &BTreeMap<ImportId, ImportContract>,
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -2338,6 +2425,7 @@ fn encode_function(
         target_function,
         layout: &layout,
         function_indices,
+        signature_indices,
         import_indices,
         imports,
         static_data,
@@ -2371,7 +2459,6 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
             expected_source_items(source).into_iter().next().expect("nonempty canonical module"),
         )));
     }
-    let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, index as u32)).collect();
     let import_count = u32::try_from(source.imports().len()).map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import count" }))?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, import_count + index as u32)).collect();
     let import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
@@ -2402,6 +2489,27 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         imports.import(&import.module, &import.name, EntityType::Function(type_index));
     }
     let mut functions = FunctionSection::new();
+    let mut table_section = TableSection::new();
+    let mut elements = ElementSection::new();
+    let table_function_indices = target.table.as_ref().map(|table| {
+        table
+            .functions
+            .iter()
+            .map(|function| function_indices.get(function).copied().ok_or(EncodeError::MissingFunction(*function)))
+            .collect::<Result<Vec<_>, _>>()
+    }).transpose()?;
+    if let Some(table) = &target.table {
+        table_section.table(TableType {
+            element_type: RefType::FUNCREF,
+            table64: false,
+            minimum: table.functions.len() as u64,
+            maximum: None,
+            shared: false,
+        });
+        if let Some(functions) = &table_function_indices {
+            elements.active(None, &ConstExpr::i32_const(0), Elements::Functions(functions.clone().into()));
+        }
+    }
     let mut memory = MemorySection::new();
     memory.memory(MemoryType {
         minimum: 1,
@@ -2433,17 +2541,24 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, signature, target_function, &function_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts)?);
+        code.function(&encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts)?);
     }
     let mut module = WasmModule::new();
     module
         .section(&types)
         .section(&imports)
-        .section(&functions)
+        .section(&functions);
+    if target.table.is_some() {
+        module.section(&table_section);
+    }
+    module
         .section(&memory)
         .section(&globals)
-        .section(&exports)
-        .section(&code);
+        .section(&exports);
+    if target.table.is_some() {
+        module.section(&elements);
+    }
+    module.section(&code);
     if !target.static_data.is_empty() {
         module.section(&data);
     }
@@ -2493,6 +2608,7 @@ enum PlanToken {
     Unreachable,
     Return,
     Call(u32),
+    CallIndirect { type_index: u32, table_index: u32 },
     ReturnCall(u32),
     End,
 }
@@ -2543,6 +2659,7 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::Unreachable => PlanToken::Unreachable,
         wasmparser::Operator::Return => PlanToken::Return,
         wasmparser::Operator::Call { function_index } => PlanToken::Call(function_index),
+        wasmparser::Operator::CallIndirect { type_index, table_index } => PlanToken::CallIndirect { type_index, table_index },
         wasmparser::Operator::ReturnCall { function_index } => PlanToken::ReturnCall(function_index),
         wasmparser::Operator::End => PlanToken::End,
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
@@ -2972,6 +3089,7 @@ fn expected_linear_function_plan(
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     imports: &BTreeMap<ImportId, ImportContract>,
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -3125,6 +3243,22 @@ fn expected_linear_function_plan(
                     push_set(&mut plan, &layout, *destination)?;
                 }
             }
+            Operation::VarCall { destinations, callee, signature: call_signature, arguments } => {
+                if function.value_types.get(callee) != Some(&ValueType::Callable(*call_signature)) {
+                    return Err(CanonicalAdmissionError::UnsupportedPlan);
+                }
+                for argument in arguments {
+                    push_get(&mut plan, &layout, plan_call_argument(argument)?)?;
+                }
+                push_get(&mut plan, &layout, *callee)?;
+                plan.push(PlanToken::CallIndirect {
+                    type_index: *signature_indices.get(call_signature).ok_or(CanonicalAdmissionError::UnsupportedPlan)?,
+                    table_index: 0,
+                });
+                for destination in destinations.iter().rev() {
+                    push_set(&mut plan, &layout, *destination)?;
+                }
+            }
             Operation::HostCall { destinations, import, arguments } => {
                 push_host_call_plan(&mut plan, function, &layout, imports, import_indices, layouts, destinations, *import, arguments)?;
             }
@@ -3160,6 +3294,7 @@ fn expected_block_operations_plan(
     block: &BasicBlock,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     imports: &BTreeMap<ImportId, ImportContract>,
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -3190,6 +3325,7 @@ fn expected_block_operations_plan(
         signature,
         layouts,
         function_indices,
+        signature_indices,
         imports,
         import_indices,
         static_data_offsets,
@@ -3206,6 +3342,7 @@ struct PlanEmitter<'a> {
     layout: &'a LocalLayout,
     layouts: &'a LayoutInterner,
     function_indices: &'a BTreeMap<FunctionId, u32>,
+    signature_indices: &'a BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     imports: &'a BTreeMap<ImportId, ImportContract>,
     import_indices: &'a BTreeMap<ImportId, u32>,
     static_data_offsets: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -3395,7 +3532,8 @@ impl PlanEmitter<'_> {
             self.signature,
             &block,
             self.layouts,
-            self.function_indices,
+        self.function_indices,
+        self.signature_indices,
             self.imports,
             self.import_indices,
             self.static_data_offsets,
@@ -3464,7 +3602,7 @@ impl PlanEmitter<'_> {
         self.plan.push(PlanToken::Loop("Empty".to_owned()));
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
-        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.imports, self.import_indices, self.static_data_offsets)?);
+        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets)?);
         push_get(&mut self.plan, self.layout, *condition)?;
         self.plan.push(PlanToken::If("Empty".to_owned()));
         self.labels.push(StructuredLabel::If);
@@ -3490,6 +3628,7 @@ fn expected_function_plan(
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     imports: &BTreeMap<ImportId, ImportContract>,
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
@@ -3501,6 +3640,7 @@ fn expected_function_plan(
         layout: &layout,
         layouts,
         function_indices,
+        signature_indices,
         imports,
         import_indices,
         static_data_offsets,
@@ -3555,6 +3695,7 @@ fn expected_metadata_prefix(
         imports.import(&contract.module, &contract.name, EntityType::Function(type_index));
     }
     let mut functions = FunctionSection::new();
+    let mut tables = TableSection::new();
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
     let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -3564,13 +3705,26 @@ fn expected_metadata_prefix(
         functions.function(type_index);
         exports.export(&format!("f{}", function.id.get()), ExportKind::Func, import_count + index as u32);
     }
+    if let Some(table) = &target.table {
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            table64: false,
+            minimum: table.functions.len() as u64,
+            maximum: None,
+            shared: false,
+        });
+    }
     let mut memory = MemorySection::new();
     memory.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
     let mut module = WasmModule::new();
-    module.section(&types).section(&imports).section(&functions).section(&memory).section(&globals).section(&exports);
+    module.section(&types).section(&imports).section(&functions);
+    if target.table.is_some() {
+        module.section(&tables);
+    }
+    module.section(&memory).section(&globals).section(&exports);
     Ok(module.finish())
 }
 
@@ -3599,6 +3753,9 @@ fn decode_and_match_plan(
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
         .map(|(index, function)| (function.id, import_count + index as u32))
         .collect();
+    let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate()
+        .map(|(index, signature)| (signature.id, index as u32))
+        .collect();
     let import_indices: BTreeMap<_, _> = target.imports.iter().enumerate()
         .map(|(index, import)| (import.id, index as u32))
         .collect();
@@ -3613,7 +3770,7 @@ fn decode_and_match_plan(
             let local = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
             let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &imports, &import_indices, &static_data_offsets)?))
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut actual = Vec::new();
@@ -3621,20 +3778,67 @@ fn decode_and_match_plan(
     let mut section_order = Vec::new();
     let mut code_started = false;
     let mut actual_data = Vec::new();
+    let mut actual_table = None;
+    let mut actual_elements = None;
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
         match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
             wasmparser::Payload::Version { .. } => {}
             wasmparser::Payload::TypeSection(_) => section_order.push(0),
             wasmparser::Payload::ImportSection(_) => section_order.push(1),
             wasmparser::Payload::FunctionSection(_) => section_order.push(2),
-            wasmparser::Payload::MemorySection(_) => section_order.push(3),
-            wasmparser::Payload::GlobalSection(_) => section_order.push(4),
-            wasmparser::Payload::ExportSection(_) => section_order.push(5),
+            wasmparser::Payload::TableSection(reader) => {
+                if actual_table.is_some() {
+                    return Err(CanonicalAdmissionError::PlanMismatch("duplicate table section"));
+                }
+                let tables = reader.into_iter().collect::<Result<Vec<_>, _>>().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                if tables.len() != 1 {
+                    return Err(CanonicalAdmissionError::PlanMismatch("table count"));
+                }
+                let table = &tables[0];
+                actual_table = Some((
+                    table.ty.element_type == wasmparser::RefType::FUNCREF,
+                    table.ty.table64,
+                    table.ty.initial,
+                    table.ty.maximum,
+                    table.ty.shared,
+                ));
+                section_order.push(3);
+            }
+            wasmparser::Payload::MemorySection(_) => section_order.push(4),
+            wasmparser::Payload::GlobalSection(_) => section_order.push(5),
+            wasmparser::Payload::ExportSection(_) => section_order.push(6),
+            wasmparser::Payload::ElementSection(reader) => {
+                if actual_elements.is_some() {
+                    return Err(CanonicalAdmissionError::PlanMismatch("duplicate element section"));
+                }
+                let elements = reader.into_iter().collect::<Result<Vec<_>, _>>().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                if elements.len() != 1 {
+                    return Err(CanonicalAdmissionError::PlanMismatch("element count"));
+                }
+                let element = &elements[0];
+                let wasmparser::ElementKind::Active { table_index, offset_expr } = &element.kind else {
+                    return Err(CanonicalAdmissionError::PlanMismatch("element kind"));
+                };
+                if *table_index != None {
+                    return Err(CanonicalAdmissionError::PlanMismatch("element table"));
+                }
+                let mut offset = offset_expr.get_operators_reader();
+                if !matches!(offset.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?, wasmparser::Operator::I32Const { value: 0 })
+                    || !matches!(offset.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?, wasmparser::Operator::End)
+                {
+                    return Err(CanonicalAdmissionError::PlanMismatch("element offset"));
+                }
+                let wasmparser::ElementItems::Functions(reader) = &element.items else {
+                    return Err(CanonicalAdmissionError::PlanMismatch("element expressions"));
+                };
+                actual_elements = Some(reader.clone().into_iter().collect::<Result<Vec<_>, _>>().map_err(|_| CanonicalAdmissionError::WasmValidation)?);
+                section_order.push(7);
+            }
             wasmparser::Payload::CodeSectionStart { count, .. } => {
                 if code_count.replace(count).is_some() {
                     return Err(CanonicalAdmissionError::PlanMismatch("duplicate code section"));
                 }
-                section_order.push(6);
+                section_order.push(8);
                 code_started = true;
             }
             wasmparser::Payload::CodeSectionEntry(body) => {
@@ -3655,7 +3859,7 @@ fn decode_and_match_plan(
                 actual.push((locals, plan));
             }
             wasmparser::Payload::DataSection(reader) => {
-                section_order.push(7);
+                section_order.push(9);
                 for data in reader {
                     let data = data.map_err(|_| CanonicalAdmissionError::WasmValidation)?;
                     let wasmparser::DataKind::Active { memory_index, offset_expr } = data.kind else {
@@ -3684,9 +3888,17 @@ fn decode_and_match_plan(
     // The canonical encoder deliberately emits every fixed metadata section,
     // including an empty import section. Match that exact byte policy rather
     // than inferring section presence from the logical import count.
-    let mut expected_sections = vec![0, 1, 2, 3, 4, 5, 6];
-    if !target.static_data.is_empty() {
+    let mut expected_sections = vec![0, 1, 2];
+    if target.table.is_some() {
+        expected_sections.push(3);
+    }
+    expected_sections.extend([4, 5, 6]);
+    if target.table.is_some() {
         expected_sections.push(7);
+    }
+    expected_sections.push(8);
+    if !target.static_data.is_empty() {
+        expected_sections.push(9);
     }
     let expected_data = expected_static_data.iter().map(|segment| (segment.offset, segment.bytes.clone())).collect::<Vec<_>>();
     if section_order != expected_sections {
@@ -3703,6 +3915,23 @@ fn decode_and_match_plan(
     }
     if actual_data != expected_data {
         return Err(CanonicalAdmissionError::PlanMismatch("data contents"));
+    }
+    match &target.table {
+        Some(table) => {
+            let expected_table = (true, false, table.functions.len() as u64, None, false);
+            if actual_table != Some(expected_table) {
+                return Err(CanonicalAdmissionError::PlanMismatch("table definition"));
+            }
+            let expected_elements = table.functions.iter().map(|function| function_indices.get(function).copied().ok_or(CanonicalAdmissionError::UnsupportedPlan)).collect::<Result<Vec<_>, _>>()?;
+            if actual_elements != Some(expected_elements) {
+                return Err(CanonicalAdmissionError::PlanMismatch("table elements"));
+            }
+        }
+        None => {
+            if actual_table.is_some() || actual_elements.is_some() {
+                return Err(CanonicalAdmissionError::PlanMismatch("unexpected table"));
+            }
+        }
     }
     Ok(())
 }
@@ -4176,11 +4405,89 @@ mod tests {
                 0,
                 &operation,
                 &BTreeMap::new(),
+                &BTreeMap::new(),
                 &LayoutInterner::new(),
                 &BTreeMap::new(),
                 &mut BTreeMap::new(),
             ),
-            Err(LoweringError::UnsupportedOperation { operation: "VarCall", .. })
+            Err(LoweringError::UnsupportedOperation { .. })
+        ));
+    }
+
+    fn checked_var_call() -> ValidatedSafeWir {
+        let callable = ValueId::new(1);
+        let result = ValueId::new(2);
+        let callee_result = ValueId::new(3);
+        let caller_signature = scalar_signature_with(
+            FunctionSignatureId::new(20),
+            vec![ValueType::Callable(FunctionSignatureId::new(21))],
+            vec![ValueType::Int],
+        );
+        let callee_signature = scalar_signature(FunctionSignatureId::new(21));
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(20),
+            checked_source: CheckedSourceIdentity::from_digest([0x20; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![caller_signature, callee_signature],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FunctionId::new(20),
+                    signature: FunctionSignatureId::new(20),
+                    entry: crate::canonical_safewir::BlockId::new(20),
+                    value_types: [(callable, ValueType::Callable(FunctionSignatureId::new(21))), (result, ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(20),
+                        parameters: vec![BlockParameter { value: callable, value_type: ValueType::Callable(FunctionSignatureId::new(21)), ownership: None }],
+                        operations: vec![Operation::VarCall {
+                            destinations: vec![result],
+                            callee: callable,
+                            signature: FunctionSignatureId::new(21),
+                            arguments: Vec::new(),
+                        }],
+                        terminator: Terminator::Return { values: vec![result] },
+                    }],
+                },
+                Function {
+                    id: FunctionId::new(21),
+                    signature: FunctionSignatureId::new(21),
+                    entry: crate::canonical_safewir::BlockId::new(21),
+                    value_types: [(callee_result, ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(21),
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt { destination: callee_result, value: 42 }],
+                        terminator: Terminator::Return { values: vec![callee_result] },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn admitted_scalar_var_call_uses_authenticated_table_and_executes() {
+        let artifact = admit_canonical(checked_var_call()).expect("scalar indirect call artifact admits");
+        wasmparser::validate(&artifact.wasm()).expect("scalar indirect call is structurally valid");
+        assert!(artifact.wasm().contains(&0x11), "encoded artifact contains call_indirect");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<i32, i64>(&mut store, "f20").unwrap();
+        assert_eq!(function.call(&mut store, 1).unwrap(), 42);
+    }
+
+    #[test]
+    fn mutated_scalar_var_call_signature_fails_exact_admission() {
+        let mut bytes = encode_validated(checked_var_call()).expect("scalar indirect call encodes");
+        let call = bytes.iter().position(|byte| *byte == 0x11).expect("call_indirect opcode exists");
+        bytes[call + 1] = 0;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_var_call(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch("function body"))
+                | Err(CanonicalAdmissionError::WasmValidation)
         ));
     }
 
