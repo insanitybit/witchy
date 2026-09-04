@@ -184,6 +184,31 @@ mod tests {
     }
 
     #[test]
+    fn list_int_out_of_bounds_source_admits_then_traps() {
+        let source = "fn main() -> Int:\n    [10][1]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked out-of-bounds source");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("bounds checks permit safe canonical admission");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted bounds-checked artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted bounds-checked artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical main export");
+
+        assert!(main.call(&mut store, ()).is_err());
+    }
+
+    #[test]
     fn unsupported_string_layout_fails_closed_before_lowering() {
         let source = "fn text() -> String:\n    \"hello\"\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
