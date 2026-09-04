@@ -87,6 +87,7 @@ impl DerivedResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Origin {
+    Unseen,
     Unknown,
     Parameter { parameter: u32, layout: Option<crate::layout::LayoutId> },
     Fresh(crate::layout::LayoutId),
@@ -98,6 +99,7 @@ enum Origin {
 impl Origin {
     fn result(self, value_type: ValueType) -> DerivedResult {
         match (self, value_type) {
+            (Origin::Unseen, _) => DerivedResult::Unseen,
             (Origin::Unknown, value_type) if is_scalar(value_type) => DerivedResult::Value(value_type),
             (Origin::Fresh(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::Fresh(layout),
             (Origin::StaticData(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::StaticData(layout),
@@ -184,7 +186,7 @@ fn derive_summary(
         .enumerate()
         .map(|(index, parameter)| (parameter.value, index as u32))
         .collect::<BTreeMap<_, _>>();
-    let mut origins = parameter_values
+    let entry_origins = parameter_values
         .iter()
         .map(|(value, parameter)| {
             let layout = match function.value_types.get(value).copied() {
@@ -194,11 +196,12 @@ fn derive_summary(
             (*value, Origin::Parameter { parameter: *parameter, layout })
         })
         .collect::<BTreeMap<_, _>>();
+    let mut origins = derive_origins(function, summaries, &entry_origins)?;
     let mut summary = initial_summary(function, signatures)?;
 
     for block in &function.blocks {
         for operation in &block.operations {
-            derive_operation(function, operation, functions, summaries, &parameter_values, &mut origins, &mut summary)?;
+            derive_operation(function, operation, functions, summaries, &mut origins, &mut summary)?;
         }
         match &block.terminator {
             Terminator::Return { values } => {
@@ -208,10 +211,7 @@ fn derive_summary(
                     if let Some(slot) = summary.results.get_mut(index) {
                         slot.join(result);
                     }
-                    if let Some(parameter) = parameter_values.get(value).copied() {
-                        summary.escaped_parameters.insert(parameter);
-                        summary.needs[parameter as usize] = summary.needs[parameter as usize].join(ParameterNeed::Read);
-                    }
+                    mark_escape(&mut summary, origin_of(&origins, *value));
                 }
             }
             Terminator::TailCall { callee, arguments, .. } => {
@@ -225,7 +225,7 @@ fn derive_summary(
                     &origins,
                     &mut summary,
                 )?;
-                derive_call_needs(*callee, arguments, functions, summaries, &parameter_values, &mut summary)?;
+                derive_call_needs(*callee, arguments, functions, summaries, &origins, &mut summary)?;
             }
             Terminator::VarTailCall { .. } => {
                 return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
@@ -236,13 +236,163 @@ fn derive_summary(
     Ok(summary)
 }
 
+fn derive_origins(
+    function: &Function,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+    entry_origins: &BTreeMap<ValueId, Origin>,
+) -> Result<BTreeMap<ValueId, Origin>, InitialCheckError> {
+    let blocks = function
+        .blocks
+        .iter()
+        .map(|block| (block.id, block))
+        .collect::<BTreeMap<_, _>>();
+    let mut origins = function
+        .blocks
+        .iter()
+        .flat_map(|block| block.parameters.iter().map(|parameter| (parameter.value, Origin::Unseen)))
+        .collect::<BTreeMap<_, _>>();
+    origins.extend(entry_origins.iter().map(|(value, origin)| (*value, *origin)));
+
+    let iteration_limit = function.value_types.len().saturating_add(function.blocks.len()).saturating_add(1);
+    for _ in 0..iteration_limit {
+        let before = origins.clone();
+        for block in &function.blocks {
+            for operation in &block.operations {
+                propagate_operation_origins(function.id, operation, summaries, &mut origins)?;
+            }
+            match &block.terminator {
+                Terminator::Branch { target, arguments } => {
+                    propagate_block_arguments(function, &blocks, *target, arguments, &mut origins)?;
+                }
+                Terminator::BranchIf {
+                    then_target,
+                    then_arguments,
+                    else_target,
+                    else_arguments,
+                    ..
+                } => {
+                    propagate_block_arguments(function, &blocks, *then_target, then_arguments, &mut origins)?;
+                    propagate_block_arguments(function, &blocks, *else_target, else_arguments, &mut origins)?;
+                }
+                Terminator::Return { .. }
+                | Terminator::TailCall { .. }
+                | Terminator::VarTailCall { .. }
+                | Terminator::Trap
+                | Terminator::Unreachable => {}
+            }
+        }
+        if origins == before {
+            return Ok(origins);
+        }
+    }
+    Err(InitialCheckError::UnknownCallableContract { function: function.id })
+}
+
+fn propagate_operation_origins(
+    function: FunctionId,
+    operation: &Operation,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+    origins: &mut BTreeMap<ValueId, Origin>,
+) -> Result<(), InitialCheckError> {
+    match operation {
+        Operation::Alloc { destination, layout, .. } => join_origin(origins, *destination, Origin::Fresh(*layout)),
+        Operation::StaticData { destination, layout, .. } => {
+            join_origin(origins, *destination, Origin::StaticData(*layout));
+        }
+        Operation::Share { destination, source } => {
+            let origin = match origin_of(origins, *source) {
+                Origin::Parameter { layout: Some(layout), .. }
+                | Origin::Fresh(layout)
+                | Origin::StaticData(layout)
+                | Origin::Shared(layout)
+                | Origin::ReallocatesParameter { layout, .. } => Origin::Shared(layout),
+                Origin::Unseen => Origin::Unseen,
+                _ => Origin::Unknown,
+            };
+            join_origin(origins, *destination, origin);
+        }
+        Operation::MoveValue { destination, source } => {
+            let origin = origin_of(origins, *source);
+            join_origin(origins, *destination, origin);
+        }
+        Operation::Load { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
+        Operation::Call { destinations, callee, arguments } => {
+            let summary = summaries.get(callee).ok_or(InitialCheckError::MissingFunction(*callee))?;
+            if destinations.len() != summary.results.len() {
+                return Err(InitialCheckError::ArityMismatch {
+                    context: "derived call results",
+                    expected: summary.results.len(),
+                    actual: destinations.len(),
+                });
+            }
+            for (destination, result) in destinations.iter().zip(&summary.results) {
+                let origin = result_origin(result, arguments, origins, ValueType::Unit);
+                join_origin(origins, *destination, origin);
+            }
+        }
+        Operation::VarCall { .. } => return Err(InitialCheckError::UnsupportedIndirectCall { function }),
+        Operation::ConstInt { destination, .. }
+        | Operation::ConstFloat { destination, .. }
+        | Operation::ConstBool { destination, .. }
+        | Operation::ConstSize { destination, .. }
+        | Operation::Arithmetic { destination, .. }
+        | Operation::Compare { destination, .. }
+        | Operation::NarrowSize { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
+        Operation::Guard { .. }
+        | Operation::Store { .. }
+        | Operation::CopyBytes { .. }
+        | Operation::MoveRange { .. }
+        | Operation::CloneRange { .. }
+        | Operation::UpdateCount { .. }
+        | Operation::Retain { .. }
+        | Operation::Release { .. }
+        | Operation::Reclaim { .. }
+        | Operation::HostCall { .. } => {}
+    }
+    Ok(())
+}
+
+fn propagate_block_arguments(
+    function: &Function,
+    blocks: &BTreeMap<super::super::BlockId, &super::super::BasicBlock>,
+    target: super::super::BlockId,
+    arguments: &[ValueId],
+    origins: &mut BTreeMap<ValueId, Origin>,
+) -> Result<(), InitialCheckError> {
+    let block = blocks
+        .get(&target)
+        .copied()
+        .ok_or(InitialCheckError::MissingBlock { function: function.id, block: target })?;
+    if block.parameters.len() != arguments.len() {
+        return Err(InitialCheckError::ArityMismatch {
+            context: "derived branch arguments",
+            expected: block.parameters.len(),
+            actual: arguments.len(),
+        });
+    }
+    let incoming = arguments.iter().map(|argument| origin_of(origins, *argument)).collect::<Vec<_>>();
+    for (parameter, origin) in block.parameters.iter().zip(incoming) {
+        join_origin(origins, parameter.value, origin);
+    }
+    Ok(())
+}
+
+fn join_origin(origins: &mut BTreeMap<ValueId, Origin>, destination: ValueId, incoming: Origin) {
+    let current = origins.get(&destination).copied().unwrap_or(Origin::Unseen);
+    let joined = match (current, incoming) {
+        (Origin::Unseen, value) | (value, Origin::Unseen) => value,
+        (left, right) if left == right => left,
+        _ => Origin::Unknown,
+    };
+    origins.insert(destination, joined);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn derive_operation(
     function: &Function,
     operation: &Operation,
     functions: &BTreeMap<FunctionId, &Function>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
-    parameter_values: &BTreeMap<ValueId, u32>,
     origins: &mut BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
 ) -> Result<(), InitialCheckError> {
@@ -291,7 +441,7 @@ fn derive_operation(
                 let value_type = function.value_types.get(destination).copied().unwrap_or(ValueType::Unit);
                 origins.insert(*destination, result_origin(result, arguments, origins, value_type));
             }
-            derive_call_needs(*callee, arguments, functions, summaries, parameter_values, summary)?;
+            derive_call_needs(*callee, arguments, functions, summaries, origins, summary)?;
         }
         Operation::VarCall { .. } => {
             return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
@@ -338,13 +488,17 @@ fn derive_call_needs(
     arguments: &[CallArgument],
     functions: &BTreeMap<FunctionId, &Function>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
-    parameter_values: &BTreeMap<ValueId, u32>,
+    origins: &BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
 ) -> Result<(), InitialCheckError> {
     if !functions.contains_key(&callee) { return Err(InitialCheckError::MissingFunction(callee)); }
     let callee_summary = summaries.get(&callee).ok_or(InitialCheckError::MissingFunction(callee))?;
     for (index, argument) in arguments.iter().enumerate() {
-        let Some(parameter) = parameter_values.get(&argument_value(argument)).copied() else { continue; };
+        let origin = origin_of(origins, argument_value(argument));
+        let parameter = match origin {
+            Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. } => parameter,
+            _ => continue,
+        };
         let need = callee_summary.needs.get(index).copied().unwrap_or(ParameterNeed::Unknown);
         if let Some(effect) = need.effect() { add_effect(summary, Origin::Parameter { parameter, layout: None }, effect); }
         let mut merged = summary.needs.get(parameter as usize).copied().ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?.join(need);
@@ -365,7 +519,8 @@ fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &B
         DerivedResult::Shared(layout) => Origin::Shared(*layout),
         DerivedResult::AliasesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).map(|origin| match origin { Origin::Parameter { parameter, .. } => Origin::Parameter { parameter, layout: Some(*layout) }, other => other }).unwrap_or(Origin::Unknown),
         DerivedResult::ReallocatesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).and_then(|origin| match origin { Origin::Parameter { parameter, .. } => Some(Origin::ReallocatesParameter { parameter, layout: *layout }), _ => None }).unwrap_or(Origin::Unknown),
-        DerivedResult::Unseen | DerivedResult::Unknown | DerivedResult::Value(_) => Origin::Unknown,
+        DerivedResult::Unseen => Origin::Unseen,
+        DerivedResult::Unknown | DerivedResult::Value(_) => Origin::Unknown,
     }
 }
 
@@ -380,7 +535,14 @@ fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
     if let Some(slot) = summary.needs.get_mut(parameter as usize) { *slot = slot.join(need); }
 }
 
-fn mark_escape(summary: &mut BodySummary, origin: Origin) { if let Origin::Parameter { parameter, .. } = origin { summary.escaped_parameters.insert(parameter); } }
+fn mark_escape(summary: &mut BodySummary, origin: Origin) {
+    if let Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. } = origin {
+        summary.escaped_parameters.insert(parameter);
+        if let Some(need) = summary.needs.get_mut(parameter as usize) {
+            *need = need.join(ParameterNeed::Read);
+        }
+    }
+}
 
 fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Result<(), InitialCheckError> {
     if signature.contract.parameters.len() != signature.parameters.len() || signature.contract.results.len() != signature.results.len() { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
@@ -461,6 +623,67 @@ mod tests {
         let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared, non_escaping: false }], results: vec![ResultContract::AliasesParameter { parameter: 0, layout }], parameter_effects: BTreeMap::new() };
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Shared) }], operations: Vec::new(), terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: vec![ValueType::Ref(layout)], contract };
+        let (functions, signatures) = maps(function, signature);
+        assert!(check_all(&functions, &signatures).is_ok());
+    }
+
+    #[test]
+    fn returning_a_parameter_through_a_cfg_join_derives_alias_result() {
+        let object = ValueId::new(0);
+        let joined = ValueId::new(1);
+        let join = BlockId::new(1);
+        let layout = layout();
+        let contract = super::super::super::CallableContract {
+            parameters: vec![ParameterContract {
+                value_type: ValueType::Ref(layout),
+                ownership: ParameterOwnership::Shared,
+                non_escaping: false,
+            }],
+            results: vec![ResultContract::AliasesParameter { parameter: 0, layout }],
+            parameter_effects: BTreeMap::new(),
+        };
+        let function = Function {
+            id: FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: ENTRY,
+            value_types: [
+                (object, ValueType::Ref(layout)),
+                (joined, ValueType::Ref(layout)),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![
+                BasicBlock {
+                    id: ENTRY,
+                    parameters: vec![BlockParameter {
+                        value: object,
+                        value_type: ValueType::Ref(layout),
+                        ownership: Some(Ownership::Shared),
+                    }],
+                    operations: Vec::new(),
+                    terminator: Terminator::Branch {
+                        target: join,
+                        arguments: vec![object],
+                    },
+                },
+                BasicBlock {
+                    id: join,
+                    parameters: vec![BlockParameter {
+                        value: joined,
+                        value_type: ValueType::Ref(layout),
+                        ownership: Some(Ownership::Shared),
+                    }],
+                    operations: Vec::new(),
+                    terminator: Terminator::Return { values: vec![joined] },
+                },
+            ],
+        };
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![ValueType::Ref(layout)],
+            results: vec![ValueType::Ref(layout)],
+            contract,
+        };
         let (functions, signatures) = maps(function, signature);
         assert!(check_all(&functions, &signatures).is_ok());
     }
