@@ -50,6 +50,8 @@ struct RangeState {
     ownership: Ownership,
     allocation_class: Option<AllocationClass>,
     initialized: bool,
+    zero_width: bool,
+    zero_start: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -805,11 +807,11 @@ impl<'a> MemoryChecker<'a> {
             });
             self.state.range_states.insert(
                 RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
-                RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: moved.allocation_class, initialized: true },
+                RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: moved.allocation_class, initialized: true, zero_width: self.is_zero(count), zero_start: self.is_zero(destination.start) },
             );
             self.state.range_states.insert(
                 RangeIdentity { object: source.object, start: source.start, length: source.length },
-                RangeState { element: source.element, ownership: Ownership::Consumed, allocation_class: moved.allocation_class, initialized: false },
+                RangeState { element: source.element, ownership: Ownership::Consumed, allocation_class: moved.allocation_class, initialized: false, zero_width: self.is_zero(count), zero_start: self.is_zero(source.start) },
             );
         } else {
             self.require_scalar_range_element(destination.element, "MoveRange")?;
@@ -867,7 +869,8 @@ impl<'a> MemoryChecker<'a> {
                 && self.same_scalar(identity.length, range.length)
                 && state.element == element
                 && state.ownership == Ownership::Unique
-                && state.initialized)
+                && state.initialized
+                && (!state.zero_width || self.is_zero(range.length)))
                 .then_some(*state)
         }) {
             return Ok(state);
@@ -896,7 +899,7 @@ impl<'a> MemoryChecker<'a> {
             }
             allocation_class = stored.allocation_class;
         }
-        Ok(RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true })
+        Ok(RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true, zero_width: self.is_zero(range.length), zero_start: self.is_zero(range.start) })
     }
 
     fn require_destination_range_empty(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
@@ -910,7 +913,7 @@ impl<'a> MemoryChecker<'a> {
             || !self.state.range_states.iter().any(|(identity, state)| {
                 identity.object == range.object
                     && state.initialized
-                    && self.is_zero(identity.start)
+                    && state.zero_start
                     && self.is_zero(identity.length)
             })
         {
@@ -1374,6 +1377,8 @@ impl<'a> MemoryChecker<'a> {
                         ownership: Ownership::Unique,
                         allocation_class: None,
                         initialized: true,
+                        zero_width: true,
+                        zero_start: true,
                     },
                 );
             }
@@ -1505,7 +1510,7 @@ impl<'a> MemoryChecker<'a> {
             let range = self.state.range_states.iter().find_map(|(identity, state)| {
                 (identity.object == place.object()
                     && state.initialized
-                    && self.is_zero(identity.start)
+                    && state.zero_start
                     && self.strict_less(index, identity.length))
                     .then_some((*identity, *state))
             }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
@@ -1610,7 +1615,7 @@ impl<'a> MemoryChecker<'a> {
             if self.state.range_states.iter().any(|(identity, state)| {
                 identity.object == place.object()
                     && state.initialized
-                    && self.is_zero(identity.start)
+                    && state.zero_start
                     && self.strict_less(*index, identity.length)
             }) {
                 return self.unsupported("Store(overwrite initialized prefix)");
@@ -1902,12 +1907,14 @@ impl<'a> MemoryChecker<'a> {
                     ownership: Ownership::Unique,
                     allocation_class: None,
                     initialized: true,
+                    zero_width: true,
+                    zero_start: true,
                 },
             );
             return Ok(());
         }
         let existing = self.state.range_states.iter().find_map(|(identity, state)| {
-            (identity.object == object && state.initialized && self.is_zero(identity.start))
+            (identity.object == object && state.initialized && state.zero_start)
                 .then_some((*identity, *state))
         }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
             function: self.function.id,
@@ -1955,6 +1962,8 @@ impl<'a> MemoryChecker<'a> {
                     ownership: Ownership::Unique,
                     allocation_class: stored.allocation_class,
                     initialized: true,
+                    zero_width: self.is_zero(count),
+                    zero_start: existing.1.zero_start,
                 },
             );
             return Ok(());
@@ -1994,7 +2003,7 @@ impl<'a> MemoryChecker<'a> {
         self.state.range_states.remove(&existing.0);
         self.state.range_states.insert(
             RangeIdentity { object, start: existing.0.start, length: count },
-            RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true },
+            RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true, zero_width: self.is_zero(count), zero_start: existing.1.zero_start },
         );
         Ok(())
     }
@@ -2176,6 +2185,7 @@ impl<'a> MemoryChecker<'a> {
 
     fn less_equal(&self, left: ValueId, right: ValueId) -> bool {
         self.constant_relation(left, right, |left, right| left <= right)
+            || self.is_zero(left)
             || self
                 .state.guards
                 .iter()
@@ -2445,17 +2455,53 @@ fn meet_range_states(
         .range_states
         .iter()
         .filter_map(|(identity, current)| {
-            let (_, next) = incoming.range_states.iter().find(|(candidate, _)| {
+            let mut candidates = incoming.range_states.iter().filter(|(candidate, next)| {
                 candidate.object == identity.object
-                    && same_scalar_across(existing, identity.start, incoming, candidate.start)
-                    && same_scalar_across(existing, identity.length, incoming, candidate.length)
-            })?;
+                    && next.element == current.element
+                    && (current.zero_width
+                        || next.zero_width
+                        || (same_scalar_across(
+                            existing,
+                            identity.start,
+                            incoming,
+                            candidate.start,
+                        ) && same_scalar_across(
+                            existing,
+                            identity.length,
+                            incoming,
+                            candidate.length,
+                        )))
+            });
+            let (next_identity, next) = candidates.next()?;
+            if candidates.next().is_some() {
+                return None;
+            }
+            if current.zero_width && !next.zero_width {
+                return next.initialized.then_some((*next_identity, *next));
+            }
+            if next.zero_width && !current.zero_width {
+                return current.initialized.then_some((*identity, *current));
+            }
+            if current.zero_width && next.zero_width {
+                return Some((
+                    *identity,
+                    RangeState {
+                        element: current.element,
+                        ownership: Ownership::Unique,
+                        allocation_class: None,
+                        initialized: true,
+                        zero_width: true,
+                        zero_start: current.zero_start && next.zero_start,
+                    },
+                ));
+            }
             if current == next {
                 return Some((*identity, *current));
             }
             if current.element != next.element
                 || current.initialized != next.initialized
                 || !current.initialized
+                || current.zero_start != next.zero_start
             {
                 return None;
             }
@@ -2465,17 +2511,10 @@ fn meet_range_states(
                 | (Ownership::Shared, Ownership::Unique) => Ownership::Shared,
                 _ => return None,
             };
-            let current_empty = existing.constants.get(&identity.length) == Some(&0);
-            let next_empty = incoming.constants.get(&identity.length) == Some(&0);
-            let allocation_class = if current.allocation_class == next.allocation_class {
-                current.allocation_class
-            } else if current_empty {
-                next.allocation_class
-            } else if next_empty {
-                current.allocation_class
-            } else {
-                None
-            };
+            let allocation_class =
+                (current.allocation_class == next.allocation_class)
+                    .then_some(current.allocation_class)
+                    .flatten();
             Some((
                 *identity,
                 RangeState { ownership, allocation_class, ..*current },
@@ -3031,13 +3070,13 @@ mod tests {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
                 RangeIdentity { object: DESTINATION, start: START, length: ZERO },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true, zero_width: true, zero_start: true },
             );
             checker.state.constants.remove(&COUNT);
             checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY));
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
             assert_eq!(
                 checker.check(&Operation::MoveRange {
@@ -3049,11 +3088,11 @@ mod tests {
             );
             assert_eq!(
                 checker.state.range_states[&RangeIdentity { object: DESTINATION, start: START, length: COUNT }],
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true }
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true }
             );
             assert_eq!(
                 checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
-                RangeState { element: pointer_element, ownership: Ownership::Consumed, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: false }
+                RangeState { element: pointer_element, ownership: Ownership::Consumed, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: false, zero_width: false, zero_start: true }
             );
         });
     }
@@ -3081,11 +3120,11 @@ mod tests {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
             checker.state.range_states.insert(
                 RangeIdentity { object: DESTINATION, start: START, length: ZERO },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true, zero_width: true, zero_start: true },
             );
             let operation = Operation::MoveRange {
                 destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
@@ -3109,7 +3148,7 @@ mod tests {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
             assert!(matches!(
                 checker.check(&Operation::MoveRange {
@@ -3131,11 +3170,11 @@ mod tests {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
             checker.state.range_states.insert(
                 RangeIdentity { object: DESTINATION, start: START, length: COUNT },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
             assert!(matches!(
                 checker.check(&Operation::MoveRange {
@@ -3157,11 +3196,11 @@ mod tests {
             let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: LENGTH },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
             checker.state.range_states.insert(
                 RangeIdentity { object: DESTINATION, start: START, length: ZERO },
-                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true, zero_width: true, zero_start: true },
             );
             assert_eq!(
                 checker.check(&Operation::MoveRange {
