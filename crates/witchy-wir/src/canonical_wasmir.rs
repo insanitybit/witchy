@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use sha2::{Digest, Sha256};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection,
     Function as WasmFunctionEncoder, FunctionSection, GlobalSection, GlobalType, Ieee64,
@@ -3357,6 +3358,7 @@ mod tests {
             Err(CanonicalAdmissionError::PlanMismatch)
         ));
     }
+    #[cfg(feature = "native")]
     #[test]
     fn packed_scalar_collection_access_mutates_and_preserves_headers() {
         let source = checked_packed_list_fixture(false);
@@ -3372,6 +3374,7 @@ mod tests {
         assert_eq!(run.call(&mut store, ()).unwrap(), 42);
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn packed_scalar_collection_oob_guard_traps_in_wasmtime() {
         let wasm = encode_validated(checked_packed_list_fixture(true)).expect("OOB fixture encodes");
@@ -3383,6 +3386,7 @@ mod tests {
         assert!(run.call(&mut store, ()).is_err());
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn shared_destination_preserves_root_for_use() {
         let source = checked_share_fixture();
@@ -3398,6 +3402,7 @@ mod tests {
         assert_eq!(run.call(&mut store, ()).unwrap(), 1);
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn consecutive_rc_allocations_reserve_non_overlapping_prefixes() {
         let source = checked_two_allocations_fixture();
@@ -3413,6 +3418,7 @@ mod tests {
         assert_eq!(run.call(&mut store, ()).unwrap(), 7);
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn allocation_refuses_to_return_storage_past_fixed_linear_memory() {
         let mut interner = LayoutInterner::new();
@@ -3436,6 +3442,7 @@ mod tests {
         assert!(run.call(&mut store, ()).is_err());
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn share_at_max_refcount_traps_before_destination_or_refcount_write() {
         let wasm = rc_boundary_module(true, true);
@@ -3449,6 +3456,7 @@ mod tests {
         assert_eq!(state.call(&mut store, ()).unwrap() as u64, u64::from(u32::MAX));
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn release_at_zero_refcount_traps_before_decrement() {
         let wasm = rc_boundary_module(false, false);

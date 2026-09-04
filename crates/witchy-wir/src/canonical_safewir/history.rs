@@ -1168,6 +1168,7 @@ mod tests {
         let first = OptimizationHistoryWitness {
             body: OptimizationHistoryBody {
                 checked_lowering_revision_digest: ModuleDigest([1; 32]),
+                proper_tail_manifest_digest: ModuleDigest([4; 32]),
                 ordered: Vec::new(),
                 final_safewir_revision_digest: ModuleDigest([2; 32]),
                 optimizer_policy_and_route_digest: policy_and_route_digest(),

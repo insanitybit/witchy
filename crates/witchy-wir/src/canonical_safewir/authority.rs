@@ -66,6 +66,14 @@ impl ValidatedSafeWir {
     pub fn checked_lowering(&self) -> &CheckedLoweringWitness {
         &self.checked_lowering
     }
+
+    pub(crate) fn final_module_digest(&self) -> ModuleDigest {
+        module_digest(&self.module)
+    }
+
+    pub(crate) fn history_digest(&self) -> ModuleDigest {
+        self.optimization_history.identity_digest()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -134,9 +134,14 @@ fn canonical_wasm_encoding_is_private_and_requires_final_authority() {
     let encoder = named(&file, "encode_validated");
     assert!(matches!(encoder.vis, Visibility::Inherited));
     assert!(takes(encoder, "ValidatedSafeWir"));
+    let admission = named(&file, "admit_canonical");
+    assert!(is_public(admission));
+    assert!(takes(admission, "ValidatedSafeWir"));
     assert!(
-        functions(&file).all(|function| !is_public(function)),
-        "canonical WasmIR must not grow a public raw-byte producer"
+        functions(&file).all(|function| {
+            !is_public(function) || function.sig.ident == "admit_canonical"
+        }),
+        "canonical WasmIR must expose only validated artifact admission"
     );
 }
 
