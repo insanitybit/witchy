@@ -1,7 +1,7 @@
-use std::{collections::BTreeSet, fs};
+use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
 use syn::visit::Visit;
-use syn::{FnArg, Item, ItemFn, Type, Visibility};
+use syn::{ExprStruct, Fields, FnArg, Item, ItemFn, ItemStruct, Path as SynPath, Type, Visibility};
 
 fn read_source(relative: &str) -> String {
     let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative);
@@ -75,6 +75,166 @@ fn called_functions(file: &syn::File) -> BTreeSet<String> {
     let mut calls = CalledFunctions::default();
     calls.visit_file(file);
     calls.0
+}
+
+fn rust_sources(root: &Path) -> Vec<(PathBuf, String)> {
+    fn collect(directory: &Path, files: &mut Vec<(PathBuf, String)>) {
+        for entry in fs::read_dir(directory)
+            .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
+        {
+            let entry = entry.unwrap_or_else(|error| panic!("read directory entry: {error}"));
+            let path = entry.path();
+            if path.is_dir() {
+                collect(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+                files.push((path, source));
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect(root, &mut files);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+fn path_ends_in(path: &SynPath, name: &str) -> bool {
+    path.segments.last().is_some_and(|segment| segment.ident == name)
+}
+
+#[derive(Default)]
+struct WasmIrSurface {
+    references: usize,
+    declarations: Vec<ItemStruct>,
+    constructions: Vec<(String, bool, bool)>,
+    current_function: Option<(String, bool, bool)>,
+}
+
+impl<'ast> Visit<'ast> for WasmIrSurface {
+    fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
+        if item.ident == "WasmIr" {
+            self.references += 1;
+            self.declarations.push(item.clone());
+        }
+        syn::visit::visit_item_struct(self, item);
+    }
+
+    fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+        if path_ends_in(&path.path, "WasmIr") {
+            self.references += 1;
+        }
+        syn::visit::visit_type_path(self, path);
+    }
+
+    fn visit_expr_struct(&mut self, expression: &'ast ExprStruct) {
+        if path_ends_in(&expression.path, "WasmIr") {
+            self.references += 1;
+            let (function, is_public, takes_validated) = self
+                .current_function
+                .clone()
+                .unwrap_or_else(|| ("<item initializer>".to_string(), true, false));
+            self.constructions.push((function, is_public, takes_validated));
+        }
+        syn::visit::visit_expr_struct(self, expression);
+    }
+
+    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+        let context = (
+            function.sig.ident.to_string(),
+            is_public(function),
+            takes(function, "ValidatedSafeWir"),
+        );
+        let previous = self.current_function.replace(context);
+        syn::visit::visit_item_fn(self, function);
+        self.current_function = previous;
+    }
+}
+
+#[test]
+fn canonical_wasmir_has_one_private_validated_construction_surface() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source_root = manifest_dir.join("src");
+    let canonical = source_root.join("canonical_wasmir.rs");
+    let mut canonical_surface = WasmIrSurface::default();
+
+    for (path, source) in rust_sources(&source_root) {
+        let file = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
+        let mut surface = WasmIrSurface::default();
+        surface.visit_file(&file);
+        if path == canonical {
+            canonical_surface = surface;
+        } else {
+            assert_eq!(
+                surface.references, 0,
+                "WasmIr must not be referenced outside the private canonical backend: {}",
+                path.display()
+            );
+        }
+    }
+
+    assert_eq!(canonical_surface.declarations.len(), 1, "WasmIr must have one declaration");
+    let declaration = &canonical_surface.declarations[0];
+    assert!(matches!(declaration.vis, Visibility::Inherited));
+    if let Fields::Named(fields) = &declaration.fields {
+        assert!(
+            fields.named.iter().all(|field| matches!(field.vis, Visibility::Inherited)),
+            "WasmIr fields must remain private"
+        );
+    } else {
+        panic!("WasmIr must retain its named private fields");
+    }
+
+    assert_eq!(canonical_surface.constructions.len(), 1, "WasmIr must have one construction site");
+    let (function, is_public, takes_validated) = &canonical_surface.constructions[0];
+    assert!(!is_public, "WasmIr construction site `{function}` must be private");
+    assert!(
+        *takes_validated,
+        "WasmIr construction site `{function}` must directly accept ValidatedSafeWir"
+    );
+}
+
+fn workspace_manifests() -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut manifests = vec![root.join("Cargo.toml")];
+    let crates = root.join("crates");
+    for entry in fs::read_dir(&crates).unwrap_or_else(|error| panic!("read {}: {error}", crates.display())) {
+        let entry = entry.unwrap_or_else(|error| panic!("read workspace crate: {error}"));
+        let manifest = entry.path().join("Cargo.toml");
+        if manifest.is_file() {
+            manifests.push(manifest);
+        }
+    }
+    manifests.sort();
+    manifests
+}
+
+#[test]
+fn raw_encoder_feature_is_dev_only_in_the_workspace_feature_tree() {
+    let mut uses = 0;
+    for manifest in workspace_manifests() {
+        let source = fs::read_to_string(&manifest)
+            .unwrap_or_else(|error| panic!("read {}: {error}", manifest.display()));
+        let mut section = String::new();
+        for (line_number, line) in source.lines().enumerate() {
+            let line = line.split('#').next().unwrap_or_default().trim();
+            if line.starts_with('[') && line.ends_with(']') {
+                section = line.to_string();
+            }
+            if line.contains("\"raw-encoder-test-api\"") {
+                uses += 1;
+                assert!(
+                    section.contains("dev-dependencies"),
+                    "raw-encoder-test-api must be reachable only through dev-dependencies: {}:{} ({section})",
+                    manifest.display(),
+                    line_number + 1
+                );
+            }
+        }
+    }
+    assert!(uses > 0, "workspace must retain an explicit dev-only raw encoder test feature edge");
 }
 
 #[test]
