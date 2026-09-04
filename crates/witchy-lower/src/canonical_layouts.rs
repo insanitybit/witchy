@@ -117,6 +117,10 @@ impl LayoutProjection {
             }
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
                 "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" => Ok(()),
+                "String" => {
+                    self.roots.push(ty.clone());
+                    Ok(())
+                }
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
             Type::Named(name, arguments) if name == "List" => {
@@ -137,14 +141,35 @@ impl LayoutProjection {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
         for ty in self.roots {
-            let root = interner
-                .intern_type(&ty, &V1Resolver)
-                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let root = if is_string_type(&ty) {
+                // String uses the existing runtime `[u32 byte_length][raw
+                // bytes...]` carrier. RawByte is representation-only and is
+                // intentionally distinct from Bool and tag lanes. The RC
+                // allocator word is outside this object descriptor, so this
+                // runtime buffer has no length/capacity header variant.
+                let byte = interner
+                    .intern_scalar(ScalarKind::RawByte)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                interner
+                    .intern_runtime_buffer(byte)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            } else {
+                interner
+                    .intern_type(&ty, &V1Resolver)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            };
             roots.insert(root);
         }
         LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
     }
+}
+
+fn is_string_type(ty: &Type) -> bool {
+    matches!(
+        ty.unqualified(),
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+    )
 }
 
 struct V1Resolver;

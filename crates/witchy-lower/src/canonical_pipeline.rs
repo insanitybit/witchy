@@ -285,8 +285,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_string_layout_fails_closed_before_lowering() {
-        let source = "fn text() -> String:\n    \"hello\"\n";
+    fn checked_string_signature_and_utf8_literal_project_one_deterministic_byte_layout() {
+        let source = "fn text() -> String:\n    \"h\u{00e9}llo\"\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
             "main",
@@ -294,13 +294,27 @@ mod tests {
         )
         .expect("checked String source");
 
-        let error = match validate_checked_module(&checked) {
-            Ok(_) => panic!("String is outside canonical v1"),
-            Err(error) => error,
+        let canonical = checked.canonical_source().expect("canonical source");
+        let first = derive_layout_bundle(canonical).expect("project canonical String layout");
+        let second = derive_layout_bundle(canonical).expect("reproject canonical String layout");
+        assert_eq!(first.canonical_bytes(), second.canonical_bytes());
+        assert_eq!(first.roots().len(), 1);
+
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&first.canonical_bytes())
+            .expect("decode projected String layout bundle");
+        let string = layouts.get(first.roots()[0]).expect("String descriptor");
+        let element = match string.kind() {
+            witchy_wir::layout::LayoutKind::RuntimeBuffer { element } => *element,
+            other => panic!("expected canonical String byte buffer, got {other:?}"),
         };
-        assert!(matches!(
-            error,
-            CanonicalPipelineError::Layout(CanonicalLayoutError::UnsupportedType(_))
-        ));
+        assert_eq!(
+            string.size(),
+            witchy_wir::layout::LayoutSize::Dynamic { base: 4, stride: 1 }
+        );
+        assert_eq!(string.header(), witchy_wir::layout::HeaderLayout::None);
+        assert_eq!(
+            layouts.get(element).expect("RawByte descriptor").kind(),
+            &witchy_wir::layout::LayoutKind::Scalar(witchy_wir::layout::ScalarKind::RawByte)
+        );
     }
 }
