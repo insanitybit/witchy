@@ -39,7 +39,17 @@
           "input_domain": { "type": "object", "minProperties": 1 },
           "environment_domain": { "type": "object", "minProperties": 1 },
           "observation_contract": { "type": "string", "minLength": 1 },
-          "trace": { "type": "object", "minProperties": 1 }
+          "trace": {
+            "type": "object",
+            "required": ["status", "version", "record", "digest"],
+            "properties": {
+              "status": { "const": "recorded" },
+              "version": { "const": 1 },
+              "record": { "type": "object", "minProperties": 1 },
+              "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            },
+            "additionalProperties": false
+          }
         },
         "additionalProperties": false
       }

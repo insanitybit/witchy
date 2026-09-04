@@ -19,7 +19,9 @@
 #   input_domain: non-empty object
 #   environment_domain: non-empty object
 #   observation_contract: non-empty string
-#   trace: { status: recorded, digest: non-empty string } when admitted
+#   trace: { status: recorded, version: 1, record: {...}, digest: SHA-256 }
+#   for every source/profile. The record is the digest input, not a success
+#   marker: it contains every executed route step and its captured effects.
 #
 # The hook is the missing production adapter/interpreter/SafeWIR execution
 # bridge. Until it exists, --freeze refuses to modify the committed manifest.
@@ -136,8 +138,6 @@ def validate_entry(entry, index, frozen):
     if entry["adapter_admitted"]:
         if entry["freeze_class"] not in FREEZE_CLASSES:
             fail(f"admitted entries[{index}] need a v1/v2 freeze_class")
-        if entry["classification"] != "known-valid":
-            fail(f"admitted entries[{index}] must be known-valid")
     elif entry["freeze_class"] is not None:
         fail(f"non-admitted entries[{index}] must have null freeze_class")
     if not isinstance(entry["source_digest"], str) or len(entry["source_digest"]) != 64:
@@ -153,11 +153,21 @@ def validate_entry(entry, index, frozen):
         fail(f"entries[{index}].observation_contract must be non-empty")
     trace = entry["trace"]
     require_object(trace, f"entries[{index}].trace")
-    if entry["adapter_admitted"]:
-        if trace.get("status") != "recorded" or not isinstance(trace.get("digest"), str) or not trace["digest"]:
-            fail(f"admitted entries[{index}] need a recorded trace digest")
-    elif trace.get("status") not in ("not-applicable", "unavailable"):
-        fail(f"non-admitted entries[{index}] need not-applicable or unavailable trace status")
+    if trace.get("status") != "recorded" or trace.get("version") != 1:
+        fail(f"entries[{index}] need a versioned recorded trace")
+    if not isinstance(trace.get("record"), dict) or not trace["record"]:
+        fail(f"entries[{index}] need a complete trace record")
+    if not isinstance(trace.get("digest"), str) or len(trace["digest"]) != 64:
+        fail(f"entries[{index}] need a SHA-256 trace digest")
+    actual_trace_digest = digest_bytes(canonical(trace["record"]).encode("utf-8"))
+    if trace["digest"] != actual_trace_digest:
+        fail(f"entries[{index}] trace digest does not match its record")
+    steps = trace["record"].get("steps")
+    if not isinstance(steps, list) or not steps or steps[0].get("kind") != "check":
+        fail(f"entries[{index}] trace must begin with the ordinary production check")
+    check_admitted = steps[0].get("exit_status") == 0
+    if entry["adapter_admitted"] != check_admitted:
+        fail(f"entries[{index}] adapter_admitted does not match its recorded check result")
     if frozen:
         actual_source_digest = digest_file(ROOT / entry["source"])
         if entry["source_digest"] != actual_source_digest:
