@@ -12,7 +12,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
-    ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, TypeTable, TypedModule,
+    ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, TypeTable,
 };
 use witchy_wir::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, BorrowMode,
@@ -94,9 +94,59 @@ pub fn lower_typed_module(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
-    let mut signatures = Vec::new();
+    // Callable identity is structural.  Intern every concrete checked `Fn`
+    // type, including types which occur only in parameters or lambda
+    // expressions, before assigning any declaration/function IDs.  A source
+    // name is never part of a callable ABI identity.
+    let mut callable_types = Vec::new();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
+        if let Some(function_type) = source.callable_signature(&function.name) {
+            collect_callable_types(function_type, &mut callable_types);
+        }
+    }
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
+            &function.body,
+            &mut |expression| {
+                if let Some(checked_type) = typed.table().type_of(expression)
+                    .and_then(witchy_types::typeck::ty_to_ast)
+                {
+                    collect_callable_types(&checked_type, &mut callable_types);
+                }
+                Ok(())
+            },
+        );
+    }
+    callable_types.sort_by_key(|ty| format!("{ty:?}"));
+    callable_types.dedup();
+    let function_types = callable_types
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| {
+            Ok((
+                ty.clone(),
+                FunctionSignatureId::new(
+                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, CanonicalLoweringError>>()?;
+    let mut signatures = callable_types
+        .iter()
+        .map(|ty| {
+            let id = function_types[ty];
+            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types)
+        })
+        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     let mut functions_by_name = HashMap::new();
-    let mut function_types = HashMap::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else {
             match item {
@@ -122,23 +172,12 @@ pub fn lower_typed_module(
             continue;
         };
         let function_id = FunctionId::new(
-            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
-        let signature_id = FunctionSignatureId::new(
-            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-        );
+        let signature_id = *function_types
+            .get(function_type.unqualified())
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
-        function_types.insert(function_type, signature_id);
-        signatures.push(FunctionSignature {
-            id: signature_id,
-            parameters: Vec::new(),
-            results: Vec::new(),
-            contract: CallableContract {
-                parameters: Vec::new(),
-                results: Vec::new(),
-                parameter_effects: BTreeMap::new(),
-            },
-        });
     }
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
@@ -150,7 +189,6 @@ pub fn lower_typed_module(
         };
         signatures[signature_id.get() as usize] = checked_signature(
             source,
-            typed,
             function,
             signature_id,
             &layouts,
@@ -254,7 +292,6 @@ pub fn lower_typed_module(
 
 fn checked_signature(
     source: &CanonicalCheckedSource,
-    typed: &TypedModule,
     function: &witchy_syntax::ast::Function,
     id: FunctionSignatureId,
     layout_bundle: &LayoutBundle,
@@ -265,7 +302,7 @@ fn checked_signature(
         .callable_signature(&function.name)
         .cloned()
         .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone()))?;
-    let Type::Fn(parameters, result, conventions, _) = checked else {
+    let Type::Fn(parameters, _, conventions, _) = &checked else {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     };
     if parameters.len() != function.params.len() {
@@ -274,15 +311,16 @@ fn checked_signature(
     let conventions = if conventions.is_empty() {
         vec![Convention::Let; parameters.len()]
     } else {
-        conventions
+        conventions.to_vec()
     };
     if conventions.len() != parameters.len() {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let mut value_parameters = Vec::with_capacity(parameters.len());
-    let mut contract_parameters = Vec::with_capacity(parameters.len());
-    let mut parameter_effects = BTreeMap::new();
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types)?;
+    let value_parameters = checked_signature.parameters;
+    let contract_parameters = checked_signature.contract.parameters;
+    let parameter_effects = checked_signature.contract.parameter_effects;
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
@@ -293,48 +331,86 @@ fn checked_signature(
                 convention,
             });
         }
+        let _ = parameter;
+        let _ = parameter_index;
+    }
+    Ok(FunctionSignature { id, parameters: value_parameters, results: checked_signature.results, contract: CallableContract {
+        parameters: contract_parameters,
+        results: checked_signature.contract.results,
+        parameter_effects,
+    }})
+}
+
+fn signature_from_type(
+    id: FunctionSignatureId,
+    checked: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+    function_types: &HashMap<Type, FunctionSignatureId>,
+) -> Result<FunctionSignature, CanonicalLoweringError> {
+    let Type::Fn(parameters, result, conventions, _) = checked.unqualified() else {
+        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
+    };
+    let conventions = if conventions.is_empty() {
+        vec![Convention::Let; parameters.len()]
+    } else {
+        conventions.clone()
+    };
+    if conventions.len() != parameters.len() {
+        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
+    }
+    let mut value_parameters = Vec::with_capacity(parameters.len());
+    let mut contract_parameters = Vec::with_capacity(parameters.len());
+    let mut parameter_effects = BTreeMap::new();
+    for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
+        if !matches!(convention, Convention::Let | Convention::Borrow) {
+            return Err(CanonicalLoweringError::UnsupportedConvention {
+                function: format!("signature {:?}", id),
+                parameter: index.to_string(),
+                convention,
+            });
+        }
         let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
-        value_parameters.push(value_type);
         let (ownership, non_escaping) = match (value_type, convention) {
-            (ValueType::Ref(_), Convention::Let | Convention::Borrow) => {
-                (ParameterOwnership::CallBorrow { mode: BorrowMode::Read }, true)
-            }
+            (ValueType::Ref(_), Convention::Let | Convention::Borrow) =>
+                (ParameterOwnership::CallBorrow { mode: BorrowMode::Read }, true),
             (_, Convention::Let | Convention::Borrow) => (ParameterOwnership::Value, false),
-            _ => unreachable!("unsupported conventions are rejected above"),
+            _ => unreachable!(),
         };
         if matches!(value_type, ValueType::Ref(_)) {
-            parameter_effects.insert(
-                u32::try_from(parameter_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                vec![MemoryEffect::Read],
-            );
+            parameter_effects.insert(index as u32, vec![MemoryEffect::Read]);
         }
-        contract_parameters.push(ParameterContract {
-            value_type,
-            ownership,
-            non_escaping,
-        });
+        value_parameters.push(value_type);
+        contract_parameters.push(ParameterContract { value_type, ownership, non_escaping });
     }
-    let result = source_value_type(&result, layout_bundle, layouts, function_types)?;
+    let result = source_value_type(result, layout_bundle, layouts, function_types)?;
     let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
-    let result_contracts = results
-        .iter()
-        .copied()
-        .map(|result| match result {
-            ValueType::Ref(_) => ResultContract::BodyDerived(result),
-            result => ResultContract::Value(result),
-        })
-        .collect();
-
+    let result_contracts = results.iter().copied().map(|result| match result {
+        ValueType::Ref(_) => ResultContract::BodyDerived(result),
+        result => ResultContract::Value(result),
+    }).collect();
     Ok(FunctionSignature {
         id,
         parameters: value_parameters,
         results,
-        contract: CallableContract {
-            parameters: contract_parameters,
-            results: result_contracts,
-            parameter_effects,
-        },
+        contract: CallableContract { parameters: contract_parameters, results: result_contracts, parameter_effects },
     })
+}
+
+fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
+    let ty = ty.unqualified();
+    match ty {
+        Type::Fn(parameters, result, _, _) => {
+            out.push(ty.clone());
+            for parameter in parameters { collect_callable_types(parameter, out); }
+            collect_callable_types(result, out);
+        }
+        Type::Named(_, arguments) | Type::Tuple(arguments) => {
+            for argument in arguments { collect_callable_types(argument, out); }
+        }
+        Type::Slice(inner) => collect_callable_types(inner, out),
+        _ => {}
+    }
 }
 
 fn lower_function(
@@ -3224,6 +3300,23 @@ mod tests {
         )
         .expect("generic direct call lowers through its checked instance");
         assert_eq!(candidate.functions().len(), 2, "main plus concrete identity");
+    }
+
+    #[test]
+    fn canonical_lowering_interns_structural_callable_parameter() {
+        let candidate = lower(
+            "fn positive(n: Int) -> Bool:\n    n > 0\n\nfn nonzero(n: Int) -> Bool:\n    n != 0\n\nfn apply(f: fn(Int) -> Bool, n: Int) -> Bool:\n    f(n)\n\nfn main() -> Int:\n    0\n",
+        );
+        assert_eq!(candidate.functions()[0].signature, candidate.functions()[1].signature);
+        let apply = &candidate.functions()[2];
+        assert_eq!(candidate.signatures()[apply.signature.get() as usize].parameters.len(), 2);
+        assert!(candidate
+            .functions()
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .any(|block| matches!(block.terminator, Terminator::VarTailCall { .. })));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "callable candidate rejected: {result:?}");
     }
 
     #[test]
