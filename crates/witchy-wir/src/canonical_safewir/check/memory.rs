@@ -128,7 +128,31 @@ impl<'a> MemoryChecker<'a> {
         arguments: &[ValueId],
     ) -> Result<MemoryState, InitialCheckError> {
         let mut renames = BTreeMap::new();
+        let mut unique_phi_rebases = BTreeMap::new();
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
+            if parameter.ownership == Some(Ownership::Unique) {
+                if !matches!(parameter.value_type, ValueType::Ref(_)) {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: parameter.value,
+                    });
+                }
+                let state = self.state.objects.get(argument).ok_or(
+                    InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: *argument,
+                    },
+                )?;
+                if state.ownership != Ownership::Unique
+                    || !self.is_sole_live_token(*argument, state.identity)
+                {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: *argument,
+                    });
+                }
+                unique_phi_rebases.insert(*argument, parameter.value);
+            }
             if self.state.objects.contains_key(argument)
                 && renames.insert(*argument, parameter.value).is_some_and(|previous| previous != parameter.value)
             {
@@ -142,9 +166,13 @@ impl<'a> MemoryChecker<'a> {
 
         let mut objects = BTreeMap::new();
         for (value, state) in &self.state.objects {
+            let original_value = *value;
             let mut state = state.clone();
             state.extent = remap_extent(&renames, &state.extent);
-            let value = remap_value(&renames, *value);
+            let value = remap_value(&renames, original_value);
+            if let Some(identity) = unique_phi_rebases.get(&original_value) {
+                state.identity = *identity;
+            }
             if let Some(previous) = objects.insert(value, state.clone()) {
                 if previous != state {
                     return Err(InitialCheckError::InvalidOwnership {
@@ -256,6 +284,18 @@ impl<'a> MemoryChecker<'a> {
                 .iter()
                 .map(|object| remap_value(&renames, *object))
                 .collect(),
+        })
+    }
+
+    /// A Unique phi may change object identity only when its edge argument is
+    /// the sole remaining live representation of that identity.  Container
+    /// slots count: rebasing a value while the same object remains stored
+    /// elsewhere would leave a physical alias under the old identity.
+    fn is_sole_live_token(&self, value: ValueId, identity: ValueId) -> bool {
+        self.state.objects.iter().all(|(candidate, state)| {
+            state.identity != identity || state.ownership == Ownership::Consumed || *candidate == value
+        }) && self.state.stored_objects.values().all(|state| {
+            state.identity != identity || state.ownership == Ownership::Consumed
         })
     }
 
@@ -1611,6 +1651,7 @@ impl<'a> MemoryChecker<'a> {
                 capacity,
             });
         }
+        self.consolidate_pointer_prefix(object, count)?;
         self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
             header_bytes,
             count,
@@ -1630,7 +1671,17 @@ impl<'a> MemoryChecker<'a> {
         let Some(element) = self.descriptor(layout)?.kind().packed_element_layout() else {
             return Ok(());
         };
-        if !self.value_type_for_layout(element)?.is_memory_bearing() {
+        // Only the catalog's owned pointer slot is a v1 aggregate whose
+        // initialized prefix carries object ownership. Raw bytes and boolean
+        // value slots are pointer-free storage, not SafeWIR value types, and
+        // therefore have no prefix ownership facts to consolidate.
+        if !matches!(
+            self.descriptor(element)?.kind(),
+            LayoutKind::RuntimePointerValueSlot {
+                semantics: PointerSlot::Owned,
+                ..
+            }
+        ) {
             return Ok(());
         }
         let existing = self.state.range_states.iter().find_map(|(identity, state)| {
@@ -2106,6 +2157,51 @@ mod tests {
             ValueType::Ref(list),
             access,
         )
+    }
+
+    fn unique_phi_target(value: ValueId, layout: crate::layout::LayoutId) -> BasicBlock {
+        BasicBlock {
+            id: crate::canonical_safewir::BlockId::new(1),
+            parameters: vec![crate::canonical_safewir::BlockParameter {
+                value,
+                value_type: ValueType::Ref(layout),
+                ownership: Some(Ownership::Unique),
+            }],
+            operations: Vec::new(),
+            terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+        }
+    }
+
+    #[test]
+    fn unique_phi_rebases_distinct_fresh_identities_before_join() {
+        with_checker(false, |checker, list| {
+            let phi = ValueId::new(99);
+            let target = unique_phi_target(phi, list);
+            let left = checker.transfer_edge(&target, &[SOURCE]).expect("left unique phi");
+            let right = checker.transfer_edge(&target, &[DESTINATION]).expect("right unique phi");
+
+            let joined = checker.meet(&target, &left, &right).expect("fresh identities join through phi");
+            assert_eq!(joined.objects[&phi].identity, phi);
+            assert_eq!(joined.objects[&phi].ownership, Ownership::Unique);
+        });
+    }
+
+    #[test]
+    fn unique_phi_rejects_stored_alias() {
+        with_checker(false, |checker, list| {
+            let phi = ValueId::new(99);
+            let target = unique_phi_target(phi, list);
+            let alias = checker.state.objects[&SOURCE].clone();
+            checker
+                .state
+                .stored_objects
+                .insert((DESTINATION, SlotIdentity::Constant(0)), alias);
+
+            assert!(matches!(
+                checker.transfer_edge(&target, &[SOURCE]),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
     }
 
     fn with_pointer_slot_checker(
