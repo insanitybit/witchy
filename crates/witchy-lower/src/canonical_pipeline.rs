@@ -55,14 +55,10 @@ pub(crate) fn validate_checked_module(
         .map_err(CanonicalPipelineError::InitialValidation)?;
     let initial_snapshot = checked.module().clone();
     let (initial, lowering_witness) = checked.into_parts();
-    let mut optimizer = OptimizationSession::new(initial);
-    optimizer
-        .apply_unreachable_blocks()
-        .map_err(CanonicalPipelineError::Optimization)?;
-    optimizer
-        .apply_constant_folding()
-        .map_err(CanonicalPipelineError::Optimization)?;
-    let optimized = optimizer
+    // RFC-0165 milestone 1 deliberately enables no optional optimization.
+    // Keep the zero-pass typestate transition until the simplified v1
+    // authority replaces OptimizationSession entirely.
+    let optimized = OptimizationSession::new(initial)
         .finalize()
         .map_err(CanonicalPipelineError::Optimization)?;
     validate_final(&initial_snapshot, lowering_witness, optimized)
@@ -236,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn public_production_entry_emits_executable_checked_wasm() {
+    fn frozen_production_entry_remains_executable_during_migration() {
         let source = "fn main() -> Int:\n    40 + 2\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
@@ -257,20 +253,6 @@ mod tests {
             .expect("configure public production Wasm engine");
         let module = wasmtime::Module::new(&engine, &bytes)
             .expect("compile public production Wasm");
-        let launch_contracts = wasmparser::Parser::new(0)
-            .parse_all(&bytes)
-            .filter_map(|payload| match payload.expect("parse public production Wasm") {
-                wasmparser::Payload::CustomSection(section)
-                    if section.name()
-                        == witchy_caps::capabilities::LAUNCH_CONTRACT_SECTION =>
-                {
-                    Some(section.data().to_vec())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(launch_contracts, [vec![1, 0]]);
-
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[])
             .expect("instantiate public production Wasm");

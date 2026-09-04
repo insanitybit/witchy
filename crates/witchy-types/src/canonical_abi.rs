@@ -192,13 +192,17 @@ impl Context {
 /// Derive the complete callable ABI manifest from the final checked module.
 /// Declarations contribute closed local targets. Concrete expression types
 /// contribute open ABI entries, including nested function types.
-pub fn derive_manifest(typed: &TypedModule) -> Result<CanonicalCallableAbiManifest, CanonicalAbiError> {
+pub fn derive_manifest(
+    typed: &TypedModule,
+    closed_functions: &[String],
+) -> Result<CanonicalCallableAbiManifest, CanonicalAbiError> {
     let context = Context::from_module(typed.module());
     let mut entries = BTreeSet::new();
-    let mut function_ordinal = 0u32;
-    for item in &typed.module().items {
-        let Item::Function(function) = item else { continue };
-        let signature = typed.table().function_type(&function.name).ok_or_else(|| {
+    for (ordinal, name) in closed_functions.iter().enumerate() {
+        let function_ordinal = u32::try_from(ordinal).map_err(|_| {
+            CanonicalAbiError::InvalidCallable("function ordinal overflow".into())
+        })?;
+        let signature = typed.table().function_type(name).ok_or_else(|| {
             CanonicalAbiError::InvalidCallable(format!("checked declaration at ordinal {function_ordinal} has no finalized signature"))
         })?;
         let entry = callable_from_ast(
@@ -207,9 +211,6 @@ pub fn derive_manifest(typed: &TypedModule) -> Result<CanonicalCallableAbiManife
             &context,
         )?;
         entries.insert(entry);
-        function_ordinal = function_ordinal.checked_add(1).ok_or_else(|| {
-            CanonicalAbiError::InvalidCallable("function ordinal overflow".into())
-        })?;
     }
     for ty in typed.table().concrete_types() {
         collect_ty_callables(ty, CanonicalTargetPolicy::OpenAbi, &context, &mut entries)?;
@@ -478,18 +479,32 @@ mod tests {
         typeck::annotate_checked(module).expect("type check")
     }
 
+    fn manifest(source: &str) -> CanonicalCallableAbiManifest {
+        let typed = typed(source);
+        let functions = typed
+            .module()
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(function) => Some(function.name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        derive_manifest(&typed, &functions).expect("manifest")
+    }
+
     #[test]
     fn function_rename_does_not_change_manifest() {
-        let a = derive_manifest(&typed("fn apply(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    apply(1)\n")).expect("manifest");
-        let b = derive_manifest(&typed("fn renamed(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    renamed(1)\n")).expect("manifest");
+        let a = manifest("fn apply(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    apply(1)\n");
+        let b = manifest("fn renamed(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    renamed(1)\n");
         assert_eq!(a.digest(), b.digest());
     }
 
     #[test]
     fn convention_and_result_type_change_manifest() {
-        let base = derive_manifest(&typed("fn apply(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    apply(1)\n")).expect("manifest");
-        let convention = derive_manifest(&typed("fn apply(var value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    var n = 1\n    apply(n)\n")).expect("manifest");
-        let result = derive_manifest(&typed("fn apply(value: Int) -> String:\n    \"x\"\n\nfn main() -> Int:\n    apply(1).length()\n")).expect("manifest");
+        let base = manifest("fn apply(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    apply(1)\n");
+        let convention = manifest("fn apply(var value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    var n = 1\n    apply(n)\n");
+        let result = manifest("fn apply(value: Int) -> String:\n    \"x\"\n\nfn main() -> Int:\n    let ignored = apply(1)\n    0\n");
         assert_ne!(base.digest(), convention.digest());
         assert_ne!(base.digest(), result.digest());
     }

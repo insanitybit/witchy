@@ -568,23 +568,28 @@ fn bind_canonical_callable_witness(
     typed: &typeck::TypedModule,
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
 ) -> Result<CanonicalCallableWitness, PipelineError> {
-    let abi_manifest = canonical_abi::derive_manifest(typed).map_err(|error| {
-        PipelineError::Type(TypeError { message: error.to_string() })
-    })?;
-    let functions = typed
+    let linked_entry = typed.module().linked_entry.as_deref();
+    let runtime_functions = typed
         .module()
         .items
         .iter()
         .filter_map(|item| match item {
-            witchy_syntax::ast::Item::Function(function) => Some(function.name.as_str()),
+            witchy_syntax::ast::Item::Function(function)
+                if linked_entry.is_none_or(|entry| {
+                    function.name == entry || function.name.starts_with(&format!("{entry}."))
+                }) => Some(function.name.clone()),
             _ => None,
         })
-        .collect::<HashSet<_>>();
+        .collect::<Vec<_>>();
+    let functions = runtime_functions.iter().map(String::as_str).collect::<HashSet<_>>();
     let mut signatures = BTreeMap::new();
-    for name in &functions {
-        if let Some(signature) = typed.table().function_type(name) {
-            signatures.insert((*name).to_string(), signature);
-        }
+    for name in &runtime_functions {
+        let signature = typed.table().function_type(name).ok_or_else(|| {
+            PipelineError::Type(TypeError {
+                message: format!("canonical runtime function `{name}` lacks a finalized signature"),
+            })
+        })?;
+        signatures.insert(name.clone(), signature);
     }
     for name in generic_instances.keys() {
         if !functions.contains(name.as_str()) || !signatures.contains_key(name) {
@@ -595,6 +600,9 @@ fn bind_canonical_callable_witness(
             }));
         }
     }
+    let abi_manifest = canonical_abi::derive_manifest(typed, &runtime_functions).map_err(|error| {
+        PipelineError::Type(TypeError { message: error.to_string() })
+    })?;
     Ok(CanonicalCallableWitness {
         signatures,
         generic_instances,
