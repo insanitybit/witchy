@@ -185,7 +185,18 @@ fn initial_summary(
         .ok_or(InitialCheckError::MissingSignature(function.signature))?;
     Ok(BodySummary {
         needs: vec![BTreeSet::new(); signature.parameters.len()],
-        results: vec![DerivedResult::Unseen; signature.results.len()],
+        results: signature
+            .results
+            .iter()
+            .copied()
+            .map(|value_type| {
+                if is_scalar(value_type) {
+                    DerivedResult::Value(value_type)
+                } else {
+                    DerivedResult::Unseen
+                }
+            })
+            .collect(),
         effects: BTreeMap::new(),
         escaped_parameters: BTreeSet::new(),
     })
