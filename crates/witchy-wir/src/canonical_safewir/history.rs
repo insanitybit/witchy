@@ -693,6 +693,10 @@ impl CanonicalWriter {
 
     fn result_contract(&mut self, result: &ResultContract) {
         match result {
+            ResultContract::BodyDerived(value_type) => {
+                self.u8(6);
+                self.value_type(*value_type);
+            }
             ResultContract::Value(value_type) => {
                 self.u8(0);
                 self.value_type(*value_type);

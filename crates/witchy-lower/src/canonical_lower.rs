@@ -313,7 +313,7 @@ fn checked_signature(
         .iter()
         .copied()
         .map(|result| match result {
-            ValueType::Ref(layout) => ResultContract::Fresh { layout },
+            ValueType::Ref(_) => ResultContract::BodyDerived(result),
             result => ResultContract::Value(result),
         })
         .collect();

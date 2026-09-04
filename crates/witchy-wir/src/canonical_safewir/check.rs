@@ -156,12 +156,38 @@ fn install_body_derived_result_contracts(
     let signatures = index_signatures(candidate.signatures())?;
     let functions = index_functions(candidate.functions())?;
     let derived = contracts::derive_result_contracts(&functions, &signatures)?;
-    for signature in &candidate.signatures {
+    for signature in &mut candidate.signatures {
         if let Some(results) = derived.get(&signature.id) {
-            if signature.contract.results != *results {
+            if signature.contract.results.len() != results.len() {
                 return Err(InitialCheckError::CallableContractMismatch {
                     signature: signature.id,
                 });
+            }
+            for ((declared, derived), value_type) in signature
+                .contract
+                .results
+                .iter_mut()
+                .zip(results)
+                .zip(&signature.results)
+            {
+                match declared {
+                    super::ResultContract::BodyDerived(declared_type)
+                        if declared_type == value_type =>
+                    {
+                        declared.clone_from(derived);
+                    }
+                    super::ResultContract::BodyDerived(_) => {
+                        return Err(InitialCheckError::CallableContractMismatch {
+                            signature: signature.id,
+                        });
+                    }
+                    explicit if explicit != derived => {
+                        return Err(InitialCheckError::CallableContractMismatch {
+                            signature: signature.id,
+                        });
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -1122,6 +1148,7 @@ fn check_call(
     {
         require_type(function, *destination, *expected)?;
         let contract_type = match contract {
+            super::ResultContract::BodyDerived(value_type) => *value_type,
             super::ResultContract::Value(value_type) => *value_type,
             super::ResultContract::Fresh { layout }
             | super::ResultContract::Shared { layout }

@@ -490,6 +490,21 @@ impl<'a> MemoryChecker<'a> {
                         },
                     );
                 }
+                ResultContract::StaticData { layout } => {
+                    self.require_ref_type(*destination, *layout)?;
+                    let extent = self.parameter_extent(*layout)?;
+                    self.state.objects.insert(
+                        *destination,
+                        ObjectState {
+                            identity: *destination,
+                            layout: *layout,
+                            extent,
+                            ownership: Ownership::Shared,
+                            allocation_class: None,
+                        },
+                    );
+                    self.state.static_data_objects.insert(*destination);
+                }
                 _ => return self.unsupported("Call(memory result)"),
             }
         }

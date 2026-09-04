@@ -665,6 +665,50 @@ mod tests {
     }
 
     #[test]
+    fn body_derived_static_result_flows_through_a_direct_call() {
+        let source = "fn greeting() -> String:\n    \"hello\"\nfn main(console: Console):\n    console.print(greeting())\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked direct String-result source");
+        let artifact = admit_checked_module(&checked)
+            .expect("body-derived static result reaches admission");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted direct String-result artifact");
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "print",
+                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(wasmtime::Extern::into_memory)
+                        .expect("canonical memory export");
+                    let start = usize::try_from(pointer).expect("non-negative print pointer");
+                    let length = usize::try_from(length).expect("non-negative print length");
+                    let bytes = memory.data(&caller)[start..start + length].to_vec();
+                    caller.data_mut().extend_from_slice(&bytes);
+                },
+            )
+            .expect("bind authenticated print ABI");
+        let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted direct String-result artifact");
+        let main = instance
+            .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f1")
+            .expect("canonical main export");
+        main.call(&mut store, None)
+            .expect("run direct String-result artifact");
+        assert_eq!(store.data(), b"hello");
+    }
+
+    #[test]
     fn repeated_string_literals_share_one_deterministic_static_segment() {
         let source = "fn main() -> Int:\n    let first = \"same\"\n    let second = \"same\"\n    1\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

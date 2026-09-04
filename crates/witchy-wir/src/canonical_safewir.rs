@@ -317,6 +317,10 @@ pub struct ParameterContract {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultContract {
+    /// Non-authoritative lowering placeholder. Initial checking replaces this
+    /// with the exact contract derived from the corresponding function body;
+    /// it is never valid for an import or a validated module.
+    BodyDerived(ValueType),
     Value(ValueType),
     Fresh { layout: LayoutId },
     Shared { layout: LayoutId },
