@@ -134,18 +134,34 @@ impl Error for InitialCheckError {}
 /// counted collections, projected scalar access, explicit runtime guards, and
 /// structural ownership are admitted; loans and pointer-bearing copies are not.
 pub fn check_initial(
-    candidate: CanonicalModule<LoweredCandidate>,
+    mut candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    install_body_derived_result_contracts(&mut candidate)?;
     check_candidate(&candidate, candidate.abi_catalog())?;
     Ok(candidate.into_initial_valid())
 }
 
 pub(crate) fn check_initial_with_catalog(
-    candidate: CanonicalModule<LoweredCandidate>,
+    mut candidate: CanonicalModule<LoweredCandidate>,
     catalog: &CanonicalAbiCatalog,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    install_body_derived_result_contracts(&mut candidate)?;
     check_candidate(&candidate, Some(catalog))?;
     Ok(candidate.into_initial_valid())
+}
+
+fn install_body_derived_result_contracts(
+    candidate: &mut CanonicalModule<LoweredCandidate>,
+) -> Result<(), InitialCheckError> {
+    let signatures = index_signatures(candidate.signatures())?;
+    let functions = index_functions(candidate.functions())?;
+    let derived = contracts::derive_result_contracts(&functions, &signatures)?;
+    for signature in &mut candidate.signatures {
+        if let Some(results) = derived.get(&signature.id) {
+            signature.contract.results = results.clone();
+        }
+    }
+    Ok(())
 }
 
 pub fn check_transform(

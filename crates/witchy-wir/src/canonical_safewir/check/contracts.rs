@@ -39,6 +39,26 @@ impl DerivedResult {
             *self = Self::Unknown;
         }
     }
+
+    fn checked_contract(&self, function: FunctionId) -> Result<ResultContract, InitialCheckError> {
+        match self {
+            Self::Value(value_type) => Ok(ResultContract::Value(*value_type)),
+            Self::Fresh(layout) => Ok(ResultContract::Fresh { layout: *layout }),
+            Self::StaticData(layout) => Ok(ResultContract::StaticData { layout: *layout }),
+            Self::Shared(layout) => Ok(ResultContract::Shared { layout: *layout }),
+            Self::AliasesParameter { parameter, layout } => Ok(ResultContract::AliasesParameter {
+                parameter: *parameter,
+                layout: *layout,
+            }),
+            Self::ReallocatesParameter { parameter, layout } => {
+                Ok(ResultContract::ReallocatesParameter {
+                    parameter: *parameter,
+                    layout: *layout,
+                })
+            }
+            Self::Unseen | Self::Unknown => Err(InitialCheckError::UnknownCallableContract { function }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +95,44 @@ pub(super) fn check_all(
     functions: &BTreeMap<FunctionId, &Function>,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
 ) -> Result<(), InitialCheckError> {
+    let summaries = derive_all(functions, signatures)?;
+    for function in functions.values() {
+        let signature = signatures
+            .get(&function.signature)
+            .copied()
+            .ok_or(InitialCheckError::MissingSignature(function.signature))?;
+        check_declaration(signature, &summaries[&function.id])?;
+    }
+    Ok(())
+}
+
+pub(super) fn derive_result_contracts(
+    functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+) -> Result<BTreeMap<FunctionSignatureId, Vec<ResultContract>>, InitialCheckError> {
+    let summaries = derive_all(functions, signatures)?;
+    let mut contracts = BTreeMap::new();
+    for function in functions.values() {
+        let results = summaries[&function.id]
+            .results
+            .iter()
+            .map(|result| result.checked_contract(function.id))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(previous) = contracts.insert(function.signature, results.clone()) {
+            if previous != results {
+                return Err(InitialCheckError::CallableContractMismatch {
+                    signature: function.signature,
+                });
+            }
+        }
+    }
+    Ok(contracts)
+}
+
+fn derive_all(
+    functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+) -> Result<BTreeMap<FunctionId, BodySummary>, InitialCheckError> {
     let mut summaries = functions
         .iter()
         .map(|(id, function)| Ok((*id, initial_summary(function, signatures)?)))
@@ -99,14 +157,7 @@ pub(super) fn check_all(
         });
     }
 
-    for function in functions.values() {
-        let signature = signatures
-            .get(&function.signature)
-            .copied()
-            .ok_or(InitialCheckError::MissingSignature(function.signature))?;
-        check_declaration(signature, &summaries[&function.id])?;
-    }
-    Ok(())
+    Ok(summaries)
 }
 
 fn initial_summary(
