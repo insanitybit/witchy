@@ -577,7 +577,9 @@ fn bind_canonical_callable_witness(
             witchy_syntax::ast::Item::Function(function)
                 if linked_entry.is_none_or(|entry| {
                     function.name == entry || function.name.starts_with(&format!("{entry}."))
-                }) => Some(function.name.clone()),
+                }) && !function_has_free_signature_variables(function) => {
+                    Some(function.name.clone())
+                }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -608,6 +610,23 @@ fn bind_canonical_callable_witness(
         generic_instances,
         abi_manifest,
     })
+}
+
+/// Generic templates are compile-time inputs to monomorphization, not runtime
+/// call targets. Concrete generated instances have no free variables and stay
+/// in the manifest, where the checks below require their exact checked body and
+/// signature.
+fn function_has_free_signature_variables(function: &witchy_syntax::ast::Function) -> bool {
+    let mut variables = Vec::new();
+    for parameter in &function.params {
+        if let Some(ty) = &parameter.ty {
+            witchy_syntax::ast::collect_type_vars(ty, &mut variables);
+        }
+    }
+    if let Some(result) = &function.ret {
+        witchy_syntax::ast::collect_type_vars(result, &mut variables);
+    }
+    !variables.is_empty()
 }
 
 /// Parse exact source bytes, type-check the resulting linked module, and mint

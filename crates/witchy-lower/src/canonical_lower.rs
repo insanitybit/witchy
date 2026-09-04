@@ -554,6 +554,11 @@ impl FunctionLowerer<'_> {
                             self.finish_current(self.return_value(Some(value), results)?)?;
                             return Ok(());
                         }
+                        if matches!(name.as_str(), "string.chars" | "string.__chars") {
+                            let value = self.lower_string_chars(args)?;
+                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            return Ok(());
+                        }
                         if is_console_print(name) {
                             if !results.is_empty() {
                                 return Err(CanonicalLoweringError::UnsupportedExpression(
@@ -619,6 +624,11 @@ impl FunctionLowerer<'_> {
                     if let Expr::Call { name, args } = value {
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
+                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            return Ok(());
+                        }
+                        if matches!(name.as_str(), "string.chars" | "string.__chars") {
+                            let value = self.lower_string_chars(args)?;
                             self.finish_current(self.return_value(Some(value), results)?)?;
                             return Ok(());
                         }
@@ -3097,16 +3107,34 @@ fn string_layout(
 }
 
 fn collect_string_payloads(module: &witchy_syntax::ast::Module) -> Vec<Vec<u8>> {
-    let mut payloads = BTreeSet::new();
+    let mut literal_uses = BTreeMap::<Vec<u8>, usize>::new();
+    let mut chars_inputs = BTreeMap::<Vec<u8>, usize>::new();
+    let mut chars_outputs = BTreeSet::new();
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(module, &function.name) { continue; }
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             if let Expr::Str(value) = expression {
-                payloads.insert(value.as_bytes().to_vec());
+                *literal_uses.entry(value.as_bytes().to_vec()).or_default() += 1;
+            }
+            if let Expr::Call { name, args } = expression
+                && matches!(name.as_str(), "string.chars" | "string.__chars")
+            {
+                if let [Expr::Str(value)] = args.as_slice() {
+                    *chars_inputs.entry(value.as_bytes().to_vec()).or_default() += 1;
+                    for character in value.chars() {
+                        chars_outputs.insert(character.to_string().into_bytes());
+                    }
+                }
             }
             Ok::<(), ()>(())
         }).expect("string payload visitor cannot fail");
+    }
+    let mut payloads = chars_outputs;
+    for (payload, uses) in literal_uses {
+        if uses > chars_inputs.get(&payload).copied().unwrap_or_default() {
+            payloads.insert(payload);
+        }
     }
     payloads.into_iter().collect()
 }
@@ -3660,16 +3688,15 @@ mod tests {
         )));
         assert!(operations.iter().any(|operation| matches!(
             operation,
-            Operation::Compare { operator: witchy_wir::canonical_safewir::ComparisonOperator::LessUnsigned, .. }
-        )));
+            Operation::Compare {
+                operator: witchy_wir::canonical_safewir::ComparisonOperator::LessUnsigned,
+                right,
+                ..
+            } if *right == count
+        )), "the index guard uses the allocation's intrinsic logical-length identity");
         assert!(operations.iter().any(|operation| matches!(
             operation,
             Operation::Guard { kind: GuardKind::Bounds, .. }
-        )));
-        assert!(operations.iter().any(|operation| matches!(
-            operation,
-            Operation::Load { place, transfer: LoadTransfer::CopyScalar, .. }
-                if matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length))
         )));
         assert!(operations.iter().any(|operation| matches!(
             operation,
@@ -3743,11 +3770,11 @@ mod tests {
     #[test]
     fn string_chars_literal_decodes_utf8_scalars_into_owned_strings() {
         let candidate = lower_with_derived_layouts(
-            "fn main() -> List(String):\n    \"h\u{00e9}\".chars()\n",
+            "fn chars() -> List(String):\n    \"h\u{00e9}\".chars()\n\nfn main() -> Int:\n    0\n",
         );
-        let operations = candidate.functions()[0]
-            .blocks
+        let operations = candidate.functions()
             .iter()
+            .flat_map(|function| &function.blocks)
             .flat_map(|block| &block.operations)
             .collect::<Vec<_>>();
         assert_eq!(

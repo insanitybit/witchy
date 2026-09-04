@@ -6383,6 +6383,8 @@ mod tests {
         let second_value = ValueId::new(11);
         let length_loaded = ValueId::new(12);
         let element_loaded = ValueId::new(13);
+        let capacity_condition = ValueId::new(14);
+        let second_capacity_condition = ValueId::new(15);
         let (operations, results) = if oob {
             (
                 vec![
@@ -6391,6 +6393,8 @@ mod tests {
                     Operation::ConstSize { destination: index, value: 1 },
                     Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
                     Operation::Guard { condition, kind: GuardKind::Bounds },
+                    Operation::Compare { destination: capacity_condition, operator: ComparisonOperator::LessUnsigned, left: index, right: capacity },
+                    Operation::Guard { condition: capacity_condition, kind: GuardKind::Bounds },
                     Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
                     Operation::Load { destination: element_loaded, place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                     Operation::Reclaim { object },
@@ -6405,6 +6409,8 @@ mod tests {
                     Operation::ConstSize { destination: index, value: 0 },
                     Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
                     Operation::Guard { condition, kind: GuardKind::Bounds },
+                    Operation::Compare { destination: capacity_condition, operator: ComparisonOperator::LessUnsigned, left: index, right: capacity },
+                    Operation::Guard { condition: capacity_condition, kind: GuardKind::Bounds },
                     Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
                     Operation::ConstSize { destination: value, value: 7 },
                     Operation::Store { place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
@@ -6414,6 +6420,8 @@ mod tests {
                     Operation::ConstSize { destination: second_index, value: 1 },
                     Operation::Compare { destination: second_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: new_count },
                     Operation::Guard { condition: second_condition, kind: GuardKind::Bounds },
+                    Operation::Compare { destination: second_capacity_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: capacity },
+                    Operation::Guard { condition: second_capacity_condition, kind: GuardKind::Bounds },
                     Operation::ConstSize { destination: second_value, value: 42 },
                     Operation::Store { place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Write), value: second_value, transfer: StoreTransfer::CopyScalar },
                     Operation::Load { destination: length_loaded, place: Place::projected(object, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
@@ -6428,6 +6436,7 @@ mod tests {
             value_types.insert(value, ValueType::Size);
         }
         value_types.insert(condition, ValueType::Bool);
+        value_types.insert(capacity_condition, ValueType::Bool);
         value_types.insert(object, ValueType::Ref(list));
         value_types.insert(element_loaded, ValueType::Size);
         if !oob {
@@ -6435,6 +6444,7 @@ mod tests {
                 value_types.insert(value, ValueType::Size);
             }
             value_types.insert(second_condition, ValueType::Bool);
+            value_types.insert(second_capacity_condition, ValueType::Bool);
         }
         let result_types = results.iter().map(|_| ValueType::Size).collect::<Vec<_>>();
         finalize(CanonicalModule::from_lowering(LoweredModuleParts {
@@ -6914,17 +6924,25 @@ mod tests {
     fn rc_boundary_module(share: bool, max_rc: bool) -> Vec<u8> {
         let object = ValueId::new(1);
         let destination = ValueId::new(2);
+        let mut layouts = LayoutInterner::new();
+        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let object_layout = layouts.intern_runtime_buffer(byte).unwrap();
         let function = Function {
             id: FunctionId::new(90),
             signature: crate::canonical_safewir::FunctionSignatureId::new(90),
             entry: crate::canonical_safewir::BlockId::new(90),
-            value_types: BTreeMap::new(),
+            value_types: [
+                (object, ValueType::Ref(object_layout)),
+                (destination, ValueType::Ref(object_layout)),
+            ]
+            .into_iter()
+            .collect(),
             blocks: Vec::new(),
         };
         let layout = LocalLayout {
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
             extra_types: vec![ValType::I32; 5],
-            scratch: [2, 3, 4, 5],
+            scratch: vec![2, 3, 4, 5],
         };
         let mut boundary = WasmFunctionEncoder::new(vec![(5, ValType::I32)]);
         if share {
@@ -6933,7 +6951,7 @@ mod tests {
             boundary.instruction(&wasm_encoder::Instruction::LocalGet(1));
             boundary.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
         } else {
-            emit_release(&mut boundary, &layout, &function, object).unwrap();
+            emit_release(&mut boundary, &layout, &function, object, &layouts).unwrap();
         }
         boundary.instruction(&wasm_encoder::Instruction::End);
 
@@ -6971,6 +6989,10 @@ mod tests {
         globals.global(
             GlobalType { val_type: ValType::I32, mutable: true, shared: false },
             &ConstExpr::i32_const(0),
+        );
+        globals.global(
+            GlobalType { val_type: ValType::I32, mutable: false, shared: false },
+            &ConstExpr::i32_const(16),
         );
         let mut exports = ExportSection::new();
         exports.export("boundary", ExportKind::Func, 0);
@@ -7261,7 +7283,7 @@ mod tests {
         let source = checked_packed_list_fixture(false);
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();
-        assert_eq!(receipt.mappings.len(), 20);
+        assert_eq!(receipt.mappings.len(), 24);
         let wasm = encode_validated(source).expect("packed scalar collection encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();

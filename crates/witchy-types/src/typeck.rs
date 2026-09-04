@@ -12090,7 +12090,15 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         // Effect-only canonical host operations are not callable tail
         // transfers. In particular, console.print must lower to HostCall
         // followed by Return, not to a TailCall terminator.
-        Expr::Call { name, .. } if name == "__capop.print" => None,
+        Expr::Call { name, .. }
+            if matches!(
+                name.as_str(),
+                "__capop.print"
+                    | "list.length"
+                    | "list.__length"
+                    | "string.chars"
+                    | "string.__chars"
+            ) => None,
         Expr::Call { .. } | Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } | Expr::MethodCall { .. } => Some(ProperTailDispatchKind::Direct),
         Expr::Apply { .. } | Expr::ExistentialCall { .. } => Some(ProperTailDispatchKind::Indirect),
         _ => None,
@@ -13421,5 +13429,13 @@ mod proper_tail_manifest_tests {
         let first = manifest("fn f(n: Int) -> Int:\n    f(n)\n");
         let second = manifest("\n\nfn renamed(n: Int) -> Int:\n    renamed(n)\n");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn canonical_inline_intrinsics_are_not_tail_call_obligations() {
+        let manifest = manifest(
+            "fn chars() -> List(String):\n    string.chars(\"x\")\n\nfn len(xs: List(Int)) -> Int:\n    list.length(xs)\n",
+        );
+        assert!(manifest.sites().is_empty());
     }
 }
