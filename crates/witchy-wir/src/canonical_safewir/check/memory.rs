@@ -609,6 +609,9 @@ impl<'a> MemoryChecker<'a> {
         if place.access() != AccessMode::Write || transfer != StoreTransfer::CopyScalar {
             return self.unsupported("Store(non-scalar)");
         }
+        if matches!(place.projection(), Projection::Header(_)) {
+            return self.unsupported("Store(header)");
+        }
         if self.state.static_data_objects.contains(&place.object()) {
             return Err(InitialCheckError::WritableStaticData {
                 function: self.function.id,
@@ -658,6 +661,11 @@ impl<'a> MemoryChecker<'a> {
                 let Extent::Counted { count, .. } = &object.extent else {
                     return self.invalid_projection(place.object());
                 };
+                let count = self
+                    .state
+                    .header_values
+                    .get(&(place.object(), HeaderField::Length))
+                    .unwrap_or(count);
                 self.require_type(*index, ValueType::Size)?;
                 if !self.less_than(*index, *count) {
                     return Err(InitialCheckError::MissingBoundsGuard {
