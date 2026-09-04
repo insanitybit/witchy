@@ -243,7 +243,7 @@ impl<'a> MemoryChecker<'a> {
                         kind: *kind,
                     },
                 )?;
-                if *kind == GuardKind::Bounds {
+                if matches!(*kind, GuardKind::Bounds | GuardKind::Arithmetic) {
                     if !matches!(
                         comparison.operator,
                         ComparisonOperator::LessUnsigned
@@ -442,7 +442,7 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn store(
-        &self,
+        &mut self,
         place: &Place,
         value: ValueId,
         transfer: StoreTransfer,
@@ -463,7 +463,10 @@ impl<'a> MemoryChecker<'a> {
         self.require_type(value, expected)
     }
 
-    fn check_place(&self, place: &Place) -> Result<ValueType, InitialCheckError> {
+    fn check_place(&mut self, place: &Place) -> Result<ValueType, InitialCheckError> {
+        if matches!(place.projection(), Projection::Element { .. }) {
+            self.promote_header_extent(place.object())?;
+        }
         let object = self.live_object(place.object())?;
         let descriptor = self.descriptor(object.layout)?;
         let derived = match place.projection() {
@@ -527,6 +530,59 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         Ok(derived)
+    }
+
+    fn promote_header_extent(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(object)?.clone();
+        let Extent::HeaderPrefix { minimum_bytes } = state.extent else {
+            return Ok(());
+        };
+        let LayoutSize::Dynamic { base, stride } = self.descriptor(state.layout)?.size() else {
+            return self.invalid_projection(object);
+        };
+        if minimum_bytes != base || stride == 0 {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object,
+            });
+        }
+        let count = self
+            .header_values
+            .get(&(object, HeaderField::Length))
+            .copied()
+            .ok_or(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object,
+            })?;
+        let capacity = self
+            .header_values
+            .get(&(object, HeaderField::Capacity))
+            .copied()
+            .ok_or(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object,
+            })?;
+        if !self.less_equal(count, capacity) {
+            return Err(InitialCheckError::MissingCapacityGuard {
+                function: self.function.id,
+                count,
+                capacity,
+            });
+        }
+        if !self.allocation_fits(capacity, base, stride) {
+            return Err(InitialCheckError::MissingAllocationSizeGuard {
+                function: self.function.id,
+                capacity,
+                maximum: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
+            });
+        }
+        self.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+            header_bytes: base,
+            count,
+            capacity,
+            stride_bytes: stride,
+        };
+        Ok(())
     }
 
     fn update_count(&mut self, object: ValueId, count: ValueId) -> Result<(), InitialCheckError> {

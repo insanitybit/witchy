@@ -978,7 +978,8 @@ impl FunctionLowerer<'_> {
 
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(base)?;
-        let (layout, _, _) = list_int_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        let (layout, header_bytes, stride_bytes) =
+            list_int_layout(&logical_type, self.layout_bundle, self.layouts)?;
         let object = self.lower_expr(base)?;
         if self.values[&object] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
@@ -1002,12 +1003,57 @@ impl FunctionLowerer<'_> {
             ),
             transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
         });
-        // Allocated literals retain their checked compile-time count. A borrowed
-        // parameter has no caller-supplied extent authority, so its logical count
-        // is the authenticated header value loaded above. The checker must still
-        // establish that this header bootstrap permits the subsequent element
-        // access; capacity is deliberately not used as a bounds source.
-        let logical_count = self.list_counts.get(&object).copied().unwrap_or(logical_length);
+        // A borrowed parameter starts with authority for its catalog-authenticated
+        // header only. Authenticate both dynamic header values before allowing a
+        // body projection: logical length is bounded by capacity, and capacity
+        // cannot overflow the Wasm32 allocation size for this layout.
+        let logical_count = if let Some(count) = self.list_counts.get(&object).copied() {
+            count
+        } else {
+            let capacity = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::Load {
+                destination: capacity,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    witchy_wir::canonical_safewir::Projection::Header(
+                        witchy_wir::canonical_safewir::HeaderField::Capacity,
+                    ),
+                    ValueType::Size,
+                    witchy_wir::canonical_safewir::AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            });
+            let count_fits = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: count_fits,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: logical_length,
+                right: capacity,
+            });
+            self.push_operation(Operation::Guard {
+                condition: count_fits,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+            let maximum = (u64::from(u32::MAX) - u64::from(header_bytes))
+                / u64::from(stride_bytes);
+            let maximum_value = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize {
+                destination: maximum_value,
+                value: maximum,
+            });
+            let allocation_fits = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: allocation_fits,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: capacity,
+                right: maximum_value,
+            });
+            self.push_operation(Operation::Guard {
+                condition: allocation_fits,
+                kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+            });
+            logical_length
+        };
         let condition = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: condition,
@@ -1518,20 +1564,14 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_list_parameter_index_reports_missing_header_extent_promotion() {
+    fn borrowed_list_parameter_index_promotes_authenticated_header_extent() {
         let checked = checked("fn first(xs: List(Int)) -> Int:\n    xs[0]\n");
         let candidate = lower_typed_module(
             checked.canonical_source().expect("canonical source"),
             list_layouts(),
         )
         .expect("lower borrowed List(Int) parameter index");
-        let error = check_initial(candidate).expect_err(
-            "the current checker must not silently treat a header prefix as a counted extent",
-        );
-        assert!(matches!(
-            error,
-            witchy_wir::canonical_safewir::InitialCheckError::InvalidProjection { .. }
-        ));
+        assert!(check_initial(candidate).is_ok());
     }
 
     #[test]

@@ -2006,6 +2006,7 @@ enum PlanToken {
     GlobalSet(u32),
     I32Add,
     I32LtU,
+    I32LeU,
     I32GtU,
     I32Eqz,
     I32Load { offset: u64, align: u8, memory: u32 },
@@ -2043,6 +2044,7 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::GlobalSet { global_index } => PlanToken::GlobalSet(global_index),
         wasmparser::Operator::I32Add => PlanToken::I32Add,
         wasmparser::Operator::I32LtU => PlanToken::I32LtU,
+        wasmparser::Operator::I32LeU => PlanToken::I32LeU,
         wasmparser::Operator::I32GtU => PlanToken::I32GtU,
         wasmparser::Operator::I32Eqz => PlanToken::I32Eqz,
         wasmparser::Operator::I32Load { memarg } => PlanToken::I32Load { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
@@ -2423,13 +2425,22 @@ fn expected_function_plan(
                 push_get(&mut plan, &layout, *source)?;
                 push_set(&mut plan, &layout, *destination)?;
             }
-            Operation::Compare { destination, operator: ComparisonOperator::LessUnsigned, left, right } => {
+            Operation::Compare {
+                destination,
+                operator: operator @ (ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned),
+                left,
+                right,
+            } => {
                 push_get(&mut plan, &layout, *left)?;
                 push_get(&mut plan, &layout, *right)?;
-                plan.push(PlanToken::I32LtU);
+                plan.push(match operator {
+                    ComparisonOperator::LessUnsigned => PlanToken::I32LtU,
+                    ComparisonOperator::LessEqualUnsigned => PlanToken::I32LeU,
+                    _ => unreachable!("pattern restricts unsigned comparisons"),
+                });
                 push_set(&mut plan, &layout, *destination)?;
             }
-            Operation::Guard { condition, kind: crate::canonical_safewir::GuardKind::Bounds } => {
+            Operation::Guard { condition, .. } => {
                 push_get(&mut plan, &layout, *condition)?;
                 plan.extend([
                     PlanToken::I32Eqz,

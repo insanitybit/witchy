@@ -260,6 +260,31 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_list_parameter_index_reaches_admitted_execution() {
+        let source = "fn first(xs: List(Int)) -> Int:\n    xs[0]\nfn main() -> Int:\n    first([42])\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked borrowed List(Int) source");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical borrowed List(Int) artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted borrowed List(Int) artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted borrowed List(Int) artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 42);
+    }
+
+    #[test]
     fn list_int_out_of_bounds_source_admits_then_traps() {
         let source = "fn main() -> Int:\n    [10][1]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
