@@ -10,53 +10,16 @@ use witchy_wir::layout::{
     HostLayoutContract, HostLayoutPolicy, LayoutBundle, LayoutInterner,
 };
 
-const LAUNCH_SECTION: &str = "witchy.launch";
-const LAUNCH_VERSION: u8 = 1;
+const LAUNCH_SECTION: &str = capabilities::LAUNCH_CONTRACT_SECTION;
+const LAUNCH_VERSION: u8 = capabilities::LAUNCH_CONTRACT_VERSION;
+const CAP_TAGS: [(&str, u8); 11] = capabilities::LAUNCH_CAP_TAGS;
 const LAYOUT_SECTION: &str = "witchy.layouts";
-
-const CAP_TAGS: [(&str, u8); 11] = [
-    ("Console", 0),
-    ("Clock", 1),
-    ("Rand", 2),
-    ("Env", 3),
-    ("Secret", 4),
-    ("SecretStore", 5),
-    ("Dir", 6),
-    ("File", 7),
-    ("Net", 8),
-    ("Exec", 9),
-    ("Fetch", 10),
-];
-
-// These bit positions are WIRE FORMAT: a trusted-publisher application digests the encoded
-// payload, so an existing right's bit must never be renumbered. New rights take
-// the next free bit. `every_rights_bearing_capability_has_a_bit_table` fails if a
-// capability gains a rights vocabulary without a table here — otherwise its rights
-// would silently encode as empty and a narrowed grant would decode as right-free.
-const CONSOLE_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
-const DIR_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
-const NET_RIGHTS: [(&str, u8); 5] = [
-    ("Connect", 1 << 0),
-    ("Listen", 1 << 1),
-    ("Tcp", 1 << 2),
-    ("Udp", 1 << 3),
-    ("Uds", 1 << 4),
-];
-/// (RFC-0121) `Secret[Reveal]`/`Secret[Seal]`.
-const SECRET_RIGHTS: [(&str, u8); 2] = [("Reveal", 1 << 0), ("Seal", 1 << 1)];
 
 /// Append the checked source module's root capability contract to its wasm.
 /// Imports remain the executable authority floor; this section preserves
 /// capability parameters that lowering can otherwise make operationally unused.
 pub fn embed_launch_contract(mut wasm: Vec<u8>, module: &ast::Module) -> Vec<u8> {
-    let caps = capabilities::run_grant(module);
-    let mut data = Vec::with_capacity(2 + caps.len() * 2);
-    data.push(LAUNCH_VERSION);
-    data.push(u8::try_from(caps.len()).expect("host capability count fits in one byte"));
-    for (name, rights) in caps {
-        data.push(cap_tag(name).expect("the capability analyzer emits known host capabilities"));
-        data.push(rights_mask(name, &rights));
-    }
+    let data = capabilities::launch_contract_payload(module);
     CustomSection {
         name: Cow::Borrowed(LAUNCH_SECTION),
         data: Cow::Owned(data),
@@ -195,28 +158,19 @@ pub fn layout_bundle_payload(wasm: &[u8]) -> Result<Option<&[u8]>, String> {
 }
 
 fn cap_tag(name: &str) -> Option<u8> {
-    CAP_TAGS.iter().find_map(|(cap, tag)| (*cap == name).then_some(*tag))
+    capabilities::launch_cap_tag(name)
 }
 
 fn tag_cap(tag: u8) -> Option<&'static str> {
-    CAP_TAGS.iter().find_map(|(cap, candidate)| (*candidate == tag).then_some(*cap))
+    capabilities::launch_tag_cap(tag)
 }
 
 fn right_tags(cap: &str) -> &'static [(&'static str, u8)] {
-    match cap {
-        "Console" => &CONSOLE_RIGHTS,
-        "Dir" | "File" => &DIR_RIGHTS,
-        "Net" => &NET_RIGHTS,
-        "Secret" => &SECRET_RIGHTS,
-        _ => &[],
-    }
+    capabilities::launch_right_tags(cap)
 }
 
 fn rights_mask(cap: &str, rights: &capabilities::Rights) -> u8 {
-    right_tags(cap)
-        .iter()
-        .filter_map(|(right, bit)| rights.contains(right).then_some(*bit))
-        .fold(0, |mask, bit| mask | bit)
+    capabilities::launch_rights_mask(cap, rights)
 }
 
 fn decode_contract(data: &[u8]) -> Result<capabilities::CapSet, String> {

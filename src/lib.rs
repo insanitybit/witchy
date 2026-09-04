@@ -349,8 +349,7 @@ fn ownership_relevant_type(ty: &witchy_syntax::ast::Type) -> bool {
 /// none).
 pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     let checked = resolve_std_only_checked(src).map_err(|error| error.to_string())?;
-    let linked = checked.module();
-    enforce_performance_modes(linked, "main")?;
+    enforce_performance_modes(checked.module(), "main")?;
     // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
     // pure Rust, so this runs on EVERY target including the browser playground).
     let bytes = match witchy_lower::codegen::compile_checked_module_binary(&checked) {
@@ -362,7 +361,7 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
-    Ok(artifact::embed_launch_contract(bytes, linked))
+    Ok(bytes)
 }
 
 #[cfg(test)]

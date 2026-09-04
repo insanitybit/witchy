@@ -11,7 +11,10 @@ use witchy_wir::canonical_safewir::{
     FinalValidationError, InitialCheckError, OptimizationError, OptimizationSession,
     ValidatedSafeWir, check_initial_with_witness, validate_final,
 };
-use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
+use witchy_wir::{
+    AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalCustomSection,
+    admit_canonical_with_custom_sections,
+};
 
 use crate::canonical_layouts::{CanonicalLayoutError, derive_layout_bundle};
 use crate::canonical_lower::{CanonicalLoweringError, lower_typed_module};
@@ -31,7 +34,12 @@ pub(crate) fn admit_checked_module(
     checked: &CheckedModule,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
     let validated = validate_checked_module(checked)?;
-    admit_canonical(validated).map_err(CanonicalPipelineError::Admission)
+    let launch_contract = CanonicalCustomSection::new(
+        witchy_caps::capabilities::LAUNCH_CONTRACT_SECTION,
+        witchy_caps::capabilities::launch_contract_payload(checked.module()),
+    );
+    admit_canonical_with_custom_sections(validated, &[launch_contract])
+        .map_err(CanonicalPipelineError::Admission)
 }
 
 impl fmt::Display for CanonicalPipelineError {

@@ -32,6 +32,7 @@ WIR_LIB = WIR_SRC / "lib.rs"
 RAW_ENCODER = WIR_SRC / "wir_encode.rs"
 LOWER_SRC = ROOT / "crates" / "witchy-lower" / "src"
 FORBIDDEN_PRODUCTION_FEATURES = {"legacy-encoder-bridge"}
+RAW_STRING_START = re.compile(r"(?:br|r)(#+)\"")
 
 
 def fail(violations: list[str]) -> None:
@@ -82,7 +83,7 @@ def mask_rust(source: str) -> str:
             block_depth = 1
             i += 2
             continue
-        raw = re.match(r"(?:br|r)(#+)\"", source[i:])
+        raw = RAW_STRING_START.match(source, i) if source[i] in {"b", "r"} else None
         if raw:
             hashes = raw.group(1)
             end = "\"" + hashes + ""
@@ -142,8 +143,21 @@ def matching(masked: str, opening: int, left: str = "(", right: str = ")") -> in
     return None
 
 
-def function_records(source: str) -> list[dict[str, object]]:
-    masked = mask_rust(source)
+def matching_pairs(masked: str, left: str, right: str) -> dict[int, int]:
+    stack: list[int] = []
+    pairs: dict[int, int] = {}
+    for index, char in enumerate(masked):
+        if char == left:
+            stack.append(index)
+        elif char == right and stack:
+            pairs[stack.pop()] = index
+    return pairs
+
+
+def function_records(source: str, masked: str | None = None) -> list[dict[str, object]]:
+    masked = mask_rust(source) if masked is None else masked
+    parentheses = matching_pairs(masked, "(", ")")
+    braces = matching_pairs(masked, "{", "}")
     records = []
     pattern = re.compile(
         r"(?m)^[ \t]*(?P<visibility>pub(?:\s*\([^\n)]*\))?\s+)?"
@@ -151,7 +165,7 @@ def function_records(source: str) -> list[dict[str, object]]:
     )
     for match in pattern.finditer(masked):
         opening = masked.find("(", match.start(), match.end())
-        closing = matching(masked, opening)
+        closing = parentheses.get(opening)
         if closing is None:
             continue
         signature_end = closing + 1
@@ -159,14 +173,18 @@ def function_records(source: str) -> list[dict[str, object]]:
         semicolon = masked.find(";", signature_end)
         if brace < 0 or (semicolon >= 0 and semicolon < brace):
             continue
-        end = matching(masked, brace, "{", "}")
+        end = braces.get(brace)
         if end is None:
             continue
         line_start = masked.rfind("\n", 0, match.start()) + 1
-        # Attributes are policy input, so retain their feature spelling. The
-        # masked slice is for code structure only and intentionally erases
-        # string literals.
-        attribute_lines = source[max(0, line_start - 1200):line_start]
+        # Only the contiguous attribute block immediately preceding this
+        # function applies to it. Looking back an arbitrary byte window can
+        # accidentally borrow a neighboring function's cfg authority.
+        attribute_match = re.search(
+            r"(?ms)((?:^[ \t]*#\[[^\]]*\][ \t]*\n)+)[ \t]*$",
+            source[:line_start],
+        )
+        attribute_lines = attribute_match.group(1) if attribute_match else ""
         records.append({
             "name": match.group("name"),
             "visibility": match.group("visibility") or "",
@@ -216,10 +234,12 @@ def check_features(violations: list[str]) -> None:
                 if not isinstance(spec, dict):
                     continue
                 for feature in spec.get("features", []):
-                    if feature in raw_features or feature in FORBIDDEN_PRODUCTION_FEATURES:
-                        if not development_only:
+                    if feature in FORBIDDEN_PRODUCTION_FEATURES or (
+                        feature in raw_features and not development_only
+                    ):
+                        if feature in FORBIDDEN_PRODUCTION_FEATURES or not development_only:
                             violations.append(
-                                f"production dependency edge enables `{feature}`: "
+                                f"forbidden dependency edge enables `{feature}`: "
                                 f"{path.relative_to(ROOT)} [{section}] {dependency}"
                             )
 
@@ -268,7 +288,7 @@ def check_canonical_backend(violations: list[str]) -> None:
         violations.append(f"canonical backend has {len(constructions)} WasmIr construction sites; expected one")
         return
     position = constructions[0].start()
-    containing = [record for record in function_records(canonical_source)
+    containing = [record for record in function_records(canonical_source, canonical_masked)
                   if int(record["brace"]) < position < int(record["end"])]
     if len(containing) != 1:
         violations.append("WasmIr construction is not inside exactly one function")
@@ -288,7 +308,8 @@ def check_raw_encoder(violations: list[str]) -> list[str]:
     source = RAW_ENCODER.read_text(encoding="utf-8")
     raw_names = []
     for function in function_records(source):
-        if "WirModule" not in str(function["signature"]):
+        signature = str(function["signature"])
+        if "ValidatedWirModule" in signature or not re.search(r"\bWirModule\b", signature):
             continue
         attributes = str(function["attributes"])
         externally_visible = str(function["visibility"]).startswith("pub") and not str(function["visibility"]).startswith("pub(crate")
@@ -308,8 +329,20 @@ def check_lowerer_calls(raw_names: list[str], violations: list[str]) -> None:
     for path in rust_files(LOWER_SRC):
         source = path.read_text(encoding="utf-8")
         masked = mask_rust(source)
+        functions = function_records(source, masked)
         for name in raw_names:
-            if re.search(rf"\bwir_encode\s*::\s*{re.escape(name)}\s*\(", masked):
+            for call in re.finditer(rf"\bwir_encode\s*::\s*{re.escape(name)}\s*\(", masked):
+                containing = [
+                    function
+                    for function in functions
+                    if int(function["brace"]) < call.start() < int(function["end"])
+                ]
+                if len(containing) == 1:
+                    attributes = str(containing[0]["attributes"])
+                    if "cfg" in attributes and re.search(
+                        r"\btest\b|raw-module-test-api", attributes
+                    ):
+                        continue
                 violations.append(
                     f"lowerer production source invokes raw encoder `{name}`: {path.relative_to(ROOT)}"
                 )

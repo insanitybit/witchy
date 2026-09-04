@@ -2,25 +2,19 @@
 //! [`crate::safewir_adapter::ValidatedWirModule`], applies fixed SafeWIR
 //! template expansion and ghost erasure, emits via `wasm-encoder`, then always
 //! runs `wasmparser` validation. Raw byte-only WIR entrypoints exist only for
-//! crate tests and the explicit `raw-encoder-test-api` feature. One documented
-//! source-map bridge remains until `witchy-lower` can be wired atomically to the
-//! authority API after its raw-memory migration.
+//! crate tests and the explicit `raw-encoder-test-api` feature.
 //!
 //! Index spaces: imported functions come first (index = position in
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
 //!
-//! The raw byte surface is sealed except for the one explicit migration bridge:
-//! `try_encode_with_gc_source_map` remains `pub` behind the
-//! `legacy-encoder-bridge` feature because `witchy-lower`'s
-//! `codegen::assembly` has not yet migrated. The structural route gate names
-//! that bridge and asserts it is the sole production caller.
+//! The raw byte surface is sealed outside crate tests and the explicit test API.
 //! The canonical WasmIR emitter is private and accepts only final
 //! `ValidatedSafeWir` authority; the public production WIR boundary likewise
 //! accepts only `ValidatedWirModule` authority. The compile-fail case below
 //! proves that the ordinary raw entrypoints are unreachable from a normal build.
 //!
-#![cfg_attr(not(any(feature = "raw-encoder-test-api", feature = "legacy-encoder-bridge")), doc = r#"
+#![cfg_attr(not(feature = "raw-encoder-test-api"), doc = r#"
 Raw encoder entrypoints and the transitional bridge are unreachable from a
 normal downstream build:
 
@@ -1022,13 +1016,9 @@ pub fn try_encode_with_gc(
     .map(|encoded| encoded.wasm)
 }
 
-/// Transitional RFC-0162 migration bridge for the still-unmigrated production
-/// lowerer. It grants no [`ValidatedWirModule`] authority and must be sealed in
-/// the same change that wires `witchy-lower` to
-/// [`try_encode_validated_with_source_map`]. Ordinary callers should not use it;
-/// raw byte-only entrypoints remain feature-gated.
+/// Raw source-map encoder for lowerer and encoder tests only.
 #[doc(hidden)]
-#[cfg(any(test, feature = "legacy-encoder-bridge"))]
+#[cfg(any(test, feature = "raw-encoder-test-api"))]
 pub fn try_encode_with_gc_source_map(
     module: &WirModule,
     structs: &[WirStructDef],

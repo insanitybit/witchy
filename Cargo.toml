@@ -90,6 +90,7 @@ wasm-encoder = "0.251"
 # Reads back the pre-compiled prelude blob + validates the emitted module; pure
 # Rust, so the binary codegen path (WIR -> wasm) runs on the wasm playground too.
 wasmparser = "0.251"
+wasmprinter = "0.248.0"
 # Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
 wasmtime = { version = "45.0.0", optional = true }
 # Global allocator for the native binary + every test binary that links this

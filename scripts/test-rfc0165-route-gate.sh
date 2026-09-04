@@ -77,6 +77,10 @@ reject() {
     fi
 }
 
+sed -i '' 's/raw-encoder-test-api/legacy-encoder-bridge/' "$tmp/Cargo.toml"
+reject legacy-dev-feature
+sed -i '' 's/legacy-encoder-bridge/raw-encoder-test-api/' "$tmp/Cargo.toml"
+
 printf '%s\n' 'struct WasmIr;' >"$tmp/crates/witchy-wir/src/rogue.rs"
 reject outside-wasmir
 rm "$tmp/crates/witchy-wir/src/rogue.rs"
@@ -93,6 +97,11 @@ sed -i '' 's/path = "..\/witchy-wir"/path = "..\/witchy-wir", features = ["raw-e
     "$tmp/crates/witchy-lower/Cargo.toml"
 reject raw-production-feature
 sed -i '' 's/, features = \["raw-encoder-test-api"\]//' "$tmp/crates/witchy-lower/Cargo.toml"
+
+printf '%s\n' '#[cfg(any(test, feature = "raw-module-test-api"))]' \
+    'pub fn compile_test_raw(module: &WirModule) { wir_encode::encode(module); }' \
+    >>"$tmp/crates/witchy-lower/src/codegen/assembly.rs"
+run_gate >/dev/null
 
 printf '%s\n' 'pub fn compile_raw(module: &WirModule) { wir_encode::encode(module); }' \
     >>"$tmp/crates/witchy-lower/src/codegen/assembly.rs"

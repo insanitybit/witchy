@@ -15,9 +15,10 @@ raw-module-test-api = []
 # wasm-clean. The tests run the emitted module under wasmtime — a dev-dependency,
 # so it never enters a non-test or wasm build.
 [dependencies]
+witchy-caps = { path = "../witchy-caps" }
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-types = { path = "../witchy-types" }
-witchy-wir = { path = "../witchy-wir", features = ["legacy-encoder-bridge"] }
+witchy-wir = { path = "../witchy-wir" }
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).
 foldhash = "0.2.0"
 sha2 = "0.11.0"
@@ -25,6 +26,7 @@ sha2 = "0.11.0"
 wasmparser = "0.251"
 
 [dev-dependencies]
+witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api"] }
 wasmtime = "45.0.0"
 # Integration tests (tests/) compile the lib WITHOUT cfg(test); enable the
 # raw-module test surface for them via a self-dependency.

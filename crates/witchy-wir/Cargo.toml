@@ -30,9 +30,6 @@ wasmtime = { version = "45.0.0", optional = true }
 
 [features]
 native = ["dep:wasmtime"]
-# The lowerer is the one remaining production caller of the transitional
-# source-map bridge. Keep that authority separate from the raw test surface.
-legacy-encoder-bridge = []
 # Synthetic WIR and optimizer-oracle tests intentionally encode unchecked
 # modules. Normal dependents receive only the fallible production boundary.
 raw-encoder-test-api = []
