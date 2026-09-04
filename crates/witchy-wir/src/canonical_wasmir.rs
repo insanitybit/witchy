@@ -1339,20 +1339,6 @@ pub struct AdmittedCanonicalArtifact {
     wasm_digest: [u8; 32],
 }
 
-/// Non-executable metadata appended before decoded-byte matching and final
-/// artifact digesting. It cannot add or replace executable Wasm sections.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CanonicalCustomSection {
-    name: String,
-    data: Vec<u8>,
-}
-
-impl CanonicalCustomSection {
-    pub fn new(name: impl Into<String>, data: Vec<u8>) -> Self {
-        Self { name: name.into(), data }
-    }
-}
-
 impl AdmittedCanonicalArtifact {
     /// Borrow the exact admitted Wasm bytes without transferring ownership.
     pub fn wasm(&self) -> &[u8] {
@@ -4748,14 +4734,12 @@ fn admit_parts(
     source: CanonicalModule<OptimizedValid>,
     target: WasmIr,
     receipt: CorrespondenceReceipt,
-    correspondence_bytes: &[u8],
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
     history_digest: crate::canonical_safewir::ModuleDigest,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    decode_and_match_plan(&source, &target, correspondence_bytes)?;
-    wasmparser::validate(&bytes).map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+    decode_and_match_plan(&source, &target, &bytes)?;
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
         bytes,
@@ -4768,13 +4752,6 @@ fn admit_parts(
 }
 
 pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    admit_canonical_with_custom_sections(validated, &[])
-}
-
-pub fn admit_canonical_with_custom_sections(
-    validated: ValidatedSafeWir,
-    custom_sections: &[CanonicalCustomSection],
-) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     validated.validate_pre_admission().map_err(|_| CanonicalAdmissionError::Correspondence)?;
     let source = validated.module().clone();
     let checked_source = validated.checked_source();
@@ -4787,28 +4764,8 @@ pub fn admit_canonical_with_custom_sections(
     validated
         .validate_authority_wir(&authority_wir, correspondence_digest)
         .map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let correspondence_bytes =
-        encode_validated(validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
-    let mut bytes = correspondence_bytes.clone();
-    for section in custom_sections {
-        wasm_encoder::Section::append_to(
-            &wasm_encoder::CustomSection {
-                name: std::borrow::Cow::Borrowed(&section.name),
-                data: std::borrow::Cow::Borrowed(&section.data),
-            },
-            &mut bytes,
-        );
-    }
-    admit_parts(
-        source,
-        target,
-        receipt,
-        &correspondence_bytes,
-        bytes,
-        checked_source,
-        final_module_digest,
-        history_digest,
-    )
+    let bytes = encode_validated(validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
 }
 
 #[cfg(test)]
@@ -4828,17 +4785,7 @@ fn admit_canonical_with_bytes_for_test(
     validated
         .validate_authority_wir(&authority_wir, correspondence_digest)
         .map_err(|_| CanonicalAdmissionError::Correspondence)?;
-    let correspondence_bytes = bytes.clone();
-    admit_parts(
-        source,
-        target,
-        receipt,
-        &correspondence_bytes,
-        bytes,
-        checked_source,
-        final_module_digest,
-        history_digest,
-    )
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
 }
 #[cfg(test)]
 mod tests {

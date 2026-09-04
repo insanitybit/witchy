@@ -3074,7 +3074,6 @@ fn public_outcome<T>(result: Result<T, LoweringFailure>) -> LoweringOutcome<T> {
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn encode_validated(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3083,7 +3082,6 @@ fn encode_validated(
     encode_validated_with_source_map(module, gc_structs, gc_arrays).map(|encoded| encoded.wasm)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn encode_validated_with_source_map(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3122,7 +3120,6 @@ fn encode_validated_with_source_map(
     Ok(encoded)
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn validated_module_outcome(
     module: witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3218,7 +3215,6 @@ fn append_suspension_carrier(
     wasm
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn encoded_module_outcome(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3316,34 +3312,35 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
 pub fn compile_checked_module_binary(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    match crate::canonical_pipeline::admit_checked_module(checked) {
-        Ok(artifact) => LoweringOutcome::Lowered(artifact.wasm().to_vec()),
-        Err(error) => LoweringOutcome::Rejected(CodegenError {
-            message: error.to_string(),
-        }),
-    }
+    // Checked source does not necessarily carry loader-authenticated package
+    // ownership. That is valid for programs with no catalog-dependent feature:
+    // Dynamic and Glamour construction reject independently when the catalog
+    // is absent. Do not turn this optional transport into forged authority.
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref(), None)
 }
 
 /// Compile a checked module with RFC-0030 deterministic sequence counters.
 /// Ordinary production compilation omits their hot-path bookkeeping entirely;
 /// `witchy stats` opts in explicitly and still receives exported exact counts.
 pub fn compile_checked_module_binary_with_deterministic_counters(
-    _checked: &witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    public_outcome(unsupported(
-        "deterministic counters are not yet lowered by canonical SafeWIR",
-    ))
+    super::with_deterministic_sequence_counters(|| compile_checked_module_binary(checked))
 }
 
 /// Compile a generated test driver that was proved to differ from its checked
 /// source program only at `main`. Keeping this boundary distinct prevents the
 /// post-link rewrite from impersonating a production `CheckedModule`.
 pub fn compile_checked_test_driver_binary(
-    _checked: &witchy_types::pipeline::CheckedTestDriverModule,
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    public_outcome(unsupported(
-        "generated test drivers are not yet lowered by canonical SafeWIR",
-    ))
+    compile_module_binary_mode(
+        checked.module(),
+        false,
+        checked.runtime_declaration_catalog(),
+        None,
+    )
 }
 
 /// A compiler-rewritten Glamour application and generated adapter that were
@@ -3395,22 +3392,69 @@ pub fn check_glamour_island_executable(
 /// Compile only a compiler-generated Glamour executable that crossed
 /// [`check_glamour_island_executable`].
 pub fn compile_checked_glamour_island_execution_binary(
-    _executable: &CheckedGlamourExecutable,
+    executable: &CheckedGlamourExecutable,
 ) -> LoweringOutcome<Vec<u8>> {
-    public_outcome(unsupported(
-        "generated Glamour executables are not yet lowered by canonical SafeWIR",
-    ))
+    compile_module_binary_mode(
+        executable.checked.module(),
+        false,
+        Some(executable.checked.runtime_declaration_catalog()),
+        None,
+    )
 }
 
 pub fn compile_checked_development_module(
-    _checked: &witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<CompiledDevelopmentModule> {
-    public_outcome(unsupported(
-        "development source maps are not yet lowered by canonical SafeWIR",
-    ))
+    let metadata = match checked_glamour_development_metadata(checked) {
+        Ok(metadata) => metadata,
+        Err(error) => return LoweringOutcome::Rejected(error),
+    };
+    let generated_module = match metadata
+        .as_ref()
+        .and_then(|metadata| metadata.snapshot_codec.as_ref())
+    {
+        Some(codec) => match checked_glamour_development_codec_module(checked, codec) {
+            Ok(module) => Some(module),
+            Err(error) => return LoweringOutcome::Rejected(error),
+        },
+        None => None,
+    };
+    let checked_generated = match generated_module {
+        Some(module) => match CheckedGeneratedModule::new(checked, module) {
+            Ok(generated) => Some(generated),
+            Err(error) => return LoweringOutcome::Rejected(error),
+        },
+        None => None,
+    };
+    let module = checked_generated
+        .as_ref()
+        .map(|generated| &generated.module)
+        .unwrap_or_else(|| checked.module());
+    let checked_runtime_catalog = checked.runtime_declaration_catalog().ok();
+    let runtime_catalog = checked_generated
+        .as_ref()
+        .and_then(|generated| generated.runtime_catalog.as_ref())
+        .or(checked_runtime_catalog.as_ref());
+    match compile_module_binary_with_source_map_mode(
+        module,
+        false,
+        runtime_catalog,
+        metadata.as_ref(),
+        true,
+    ) {
+        LoweringOutcome::Lowered(encoded) => {
+            LoweringOutcome::Lowered(CompiledDevelopmentModule {
+                wasm: encoded.wasm,
+                glamour: metadata,
+                source_instructions: encoded.source_instructions,
+                source_expressions: encoded.source_expressions,
+            })
+        }
+        LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
+        LoweringOutcome::Rejected(error) => LoweringOutcome::Rejected(error),
+    }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn compile_module_binary_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -3430,7 +3474,6 @@ fn compile_module_binary_mode(
     }
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn compile_module_binary_with_source_map_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -3482,7 +3525,6 @@ pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::
 /// Assemble and optimize the exact WIR module used by the binary backend, then
 /// validate the transformed result before exposing it to diagnostic consumers
 /// such as `emit-wat`.
-#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_checked_optimized_wir_module(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
@@ -8505,14 +8547,12 @@ pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
 
 /// Compile a build module that crossed the canonical linked type-check boundary.
 pub fn compile_checked_build_module(
-    _checked: &witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    public_outcome(unsupported(
-        "build modules are not yet lowered by canonical SafeWIR",
-    ))
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    compile_build_module_mode(checked.module(), runtime_catalog.as_ref())
 }
 
-#[cfg(any(test, feature = "raw-module-test-api"))]
 fn compile_build_module_mode(
     module: &Module,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,

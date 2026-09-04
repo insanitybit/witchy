@@ -57,7 +57,7 @@ cap-std-ext = "5.1.2"
 
 [dev-dependencies]
 # Combined checked-heap/UAF tests assemble the exact WIR allocator helpers.
-witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api"] }
+witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api", "legacy-encoder-bridge"] }
 wasm-encoder = "0.251"
 
 [features]

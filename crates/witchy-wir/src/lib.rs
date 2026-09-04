@@ -23,8 +23,7 @@ pub mod runtime_layout_catalog;
 pub mod canonical_safewir;
 mod canonical_wasmir;
 pub use canonical_wasmir::{
-    AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalCustomSection, admit_canonical,
-    admit_canonical_with_custom_sections,
+    AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical,
 };
 pub mod safewir;
 pub mod safewir_adapter;
