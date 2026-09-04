@@ -6,29 +6,35 @@ use crate::layout::{
 
 use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
-    AccessMode, AllocationClass, BorrowMode, CallArgument, ComparisonOperator, Extent, Function,
-    FunctionSignature, GuardKind, HeaderField, LoadTransfer, Operation, Ownership, ParameterContract,
-    ParameterOwnership, Place, Projection, ResultContract, StoreTransfer, ValueId, ValueType,
+    AccessMode, AllocationClass, BasicBlock, BorrowMode, CallArgument, ComparisonOperator, Extent,
+    Function, FunctionSignature, GuardKind, HeaderField, LoadTransfer, Operation, Ownership,
+    ParameterContract, ParameterOwnership, Place, Projection, ResultContract, StoreTransfer, ValueId,
+    ValueType,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ObjectState {
+    /// The allocation or entry parameter from which this reference originates.
+    /// SSA edge arguments rename values, never object identity.
+    identity: ValueId,
     layout: crate::layout::LayoutId,
     extent: Extent,
     ownership: Ownership,
     allocation_class: Option<AllocationClass>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Comparison {
     operator: ComparisonOperator,
     left: ValueId,
     right: ValueId,
 }
 
-pub(super) struct MemoryChecker<'a> {
-    function: &'a Function,
-    layouts: &'a LayoutInterner,
+/// All derived memory facts at one program point.  This is deliberately a
+/// checker-owned snapshot: transforms cannot attach a claimed range, extent,
+/// or ownership fact to an edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MemoryState {
     objects: BTreeMap<ValueId, ObjectState>,
     constants: BTreeMap<ValueId, u64>,
     comparisons: BTreeMap<ValueId, Comparison>,
@@ -37,36 +43,183 @@ pub(super) struct MemoryChecker<'a> {
     static_data_objects: BTreeSet<ValueId>,
 }
 
+pub(super) struct MemoryChecker<'a> {
+    function: &'a Function,
+    layouts: &'a LayoutInterner,
+    state: MemoryState,
+}
+
 impl<'a> MemoryChecker<'a> {
     pub(super) fn new(
         function: &'a Function,
         layouts: &'a LayoutInterner,
         signature: &FunctionSignature,
     ) -> Result<Self, InitialCheckError> {
-        let has_memory = function
-            .value_types
-            .values()
-            .any(ValueType::is_memory_bearing)
-            || function.blocks.iter().any(|block| {
-                block.operations.iter().any(is_memory_operation)
-            });
-        if has_memory && function.blocks.len() != 1 {
-            return Err(InitialCheckError::UnsupportedMemoryControlFlow {
-                function: function.id,
-            });
-        }
         let mut checker = Self {
             function,
             layouts,
-            objects: BTreeMap::new(),
-            constants: BTreeMap::new(),
-            comparisons: BTreeMap::new(),
-            guards: BTreeSet::new(),
-            header_values: BTreeMap::new(),
-            static_data_objects: BTreeSet::new(),
+            state: MemoryState {
+                objects: BTreeMap::new(),
+                constants: BTreeMap::new(),
+                comparisons: BTreeMap::new(),
+                guards: BTreeSet::new(),
+                header_values: BTreeMap::new(),
+                static_data_objects: BTreeSet::new(),
+            },
         };
         checker.initialize_parameters(signature)?;
         Ok(checker)
+    }
+
+    pub(super) fn snapshot(&self) -> MemoryState {
+        self.state.clone()
+    }
+
+    pub(super) fn restore(&mut self, state: MemoryState) {
+        self.state = state;
+    }
+
+    /// Rename facts through an explicit SSA edge.  A block parameter is a new
+    /// definition, so any count, capacity, header value, guard, or object state
+    /// carried by an argument must be expressed in terms of that definition.
+    pub(super) fn transfer_edge(
+        &self,
+        target: &BasicBlock,
+        arguments: &[ValueId],
+    ) -> Result<MemoryState, InitialCheckError> {
+        let mut renames = BTreeMap::new();
+        for (argument, parameter) in arguments.iter().zip(&target.parameters) {
+            if self.state.objects.contains_key(argument)
+                && renames.insert(*argument, parameter.value).is_some_and(|previous| previous != parameter.value)
+            {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: *argument,
+                });
+            }
+            renames.insert(*argument, parameter.value);
+        }
+
+        let mut objects = BTreeMap::new();
+        for (value, state) in &self.state.objects {
+            let mut state = state.clone();
+            state.extent = remap_extent(&renames, &state.extent);
+            let value = remap_value(&renames, *value);
+            if let Some(previous) = objects.insert(value, state.clone()) {
+                if previous != state {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: value,
+                    });
+                }
+            }
+        }
+        for parameter in &target.parameters {
+            if parameter.value_type.is_memory_bearing() && !objects.contains_key(&parameter.value) {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: parameter.value,
+                });
+            }
+        }
+
+        Ok(MemoryState {
+            objects,
+            constants: self
+                .state
+                .constants
+                .iter()
+                .map(|(value, constant)| (remap_value(&renames, *value), *constant))
+                .collect(),
+            comparisons: self
+                .state
+                .comparisons
+                .iter()
+                .map(|(value, comparison)| {
+                    (
+                        remap_value(&renames, *value),
+                        Comparison {
+                            operator: comparison.operator,
+                            left: remap_value(&renames, comparison.left),
+                            right: remap_value(&renames, comparison.right),
+                        },
+                    )
+                })
+                .collect(),
+            guards: self
+                .state
+                .guards
+                .iter()
+                .map(|(operator, left, right)| {
+                    (*operator, remap_value(&renames, *left), remap_value(&renames, *right))
+                })
+                .collect(),
+            header_values: self
+                .state
+                .header_values
+                .iter()
+                .map(|((object, field), value)| {
+                    (
+                        (remap_value(&renames, *object), *field),
+                        remap_value(&renames, *value),
+                    )
+                })
+                .collect(),
+            static_data_objects: self
+                .state
+                .static_data_objects
+                .iter()
+                .map(|object| remap_value(&renames, *object))
+                .collect(),
+        })
+    }
+
+    /// Meet facts from predecessor edges.  Scalar facts are usable only when
+    /// every predecessor establishes the same fact.  An object state is never
+    /// widened: different allocation identity, ownership, layout, or extent is
+    /// an explicit unsafe join rather than an inferred alias relation.
+    pub(super) fn meet(
+        &self,
+        block: &BasicBlock,
+        existing: &MemoryState,
+        incoming: &MemoryState,
+    ) -> Result<MemoryState, InitialCheckError> {
+        let mut objects = BTreeMap::new();
+        for (value, current) in &existing.objects {
+            let Some(next) = incoming.objects.get(value) else {
+                continue;
+            };
+            if current != next {
+                return Err(InitialCheckError::IncompatibleMemoryJoin {
+                    function: self.function.id,
+                    block: block.id,
+                    object: *value,
+                });
+            }
+            objects.insert(*value, current.clone());
+        }
+        for parameter in &block.parameters {
+            if parameter.value_type.is_memory_bearing() && !objects.contains_key(&parameter.value) {
+                return Err(InitialCheckError::IncompatibleMemoryJoin {
+                    function: self.function.id,
+                    block: block.id,
+                    object: parameter.value,
+                });
+            }
+        }
+
+        Ok(MemoryState {
+            objects,
+            constants: intersect_map(&existing.constants, &incoming.constants),
+            comparisons: intersect_map(&existing.comparisons, &incoming.comparisons),
+            guards: existing.guards.intersection(&incoming.guards).copied().collect(),
+            header_values: intersect_map(&existing.header_values, &incoming.header_values),
+            static_data_objects: existing
+                .static_data_objects
+                .intersection(&incoming.static_data_objects)
+                .copied()
+                .collect(),
+        })
     }
 
     fn initialize_parameters(
@@ -103,9 +256,10 @@ impl<'a> MemoryChecker<'a> {
                 }
             };
             let extent = self.parameter_extent(layout)?;
-            self.objects.insert(
+            self.state.objects.insert(
                 parameter.value,
                 ObjectState {
+                    identity: parameter.value,
                     layout,
                     extent,
                     ownership,
@@ -212,7 +366,7 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-        self.objects
+                self.state.objects
             .get_mut(&source)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
@@ -223,11 +377,11 @@ impl<'a> MemoryChecker<'a> {
     pub(super) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
         match operation {
             Operation::ConstSize { destination, value } => {
-                self.constants.insert(*destination, *value);
+                self.state.constants.insert(*destination, *value);
                 Ok(false)
             }
             Operation::Compare { destination, operator, left, right } => {
-                self.comparisons.insert(
+                self.state.comparisons.insert(
                     *destination,
                     Comparison {
                         operator: *operator,
@@ -238,7 +392,7 @@ impl<'a> MemoryChecker<'a> {
                 Ok(false)
             }
             Operation::Guard { condition, kind } => {
-                let comparison = self.comparisons.get(condition).copied().ok_or(
+                let comparison = self.state.comparisons.get(condition).copied().ok_or(
                     InitialCheckError::InvalidGuard {
                         function: self.function.id,
                         condition: *condition,
@@ -257,7 +411,7 @@ impl<'a> MemoryChecker<'a> {
                             kind: *kind,
                         });
                     }
-                    self.guards
+                    self.state.guards
                         .insert((comparison.operator, comparison.left, comparison.right));
                 }
                 Ok(false)
@@ -328,9 +482,10 @@ impl<'a> MemoryChecker<'a> {
         self.require_ref_type(destination, layout)?;
         let descriptor = self.descriptor(layout)?;
         self.check_extent(destination, extent, descriptor, false)?;
-        self.objects.insert(
+        self.state.objects.insert(
             destination,
             ObjectState {
+                identity: destination,
                 layout,
                 extent: extent.clone(),
                 ownership: Ownership::Unique,
@@ -349,16 +504,17 @@ impl<'a> MemoryChecker<'a> {
         self.require_ref_type(destination, layout)?;
         let descriptor = self.descriptor(layout)?;
         self.check_extent(destination, extent, descriptor, true)?;
-        self.objects.insert(
+        self.state.objects.insert(
             destination,
             ObjectState {
+                identity: destination,
                 layout,
                 extent: extent.clone(),
                 ownership: Ownership::Shared,
                 allocation_class: None,
             },
         );
-        self.static_data_objects.insert(destination);
+        self.state.static_data_objects.insert(destination);
         Ok(())
     }
 
@@ -438,7 +594,7 @@ impl<'a> MemoryChecker<'a> {
         }
         self.require_type(destination, expected)?;
         if let Projection::Header(field) = place.projection() {
-            self.header_values
+            self.state.header_values
                 .insert((place.object(), *field), destination);
         }
         Ok(())
@@ -453,7 +609,7 @@ impl<'a> MemoryChecker<'a> {
         if place.access() != AccessMode::Write || transfer != StoreTransfer::CopyScalar {
             return self.unsupported("Store(non-scalar)");
         }
-        if self.static_data_objects.contains(&place.object()) {
+        if self.state.static_data_objects.contains(&place.object()) {
             return Err(InitialCheckError::WritableStaticData {
                 function: self.function.id,
                 object: place.object(),
@@ -556,7 +712,7 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         let count = self
-            .header_values
+            .state.header_values
             .get(&(object, HeaderField::Length))
             .copied()
             .ok_or(InitialCheckError::InvalidExtent {
@@ -564,7 +720,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             })?;
         let capacity = self
-            .header_values
+            .state.header_values
             .get(&(object, HeaderField::Capacity))
             .copied()
             .ok_or(InitialCheckError::InvalidExtent {
@@ -585,7 +741,7 @@ impl<'a> MemoryChecker<'a> {
                 maximum: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
             });
         }
-        self.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+        self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
             header_bytes: base,
             count,
             capacity,
@@ -596,7 +752,7 @@ impl<'a> MemoryChecker<'a> {
 
     fn update_count(&mut self, object: ValueId, count: ValueId) -> Result<(), InitialCheckError> {
         self.require_type(count, ValueType::Size)?;
-        if self.static_data_objects.contains(&object) {
+        if self.state.static_data_objects.contains(&object) {
             return Err(InitialCheckError::WritableStaticData {
                 function: self.function.id,
                 object,
@@ -616,7 +772,7 @@ impl<'a> MemoryChecker<'a> {
             });
         };
         if self
-            .header_values
+            .state.header_values
             .get(&(object, HeaderField::Capacity))
             .is_some_and(|loaded| *loaded != capacity)
         {
@@ -632,13 +788,13 @@ impl<'a> MemoryChecker<'a> {
                 capacity,
             });
         }
-        self.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+        self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
             header_bytes,
             count,
             capacity,
             stride_bytes,
         };
-        self.header_values.insert((object, HeaderField::Length), count);
+        self.state.header_values.insert((object, HeaderField::Length), count);
         Ok(())
     }
 
@@ -646,8 +802,8 @@ impl<'a> MemoryChecker<'a> {
         let source_type = value_type(self.function, source)?;
         self.require_type(destination, source_type)?;
         let state = self.live_object(source)?.clone();
-        self.objects.insert(destination, state);
-        self.objects
+        self.state.objects.insert(destination, state);
+        self.state.objects
             .get_mut(&source)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
@@ -668,8 +824,8 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         state.ownership = Ownership::Shared;
-        self.objects.insert(destination, state);
-        self.objects
+        self.state.objects.insert(destination, state);
+        self.state.objects
             .get_mut(&source)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
@@ -684,7 +840,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        self.objects
+        self.state.objects
             .get_mut(&object)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
@@ -705,12 +861,12 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        self.objects.get_mut(&object).expect("live object exists").ownership = Ownership::Consumed;
+        self.state.objects.get_mut(&object).expect("live object exists").ownership = Ownership::Consumed;
         Ok(())
     }
 
     fn live_object(&self, object: ValueId) -> Result<&ObjectState, InitialCheckError> {
-        let state = self.objects.get(&object).ok_or(InitialCheckError::InvalidOwnership {
+        let state = self.state.objects.get(&object).ok_or(InitialCheckError::InvalidOwnership {
             function: self.function.id,
             object,
         })?;
@@ -724,14 +880,14 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn less_than(&self, left: ValueId, right: ValueId) -> bool {
-        self.guards
+        self.state.guards
             .contains(&(ComparisonOperator::LessUnsigned, left, right))
     }
 
     fn less_equal(&self, left: ValueId, right: ValueId) -> bool {
         self.constant_relation(left, right, |left, right| left <= right)
             || self
-                .guards
+                .state.guards
                 .contains(&(ComparisonOperator::LessEqualUnsigned, left, right))
             || left == right
     }
@@ -741,13 +897,13 @@ impl<'a> MemoryChecker<'a> {
             return false;
         }
         let maximum = (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride);
-        self.constants
+        self.state.constants
             .get(&capacity)
             .is_some_and(|capacity| *capacity <= maximum)
-            || self.guards.iter().any(|(operator, left, right)| {
+            || self.state.guards.iter().any(|(operator, left, right)| {
                 *operator == ComparisonOperator::LessEqualUnsigned
                     && *left == capacity
-                    && self.constants.get(right).copied() == Some(maximum)
+                    && self.state.constants.get(right).copied() == Some(maximum)
             })
     }
 
@@ -757,10 +913,10 @@ impl<'a> MemoryChecker<'a> {
         right: ValueId,
         predicate: impl FnOnce(u64, u64) -> bool,
     ) -> bool {
-        self.constants
+        self.state.constants
             .get(&left)
             .copied()
-            .zip(self.constants.get(&right).copied())
+            .zip(self.state.constants.get(&right).copied())
             .is_some_and(|(left, right)| predicate(left, right))
     }
 
@@ -840,22 +996,38 @@ impl<'a> MemoryChecker<'a> {
     }
 }
 
-fn is_memory_operation(operation: &Operation) -> bool {
-    matches!(
-        operation,
-        Operation::Alloc { .. }
-            | Operation::StaticData { .. }
-            | Operation::Load { .. }
-            | Operation::Store { .. }
-            | Operation::CopyBytes { .. }
-            | Operation::MoveRange { .. }
-            | Operation::CloneRange { .. }
-            | Operation::UpdateCount { .. }
-            | Operation::Share { .. }
-            | Operation::Retain { .. }
-            | Operation::Release { .. }
-            | Operation::Reclaim { .. }
-    )
+fn remap_value(renames: &BTreeMap<ValueId, ValueId>, value: ValueId) -> ValueId {
+    renames.get(&value).copied().unwrap_or(value)
+}
+
+fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent {
+    match extent {
+        Extent::FixedBytes(bytes) => Extent::FixedBytes(*bytes),
+        Extent::HeaderPrefix { minimum_bytes } => Extent::HeaderPrefix {
+            minimum_bytes: *minimum_bytes,
+        },
+        Extent::Counted {
+            header_bytes,
+            count,
+            capacity,
+            stride_bytes,
+        } => Extent::Counted {
+            header_bytes: *header_bytes,
+            count: remap_value(renames, *count),
+            capacity: remap_value(renames, *capacity),
+            stride_bytes: *stride_bytes,
+        },
+    }
+}
+
+fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(
+    left: &BTreeMap<K, V>,
+    right: &BTreeMap<K, V>,
+) -> BTreeMap<K, V> {
+    left
+        .iter()
+        .filter_map(|(key, value)| (right.get(key) == Some(value)).then(|| (*key, value.clone())))
+        .collect()
 }
 
 fn operation_name(operation: &Operation) -> &'static str {

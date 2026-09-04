@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -45,6 +45,8 @@ pub enum InitialCheckError {
     InvalidOwnership { function: FunctionId, object: ValueId },
     InvalidAllocationClass { function: FunctionId, object: ValueId },
     UseAfterConsume { function: FunctionId, object: ValueId },
+    IncompatibleMemoryJoin { function: FunctionId, block: BlockId, object: ValueId },
+    MemoryDataflowNonConvergence { function: FunctionId },
     UnsupportedMemoryControlFlow { function: FunctionId },
     DuplicateSignature(FunctionSignatureId),
     DuplicateFunction(FunctionId),
@@ -396,17 +398,70 @@ fn check_function(
     let predecessors = predecessor_map(function, &blocks)?;
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
-    let mut memory = MemoryChecker::new(function, layouts, signature)?;
-
+    let memory = MemoryChecker::new(function, layouts, signature)?;
     for block in &function.blocks {
+        match &block.terminator {
+            Terminator::TailCall { site, .. } | Terminator::VarTailCall { site, .. } => {
+                observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
+            }
+            _ => {}
+        }
+    }
+    check_memory_cfg(
+        function,
+        signature,
+        signatures,
+        imports,
+        catalog,
+        functions,
+        &blocks,
+        &definition_sites,
+        &dominators,
+        memory,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_memory_cfg(
+    function: &Function,
+    signature: &FunctionSignature,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    imports: &BTreeMap<ImportId, &ImportContract>,
+    catalog: Option<&CanonicalAbiCatalog>,
+    functions: &BTreeMap<FunctionId, &Function>,
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
+    definition_sites: &BTreeMap<ValueId, DefinitionSite>,
+    dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    mut memory: MemoryChecker<'_>,
+) -> Result<(), InitialCheckError> {
+    let mut incoming = BTreeMap::new();
+    incoming.insert(function.entry, memory.snapshot());
+    let mut pending = VecDeque::from([function.entry]);
+    let mut iterations = 0usize;
+    let maximum_iterations = function
+        .blocks
+        .len()
+        .saturating_mul(function.value_types.len().saturating_add(1))
+        .saturating_mul(8)
+        .max(64);
+
+    while let Some(block_id) = pending.pop_front() {
+        iterations += 1;
+        if iterations > maximum_iterations {
+            return Err(InitialCheckError::MemoryDataflowNonConvergence {
+                function: function.id,
+            });
+        }
+        let block = blocks[&block_id];
+        memory.restore(incoming[&block_id].clone());
         for (operation_index, operation) in block.operations.iter().enumerate() {
             check_uses_dominate(
                 function,
                 block.id,
                 operation_index,
                 operation_uses(operation),
-                &definition_sites,
-                &dominators,
+                definition_sites,
+                dominators,
             )?;
             check_operation(function, operation, signatures, imports, catalog, functions, &mut memory)?;
         }
@@ -415,8 +470,8 @@ fn check_function(
             block.id,
             block.operations.len(),
             terminator_uses(&block.terminator),
-            &definition_sites,
-            &dominators,
+            definition_sites,
+            dominators,
         )?;
         check_terminator(
             function,
@@ -424,13 +479,42 @@ fn check_function(
             signature,
             signatures,
             functions,
-            &blocks,
-            tail_obligations,
-            observed_tail_sites,
+            blocks,
             &mut memory,
         )?;
+
+        for (target, arguments) in memory_successor_edges(&block.terminator) {
+            let target_block = blocks[&target];
+            let transferred = memory.transfer_edge(target_block, arguments)?;
+            let next = match incoming.get(&target) {
+                Some(current) => memory.meet(target_block, current, &transferred)?,
+                None => transferred,
+            };
+            if incoming.get(&target) != Some(&next) {
+                incoming.insert(target, next);
+                pending.push_back(target);
+            }
+        }
     }
     Ok(())
+}
+
+fn memory_successor_edges(terminator: &Terminator) -> Vec<(BlockId, &[ValueId])> {
+    match terminator {
+        Terminator::Branch { target, arguments } => vec![(*target, arguments)],
+        Terminator::BranchIf {
+            then_target,
+            then_arguments,
+            else_target,
+            else_arguments,
+            ..
+        } => vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+        Terminator::Return { .. }
+        | Terminator::TailCall { .. }
+        | Terminator::VarTailCall { .. }
+        | Terminator::Trap
+        | Terminator::Unreachable => Vec::new(),
+    }
 }
 
 fn index_blocks(function: &Function) -> Result<BTreeMap<BlockId, &BasicBlock>, InitialCheckError> {
@@ -1019,8 +1103,6 @@ fn check_terminator(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     functions: &BTreeMap<FunctionId, &Function>,
     blocks: &BTreeMap<BlockId, &BasicBlock>,
-    tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
-    observed_tail_sites: &mut BTreeSet<TailSiteId>,
     memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
     match terminator {
@@ -1032,7 +1114,7 @@ fn check_terminator(
             Ok(())
         }
         Terminator::TailCall { site, callee, arguments } => {
-            observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
+            let _ = site;
             let callee = functions
                 .get(callee)
                 .copied()
@@ -1044,7 +1126,7 @@ fn check_terminator(
             check_tail_call(function, arguments, signature, current_signature, Some(memory))
         }
         Terminator::VarTailCall { site, callee, signature, arguments } => {
-            observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
+            let _ = site;
             require_type(function, *callee, ValueType::Callable(*signature))?;
             let signature = signatures
                 .get(signature)
