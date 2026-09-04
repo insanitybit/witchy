@@ -133,6 +133,31 @@ mod tests {
     }
 
     #[test]
+    fn checked_parameterized_call_reaches_admitted_execution() {
+        let source = "fn increment(n: Int) -> Int:\n    n + 1\nfn main() -> Int:\n    increment(41)\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked parameterized-call source");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical parameterized-call artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted parameterized-call artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted parameterized-call artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 42);
+    }
+
+    #[test]
     fn checked_proper_tail_call_reaches_return_call_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    return answer()\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
