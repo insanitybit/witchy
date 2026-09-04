@@ -12,6 +12,7 @@ use witchy_wir::canonical_safewir::{
     check_initial_with_witness, optimize_unreachable_blocks, validate_final,
 };
 use witchy_wir::layout::LayoutBundle;
+use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
 
 use crate::canonical_lower::{CanonicalLoweringError, lower_typed_module};
 
@@ -22,6 +23,15 @@ pub(crate) enum CanonicalPipelineError {
     InitialValidation(InitialCheckError),
     Optimization(OptimizationError),
     FinalValidation(FinalValidationError),
+    Admission(CanonicalAdmissionError),
+}
+
+pub(crate) fn admit_checked_module(
+    checked: &CheckedModule,
+    layouts: LayoutBundle,
+) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
+    let validated = validate_checked_module(checked, layouts)?;
+    admit_canonical(validated).map_err(CanonicalPipelineError::Admission)
 }
 
 impl fmt::Display for CanonicalPipelineError {
@@ -73,6 +83,24 @@ mod tests {
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
         assert!(validated.optimization_history().is_zero_pass());
+    }
+
+    #[test]
+    fn scalar_checked_source_reaches_exact_canonical_artifact() {
+        let source = "fn main() -> Int:\n    40 + 2\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("empty scalar layout bundle");
+
+        let artifact = admit_checked_module(&checked, layouts)
+            .expect("admit canonical scalar artifact");
+
+        wasmparser::validate(artifact.wasm()).expect("admitted bytes remain valid Wasm");
     }
 
     #[test]
