@@ -265,54 +265,27 @@ mod tests {
             .expect("configure public production Wasm engine");
         let module = wasmtime::Module::new(&engine, &bytes)
             .expect("compile public production Wasm");
-        let mut store = wasmtime::Store::new(&engine, ());
-        let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "__witchy_abort",
-                |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
-                    wasmtime::bail!("unexpected abort in public production probe")
-                },
-            )
-            .expect("bind public production abort ABI");
-        linker
-            .func_wrap(
-                "witchy",
-                "print_int",
-                |_: wasmtime::Caller<'_, ()>, _: i64| {},
-            )
-            .expect("bind public production integer output ABI");
-        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = std::sync::Arc::clone(&output);
-        let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "__witchy_abort",
-                |_: wasmtime::Caller<'_, ()>, _: i32, _: i64, _: i64, _: i32| -> wasmtime::Result<()> {
-                    wasmtime::bail!("unexpected abort in public production probe")
-                },
-            )
-            .expect("bind public production abort ABI");
-        linker
-            .func_wrap(
-                "witchy",
-                "print_int",
-                move |_: wasmtime::Caller<'_, ()>, value: i64| {
-                    sink.lock().expect("public production output lock").push(value);
-                },
-            )
-            .expect("bind public production integer output ABI");
-        let instance = linker
-            .instantiate(&mut store, &module)
-            .expect("instantiate public production Wasm");
-        let run = instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .expect("public production run export");
+        let launch_contracts = wasmparser::Parser::new(0)
+            .parse_all(&bytes)
+            .filter_map(|payload| match payload.expect("parse public production Wasm") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name()
+                        == witchy_caps::capabilities::LAUNCH_CONTRACT_SECTION =>
+                {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(launch_contracts, [vec![1, 0]]);
 
-        run.call(&mut store, ()).expect("run public production Wasm");
-        assert_eq!(*output.lock().expect("public production output lock"), [42]);
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate public production Wasm");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical public production main export");
+        assert_eq!(main.call(&mut store, ()).expect("run public production Wasm"), 42);
     }
 
     #[test]
