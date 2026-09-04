@@ -69,6 +69,7 @@ enum ScalarInstruction {
         left: ValueId,
         right: ValueId,
     },
+    NarrowSize { destination: ValueId, value: ValueId },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
     MoveValue { destination: ValueId, source: ValueId },
     Alloc {
@@ -405,9 +406,7 @@ fn lower_operation(
             left: *left,
             right: *right,
         },
-        Operation::NarrowSize { .. } => {
-            return Err(LoweringError::UnsupportedOperation { function, operation: "NarrowSize" });
-        }
+        Operation::NarrowSize { destination, value } => ScalarInstruction::NarrowSize { destination: *destination, value: *value },
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },
         Operation::MoveValue { destination, source } => {
             if matches!(value_types.get(source), Some(ValueType::Ref(_))) {
@@ -602,7 +601,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         | Operation::ConstSize { .. } => Some(CorrespondenceRule::ScalarConstant),
         Operation::Arithmetic { .. } => Some(CorrespondenceRule::ScalarArithmetic),
         Operation::Compare { .. } => Some(CorrespondenceRule::ScalarComparison),
-        Operation::NarrowSize { .. } => None,
+        Operation::NarrowSize { .. } => Some(CorrespondenceRule::ScalarConversion),
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
         Operation::Alloc { .. } => Some(CorrespondenceRule::MemoryAlloc),
@@ -630,6 +629,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::ConstSize { destination, value }, ScalarInstruction::SizeConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
         (Operation::Arithmetic { destination, operator, left, right, overflow }, ScalarInstruction::Arithmetic { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right, overflow: actual_overflow }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right && overflow == actual_overflow,
         (Operation::Compare { destination, operator, left, right }, ScalarInstruction::Compare { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right,
+        (Operation::NarrowSize { destination, value }, ScalarInstruction::NarrowSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Alloc { destination, layout, extent, class }, ScalarInstruction::Alloc { destination: actual_destination, layout: actual_layout, extent: actual_extent, class: actual_class }) => destination == actual_destination && layout == actual_layout && extent == actual_extent && class == actual_class,
@@ -1110,6 +1110,30 @@ fn emit_compare(
     emit_set(body, layout, function.id, destination)
 }
 
+fn emit_narrow_size(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destination: ValueId,
+    value: ValueId,
+) -> Result<(), EncodeError> {
+    emit_get(body, layout, function.id, value)?;
+    body.instruction(&wasm_encoder::Instruction::I64Const(0));
+    body.instruction(&wasm_encoder::Instruction::I64LtS);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get(body, layout, function.id, value)?;
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+    body.instruction(&wasm_encoder::Instruction::I64GtS);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get(body, layout, function.id, value)?;
+    body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    emit_set(body, layout, function.id, destination)
+}
+
 fn emit_typed_load(
     body: &mut wasm_encoder::Function,
     function: &Function,
@@ -1371,6 +1395,7 @@ fn emit_instruction(
             emit_arithmetic(body, function, layout, *destination, *operator, *left, *right)?;
         }
         ScalarInstruction::Compare { destination, operator, left, right } => { emit_compare(body, function, layout, *destination, *operator, *left, *right)?; }
+        ScalarInstruction::NarrowSize { destination, value } => emit_narrow_size(body, function, layout, *destination, *value)?,
         ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
         ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::Alloc { destination, layout: layout_id, extent, class } => {
@@ -1962,12 +1987,24 @@ enum PlanToken {
     I64Mul,
     I64Add,
     I32WrapI64,
+    I64LtS,
+    I64GtS,
     GlobalGet(u32),
     GlobalSet(u32),
     I32Add,
     I32LtU,
+    I32GtU,
     I32Eqz,
+    I32Load { offset: u64, align: u8, memory: u32 },
+    I32Load8U { offset: u64, align: u8, memory: u32 },
+    I32Load16U { offset: u64, align: u8, memory: u32 },
+    I64Load { offset: u64, align: u8, memory: u32 },
+    F64Load { offset: u64, align: u8, memory: u32 },
     I32Store { offset: u64, align: u8, memory: u32 },
+    I32Store8 { offset: u64, align: u8, memory: u32 },
+    I32Store16 { offset: u64, align: u8, memory: u32 },
+    I64Store { offset: u64, align: u8, memory: u32 },
+    F64Store { offset: u64, align: u8, memory: u32 },
     I64GtU,
     If(String),
     Unreachable,
@@ -1985,16 +2022,28 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I64Mul => PlanToken::I64Mul,
         wasmparser::Operator::I64Add => PlanToken::I64Add,
         wasmparser::Operator::I32WrapI64 => PlanToken::I32WrapI64,
+        wasmparser::Operator::I64LtS => PlanToken::I64LtS,
+        wasmparser::Operator::I64GtS => PlanToken::I64GtS,
         wasmparser::Operator::GlobalGet { global_index } => PlanToken::GlobalGet(global_index),
         wasmparser::Operator::GlobalSet { global_index } => PlanToken::GlobalSet(global_index),
         wasmparser::Operator::I32Add => PlanToken::I32Add,
         wasmparser::Operator::I32LtU => PlanToken::I32LtU,
+        wasmparser::Operator::I32GtU => PlanToken::I32GtU,
         wasmparser::Operator::I32Eqz => PlanToken::I32Eqz,
+        wasmparser::Operator::I32Load { memarg } => PlanToken::I32Load { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::I32Load8U { memarg } => PlanToken::I32Load8U { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::I32Load16U { memarg } => PlanToken::I32Load16U { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::I64Load { memarg } => PlanToken::I64Load { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::F64Load { memarg } => PlanToken::F64Load { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::I32Store { memarg } => PlanToken::I32Store {
             offset: memarg.offset,
             align: memarg.align,
             memory: memarg.memory,
         },
+        wasmparser::Operator::I32Store8 { memarg } => PlanToken::I32Store8 { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::I32Store16 { memarg } => PlanToken::I32Store16 { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::I64Store { memarg } => PlanToken::I64Store { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::F64Store { memarg } => PlanToken::F64Store { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::I64GtU => PlanToken::I64GtU,
         wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
         wasmparser::Operator::Unreachable => PlanToken::Unreachable,
@@ -2020,6 +2069,174 @@ fn push_set(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> 
 
 fn push_store(plan: &mut Vec<PlanToken>) {
     plan.push(PlanToken::I32Store { offset: 0, align: 2, memory: 0 });
+}
+
+fn push_u32_trap_if_gt_plan(
+    plan: &mut Vec<PlanToken>,
+    layout: &LocalLayout,
+    value: ValueId,
+    limit: u32,
+) -> Result<(), CanonicalAdmissionError> {
+    push_get(plan, layout, value)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(limit)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    Ok(())
+}
+
+fn push_projected_address_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    access: MemoryAccess,
+) -> Result<(), CanonicalAdmissionError> {
+    if let Some(index) = access.index {
+        let maximum = (u32::MAX
+            .checked_sub(access.offset)
+            .and_then(|value| value.checked_sub(access.width))
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)?
+            ) / access.collection.stride;
+        push_u32_trap_if_gt_plan(plan, layout, index, maximum)?;
+        push_get(plan, layout, access.object)?;
+        plan.push(PlanToken::I64ExtendI32U);
+        push_get(plan, layout, index)?;
+        plan.extend([
+            PlanToken::I64ExtendI32U,
+            PlanToken::I64Const(i64::from(access.collection.stride)),
+            PlanToken::I64Mul,
+            PlanToken::I64Const(i64::from(access.offset)),
+            PlanToken::I64Add,
+            PlanToken::I64Add,
+        ]);
+        push_get(plan, layout, access.object)?;
+        plan.push(PlanToken::I64ExtendI32U);
+        push_get(plan, layout, index)?;
+        plan.extend([
+            PlanToken::I64ExtendI32U,
+            PlanToken::I64Const(i64::from(access.collection.stride)),
+            PlanToken::I64Mul,
+            PlanToken::I64Const(i64::from(access.offset)),
+            PlanToken::I64Add,
+            PlanToken::I64Add,
+            PlanToken::I64Const(i64::from(u32::MAX - access.width)),
+            PlanToken::I64GtU,
+            PlanToken::If("Empty".to_owned()),
+            PlanToken::Unreachable,
+            PlanToken::End,
+            PlanToken::I32WrapI64,
+        ]);
+        return Ok(());
+    }
+    let maximum = u32::MAX.checked_sub(access.width).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    push_get(plan, layout, access.object)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(access.offset)),
+        PlanToken::I64Add,
+        PlanToken::I64Const(i64::from(maximum)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    push_get(plan, layout, access.object)?;
+    plan.extend([PlanToken::I32Const(access.offset as i32), PlanToken::I32Add]);
+    let _ = function;
+    Ok(())
+}
+
+fn push_memory_load_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    place: &Place,
+    destination: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    push_projected_address_plan(plan, function, layout, access)?;
+    let memarg = |offset, align, memory| PlanToken::I32Load { offset, align, memory };
+    plan.push(match access.scalar {
+        ScalarKind::Bool | ScalarKind::Tag8 => PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
+        ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
+        ScalarKind::U32 | ScalarKind::Tag32 => memarg(0, 2, 0),
+        ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
+        ScalarKind::Float => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    });
+    push_set(plan, layout, destination)
+}
+
+fn push_memory_store_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    place: &Place,
+    value: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    push_projected_address_plan(plan, function, layout, access)?;
+    push_get(plan, layout, value)?;
+    plan.push(match access.scalar {
+        ScalarKind::Bool | ScalarKind::Tag8 => PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
+        ScalarKind::Tag16 => PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
+        ScalarKind::U32 | ScalarKind::Tag32 => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Store { offset: 0, align: 3, memory: 0 },
+        ScalarKind::Float => PlanToken::F64Store { offset: 0, align: 3, memory: 0 },
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    });
+    Ok(())
+}
+
+fn push_update_count_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    object: ValueId,
+    count: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let collection = resolve_collection_layout_for_values(function.id, &function.value_types, layouts, object)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    if let Some(capacity_offset) = collection.capacity_offset {
+        push_get(plan, layout, count)?;
+        push_get(plan, layout, object)?;
+        plan.extend([
+            PlanToken::I32Const(capacity_offset as i32),
+            PlanToken::I32Add,
+            PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+            PlanToken::I32GtU,
+            PlanToken::If("Empty".to_owned()),
+            PlanToken::Unreachable,
+            PlanToken::End,
+        ]);
+    }
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I32Const(collection.length_offset as i32), PlanToken::I32Add]);
+    push_get(plan, layout, count)?;
+    push_store(plan);
+    Ok(())
+}
+
+fn push_reclaim_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: ValueId) -> Result<(), CanonicalAdmissionError> {
+    push_get(plan, layout, object)?;
+    plan.push(PlanToken::LocalSet(layout.scratch[1]));
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::GlobalGet(1),
+        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::GlobalSet(1),
+    ]);
+    Ok(())
 }
 
 fn expected_alloc_plan(
@@ -2137,6 +2354,26 @@ fn expected_function_plan(
                 plan.push(PlanToken::I32Const(value));
                 push_set(&mut plan, &layout, *destination)?;
             }
+            Operation::NarrowSize { destination, value } => {
+                push_get(&mut plan, &layout, *value)?;
+                plan.extend([
+                    PlanToken::I64Const(0),
+                    PlanToken::I64LtS,
+                    PlanToken::If("Empty".to_owned()),
+                    PlanToken::Unreachable,
+                    PlanToken::End,
+                ]);
+                push_get(&mut plan, &layout, *value)?;
+                plan.extend([
+                    PlanToken::I64Const(i64::from(u32::MAX)),
+                    PlanToken::I64GtS,
+                    PlanToken::If("Empty".to_owned()),
+                    PlanToken::Unreachable,
+                    PlanToken::End,
+                ]);
+                push_get(&mut plan, &layout, *value)?;
+                plan.extend([PlanToken::I32WrapI64, PlanToken::LocalSet(plan_local(&layout, *destination)?)])
+            }
             Operation::MoveValue { destination, source } => {
                 push_get(&mut plan, &layout, *source)?;
                 push_set(&mut plan, &layout, *destination)?;
@@ -2163,6 +2400,18 @@ fn expected_function_plan(
                 let collection = collection_layout(function.id, layouts, *layout_id)
                     .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
                 expected_alloc_plan(&mut plan, function, &layout, collection, *destination, extent)?;
+            }
+            Operation::Load { destination, place, transfer: LoadTransfer::CopyScalar } => {
+                push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
+            }
+            Operation::Store { place, value, transfer: StoreTransfer::CopyScalar } => {
+                push_memory_store_plan(&mut plan, function, layouts, &layout, place, *value)?;
+            }
+            Operation::UpdateCount { object, count } => {
+                push_update_count_plan(&mut plan, function, layouts, &layout, *object, *count)?;
+            }
+            Operation::Reclaim { object } => {
+                push_reclaim_plan(&mut plan, &layout, *object)?;
             }
             _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
         }
@@ -2846,7 +3095,7 @@ mod tests {
         wasmparser::validate(&wasm).expect("comparison module is structurally valid");
     }
 
-    fn checked_size_operation(operation: Operation, input: ValueId, result: ValueId) -> ValidatedSafeWir {
+    fn checked_size_operation_with_input(operation: Operation, input: ValueId, result: ValueId, input_value: i64) -> ValidatedSafeWir {
         let signature = FunctionSignature {
             id: FunctionSignatureId::new(4),
             parameters: Vec::new(),
@@ -2871,7 +3120,7 @@ mod tests {
                 blocks: vec![BasicBlock {
                     id: crate::canonical_safewir::BlockId::new(4),
                     parameters: Vec::new(),
-                    operations: vec![Operation::ConstInt { destination: input, value: -1 }, operation],
+                    operations: vec![Operation::ConstInt { destination: input, value: input_value }, operation],
                     terminator: Terminator::Return { values: vec![result] },
                 }],
             }],
@@ -2884,15 +3133,60 @@ mod tests {
         validate_final(&initial_snapshot, witness, optimized).unwrap()
     }
 
+    fn checked_size_operation(operation: Operation, input: ValueId, result: ValueId) -> ValidatedSafeWir {
+        checked_size_operation_with_input(operation, input, result, -1)
+    }
+
     #[test]
-    fn narrow_size_fails_closed_in_the_scalar_backend() {
+    fn narrow_size_negative_traps_in_wasmtime() {
         let input = ValueId::new(1);
         let result = ValueId::new(2);
         let validated = checked_size_operation(Operation::NarrowSize { destination: result, value: input }, input, result);
-        assert!(matches!(
-            encode_validated(validated),
-            Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { operation: "NarrowSize", .. }))
-        ));
+        let wasm = encode_validated(validated).expect("negative narrow encodes with a trap");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let result = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap().call(&mut store, ());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn narrow_size_u32_overflow_traps_in_wasmtime() {
+        let input = ValueId::new(1);
+        let result = ValueId::new(2);
+        let validated = checked_size_operation_with_input(
+            Operation::NarrowSize { destination: result, value: input },
+            input,
+            result,
+            i64::from(u32::MAX) + 1,
+        );
+        let wasm = encode_validated(validated).expect("overflow narrow encodes with a trap");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let result = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap().call(&mut store, ());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn narrow_size_valid_value_executes() {
+        let input = ValueId::new(1);
+        let result = ValueId::new(2);
+        let validated = checked_size_operation_with_input(
+            Operation::NarrowSize { destination: result, value: input },
+            input,
+            result,
+            19,
+        );
+        let wasm = encode_validated(validated).expect("valid narrow encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let result = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap().call(&mut store, ()).unwrap();
+        assert_eq!(result, 19);
     }
 
     fn checked_full_u32_size() -> ValidatedSafeWir {
@@ -3059,6 +3353,59 @@ mod tests {
                         Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes, count, capacity, stride_bytes }, class },
                     ],
                     terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_int_list_fixture() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&interner, [list]).unwrap();
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let index = ValueId::new(3);
+        let condition = ValueId::new(4);
+        let object = ValueId::new(5);
+        let value = ValueId::new(6);
+        let loaded = ValueId::new(7);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(36),
+            checked_source: CheckedSourceIdentity::from_digest([0x36; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(36), Vec::new(), vec![ValueType::Int])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(36),
+                signature: FunctionSignatureId::new(36),
+                entry: crate::canonical_safewir::BlockId::new(36),
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (index, ValueType::Size),
+                    (condition, ValueType::Bool),
+                    (object, ValueType::Ref(list)),
+                    (value, ValueType::Int),
+                    (loaded, ValueType::Int),
+                ].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(36),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 1 },
+                        Operation::ConstSize { destination: capacity, value: 1 },
+                        Operation::ConstSize { destination: index, value: 0 },
+                        Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
+                        Operation::Guard { condition, kind: GuardKind::Bounds },
+                        Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 8 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                        Operation::ConstInt { destination: value, value: 19 },
+                        Operation::Store { place: Place::projected(object, Projection::Element { index }, ValueType::Int, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
+                        Operation::Load { destination: loaded, place: Place::projected(object, Projection::Element { index }, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                        Operation::Reclaim { object },
+                    ],
+                    terminator: Terminator::Return { values: vec![loaded] },
                 }],
             }],
             proper_tail_sites: Vec::new(),
@@ -3304,6 +3651,30 @@ mod tests {
         wasmparser::validate(scalar.wasm()).expect("admitted scalar bytes validate");
         let list = admit_canonical(checked_packed_list_allocation_artifact()).expect("list allocation artifact admits");
         wasmparser::validate(list.wasm()).expect("admitted list bytes validate");
+    }
+
+    #[test]
+    fn admitted_int_list_load_store_executes() {
+        let artifact = admit_canonical(checked_int_list_fixture()).expect("int list literal/index artifact admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let result = instance.get_typed_func::<(), i64>(&mut store, "f36").unwrap().call(&mut store, ()).unwrap();
+        assert_eq!(result, 19);
+    }
+
+    #[test]
+    fn mutated_int_list_store_offset_fails_admission() {
+        let mut bytes = encode_validated(checked_int_list_fixture()).unwrap();
+        let opcode = bytes.iter().position(|byte| *byte == 0x37).expect("i64.store opcode exists");
+        assert_eq!(bytes[opcode + 1], 3);
+        assert_eq!(bytes[opcode + 2], 0);
+        bytes[opcode + 2] = 1;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_int_list_fixture(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch)
+        ));
     }
 
     #[test]
