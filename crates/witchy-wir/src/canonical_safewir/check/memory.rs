@@ -1028,6 +1028,18 @@ impl<'a> MemoryChecker<'a> {
                 self.state.exact_additions.insert(*destination, (*left, *right));
                 Ok(false)
             }
+            Operation::Arithmetic {
+                destination,
+                operator: ArithmeticOperator::Add,
+                left,
+                right,
+                overflow: OverflowBehavior::Wrap,
+            } => {
+                if self.proven_nonwrapping_size_add(*left, *right) {
+                    self.state.exact_additions.insert(*destination, (*left, *right));
+                }
+                Ok(false)
+            }
             Operation::Compare { destination, operator, left, right } => {
                 self.state.comparisons.insert(
                     *destination,
@@ -1890,6 +1902,49 @@ impl<'a> MemoryChecker<'a> {
             || left == right
     }
 
+    /// A wrapping addition is exact only when the current path proves that its
+    /// mathematical sum fits the `Size` domain.  The operation remains a wrap
+    /// in the IR; this merely permits consumers of `exact_additions` to use the
+    /// relation when the wrap is unreachable.
+    fn proven_nonwrapping_size_add(&self, left: ValueId, right: ValueId) -> bool {
+        if !matches!(value_type(self.function, left), Ok(ValueType::Size))
+            || !matches!(value_type(self.function, right), Ok(ValueType::Size))
+        {
+            return false;
+        }
+        let maximum = u64::from(u32::MAX);
+        if let (Some(left), Some(right)) = (
+            self.state.constants.get(&left).copied(),
+            self.state.constants.get(&right).copied(),
+        ) {
+            return left.checked_add(right).is_some_and(|sum| sum <= maximum);
+        }
+        let Some((value, delta)) = self.state.constants.get(&left).copied()
+            .map(|delta| (right, delta))
+            .or_else(|| self.state.constants.get(&right).copied().map(|delta| (left, delta)))
+        else {
+            return false;
+        };
+        self.state.guards.iter().any(|(operator, guarded, bound)| {
+            if *guarded != value {
+                return false;
+            }
+            let Some(bound) = self.state.constants.get(bound).copied() else {
+                return false;
+            };
+            match operator {
+                ComparisonOperator::LessUnsigned => bound
+                    .checked_sub(1)
+                    .and_then(|maximum_value| maximum_value.checked_add(delta))
+                    .is_some_and(|sum| sum <= maximum),
+                ComparisonOperator::LessEqualUnsigned => bound
+                    .checked_add(delta)
+                    .is_some_and(|sum| sum <= maximum),
+                _ => false,
+            }
+        })
+    }
+
     fn allocation_fits(&self, capacity: ValueId, base: u32, stride: u32) -> bool {
         if stride == 0 {
             return false;
@@ -2100,6 +2155,7 @@ mod tests {
                 (START, ValueType::Size),
                 (LENGTH, ValueType::Size),
                 (LONG_LENGTH, ValueType::Size),
+                (END, ValueType::Size),
                 (SOURCE, ValueType::Ref(list)),
                 (DESTINATION, ValueType::Ref(list)),
             ]
@@ -2201,6 +2257,45 @@ mod tests {
                 checker.transfer_edge(&target, &[SOURCE]),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
+        });
+    }
+
+    #[test]
+    fn guarded_wrapping_size_add_records_an_exact_relation() {
+        with_checker(false, |checker, _list| {
+            checker.state.constants.remove(&START);
+            checker.state.guards.insert((
+                ComparisonOperator::LessUnsigned,
+                START,
+                CAPACITY,
+            ));
+            checker
+                .check(&Operation::Arithmetic {
+                    destination: END,
+                    operator: ArithmeticOperator::Add,
+                    left: START,
+                    right: LENGTH,
+                    overflow: OverflowBehavior::Wrap,
+                })
+                .expect("guarded wrapping addition is checked");
+            assert_eq!(checker.state.exact_additions.get(&END), Some(&(START, LENGTH)));
+        });
+    }
+
+    #[test]
+    fn unchecked_wrapping_size_add_does_not_record_an_exact_relation() {
+        with_checker(false, |checker, _list| {
+            checker.state.constants.remove(&START);
+            checker
+                .check(&Operation::Arithmetic {
+                    destination: END,
+                    operator: ArithmeticOperator::Add,
+                    left: START,
+                    right: LENGTH,
+                    overflow: OverflowBehavior::Wrap,
+                })
+                .expect("unchecked wrapping addition remains representable");
+            assert!(!checker.state.exact_additions.contains_key(&END));
         });
     }
 
