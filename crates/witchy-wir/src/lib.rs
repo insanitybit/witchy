@@ -21,6 +21,7 @@ pub mod layout;
 pub mod optimizer_policy;
 pub mod runtime_layout_catalog;
 pub mod canonical_safewir;
+pub mod canonical_interpreter;
 mod canonical_wasmir;
 pub use canonical_wasmir::{
     AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical,
