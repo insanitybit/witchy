@@ -24,7 +24,7 @@ use wasm_encoder::{
 };
 
 use crate::canonical_safewir::{
-    AccessMode, ArithmeticOperator, BasicBlock, CallArgument, CanonicalModule,
+    AccessMode, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, HeaderField, LoadTransfer,
     ModuleStage, Operation, OptimizedValid, Place, Projection, StoreTransfer, Terminator,
     ValidatedSafeWir, ValueId, ValueType,
@@ -239,6 +239,7 @@ fn scalar_arguments(
         .iter()
         .map(|argument| match argument {
             CallArgument::Value(value) => Ok(*value),
+            CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Ok(borrow.source()),
             CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
                 Err(LoweringError::UnsupportedCallArgument { function })
             }
@@ -647,6 +648,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
 fn scalar_argument_values(arguments: &[CallArgument]) -> Option<Vec<ValueId>> {
     arguments.iter().map(|argument| match argument {
         CallArgument::Value(value) => Some(*value),
+        CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Some(borrow.source()),
         CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => None,
     }).collect()
 }
@@ -2009,6 +2011,8 @@ enum PlanToken {
     If(String),
     Unreachable,
     Return,
+    Call(u32),
+    ReturnCall(u32),
     End,
 }
 
@@ -2048,6 +2052,8 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
         wasmparser::Operator::Unreachable => PlanToken::Unreachable,
         wasmparser::Operator::Return => PlanToken::Return,
+        wasmparser::Operator::Call { function_index } => PlanToken::Call(function_index),
+        wasmparser::Operator::ReturnCall { function_index } => PlanToken::ReturnCall(function_index),
         wasmparser::Operator::End => PlanToken::End,
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     })
@@ -2065,6 +2071,16 @@ fn push_get(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> 
 fn push_set(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> Result<(), CanonicalAdmissionError> {
     plan.push(PlanToken::LocalSet(plan_local(layout, value)?));
     Ok(())
+}
+
+fn plan_call_argument(argument: &CallArgument) -> Result<ValueId, CanonicalAdmissionError> {
+    match argument {
+        CallArgument::Value(value) => Ok(*value),
+        CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Ok(borrow.source()),
+        CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
+            Err(CanonicalAdmissionError::UnsupportedPlan)
+        }
+    }
 }
 
 fn push_store(plan: &mut Vec<PlanToken>) {
@@ -2332,8 +2348,9 @@ fn expected_alloc_plan(
 fn expected_function_plan(
     function: &Function,
     layouts: &LayoutInterner,
+    function_indices: &BTreeMap<FunctionId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
-    if function.blocks.len() != 1 || function.blocks[0].id != function.entry || !function.blocks[0].parameters.is_empty() {
+    if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
     let layout = local_layout(function).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -2413,16 +2430,41 @@ fn expected_function_plan(
             Operation::Reclaim { object } => {
                 push_reclaim_plan(&mut plan, &layout, *object)?;
             }
+            Operation::Call { destinations, callee, arguments } => {
+                for argument in arguments {
+                    push_get(&mut plan, &layout, plan_call_argument(argument)?)?;
+                }
+                let index = function_indices
+                    .get(callee)
+                    .copied()
+                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+                plan.push(PlanToken::Call(index));
+                for destination in destinations.iter().rev() {
+                    push_set(&mut plan, &layout, *destination)?;
+                }
+            }
             _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
         }
     }
-    let Terminator::Return { values } = &block.terminator else {
-        return Err(CanonicalAdmissionError::UnsupportedPlan);
-    };
-    for value in values {
-        push_get(&mut plan, &layout, *value)?;
+    match &block.terminator {
+        Terminator::Return { values } => {
+            for value in values {
+                push_get(&mut plan, &layout, *value)?;
+            }
+            plan.push(PlanToken::Return);
+        }
+        Terminator::TailCall { callee, arguments, .. } => {
+            for argument in arguments {
+                push_get(&mut plan, &layout, plan_call_argument(argument)?)?;
+            }
+            let index = function_indices
+                .get(callee)
+                .copied()
+                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            plan.push(PlanToken::ReturnCall(index));
+        }
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     }
-    plan.push(PlanToken::Return);
     plan.push(PlanToken::End);
     Ok(plan)
 }
@@ -2468,18 +2510,25 @@ fn decode_and_match_plan(
     target: &WasmIr,
     bytes: &[u8],
 ) -> Result<(), CanonicalAdmissionError> {
-    wasmparser::Validator::new().validate_all(bytes).map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+    wasmparser::Validator::new_with_features(
+        wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL,
+    )
+    .validate_all(bytes)
+    .map_err(|_| CanonicalAdmissionError::WasmValidation)?;
     let metadata = expected_metadata_prefix(source, target)?;
     if bytes.len() < metadata.len() || bytes[..metadata.len()] != metadata[..] {
         return Err(CanonicalAdmissionError::PlanMismatch);
     }
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
+        .map(|(index, function)| (function.id, index as u32))
+        .collect();
     let expected = source.functions().iter()
         .map(|function| {
             let local = local_layout(function).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
-            Ok((locals, expected_function_plan(function, &layouts)?))
+            Ok((locals, expected_function_plan(function, &layouts, &function_indices)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut actual = Vec::new();
@@ -3026,18 +3075,144 @@ mod tests {
         validate_final(&initial_snapshot, witness, optimized).expect("direct scalar call is final-valid")
     }
 
+    fn checked_object_call_borrow() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        let count = ValueId::new(40);
+        let capacity = ValueId::new(41);
+        let object = ValueId::new(42);
+        let parameter = ValueId::new(43);
+        let caller_signature = FunctionSignature {
+            id: FunctionSignatureId::new(40),
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract { parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new() },
+        };
+        let callee_signature = FunctionSignature {
+            id: FunctionSignatureId::new(41),
+            parameters: vec![ValueType::Ref(layout)],
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Ref(layout),
+                    ownership: ParameterOwnership::CallBorrow { mode: BorrowMode::Read },
+                    non_escaping: true,
+                }],
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(40),
+            checked_source: CheckedSourceIdentity::from_digest([0x40; 32]),
+            layouts,
+            signatures: vec![caller_signature, callee_signature],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FunctionId::new(40),
+                    signature: FunctionSignatureId::new(40),
+                    entry: crate::canonical_safewir::BlockId::new(40),
+                    value_types: [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout))].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(40),
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::ConstSize { destination: count, value: 1 },
+                            Operation::ConstSize { destination: capacity, value: 1 },
+                            Operation::Alloc {
+                                destination: object,
+                                layout,
+                                extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 },
+                                class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                            },
+                            Operation::Call {
+                                destinations: Vec::new(),
+                                callee: FunctionId::new(41),
+                                arguments: vec![CallArgument::Borrow(crate::canonical_safewir::CallBorrow::new(object, BorrowMode::Read))],
+                            },
+                            Operation::Reclaim { object },
+                        ],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    }],
+                },
+                Function {
+                    id: FunctionId::new(41),
+                    signature: FunctionSignatureId::new(41),
+                    entry: crate::canonical_safewir::BlockId::new(41),
+                    value_types: [(parameter, ValueType::Ref(layout))].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(41),
+                        parameters: vec![BlockParameter { value: parameter, value_type: ValueType::Ref(layout), ownership: None }],
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: Vec::new() },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[cfg(feature = "native")]
     #[test]
     fn direct_call_encodes_as_wasm_call() {
-        let wasm = encode_validated(checked_direct_call(false)).expect("validated direct call encodes");
+        let artifact = admit_canonical(checked_direct_call(false)).expect("direct call artifact admits");
+        let wasm = artifact.wasm();
         wasmparser::validate(&wasm).expect("direct call module is structurally valid");
         assert!(wasm.windows(2).any(|window| window == [0x10, 0x01]));
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<(), i64>(&mut store, "f1").unwrap();
+        assert_eq!(function.call(&mut store, ()).unwrap(), 17);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn proper_tail_call_encodes_as_wasm_return_call() {
+        let artifact = admit_canonical(checked_direct_call(true)).expect("proper tail call artifact admits");
+        let wasm = artifact.wasm();
+        wasmparser::Validator::new_with_features(
+            wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL,
+        )
+        .validate_all(wasm)
+        .expect("tail-call module is structurally valid");
+        assert!(wasm.windows(2).any(|window| window == [0x12, 0x01]));
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<(), i64>(&mut store, "f1").unwrap();
+        assert_eq!(function.call(&mut store, ()).unwrap(), 17);
     }
 
     #[test]
-    fn proper_tail_call_encodes_as_wasm_return_call() {
-        let wasm = encode_validated(checked_direct_call(true)).expect("validated proper tail call encodes");
-        wasmparser::validate(&wasm).expect("tail-call module is structurally valid");
-        assert!(wasm.windows(2).any(|window| window == [0x12, 0x01]));
+    fn mutated_direct_call_callee_index_fails_admission() {
+        let mut bytes = encode_validated(checked_direct_call(false)).unwrap();
+        let call = bytes
+            .windows(2)
+            .position(|window| window == [0x10, 0x01])
+            .expect("direct call opcode and index exist");
+        bytes[call + 1] = 0;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_direct_call(false), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch)
+        ));
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn admitted_object_call_borrow_executes_and_preserves_ownership() {
+        let artifact = admit_canonical(checked_object_call_borrow()).expect("read call borrow artifact admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<(), ()>(&mut store, "f40").unwrap();
+        function.call(&mut store, ()).unwrap();
     }
 
     fn checked_comparison() -> ValidatedSafeWir {
