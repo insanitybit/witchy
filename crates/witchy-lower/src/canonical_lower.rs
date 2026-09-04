@@ -16,10 +16,10 @@ use witchy_types::typeck::{
 };
 use witchy_wir::canonical_safewir::{
     ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
-    CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, LoweredCandidate, LoweredModuleParts, Operation, OverflowBehavior,
-    ParameterContract, ParameterOwnership, ResultContract, Revision, Terminator, ValueId,
-    ValueType,
+    BorrowMode, CallArgument, CallBorrow, CheckedSourceIdentity, ComparisonOperator, Function,
+    FunctionId, FunctionSignature, FunctionSignatureId, LoweredCandidate, LoweredModuleParts,
+    Operation, OverflowBehavior, ParameterContract, ParameterOwnership, ResultContract, Revision,
+    Terminator, ValueId, ValueType,
 };
 use witchy_wir::layout::{HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, ScalarKind};
 
@@ -42,6 +42,14 @@ pub enum CanonicalLoweringError {
     DuplicateBinding(String),
     MissingReturn(String),
     ReturnTypeMismatch { function: String, expected: ValueType, actual: ValueType },
+    CallArityMismatch { callee: String, expected: usize, actual: usize },
+    CallArgumentTypeMismatch {
+        callee: String,
+        parameter: usize,
+        expected: ValueType,
+        actual: ValueType,
+    },
+    UnsupportedCallOwnership { callee: String, parameter: usize, ownership: ParameterOwnership },
     IdOverflow,
     TailManifest(String),
 }
@@ -112,6 +120,7 @@ pub fn lower_typed_module(
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
             signature,
             &functions_by_name,
+            &signatures,
             &tail_manifest,
             typed.table(),
             &layouts,
@@ -170,10 +179,17 @@ fn checked_signature(
         }
         let value_type = source_value_type(parameter, layout_bundle, layouts)?;
         value_parameters.push(value_type);
+        let (ownership, non_escaping) = match (value_type, convention) {
+            (ValueType::Ref(_), Convention::Let | Convention::Borrow) => {
+                (ParameterOwnership::CallBorrow { mode: BorrowMode::Read }, true)
+            }
+            (_, Convention::Let | Convention::Borrow) => (ParameterOwnership::Value, false),
+            _ => unreachable!("unsupported conventions are rejected above"),
+        };
         contract_parameters.push(ParameterContract {
             value_type,
-            ownership: ParameterOwnership::Value,
-            non_escaping: false,
+            ownership,
+            non_escaping,
         });
     }
     let result = source_value_type(&result, layout_bundle, layouts)?;
@@ -205,6 +221,7 @@ fn lower_function(
     item: u32,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    signatures: &[FunctionSignature],
     tail_manifest: &ProperTailSiteManifest,
     type_table: &TypeTable,
     layout_bundle: &LayoutBundle,
@@ -220,6 +237,7 @@ fn lower_function(
         current: BlockId::new(0),
         item,
         functions,
+        signatures,
         tail_manifest,
         type_table,
         layout_bundle,
@@ -274,6 +292,7 @@ struct FunctionLowerer<'a> {
     current: BlockId,
     item: u32,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
+    signatures: &'a [FunctionSignature],
     tail_manifest: &'a ProperTailSiteManifest,
     type_table: &'a TypeTable,
     layout_bundle: &'a LayoutBundle,
@@ -362,6 +381,10 @@ impl FunctionLowerer<'_> {
         match expression {
             Expr::While { cond, body } => self.lower_while(cond, body),
             Expr::Block(block) => self.lower_block_effect(block),
+            Expr::Call { name, args } => {
+                self.lower_direct_call(name, args)?;
+                Ok(())
+            }
             Expr::If {
                 cond,
                 then_block,
@@ -656,11 +679,16 @@ impl FunctionLowerer<'_> {
         statement: usize,
         position: ProperTailPathStep,
     ) -> Result<Terminator, CanonicalLoweringError> {
-        let (callee, _) = self
+        let (callee, signature_id) = self
             .functions
             .get(name)
             .copied()
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.to_owned()))?;
+        let signature = self
+            .signatures
+            .get(signature_id.get() as usize)
+            .cloned()
+            .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
         let statement = u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?;
         let key = ProperTailSiteKey {
             callable: ProperTailCallableId {
@@ -681,18 +709,86 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = arguments
-            .iter()
-            .map(|argument| {
-                self.lower_expr(argument)
-                    .map(witchy_wir::canonical_safewir::CallArgument::Value)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let arguments = self.lower_call_arguments(name, arguments, &signature)?;
         Ok(Terminator::TailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
             callee,
             arguments,
         })
+    }
+
+    fn lower_direct_call(
+        &mut self,
+        name: &str,
+        arguments: &[Expr],
+    ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        let (callee, signature_id) = self
+            .functions
+            .get(name)
+            .copied()
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.to_owned()))?;
+        let signature = self
+            .signatures
+            .get(signature_id.get() as usize)
+            .cloned()
+            .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
+        let arguments = self.lower_call_arguments(name, arguments, &signature)?;
+        let destinations = signature
+            .results
+            .iter()
+            .copied()
+            .map(|value_type| self.fresh(value_type))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.push_operation(Operation::Call {
+            destinations: destinations.clone(),
+            callee,
+            arguments,
+        });
+        Ok(destinations)
+    }
+
+    fn lower_call_arguments(
+        &mut self,
+        callee: &str,
+        arguments: &[Expr],
+        signature: &FunctionSignature,
+    ) -> Result<Vec<CallArgument>, CanonicalLoweringError> {
+        let parameters = &signature.contract.parameters;
+        if arguments.len() != parameters.len() {
+            return Err(CanonicalLoweringError::CallArityMismatch {
+                callee: callee.to_owned(),
+                expected: parameters.len(),
+                actual: arguments.len(),
+            });
+        }
+        arguments
+            .iter()
+            .zip(parameters)
+            .enumerate()
+            .map(|(parameter, (argument, contract))| {
+                let value = self.lower_expr(argument)?;
+                let actual = self.values[&value];
+                if actual != contract.value_type {
+                    return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                        callee: callee.to_owned(),
+                        parameter,
+                        expected: contract.value_type,
+                        actual,
+                    });
+                }
+                match contract.ownership {
+                    ParameterOwnership::Value => Ok(CallArgument::Value(value)),
+                    ParameterOwnership::CallBorrow { mode: BorrowMode::Read } => {
+                        Ok(CallArgument::Borrow(CallBorrow::new(value, BorrowMode::Read)))
+                    }
+                    ownership => Err(CanonicalLoweringError::UnsupportedCallOwnership {
+                        callee: callee.to_owned(),
+                        parameter,
+                        ownership,
+                    }),
+                }
+            })
+            .collect()
     }
 
     fn return_value(
@@ -744,8 +840,15 @@ impl FunctionLowerer<'_> {
                 .get(name)
                 .copied()
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())),
-            Expr::Call { .. }
-            | Expr::LabeledCall { .. }
+            Expr::Call { name, args } => {
+                let results = self.lower_direct_call(name, args)?;
+                match results.as_slice() {
+                    [value] => Ok(*value),
+                    [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
+                    _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
+                }
+            }
+            Expr::LabeledCall { .. }
             | Expr::LabeledMethodCall { .. }
             | Expr::MethodCall { .. }
             | Expr::Apply { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
@@ -1135,7 +1238,8 @@ mod tests {
     use witchy_syntax::ast::Item;
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
-        check_initial, Extent, GuardKind, LoadTransfer, Operation, Projection, Terminator,
+        check_initial, BorrowMode, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
+        ParameterOwnership, Projection, Terminator,
     };
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind};
 
@@ -1348,6 +1452,89 @@ mod tests {
             .iter()
             .any(|operation| matches!(operation, Operation::Alloc { extent: Extent::Counted { .. }, .. })));
         assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn scalar_direct_call_remains_a_value_argument() {
+        let candidate = lower(
+            "fn increment(n: Int) -> Int:\n    n + 1\nfn caller() -> Int:\n    let result = increment(41)\n    result\n",
+        );
+        let caller = &candidate.functions()[1];
+        let call = caller.blocks[0]
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Call { arguments, .. } => Some(arguments),
+                _ => None,
+            })
+            .expect("caller has a direct call");
+        assert!(matches!(call.as_slice(), [CallArgument::Value(_)]));
+    }
+
+    #[test]
+    fn reference_let_parameter_uses_a_non_escaping_read_call_borrow() {
+        let checked = checked(
+            "fn inspect(xs: List(Int)) -> Int:\n    7\nfn caller() -> Int:\n    let xs = [1]\n    let result = inspect(xs)\n    result\n",
+        );
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower direct object call");
+        let callee = candidate
+            .signatures()
+            .iter()
+            .find(|signature| signature.contract.parameters.len() == 1)
+            .expect("object callee signature");
+        assert!(matches!(
+            callee.contract.parameters[0].ownership,
+            ParameterOwnership::CallBorrow { mode: BorrowMode::Read }
+        ));
+        assert!(callee.contract.parameters[0].non_escaping);
+
+        let call = candidate.functions()[1].blocks[0]
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Call { arguments, .. } => Some(arguments),
+                _ => None,
+            })
+            .expect("caller has a direct object call");
+        assert!(matches!(
+            call.as_slice(),
+            [CallArgument::Borrow(borrow)]
+                if borrow.mode() == BorrowMode::Read
+        ));
+    }
+
+    #[test]
+    fn reference_tail_call_uses_a_read_call_borrow() {
+        let checked = checked("fn recurse(xs: List(Int)) -> Int:\n    return recurse(xs)\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower object tail call");
+        let tail = match &candidate.functions()[0].blocks[0].terminator {
+            Terminator::TailCall { arguments, .. } => arguments,
+            other => panic!("expected tail call, got {other:?}"),
+        };
+        assert!(matches!(
+            tail.as_slice(),
+            [CallArgument::Borrow(borrow)]
+                if borrow.mode() == BorrowMode::Read
+        ));
+    }
+
+    #[test]
+    fn unsupported_own_parameter_still_fails_closed() {
+        let checked = checked("fn consume(own value: Int) -> Int:\n    value\n");
+        let error = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            empty_layouts(),
+        )
+        .expect_err("v1 canonical lowering does not guess move ownership");
+        assert!(matches!(error, CanonicalLoweringError::UnsupportedConvention { .. }));
     }
 
     #[test]
