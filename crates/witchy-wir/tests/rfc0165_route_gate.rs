@@ -413,28 +413,15 @@ fn validated_legacy_encoder_still_consumes_only_bound_authority() {
 }
 
 #[test]
-fn unassured_legacy_inliners_have_no_production_caller() {
+fn deleted_legacy_inliners_have_no_implementation_or_invocation() {
     let optimizer = syn::parse_file(&read_source("src/wir_opt.rs")).expect("wir_opt.rs parses");
     for name in ["inline", "recursive_inline"] {
-        let module = optimizer
+        assert!(optimizer
             .items
             .iter()
-            .find_map(|item| match item {
-                Item::Mod(module) if module.ident == name => Some(module),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("missing legacy inliner module `{name}`"));
-        let cfg = module
-            .attrs
-            .iter()
-            .filter(|attribute| attribute.path().is_ident("cfg"))
-            .filter_map(|attribute| match &attribute.meta {
-                syn::Meta::List(list) => Some(list.tokens.to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(cfg.contains("test"), "legacy inliner `{name}` must remain test-only");
+            .all(|item| !matches!(item, Item::Mod(module) if module.ident == name)),
+            "deleted legacy inliner module `{name}` is still registered",
+        );
     }
 
     let optimizer_calls = called_functions(&optimizer);
