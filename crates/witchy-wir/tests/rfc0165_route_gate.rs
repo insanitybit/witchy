@@ -1,5 +1,6 @@
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
+use syn::visit::Visit;
 use syn::{FnArg, Item, ItemFn, Type, Visibility};
 
 fn read_source(relative: &str) -> String {
@@ -54,6 +55,26 @@ fn named<'a>(file: &'a syn::File, name: &str) -> &'a ItemFn {
     functions(file)
         .find(|function| function.sig.ident == name)
         .unwrap_or_else(|| panic!("missing encoder entrypoint {name}"))
+}
+
+#[derive(Default)]
+struct CalledFunctions(BTreeSet<String>);
+
+impl Visit<'_> for CalledFunctions {
+    fn visit_expr_call(&mut self, expression: &syn::ExprCall) {
+        if let syn::Expr::Path(path) = expression.func.as_ref()
+            && let Some(segment) = path.path.segments.last()
+        {
+            self.0.insert(segment.ident.to_string());
+        }
+        syn::visit::visit_expr_call(self, expression);
+    }
+}
+
+fn called_functions(file: &syn::File) -> BTreeSet<String> {
+    let mut calls = CalledFunctions::default();
+    calls.visit_file(file);
+    calls.0
 }
 
 #[test]
@@ -128,4 +149,40 @@ fn validated_legacy_encoder_still_consumes_only_bound_authority() {
         assert!(is_public(function));
         assert!(takes(function, "ValidatedWirModule"));
     }
+}
+
+#[test]
+fn unassured_legacy_inliners_have_no_production_caller() {
+    let optimizer = syn::parse_file(&read_source("src/wir_opt.rs")).expect("wir_opt.rs parses");
+    for name in ["inline", "recursive_inline"] {
+        let module = optimizer
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Mod(module) if module.ident == name => Some(module),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing legacy inliner module `{name}`"));
+        let cfg = module
+            .attrs
+            .iter()
+            .filter(|attribute| attribute.path().is_ident("cfg"))
+            .filter_map(|attribute| match &attribute.meta {
+                syn::Meta::List(list) => Some(list.tokens.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(cfg.contains("test"), "legacy inliner `{name}` must remain test-only");
+    }
+
+    let optimizer_calls = called_functions(&optimizer);
+    assert!(!optimizer_calls.contains("inline_direct_calls"));
+    assert!(!optimizer_calls.contains("inline_recursive_calls"));
+
+    let assembly = syn::parse_file(&read_source("../witchy-lower/src/codegen/assembly.rs"))
+        .expect("assembly.rs parses");
+    let assembly_calls = called_functions(&assembly);
+    assert!(!assembly_calls.contains("inline_direct_calls"));
+    assert!(!assembly_calls.contains("inline_recursive_calls"));
 }
