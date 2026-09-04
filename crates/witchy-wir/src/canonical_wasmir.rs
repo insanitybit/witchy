@@ -2397,8 +2397,9 @@ fn expected_function_plan(
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::ConstSize { destination, value } => {
-                let value = i32::try_from(*value).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-                plan.push(PlanToken::I32Const(value));
+                let value = u32::try_from(*value)
+                    .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+                plan.push(PlanToken::I32Const(value as i32));
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::NarrowSize { destination, value } => {
@@ -4217,6 +4218,13 @@ mod tests {
     fn full_u32_size_constant_encodes_and_validates() {
         let wasm = encode_validated(checked_full_u32_size()).expect("full u32 size encodes");
         wasmparser::validate(&wasm).expect("full u32 size module is structurally valid");
+    }
+
+    #[test]
+    fn full_u32_size_constant_matches_exact_admission_plan() {
+        let artifact = admit_canonical(checked_full_u32_size())
+            .expect("full u32 size matches its independently decoded plan");
+        wasmparser::validate(artifact.wasm()).expect("admitted full u32 size remains valid Wasm");
     }
 
     #[cfg(feature = "native")]
