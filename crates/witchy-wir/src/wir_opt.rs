@@ -42,9 +42,13 @@ mod strength_reduce;
 pub use strength_reduce::{simplify_integer_ranges, RangeFact};
 mod tail_calls;
 pub use tail_calls::lower_direct_tail_calls;
+#[cfg(test)]
 mod recursive_inline;
+#[cfg(test)]
 pub use recursive_inline::inline_recursive_calls;
+#[cfg(test)]
 mod inline;
+#[cfg(test)]
 pub use inline::inline_direct_calls;
 pub mod specialize;
 pub use specialize::specialize_by_call_site_facts;
@@ -68,8 +72,6 @@ pub struct OptStats {
 /// `module` to a fixpoint, in place. Raw-body functions are left untouched.
 /// Returns the before/after node counts.
 pub fn optimize(module: &mut WirModule) -> OptStats {
-    inline_recursive_calls(module);
-
     let nodes_before = module_size(module);
 
     // The RFC-0146 range reducer remains an explicit experimental pass. It is
