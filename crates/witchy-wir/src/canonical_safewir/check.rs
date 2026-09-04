@@ -28,6 +28,11 @@ pub enum InitialCheckError {
         count: ValueId,
         capacity: ValueId,
     },
+    MissingAllocationSizeGuard {
+        function: FunctionId,
+        capacity: ValueId,
+        maximum: u64,
+    },
     InvalidOwnership { function: FunctionId, object: ValueId },
     InvalidAllocationClass { function: FunctionId, object: ValueId },
     UseAfterConsume { function: FunctionId, object: ValueId },
@@ -1235,7 +1240,10 @@ mod tests {
         );
     }
 
-    fn dynamic_load_module(with_guard: bool) -> CanonicalModule<super::super::LoweredCandidate> {
+    fn dynamic_load_module(
+        with_guard: bool,
+        capacity_value: u64,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
         let count = ValueId::new(0);
         let capacity = ValueId::new(1);
         let index = ValueId::new(2);
@@ -1250,7 +1258,7 @@ mod tests {
             },
             Operation::ConstSize {
                 destination: capacity,
-                value: 1,
+                value: capacity_value,
             },
             Operation::ConstSize {
                 destination: index,
@@ -1332,17 +1340,29 @@ mod tests {
 
     #[test]
     fn guarded_dynamic_element_load_is_admitted() {
-        assert!(check_initial(dynamic_load_module(true)).is_ok());
+        assert!(check_initial(dynamic_load_module(true, 1)).is_ok());
     }
 
     #[test]
     fn dynamic_element_load_without_guard_is_refused() {
         assert_eq!(
-            check_initial(dynamic_load_module(false)).unwrap_err(),
+            check_initial(dynamic_load_module(false, 1)).unwrap_err(),
             InitialCheckError::MissingBoundsGuard {
                 function: FUNCTION,
                 index: ValueId::new(2),
                 count: ValueId::new(0),
+            }
+        );
+    }
+
+    #[test]
+    fn dynamic_allocation_extent_must_fit_wasm_address_space() {
+        assert_eq!(
+            check_initial(dynamic_load_module(true, u64::MAX)).unwrap_err(),
+            InitialCheckError::MissingAllocationSizeGuard {
+                function: FUNCTION,
+                capacity: ValueId::new(1),
+                maximum: (u64::from(u32::MAX) - 4) / 4,
             }
         );
     }

@@ -205,6 +205,7 @@ impl<'a> MemoryChecker<'a> {
                     && value_type(self.function, *count)? == ValueType::Size
                     && value_type(self.function, *capacity)? == ValueType::Size
                     && self.less_equal(*count, *capacity)
+                    && self.allocation_fits(*capacity, base, stride)
             }
             (Extent::HeaderPrefix { minimum_bytes }, LayoutSize::Dynamic { base, .. }) => {
                 allow_prefix && *minimum_bytes == base
@@ -219,6 +220,17 @@ impl<'a> MemoryChecker<'a> {
                         count: *count,
                         capacity: *capacity,
                     });
+                }
+                if let LayoutSize::Dynamic { base, stride } = descriptor.size() {
+                    if !self.allocation_fits(*capacity, base, stride) {
+                        let maximum = (u64::from(u32::MAX) - u64::from(base))
+                            / u64::from(stride);
+                        return Err(InitialCheckError::MissingAllocationSizeGuard {
+                            function: self.function.id,
+                            capacity: *capacity,
+                            maximum,
+                        });
+                    }
                 }
             }
             return Err(InitialCheckError::InvalidExtent {
@@ -401,6 +413,21 @@ impl<'a> MemoryChecker<'a> {
                 .guards
                 .contains(&(ComparisonOperator::LessEqualUnsigned, left, right))
             || left == right
+    }
+
+    fn allocation_fits(&self, capacity: ValueId, base: u32, stride: u32) -> bool {
+        if stride == 0 {
+            return false;
+        }
+        let maximum = (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride);
+        self.constants
+            .get(&capacity)
+            .is_some_and(|capacity| *capacity <= maximum)
+            || self.guards.iter().any(|(operator, left, right)| {
+                *operator == ComparisonOperator::LessEqualUnsigned
+                    && *left == capacity
+                    && self.constants.get(right).copied() == Some(maximum)
+            })
     }
 
     fn constant_relation(
