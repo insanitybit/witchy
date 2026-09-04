@@ -367,6 +367,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "serialized gate did not use fail-fast execution with the proven eight-job default: {cargo_args}",
     );
     assert!(
+        cargo_args.lines().any(|line| line.contains("--features witchy-wir/native")),
+        "serialized workspace gate did not enable RFC-0165 native security tests: {cargo_args}",
+    );
+    assert!(
         cargo_args.lines().any(|line| {
             line.contains(
                 "not test(/^rfc0087_migration_census::repository_census_matches_the_checked_in_type_resolved_snapshot$/)",

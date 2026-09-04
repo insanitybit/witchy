@@ -578,7 +578,11 @@ else
     preflight_cmd=()
     # Plain cargo test runs integration binaries sequentially, so the queue
     # fixture is already isolated from other binaries in this fallback mode.
-    test_cmd=(cargo test --workspace)
+    # Keep the fallback identical to the nextest/CI path: package-local
+    # `native` features are not inherited from the root package's defaults.
+    # Without this explicit feature, witchy-wir's native security tests are
+    # compiled out while cargo still reports a green workspace test run.
+    test_cmd=(cargo test --workspace --features witchy-wir/native)
     queue_infra_cmd=(cargo test --test merge_queue -- --test-threads=1)
 fi
 
