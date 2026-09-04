@@ -167,6 +167,50 @@ mod tests {
     }
 
     #[test]
+    fn rfc0165_list_for_push_reaches_admitted_execution() {
+        let source = "fn main(console: Console):\n    var out = []\n    for n in [1, 2]:\n        out.push(\"x\")\n    for value in out:\n        console.print(value)\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked RFC-0165 list-for source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical RFC-0165 list-for artifact");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted RFC-0165 list-for artifact");
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "print",
+                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(wasmtime::Extern::into_memory)
+                        .expect("canonical memory export");
+                    let start = usize::try_from(pointer).expect("non-negative print pointer");
+                    let length = usize::try_from(length).expect("non-negative print length");
+                    let bytes = memory.data(&caller)[start..start + length].to_vec();
+                    caller.data_mut().extend_from_slice(&bytes);
+                },
+            )
+            .expect("bind authenticated print ABI");
+        let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted RFC-0165 list-for artifact");
+        let main = instance
+            .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f0")
+            .expect("canonical RFC-0165 list-for main export");
+        main.call(&mut store, None)
+            .expect("run canonical RFC-0165 list-for artifact");
+        assert_eq!(store.data(), b"xx");
+    }
+
+    #[test]
     fn scalar_checked_source_reaches_exact_canonical_artifact() {
         let source = "fn main() -> Int:\n    40 + 2\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

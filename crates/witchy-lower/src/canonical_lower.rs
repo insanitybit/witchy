@@ -21,7 +21,7 @@ use witchy_wir::canonical_safewir::{
     FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
     LoweredModuleParts, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
     ParameterOwnership, Projection, ResultContract, Revision,
-    Terminator, ValueId, ValueType,
+    Terminator, Ownership, ValueId, ValueType,
 };
 use witchy_wir::layout::{
     HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, ScalarKind,
@@ -351,6 +351,7 @@ fn lower_function(
         bindings: HashMap::new(),
         string_lengths: HashMap::new(),
         list_counts: HashMap::new(),
+        list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
@@ -410,6 +411,7 @@ struct FunctionLowerer<'a> {
     bindings: HashMap<String, ValueId>,
     string_lengths: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
+    list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
@@ -582,7 +584,7 @@ impl FunctionLowerer<'_> {
                         self.finish_current(terminator)?;
                         return Ok(());
                     }
-                    if results.is_empty() && matches!(value, Expr::While { .. }) {
+                    if results.is_empty() && matches!(value, Expr::While { .. } | Expr::For { .. }) {
                         self.lower_effect_expr(value)?;
                         self.finish_current(Terminator::Return { values: Vec::new() })?;
                         return Ok(());
@@ -612,6 +614,7 @@ impl FunctionLowerer<'_> {
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
             Expr::While { cond, body } => self.lower_while(cond, body),
+            Expr::For { var, iter, body } => self.lower_for(var, iter, body),
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
             Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
@@ -892,6 +895,243 @@ impl FunctionLowerer<'_> {
             .zip(exit_parameters.iter())
             .map(|(name, parameter)| (name.clone(), parameter.value))
             .collect();
+        Ok(())
+    }
+
+    fn lower_for(
+        &mut self,
+        variable: &str,
+        iterable: &Expr,
+        body: &witchy_syntax::ast::Block,
+    ) -> Result<(), CanonicalLoweringError> {
+        let logical_type = self.expression_type(iterable)?;
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        let source = self.lower_expr(iterable)?;
+        if self.values[&source] != ValueType::Ref(layout) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("for list object type"));
+        }
+
+        let outer = self.bindings.clone();
+        let mut names = body
+            .stmts
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Assign { name, .. } if outer.contains_key(name) => Some(name.clone()),
+                Stmt::Expr(Expr::Call { name, args })
+                    if matches!(name.as_str(), "list.push" | "list.__push") =>
+                {
+                    match args.first() {
+                        Some(Expr::Var(name)) if outer.contains_key(name) => Some(name.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        if matches!(iterable, Expr::Var(name) if names.contains(name)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("for iterator mutation"));
+        }
+        let list_names = names
+            .iter()
+            .filter_map(|name| {
+                let object = outer[name];
+                self.list_counts.contains_key(&object).then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        if list_names.iter().any(|name| {
+            let object = outer[name];
+            !self.list_capacities.contains_key(&object)
+        }) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
+        }
+
+        // The loop carries one canonical state tuple through every CFG edge:
+        // mutable bindings, each mutable list's logical count/capacity, then
+        // the iterator index.  Do not reconstruct metadata lanes from the
+        // binding map after a body has rebound an object: that can associate a
+        // reference parameter with a Size parameter at the backedge.
+        let mut state_types = names
+            .iter()
+            .map(|name| self.values[&outer[name]])
+            .collect::<Vec<_>>();
+        state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
+        state_types.push(ValueType::Size);
+        let exit_types = state_types[..state_types.len() - 1].to_vec();
+        let zero = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
+        let header = self.new_block(&state_types)?;
+        let body_id = self.new_block(&state_types)?;
+        let exit = self.new_block(&exit_types)?;
+        // A tracked mutable list is produced by canonical allocation/push
+        // templates and remains the sole local token until it is explicitly
+        // shared or moved.  Carry that fact only on the loop header's Ref
+        // lane, which permits a checked Unique phi to rebase the fresh list
+        // allocated by a prior iteration.  Untracked/Shared references stay
+        // unspecified and therefore cannot acquire phi authority.
+        for (name, parameter) in names
+            .iter()
+            .zip(&mut self.blocks[header.get() as usize].parameters)
+        {
+            if list_names.iter().any(|list_name| list_name == name)
+                && matches!(parameter.value_type, ValueType::Ref(_))
+            {
+                parameter.ownership = Some(Ownership::Unique);
+            }
+        }
+        let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
+        for name in &list_names {
+            let object = outer[name];
+            entry_state.push(self.list_counts[&object]);
+            entry_state.push(self.list_capacities[&object]);
+        }
+        entry_state.push(zero);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
+
+        let header_parameters = self.blocks[header.get() as usize].parameters.clone();
+        let header_values = header_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        self.current = header;
+        self.bindings = outer.clone();
+        for (name, value) in names.iter().zip(&header_values) {
+            self.bindings.insert(name.clone(), *value);
+        }
+        let mut metadata_index = names.len();
+        for name in &list_names {
+            let object = self.bindings[name];
+            self.list_counts.insert(object, header_values[metadata_index]);
+            self.list_capacities.insert(object, header_values[metadata_index + 1]);
+            metadata_index += 2;
+        }
+        let index = *header_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
+        let logical_length = *self
+            .list_counts
+            .get(&source)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("for list count state"))?;
+        let _capacity = *self
+            .list_capacities
+            .get(&source)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("for list capacity state"))?;
+        let maximum_count = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: maximum_count,
+            value: (u64::from(u32::MAX) - u64::from(header_bytes)) / u64::from(stride_bytes),
+        });
+        let condition = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: condition,
+            operator: ComparisonOperator::LessUnsigned,
+            left: index,
+            right: logical_length,
+        });
+        self.finish_current(Terminator::BranchIf {
+            condition,
+            then_target: body_id,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..metadata_index].to_vec(),
+        })?;
+
+        let body_parameters = self.blocks[body_id.get() as usize].parameters.clone();
+        let body_values = body_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        self.current = body_id;
+        self.bindings = outer.clone();
+        for (name, value) in names.iter().zip(&body_values) {
+            self.bindings.insert(name.clone(), *value);
+        }
+        metadata_index = names.len();
+        for name in &list_names {
+            let object = self.bindings[name];
+            self.list_counts.insert(object, body_values[metadata_index]);
+            self.list_capacities.insert(object, body_values[metadata_index + 1]);
+            metadata_index += 2;
+        }
+        let body_index = *body_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
+        let body_logical_length = *self
+            .list_counts
+            .get(&source)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("for list count state"))?;
+        let body_condition = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: body_condition,
+            operator: ComparisonOperator::LessUnsigned,
+            left: body_index,
+            right: body_logical_length,
+        });
+        self.push_operation(Operation::Guard {
+            condition: body_condition,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        let element = self.fresh(element_type)?;
+        self.push_operation(Operation::Load {
+            destination: element,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                source,
+                Projection::Element { index: body_index },
+                element_type,
+                AccessMode::Read,
+            ),
+            transfer: if matches!(element_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+            } else {
+                witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+            },
+        });
+        self.ensure_string_extent(element)?;
+        self.bindings.insert(variable.to_owned(), element);
+        self.lower_block_effect(body)?;
+        let body_bindings = self.bindings.clone();
+        let increment_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: increment_fits,
+            operator: ComparisonOperator::LessUnsigned,
+            left: body_index,
+            right: maximum_count,
+        });
+        self.push_operation(Operation::Guard {
+            condition: increment_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+        });
+        let one = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: one, value: 1 });
+        let next_index = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Arithmetic {
+            destination: next_index,
+            operator: ArithmeticOperator::Add,
+            left: body_index,
+            right: one,
+            overflow: OverflowBehavior::Wrap,
+        });
+        let mut back_state = names
+            .iter()
+            .map(|name| body_bindings[name])
+            .collect::<Vec<_>>();
+        for name in &list_names {
+            let object = body_bindings[name];
+            back_state.push(*self.list_counts.get(&object).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("for backedge list count state"),
+            )?);
+            back_state.push(*self.list_capacities.get(&object).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("for backedge list capacity state"),
+            )?);
+        }
+        back_state.push(next_index);
+        self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
+
+        let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
+        self.current = exit;
+        self.bindings = outer;
+        for (name, parameter) in names.iter().zip(&exit_parameters) {
+            self.bindings.insert(name.clone(), parameter.value);
+        }
+        metadata_index = names.len();
+        for name in &list_names {
+            let object = self.bindings[name];
+            self.list_counts.insert(object, exit_parameters[metadata_index].value);
+            self.list_capacities.insert(object, exit_parameters[metadata_index + 1].value);
+            metadata_index += 2;
+        }
         Ok(())
     }
 
@@ -1407,19 +1647,27 @@ impl FunctionLowerer<'_> {
             destination: capacity,
             value: u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         });
+        let allocation_count = if matches!(element_type, ValueType::Ref(_)) {
+            let zero = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
+            zero
+        } else {
+            count
+        };
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: object,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes,
-                count,
+                count: allocation_count,
                 capacity,
                 stride_bytes,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
         self.list_counts.insert(object, count);
+        self.list_capacities.insert(object, capacity);
         self.known_list_lengths.insert(
             object,
             u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
@@ -1443,7 +1691,7 @@ impl FunctionLowerer<'_> {
                 destination: condition,
                 operator: ComparisonOperator::LessUnsigned,
                 left: index,
-                right: count,
+                right: capacity,
             });
             self.push_operation(Operation::Guard {
                 condition,
@@ -1463,6 +1711,9 @@ impl FunctionLowerer<'_> {
                     witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
                 },
             });
+        }
+        if matches!(element_type, ValueType::Ref(_)) {
+            self.push_operation(Operation::UpdateCount { object, count });
         }
         Ok(object)
     }
@@ -1561,9 +1812,6 @@ impl FunctionLowerer<'_> {
     /// semantics: grow into a fresh allocation, initialize it, then reclaim
     /// the old unique allocation and rebind the source name.
     ///
-    /// The v1 template is deliberately limited to statically known lengths.
-    /// A dynamic-length move needs a checked generic range operation; guessing
-    /// from a helper name would violate the canonical SafeWIR boundary.
     fn lower_list_push(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
         let [Expr::Var(name), value] = arguments else {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push arguments"));
@@ -1581,33 +1829,53 @@ impl FunctionLowerer<'_> {
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
-        let old_length = *self
-            .list_counts
-            .get(&old_object)
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
-        let old_length_value = *self
-            .known_list_lengths
-            .get(&old_object)
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
+        let pointer_elements = matches!(element_type, ValueType::Ref(_));
+        let (old_length, maximum_count, old_length_value) = if pointer_elements {
+            let old_length = *self
+                .list_counts
+                .get(&old_object)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
+            let _old_capacity = *self
+                .list_capacities
+                .get(&old_object)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic capacity"))?;
+            let maximum_count = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize {
+                destination: maximum_count,
+                value: (u64::from(u32::MAX) - u64::from(header_bytes))
+                    / u64::from(stride_bytes),
+            });
+            (old_length, maximum_count, None)
+        } else {
+            let old_length = *self
+                .list_counts
+                .get(&old_object)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
+            let old_length_value = *self
+                .known_list_lengths
+                .get(&old_object)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
+            let maximum_count = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize {
+                destination: maximum_count,
+                value: u64::from(u32::MAX),
+            });
+            (old_length, maximum_count, Some(old_length_value))
+        };
         let mut value = self.lower_expr(value)?;
         if self.values[&value] != element_type {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
         }
-        if matches!(element_type, ValueType::Ref(_)) {
+        if pointer_elements {
             value = self.clone_string_for_storage(value)?;
         }
 
-        let maximum = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::ConstSize {
-            destination: maximum,
-            value: u64::from(u32::MAX),
-        });
         let increment_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: increment_fits,
             operator: ComparisonOperator::LessUnsigned,
             left: old_length,
-            right: maximum,
+            right: maximum_count,
         });
         self.push_operation(Operation::Guard {
             condition: increment_fits,
@@ -1625,12 +1893,35 @@ impl FunctionLowerer<'_> {
         });
         let capacity = self.fresh(ValueType::Size)?;
         let new_length_value = old_length_value
-            .checked_add(1)
-            .ok_or(CanonicalLoweringError::IdOverflow)?;
-        self.push_operation(Operation::ConstSize {
-            destination: capacity,
-            value: new_length_value,
-        });
+            .map(|old| old.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow))
+            .transpose()?;
+        if let Some(new_length_value) = new_length_value {
+            self.push_operation(Operation::ConstSize {
+                destination: capacity,
+                value: new_length_value,
+            });
+        } else {
+            self.push_operation(Operation::Arithmetic {
+                destination: capacity,
+                operator: ArithmeticOperator::Add,
+                left: old_length,
+                right: one,
+                overflow: OverflowBehavior::Wrap,
+            });
+        }
+        if pointer_elements {
+            let capacity_fits = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: capacity_fits,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: capacity,
+                right: maximum_count,
+            });
+            self.push_operation(Operation::Guard {
+                condition: capacity_fits,
+                kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+            });
+        }
         let initial_count_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: initial_count_fits,
@@ -1642,87 +1933,114 @@ impl FunctionLowerer<'_> {
             condition: initial_count_fits,
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
+        let allocation_count = if pointer_elements {
+            let zero = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
+            zero
+        } else {
+            old_length
+        };
+        if pointer_elements {
+            let allocation_count_fits = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: allocation_count_fits,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: allocation_count,
+                right: capacity,
+            });
+            self.push_operation(Operation::Guard {
+                condition: allocation_count_fits,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+        }
         let new_object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: new_object,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes,
-                count: old_length,
+                count: allocation_count,
                 capacity,
                 stride_bytes,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
 
-        for position in 0..old_length_value {
-            let index = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::ConstSize { destination: index, value: position });
-            let in_bounds = self.fresh(ValueType::Bool)?;
+        if pointer_elements {
+            let zero = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
+            let move_fits = self.fresh(ValueType::Bool)?;
             self.push_operation(Operation::Compare {
-                destination: in_bounds,
-                operator: ComparisonOperator::LessUnsigned,
-                left: index,
-                right: old_length,
+                destination: move_fits,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: old_length,
+                right: capacity,
             });
             self.push_operation(Operation::Guard {
-                condition: in_bounds,
+                condition: move_fits,
                 kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
             });
-            let copied = self.fresh(element_type)?;
-            self.push_operation(Operation::Load {
-                destination: copied,
-                place: witchy_wir::canonical_safewir::Place::projected(
-                    old_object,
-                    witchy_wir::canonical_safewir::Projection::Element { index },
-                    element_type,
-                    witchy_wir::canonical_safewir::AccessMode::Read,
-                ),
-                transfer: if matches!(element_type, ValueType::Ref(_)) {
-                    witchy_wir::canonical_safewir::LoadTransfer::MoveUnique
-                } else {
-                    witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
-                },
-            });
-            self.push_operation(Operation::Store {
-                place: witchy_wir::canonical_safewir::Place::projected(
+            self.push_operation(Operation::MoveRange {
+                destination: witchy_wir::canonical_safewir::Place::projected(
                     new_object,
-                    witchy_wir::canonical_safewir::Projection::Element { index },
-                    element_type,
-                    witchy_wir::canonical_safewir::AccessMode::Write,
+                    Projection::Slice { start: zero, length: old_length },
+                    ValueType::Ref(layout),
+                    AccessMode::Write,
                 ),
-                value: copied,
-                transfer: if matches!(element_type, ValueType::Ref(_)) {
-                    witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-                } else {
-                    witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-                },
+                source: witchy_wir::canonical_safewir::Place::projected(
+                    old_object,
+                    Projection::Slice { start: zero, length: old_length },
+                    ValueType::Ref(layout),
+                    AccessMode::Read,
+                ),
+                count: old_length,
             });
+        } else {
+            for position in 0..old_length_value.expect("scalar list length is static") {
+                let index = self.fresh(ValueType::Size)?;
+                self.push_operation(Operation::ConstSize { destination: index, value: position });
+                let in_bounds = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::Compare {
+                    destination: in_bounds,
+                    operator: ComparisonOperator::LessUnsigned,
+                    left: index,
+                    right: old_length,
+                });
+                self.push_operation(Operation::Guard {
+                    condition: in_bounds,
+                    kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+                });
+                let copied = self.fresh(element_type)?;
+                self.push_operation(Operation::Load {
+                    destination: copied,
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        old_object,
+                        Projection::Element { index },
+                        element_type,
+                        AccessMode::Read,
+                    ),
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+                });
+                self.push_operation(Operation::Store {
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        new_object,
+                        Projection::Element { index },
+                        element_type,
+                        AccessMode::Write,
+                    ),
+                    value: copied,
+                    transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+                });
+            }
         }
 
-        let new_count_fits = self.fresh(ValueType::Bool)?;
-        self.push_operation(Operation::Compare {
-            destination: new_count_fits,
-            operator: ComparisonOperator::LessEqualUnsigned,
-            left: new_length,
-            right: capacity,
-        });
-        self.push_operation(Operation::Guard {
-            condition: new_count_fits,
-            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-        });
-        self.push_operation(Operation::UpdateCount { object: new_object, count: new_length });
-        let append_index = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::ConstSize {
-            destination: append_index,
-            value: old_length_value,
-        });
+        let append_index = old_length;
         let append_in_bounds = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: append_in_bounds,
             operator: ComparisonOperator::LessUnsigned,
             left: append_index,
-            right: new_length,
+            right: capacity,
         });
         self.push_operation(Operation::Guard {
             condition: append_in_bounds,
@@ -1736,16 +2054,31 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::AccessMode::Write,
             ),
             value,
-            transfer: if matches!(element_type, ValueType::Ref(_)) {
+            transfer: if pointer_elements {
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
             } else {
                 witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
             },
         });
+        let new_count_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: new_count_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: new_length,
+            right: capacity,
+        });
+        self.push_operation(Operation::Guard {
+            condition: new_count_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        self.push_operation(Operation::UpdateCount { object: new_object, count: new_length });
         self.push_operation(Operation::Reclaim { object: old_object });
         self.bindings.insert(name.clone(), new_object);
         self.list_counts.insert(new_object, new_length);
-        self.known_list_lengths.insert(new_object, new_length_value);
+        self.list_capacities.insert(new_object, capacity);
+        if let Some(new_length_value) = new_length_value {
+            self.known_list_lengths.insert(new_object, new_length_value);
+        }
         Ok(())
     }
 
