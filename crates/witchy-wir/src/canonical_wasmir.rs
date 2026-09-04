@@ -89,6 +89,7 @@ enum ScalarInstruction {
     Store { place: Place, value: ValueId, transfer: StoreTransfer },
     CopyBytes { destination: Place, source: Place, length: ValueId },
     MoveRange { destination: Place, source: Place, count: ValueId },
+    CloneRange { destination: Place, source: Place, count: ValueId },
     UpdateCount { object: ValueId, count: ValueId },
     Share { destination: ValueId, source: ValueId },
     Release { object: ValueId },
@@ -843,8 +844,19 @@ fn lower_operation(
             }
             ScalarInstruction::MoveRange { destination: destination.clone(), source: source.clone(), count: *count }
         }
-        Operation::CloneRange { .. }
-        | Operation::Retain { .. } => {
+        Operation::CloneRange { destination, source, count } => {
+            let destination_layout = resolve_collection_layout_for_values(function, value_types, layouts, destination.object())?;
+            let source_layout = resolve_collection_layout_for_values(function, value_types, layouts, source.object())?;
+            if destination_layout.pointer_layout.is_some()
+                || destination_layout != source_layout
+                || !matches!(destination.projection(), Projection::Slice { length, .. } if *length == *count)
+                || !matches!(source.projection(), Projection::Slice { length, .. } if *length == *count)
+            {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "CloneRange" });
+            }
+            ScalarInstruction::CloneRange { destination: destination.clone(), source: source.clone(), count: *count }
+        }
+        Operation::Retain { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: operation_name(operation) });
         }
     };
@@ -1111,14 +1123,14 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::Store { .. } => Some(CorrespondenceRule::MemoryStore),
         Operation::CopyBytes { .. } => Some(CorrespondenceRule::MemoryCopy),
         Operation::MoveRange { .. } => Some(CorrespondenceRule::MemoryOwnership),
+        Operation::CloneRange { .. } => Some(CorrespondenceRule::MemoryCopy),
         Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
         Operation::Share { .. }
         | Operation::Release { .. }
         | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
         Operation::HostCall { .. } => Some(CorrespondenceRule::HostCall),
-        Operation::CloneRange { .. }
-        | Operation::Retain { .. } => None,
+        Operation::Retain { .. } => None,
     }
 }
 
@@ -1140,6 +1152,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::Store { place, value, transfer }, ScalarInstruction::Store { place: actual_place, value: actual_value, transfer: actual_transfer }) => place == actual_place && value == actual_value && transfer == actual_transfer,
         (Operation::CopyBytes { destination, source, length }, ScalarInstruction::CopyBytes { destination: actual_destination, source: actual_source, length: actual_length }) => destination == actual_destination && source == actual_source && length == actual_length,
         (Operation::MoveRange { destination, source, count }, ScalarInstruction::MoveRange { destination: actual_destination, source: actual_source, count: actual_count }) => destination == actual_destination && source == actual_source && count == actual_count,
+        (Operation::CloneRange { destination, source, count }, ScalarInstruction::CloneRange { destination: actual_destination, source: actual_source, count: actual_count }) => destination == actual_destination && source == actual_source && count == actual_count,
         (Operation::UpdateCount { object, count }, ScalarInstruction::UpdateCount { object: actual_object, count: actual_count }) => object == actual_object && count == actual_count,
         (Operation::Share { destination, source }, ScalarInstruction::Share { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Release { object }, ScalarInstruction::Release { object: actual_object }) | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
@@ -2150,6 +2163,45 @@ fn emit_move_range(
     Ok(())
 }
 
+fn emit_clone_range(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destination: &Place,
+    source: &Place,
+    count: ValueId,
+    layouts: &LayoutInterner,
+) -> Result<(), EncodeError> {
+    let destination_layout = resolve_collection_layout(function, layouts, destination.object()).map_err(EncodeError::Lowering)?;
+    let source_layout = resolve_collection_layout(function, layouts, source.object()).map_err(EncodeError::Lowering)?;
+    if destination_layout.pointer_layout.is_some() || destination_layout != source_layout {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "CloneRange" }));
+    }
+    let (destination_start, source_start) = match (destination.projection(), source.projection()) {
+        (Projection::Slice { start: destination_start, length: destination_length }, Projection::Slice { start: source_start, length: source_length })
+            if *destination_length == count && *source_length == count => (*destination_start, *source_start),
+        _ => return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "CloneRange" })),
+    };
+    emit_move_range_base(body, function, layout, source.object(), source_start, source_layout, 1)?;
+    emit_move_range_base(body, function, layout, destination.object(), destination_start, destination_layout, 2)?;
+    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 2)));
+    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 1)));
+    emit_get(body, layout, function.id, count)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(destination_layout.stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get(body, layout, function.id, count)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Mul);
+    body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    Ok(())
+}
+
 fn emit_host_call(
     body: &mut wasm_encoder::Function,
     function: &Function,
@@ -2274,6 +2326,9 @@ fn emit_instruction(
         }
         ScalarInstruction::MoveRange { destination, source, count } => {
             emit_move_range(body, function, layout, destination, source, *count, layouts)?;
+        }
+        ScalarInstruction::CloneRange { destination, source, count } => {
+            emit_clone_range(body, function, layout, destination, source, *count, layouts)?;
         }
         ScalarInstruction::UpdateCount { object, count } => emit_update_count(body, function, layout, layouts, *object, *count)?,
         ScalarInstruction::Share { destination, source } => emit_share(body, layout, *destination, *source, function)?,
@@ -2948,6 +3003,7 @@ enum PlanToken {
     GlobalGet(u32),
     GlobalSet(u32),
     I32Add,
+    I32Mul,
     I32Sub,
     I32LtU,
     I32LeU,
@@ -2996,6 +3052,7 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::GlobalGet { global_index } => PlanToken::GlobalGet(global_index),
         wasmparser::Operator::GlobalSet { global_index } => PlanToken::GlobalSet(global_index),
         wasmparser::Operator::I32Add => PlanToken::I32Add,
+        wasmparser::Operator::I32Mul => PlanToken::I32Mul,
         wasmparser::Operator::I32Sub => PlanToken::I32Sub,
         wasmparser::Operator::I32LtU => PlanToken::I32LtU,
         wasmparser::Operator::I32LeU => PlanToken::I32LeU,
@@ -3518,6 +3575,53 @@ fn push_move_range_plan(
     Ok(())
 }
 
+fn push_clone_range_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    destination: &Place,
+    source: &Place,
+    count: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let destination_layout = resolve_collection_layout(function, layouts, destination.object())
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let source_layout = resolve_collection_layout(function, layouts, source.object())
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    if destination_layout.pointer_layout.is_some() || destination_layout != source_layout {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    let (destination_start, source_start) = match (destination.projection(), source.projection()) {
+        (Projection::Slice { start: destination_start, length: destination_length }, Projection::Slice { start: source_start, length: source_length })
+            if *destination_length == count && *source_length == count => (*destination_start, *source_start),
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    };
+    push_move_range_base_plan(plan, layout, source.object(), source_start, source_layout, 1)?;
+    push_move_range_base_plan(plan, layout, destination.object(), destination_start, destination_layout, 2)?;
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[1]),
+    ]);
+    push_get(plan, layout, count)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(destination_layout.stride)),
+        PlanToken::I64Mul,
+        PlanToken::I64Const(i64::from(u32::MAX)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    push_get(plan, layout, count)?;
+    plan.extend([
+        PlanToken::I32Const(destination_layout.stride as i32),
+        PlanToken::I32Mul,
+        PlanToken::MemoryCopy { source: 0, destination: 0 },
+    ]);
+    Ok(())
+}
+
 fn push_reclaim_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: ValueId) -> Result<(), CanonicalAdmissionError> {
     push_get(plan, layout, object)?;
     plan.push(PlanToken::LocalSet(layout.scratch[1]));
@@ -3824,6 +3928,9 @@ fn expected_linear_function_plan(
             }
             Operation::MoveRange { destination, source, count } => {
                 push_move_range_plan(&mut plan, function, &layout, layouts, destination, source, *count)?;
+            }
+            Operation::CloneRange { destination, source, count } => {
+                push_clone_range_plan(&mut plan, function, &layout, layouts, destination, source, *count)?;
             }
             Operation::UpdateCount { object, count } => {
                 push_update_count_plan(&mut plan, function, layouts, &layout, *object, *count)?;
