@@ -101,6 +101,16 @@ mod tests {
             .expect("admit canonical scalar artifact");
 
         wasmparser::validate(artifact.wasm()).expect("admitted bytes remain valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted canonical artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted canonical artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical main export");
+        assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 42);
     }
 
     #[test]
