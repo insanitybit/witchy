@@ -451,7 +451,24 @@ fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), Cano
 
 fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
     match ty.unqualified() {
-        Type::Named(name, args) => { bytes.push(0); let tag = match (name.as_str(), args.is_empty()) { ("Int", true) => 0, ("Float", true) => 1, ("Duration", true) => 2, ("String", true) => 3, ("Bytes", true) => 4, ("Bool", true) => 5, ("Nil", true) | ("Unit", true) => 6, _ => context.nominal(name)? + 32 }; bytes.extend_from_slice(&tag.to_le_bytes()); put_len(bytes, args.len()); for arg in args { encode_ast(arg, context, bytes)?; } }
+        Type::Named(name, args) => {
+            bytes.push(0);
+            let tag = match (name.as_str(), args.is_empty()) {
+                ("Int", true) => 0,
+                ("Float", true) => 1,
+                ("Duration", true) => 2,
+                ("String", true) => 3,
+                ("Bytes", true) => 4,
+                ("Bool", true) => 5,
+                ("Nil" | "Unit", true) => 6,
+                _ if is_capability_name(name) => 7 + capability_name(name) as u32,
+                _ => builtin_nominal_tag(name, args.len())?
+                    .map_or_else(|| context.nominal(name).map(|ordinal| ordinal + 64), Ok)?,
+            };
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            put_len(bytes, args.len());
+            for arg in args { encode_ast(arg, context, bytes)?; }
+        }
         Type::Tuple(items) => { bytes.push(1); put_len(bytes, items.len()); for item in items { encode_ast(item, context, bytes)?; } }
         Type::Slice(item) => { bytes.push(2); encode_ast(item, context, bytes)?; }
         Type::RecordCompose { .. } => return Err(CanonicalAbiError::Unsupported("record composition survived type checking".into())),
@@ -464,6 +481,27 @@ fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), C
 
 fn capability_kind(ty: &Ty) -> CanonicalCapabilityKind {
     match ty { Ty::Console(_) => CanonicalCapabilityKind::Console, Ty::Clock => CanonicalCapabilityKind::Clock, Ty::Rand => CanonicalCapabilityKind::Rand, Ty::Env => CanonicalCapabilityKind::Env, Ty::Secret(_) => CanonicalCapabilityKind::Secret, Ty::Exec => CanonicalCapabilityKind::Exec, Ty::Fetch => CanonicalCapabilityKind::Fetch, Ty::Dir(_) => CanonicalCapabilityKind::Dir, Ty::File(_) => CanonicalCapabilityKind::File, Ty::Net(_) => CanonicalCapabilityKind::Net, Ty::Socket => CanonicalCapabilityKind::Socket, Ty::Listener => CanonicalCapabilityKind::Listener, Ty::BuildOut => CanonicalCapabilityKind::BuildOut, Ty::BuildRead => CanonicalCapabilityKind::BuildRead, Ty::BuildEnv => CanonicalCapabilityKind::BuildEnv, Ty::BuildNet => CanonicalCapabilityKind::BuildNet, Ty::BuildExec => CanonicalCapabilityKind::BuildExec, _ => unreachable!("not a capability") }
+}
+
+fn builtin_nominal_tag(name: &str, arity: usize) -> Result<Option<u32>, CanonicalAbiError> {
+    let expected_and_tag = match name {
+        "str" => Some((0, 32)),
+        "Option" => Some((1, 33)),
+        "Result" => Some((2, 34)),
+        "Dict" => Some((2, 35)),
+        "Ordering" => Some((0, 36)),
+        "Set" => Some((1, 37)),
+        "Iter" => Some((1, 38)),
+        "List" => Some((1, 39)),
+        _ => None,
+    };
+    let Some((expected, tag)) = expected_and_tag else { return Ok(None) };
+    if arity != expected {
+        return Err(CanonicalAbiError::InvalidCallable(format!(
+            "builtin `{name}` ABI type expects {expected} arguments, got {arity}"
+        )));
+    }
+    Ok(Some(tag))
 }
 
 fn is_capability_name(name: &str) -> bool { matches!(name, "Console" | "Clock" | "Rand" | "Env" | "Secret" | "Exec" | "Fetch" | "Dir" | "File" | "Net" | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec") }
