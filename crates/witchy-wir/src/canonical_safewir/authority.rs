@@ -17,6 +17,7 @@ pub struct CheckedLoweringWitness {
     revision: Revision,
     module_digest: ModuleDigest,
     proper_tail_manifest_digest: ModuleDigest,
+    checked_source_witness: CheckedSourceWitness,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,9 +25,9 @@ pub(crate) struct CandidateId([u8; 32]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CheckedSourceWitness {
-    candidate: CandidateId,
     checked_source: CheckedSourceIdentity,
-    checked_lowering_digest: ModuleDigest,
+    initial_module_digest: ModuleDigest,
+    proper_tail_manifest_digest: ModuleDigest,
 }
 
 /// Evidence returned only by the independent final SafeWIR checker.
@@ -35,14 +36,6 @@ struct FinalSafeWirWitness {
     candidate: CandidateId,
     final_module_digest: ModuleDigest,
     final_revision: Revision,
-}
-
-/// Evidence returned only after canonical SafeWIR-to-WasmIR correspondence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AuthorityWirWitness {
-    candidate: CandidateId,
-    final_module_digest: ModuleDigest,
-    correspondence_digest: [u8; 32],
 }
 
 /// The only result of initial validation that carries both the checked module
@@ -115,15 +108,8 @@ impl ValidatedSafeWir {
         self.optimization_history.identity_digest()
     }
 
-    pub(crate) fn mint_authority_wir(
-        &self,
-        correspondence_digest: [u8; 32],
-    ) -> AuthorityWirWitness {
-        AuthorityWirWitness::from_correspondence(
-            self.candidate,
-            module_digest(&self.module),
-            correspondence_digest,
-        )
+    pub(crate) const fn candidate_binding(&self) -> [u8; 32] {
+        self.candidate.0
     }
 
     pub(crate) fn validate_pre_admission(
@@ -133,10 +119,12 @@ impl ValidatedSafeWir {
         if self.candidate != expected_candidate {
             return Err(AdmissionWitnessMismatch::Candidate);
         }
-        if self.checked_source_witness.candidate != self.candidate
+        if self.checked_source_witness != self.checked_lowering.checked_source_witness
             || self.checked_source_witness.checked_source != self.module.checked_source()
-            || self.checked_source_witness.checked_lowering_digest
-                != self.checked_lowering.identity_digest()
+            || self.checked_source_witness.initial_module_digest
+                != self.checked_lowering.module_digest
+            || self.checked_source_witness.proper_tail_manifest_digest
+                != self.checked_lowering.proper_tail_manifest_digest
             || self.checked_lowering.checked_source != self.module.checked_source()
         {
             return Err(AdmissionWitnessMismatch::CheckedSource);
@@ -157,30 +145,17 @@ impl ValidatedSafeWir {
 
     pub(crate) fn validate_authority_wir(
         &self,
-        witness: &AuthorityWirWitness,
+        witness: &crate::canonical_wasmir::AuthorityWirWitness,
         correspondence_digest: [u8; 32],
     ) -> Result<(), AdmissionWitnessMismatch> {
-        if witness.candidate != self.candidate
-            || witness.final_module_digest != module_digest(&self.module)
-            || witness.correspondence_digest != correspondence_digest
-        {
+        if !witness.matches(
+            self.candidate.0,
+            module_digest(&self.module),
+            correspondence_digest,
+        ) {
             return Err(AdmissionWitnessMismatch::AuthorityWir);
         }
         Ok(())
-    }
-}
-
-impl CheckedLoweringWitness {
-    fn identity_digest(&self) -> ModuleDigest {
-        witness_digest(
-            b"witchy/checked-lowering-witness/v1",
-            &[
-                &self.checked_source.digest(),
-                &self.revision.get().to_le_bytes(),
-                &self.module_digest.bytes(),
-                &self.proper_tail_manifest_digest.bytes(),
-            ],
-        )
     }
 }
 
@@ -200,16 +175,6 @@ impl CandidateId {
             )
             .bytes(),
         )
-    }
-}
-
-impl AuthorityWirWitness {
-    pub(crate) fn from_correspondence(
-        candidate: CandidateId,
-        final_module_digest: ModuleDigest,
-        correspondence_digest: [u8; 32],
-    ) -> Self {
-        Self { candidate, final_module_digest, correspondence_digest }
     }
 }
 
@@ -266,11 +231,17 @@ pub fn check_initial_with_witness(
             actual_site_count: module.proper_tail_sites().len(),
         });
     }
+    let checked_source_witness = CheckedSourceWitness {
+        checked_source: module.checked_source(),
+        initial_module_digest: module_digest(&module),
+        proper_tail_manifest_digest: expected,
+    };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
         revision: module.revision(),
         module_digest: module_digest(&module),
         proper_tail_manifest_digest: expected,
+        checked_source_witness,
     };
     Ok(CheckedInitialSafeWir { module, witness })
 }
@@ -307,11 +278,7 @@ pub fn validate_final(
         .validate(initial, &module)
         .map_err(FinalValidationError::History)?;
 
-    let checked_source_witness = CheckedSourceWitness {
-        candidate,
-        checked_source: initial.checked_source(),
-        checked_lowering_digest: checked_lowering.identity_digest(),
-    };
+    let checked_source_witness = checked_lowering.checked_source_witness.clone();
 
     Ok(ValidatedSafeWir {
         module,
@@ -346,11 +313,17 @@ fn check_initial_with_expected_digest(
             actual_site_count: module.proper_tail_sites().len(),
         });
     }
+    let checked_source_witness = CheckedSourceWitness {
+        checked_source: module.checked_source(),
+        initial_module_digest: module_digest(&module),
+        proper_tail_manifest_digest: expected,
+    };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
         revision: module.revision(),
         module_digest: module_digest(&module),
         proper_tail_manifest_digest: expected,
+        checked_source_witness,
     };
     Ok(CheckedInitialSafeWir { module, witness })
 }

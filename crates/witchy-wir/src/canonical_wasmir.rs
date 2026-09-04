@@ -243,6 +243,38 @@ struct CorrespondenceReceipt {
     mappings: Vec<CorrespondenceMapping>,
 }
 
+/// Encoder authority that can only be created in this private module after a
+/// concrete correspondence receipt has been checked.
+pub(crate) struct AuthorityWirWitness {
+    candidate_binding: [u8; 32],
+    final_module_digest: crate::canonical_safewir::ModuleDigest,
+    correspondence_digest: [u8; 32],
+}
+
+impl AuthorityWirWitness {
+    fn from_correspondence(
+        validated: &ValidatedSafeWir,
+        receipt: &CorrespondenceReceipt,
+    ) -> Self {
+        Self {
+            candidate_binding: validated.candidate_binding(),
+            final_module_digest: validated.final_module_digest(),
+            correspondence_digest: correspondence_digest(receipt),
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        candidate_binding: [u8; 32],
+        final_module_digest: crate::canonical_safewir::ModuleDigest,
+        correspondence_digest: [u8; 32],
+    ) -> bool {
+        self.candidate_binding == candidate_binding
+            && self.final_module_digest == final_module_digest
+            && self.correspondence_digest == correspondence_digest
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoweringError {
     UnsupportedOperation { function: FunctionId, operation: &'static str },
@@ -4229,7 +4261,7 @@ pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalA
     let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
     let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
     let correspondence_digest = correspondence_digest(&receipt);
-    let authority_wir = validated.mint_authority_wir(correspondence_digest);
+    let authority_wir = AuthorityWirWitness::from_correspondence(&validated, &receipt);
     validated
         .validate_authority_wir(&authority_wir, correspondence_digest)
         .map_err(|_| CanonicalAdmissionError::Correspondence)?;
@@ -4250,7 +4282,7 @@ fn admit_canonical_with_bytes_for_test(
     let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
     let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
     let correspondence_digest = correspondence_digest(&receipt);
-    let authority_wir = validated.mint_authority_wir(correspondence_digest);
+    let authority_wir = AuthorityWirWitness::from_correspondence(&validated, &receipt);
     validated
         .validate_authority_wir(&authority_wir, correspondence_digest)
         .map_err(|_| CanonicalAdmissionError::Correspondence)?;
@@ -4332,12 +4364,12 @@ mod tests {
     }
 
     #[test]
-    fn a3_independently_constructed_authority_witness_cannot_cross_candidates() {
+    fn a3_final_validated_candidate_cannot_substitute_for_correspondence_authority() {
         let first = checked_scalar();
         let target = lower_validated(&first).unwrap();
         let receipt = check_correspondence(first.module(), &target).unwrap();
         let digest = correspondence_digest(&receipt);
-        let witness = first.mint_authority_wir(digest);
+        let witness = AuthorityWirWitness::from_correspondence(&first, &receipt);
 
         let other = checked_branch();
         assert!(other.validate_authority_wir(&witness, digest).is_err());
