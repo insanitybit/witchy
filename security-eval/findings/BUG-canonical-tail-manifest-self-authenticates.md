@@ -2,8 +2,8 @@
 
 ## Status
 
-Open. Production canonical cutover must not claim RFC-0090 completeness until
-this is closed.
+Resolved on `impl/rfc0165-canonical-v1`. Production canonical cutover still
+requires the RFC-0090 deep-transition acceptance probes.
 
 ## Impact
 
@@ -31,3 +31,20 @@ The expected digest must not be recomputed by the lowerer from the candidate
 list. Missing, duplicated, unknown, or ordinary-call encodings require focused
 negative tests, followed by the RFC-0090 300,000-transition probes at final
 cutover.
+
+## Resolution
+
+`witchy-types::pipeline::CheckedSourceWitness` is now privately minted by the
+source-bearing type-check pipeline and binds both the exact source-bundle digest
+and the frontend-derived proper-tail manifest digest. `CanonicalCheckedSource`
+privately pairs that witness with the typed module and manifest. Initial SafeWIR
+validation compares the lowered candidate's independently recomputed tail
+digest with this frontend witness before minting lowering authority; final
+validation and optimization history preserve the same digest.
+
+Focused evidence:
+
+```text
+cargo test -p witchy-wir --features native canonical_safewir::authority::tests::initial_checker_rejects_an_independent_tail_manifest_mismatch -- --exact
+cargo test -p witchy-lower canonical_lower::tests::proper_tail_source_lowers_with_manifest_identity -- --exact
+```

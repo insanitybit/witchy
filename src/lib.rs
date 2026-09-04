@@ -136,7 +136,7 @@ pub fn resolve_std_only_checked(
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };
 
-    let modules = resolve_std_modules(src)?;
+    let sources = resolve_std_sources(src)?;
     let application = PackageCoordinate::new(
         PackageSource::Workspace,
         "witchy/source",
@@ -175,20 +175,42 @@ pub fn resolve_std_only_checked(
             .collect::<Result<Vec<_>, _>>()?,
     );
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)?;
-    witchy_interp::pipeline::link_checked_authenticated(modules, "main", owners).map_err(Into::into)
+    let user_modules = std::collections::HashSet::from(["main".to_string()]);
+    witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources,
+        "main",
+        &user_modules,
+        owners,
+    )
+    .map_err(Into::into)
 }
 
 fn resolve_std_modules(
     src: &str,
 ) -> Result<Vec<(String, witchy_syntax::ast::Module)>, ResolveStdError> {
+    resolve_std_sources(src)?
+        .into_iter()
+        .map(|(name, source)| {
+            let parsed = witchy_syntax::parser::parse_module(
+                std::str::from_utf8(&source).expect("source resolver stores UTF-8 Witchy source"),
+            )
+            .map_err(|error| ResolveStdError::Parse {
+                module: name.clone(),
+                error,
+            })?;
+            Ok((name, parsed))
+        })
+        .collect()
+}
+
+fn resolve_std_sources(src: &str) -> Result<Vec<(String, Vec<u8>)>, ResolveStdError> {
     use std::collections::{HashSet, VecDeque};
     let entry =
         witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
             module: "main".to_string(),
             error,
         })?;
-    let mut modules: Vec<(String, witchy_syntax::ast::Module)> =
-        vec![("main".to_string(), entry.clone())];
+    let mut sources = vec![("main".to_string(), src.as_bytes().to_vec())];
     let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
     let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::from([entry]);
     while let Some(module) = queue.pop_front() {
@@ -210,10 +232,10 @@ fn resolve_std_modules(
                 }
             })?;
             queue.push_back(parsed.clone());
-            modules.push((name, parsed));
+            sources.push((name, source.as_bytes().to_vec()));
         }
     }
-    Ok(modules)
+    Ok(sources)
 }
 
 /// Whether a linked function originated in the entry file. The linker keeps the
@@ -362,6 +384,30 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
         }
     };
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod canonical_source_witness_tests {
+    #[test]
+    fn browser_resolver_mints_an_exact_source_witness() {
+        let checked = super::resolve_std_only_checked(
+            "pub fn export_echo(input: Bytes) -> Bytes:\n    input\n",
+        )
+        .expect("browser source resolves through canonical type checking");
+        let digest = checked
+            .canonical_source_witness()
+            .expect("checked browser source carries an exact-source witness")
+            .source_bundle_digest();
+        let changed = super::resolve_std_only_checked(
+            "pub fn export_echo(input: Bytes) -> Bytes:\n    input\n\n",
+        )
+        .expect("byte-distinct browser source also resolves")
+        .canonical_source_witness()
+        .expect("byte-distinct source carries a witness")
+        .source_bundle_digest();
+
+        assert_ne!(digest, changed, "the witness must bind exact source bytes");
+    }
 }
 
 #[cfg(test)]
