@@ -368,6 +368,18 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$full" -eq 0 ]; then
     esac
 fi
 
+# Keep every compiler leg that can select witchy-wir or witchy-lower on the
+# native feature as well. The foreground nextest command has its own feature
+# selection below; without this parallel check/clippy selection, a native
+# security test target can be absent from the compile leg while the test leg
+# still reports green.
+native_feature_args=()
+case " ${compile_sel[*]} " in
+    *" --workspace "* | *" -p witchy-wir "* | *" -p witchy-lower "*)
+        native_feature_args=(--features witchy-wir/native)
+        ;;
+esac
+
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
 ungated_excl=""
@@ -781,11 +793,11 @@ if [ -n "$shard" ]; then
     case "$shard" in
         e2e)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E 'binary(e2e)'
+            cargo nextest run --workspace --features witchy-wir/native -E 'binary(e2e)'
             ;;
         examples)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E 'test(/^example_tests::/)'
+            cargo nextest run --workspace --features witchy-wir/native -E 'test(/^example_tests::/)'
             ;;
         wasm)
             "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
@@ -803,13 +815,13 @@ if [ -n "$shard" ]; then
             # working on glamour or coven-web — the queue will not catch a
             # regression there for you.
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --glamour requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E "$ungated_filter_glamour"
+            cargo nextest run --workspace --features witchy-wir/native -E "$ungated_filter_glamour"
             ;;
         grimoire)
             # Likewise for grimoire/coven. Run this while working on the package
             # manager or the registry; the queue will not catch it for you.
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --grimoire requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace -E "$ungated_filter_grimoire"
+            cargo nextest run --workspace --features witchy-wir/native -E "$ungated_filter_grimoire"
             ;;
     esac
     record_shard_receipt "$shard"
@@ -943,7 +955,7 @@ seed_cow_target() { # seed_cow_target <dir>
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
     clippy_started=$(date +%s)
-    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
+    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets "${native_feature_args[@]}" -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
     clippy_pid=$!
 }
 
@@ -959,7 +971,7 @@ check_dir="${target_dir}-check"
 launch_check_leg() {
     check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
     check_started=$(date +%s)
-    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ) >"$check_log" 2>&1 &
+    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets "${native_feature_args[@]}" ) >"$check_log" 2>&1 &
     check_pid=$!
 }
 

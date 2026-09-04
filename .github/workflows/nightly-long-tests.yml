@@ -26,4 +26,4 @@ jobs:
         with:
           tool: nextest
       - name: Complete non-blocking workspace suite
-        run: cargo nextest run --workspace --all-targets --profile nightly --ignore-default-filter
+        run: cargo nextest run --workspace --features witchy-wir/native --all-targets --profile nightly --ignore-default-filter

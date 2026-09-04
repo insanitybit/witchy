@@ -259,15 +259,15 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-lower
-            add "cargo nextest run -p witchy-lower"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -p witchy-lower --features witchy-wir/native"
+            add "cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-wir/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-wir
-            add "cargo nextest run -p witchy-wir"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "cargo nextest run -p witchy-wir --features witchy-wir/native"
+            add "cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-runtime/*)
             any_rust=1
