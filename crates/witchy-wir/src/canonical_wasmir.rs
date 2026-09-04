@@ -17,15 +17,25 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use wasm_encoder::{
-    BlockType, CodeSection, ExportKind, ExportSection, Function as WasmFunctionEncoder,
-    FunctionSection, Ieee64, Module as WasmModule, TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection,
+    Function as WasmFunctionEncoder, FunctionSection, GlobalSection, GlobalType, Ieee64,
+    MemArg, MemorySection, MemoryType, Module as WasmModule, TypeSection, ValType,
 };
 
 use crate::canonical_safewir::{
-    ArithmeticOperator, BasicBlock, CallArgument, CanonicalModule, ComparisonOperator,
-    Function, FunctionId, ModuleStage, Operation, OptimizedValid, Terminator, ValidatedSafeWir,
-    ValueId,
+    AccessMode, ArithmeticOperator, BasicBlock, CallArgument, CanonicalModule,
+    ComparisonOperator, Extent, Function, FunctionId, HeaderField, LoadTransfer,
+    ModuleStage, Operation, OptimizedValid, Place, Projection, StoreTransfer, Terminator,
+    ValidatedSafeWir, ValueId, ValueType,
 };
+use crate::layout::{HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, RcHeader, ScalarKind};
+
+// Ref values point at the canonical layout root.  RC metadata occupies the
+// eight bytes immediately before that root; the private module keeps one
+// fixed linear-memory page and refuses an allocation before returning a
+// pointer when the checked extent does not fit.
+const RC_PREFIX_BYTES: u32 = 8;
+const LINEAR_MEMORY_BYTES: u32 = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SourceItemId {
@@ -60,6 +70,18 @@ enum ScalarInstruction {
     },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
     MoveValue { destination: ValueId, source: ValueId },
+    Alloc {
+        destination: ValueId,
+        layout: crate::layout::LayoutId,
+        extent: Extent,
+        class: crate::canonical_safewir::AllocationClass,
+    },
+    Load { destination: ValueId, place: Place, transfer: LoadTransfer },
+    Store { place: Place, value: ValueId, transfer: StoreTransfer },
+    UpdateCount { object: ValueId, count: ValueId },
+    Share { destination: ValueId, source: ValueId },
+    Release { object: ValueId },
+    Reclaim { object: ValueId },
     Call { destinations: Vec<ValueId>, callee: FunctionId, arguments: Vec<ValueId> },
     VarCall {
         destinations: Vec<ValueId>,
@@ -73,6 +95,26 @@ enum ScalarInstruction {
 struct WasmInstruction {
     source: SourceItemId,
     operation: ScalarInstruction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CollectionLayout {
+    layout: crate::layout::LayoutId,
+    length_offset: u32,
+    capacity_offset: Option<u32>,
+    data_offset: u32,
+    stride: u32,
+    scalar: ScalarKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemoryAccess {
+    object: ValueId,
+    collection: CollectionLayout,
+    offset: u32,
+    width: u32,
+    scalar: ScalarKind,
+    index: Option<ValueId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +179,11 @@ enum CorrespondenceRule {
     ScalarConversion,
     ScalarGuard,
     ScalarMove,
+    MemoryAlloc,
+    MemoryLoad,
+    MemoryStore,
+    MemoryUpdateCount,
+    MemoryOwnership,
     ScalarCall,
     Control,
 }
@@ -161,6 +208,8 @@ enum LoweringError {
     UnsupportedCallArgument { function: FunctionId },
     UnsupportedOverflow { function: FunctionId },
     UnsupportedControlFlow { function: FunctionId, operation: &'static str },
+    UnsupportedLayout { function: FunctionId, operation: &'static str },
+    InvalidLayoutBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,11 +244,141 @@ fn scalar_arguments(
         .collect()
 }
 
+fn collection_layout(
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    layout: crate::layout::LayoutId,
+) -> Result<CollectionLayout, LoweringError> {
+    let descriptor = layouts
+        .get(layout)
+        .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
+    let element = match descriptor.kind() {
+        LayoutKind::PackedList { element, .. } => *element,
+        LayoutKind::RuntimeBuffer { .. } => {
+            return Err(LoweringError::UnsupportedLayout { function, operation: "RuntimeBuffer" });
+        }
+        _ => return Err(LoweringError::UnsupportedLayout { function, operation: "layout" }),
+    };
+    let element_descriptor = layouts
+        .get(element)
+        .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
+    let scalar = match element_descriptor.kind() {
+        LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => *scalar,
+        _ => return Err(LoweringError::UnsupportedLayout { function, operation: "pointer-bearing layout" }),
+    };
+    let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "layout" });
+    };
+    let (length_offset, capacity_offset, data_offset) = match descriptor.header() {
+        HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, rc: RcHeader::Required } =>
+            (length_offset, Some(capacity_offset), data_offset),
+        _ => return Err(LoweringError::UnsupportedLayout { function, operation: "layout" }),
+    };
+    let LayoutSize::Fixed(element_size) = element_descriptor.size() else {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "layout" });
+    };
+    if data_offset != base || stride != element_size {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "layout" });
+    }
+    Ok(CollectionLayout { layout, length_offset, capacity_offset, data_offset, stride, scalar })
+}
+
+fn resolve_collection_layout(
+    function: &Function,
+    layouts: &LayoutInterner,
+    object: ValueId,
+) -> Result<CollectionLayout, LoweringError> {
+    let Some(ValueType::Ref(layout)) = function.value_types.get(&object).copied() else {
+        return Err(LoweringError::UnsupportedLayout { function: function.id, operation: "object" });
+    };
+    collection_layout(function.id, layouts, layout)
+}
+
+fn resolve_collection_layout_for_values(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    object: ValueId,
+) -> Result<CollectionLayout, LoweringError> {
+    let Some(ValueType::Ref(layout)) = value_types.get(&object).copied() else {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "object" });
+    };
+    collection_layout(function, layouts, layout)
+}
+
+fn resolve_memory_place(
+    function: &Function,
+    layouts: &LayoutInterner,
+    place: &Place,
+) -> Result<MemoryAccess, LoweringError> {
+    let collection = resolve_collection_layout(function, layouts, place.object())?;
+    match place.projection() {
+        Projection::Header(field) => {
+            let offset = match field {
+                HeaderField::Length => collection.length_offset,
+                HeaderField::Capacity => collection.capacity_offset.ok_or(LoweringError::UnsupportedLayout {
+                    function: function.id,
+                    operation: "header",
+                })?,
+            };
+            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, index: None })
+        }
+        Projection::Element { index } => Ok(MemoryAccess {
+            object: place.object(),
+            collection,
+            offset: collection.data_offset,
+            width: collection.scalar.size(),
+            scalar: collection.scalar,
+            index: Some(*index),
+        }),
+        Projection::Field { .. } | Projection::Slice { .. } => Err(LoweringError::UnsupportedLayout {
+            function: function.id,
+            operation: "projection",
+        }),
+    }
+}
+
+fn resolve_memory_place_for_values(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    place: &Place,
+) -> Result<MemoryAccess, LoweringError> {
+    let collection = resolve_collection_layout_for_values(function, value_types, layouts, place.object())?;
+    match place.projection() {
+        Projection::Header(field) => {
+            let offset = match field {
+                HeaderField::Length => collection.length_offset,
+                HeaderField::Capacity => collection.capacity_offset.ok_or(LoweringError::UnsupportedLayout {
+                    function,
+                    operation: "header",
+                })?,
+            };
+            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, index: None })
+        }
+        Projection::Element { index } => Ok(MemoryAccess {
+            object: place.object(),
+            collection,
+            offset: collection.data_offset,
+            width: collection.scalar.size(),
+            scalar: collection.scalar,
+            index: Some(*index),
+        }),
+        Projection::Field { .. } | Projection::Slice { .. } => Err(LoweringError::UnsupportedLayout {
+            function,
+            operation: "projection",
+        }),
+    }
+}
+
 fn lower_operation(
     function: FunctionId,
     block: crate::canonical_safewir::BlockId,
     index: usize,
     operation: &Operation,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmInstruction, LoweringError> {
     let source = SourceItemId::Operation { function, block, index };
     let operation = match operation {
@@ -229,7 +408,64 @@ fn lower_operation(
             return Err(LoweringError::UnsupportedOperation { function, operation: "NarrowSize" });
         }
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },
-        Operation::MoveValue { destination, source } => ScalarInstruction::MoveValue { destination: *destination, source: *source },
+        Operation::MoveValue { destination, source } => {
+            if matches!(value_types.get(source), Some(ValueType::Ref(_))) {
+                if let Some(class) = allocation_classes.remove(source) {
+                    allocation_classes.insert(*destination, class);
+                }
+            }
+            ScalarInstruction::MoveValue { destination: *destination, source: *source }
+        }
+        Operation::Alloc { destination, layout, extent, class } => {
+            if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted
+                || collection_layout(function, layouts, *layout).is_err()
+                || !matches!(extent, Extent::Counted { .. })
+            {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "Alloc" });
+            }
+            allocation_classes.insert(*destination, *class);
+            ScalarInstruction::Alloc { destination: *destination, layout: *layout, extent: extent.clone(), class: *class }
+        }
+        Operation::Load { destination, place, transfer } => {
+            if *transfer != LoadTransfer::CopyScalar || place.access() != AccessMode::Read
+                || resolve_memory_place_for_values(function, value_types, layouts, place).is_err()
+            {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "Load" });
+            }
+            ScalarInstruction::Load { destination: *destination, place: place.clone(), transfer: *transfer }
+        }
+        Operation::Store { place, value, transfer } => {
+            if *transfer != StoreTransfer::CopyScalar || place.access() != AccessMode::Write
+                || resolve_memory_place_for_values(function, value_types, layouts, place).is_err()
+            {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "Store" });
+            }
+            ScalarInstruction::Store { place: place.clone(), value: *value, transfer: *transfer }
+        }
+        Operation::UpdateCount { object, count } => {
+            if resolve_collection_layout_for_values(function, value_types, layouts, *object).is_err() {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "UpdateCount" });
+            }
+            ScalarInstruction::UpdateCount { object: *object, count: *count }
+        }
+        Operation::Share { destination, source } => {
+            if allocation_classes.get(source) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "Share" });
+            }
+            allocation_classes.insert(*destination, crate::canonical_safewir::AllocationClass::ReferenceCounted);
+            ScalarInstruction::Share { destination: *destination, source: *source }
+        }
+        Operation::Release { object } | Operation::Reclaim { object } => {
+            if allocation_classes.get(object) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
+                return Err(LoweringError::UnsupportedLayout { function, operation: operation_name(operation) });
+            }
+            allocation_classes.remove(object);
+            match operation {
+                Operation::Release { object } => ScalarInstruction::Release { object: *object },
+                Operation::Reclaim { object } => ScalarInstruction::Reclaim { object: *object },
+                _ => unreachable!(),
+            }
+        }
         Operation::Call { destinations, callee, arguments } => ScalarInstruction::Call {
             destinations: destinations.clone(),
             callee: *callee,
@@ -238,18 +474,11 @@ fn lower_operation(
         Operation::VarCall { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: "VarCall" });
         }
-        Operation::Alloc { .. }
-        | Operation::StaticData { .. }
-        | Operation::Load { .. }
-        | Operation::Store { .. }
+        Operation::StaticData { .. }
         | Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
-        | Operation::UpdateCount { .. }
-        | Operation::Share { .. }
         | Operation::Retain { .. }
-        | Operation::Release { .. }
-        | Operation::Reclaim { .. }
         | Operation::HostCall { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: operation_name(operation) });
         }
@@ -316,12 +545,17 @@ fn lower_terminator(
     Ok(WasmTerminator { source, operation })
 }
 
-fn lower_block(function: &Function, block: &BasicBlock) -> Result<WasmBlock, LoweringError> {
+fn lower_block(
+    function: &Function,
+    block: &BasicBlock,
+    layouts: &LayoutInterner,
+    allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
+) -> Result<WasmBlock, LoweringError> {
     let instructions = block
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation))
+        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, layouts, allocation_classes))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(WasmBlock {
         id: block.id,
@@ -330,7 +564,8 @@ fn lower_block(function: &Function, block: &BasicBlock) -> Result<WasmBlock, Low
     })
 }
 
-fn lower_function(function: &Function) -> Result<WasmFunction, LoweringError> {
+fn lower_function(function: &Function, layouts: &LayoutInterner) -> Result<WasmFunction, LoweringError> {
+    let mut allocation_classes = BTreeMap::new();
     Ok(WasmFunction {
         id: function.id,
         signature: function.signature,
@@ -338,20 +573,22 @@ fn lower_function(function: &Function) -> Result<WasmFunction, LoweringError> {
         blocks: function
             .blocks
             .iter()
-            .map(|block| lower_block(function, block))
+            .map(|block| lower_block(function, block, layouts, &mut allocation_classes))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
 fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
     let module = module.module();
+    let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
+        .map_err(|_| LoweringError::InvalidLayoutBundle)?;
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
         functions: module
             .functions()
             .iter()
-            .map(lower_function)
+            .map(|function| lower_function(function, &layouts))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -367,19 +604,19 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::NarrowSize { .. } => None,
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
+        Operation::Alloc { .. } => Some(CorrespondenceRule::MemoryAlloc),
+        Operation::Load { .. } => Some(CorrespondenceRule::MemoryLoad),
+        Operation::Store { .. } => Some(CorrespondenceRule::MemoryStore),
+        Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
+        Operation::Share { .. }
+        | Operation::Release { .. }
+        | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
-        Operation::Alloc { .. }
-        | Operation::StaticData { .. }
-        | Operation::Load { .. }
-        | Operation::Store { .. }
+        Operation::StaticData { .. }
         | Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
-        | Operation::UpdateCount { .. }
-        | Operation::Share { .. }
         | Operation::Retain { .. }
-        | Operation::Release { .. }
-        | Operation::Reclaim { .. }
         | Operation::HostCall { .. } => None,
     }
 }
@@ -394,6 +631,12 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::Compare { destination, operator, left, right }, ScalarInstruction::Compare { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right,
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::Alloc { destination, layout, extent, class }, ScalarInstruction::Alloc { destination: actual_destination, layout: actual_layout, extent: actual_extent, class: actual_class }) => destination == actual_destination && layout == actual_layout && extent == actual_extent && class == actual_class,
+        (Operation::Load { destination, place, transfer }, ScalarInstruction::Load { destination: actual_destination, place: actual_place, transfer: actual_transfer }) => destination == actual_destination && place == actual_place && transfer == actual_transfer,
+        (Operation::Store { place, value, transfer }, ScalarInstruction::Store { place: actual_place, value: actual_value, transfer: actual_transfer }) => place == actual_place && value == actual_value && transfer == actual_transfer,
+        (Operation::UpdateCount { object, count }, ScalarInstruction::UpdateCount { object: actual_object, count: actual_count }) => object == actual_object && count == actual_count,
+        (Operation::Share { destination, source }, ScalarInstruction::Share { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::Release { object }, ScalarInstruction::Release { object: actual_object }) | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
         (Operation::Call { destinations, callee, arguments }, ScalarInstruction::Call { destinations: actual_destinations, callee: actual_callee, arguments: actual_arguments }) => *callee == *actual_callee && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
         (Operation::VarCall { destinations, callee, signature, arguments }, ScalarInstruction::VarCall { destinations: actual_destinations, callee: actual_callee, signature: actual_signature, arguments: actual_arguments }) => *callee == *actual_callee && *signature == *actual_signature && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
         _ => false,
@@ -543,6 +786,7 @@ enum EncodeError {
     MissingFunction(FunctionId),
     MissingValue { function: FunctionId, value: ValueId },
     MissingBlock { function: FunctionId, block: crate::canonical_safewir::BlockId },
+    UnsupportedLayout { function: FunctionId, operation: &'static str },
     WasmValidation(String),
 }
 
@@ -556,6 +800,7 @@ fn wasm_value_type(
         crate::canonical_safewir::ValueType::Float => Ok(ValType::F64),
         crate::canonical_safewir::ValueType::Bool => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Size => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::Ref(_) => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::V128 => Ok(ValType::V128),
         unsupported => Err(EncodeError::UnsupportedValueType { function, value, value_type: unsupported }),
     }
@@ -564,6 +809,7 @@ fn wasm_value_type(
 struct LocalLayout {
     indices: BTreeMap<ValueId, u32>,
     extra_types: Vec<ValType>,
+    scratch: [u32; 4],
 }
 
 fn local_layout(function: &Function) -> Result<LocalLayout, EncodeError> {
@@ -585,11 +831,106 @@ fn local_layout(function: &Function) -> Result<LocalLayout, EncodeError> {
         indices.insert(*value, index);
         extra_types.push(wasm_value_type(function.id, *value, *value_type)?);
     }
+    let mut scratch = [0; 4];
+    for (slot, index) in scratch.iter_mut().enumerate() {
+        *index = entry.parameters.len() as u32 + extra_types.len() as u32;
+        extra_types.push(ValType::I32);
+        if slot == 0 {
+            // Keep the first scratch slot adjacent to the value locals. The
+            // explicit indices below are still independent of value IDs.
+        }
+    }
     Ok(LocalLayout {
         indices,
         extra_types,
+        scratch,
     })
 }
+
+fn scratch_index(layout: &LocalLayout, slot: usize) -> u32 {
+    layout.scratch[slot]
+}
+
+fn memarg(width: u32) -> MemArg {
+    MemArg { offset: 0, align: width.next_power_of_two().trailing_zeros() as u32, memory_index: 0 }
+}
+
+fn emit_u32_trap_if_gt(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    value: ValueId,
+    limit: u32,
+) -> Result<(), EncodeError> {
+    emit_get(body, layout, function, value)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(limit)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    Ok(())
+}
+
+fn emit_projected_address(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    access: MemoryAccess,
+) -> Result<(), EncodeError> {
+    if let Some(index) = access.index {
+        let maximum = (u32::MAX
+            .checked_sub(access.offset)
+            .and_then(|value| value.checked_sub(access.width))
+            .ok_or(EncodeError::UnsupportedLayout { function: function.id, operation: "address" })?)
+            / access.collection.stride;
+        emit_u32_trap_if_gt(body, layout, function.id, index, maximum)?;
+        emit_get(body, layout, function.id, access.object)?;
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        emit_get(body, layout, function.id, index)?;
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(access.collection.stride)));
+        body.instruction(&wasm_encoder::Instruction::I64Mul);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(access.offset)));
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+    } else {
+        let maximum = u32::MAX.checked_sub(access.width).ok_or(EncodeError::UnsupportedLayout {
+            function: function.id,
+            operation: "address",
+        })?;
+        emit_get(body, layout, function.id, access.object)?;
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(access.offset)));
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(maximum)));
+        body.instruction(&wasm_encoder::Instruction::I64GtU);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get(body, layout, function.id, access.object)?;
+        body.instruction(&wasm_encoder::Instruction::I32Const(access.offset as i32));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        return Ok(());
+    }
+    emit_get(body, layout, function.id, access.object)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_get(body, layout, function.id, access.index.expect("element access has an index"))?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(access.collection.stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(access.offset)));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX - access.width)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    Ok(())
+}
+
 
 fn local_index(layout: &LocalLayout, function: FunctionId, value: ValueId) -> Result<u32, EncodeError> {
     layout.indices.get(&value).copied().ok_or(EncodeError::MissingValue { function, value })
@@ -613,6 +954,14 @@ fn emit_set(
 ) -> Result<(), EncodeError> {
     body.instruction(&wasm_encoder::Instruction::LocalSet(local_index(layout, function, value)?));
     Ok(())
+}
+
+fn emit_get_index(body: &mut wasm_encoder::Function, index: u32) {
+    body.instruction(&wasm_encoder::Instruction::LocalGet(index));
+}
+
+fn emit_set_index(body: &mut wasm_encoder::Function, index: u32) {
+    body.instruction(&wasm_encoder::Instruction::LocalSet(index));
 }
 
 fn emit_arithmetic(
@@ -722,6 +1071,221 @@ fn emit_compare(
     emit_set(body, layout, function.id, destination)
 }
 
+fn emit_typed_load(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    access: MemoryAccess,
+    destination: ValueId,
+) -> Result<(), EncodeError> {
+    emit_projected_address(body, function, layout, access)?;
+    let arg = memarg(access.width);
+    match access.scalar {
+        ScalarKind::Bool | ScalarKind::Tag8 => body.instruction(&wasm_encoder::Instruction::I32Load8U(arg)),
+        ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Load16U(arg)),
+        ScalarKind::U32 | ScalarKind::Tag32 => body.instruction(&wasm_encoder::Instruction::I32Load(arg)),
+        ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Load(arg)),
+        ScalarKind::Float => body.instruction(&wasm_encoder::Instruction::F64Load(arg)),
+        _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "scalar load" }),
+    };
+    emit_set(body, layout, function.id, destination)
+}
+
+fn emit_typed_store(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    access: MemoryAccess,
+    value: ValueId,
+) -> Result<(), EncodeError> {
+    emit_projected_address(body, function, layout, access)?;
+    emit_get(body, layout, function.id, value)?;
+    let arg = memarg(access.width);
+    match access.scalar {
+        ScalarKind::Bool | ScalarKind::Tag8 => body.instruction(&wasm_encoder::Instruction::I32Store8(arg)),
+        ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Store16(arg)),
+        ScalarKind::U32 | ScalarKind::Tag32 => body.instruction(&wasm_encoder::Instruction::I32Store(arg)),
+        ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Store(arg)),
+        ScalarKind::Float => body.instruction(&wasm_encoder::Instruction::F64Store(arg)),
+        _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "scalar store" }),
+    };
+    Ok(())
+}
+
+fn emit_alloc(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    destination: ValueId,
+    layout_id: crate::layout::LayoutId,
+    extent: &Extent,
+) -> Result<(), EncodeError> {
+    let collection = collection_layout(function.id, layouts, layout_id).map_err(EncodeError::Lowering)?;
+    let Extent::Counted { capacity, count, header_bytes, stride_bytes } = extent else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
+    };
+    if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
+    }
+    let maximum = (u32::MAX - collection.data_offset) / collection.stride;
+    emit_u32_trap_if_gt(body, layout, function.id, *capacity, maximum)?;
+    emit_get(body, layout, function.id, *capacity)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.data_offset)));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    emit_set_index(body, scratch_index(layout, 0));
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(0));
+    emit_set_index(body, scratch_index(layout, 1));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    emit_get_index(body, scratch_index(layout, 0));
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_set_index(body, scratch_index(layout, 2));
+    emit_get_index(body, scratch_index(layout, 2));
+    emit_get_index(body, scratch_index(layout, 0));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::GlobalSet(0));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::I32Const(1));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get_index(body, scratch_index(layout, 0));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    emit_get_index(body, scratch_index(layout, 2));
+    emit_set(body, layout, function.id, destination)?;
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get(body, layout, function.id, *count)?;
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    if let Some(capacity_offset) = collection.capacity_offset {
+        emit_get_index(body, scratch_index(layout, 2));
+        body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_get(body, layout, function.id, *capacity)?;
+        body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    }
+    Ok(())
+}
+
+fn emit_update_count(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    object: ValueId,
+    count: ValueId,
+) -> Result<(), EncodeError> {
+    let collection = resolve_collection_layout(function, layouts, object).map_err(EncodeError::Lowering)?;
+    if let Some(capacity_offset) = collection.capacity_offset {
+        emit_get(body, layout, function.id, count)?;
+        emit_get(body, layout, function.id, object)?;
+        body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+        body.instruction(&wasm_encoder::Instruction::I32GtU);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
+    emit_get(body, layout, function.id, object)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get(body, layout, function.id, count)?;
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    Ok(())
+}
+
+fn emit_share(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    destination: ValueId,
+    object: ValueId,
+    function: &Function,
+) -> Result<(), EncodeError> {
+    emit_get(body, layout, function.id, object)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(8));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_set_index(body, scratch_index(layout, 2));
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(-1));
+    body.instruction(&wasm_encoder::Instruction::I32Eq);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(1));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_set_index(body, scratch_index(layout, 2));
+    emit_get(body, layout, function.id, object)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(8));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    emit_get(body, layout, function.id, object)?;
+    emit_set(body, layout, function.id, destination)?;
+    Ok(())
+}
+
+fn emit_reclaim(body: &mut wasm_encoder::Function, layout: &LocalLayout, function: &Function, object: ValueId) -> Result<(), EncodeError> {
+    emit_get(body, layout, function.id, object)?;
+    emit_set_index(body, scratch_index(layout, 1));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
+    Ok(())
+}
+
+fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, function: &Function, object: ValueId) -> Result<(), EncodeError> {
+    emit_get(body, layout, function.id, object)?;
+    emit_set_index(body, scratch_index(layout, 1));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::I32Const(8));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_set_index(body, scratch_index(layout, 2));
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(1));
+    body.instruction(&wasm_encoder::Instruction::I32Eq);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_reclaim(body, layout, function, object)?;
+    body.instruction(&wasm_encoder::Instruction::Else);
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::I32Const(8));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(1));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::End);
+    Ok(())
+}
+
 fn emit_call_arguments(
     body: &mut wasm_encoder::Function,
     layout: &LocalLayout,
@@ -752,6 +1316,7 @@ fn emit_instruction(
     layout: &LocalLayout,
     instruction: &ScalarInstruction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    layouts: &LayoutInterner,
 ) -> Result<(), EncodeError> {
     match instruction {
         ScalarInstruction::IntConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I64Const(*value)); emit_set(body, layout, function.id, *destination)?; }
@@ -769,6 +1334,30 @@ fn emit_instruction(
         ScalarInstruction::Compare { destination, operator, left, right } => { emit_compare(body, function, layout, *destination, *operator, *left, *right)?; }
         ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
         ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::Alloc { destination, layout: layout_id, extent, class } => {
+            if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted {
+                return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc class" });
+            }
+            emit_alloc(body, function, layout, layouts, *destination, *layout_id, extent)?;
+        }
+        ScalarInstruction::Load { destination, place, transfer } => {
+            if *transfer != LoadTransfer::CopyScalar {
+                return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Load transfer" });
+            }
+            let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
+            emit_typed_load(body, function, layout, access, *destination)?;
+        }
+        ScalarInstruction::Store { place, value, transfer } => {
+            if *transfer != StoreTransfer::CopyScalar {
+                return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Store transfer" });
+            }
+            let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
+            emit_typed_store(body, function, layout, access, *value)?;
+        }
+        ScalarInstruction::UpdateCount { object, count } => emit_update_count(body, function, layout, layouts, *object, *count)?,
+        ScalarInstruction::Share { destination, source } => emit_share(body, layout, *destination, *source, function)?,
+        ScalarInstruction::Release { object } => emit_release(body, layout, function, *object)?,
+        ScalarInstruction::Reclaim { object } => emit_reclaim(body, layout, function, *object)?,
         ScalarInstruction::Call { destinations, callee, arguments } => {
             emit_call_arguments(body, layout, function.id, arguments)?;
             let index = function_indices.get(callee).copied().ok_or(EncodeError::MissingFunction(*callee))?;
@@ -793,6 +1382,7 @@ struct StructuredEmitter<'a> {
     target_function: &'a WasmFunction,
     layout: &'a LocalLayout,
     function_indices: &'a BTreeMap<FunctionId, u32>,
+    layouts: &'a LayoutInterner,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
@@ -1049,6 +1639,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.layouts,
             )?;
         }
         match block.terminator.operation {
@@ -1169,6 +1760,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.layouts,
             )?;
         }
         emit_get(self.body, self.layout, self.source_function.id, condition)?;
@@ -1221,6 +1813,7 @@ fn encode_function(
     source_function: &Function,
     target_function: &WasmFunction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    layouts: &LayoutInterner,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
     let layout = local_layout(source_function)?;
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
@@ -1238,6 +1831,7 @@ fn encode_function(
         target_function,
         layout: &layout,
         function_indices,
+        layouts,
         emitted: BTreeSet::new(),
         labels: Vec::new(),
         loops: Vec::new(),
@@ -1259,6 +1853,8 @@ fn encode_function(
 fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError> {
     let target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
     let source = validated.module();
+    let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
+        .map_err(|_| EncodeError::Lowering(LoweringError::InvalidLayoutBundle))?;
     let receipt = check_correspondence(source, &target).map_err(EncodeError::Correspondence)?;
     if receipt.mappings.len() != expected_source_items(source).len() {
         return Err(EncodeError::Correspondence(CorrespondenceError::MissingSourceItem(
@@ -1276,6 +1872,23 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         types.ty().function(parameters, results);
     }
     let mut functions = FunctionSection::new();
+    let mut memory = MemorySection::new();
+    memory.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+        &ConstExpr::i32_const(16),
+    );
+    globals.global(
+        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+        &ConstExpr::i32_const(0),
+    );
     let mut exports = ExportSection::new();
     let mut code = CodeSection::new();
     for target_function in &target.functions {
@@ -1283,10 +1896,16 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, target_function, &function_indices)?);
+        code.function(&encode_function(source_function, target_function, &function_indices, &layouts)?);
     }
     let mut module = WasmModule::new();
-    module.section(&types).section(&functions).section(&exports).section(&code);
+    module
+        .section(&types)
+        .section(&functions)
+        .section(&memory)
+        .section(&globals)
+        .section(&exports)
+        .section(&code);
     let bytes = module.finish();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
         .validate_all(&bytes)
@@ -1300,10 +1919,11 @@ mod tests {
     use crate::canonical_safewir::{
         BasicBlock, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
         FunctionSignatureId,
+        GuardKind,
         LoweredCandidate, LoweredModuleParts, ParameterContract, ParameterOwnership, Revision,
         ResultContract, check_initial_with_witness, optimize_unreachable_blocks, validate_final,
     };
-    use crate::layout::{LayoutBundle, LayoutInterner};
+    use crate::layout::{LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
     fn checked_scalar() -> ValidatedSafeWir {
         let value = ValueId::new(1);
@@ -1643,6 +2263,9 @@ mod tests {
                 crate::canonical_safewir::BlockId::new(0),
                 0,
                 &operation,
+                &BTreeMap::new(),
+                &LayoutInterner::new(),
+                &mut BTreeMap::new(),
             ),
             Err(LoweringError::UnsupportedOperation { operation: "VarCall", .. })
         ));
@@ -1848,6 +2471,461 @@ mod tests {
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).unwrap();
         validate_final(&initial_snapshot, witness, optimized).unwrap()
+    }
+
+    fn checked_packed_list_fixture(oob: bool) -> ValidatedSafeWir {
+        let mut layouts = LayoutInterner::new();
+        let element = layouts.intern_scalar(ScalarKind::U32).unwrap();
+        let list = layouts.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&layouts, [list]).unwrap();
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let index = ValueId::new(3);
+        let condition = ValueId::new(4);
+        let object = ValueId::new(5);
+        let value = ValueId::new(6);
+        let capacity_loaded = ValueId::new(7);
+        let new_count = ValueId::new(8);
+        let second_index = ValueId::new(9);
+        let second_condition = ValueId::new(10);
+        let second_value = ValueId::new(11);
+        let length_loaded = ValueId::new(12);
+        let element_loaded = ValueId::new(13);
+        let (operations, results) = if oob {
+            (
+                vec![
+                    Operation::ConstSize { destination: count, value: 1 },
+                    Operation::ConstSize { destination: capacity, value: 1 },
+                    Operation::ConstSize { destination: index, value: 1 },
+                    Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
+                    Operation::Guard { condition, kind: GuardKind::Bounds },
+                    Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                    Operation::Load { destination: element_loaded, place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                    Operation::Reclaim { object },
+                ],
+                Vec::new(),
+            )
+        } else {
+            (
+                vec![
+                    Operation::ConstSize { destination: count, value: 1 },
+                    Operation::ConstSize { destination: capacity, value: 2 },
+                    Operation::ConstSize { destination: index, value: 0 },
+                    Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
+                    Operation::Guard { condition, kind: GuardKind::Bounds },
+                    Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                    Operation::ConstSize { destination: value, value: 7 },
+                    Operation::Store { place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
+                    Operation::ConstSize { destination: new_count, value: 2 },
+                    Operation::UpdateCount { object, count: new_count },
+                    Operation::Load { destination: capacity_loaded, place: Place::projected(object, Projection::Header(HeaderField::Capacity), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                    Operation::ConstSize { destination: second_index, value: 1 },
+                    Operation::Compare { destination: second_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: new_count },
+                    Operation::Guard { condition: second_condition, kind: GuardKind::Bounds },
+                    Operation::ConstSize { destination: second_value, value: 42 },
+                    Operation::Store { place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Write), value: second_value, transfer: StoreTransfer::CopyScalar },
+                    Operation::Load { destination: length_loaded, place: Place::projected(object, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                    Operation::Load { destination: element_loaded, place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                    Operation::Reclaim { object },
+                ],
+                vec![element_loaded],
+            )
+        };
+        let mut value_types = BTreeMap::new();
+        for value in [count, capacity, index] {
+            value_types.insert(value, ValueType::Size);
+        }
+        value_types.insert(condition, ValueType::Bool);
+        value_types.insert(object, ValueType::Ref(list));
+        value_types.insert(element_loaded, ValueType::Size);
+        if !oob {
+            for value in [capacity_loaded, new_count, second_index, value, second_value, length_loaded] {
+                value_types.insert(value, ValueType::Size);
+            }
+            value_types.insert(second_condition, ValueType::Bool);
+        }
+        let result_types = results.iter().map(|_| ValueType::Size).collect::<Vec<_>>();
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(if oob { 31 } else { 30 }),
+            checked_source: CheckedSourceIdentity::from_digest([if oob { 0x31 } else { 0x30 }; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(30), Vec::new(), result_types)],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(30),
+                signature: FunctionSignatureId::new(30),
+                entry: crate::canonical_safewir::BlockId::new(30),
+                value_types,
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(30),
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: results },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_alloc_only(
+        layout: crate::layout::LayoutId,
+        layouts: LayoutBundle,
+        class: crate::canonical_safewir::AllocationClass,
+        header_bytes: u32,
+        stride_bytes: u32,
+        capacity_value: u64,
+    ) -> ValidatedSafeWir {
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let object = ValueId::new(3);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(32),
+            checked_source: CheckedSourceIdentity::from_digest([0x32; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(32), Vec::new(), Vec::new())],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(32),
+                signature: FunctionSignatureId::new(32),
+                entry: crate::canonical_safewir::BlockId::new(32),
+                value_types: [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout))].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(32),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 0 },
+                        Operation::ConstSize { destination: capacity, value: capacity_value },
+                        Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes, count, capacity, stride_bytes }, class },
+                    ],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_share_fixture() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let object = ValueId::new(3);
+        let shared = ValueId::new(4);
+        let loaded = ValueId::new(5);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(33),
+            checked_source: CheckedSourceIdentity::from_digest([0x33; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(33), Vec::new(), vec![ValueType::Size])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(33),
+                signature: FunctionSignatureId::new(33),
+                entry: crate::canonical_safewir::BlockId::new(33),
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (object, ValueType::Ref(layout)),
+                    (shared, ValueType::Ref(layout)),
+                    (loaded, ValueType::Size),
+                ].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(33),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 1 },
+                        Operation::ConstSize { destination: capacity, value: 1 },
+                        Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                        Operation::Share { destination: shared, source: object },
+                        Operation::Load { destination: loaded, place: Place::projected(shared, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                        Operation::Release { object: shared },
+                    ],
+                    terminator: Terminator::Return { values: vec![loaded] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_two_allocations_fixture() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let first = ValueId::new(3);
+        let index = ValueId::new(4);
+        let value = ValueId::new(5);
+        let condition = ValueId::new(6);
+        let second = ValueId::new(7);
+        let loaded = ValueId::new(8);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(34),
+            checked_source: CheckedSourceIdentity::from_digest([0x34; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(34), Vec::new(), vec![ValueType::Size])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(34),
+                signature: FunctionSignatureId::new(34),
+                entry: crate::canonical_safewir::BlockId::new(34),
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (first, ValueType::Ref(layout)),
+                    (index, ValueType::Size),
+                    (value, ValueType::Size),
+                    (condition, ValueType::Bool),
+                    (second, ValueType::Ref(layout)),
+                    (loaded, ValueType::Size),
+                ].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(34),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 1 },
+                        Operation::ConstSize { destination: capacity, value: 1 },
+                        Operation::Alloc { destination: first, layout, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                        Operation::ConstSize { destination: index, value: 0 },
+                        Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
+                        Operation::Guard { condition, kind: GuardKind::Bounds },
+                        Operation::ConstSize { destination: value, value: 7 },
+                        Operation::Store { place: Place::projected(first, Projection::Element { index }, ValueType::Size, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
+                        Operation::Alloc { destination: second, layout, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                        Operation::Load { destination: loaded, place: Place::projected(first, Projection::Element { index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                        Operation::Reclaim { object: second },
+                        Operation::Reclaim { object: first },
+                    ],
+                    terminator: Terminator::Return { values: vec![loaded] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn rc_boundary_module(share: bool, max_rc: bool) -> Vec<u8> {
+        let object = ValueId::new(1);
+        let destination = ValueId::new(2);
+        let function = Function {
+            id: FunctionId::new(90),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(90),
+            entry: crate::canonical_safewir::BlockId::new(90),
+            value_types: BTreeMap::new(),
+            blocks: Vec::new(),
+        };
+        let layout = LocalLayout {
+            indices: [(object, 0), (destination, 1)].into_iter().collect(),
+            extra_types: vec![ValType::I32; 5],
+            scratch: [2, 3, 4, 5],
+        };
+        let mut boundary = WasmFunctionEncoder::new(vec![(5, ValType::I32)]);
+        if share {
+            emit_share(&mut boundary, &layout, destination, object, &function).unwrap();
+            boundary.instruction(&wasm_encoder::Instruction::I32Const(0));
+            boundary.instruction(&wasm_encoder::Instruction::LocalGet(1));
+            boundary.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+        } else {
+            emit_release(&mut boundary, &layout, &function, object).unwrap();
+        }
+        boundary.instruction(&wasm_encoder::Instruction::End);
+
+        let mut state = WasmFunctionEncoder::new(Vec::new());
+        state.instruction(&wasm_encoder::Instruction::I32Const(0));
+        state.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+        state.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        state.instruction(&wasm_encoder::Instruction::I64Const(32));
+        state.instruction(&wasm_encoder::Instruction::I64Shl);
+        state.instruction(&wasm_encoder::Instruction::I32Const(16));
+        state.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+        state.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        state.instruction(&wasm_encoder::Instruction::I64Or);
+        state.instruction(&wasm_encoder::Instruction::End);
+
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], Vec::<ValType>::new());
+        types.ty().function(Vec::<ValType>::new(), vec![ValType::I64]);
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        functions.function(1);
+        let mut memory = MemorySection::new();
+        memory.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+            &ConstExpr::i32_const(16),
+        );
+        globals.global(
+            GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+            &ConstExpr::i32_const(0),
+        );
+        let mut exports = ExportSection::new();
+        exports.export("boundary", ExportKind::Func, 0);
+        exports.export("state", ExportKind::Func, 1);
+        let mut code = CodeSection::new();
+        code.function(&boundary);
+        code.function(&state);
+        let mut data = DataSection::new();
+        data.active(0, &ConstExpr::i32_const(16), if max_rc { vec![0xff; 4] } else { vec![0; 4] });
+        let mut module = WasmModule::new();
+        module
+            .section(&types)
+            .section(&functions)
+            .section(&memory)
+            .section(&globals)
+            .section(&exports)
+            .section(&code)
+            .section(&data);
+        module.finish()
+    }
+
+    #[test]
+    fn packed_scalar_collection_access_mutates_and_preserves_headers() {
+        let source = checked_packed_list_fixture(false);
+        let target = lower_validated(&source).unwrap();
+        let receipt = check_correspondence(source.module(), &target).unwrap();
+        assert_eq!(receipt.mappings.len(), 20);
+        let wasm = encode_validated(source).expect("packed scalar collection encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), i32>(&mut store, "f30").unwrap();
+        assert_eq!(run.call(&mut store, ()).unwrap(), 42);
+    }
+
+    #[test]
+    fn packed_scalar_collection_oob_guard_traps_in_wasmtime() {
+        let wasm = encode_validated(checked_packed_list_fixture(true)).expect("OOB fixture encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), ()>(&mut store, "f30").unwrap();
+        assert!(run.call(&mut store, ()).is_err());
+    }
+
+    #[test]
+    fn shared_destination_preserves_root_for_use() {
+        let source = checked_share_fixture();
+        let target = lower_validated(&source).unwrap();
+        let receipt = check_correspondence(source.module(), &target).unwrap();
+        assert_eq!(receipt.mappings.len(), 7);
+        let wasm = encode_validated(source).expect("shared scalar collection encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), i32>(&mut store, "f33").unwrap();
+        assert_eq!(run.call(&mut store, ()).unwrap(), 1);
+    }
+
+    #[test]
+    fn consecutive_rc_allocations_reserve_non_overlapping_prefixes() {
+        let source = checked_two_allocations_fixture();
+        let target = lower_validated(&source).unwrap();
+        let receipt = check_correspondence(source.module(), &target).unwrap();
+        assert_eq!(receipt.mappings.len(), 13);
+        let wasm = encode_validated(source).expect("two scalar collections encode");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), i32>(&mut store, "f34").unwrap();
+        assert_eq!(run.call(&mut store, ()).unwrap(), 7);
+    }
+
+    #[test]
+    fn allocation_refuses_to_return_storage_past_fixed_linear_memory() {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        let wasm = encode_validated(checked_alloc_only(
+            layout,
+            bundle,
+            crate::canonical_safewir::AllocationClass::ReferenceCounted,
+            8,
+            4,
+            16_383,
+        ))
+        .expect("large allocation module encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), ()>(&mut store, "f32").unwrap();
+        assert!(run.call(&mut store, ()).is_err());
+    }
+
+    #[test]
+    fn share_at_max_refcount_traps_before_destination_or_refcount_write() {
+        let wasm = rc_boundary_module(true, true);
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let boundary = instance.get_typed_func::<i32, ()>(&mut store, "boundary").unwrap();
+        assert!(boundary.call(&mut store, 24).is_err());
+        let state = instance.get_typed_func::<(), i64>(&mut store, "state").unwrap();
+        assert_eq!(state.call(&mut store, ()).unwrap() as u64, u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn release_at_zero_refcount_traps_before_decrement() {
+        let wasm = rc_boundary_module(false, false);
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let boundary = instance.get_typed_func::<i32, ()>(&mut store, "boundary").unwrap();
+        assert!(boundary.call(&mut store, 24).is_err());
+        let state = instance.get_typed_func::<(), i64>(&mut store, "state").unwrap();
+        assert_eq!(state.call(&mut store, ()).unwrap(), 0);
+    }
+
+    #[test]
+    fn unsupported_allocator_class_is_refused_by_canonical_backend() {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        assert!(matches!(
+            encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::Bump, 8, 4, 1)),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { operation: "Alloc", .. }))
+        ));
+    }
+
+    #[test]
+    fn pointer_bearing_catalog_layout_is_refused_by_canonical_backend() {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_runtime_pointer_buffer(element, PointerSlot::Owned).unwrap();
+        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        assert!(matches!(
+            encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 8, 1)),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { operation: "Alloc", .. }))
+        ));
+    }
+
+    #[test]
+    fn headerless_runtime_buffer_is_refused_by_canonical_backend() {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_runtime_buffer(element).unwrap();
+        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        assert!(matches!(
+            encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 4, 1)),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { .. }))
+        ));
     }
 
     #[test]
