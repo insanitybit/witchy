@@ -112,6 +112,39 @@ struct WasmIrSurface {
     current_function: Option<(String, bool, bool)>,
 }
 
+#[derive(Default)]
+struct ValidatedSafeWirSurface {
+    declarations: Vec<ItemStruct>,
+    constructions: Vec<String>,
+    current_function: Option<String>,
+}
+
+impl<'ast> Visit<'ast> for ValidatedSafeWirSurface {
+    fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
+        if item.ident == "ValidatedSafeWir" {
+            self.declarations.push(item.clone());
+        }
+        syn::visit::visit_item_struct(self, item);
+    }
+
+    fn visit_expr_struct(&mut self, expression: &'ast ExprStruct) {
+        if path_ends_in(&expression.path, "ValidatedSafeWir") {
+            self.constructions.push(
+                self.current_function
+                    .clone()
+                    .unwrap_or_else(|| "<item initializer>".to_string()),
+            );
+        }
+        syn::visit::visit_expr_struct(self, expression);
+    }
+
+    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+        let previous = self.current_function.replace(function.sig.ident.to_string());
+        syn::visit::visit_item_fn(self, function);
+        self.current_function = previous;
+    }
+}
+
 impl<'ast> Visit<'ast> for WasmIrSurface {
     fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
         if item.ident == "WasmIr" {
@@ -193,6 +226,45 @@ fn canonical_wasmir_has_one_private_validated_construction_surface() {
     assert!(
         *takes_validated,
         "WasmIr construction site `{function}` must directly accept ValidatedSafeWir"
+    );
+}
+
+#[test]
+fn validated_safewir_has_one_checker_owned_construction_surface() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let authority = source_root.join("canonical_safewir/authority.rs");
+    let mut declarations = Vec::new();
+    let mut constructions = Vec::new();
+
+    for (path, source) in rust_sources(&source_root) {
+        let file = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
+        let mut surface = ValidatedSafeWirSurface::default();
+        surface.visit_file(&file);
+        declarations.extend(surface.declarations.into_iter().map(|item| (path.clone(), item)));
+        constructions.extend(
+            surface
+                .constructions
+                .into_iter()
+                .map(|function| (path.clone(), function)),
+        );
+    }
+
+    assert_eq!(declarations.len(), 1, "ValidatedSafeWir must have one declaration");
+    let (declaration_path, declaration) = &declarations[0];
+    assert_eq!(declaration_path, &authority, "validated authority belongs to the checker");
+    let Fields::Named(fields) = &declaration.fields else {
+        panic!("ValidatedSafeWir must retain named private fields");
+    };
+    assert!(
+        fields.named.iter().all(|field| matches!(field.vis, Visibility::Inherited)),
+        "ValidatedSafeWir fields must remain private"
+    );
+
+    assert_eq!(
+        constructions,
+        vec![(authority, "validate_final".to_string())],
+        "only final checking may construct ValidatedSafeWir"
     );
 }
 
