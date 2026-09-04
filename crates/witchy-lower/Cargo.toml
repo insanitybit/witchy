@@ -17,7 +17,7 @@ raw-module-test-api = []
 [dependencies]
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-types = { path = "../witchy-types" }
-witchy-wir = { path = "../witchy-wir" }
+witchy-wir = { path = "../witchy-wir", features = ["legacy-encoder-bridge"] }
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).
 foldhash = "0.2.0"
 sha2 = "0.11.0"

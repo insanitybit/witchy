@@ -10,23 +10,27 @@
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
 //!
-//! **The raw path is NOT sealed yet, and RFC-0162 row 15 is not satisfied.**
-//! `try_encode_with_gc_source_map` is `pub` and ungated (only `#[doc(hidden)]`),
-//! and `witchy-lower`'s `codegen::assembly` still calls it, so every real
-//! compilation today encodes without SafeWIR validation. Sealing it is the
-//! last step of the raw-memory migration, not something this module has done.
-//! The `compile_fail` case below therefore proves one thing only: the
-//! test-only `try_encode_with_gc` is unreachable from a normal build.
+//! The raw byte surface is sealed except for the one explicit migration bridge:
+//! `try_encode_with_gc_source_map` remains `pub` behind the
+//! `legacy-encoder-bridge` feature because `witchy-lower`'s
+//! `codegen::assembly` has not yet migrated. The structural route gate names
+//! that bridge and asserts it is the sole production caller.
+//! The canonical WasmIR emitter is private and accepts only final
+//! `ValidatedSafeWir` authority; the public production WIR boundary likewise
+//! accepts only `ValidatedWirModule` authority. The compile-fail case below
+//! proves that the ordinary raw entrypoints are unreachable from a normal build.
 //!
-#![cfg_attr(not(feature = "raw-encoder-test-api"), doc = r#"
-The test-only raw encoder is unreachable from a normal downstream build
-(this says nothing about the `try_encode_with_gc_source_map` bridge above):
+#![cfg_attr(not(any(feature = "raw-encoder-test-api", feature = "legacy-encoder-bridge")), doc = r#"
+Raw encoder entrypoints and the transitional bridge are unreachable from a
+normal downstream build:
 
 ```compile_fail,E0425
 use witchy_wir::wir::WirModule;
 
 fn encode_raw(module: &WirModule) {
+    let _ = witchy_wir::wir_encode::encode(module, &[]);
     let _ = witchy_wir::wir_encode::try_encode_with_gc(module, &[], &[]);
+    let _ = witchy_wir::wir_encode::try_encode_with_gc_source_map(module, &[], &[]);
 }
 ```
 "#)]
@@ -1024,6 +1028,7 @@ pub fn try_encode_with_gc(
 /// [`try_encode_validated_with_source_map`]. Ordinary callers should not use it;
 /// raw byte-only entrypoints remain feature-gated.
 #[doc(hidden)]
+#[cfg(any(test, feature = "legacy-encoder-bridge"))]
 pub fn try_encode_with_gc_source_map(
     module: &WirModule,
     structs: &[WirStructDef],
