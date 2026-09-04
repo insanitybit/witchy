@@ -19,15 +19,18 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use sha2::{Digest, Sha256};
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection,
-    Function as WasmFunctionEncoder, FunctionSection, GlobalSection, GlobalType, Ieee64,
-    MemArg, MemorySection, MemoryType, Module as WasmModule, TypeSection, ValType,
+    EntityType, Function as WasmFunctionEncoder, FunctionSection, GlobalSection, GlobalType,
+    Ieee64, ImportSection, MemArg, MemorySection, MemoryType, Module as WasmModule, TypeSection,
+    ValType,
 };
 
 use crate::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, FunctionSignature, HeaderField,
-    LoadTransfer, ModuleStage, Operation, OptimizedValid, Place, Projection, StoreTransfer,
-    Terminator, ValidatedSafeWir, ValueId, ValueType,
+    HostCallArgument, HostBufferExtent, HostMutation, HostParameterRole, HostResultRole,
+    ImportContract, ImportContractIdentity, ImportId, LoadTransfer, ModuleStage, Operation,
+    OptimizedValid, Place, Projection, StoreTransfer, Terminator, ValidatedSafeWir, ValueId,
+    ValueType,
 };
 use crate::layout::{HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, RcHeader, ScalarKind};
 
@@ -86,6 +89,7 @@ enum ScalarInstruction {
     Release { object: ValueId },
     Reclaim { object: ValueId },
     Call { destinations: Vec<ValueId>, callee: FunctionId, arguments: Vec<ValueId> },
+    HostCall { destinations: Vec<ValueId>, import: ImportId, arguments: Vec<HostCallArgument> },
     VarCall {
         destinations: Vec<ValueId>,
         callee: ValueId,
@@ -172,8 +176,15 @@ struct WasmIr {
     revision: crate::canonical_safewir::Revision,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     static_data: Vec<WasmStaticData>,
+    imports: Vec<WasmImport>,
     heap_start: u32,
     functions: Vec<WasmFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WasmImport {
+    id: ImportId,
+    signature: crate::canonical_safewir::FunctionSignatureId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +209,7 @@ enum CorrespondenceRule {
     MemoryUpdateCount,
     MemoryOwnership,
     ScalarCall,
+    HostCall,
     Control,
 }
 
@@ -257,6 +269,143 @@ fn scalar_arguments(
             }
         })
         .collect()
+}
+
+fn canonical_import_name(import: ImportId) -> String {
+    // ImportContract deliberately carries no authority-bearing source name.
+    // Linkage is therefore a deterministic serialization of its authenticated
+    // slot, never a lookup into the legacy helper-name tables.
+    format!("canonical.import.{}", import.get())
+}
+
+fn host_scalar_wasm_type(
+    function: FunctionId,
+    value: ValueId,
+    value_type: ValueType,
+) -> Result<ValType, LoweringError> {
+    match value_type {
+        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Size | ValueType::V128 =>
+            wasm_value_type(function, value, value_type).map_err(|_| LoweringError::UnsupportedOperation { function, operation: "HostCall value" }),
+        _ => Err(LoweringError::UnsupportedOperation { function, operation: "HostCall value" }),
+    }
+}
+
+fn runtime_byte_slice(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    argument: &HostCallArgument,
+) -> Result<(ValueId, ValueId, ValueId), LoweringError> {
+    let HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } = argument else {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer" });
+    };
+    if place.access() != AccessMode::Read {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer access" });
+    }
+    let Projection::Slice { start, length } = place.projection() else {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
+    };
+    if value_types.get(start) != Some(&ValueType::Size) || value_types.get(length) != Some(&ValueType::Size) {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice bounds" });
+    }
+    let ValueType::Ref(layout) = value_types.get(&place.object()).copied().ok_or(
+        LoweringError::UnsupportedOperation { function, operation: "HostCall buffer object" },
+    )? else {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer object" });
+    };
+    if place.value_type() != ValueType::Ref(layout) {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer type" });
+    }
+    let descriptor = layouts.get(layout).ok_or(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer layout" })?;
+    let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer layout" });
+    };
+    let element = layouts.get(*element).ok_or(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer element" })?;
+    if element.kind() != &LayoutKind::Scalar(ScalarKind::RawByte) {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer element" });
+    }
+    Ok((place.object(), *start, *length))
+}
+
+fn validate_host_call_lowering(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    import: &ImportContract,
+    arguments: &[HostCallArgument],
+    destinations: &[ValueId],
+) -> Result<(), LoweringError> {
+    if !matches!(import.abi_identity, ImportContractIdentity::AuthenticatedAbi(_))
+        || import.mutation != HostMutation::ReadOnly
+    {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall contract" });
+    }
+    if import.parameter_roles.len() != arguments.len() || import.result_roles.len() != destinations.len() {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall arity" });
+    }
+    for (role, argument) in import.parameter_roles.iter().zip(arguments) {
+        match (role, argument) {
+            (HostParameterRole::Value(expected), HostCallArgument::Value(value)) => {
+                if value_types.get(value) != Some(expected) {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall value type" });
+                }
+                host_scalar_wasm_type(function, *value, *expected)?;
+            }
+            (HostParameterRole::Capability(expected), HostCallArgument::Capability(value)) => {
+                if value_types.get(value) != Some(&ValueType::Capability(*expected)) {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall capability type" });
+                }
+            }
+            (
+                HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice },
+                HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice },
+            ) => {
+                if place.value_type() != ValueType::Ref(*layout) {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer type" });
+                }
+                let _ = runtime_byte_slice(function, value_types, layouts, argument)?;
+            }
+            _ => return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall argument" }),
+        }
+    }
+    for (role, destination) in import.result_roles.iter().zip(destinations) {
+        let expected = match role {
+            HostResultRole::Value(value_type) => *value_type,
+            HostResultRole::Capability(kind) => ValueType::Capability(*kind),
+        };
+        if value_types.get(destination) != Some(&expected) {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall result type" });
+        }
+        if let HostResultRole::Value(value_type) = role {
+            host_scalar_wasm_type(function, *destination, *value_type)?;
+        }
+    }
+    Ok(())
+}
+
+fn host_import_wasm_signature(
+    function: FunctionId,
+    import: &ImportContract,
+) -> Result<(Vec<ValType>, Vec<ValType>), LoweringError> {
+    let mut parameters = Vec::new();
+    for role in &import.parameter_roles {
+        match role {
+            HostParameterRole::Value(value_type) => parameters.push(host_scalar_wasm_type(function, ValueId::new(u32::MAX), *value_type)?),
+            HostParameterRole::Capability(_) => parameters.push(ValType::EXTERNREF),
+            HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Read, extent: HostBufferExtent::Slice } => {
+                parameters.extend([ValType::I32, ValType::I32]);
+            }
+            _ => return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall import signature" }),
+        }
+    }
+    let mut results = Vec::new();
+    for role in &import.result_roles {
+        match role {
+            HostResultRole::Value(value_type) => results.push(host_scalar_wasm_type(function, ValueId::new(u32::MAX), *value_type)?),
+            HostResultRole::Capability(_) => results.push(ValType::EXTERNREF),
+        }
+    }
+    Ok((parameters, results))
 }
 
 fn collection_layout(
@@ -393,6 +542,7 @@ fn lower_operation(
     operation: &Operation,
     value_types: &BTreeMap<ValueId, ValueType>,
     layouts: &LayoutInterner,
+    imports: &BTreeMap<ImportId, ImportContract>,
     allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmInstruction, LoweringError> {
     let source = SourceItemId::Operation { function, block, index };
@@ -490,11 +640,15 @@ fn lower_operation(
         Operation::VarCall { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: "VarCall" });
         }
+        Operation::HostCall { destinations, import, arguments } => {
+            let contract = imports.get(import).ok_or(LoweringError::UnsupportedOperation { function, operation: "HostCall contract" })?;
+            validate_host_call_lowering(function, value_types, layouts, contract, arguments, destinations)?;
+            ScalarInstruction::HostCall { destinations: destinations.clone(), import: *import, arguments: arguments.clone() }
+        }
         Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
-        | Operation::Retain { .. }
-        | Operation::HostCall { .. } => {
+        | Operation::Retain { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: operation_name(operation) });
         }
     };
@@ -564,13 +718,14 @@ fn lower_block(
     function: &Function,
     block: &BasicBlock,
     layouts: &LayoutInterner,
+    imports: &BTreeMap<ImportId, ImportContract>,
     allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmBlock, LoweringError> {
     let instructions = block
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, layouts, allocation_classes))
+        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, layouts, imports, allocation_classes))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(WasmBlock {
         id: block.id,
@@ -579,7 +734,7 @@ fn lower_block(
     })
 }
 
-fn lower_function(function: &Function, layouts: &LayoutInterner) -> Result<WasmFunction, LoweringError> {
+fn lower_function(function: &Function, layouts: &LayoutInterner, imports: &BTreeMap<ImportId, ImportContract>) -> Result<WasmFunction, LoweringError> {
     let mut allocation_classes = allocation_classes_across_cfg(function);
     Ok(WasmFunction {
         id: function.id,
@@ -588,7 +743,7 @@ fn lower_function(function: &Function, layouts: &LayoutInterner) -> Result<WasmF
         blocks: function
             .blocks
             .iter()
-            .map(|block| lower_block(function, block, layouts, &mut allocation_classes))
+            .map(|block| lower_block(function, block, layouts, imports, &mut allocation_classes))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -654,15 +809,17 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
         .map_err(|_| LoweringError::InvalidLayoutBundle)?;
     let (static_data, heap_start) = static_data_plan(module.static_data_segments())?;
+    let imports = module.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
         static_data,
+        imports: module.imports().iter().map(|import| WasmImport { id: import.id, signature: import.signature }).collect(),
         heap_start,
         functions: module
             .functions()
             .iter()
-            .map(|function| lower_function(function, &layouts))
+            .map(|function| lower_function(function, &layouts, &imports))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -706,11 +863,11 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         | Operation::Release { .. }
         | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
+        Operation::HostCall { .. } => Some(CorrespondenceRule::HostCall),
         Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
-        | Operation::Retain { .. }
-        | Operation::HostCall { .. } => None,
+        | Operation::Retain { .. } => None,
     }
 }
 
@@ -733,6 +890,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::Share { destination, source }, ScalarInstruction::Share { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Release { object }, ScalarInstruction::Release { object: actual_object }) | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
         (Operation::Call { destinations, callee, arguments }, ScalarInstruction::Call { destinations: actual_destinations, callee: actual_callee, arguments: actual_arguments }) => *callee == *actual_callee && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
+        (Operation::HostCall { destinations, import, arguments }, ScalarInstruction::HostCall { destinations: actual_destinations, import: actual_import, arguments: actual_arguments }) => import == actual_import && destinations == actual_destinations && arguments == actual_arguments,
         (Operation::VarCall { destinations, callee, signature, arguments }, ScalarInstruction::VarCall { destinations: actual_destinations, callee: actual_callee, signature: actual_signature, arguments: actual_arguments }) => *callee == *actual_callee && *signature == *actual_signature && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
         _ => false,
     }
@@ -936,6 +1094,7 @@ fn wasm_value_type(
         crate::canonical_safewir::ValueType::Bool => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Size => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Ref(_) => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::Capability(_) => Ok(ValType::EXTERNREF),
         crate::canonical_safewir::ValueType::V128 => Ok(ValType::V128),
         unsupported => Err(EncodeError::UnsupportedValueType { function, value, value_type: unsupported }),
     }
@@ -1465,6 +1624,80 @@ fn emit_call_arguments(
     Ok(())
 }
 
+fn emit_host_slice(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    argument: &HostCallArgument,
+) -> Result<(), EncodeError> {
+    let (object, start, length) = runtime_byte_slice(function, value_types, layouts, argument)
+        .map_err(EncodeError::Lowering)?;
+    // Authenticate the complete physical range before narrowing it to the
+    // two i32 ABI lanes. This is redundant with the SafeWIR checker by design:
+    // the emitted host pointer must never be allowed to wrap independently.
+    emit_get(body, layout, function, object)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(4));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    emit_get(body, layout, function, start)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    emit_get(body, layout, function, length)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get(body, layout, function, object)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get(body, layout, function, start)?;
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_get(body, layout, function, length)
+}
+
+fn emit_host_call(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destinations: &[ValueId],
+    import: ImportId,
+    arguments: &[HostCallArgument],
+    contracts: &BTreeMap<ImportId, ImportContract>,
+    import_indices: &BTreeMap<ImportId, u32>,
+    layouts: &LayoutInterner,
+) -> Result<(), EncodeError> {
+    let contract = contracts.get(&import).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+        function: function.id,
+        operation: "HostCall contract",
+    }))?;
+    for (role, argument) in contract.parameter_roles.iter().zip(arguments) {
+        match (role, argument) {
+            (HostParameterRole::Value(_), HostCallArgument::Value(value))
+            | (HostParameterRole::Capability(_), HostCallArgument::Capability(value)) => {
+                emit_get(body, layout, function.id, *value)?;
+            }
+            (HostParameterRole::Buffer { .. }, HostCallArgument::Buffer { .. }) => {
+                emit_host_slice(body, layout, function.id, &function.value_types, layouts, argument)?;
+            }
+            _ => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "HostCall argument" })),
+        }
+    }
+    let index = import_indices.get(&import).copied().ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+        function: function.id,
+        operation: "HostCall import",
+    }))?;
+    body.instruction(&wasm_encoder::Instruction::Call(index));
+    for destination in destinations.iter().rev() {
+        emit_set(body, layout, function.id, *destination)?;
+    }
+    Ok(())
+}
+
 fn emit_results(
     body: &mut wasm_encoder::Function,
     layout: &LocalLayout,
@@ -1483,6 +1716,8 @@ fn emit_instruction(
     layout: &LocalLayout,
     instruction: &ScalarInstruction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    import_indices: &BTreeMap<ImportId, u32>,
+    imports: &BTreeMap<ImportId, ImportContract>,
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
 ) -> Result<(), EncodeError> {
@@ -1541,6 +1776,7 @@ fn emit_instruction(
             body.instruction(&wasm_encoder::Instruction::Call(index));
             emit_results(body, layout, function.id, destinations)?;
         }
+        ScalarInstruction::HostCall { destinations, import, arguments } => emit_host_call(body, function, layout, destinations, *import, arguments, imports, import_indices, layouts)?,
         ScalarInstruction::VarCall { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "VarCall" })),
     }
     Ok(())
@@ -1559,6 +1795,8 @@ struct StructuredEmitter<'a> {
     target_function: &'a WasmFunction,
     layout: &'a LocalLayout,
     function_indices: &'a BTreeMap<FunctionId, u32>,
+    import_indices: &'a BTreeMap<ImportId, u32>,
+    imports: &'a BTreeMap<ImportId, ImportContract>,
     static_data: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &'a LayoutInterner,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
@@ -1817,6 +2055,8 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.import_indices,
+                self.imports,
                 self.static_data,
                 self.layouts,
             )?;
@@ -1939,6 +2179,8 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.import_indices,
+                self.imports,
                 self.static_data,
                 self.layouts,
             )?;
@@ -1994,6 +2236,8 @@ fn encode_function(
     signature: &FunctionSignature,
     target_function: &WasmFunction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    import_indices: &BTreeMap<ImportId, u32>,
+    imports: &BTreeMap<ImportId, ImportContract>,
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
@@ -2013,6 +2257,8 @@ fn encode_function(
         target_function,
         layout: &layout,
         function_indices,
+        import_indices,
+        imports,
         static_data,
         layouts,
         emitted: BTreeSet::new(),
@@ -2045,6 +2291,10 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         )));
     }
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, index as u32)).collect();
+    let import_count = u32::try_from(source.imports().len()).map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import count" }))?;
+    let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, import_count + index as u32)).collect();
+    let import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
+    let import_contracts: BTreeMap<_, _> = source.imports().iter().map(|import| (import.id, import.clone())).collect();
     let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate().map(|(index, signature)| (signature.id, index as u32)).collect();
     let mut types = TypeSection::new();
     for signature in source.signatures() {
@@ -2053,6 +2303,22 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         let parameters = parameters.collect::<Result<Vec<_>, _>>()?;
         let results = results.collect::<Result<Vec<_>, _>>()?;
         types.ty().function(parameters, results);
+    }
+    let mut import_type_indices = BTreeMap::new();
+    for (index, import) in source.imports().iter().enumerate() {
+        let (parameters, results) = host_import_wasm_signature(FunctionId::new(u32::MAX), import)
+            .map_err(EncodeError::Lowering)?;
+        let type_index = u32::try_from(source.signatures().len() + index)
+            .map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import type count" }))?;
+        types.ty().function(parameters, results);
+        import_type_indices.insert(import.id, type_index);
+    }
+    let mut imports = ImportSection::new();
+    for import in source.imports() {
+        let type_index = import_type_indices.get(&import.id).copied().ok_or(
+            EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "HostCall import" }),
+        )?;
+        imports.import("witchy", &canonical_import_name(import.id), EntityType::Function(type_index));
     }
     let mut functions = FunctionSection::new();
     let mut memory = MemorySection::new();
@@ -2085,11 +2351,12 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, signature, target_function, &function_indices, &static_data_offsets, &layouts)?);
+        code.function(&encode_function(source_function, signature, target_function, &function_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts)?);
     }
     let mut module = WasmModule::new();
     module
         .section(&types)
+        .section(&imports)
         .section(&functions)
         .section(&memory)
         .section(&globals)
@@ -2378,6 +2645,65 @@ fn push_update_count_plan(
     Ok(())
 }
 
+fn push_host_slice_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    argument: &HostCallArgument,
+) -> Result<(), CanonicalAdmissionError> {
+    let (object, start, length) = runtime_byte_slice(function.id, &function.value_types, layouts, argument)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(4)]);
+    push_get(plan, layout, start)?;
+    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Add]);
+    push_get(plan, layout, length)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Add,
+        PlanToken::I64Const(i64::from(u32::MAX)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I32Const(4), PlanToken::I32Add]);
+    push_get(plan, layout, start)?;
+    plan.push(PlanToken::I32Add);
+    push_get(plan, layout, length)
+}
+
+fn push_host_call_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    imports: &BTreeMap<ImportId, ImportContract>,
+    import_indices: &BTreeMap<ImportId, u32>,
+    layouts: &LayoutInterner,
+    destinations: &[ValueId],
+    import: ImportId,
+    arguments: &[HostCallArgument],
+) -> Result<(), CanonicalAdmissionError> {
+    let contract = imports.get(&import).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    validate_host_call_lowering(function.id, &function.value_types, layouts, contract, arguments, destinations)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    for (role, argument) in contract.parameter_roles.iter().zip(arguments) {
+        match (role, argument) {
+            (HostParameterRole::Value(_), HostCallArgument::Value(value))
+            | (HostParameterRole::Capability(_), HostCallArgument::Capability(value)) => push_get(plan, layout, *value)?,
+            (HostParameterRole::Buffer { .. }, HostCallArgument::Buffer { .. }) => push_host_slice_plan(plan, function, layout, layouts, argument)?,
+            _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+        }
+    }
+    plan.push(PlanToken::Call(*import_indices.get(&import).ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
+    for destination in destinations.iter().rev() {
+        push_set(plan, layout, *destination)?;
+    }
+    Ok(())
+}
+
 fn push_reclaim_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: ValueId) -> Result<(), CanonicalAdmissionError> {
     push_get(plan, layout, object)?;
     plan.push(PlanToken::LocalSet(layout.scratch[1]));
@@ -2486,6 +2812,8 @@ fn expected_linear_function_plan(
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    imports: &BTreeMap<ImportId, ImportContract>,
+    import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
@@ -2626,6 +2954,9 @@ fn expected_linear_function_plan(
                     push_set(&mut plan, &layout, *destination)?;
                 }
             }
+            Operation::HostCall { destinations, import, arguments } => {
+                push_host_call_plan(&mut plan, function, &layout, imports, import_indices, layouts, destinations, *import, arguments)?;
+            }
             _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
         }
     }
@@ -2658,6 +2989,8 @@ fn expected_block_operations_plan(
     block: &BasicBlock,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    imports: &BTreeMap<ImportId, ImportContract>,
+    import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     // Reuse only the source-operation rules above.  The synthetic terminator
@@ -2686,6 +3019,8 @@ fn expected_block_operations_plan(
         signature,
         layouts,
         function_indices,
+        imports,
+        import_indices,
         static_data_offsets,
     )?;
     if plan.pop() != Some(PlanToken::End) || plan.pop() != Some(PlanToken::Return) {
@@ -2700,6 +3035,8 @@ struct PlanEmitter<'a> {
     layout: &'a LocalLayout,
     layouts: &'a LayoutInterner,
     function_indices: &'a BTreeMap<FunctionId, u32>,
+    imports: &'a BTreeMap<ImportId, ImportContract>,
+    import_indices: &'a BTreeMap<ImportId, u32>,
     static_data_offsets: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     plan: Vec<PlanToken>,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
@@ -2888,6 +3225,8 @@ impl PlanEmitter<'_> {
             &block,
             self.layouts,
             self.function_indices,
+            self.imports,
+            self.import_indices,
             self.static_data_offsets,
         )?);
         match block.terminator {
@@ -2954,7 +3293,7 @@ impl PlanEmitter<'_> {
         self.plan.push(PlanToken::Loop("Empty".to_owned()));
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
-        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.static_data_offsets)?);
+        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.imports, self.import_indices, self.static_data_offsets)?);
         push_get(&mut self.plan, self.layout, *condition)?;
         self.plan.push(PlanToken::If("Empty".to_owned()));
         self.labels.push(StructuredLabel::If);
@@ -2980,6 +3319,8 @@ fn expected_function_plan(
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    imports: &BTreeMap<ImportId, ImportContract>,
+    import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     let layout = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -2989,6 +3330,8 @@ fn expected_function_plan(
         layout: &layout,
         layouts,
         function_indices,
+        imports,
+        import_indices,
         static_data_offsets,
         plan: Vec::new(),
         emitted: BTreeSet::new(),
@@ -3021,13 +3364,31 @@ fn expected_metadata_prefix(
     }
     let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate()
         .map(|(index, signature)| (signature.id, index as u32)).collect();
+    let mut import_type_indices = BTreeMap::new();
+    for (index, import) in target.imports.iter().enumerate() {
+        let contract = source.imports().iter().find(|candidate| candidate.id == import.id)
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        let (parameters, results) = host_import_wasm_signature(FunctionId::new(u32::MAX), contract)
+            .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+        let type_index = u32::try_from(source.signatures().len() + index)
+            .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+        types.ty().function(parameters, results);
+        import_type_indices.insert(import.id, type_index);
+    }
+    let mut imports = ImportSection::new();
+    for import in &target.imports {
+        let type_index = import_type_indices.get(&import.id).copied()
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        imports.import("witchy", &canonical_import_name(import.id), EntityType::Function(type_index));
+    }
     let mut functions = FunctionSection::new();
     let mut exports = ExportSection::new();
+    let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     for (index, function) in target.functions.iter().enumerate() {
         let type_index = signature_indices.get(&function.signature).copied()
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
         functions.function(type_index);
-        exports.export(&format!("f{}", function.id.get()), ExportKind::Func, index as u32);
+        exports.export(&format!("f{}", function.id.get()), ExportKind::Func, import_count + index as u32);
     }
     let mut memory = MemorySection::new();
     memory.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
@@ -3035,7 +3396,7 @@ fn expected_metadata_prefix(
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
     let mut module = WasmModule::new();
-    module.section(&types).section(&functions).section(&memory).section(&globals).section(&exports);
+    module.section(&types).section(&imports).section(&functions).section(&memory).section(&globals).section(&exports);
     Ok(module.finish())
 }
 
@@ -3060,8 +3421,12 @@ fn decode_and_match_plan(
     }
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
-        .map(|(index, function)| (function.id, index as u32))
+        .map(|(index, function)| (function.id, import_count + index as u32))
+        .collect();
+    let import_indices: BTreeMap<_, _> = target.imports.iter().enumerate()
+        .map(|(index, import)| (import.id, index as u32))
         .collect();
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter()
         .map(|segment| (segment.id, segment.offset))
@@ -3073,7 +3438,8 @@ fn decode_and_match_plan(
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
             let local = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &static_data_offsets)?))
+            let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &imports, &import_indices, &static_data_offsets)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut actual = Vec::new();
@@ -3085,15 +3451,16 @@ fn decode_and_match_plan(
         match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
             wasmparser::Payload::Version { .. } => {}
             wasmparser::Payload::TypeSection(_) => section_order.push(0),
-            wasmparser::Payload::FunctionSection(_) => section_order.push(1),
-            wasmparser::Payload::MemorySection(_) => section_order.push(2),
-            wasmparser::Payload::GlobalSection(_) => section_order.push(3),
-            wasmparser::Payload::ExportSection(_) => section_order.push(4),
+            wasmparser::Payload::ImportSection(_) => section_order.push(1),
+            wasmparser::Payload::FunctionSection(_) => section_order.push(2),
+            wasmparser::Payload::MemorySection(_) => section_order.push(3),
+            wasmparser::Payload::GlobalSection(_) => section_order.push(4),
+            wasmparser::Payload::ExportSection(_) => section_order.push(5),
             wasmparser::Payload::CodeSectionStart { count, .. } => {
                 if code_count.replace(count).is_some() {
                     return Err(CanonicalAdmissionError::PlanMismatch);
                 }
-                section_order.push(5);
+                section_order.push(6);
                 code_started = true;
             }
             wasmparser::Payload::CodeSectionEntry(body) => {
@@ -3114,7 +3481,7 @@ fn decode_and_match_plan(
                 actual.push((locals, plan));
             }
             wasmparser::Payload::DataSection(reader) => {
-                section_order.push(6);
+                section_order.push(7);
                 for data in reader {
                     let data = data.map_err(|_| CanonicalAdmissionError::WasmValidation)?;
                     let wasmparser::DataKind::Active { memory_index, offset_expr } = data.kind else {
@@ -3139,9 +3506,13 @@ fn decode_and_match_plan(
         }
     }
     let expected_count = u32::try_from(expected.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    let mut expected_sections = vec![0, 1, 2, 3, 4, 5];
+    let mut expected_sections = vec![0];
+    if !target.imports.is_empty() {
+        expected_sections.push(1);
+    }
+    expected_sections.extend([2, 3, 4, 5]);
     if !target.static_data.is_empty() {
-        expected_sections.push(6);
+        expected_sections.push(7);
     }
     let expected_data = expected_static_data.iter().map(|segment| (segment.offset, segment.bytes.clone())).collect::<Vec<_>>();
     if section_order != expected_sections
@@ -3624,6 +3995,7 @@ mod tests {
                 &operation,
                 &BTreeMap::new(),
                 &LayoutInterner::new(),
+                &BTreeMap::new(),
                 &mut BTreeMap::new(),
             ),
             Err(LoweringError::UnsupportedOperation { operation: "VarCall", .. })
