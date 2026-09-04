@@ -1999,6 +1999,15 @@ fn emit_move_range_base(
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
+    emit_get(body, layout, function.id, object)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_get(body, layout, function.id, start)?;
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.data_offset)));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
     body.instruction(&wasm_encoder::Instruction::I32WrapI64);
     body.instruction(&wasm_encoder::Instruction::LocalSet(scratch_index(layout, scratch)));
     Ok(())
@@ -2023,6 +2032,13 @@ fn emit_move_range_element_address(
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, base_scratch)));
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, index_scratch)));
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(stride)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
+    body.instruction(&wasm_encoder::Instruction::I64Add);
     body.instruction(&wasm_encoder::Instruction::I32WrapI64);
 }
 
@@ -2058,7 +2074,7 @@ fn emit_move_range(
     body.instruction(&wasm_encoder::Instruction::I32LtU);
     body.instruction(&wasm_encoder::Instruction::I32Eqz);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Br(1));
+    body.instruction(&wasm_encoder::Instruction::Br(2));
     body.instruction(&wasm_encoder::Instruction::End);
     emit_move_range_element_address(body, layout, 2, 0, destination_layout.stride);
     emit_move_range_element_address(body, layout, 1, 0, source_layout.stride);
@@ -3328,6 +3344,17 @@ fn push_move_range_base_plan(
         PlanToken::If("Empty".to_owned()),
         PlanToken::Unreachable,
         PlanToken::End,
+    ]);
+    push_get(plan, layout, object)?;
+    plan.push(PlanToken::I64ExtendI32U);
+    push_get(plan, layout, start)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(collection.stride)),
+        PlanToken::I64Mul,
+        PlanToken::I64Const(i64::from(collection.data_offset)),
+        PlanToken::I64Add,
+        PlanToken::I64Add,
         PlanToken::I32WrapI64,
         PlanToken::LocalSet(layout.scratch[scratch]),
     ]);
@@ -3354,6 +3381,15 @@ fn push_move_range_element_address_plan(
         PlanToken::If("Empty".to_owned()),
         PlanToken::Unreachable,
         PlanToken::End,
+    ]);
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[base_scratch]),
+        PlanToken::I64ExtendI32U,
+        PlanToken::LocalGet(layout.scratch[index_scratch]),
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(stride)),
+        PlanToken::I64Mul,
+        PlanToken::I64Add,
         PlanToken::I32WrapI64,
     ]);
 }
@@ -3393,7 +3429,7 @@ fn push_move_range_plan(
         PlanToken::I32LtU,
         PlanToken::I32Eqz,
         PlanToken::If("Empty".to_owned()),
-        PlanToken::Br(1),
+        PlanToken::Br(2),
         PlanToken::End,
     ]);
     push_move_range_element_address_plan(plan, layout, 2, 0, destination_layout.stride);
