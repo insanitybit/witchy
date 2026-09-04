@@ -511,6 +511,54 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    pub(super) fn check_return(
+        &self,
+        values: &[ValueId],
+        results: &[ResultContract],
+    ) -> Result<(), InitialCheckError> {
+        for (value, result) in values.iter().zip(results) {
+            match result {
+                ResultContract::Value(value_type) if !value_type.is_memory_bearing() => {}
+                ResultContract::Fresh { layout, class } => {
+                    let state = self.live_object(*value)?;
+                    if state.layout != *layout
+                        || state.ownership != Ownership::Unique
+                        || state.allocation_class != Some(*class)
+                        || !self.is_sole_live_token(*value, state.identity)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                }
+                ResultContract::StaticData { layout } => {
+                    let state = self.live_object(*value)?;
+                    if state.layout != *layout
+                        || state.ownership != Ownership::Shared
+                        || !self.state.static_data_objects.contains(value)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                }
+                ResultContract::Shared { layout } => {
+                    let state = self.live_object(*value)?;
+                    if state.layout != *layout || state.ownership != Ownership::Shared {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                }
+                _ => return self.unsupported("Return(memory result contract)"),
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn check_host_buffer(
         &mut self,
         place: &Place,
@@ -1831,15 +1879,9 @@ impl<'a> MemoryChecker<'a> {
         let source_type = value_type(self.function, source)?;
         self.require_type(destination, source_type)?;
         let state = self.live_object(source)?.clone();
-        let has_live_object_alias = self.state.objects.iter().any(|(value, candidate)| {
-            *value != source
-                && candidate.identity == state.identity
-                && candidate.ownership != Ownership::Consumed
-        });
-        let has_stored_alias = self.state.stored_objects.values().any(|candidate| {
-            candidate.identity == state.identity && candidate.ownership != Ownership::Consumed
-        });
-        if state.ownership != Ownership::Unique || has_live_object_alias || has_stored_alias {
+        if state.ownership != Ownership::Unique
+            || !self.is_sole_live_token(source, state.identity)
+        {
             return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,
                 object: source,
@@ -2461,6 +2503,40 @@ mod tests {
 
             assert!(matches!(
                 checker.move_value(DESTINATION, SOURCE),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn return_contract_accepts_only_sole_unique_fresh_object() {
+        with_checker(false, |checker, list| {
+            let contract = ResultContract::Fresh {
+                layout: list,
+                class: AllocationClass::ReferenceCounted,
+            };
+            assert!(checker.check_return(&[SOURCE], std::slice::from_ref(&contract)).is_ok());
+
+            let alias = checker.state.objects[&SOURCE].clone();
+            checker.state.objects.insert(DESTINATION, alias);
+            assert!(matches!(
+                checker.check_return(&[SOURCE], &[contract]),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn return_contract_rejects_fresh_allocation_class_mismatch() {
+        with_checker(false, |checker, list| {
+            assert!(matches!(
+                checker.check_return(
+                    &[SOURCE],
+                    &[ResultContract::Fresh {
+                        layout: list,
+                        class: AllocationClass::Bump,
+                    }],
+                ),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
         });

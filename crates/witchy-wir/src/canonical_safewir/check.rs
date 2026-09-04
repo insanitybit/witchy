@@ -1218,6 +1218,7 @@ fn check_terminator(
             for (value, expected) in values.iter().zip(&current_signature.results) {
                 require_type(function, *value, *expected)?;
             }
+            memory.check_return(values, &current_signature.contract.results)?;
             Ok(())
         }
         Terminator::TailCall { site, callee, arguments } => {
