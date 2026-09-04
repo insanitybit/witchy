@@ -1510,6 +1510,19 @@ mod tests {
         (bundle, list)
     }
 
+    fn dynamic_byte_layout() -> (LayoutBundle, LayoutId) {
+        let mut layouts = LayoutInterner::new();
+        let element = layouts
+            .intern_scalar(ScalarKind::RawByte)
+            .expect("raw byte layout is valid");
+        let buffer = layouts
+            .intern_runtime_buffer(element)
+            .expect("byte runtime buffer layout is valid");
+        let bundle = LayoutBundle::from_interner(&layouts, [buffer])
+            .expect("byte runtime buffer layout bundle is valid");
+        (bundle, buffer)
+    }
+
     fn packed_u32_layout() -> (LayoutBundle, LayoutId) {
         let mut layouts = LayoutInterner::new();
         let element = layouts
@@ -1632,6 +1645,7 @@ mod tests {
     }
 
     fn allocated_host_buffer_module(
+        raw_bytes: bool,
         start_value: u64,
         length_value: u64,
         count_value: u64,
@@ -1641,7 +1655,11 @@ mod tests {
         CanonicalModule<super::super::LoweredCandidate>,
         CanonicalAbiCatalog,
     ) {
-        let (layouts, layout) = dynamic_u32_layout();
+        let (layouts, layout) = if raw_bytes {
+            dynamic_byte_layout()
+        } else {
+            dynamic_u32_layout()
+        };
         let start = ValueId::new(0);
         let length = ValueId::new(1);
         let count = ValueId::new(2);
@@ -1727,7 +1745,7 @@ mod tests {
                                 header_bytes: 4,
                                 count,
                                 capacity,
-                                stride_bytes: 4,
+                                stride_bytes: if raw_bytes { 1 } else { 4 },
                             },
                             class: AllocationClass::ReferenceCounted,
                         },
@@ -1752,6 +1770,103 @@ mod tests {
         });
         let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
         (module, catalog)
+    }
+
+    fn byte_copy_module(raw_bytes: bool) -> CanonicalModule<super::super::LoweredCandidate> {
+        let (layouts, layout) = if raw_bytes {
+            dynamic_byte_layout()
+        } else {
+            dynamic_u32_layout()
+        };
+        let start = ValueId::new(0);
+        let length = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let capacity_ok = ValueId::new(3);
+        let source = ValueId::new(4);
+        let destination = ValueId::new(5);
+        let stride_bytes = if raw_bytes { 1 } else { 4 };
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (start, ValueType::Size),
+                    (length, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (capacity_ok, ValueType::Bool),
+                    (source, ValueType::Ref(layout)),
+                    (destination, ValueType::Ref(layout)),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: start, value: 0 },
+                        Operation::ConstSize { destination: length, value: 4 },
+                        Operation::ConstSize { destination: capacity, value: 4 },
+                        Operation::Compare {
+                            destination: capacity_ok,
+                            operator: ComparisonOperator::LessEqualUnsigned,
+                            left: length,
+                            right: capacity,
+                        },
+                        Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
+                        Operation::Alloc {
+                            destination: source,
+                            layout,
+                            extent: Extent::Counted {
+                                header_bytes: 4,
+                                count: length,
+                                capacity,
+                                stride_bytes,
+                            },
+                            class: AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Alloc {
+                            destination,
+                            layout,
+                            extent: Extent::Counted {
+                                header_bytes: 4,
+                                count: length,
+                                capacity,
+                                stride_bytes,
+                            },
+                            class: AllocationClass::ReferenceCounted,
+                        },
+                        Operation::CopyBytes {
+                            destination: Place::projected(
+                                destination,
+                                Projection::Slice { start, length },
+                                ValueType::Ref(layout),
+                                AccessMode::Write,
+                            ),
+                            source: Place::projected(
+                                source,
+                                Projection::Slice { start, length },
+                                ValueType::Ref(layout),
+                                AccessMode::Read,
+                            ),
+                            length,
+                        },
+                    ],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
     }
 
     fn host_import(
@@ -1930,6 +2045,7 @@ mod tests {
     #[test]
     fn authenticated_dynamic_host_slice_is_accepted() {
         let (module, catalog) = allocated_host_buffer_module(
+            true,
             0,
             4,
             4,
@@ -1942,6 +2058,7 @@ mod tests {
     #[test]
     fn host_slice_outside_logical_length_is_rejected() {
         let (module, catalog) = allocated_host_buffer_module(
+            true,
             1,
             4,
             4,
@@ -1951,6 +2068,38 @@ mod tests {
         assert!(matches!(
             super::check_initial_with_catalog(module, &catalog),
             Err(InitialCheckError::MissingBoundsGuard { .. })
+        ));
+    }
+
+    #[test]
+    fn pointer_or_typed_element_buffers_cannot_be_exposed_as_host_bytes() {
+        let (module, catalog) = allocated_host_buffer_module(
+            false,
+            0,
+            4,
+            4,
+            HostBufferExtent::Slice,
+            HostBufferExtent::Slice,
+        );
+        assert!(matches!(
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::UnsupportedHostBuffer { .. })
+        ));
+    }
+
+    #[test]
+    fn raw_byte_slice_copy_is_accepted() {
+        assert!(check_initial(byte_copy_module(true)).is_ok());
+    }
+
+    #[test]
+    fn typed_element_slice_cannot_use_copy_bytes() {
+        assert!(matches!(
+            check_initial(byte_copy_module(false)),
+            Err(InitialCheckError::UnsupportedMemoryOperation {
+                operation: "CopyBytes(non-byte layout)",
+                ..
+            })
         ));
     }
 

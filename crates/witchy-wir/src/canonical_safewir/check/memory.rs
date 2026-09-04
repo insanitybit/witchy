@@ -382,6 +382,13 @@ impl<'a> MemoryChecker<'a> {
                 object: place.object(),
             });
         };
+        if stride_bytes != 1 || !self.is_raw_byte_buffer(object.layout)? {
+            return Err(InitialCheckError::UnsupportedHostBuffer {
+                function: self.function.id,
+                import,
+                parameter,
+            });
+        }
         let logical_count = self
             .state
             .header_values
@@ -428,6 +435,100 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         Ok(())
+    }
+
+    fn copy_bytes(
+        &mut self,
+        destination: &Place,
+        source: &Place,
+        length: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        self.require_type(length, ValueType::Size)?;
+        let destination_length = self.check_byte_slice(destination, AccessMode::Write)?;
+        let source_length = self.check_byte_slice(source, AccessMode::Read)?;
+        if destination_length != length || source_length != length {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: destination.object(),
+            });
+        }
+        Ok(())
+    }
+
+    fn check_byte_slice(
+        &mut self,
+        place: &Place,
+        required_access: AccessMode,
+    ) -> Result<ValueId, InitialCheckError> {
+        let Projection::Slice { start, length } = place.projection() else {
+            return self.unsupported("CopyBytes(non-slice)");
+        };
+        if place.access() != required_access {
+            return self.unsupported("CopyBytes(access)");
+        }
+        self.promote_header_extent(place.object())?;
+        let object = self.live_object(place.object())?.clone();
+        self.require_ref_type(place.object(), object.layout)?;
+        if place.value_type() != ValueType::Ref(object.layout)
+            || !self.is_raw_byte_buffer(object.layout)?
+        {
+            return self.unsupported("CopyBytes(non-byte layout)");
+        }
+        if required_access == AccessMode::Write
+            && (object.ownership != Ownership::Unique
+                || self.state.static_data_objects.contains(&place.object()))
+        {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: place.object(),
+            });
+        }
+        self.require_type(*start, ValueType::Size)?;
+        self.require_type(*length, ValueType::Size)?;
+        let Extent::Counted { count, stride_bytes: 1, .. } = object.extent else {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: place.object(),
+            });
+        };
+        let logical_count = self
+            .state
+            .header_values
+            .get(&(place.object(), HeaderField::Length))
+            .copied()
+            .unwrap_or(count);
+        let whole_logical_body = self.state.constants.get(start) == Some(&0)
+            && *length == logical_count;
+        let constant_range = self
+            .state
+            .constants
+            .get(start)
+            .zip(self.state.constants.get(length))
+            .zip(self.state.constants.get(&logical_count))
+            .is_some_and(|((start, length), count)| {
+                start.checked_add(*length).is_some_and(|end| end <= *count)
+            });
+        if !whole_logical_body && !constant_range {
+            return Err(InitialCheckError::MissingBoundsGuard {
+                function: self.function.id,
+                index: *start,
+                count: logical_count,
+            });
+        }
+        Ok(*length)
+    }
+
+    fn is_raw_byte_buffer(
+        &self,
+        layout: crate::layout::LayoutId,
+    ) -> Result<bool, InitialCheckError> {
+        let LayoutKind::RuntimeBuffer { element } = self.descriptor(layout)?.kind() else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            self.descriptor(*element)?.kind(),
+            LayoutKind::Scalar(ScalarKind::RawByte)
+        ))
     }
 
     fn check_call_borrow(
@@ -545,8 +646,11 @@ impl<'a> MemoryChecker<'a> {
                 self.reclaim(*object)?;
                 Ok(true)
             }
-            Operation::CopyBytes { .. }
-            | Operation::MoveRange { .. }
+            Operation::CopyBytes { destination, source, length } => {
+                self.copy_bytes(destination, source, *length)?;
+                Ok(true)
+            }
+            Operation::MoveRange { .. }
             | Operation::CloneRange { .. }
             | Operation::Retain { .. }
                 => Err(InitialCheckError::UnsupportedMemoryOperation {
