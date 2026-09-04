@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RFC-0165 A10 freeze manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "state",
+    "source_roots",
+    "source_extensions",
+    "profiles",
+    "entries",
+    "universe_digest",
+    "snapshot_digest"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "state": { "enum": ["pending", "frozen"] },
+    "source_roots": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "source_extensions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "profiles": {
+      "const": ["normal", "opt", "native"]
+    },
+    "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+    "universe_digest": { "$ref": "#/$defs/digest" },
+    "snapshot_digest": { "$ref": "#/$defs/digest" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "entry": {
+      "type": "object",
+      "required": ["source", "source_sha256", "profiles", "entry_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "source_sha256": { "$ref": "#/$defs/digest" },
+        "entry_digest": { "$ref": "#/$defs/digest" },
+        "profiles": {
+          "type": "object",
+          "required": ["normal", "opt", "native"],
+          "additionalProperties": false,
+          "patternProperties": { "^(normal|opt|native)$": { "$ref": "#/$defs/profile" } }
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": ["classification", "adapter_admitted", "freeze_class", "input_domain", "environment_domain", "observation_contract", "observation"],
+      "additionalProperties": false,
+      "properties": {
+        "classification": { "enum": ["known-valid", "intentionally-invalid", "external-fixture"] },
+        "adapter_admitted": { "type": "boolean" },
+        "freeze_class": { "enum": ["v1-direct", "v1-materialized", "v2-required", null] },
+        "input_domain": { "type": "object", "minProperties": 1 },
+        "environment_domain": { "type": "object", "minProperties": 1 },
+        "observation_contract": { "type": "string", "minLength": 1 },
+        "observation": { "type": ["object", "null"] }
+      }
+    }
+  }
+}

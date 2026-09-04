@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "state": "frozen",
+  "source_roots": ["examples"],
+  "source_extensions": [".witchy"],
+  "profiles": ["normal", "opt", "native"],
+  "entries": [
+    {
+      "source": "examples/tiny_invalid.witchy",
+      "source_sha256": "6a1f0f10cd63d14b820997a5925cc77cf92c4a281ef6830cdfbd3e04483655c6",
+      "profiles": {
+        "normal": {"classification": "intentionally-invalid", "adapter_admitted": false, "freeze_class": null, "input_domain": {"argv": []}, "environment_domain": {"mode": "normal"}, "observation_contract": "fixture-v1", "observation": {"status": "recorded", "version": 1, "record": {"source": "examples/tiny_invalid.witchy", "profile": "normal", "steps": [{"kind": "check", "exit_status": 1, "stdout_sha256": "", "stderr_sha256": ""}]}, "digest": "8602180d61e9fc2098b5ea32898cd3a3637e30ea59e6b4bf10ffa0f0d2ffa41c"}},
+        "opt": {"classification": "intentionally-invalid", "adapter_admitted": false, "freeze_class": null, "input_domain": {"argv": []}, "environment_domain": {"mode": "opt"}, "observation_contract": "fixture-v1", "observation": {"status": "recorded", "version": 1, "record": {"source": "examples/tiny_invalid.witchy", "profile": "opt", "steps": [{"kind": "check", "exit_status": 1, "stdout_sha256": "", "stderr_sha256": ""}]}, "digest": "13b15a178dae3a367f9a405dcfec8fc54c3b5a81f6d6887e11cbcf94edd8e0bb"}},
+        "native": {"classification": "intentionally-invalid", "adapter_admitted": false, "freeze_class": null, "input_domain": {"argv": []}, "environment_domain": {"mode": "native"}, "observation_contract": "fixture-v1", "observation": {"status": "recorded", "version": 1, "record": {"source": "examples/tiny_invalid.witchy", "profile": "native", "steps": [{"kind": "check", "exit_status": 1, "stdout_sha256": "", "stderr_sha256": ""}]}, "digest": "8e30a6280f7bc12b58199b61eaacff5262833c0f73a7a3850244ca83a2bff38d"}}
+      },
+      "entry_digest": "572793c5ccf7235aa254a664a429c9f22837ab3dfcd46200a360459dbb0a2fe8"
+    },
+    {
+      "source": "examples/tiny_valid.witchy",
+      "source_sha256": "d4563b868811d59132a888ea633866a436e449a595cac85b0bc02d0d9fedec82",
+      "profiles": {
+        "normal": {"classification": "known-valid", "adapter_admitted": true, "freeze_class": "v1-direct", "input_domain": {"argv": []}, "environment_domain": {"mode": "normal"}, "observation_contract": "fixture-v1", "observation": {"status": "recorded", "version": 1, "record": {"source": "examples/tiny_valid.witchy", "profile": "normal", "steps": [{"kind": "check", "exit_status": 0, "stdout_sha256": "", "stderr_sha256": ""}]}, "digest": "abbb18696ac31c875cd6b3b28925468bc3dff272680a09a6f8c38c8524c8a771"}},
+        "opt": {"classification": "known-valid", "adapter_admitted": true, "freeze_class": "v1-direct", "input_domain": {"argv": []}, "environment_domain": {"mode": "opt"}, "observation_contract": "fixture-v1", "observation": {"status": "recorded", "version": 1, "record": {"source": "examples/tiny_valid.witchy", "profile": "opt", "steps": [{"kind": "check", "exit_status": 0, "stdout_sha256": "", "stderr_sha256": ""}]}, "digest": "bab06b3f8cdbe6af464b9864b74d67b12b818162d8914d8a408051de7892b3d9"}},
+        "native": {"classification": "known-valid", "adapter_admitted": true, "freeze_class": "v1-direct", "input_domain": {"argv": []}, "environment_domain": {"mode": "native"}, "observation_contract": "fixture-v1", "observation": {"status": "recorded", "version": 1, "record": {"source": "examples/tiny_valid.witchy", "profile": "native", "steps": [{"kind": "check", "exit_status": 0, "stdout_sha256": "", "stderr_sha256": ""}]}, "digest": "305ab740fc6f10b7dc129b3f6dbc249bd1e429e681014fdf4904e15cc130aec5"}}
+      },
+      "entry_digest": "bfebf9d103f552f45dad4a8432ad42db5ae47ac193d7a1b1fa1eb23fd2079ad9"
+    }
+  ],
+  "universe_digest": "75ce98b514c6045e22fbb18c8d1ef8fad5f03892f8b48adab11f0520df83482e",
+  "snapshot_digest": "bc9884a0cee8f730e5c7a9792a56df5021c4bf2330a5a0e0bb34b2669f11e956"
+}
