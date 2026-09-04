@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 
-use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Stmt, Type};
+use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
@@ -630,6 +630,9 @@ impl FunctionLowerer<'_> {
                 else_block: Some(else_block),
             } => self.lower_if(cond, then_block, else_block, false).map(|_| ()),
             Expr::If { .. } => Err(CanonicalLoweringError::UnsupportedExpression("if without else")),
+            Expr::Match { scrutinee, arms } => {
+                self.lower_match(scrutinee, arms, false).map(|_| ())
+            }
             _ => {
                 self.lower_expr(expression)?;
                 Ok(())
@@ -835,6 +838,185 @@ impl FunctionLowerer<'_> {
         self.current = join_id;
         self.bindings = merged;
         Ok(result)
+    }
+
+    fn lower_match(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[witchy_syntax::ast::MatchArm],
+        with_value: bool,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        if arms.is_empty() {
+            return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
+        }
+        let scrutinee = self.lower_expr(scrutinee)?;
+        let outer = self.bindings.clone();
+        let result_type = if with_value {
+            let first = self.expression_type(&arms[0].body)?;
+            let first = source_value_type(&first, self.layout_bundle, self.layouts, &HashMap::new())?;
+            if is_unit(first) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("unit match value"));
+            }
+            Some(first)
+        } else {
+            None
+        };
+        let mut arm_results = Vec::with_capacity(arms.len());
+        let mut next = self.current;
+
+        for arm in arms {
+            self.current = next;
+            self.bindings = outer.clone();
+            let arm_block = self.new_block(&[])?;
+            let next_block = self.new_block(&[])?;
+            let pattern_binding = self.lower_match_pattern(scrutinee, &arm.pattern)?;
+            if let Some((name, value)) = pattern_binding {
+                self.bindings.insert(name, value);
+            }
+            let arm_bindings = self.bindings.clone();
+            let condition = self.match_pattern_condition(scrutinee, &arm.pattern)?;
+            if let Some(condition) = condition {
+                self.finish_current(Terminator::BranchIf {
+                    condition,
+                    then_target: arm_block,
+                    then_arguments: Vec::new(),
+                    else_target: next_block,
+                    else_arguments: Vec::new(),
+                })?;
+            } else {
+                self.finish_current(Terminator::Branch {
+                    target: arm_block,
+                    arguments: Vec::new(),
+                })?;
+            }
+
+            self.current = arm_block;
+            self.bindings = arm_bindings;
+            if let Some(guard) = &arm.guard {
+                let guard = self.lower_expr(guard)?;
+                if self.values[&guard] != ValueType::Bool {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean match guard"));
+                }
+                // Replace the true edge with a dedicated body block. Keeping
+                // the guard and body separate is necessary: the false edge
+                // must not carry pattern bindings into the next arm.
+                let body_block = self.new_block(&[])?;
+                self.blocks[arm_block.get() as usize].terminator = Some(Terminator::BranchIf {
+                    condition: guard,
+                    then_target: body_block,
+                    then_arguments: Vec::new(),
+                    else_target: next_block,
+                    else_arguments: Vec::new(),
+                });
+                self.current = body_block;
+            }
+            let value = if with_value {
+                let value = self.lower_expr(&arm.body)?;
+                if Some(self.values[&value]) != result_type {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("match arm types"));
+                }
+                Some(value)
+            } else {
+                self.lower_effect_expr(&arm.body)?;
+                None
+            };
+            let body_end = self.current;
+            let bindings = self.bindings.clone();
+            arm_results.push((body_end, bindings, value));
+            self.current = next_block;
+            self.bindings = outer.clone();
+            next = next_block;
+        }
+
+        self.current = next;
+        self.bindings = outer.clone();
+        self.finish_current(Terminator::Trap)?;
+
+        let mut changed_names = outer
+            .keys()
+            .filter(|name| arm_results.iter().any(|(_, bindings, _)| bindings[*name] != outer[*name]))
+            .cloned()
+            .collect::<Vec<_>>();
+        changed_names.sort();
+        let mut parameter_types = changed_names
+            .iter()
+            .map(|name| self.values[&outer[name]])
+            .collect::<Vec<_>>();
+        if let Some(result_type) = result_type {
+            parameter_types.push(result_type);
+        }
+        let join = self.new_block(&parameter_types)?;
+        let join_parameters = self.blocks[join.get() as usize].parameters.clone();
+        let mut merged = outer;
+        let mut result = None;
+        for (body_end, bindings, value) in arm_results {
+            let mut arguments = changed_names
+                .iter()
+                .map(|name| bindings[name])
+                .collect::<Vec<_>>();
+            for (name, parameter) in changed_names.iter().zip(&join_parameters) {
+                merged.insert(name.clone(), parameter.value);
+            }
+            if let Some(value) = value {
+                arguments.push(value);
+                result = join_parameters.last().map(|parameter| parameter.value);
+            }
+            self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
+                target: join,
+                arguments,
+            });
+        }
+        self.current = join;
+        self.bindings = merged;
+        Ok(result)
+    }
+
+    fn lower_match_pattern(
+        &self,
+        scrutinee: ValueId,
+        pattern: &Pattern,
+    ) -> Result<Option<(String, ValueId)>, CanonicalLoweringError> {
+        match pattern {
+            Pattern::Var(name) if name != "_" => Ok(Some((name.clone(), scrutinee))),
+            Pattern::Wildcard
+            | Pattern::Var(_)
+            | Pattern::Int(_)
+            | Pattern::Duration(_)
+            | Pattern::Bool(_) => Ok(None),
+            _ => Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
+        }
+    }
+
+    fn match_pattern_condition(
+        &mut self,
+        scrutinee: ValueId,
+        pattern: &Pattern,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let (value, expected_type) = match pattern {
+            Pattern::Int(value) | Pattern::Duration(value) => {
+                let destination = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::ConstInt { destination, value: *value });
+                (destination, ValueType::Int)
+            }
+            Pattern::Bool(value) => {
+                let destination = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::ConstBool { destination, value: *value });
+                (destination, ValueType::Bool)
+            }
+            Pattern::Wildcard | Pattern::Var(_) => return Ok(None),
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
+        };
+        if self.values[&scrutinee] != expected_type {
+            return Err(CanonicalLoweringError::UnsupportedExpression("match pattern type"));
+        }
+        let condition = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: condition,
+            operator: ComparisonOperator::Equal,
+            left: scrutinee,
+            right: value,
+        });
+        Ok(Some(condition))
     }
 
     fn lower_while(
@@ -1520,7 +1702,9 @@ impl FunctionLowerer<'_> {
                 .lower_if(cond, then_block, else_block, true)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("if value")),
             Expr::If { .. } => Err(CanonicalLoweringError::UnsupportedExpression("if without else")),
-            Expr::Match { .. } => Err(CanonicalLoweringError::UnsupportedExpression("match")),
+            Expr::Match { scrutinee, arms } => self
+                .lower_match(scrutinee, arms, true)?
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("match value")),
             Expr::Block(block) => self.lower_block_value(block),
             Expr::While { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while value")),
             Expr::For { .. } => Err(CanonicalLoweringError::UnsupportedExpression("for")),
@@ -2832,6 +3016,20 @@ mod tests {
         assert_eq!(function.blocks.len(), 4);
         assert_eq!(function.blocks[3].parameters.len(), 1);
         assert!(matches!(function.blocks[0].terminator, Terminator::BranchIf { .. }));
+        assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn scalar_match_uses_typed_cfg_join() {
+        let candidate = lower(
+            "fn choose(flag: Bool) -> Int:\n    match flag:\n        true -> 1\n        false -> 2\n",
+        );
+        let function = &candidate.functions()[0];
+        assert!(function.blocks.iter().any(|block| matches!(
+            block.terminator,
+            Terminator::BranchIf { .. }
+        )));
+        assert_eq!(function.blocks.last().unwrap().parameters.len(), 1);
         assert!(check_initial(candidate).is_ok());
     }
 
