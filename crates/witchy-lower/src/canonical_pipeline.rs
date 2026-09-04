@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn rfc0165_list_for_push_reaches_admitted_execution() {
-        let source = "fn main(console: Console):\n    var out = []\n    for n in [1, 2]:\n        out.push(\"x\")\n    for value in out:\n        console.print(value)\n";
+        let source = "fn main(console: Console):\n    var out = []\n    for n in [1, 2]:\n        out.push(\"x\")\n    for value in out:\n        console.print(value)\n    console.print(out[1])\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
             "main",
@@ -207,7 +207,7 @@ mod tests {
             .expect("canonical RFC-0165 list-for main export");
         main.call(&mut store, None)
             .expect("run canonical RFC-0165 list-for artifact");
-        assert_eq!(store.data(), b"xx");
+        assert_eq!(store.data(), b"xxx");
     }
 
     #[test]

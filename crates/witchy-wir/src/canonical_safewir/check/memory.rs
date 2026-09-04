@@ -1903,7 +1903,12 @@ impl<'a> MemoryChecker<'a> {
 
     fn less_than(&self, left: ValueId, right: ValueId) -> bool {
         self.state.guards
-            .contains(&(ComparisonOperator::LessUnsigned, left, right))
+            .iter()
+            .any(|(operator, guarded_left, guarded_right)| {
+                *operator == ComparisonOperator::LessUnsigned
+                    && self.same_scalar(left, *guarded_left)
+                    && self.same_scalar(right, *guarded_right)
+            })
     }
 
     fn strict_less(&self, left: ValueId, right: ValueId) -> bool {
@@ -1915,6 +1920,20 @@ impl<'a> MemoryChecker<'a> {
         left == right
             || self.state.constants.get(&left).zip(self.state.constants.get(&right))
                 .is_some_and(|(left, right)| left == right)
+            || self.state.header_values.iter().any(|((object, field), loaded)| {
+                let Some(state) = self.state.objects.get(object) else {
+                    return false;
+                };
+                let Extent::Counted { count, capacity, .. } = state.extent else {
+                    return false;
+                };
+                let authoritative = match field {
+                    HeaderField::Length => count,
+                    HeaderField::Capacity => capacity,
+                };
+                (*loaded == left && authoritative == right)
+                    || (*loaded == right && authoritative == left)
+            })
     }
 
     fn is_zero(&self, value: ValueId) -> bool {
@@ -1925,8 +1944,13 @@ impl<'a> MemoryChecker<'a> {
         self.constant_relation(left, right, |left, right| left <= right)
             || self
                 .state.guards
-                .contains(&(ComparisonOperator::LessEqualUnsigned, left, right))
-            || left == right
+                .iter()
+                .any(|(operator, guarded_left, guarded_right)| {
+                    *operator == ComparisonOperator::LessEqualUnsigned
+                        && self.same_scalar(left, *guarded_left)
+                        && self.same_scalar(right, *guarded_right)
+                })
+            || self.same_scalar(left, right)
     }
 
     /// A wrapping addition is exact only when the current path proves that its
