@@ -258,7 +258,7 @@ fn check_function(
     let predecessors = predecessor_map(function, &blocks)?;
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
-    let mut memory = MemoryChecker::new(function, layouts)?;
+    let mut memory = MemoryChecker::new(function, layouts, signature)?;
 
     for block in &function.blocks {
         for (operation_index, operation) in block.operations.iter().enumerate() {
@@ -289,6 +289,7 @@ fn check_function(
             &blocks,
             tail_obligations,
             observed_tail_sites,
+            &mut memory,
         )?;
     }
     Ok(())
@@ -746,7 +747,7 @@ fn check_operation(
                 .get(&callee.signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(callee.signature))?;
-            check_call(function, destinations, arguments, signature)
+            check_call(function, destinations, arguments, signature, Some(memory))
         }
         Operation::VarCall { destinations, callee, signature, arguments } => {
             require_type(function, *callee, ValueType::Callable(*signature))?;
@@ -754,7 +755,8 @@ fn check_operation(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            check_call(function, destinations, arguments, signature)
+            reject_indirect_memory_call(function, destinations, arguments)?;
+            check_call(function, destinations, arguments, signature, None)
         }
         Operation::HostCall { destinations, import, arguments } => {
             host::check_call(function, *import, destinations, arguments, imports, signatures, catalog)
@@ -779,6 +781,7 @@ fn check_call(
     destinations: &[ValueId],
     arguments: &[CallArgument],
     signature: &FunctionSignature,
+    mut memory: Option<&mut MemoryChecker<'_>>,
 ) -> Result<(), InitialCheckError> {
     require_arity("call arguments", signature.parameters.len(), arguments.len())?;
     require_arity("call results", signature.results.len(), destinations.len())?;
@@ -832,6 +835,41 @@ fn check_call(
             });
         }
     }
+    if let Some(memory) = memory.as_deref_mut() {
+        memory.check_call(
+            arguments,
+            &signature.contract.parameters,
+            destinations,
+            &signature.contract.results,
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_indirect_memory_call(
+    function: &Function,
+    destinations: &[ValueId],
+    arguments: &[CallArgument],
+) -> Result<(), InitialCheckError> {
+    if arguments.iter().any(|argument| {
+        let value = match argument {
+            CallArgument::Value(value)
+            | CallArgument::Move(value)
+            | CallArgument::Share(value) => *value,
+            CallArgument::Borrow(borrow) => borrow.source(),
+        };
+        value_type(function, value)
+            .map(|value_type| value_type.is_memory_bearing())
+            .unwrap_or(true)
+    }) || destinations.iter().any(|destination| {
+        value_type(function, *destination)
+            .map(|value_type| value_type.is_memory_bearing())
+            .unwrap_or(true)
+    }) {
+        return Err(InitialCheckError::UnsupportedIndirectCall {
+            function: function.id,
+        });
+    }
     Ok(())
 }
 
@@ -845,6 +883,7 @@ fn check_terminator(
     blocks: &BTreeMap<BlockId, &BasicBlock>,
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
+    memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
     match terminator {
         Terminator::Return { values } => {
@@ -864,7 +903,7 @@ fn check_terminator(
                 .get(&callee.signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(callee.signature))?;
-            check_tail_call(function, arguments, signature, current_signature)
+            check_tail_call(function, arguments, signature, current_signature, Some(memory))
         }
         Terminator::VarTailCall { site, callee, signature, arguments } => {
             observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
@@ -873,7 +912,8 @@ fn check_terminator(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            check_tail_call(function, arguments, signature, current_signature)
+            reject_indirect_memory_call(function, &[], arguments)?;
+            check_tail_call(function, arguments, signature, current_signature, None)
         }
         Terminator::Branch { target, arguments } => {
             check_branch(function, *target, arguments, blocks)
@@ -918,6 +958,7 @@ fn check_tail_call(
     arguments: &[CallArgument],
     callee: &FunctionSignature,
     caller: &FunctionSignature,
+    memory: Option<&mut MemoryChecker<'_>>,
 ) -> Result<(), InitialCheckError> {
     if callee.results != caller.results {
         return Err(InitialCheckError::ArityMismatch {
@@ -931,7 +972,7 @@ fn check_tail_call(
         parameters: callee.parameters.clone(),
         results: Vec::new(),
         contract: callee.contract.clone(),
-    })
+    }, memory)
 }
 
 fn observe_tail_site(
@@ -1038,7 +1079,7 @@ mod tests {
         CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
         FunctionSignatureId, GuardKind, HeaderField, HostBufferExtent, HostCallArgument,
         HostMutation, HostParameterRole, HostReentrancy, HostResultRole, ImportContract,
-        ImportContractIdentity, ImportId, LoadTransfer, LoweredModuleParts, Operation, ParameterContract,
+        ImportContractIdentity, ImportId, LoadTransfer, LoweredModuleParts, MemoryEffect, Operation, ParameterContract,
         ParameterOwnership, Place, Projection, ProperTailSite, ResultContract, Revision, TailSiteId,
         Terminator, ValueId, ValueType,
     };
@@ -1046,10 +1087,138 @@ mod tests {
     use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, RcHeader, ScalarKind};
 
     const FUNCTION: FunctionId = FunctionId::new(0);
+    const CALLEE: FunctionId = FunctionId::new(1);
     const SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(0);
+    const CALLEE_SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(1);
     const ENTRY: BlockId = BlockId::new(0);
     const VALUE: ValueId = ValueId::new(0);
     const TAIL_SITE: TailSiteId = TailSiteId::from_digest([11; 32]);
+
+    fn call_contract(
+        layout: LayoutId,
+        ownership: ParameterOwnership,
+        results: Vec<ResultContract>,
+        parameter_effects: BTreeMap<u32, Vec<MemoryEffect>>,
+    ) -> CallableContract {
+        CallableContract {
+            parameters: vec![ParameterContract {
+                value_type: ValueType::Ref(layout),
+                ownership,
+                non_escaping: matches!(ownership, ParameterOwnership::CallBorrow { .. }),
+            }],
+            results,
+            parameter_effects,
+        }
+    }
+
+    fn call_module(
+        layouts: LayoutBundle,
+        caller_values: BTreeMap<ValueId, ValueType>,
+        caller_operations: Vec<Operation>,
+        caller_terminator: Terminator,
+        callee_operations: Vec<Operation>,
+        callee_values: BTreeMap<ValueId, ValueType>,
+        callee_terminator: Terminator,
+        callee_contract: CallableContract,
+        callee_results: Vec<ValueType>,
+        callee_parameters: Vec<BlockParameter>,
+        tail_sites: Vec<ProperTailSite>,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: Vec::new(),
+                    contract: CallableContract {
+                        parameters: Vec::new(),
+                        results: Vec::new(),
+                        parameter_effects: BTreeMap::new(),
+                    },
+                },
+                FunctionSignature {
+                    id: CALLEE_SIGNATURE,
+                    parameters: callee_parameters
+                        .iter()
+                        .map(|parameter| parameter.value_type)
+                        .collect(),
+                    results: callee_results
+                        .iter()
+                        .copied()
+                        .collect(),
+                    contract: callee_contract,
+                },
+            ],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FUNCTION,
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types: caller_values,
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: caller_operations,
+                        terminator: caller_terminator,
+                    }],
+                },
+                Function {
+                    id: CALLEE,
+                    signature: CALLEE_SIGNATURE,
+                    entry: ENTRY,
+                    value_types: callee_values,
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: callee_parameters,
+                        operations: callee_operations,
+                        terminator: callee_terminator,
+                    }],
+                },
+            ],
+            proper_tail_sites: tail_sites,
+        })
+    }
+
+    fn allocated_list_with_header(
+        layout: LayoutId,
+        header_bytes: u32,
+    ) -> (BTreeMap<ValueId, ValueType>, Vec<Operation>) {
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let object = ValueId::new(2);
+        (
+            [
+                (count, ValueType::Size),
+                (capacity, ValueType::Size),
+                (object, ValueType::Ref(layout)),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::ConstSize { destination: count, value: 0 },
+                Operation::ConstSize { destination: capacity, value: 1 },
+                Operation::Alloc {
+                    destination: object,
+                    layout,
+                    extent: Extent::Counted {
+                        header_bytes,
+                        count,
+                        capacity,
+                        stride_bytes: 4,
+                    },
+                    class: AllocationClass::ReferenceCounted,
+                },
+            ],
+        )
+    }
+
+    fn allocated_list(layout: LayoutId) -> (BTreeMap<ValueId, ValueType>, Vec<Operation>) {
+        allocated_list_with_header(layout, 4)
+    }
 
     fn contract(results: Vec<ResultContract>) -> CallableContract {
         CallableContract {
@@ -2269,6 +2438,331 @@ mod tests {
             InitialCheckError::InvalidOwnership {
                 function: FUNCTION,
                 object: shared,
+            }
+        );
+    }
+
+    #[test]
+    fn call_borrow_after_reclaim_is_rejected() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (values, mut operations) = allocated_list(layout);
+        let object = ValueId::new(2);
+        operations.extend([
+            Operation::Reclaim { object },
+            Operation::Call {
+                destinations: Vec::new(),
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Borrow(super::super::CallBorrow::new(
+                    object,
+                    super::super::BorrowMode::Read,
+                ))],
+            },
+        ]);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::CallBorrow {
+                    mode: super::super::BorrowMode::Read,
+                },
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: None,
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::UseAfterConsume {
+                function: FUNCTION,
+                object,
+            }
+        );
+    }
+
+    #[test]
+    fn call_move_consumes_unique_and_later_use_is_rejected() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (values, mut operations) = allocated_list(layout);
+        let object = ValueId::new(2);
+        operations.extend([
+            Operation::Call {
+                destinations: Vec::new(),
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Move(object)],
+            },
+            Operation::Reclaim { object },
+        ]);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Unique,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Unique),
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::UseAfterConsume {
+                function: FUNCTION,
+                object,
+            }
+        );
+    }
+
+    #[test]
+    fn call_share_and_memory_value_are_fail_closed() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (values, mut operations) = allocated_list(layout);
+        let object = ValueId::new(2);
+        operations.push(Operation::Call {
+            destinations: Vec::new(),
+            callee: CALLEE,
+            arguments: vec![super::super::CallArgument::Share(object)],
+        });
+        let share_module = call_module(
+            layouts.clone(),
+            values.clone(),
+            operations,
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Shared,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Shared),
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(share_module).unwrap_err(),
+            InitialCheckError::UnsupportedMemoryOperation {
+                function: FUNCTION,
+                operation: "Call(Share)",
+            }
+        );
+
+        let (values, mut operations) = allocated_list(layout);
+        operations.push(Operation::Call {
+            destinations: Vec::new(),
+            callee: CALLEE,
+            arguments: vec![super::super::CallArgument::Value(object)],
+        });
+        let value_module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Value,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: None,
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(value_module).unwrap_err(),
+            InitialCheckError::UnsupportedMemoryOperation {
+                function: FUNCTION,
+                operation: "Call(Value memory)",
+            }
+        );
+    }
+
+    #[test]
+    fn nonescaping_read_borrow_can_read_a_parameter_header() {
+        let (layouts, layout) = packed_u32_layout();
+        let object = ValueId::new(2);
+        let destination = ValueId::new(12);
+        let (mut values, mut operations) = allocated_list_with_header(layout, 8);
+        values.insert(destination, ValueType::Size);
+        operations.push(Operation::Call {
+            destinations: vec![destination],
+            callee: CALLEE,
+            arguments: vec![super::super::CallArgument::Borrow(super::super::CallBorrow::new(
+                object,
+                super::super::BorrowMode::Read,
+            ))],
+        });
+        let parameter = ValueId::new(10);
+        let length = ValueId::new(11);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            vec![Operation::Load {
+                destination: length,
+                place: Place::projected(
+                    parameter,
+                    Projection::Header(HeaderField::Length),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            }],
+            [(parameter, ValueType::Ref(layout)), (length, ValueType::Size)]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: vec![length] },
+            call_contract(
+                layout,
+                ParameterOwnership::CallBorrow {
+                    mode: super::super::BorrowMode::Read,
+                },
+                vec![ResultContract::Value(ValueType::Size)],
+                [(0, vec![MemoryEffect::Read])].into_iter().collect(),
+            ),
+            vec![ValueType::Size],
+            vec![BlockParameter {
+                value: parameter,
+                value_type: ValueType::Ref(layout),
+                ownership: None,
+            }],
+            Vec::new(),
+        );
+        let result = check_initial(module);
+        assert_eq!(result.as_ref().map(|_| ()), Ok(()), "{result:?}");
+    }
+
+    #[test]
+    fn tail_call_borrow_and_share_use_memory_judgment() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (values, mut operations) = allocated_list(layout);
+        let object = ValueId::new(2);
+        operations.push(Operation::Reclaim { object });
+        let borrow_module = call_module(
+            layouts.clone(),
+            values.clone(),
+            operations,
+            Terminator::TailCall {
+                site: TAIL_SITE,
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Borrow(super::super::CallBorrow::new(
+                    object,
+                    super::super::BorrowMode::Read,
+                ))],
+            },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::CallBorrow {
+                    mode: super::super::BorrowMode::Read,
+                },
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: None,
+            }],
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION,
+            }],
+        );
+        assert_eq!(
+            check_initial(borrow_module).unwrap_err(),
+            InitialCheckError::UseAfterConsume {
+                function: FUNCTION,
+                object,
+            }
+        );
+
+        let (values, operations) = allocated_list(layout);
+        let share_module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::TailCall {
+                site: TAIL_SITE,
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Share(object)],
+            },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Shared,
+                Vec::new(),
+                BTreeMap::new(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Shared),
+            }],
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION,
+            }],
+        );
+        assert_eq!(
+            check_initial(share_module).unwrap_err(),
+            InitialCheckError::UnsupportedMemoryOperation {
+                function: FUNCTION,
+                operation: "Call(Share)",
             }
         );
     }

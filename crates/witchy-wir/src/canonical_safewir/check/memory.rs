@@ -6,8 +6,9 @@ use crate::layout::{
 
 use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
-    AccessMode, AllocationClass, ComparisonOperator, Extent, Function, GuardKind, HeaderField,
-    LoadTransfer, Operation, Ownership, Place, Projection, StoreTransfer, ValueId, ValueType,
+    AccessMode, AllocationClass, BorrowMode, CallArgument, ComparisonOperator, Extent, Function,
+    FunctionSignature, GuardKind, HeaderField, LoadTransfer, Operation, Ownership, ParameterContract,
+    ParameterOwnership, Place, Projection, ResultContract, StoreTransfer, ValueId, ValueType,
 };
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,7 @@ impl<'a> MemoryChecker<'a> {
     pub(super) fn new(
         function: &'a Function,
         layouts: &'a LayoutInterner,
+        signature: &FunctionSignature,
     ) -> Result<Self, InitialCheckError> {
         let has_memory = function
             .value_types
@@ -52,7 +54,7 @@ impl<'a> MemoryChecker<'a> {
                 function: function.id,
             });
         }
-        Ok(Self {
+        let mut checker = Self {
             function,
             layouts,
             objects: BTreeMap::new(),
@@ -60,7 +62,159 @@ impl<'a> MemoryChecker<'a> {
             comparisons: BTreeMap::new(),
             guards: BTreeSet::new(),
             header_values: BTreeMap::new(),
-        })
+        };
+        checker.initialize_parameters(signature)?;
+        Ok(checker)
+    }
+
+    fn initialize_parameters(
+        &mut self,
+        signature: &FunctionSignature,
+    ) -> Result<(), InitialCheckError> {
+        let entry = self
+            .function
+            .blocks
+            .iter()
+            .find(|block| block.id == self.function.entry)
+            .ok_or(InitialCheckError::MissingBlock {
+                function: self.function.id,
+                block: self.function.entry,
+            })?;
+        for (index, parameter) in entry.parameters.iter().enumerate() {
+            let ValueType::Ref(layout) = parameter.value_type else {
+                continue;
+            };
+            let contract = signature
+                .contract
+                .parameters
+                .get(index)
+                .ok_or(InitialCheckError::UnsupportedMemorySignature {
+                    signature: signature.id,
+                })?;
+            let ownership = match contract.ownership {
+                ParameterOwnership::Unique => Ownership::Unique,
+                ParameterOwnership::Shared => Ownership::Shared,
+                ParameterOwnership::CallBorrow { mode: BorrowMode::Read } => Ownership::Shared,
+                ParameterOwnership::CallBorrow { mode: BorrowMode::Write } => Ownership::Unique,
+                ParameterOwnership::Value => {
+                    continue;
+                }
+            };
+            let extent = self.parameter_extent(layout)?;
+            self.objects.insert(
+                parameter.value,
+                ObjectState {
+                    layout,
+                    extent,
+                    ownership,
+                    allocation_class: None,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn parameter_extent(
+        &self,
+        layout: crate::layout::LayoutId,
+    ) -> Result<Extent, InitialCheckError> {
+        match self.descriptor(layout)?.size() {
+            LayoutSize::Fixed(bytes) => Ok(Extent::FixedBytes(u64::from(bytes))),
+            LayoutSize::Dynamic { base, .. } => {
+                Ok(Extent::HeaderPrefix { minimum_bytes: base })
+            }
+        }
+    }
+
+    pub(super) fn check_call(
+        &mut self,
+        arguments: &[CallArgument],
+        parameters: &[ParameterContract],
+        destinations: &[ValueId],
+        results: &[ResultContract],
+    ) -> Result<(), InitialCheckError> {
+        for (argument, parameter) in arguments.iter().zip(parameters) {
+            let value = match argument {
+                CallArgument::Value(value)
+                | CallArgument::Move(value)
+                | CallArgument::Share(value) => *value,
+                CallArgument::Borrow(borrow) => borrow.source(),
+            };
+            let actual = value_type(self.function, value)?;
+            if !actual.is_memory_bearing() {
+                if !matches!(argument, CallArgument::Value(_)) {
+                    return self.unsupported("Call(non-memory ownership)");
+                }
+                continue;
+            }
+            match argument {
+                CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
+                CallArgument::Share(_) => return self.unsupported("Call(Share)"),
+                CallArgument::Move(value) => {
+                    if !matches!(parameter.ownership, ParameterOwnership::Unique) {
+                        return Err(InitialCheckError::UnsupportedBorrowArgument {
+                            function: self.function.id,
+                        });
+                    }
+                    self.consume_call_move(*value)?;
+                }
+                CallArgument::Borrow(borrow) => {
+                    if !matches!(
+                        parameter.ownership,
+                        ParameterOwnership::CallBorrow { mode } if mode == borrow.mode()
+                    ) {
+                        return Err(InitialCheckError::UnsupportedBorrowArgument {
+                            function: self.function.id,
+                        });
+                    }
+                    self.check_call_borrow(*borrow)?;
+                }
+            }
+        }
+        if results.iter().any(|result| {
+            !matches!(result, ResultContract::Value(value) if !value.is_memory_bearing())
+        }) || destinations.iter().any(|destination| {
+            value_type(self.function, *destination)
+                .map(|value_type| value_type.is_memory_bearing())
+                .unwrap_or(true)
+        }) {
+            return self.unsupported("Call(memory result)");
+        }
+        Ok(())
+    }
+
+    fn check_call_borrow(
+        &self,
+        borrow: crate::canonical_safewir::CallBorrow,
+    ) -> Result<(), InitialCheckError> {
+        let state = self.live_object(borrow.source())?;
+        let permitted = match borrow.mode() {
+            BorrowMode::Read => matches!(state.ownership, Ownership::Unique | Ownership::Shared),
+            BorrowMode::Write => state.ownership == Ownership::Unique,
+        };
+        if permitted {
+            Ok(())
+        } else {
+            Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: borrow.source(),
+            })
+        }
+    }
+
+    fn consume_call_move(&mut self, source: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(source)?;
+        if state.ownership != Ownership::Unique {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: source,
+            });
+        }
+        self.objects
+            .get_mut(&source)
+            .expect("live object exists")
+            .ownership = Ownership::Consumed;
+        Ok(())
     }
 
     /// Returns true when this operation belongs to the memory judgment.

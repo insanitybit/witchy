@@ -54,3 +54,23 @@ object state before a later `Release` or `Reclaim` is accepted.
 `crates/witchy-wir/tests/canonical_checker_ownership_audit.rs` contains a
 sub-two-second rejection test for the exact borrow-after-reclaim sequence. It
 is expected to fail on this audit commit until the checker is corrected.
+## Resolution
+
+Fixed on impl/rfc0165-call-ownership. Direct Call and TailCall now pass
+memory-bearing arguments through MemoryChecker: borrows require a live source
+and the declared nonescaping contract, moves require live Unique ownership and
+consume the caller token, and Share plus memory-bearing Value arguments remain
+fail-closed because their retain/backend semantics are not modeled.
+Memory-bearing entry parameters are initialized from their checked contract and
+catalog-derived fixed or header-prefix extent, without inventing a dynamic
+count. Memory-bearing call results remain fail-closed unless caller state can
+be established. Indirect call forms remain fail-closed for memory-bearing
+arguments and results.
+
+Focused evidence:
+
+    CARGO_TARGET_DIR=/Users/cobrien/workspace/witchy/.codex/worktrees/rfc0165-call-ownership/target-luna-rfc0165-call-ownership cargo test -p witchy-wir --features native --lib canonical_safewir::check::tests
+    31 passed, 0 failed; test execution 0.00s
+
+The compiler-wide memory-safety claim remains unestablished; this fixes one
+checker authority gap only.
