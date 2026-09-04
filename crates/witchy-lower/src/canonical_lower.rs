@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fmt;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Stmt, Type};
+use witchy_types::pipeline::CheckedSourceWitness;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
     ProperTailSiteKey, ProperTailSiteManifest, TypedModule,
@@ -54,12 +55,17 @@ impl Error for CanonicalLoweringError {}
 /// inputs. Supplying them does not grant validation or encoding authority.
 pub fn lower_typed_module(
     typed: &TypedModule,
-    checked_source: CheckedSourceIdentity,
+    checked_source: &CheckedSourceWitness,
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let tail_manifest = typed
         .proper_tail_manifest()
         .map_err(|error| CanonicalLoweringError::TailManifest(error.to_string()))?;
+    if tail_manifest.digest() != checked_source.proper_tail_manifest_digest() {
+        return Err(CanonicalLoweringError::TailManifest(
+            "proper-tail obligations do not match the checked source witness".to_string(),
+        ));
+    }
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
@@ -106,7 +112,7 @@ pub fn lower_typed_module(
 
     Ok(CanonicalModule::from_lowering(LoweredModuleParts {
         revision: Revision::new(0),
-        checked_source,
+        checked_source: CheckedSourceIdentity::from_digest(checked_source.source_bundle_digest()),
         layouts,
         signatures,
         imports: Vec::new(),
@@ -874,7 +880,7 @@ fn canonical_tail_sites(
 mod tests {
     use super::lower_typed_module;
     use witchy_syntax::parser::parse_module;
-    use witchy_wir::canonical_safewir::{check_initial, CheckedSourceIdentity, Terminator};
+    use witchy_wir::canonical_safewir::{check_initial, Terminator};
     use witchy_wir::layout::{LayoutBundle, LayoutInterner};
 
     fn empty_layouts() -> LayoutBundle {
@@ -885,9 +891,18 @@ mod tests {
     fn lower(source: &str) -> witchy_wir::canonical_safewir::CanonicalModule<
         witchy_wir::canonical_safewir::LoweredCandidate,
     > {
-        let module = parse_module(source).expect("parse fixture");
-        let typed = witchy_types::typeck::annotate_checked(module).expect("type check fixture");
-        lower_typed_module(&typed, CheckedSourceIdentity::from_digest([3; 32]), empty_layouts())
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let typed = witchy_types::typeck::annotate_checked(
+            parse_module(source).expect("parse fixture"),
+        )
+        .expect("type check fixture");
+        let witness = checked.canonical_source_witness().expect("source witness");
+        lower_typed_module(&typed, witness, empty_layouts())
             .expect("lower canonical SafeWIR")
     }
 
@@ -936,9 +951,18 @@ mod tests {
 
     #[test]
     fn no_else_value_is_rejected_fail_closed() {
-        let module = parse_module("fn bad(flag: Bool) -> Nil:\n    if flag:\n        return\n")
-            .expect("parse fixture");
-        let typed = witchy_types::typeck::annotate_checked(module).expect("type check fixture");
-        assert!(lower_typed_module(&typed, CheckedSourceIdentity::from_digest([3; 32]), empty_layouts()).is_err());
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), "fn bad(flag: Bool) -> Nil:\n    if flag:\n        return\n".as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let typed = witchy_types::typeck::annotate_checked(
+            parse_module("fn bad(flag: Bool) -> Nil:\n    if flag:\n        return\n")
+                .expect("parse fixture"),
+        )
+        .expect("type check fixture");
+        let witness = checked.canonical_source_witness().expect("source witness");
+        assert!(lower_typed_module(&typed, witness, empty_layouts()).is_err());
     }
 }

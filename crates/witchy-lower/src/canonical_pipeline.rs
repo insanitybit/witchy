@@ -6,9 +6,9 @@
 
 use std::fmt;
 
-use witchy_types::typeck::TypedModule;
+use witchy_types::pipeline::CheckedModule;
 use witchy_wir::canonical_safewir::{
-    CheckedSourceIdentity, FinalValidationError, InitialCheckError, OptimizationError,
+    FinalValidationError, InitialCheckError, OptimizationError,
     ValidatedSafeWir, check_initial_with_witness, optimize_unreachable_blocks, validate_final,
 };
 use witchy_wir::layout::LayoutBundle;
@@ -17,6 +17,7 @@ use crate::canonical_lower::{CanonicalLoweringError, lower_typed_module};
 
 #[derive(Debug)]
 pub(crate) enum CanonicalPipelineError {
+    MissingCheckedSourceWitness,
     Lowering(CanonicalLoweringError),
     InitialValidation(InitialCheckError),
     Optimization(OptimizationError),
@@ -32,11 +33,14 @@ impl fmt::Display for CanonicalPipelineError {
 impl std::error::Error for CanonicalPipelineError {}
 
 pub(crate) fn validate_typed_module(
-    typed: &TypedModule,
-    checked_source: CheckedSourceIdentity,
+    typed: &witchy_types::typeck::TypedModule,
+    checked: &CheckedModule,
     layouts: LayoutBundle,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
-    let candidate = lower_typed_module(typed, checked_source, layouts)
+    let witness = checked
+        .canonical_source_witness()
+        .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
+    let candidate = lower_typed_module(typed, witness, layouts)
         .map_err(CanonicalPipelineError::Lowering)?;
     let checked = check_initial_with_witness(candidate)
         .map_err(CanonicalPipelineError::InitialValidation)?;
@@ -56,18 +60,52 @@ mod tests {
 
     #[test]
     fn scalar_source_reaches_final_safewir_authority_without_raw_wir() {
-        let source = parse_module("fn main() -> Int:\n    40 + 2\n").expect("parse fixture");
-        let typed = witchy_types::typeck::annotate_checked(source).expect("type check fixture");
+        let source = "fn main() -> Int:\n    40 + 2\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
         let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty scalar layout bundle");
+        let typed = witchy_types::typeck::annotate_checked(
+            parse_module(source).expect("parse fixture"),
+        )
+            .expect("type check fixture");
         let validated = validate_typed_module(
             &typed,
-            CheckedSourceIdentity::from_digest([9; 32]),
+            &checked,
             layouts,
         )
         .expect("validate canonical scalar pipeline");
 
-        assert_eq!(validated.checked_source(), CheckedSourceIdentity::from_digest([9; 32]));
+        assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
         assert!(validated.optimization_history().is_zero_pass());
+    }
+
+    #[test]
+    fn ast_only_checked_source_fails_closed_before_canonical_lowering() {
+        let source = parse_module("fn main() -> Int:\n    42\n").expect("parse fixture");
+        let checked = witchy_types::pipeline::link_checked(
+            vec![("main".to_string(), source)],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked AST source");
+        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("empty scalar layout bundle");
+
+        assert!(matches!(
+            validate_typed_module(
+                &witchy_types::typeck::annotate_checked(
+                    parse_module("fn main() -> Int:\n    42\n").unwrap(),
+                )
+                .unwrap(),
+                &checked,
+                layouts,
+            ),
+            Err(CanonicalPipelineError::MissingCheckedSourceWitness)
+        ));
     }
 }

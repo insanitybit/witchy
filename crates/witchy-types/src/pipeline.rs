@@ -23,6 +23,27 @@ use crate::runtime_type::{
 };
 use crate::typeck::{self, TypeError};
 
+/// Evidence that exact source bytes crossed the checked type-checking boundary.
+///
+/// The constructor is private so a caller cannot choose a digest and present
+/// it as checked-source authority. The witness is minted only by the
+/// source-bearing checked-link entry point below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedSourceWitness {
+    source_bundle_digest: [u8; 32],
+    proper_tail_manifest_digest: [u8; 32],
+}
+
+impl CheckedSourceWitness {
+    pub fn source_bundle_digest(&self) -> [u8; 32] {
+        self.source_bundle_digest
+    }
+
+    pub fn proper_tail_manifest_digest(&self) -> [u8; 32] {
+        self.proper_tail_manifest_digest
+    }
+}
+
 /// A linked module that has successfully passed the ordinary runtime checker.
 ///
 /// The wrapped AST remains private so APIs that require checked input can use
@@ -32,6 +53,7 @@ pub struct CheckedModule {
     linked: LinkedModule,
     module_owners: Option<AuthenticatedModuleOwners>,
     typed_async_source: Option<typeck::TypedModule>,
+    source_witness: Option<CheckedSourceWitness>,
 }
 
 /// A type-checked compiler rewrite that may be evaluated with the declaration
@@ -74,6 +96,14 @@ impl CheckedTestDriverModule {
 }
 
 impl CheckedModule {
+    /// Borrow the source witness minted by the exact-source checked pipeline.
+    /// AST-only link APIs intentionally return `None` and cannot enter
+    /// canonical production lowering.
+    #[doc(hidden)]
+    pub fn canonical_source_witness(&self) -> Option<&CheckedSourceWitness> {
+        self.source_witness.as_ref()
+    }
+
     /// Borrow the checked linked AST.
     ///
     /// This is not yet a capability-secure proof boundary because [`Module`]
@@ -393,7 +423,77 @@ fn link_checked_with(
         linked,
         module_owners,
         typed_async_source: typed_async_source.into_inner(),
+        source_witness: None,
     })
+}
+
+fn checked_source_digest(sources: &[(String, Vec<u8>)]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"witchy.checked-source-bundle.v1");
+    for (name, bytes) in sources {
+        hasher.update(&(name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn attach_source_witness(
+    mut checked: CheckedModule,
+    source_bundle_digest: [u8; 32],
+    proper_tail_manifest_digest: [u8; 32],
+) -> Result<CheckedModule, PipelineError> {
+    checked.source_witness = Some(CheckedSourceWitness {
+        source_bundle_digest,
+        proper_tail_manifest_digest,
+    });
+    Ok(checked)
+}
+
+/// Parse exact source bytes, type-check the resulting linked module, and mint
+/// the only source witness accepted by canonical SafeWIR lowering.
+///
+/// The old AST-based APIs remain available for diagnostics and legacy
+/// consumers, but deliberately do not mint this witness. The source bytes are
+/// hashed before any AST lowering or formatting, so the identity is not based
+/// on a debug rendering or a caller-supplied digest.
+pub fn link_checked_from_source_bundle(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+) -> Result<CheckedModule, PipelineError> {
+    if sources.len() != 1 {
+        return Err(PipelineError::Link(LinkError {
+            message: "canonical checked-source witness currently requires exactly one source module"
+                .to_string(),
+            location: None,
+        }));
+    }
+    let source_bundle_digest = checked_source_digest(&sources);
+    let modules = sources
+        .iter()
+        .map(|(name, bytes)| {
+            let source = std::str::from_utf8(bytes).map_err(|error| PipelineError::Link(LinkError {
+                message: format!("source module `{name}` is not UTF-8: {error}"),
+                location: None,
+            }))?;
+            let module = witchy_syntax::parser::parse_module(source).map_err(|error| {
+                PipelineError::Link(LinkError {
+                    message: format!("source module `{name}` failed to parse: {error}"),
+                    location: None,
+                })
+            })?;
+            Ok((name.clone(), module))
+        })
+        .collect::<Result<Vec<_>, PipelineError>>()?;
+    let typed_source = typeck::annotate_checked(modules[0].1.clone())?;
+    let proper_tail_manifest_digest = typed_source
+        .proper_tail_manifest()
+        .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?
+        .digest();
+    let checked = link_checked_with(modules, entry, expand, LinkMode::Production, None, None)?;
+    attach_source_witness(checked, source_bundle_digest, proper_tail_manifest_digest)
 }
 
 /// Link with the injected compile-time expander, then type-check the result.
