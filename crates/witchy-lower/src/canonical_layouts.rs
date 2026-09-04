@@ -136,10 +136,7 @@ impl LayoutProjection {
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
             Type::Named(name, arguments) if name == "List" => {
-                if arguments.len() != 1
-                    || !matches!(arguments[0].unqualified(), Type::Named(element, args)
-                        if matches!(element.as_str(), "Int" | "String") && args.is_empty())
-                {
+                if arguments.len() != 1 || !is_v1_list_element_type(&arguments[0]) {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
                 self.visit_type(&arguments[0])?;
@@ -207,12 +204,15 @@ fn intern_v1_layout(
     if let Type::Named(name, arguments) = ty.unqualified()
         && name == "List"
         && arguments.len() == 1
-        && is_byte_buffer_type(&arguments[0])
     {
-        let pointee = intern_v1_layout(interner, &arguments[0])?;
-        let element = interner
-            .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
-            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        let element = intern_v1_layout(interner, &arguments[0])?;
+        let element = if requires_owned_pointer_slot(&arguments[0]) {
+            interner
+                .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+        } else {
+            element
+        };
         return interner
             .intern_packed_list(element, RcHeader::Required)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
@@ -255,6 +255,23 @@ fn is_byte_buffer_type(ty: &Type) -> bool {
     )
 }
 
+fn is_v1_list_element_type(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Named(name, arguments)
+            if arguments.is_empty() && matches!(name.as_str(), "Int" | "String") => true,
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            is_v1_list_element_type(&arguments[0])
+        }
+        _ => false,
+    }
+}
+
+fn requires_owned_pointer_slot(ty: &Type) -> bool {
+    is_byte_buffer_type(ty)
+        || matches!(ty.unqualified(), Type::Named(name, arguments)
+            if name == "List" && arguments.len() == 1)
+}
+
 struct V1Resolver;
 
 impl ClosedTypeResolver for V1Resolver {
@@ -284,7 +301,7 @@ fn is_canonical_source_function(module: &ast::Module, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{LayoutProjection, Type};
-    use witchy_wir::layout::LayoutKind;
+    use witchy_wir::layout::{HeaderLayout, LayoutKind, PointerSlot, RcHeader};
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned(), Vec::new())
@@ -359,5 +376,65 @@ mod tests {
             layouts.get(bundle.roots()[0]).expect("bytes root").kind(),
             LayoutKind::RuntimeBuffer { .. }
         ));
+    }
+
+    #[test]
+    fn nested_list_of_strings_uses_owned_pointer_slots_and_independent_headers() {
+        let nested = Type::Named(
+            "List".into(),
+            vec![Type::Named("List".into(), vec![named("String")])],
+        );
+        let mut projection = LayoutProjection::default();
+        projection
+            .visit_type(&nested)
+            .expect("List(List(String)) has a recursive canonical layout");
+        let bundle = projection.finish().expect("nested list layout is canonical");
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(
+            &bundle.canonical_bytes(),
+        )
+        .expect("decode canonical nested-list layout");
+
+        let outer = bundle
+            .roots()
+            .iter()
+            .copied()
+            .find(|root| {
+                let Some(descriptor) = layouts.get(*root) else { return false };
+                let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return false };
+                let Some(element) = layouts.get(*element) else { return false };
+                let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } = element.kind() else { return false };
+                matches!(layouts.get(*pointee).map(|layout| layout.kind()), Some(LayoutKind::PackedList { .. }))
+            })
+            .expect("outer list root points to an inner list");
+        let LayoutKind::PackedList { element: outer_element, .. } = layouts.get(outer).unwrap().kind() else {
+            panic!("outer root must be a packed list");
+        };
+        let LayoutKind::RuntimePointerValueSlot { pointee: inner, semantics: PointerSlot::Owned } =
+            layouts.get(*outer_element).unwrap().kind()
+        else {
+            panic!("outer list elements must own inner-list pointers");
+        };
+        let LayoutKind::PackedList { element: inner_element, .. } = layouts.get(*inner).unwrap().kind() else {
+            panic!("inner pointee must be a packed list");
+        };
+        let LayoutKind::RuntimePointerValueSlot { pointee: string, semantics: PointerSlot::Owned } =
+            layouts.get(*inner_element).unwrap().kind()
+        else {
+            panic!("inner list elements must own String pointers");
+        };
+        assert!(matches!(layouts.get(*string).unwrap().kind(), LayoutKind::RuntimeBuffer { .. }));
+
+        for list in [outer, *inner] {
+            let HeaderLayout::PackedList {
+                length_offset,
+                capacity_offset,
+                rc: RcHeader::Required,
+                ..
+            } = layouts.get(list).unwrap().header()
+            else {
+                panic!("each nested list must retain its own packed-list header");
+            };
+            assert_ne!(length_offset, capacity_offset);
+        }
     }
 }
