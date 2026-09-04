@@ -1301,6 +1301,10 @@ impl<'a> MemoryChecker<'a> {
                 self.release(*object)?;
                 Ok(true)
             }
+            Operation::DropRef { object } => {
+                self.drop_ref(*object)?;
+                Ok(true)
+            }
             Operation::Reclaim { object } => {
                 self.reclaim(*object)?;
                 Ok(true)
@@ -2047,6 +2051,40 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    fn drop_ref(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(object)?;
+        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+            return Err(InitialCheckError::InvalidAllocationClass {
+                function: self.function.id,
+                object,
+            });
+        }
+        let descriptor = self.layouts.get(state.layout).ok_or(
+            InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object,
+            },
+        )?;
+        let pointer_free_payload = match descriptor.kind() {
+            LayoutKind::Scalar(_) => true,
+            LayoutKind::PackedList { element, .. }
+            | LayoutKind::RuntimeBuffer { element }
+            | LayoutKind::ScratchBuffer { element } => self
+                .layouts
+                .get(*element)
+                .is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(_))),
+            _ => false,
+        };
+        if !pointer_free_payload {
+            return self.unsupported("DropRef(pointer-bearing recursive destructor)");
+        }
+        self.state.objects
+            .get_mut(&object)
+            .expect("live object exists")
+            .ownership = Ownership::Consumed;
+        Ok(())
+    }
+
     fn reclaim(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let state = self.live_object(object)?;
         if state.ownership != Ownership::Unique {
@@ -2433,6 +2471,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Share { .. } => "Share",
         Operation::Retain { .. } => "Retain",
         Operation::Release { .. } => "Release",
+        Operation::DropRef { .. } => "DropRef",
         _ => "memory operation",
     }
 }

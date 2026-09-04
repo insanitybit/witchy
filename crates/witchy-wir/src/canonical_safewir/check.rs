@@ -743,6 +743,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::UpdateCount { .. }
         | Operation::Retain { .. }
         | Operation::Release { .. }
+        | Operation::DropRef { .. }
         | Operation::Reclaim { .. } => Vec::new(),
     }
 }
@@ -765,6 +766,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::Share { source: value, .. }
         | Operation::Retain { object: value }
         | Operation::Release { object: value }
+        | Operation::DropRef { object: value }
         | Operation::Reclaim { object: value } => vec![*value],
         Operation::Load { place, .. } => place_uses(place),
         Operation::Store { place, value, .. } => {
@@ -1121,6 +1123,7 @@ fn check_operation(
         Operation::Share { .. } => unsupported_memory(function, "Share"),
         Operation::Retain { .. } => unsupported_memory(function, "Retain"),
         Operation::Release { .. } => unsupported_memory(function, "Release"),
+        Operation::DropRef { .. } => unsupported_memory(function, "DropRef"),
         Operation::Reclaim { .. } => unsupported_memory(function, "Reclaim"),
     }
 }

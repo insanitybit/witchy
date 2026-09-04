@@ -2585,7 +2585,7 @@ impl FunctionLowerer<'_> {
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
         self.push_operation(Operation::UpdateCount { object: new_object, count: new_length });
-        self.push_operation(Operation::Reclaim { object: old_object });
+        self.push_operation(Operation::DropRef { object: old_object });
         self.bindings.insert(name.clone(), new_object);
         self.list_counts.insert(new_object, new_length);
         self.list_capacities.insert(new_object, capacity);
@@ -3480,7 +3480,8 @@ mod tests {
     #[test]
     fn checked_scalar_source_lowers_and_validates_without_wir() {
         let candidate = lower("fn answer() -> Int:\n    let x = 40\n    x + 2\n");
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "DropRef candidate rejected: {result:?}");
     }
 
     #[test]
@@ -3850,9 +3851,10 @@ mod tests {
         )));
         assert!(operations.iter().any(|operation| matches!(
             operation,
-            Operation::Reclaim { .. }
+            Operation::DropRef { .. }
         )));
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "DropRef candidate rejected: {result:?}");
     }
 
     #[test]

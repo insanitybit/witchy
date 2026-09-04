@@ -941,8 +941,12 @@ impl CanonicalWriter {
                 self.u8(19);
                 self.value_id(*object);
             }
-            Operation::Reclaim { object } => {
+            Operation::DropRef { object } => {
                 self.u8(20);
+                self.value_id(*object);
+            }
+            Operation::Reclaim { object } => {
+                self.u8(21);
                 self.value_id(*object);
             }
             Operation::FunctionValue { destination, function } => {

@@ -762,13 +762,14 @@ fn lower_operation(
             allocation_classes.insert(*destination, crate::canonical_safewir::AllocationClass::ReferenceCounted);
             ScalarInstruction::Share { destination: *destination, source: *source }
         }
-        Operation::Release { object } | Operation::Reclaim { object } => {
+        Operation::Release { object } | Operation::DropRef { object } | Operation::Reclaim { object } => {
             if allocation_classes.get(object) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
                 return Err(LoweringError::UnsupportedLayout { function, operation: operation_name(operation) });
             }
             allocation_classes.remove(object);
             match operation {
                 Operation::Release { object } => ScalarInstruction::Release { object: *object },
+                Operation::DropRef { object } => ScalarInstruction::Release { object: *object },
                 Operation::Reclaim { object } => ScalarInstruction::Reclaim { object: *object },
                 _ => unreachable!(),
             }
@@ -893,6 +894,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Share { .. } => "Share",
         Operation::Retain { .. } => "Retain",
         Operation::Release { .. } => "Release",
+        Operation::DropRef { .. } => "DropRef",
         Operation::Reclaim { .. } => "Reclaim",
         Operation::Call { .. } => "Call",
         Operation::VarCall { .. } => "VarCall",
@@ -1138,6 +1140,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
         Operation::Share { .. }
         | Operation::Release { .. }
+        | Operation::DropRef { .. }
         | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
         Operation::HostCall { .. } => Some(CorrespondenceRule::HostCall),
@@ -1167,7 +1170,9 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::CloneRange { destination, source, count }, ScalarInstruction::CloneRange { destination: actual_destination, source: actual_source, count: actual_count }) => destination == actual_destination && source == actual_source && count == actual_count,
         (Operation::UpdateCount { object, count }, ScalarInstruction::UpdateCount { object: actual_object, count: actual_count }) => object == actual_object && count == actual_count,
         (Operation::Share { destination, source }, ScalarInstruction::Share { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
-        (Operation::Release { object }, ScalarInstruction::Release { object: actual_object }) | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
+        (Operation::Release { object }, ScalarInstruction::Release { object: actual_object })
+        | (Operation::DropRef { object }, ScalarInstruction::Release { object: actual_object })
+        | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
         (Operation::Call { destinations, callee, arguments }, ScalarInstruction::Call { destinations: actual_destinations, callee: actual_callee, arguments: actual_arguments }) => *callee == *actual_callee && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
         (Operation::HostCall { destinations, import, arguments }, ScalarInstruction::HostCall { destinations: actual_destinations, import: actual_import, arguments: actual_arguments }) => import == actual_import && destinations == actual_destinations && arguments == actual_arguments,
         (Operation::VarCall { destinations, callee, signature, arguments }, ScalarInstruction::VarCall { destinations: actual_destinations, callee: actual_callee, signature: actual_signature, arguments: actual_arguments }) => *callee == *actual_callee && *signature == *actual_signature && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
@@ -3640,6 +3645,40 @@ fn push_reclaim_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: Va
     Ok(())
 }
 
+fn push_drop_ref_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: ValueId) -> Result<(), CanonicalAdmissionError> {
+    push_get(plan, layout, object)?;
+    plan.push(PlanToken::LocalSet(layout.scratch[1]));
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::I32Const(8),
+        PlanToken::I32Sub,
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::LocalSet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Eqz,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(1),
+        PlanToken::I32Eq,
+        PlanToken::If("Empty".to_owned()),
+    ]);
+    push_reclaim_plan(plan, layout, object)?;
+    plan.extend([
+        PlanToken::Else,
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::I32Const(8),
+        PlanToken::I32Sub,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(1),
+        PlanToken::I32Sub,
+        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        PlanToken::End,
+    ]);
+    Ok(())
+}
+
 fn expected_alloc_plan(
     plan: &mut Vec<PlanToken>,
     function: &Function,
@@ -3952,6 +3991,9 @@ fn expected_linear_function_plan(
             }
             Operation::Reclaim { object } => {
                 push_reclaim_plan(&mut plan, &layout, *object)?;
+            }
+            Operation::DropRef { object } => {
+                push_drop_ref_plan(&mut plan, &layout, *object)?;
             }
             Operation::Call { destinations, callee, arguments } => {
                 for argument in arguments {

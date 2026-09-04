@@ -558,6 +558,7 @@ pub enum CanonicalRuleId {
     Share,
     Retain,
     Release,
+    DropRef,
     Reclaim,
     FunctionValue,
     Call,
@@ -627,6 +628,9 @@ pub enum Operation {
     Share { destination: ValueId, source: ValueId },
     Retain { object: ValueId },
     Release { object: ValueId },
+    /// Consume one affine reference-counted token. The runtime reclaims only
+    /// when this decrement reaches zero.
+    DropRef { object: ValueId },
     Reclaim { object: ValueId },
     /// Construct a callable value from an authenticated function table entry.
     /// The checker derives the exact signature from the referenced function;
@@ -701,6 +705,7 @@ impl Operation {
             Self::Share { .. } => CanonicalRuleId::Share,
             Self::Retain { .. } => CanonicalRuleId::Retain,
             Self::Release { .. } => CanonicalRuleId::Release,
+            Self::DropRef { .. } => CanonicalRuleId::DropRef,
             Self::Reclaim { .. } => CanonicalRuleId::Reclaim,
             Self::FunctionValue { .. } => CanonicalRuleId::FunctionValue,
             Self::Call { .. } => CanonicalRuleId::Call,

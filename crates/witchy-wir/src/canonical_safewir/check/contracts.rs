@@ -443,6 +443,7 @@ fn propagate_operation_origins(
         | Operation::UpdateCount { .. }
         | Operation::Retain { .. }
         | Operation::Release { .. }
+        | Operation::DropRef { .. }
         | Operation::Reclaim { .. }
         | Operation::HostCall { .. } => {}
     }
@@ -531,6 +532,7 @@ fn derive_operation(
         Operation::Reclaim { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Reclaim); }
         Operation::Retain { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Retain); }
         Operation::Release { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Release); }
+        Operation::DropRef { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Release); }
         Operation::CopyBytes { destination, source, .. } => {
             add_effect(summary, origin_of(origins, source.object()), MemoryEffect::Read);
             add_effect(summary, origin_of(origins, destination.object()), MemoryEffect::Write);

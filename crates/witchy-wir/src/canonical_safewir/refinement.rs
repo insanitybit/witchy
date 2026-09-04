@@ -266,6 +266,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::UpdateCount { .. }
         | Operation::Retain { .. }
         | Operation::Release { .. }
+        | Operation::DropRef { .. }
         | Operation::Reclaim { .. } => Vec::new(),
     }
 }
