@@ -714,7 +714,14 @@ impl FunctionLowerer<'_> {
                 then_block,
                 else_block: Some(else_block),
             } => self.lower_if(cond, then_block, else_block, false).map(|_| ()),
-            Expr::If { .. } => Err(CanonicalLoweringError::UnsupportedExpression("if without else")),
+            Expr::If { cond, then_block, else_block: None } => {
+                let empty = witchy_syntax::ast::Block {
+                    stmts: Vec::new(),
+                    lines: Vec::new(),
+                    region: None,
+                };
+                self.lower_if(cond, then_block, &empty, false).map(|_| ())
+            }
             Expr::Match { scrutinee, arms } => {
                 self.lower_match(scrutinee, arms, false).map(|_| ())
             }
@@ -3425,6 +3432,19 @@ mod tests {
         assert_eq!(function.blocks[3].parameters.len(), 1);
         assert!(matches!(function.blocks[0].terminator, Terminator::BranchIf { .. }));
         assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn statement_if_without_else_uses_an_explicit_empty_cfg_arm() {
+        let candidate = lower(
+            "fn choose(flag: Bool) -> Int:\n    var value = 1\n    if flag:\n        value = 2\n    value\n",
+        );
+        assert!(candidate.functions()[0].blocks.iter().any(|block| matches!(
+            block.terminator,
+            Terminator::BranchIf { .. }
+        )));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "statement if candidate rejected: {result:?}");
     }
 
     #[test]
