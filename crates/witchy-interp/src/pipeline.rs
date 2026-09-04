@@ -199,6 +199,23 @@ pub fn link_checked_authenticated_with_user_modules(
     )
 }
 
+/// Parse and link exact source bytes while retaining authenticated package
+/// owners, then mint the canonical checked-source witness used by SafeWIR.
+pub fn link_checked_authenticated_from_source_bundle_with_user_modules(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+    module_owners: AuthenticatedModuleOwners,
+) -> Result<CheckedModule, PipelineError> {
+    witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources,
+        entry,
+        crate::comptime::expand_compile_time,
+        user_modules,
+        module_owners,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

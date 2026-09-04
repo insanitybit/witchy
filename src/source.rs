@@ -150,10 +150,10 @@ pub(crate) fn link_file_checked_authenticated_with_deps(
         .iter()
         .map(|(name, dep)| (name.clone(), dep.owner.clone()))
         .collect();
-    let (modules, entry_stem, user_modules, owners) =
+    let (sources, entry_stem, user_modules, owners) =
         load_file_modules_authenticated(path, &paths, entry_owner, &dep_owners)?;
-    let checked = pipeline::link_checked_authenticated_with_user_modules(
-        modules,
+    let checked = pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources,
         &entry_stem,
         &user_modules,
         owners,
@@ -265,7 +265,7 @@ fn load_file_modules_authenticated(
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
     entry_owner: ModuleLoadIdentity,
     dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
-) -> Result<(SourceModules, String, UserModuleSet, AuthenticatedModuleOwners), String> {
+) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -365,7 +365,7 @@ fn load_file_modules_authenticated(
                 sibling_module_owner(&owner, import)?,
             ));
         }
-        modules.push((name, module));
+        modules.push((name, source.into_bytes()));
     }
 
     for module in witchy_syntax::linker::STD_MODULES {

@@ -514,13 +514,17 @@ pub fn link_checked_from_source_bundle(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<CheckedModule, PipelineError> {
-    if sources.len() != 1 {
-        return Err(PipelineError::Link(LinkError {
-            message: "canonical checked-source witness currently requires exactly one source module"
-                .to_string(),
-            location: None,
-        }));
-    }
+    link_checked_source_bundle_with(sources, entry, expand, None, None)
+}
+
+fn link_checked_source_bundle_with(
+    mut sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: Option<&HashSet<String>>,
+    module_owners: Option<AuthenticatedModuleOwners>,
+) -> Result<CheckedModule, PipelineError> {
+    sources.sort_by(|left, right| left.0.cmp(&right.0));
     let source_bundle_digest = checked_source_digest(&sources);
     let modules = sources
         .iter()
@@ -543,9 +547,9 @@ pub fn link_checked_from_source_bundle(
         entry,
         expand,
         LinkMode::Production,
-        None,
+        user_modules,
         true,
-        None,
+        module_owners,
     )?;
     let typed_source = typed_source.ok_or_else(|| {
         PipelineError::Type(TypeError {
@@ -558,6 +562,25 @@ pub fn link_checked_from_source_bundle(
     let proper_tail_manifest =
         proper_tail_manifest.for_canonical_functions(typed_source.module());
     attach_canonical_source(checked, typed_source, source_bundle_digest, proper_tail_manifest)
+}
+
+/// Source-bearing production link with loader-authenticated package ownership.
+/// The source bytes, ownership catalog, typed module, and tail obligations are
+/// bound in one checked product; parsed AST inputs cannot mint this authority.
+pub fn link_checked_authenticated_from_source_bundle_with_user_modules(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &HashSet<String>,
+    module_owners: AuthenticatedModuleOwners,
+) -> Result<CheckedModule, PipelineError> {
+    link_checked_source_bundle_with(
+        sources,
+        entry,
+        expand,
+        Some(user_modules),
+        Some(module_owners),
+    )
 }
 
 /// Link with the injected compile-time expander, then type-check the result.
