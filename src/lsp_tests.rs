@@ -846,3 +846,273 @@ fn main(console: Console):
             Some(PathBuf::from("/x/%zz"))
         );
     }
+
+    #[test]
+    fn dot_completion_on_std_module_offers_bare_names_with_signatures_and_docs() {
+        let src = "fn main():\n    math.\n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 9 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"sqrt"), "math.sqrt offered as bare sqrt: {labels:?}");
+        assert!(labels.contains(&"abs"), "math.abs offered: {labels:?}");
+        assert!(labels.contains(&"min"), "math.min offered: {labels:?}");
+        assert!(labels.contains(&"max"), "math.max offered: {labels:?}");
+        // Must NOT duplicate module name in label
+        assert!(!labels.contains(&"math.sqrt"), "must not duplicate module prefix in label");
+
+        let sqrt_item = arr.iter().find(|i| i["label"] == "sqrt").expect("sqrt item");
+        assert_eq!(sqrt_item["kind"], 3); // Function
+        let detail = sqrt_item["detail"].as_str().expect("sqrt detail");
+        assert!(detail.contains("(x: Float) -> Float"), "{detail}");
+        let doc = sqrt_item["documentation"]["value"].as_str().expect("sqrt doc");
+        assert!(doc.contains("square root"), "{doc}");
+    }
+
+    #[test]
+    fn dot_completion_on_capability_offers_capability_methods() {
+        let src = "fn main(console: Console):\n    console.\n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 12 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"print"), "console.print offered: {labels:?}");
+        assert!(labels.contains(&"input"), "console.input offered: {labels:?}");
+
+        let print_item = arr.iter().find(|i| i["label"] == "print").expect("print item");
+        assert_eq!(print_item["kind"], 2); // Method
+        let detail = print_item["detail"].as_str().expect("print detail");
+        assert!(detail.contains("String"), "{detail}");
+    }
+
+    #[test]
+    fn dot_completion_on_list_variable_offers_list_methods() {
+        let src = "fn main():\n    var xs = [1, 2, 3]\n    xs.\n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 7 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"push"), "list.push offered: {labels:?}");
+        assert!(labels.contains(&"pop"), "list.pop offered: {labels:?}");
+        assert!(labels.contains(&"length"), "list.length offered: {labels:?}");
+        assert!(labels.contains(&"map"), "list.map offered: {labels:?}");
+        assert!(labels.contains(&"filter"), "list.filter offered: {labels:?}");
+
+        let push_item = arr.iter().find(|i| i["label"] == "push").expect("push item");
+        assert_eq!(push_item["kind"], 2); // Method
+    }
+
+    #[test]
+    fn dot_completion_on_string_variable_offers_string_methods() {
+        let src = "fn main():\n    let s = \"hello\"\n    s.\n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 6 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"split"), "string.split offered: {labels:?}");
+        assert!(labels.contains(&"lines"), "string.lines offered: {labels:?}");
+        assert!(labels.contains(&"trim"), "string.trim offered: {labels:?}");
+        assert!(labels.contains(&"starts_with"), "string.starts_with offered: {labels:?}");
+    }
+
+    #[test]
+    fn dot_completion_on_dict_variable_offers_dict_methods() {
+        let src = "fn main():\n    let d = {\"k\": 1}\n    d.\n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 6 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"get"), "dict.get offered: {labels:?}");
+        assert!(labels.contains(&"set"), "dict.set offered: {labels:?}");
+        assert!(labels.contains(&"keys"), "dict.keys offered: {labels:?}");
+        assert!(labels.contains(&"values"), "dict.values offered: {labels:?}");
+        assert!(labels.contains(&"items"), "dict.items offered: {labels:?}");
+    }
+
+    #[test]
+    fn dot_completion_on_option_type_offers_constructors() {
+        let src = "fn main():\n    Option.\n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 11 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"Some"), "Option.Some offered: {labels:?}");
+        assert!(labels.contains(&"None"), "Option.None offered: {labels:?}");
+    }
+
+    #[test]
+    fn type_annotation_completion_offers_builtin_and_document_types() {
+        let src = "type MyCustomType:\n    Field(Int)\n\nfn process(input: \n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": 18 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"Int"), "Int offered: {labels:?}");
+        assert!(labels.contains(&"String"), "String offered: {labels:?}");
+        assert!(labels.contains(&"Bool"), "Bool offered: {labels:?}");
+        assert!(labels.contains(&"List"), "List offered: {labels:?}");
+        assert!(labels.contains(&"Dict"), "Dict offered: {labels:?}");
+        assert!(labels.contains(&"Option"), "Option offered: {labels:?}");
+        assert!(labels.contains(&"Result"), "Result offered: {labels:?}");
+        assert!(labels.contains(&"Console"), "Console capability offered: {labels:?}");
+        assert!(labels.contains(&"MyCustomType"), "Document type offered: {labels:?}");
+    }
+
+    #[test]
+    fn import_completion_offers_std_modules() {
+        let src = "import \n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 7 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"json"), "json module offered: {labels:?}");
+        assert!(labels.contains(&"http"), "http module offered: {labels:?}");
+        assert!(labels.contains(&"math"), "math module offered: {labels:?}");
+        assert!(labels.contains(&"string"), "string module offered: {labels:?}");
+        assert!(labels.contains(&"list"), "list module offered: {labels:?}");
+        assert!(labels.contains(&"crypto"), "crypto module offered: {labels:?}");
+    }
+
+    #[test]
+    fn from_import_completion_offers_module_exports() {
+        let src = "from string import \n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 19 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"split"), "string.split offered: {labels:?}");
+        assert!(labels.contains(&"lines"), "string.lines offered: {labels:?}");
+        assert!(labels.contains(&"trim"), "string.trim offered: {labels:?}");
+        assert!(labels.contains(&"from_code"), "string.from_code offered: {labels:?}");
+    }
+
+    #[test]
+    fn scope_variables_completion_in_function_body() {
+        let src = "fn calculate(total: Int, tax_rate: Float) -> Float:\n    let discount = 0.05\n    \n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 4 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"total"), "total param offered: {labels:?}");
+        assert!(labels.contains(&"tax_rate"), "tax_rate param offered: {labels:?}");
+        assert!(labels.contains(&"discount"), "discount local offered: {labels:?}");
+
+        let total_item = arr.iter().find(|i| i["label"] == "total").unwrap();
+        assert_eq!(total_item["kind"], 6); // Variable
+        assert!(total_item["sortText"].as_str().unwrap().starts_with("0_"));
+    }
+
+    #[test]
+    fn general_completion_offers_modern_keywords_and_snippets() {
+        let src = "fn main():\n    \n";
+        let uri = "file:///test.witchy";
+        let docs = docs(uri, src);
+        let items = completion_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 4 },
+            }),
+        );
+        let arr = items.as_array().expect("items array");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        // Modern keywords
+        assert!(labels.contains(&"pure"), "pure keyword offered: {labels:?}");
+        assert!(labels.contains(&"once"), "once keyword offered: {labels:?}");
+        assert!(labels.contains(&"sealed"), "sealed keyword offered: {labels:?}");
+        assert!(labels.contains(&"must"), "must keyword offered: {labels:?}");
+        assert!(labels.contains(&"grantable"), "grantable keyword offered: {labels:?}");
+        assert!(labels.contains(&"unique"), "unique keyword offered: {labels:?}");
+        assert!(labels.contains(&"frozen"), "frozen keyword offered: {labels:?}");
+
+        // Snippets
+        assert!(labels.contains(&"fn"), "fn snippet offered: {labels:?}");
+        assert!(labels.contains(&"pure fn"), "pure fn snippet offered: {labels:?}");
+        assert!(labels.contains(&"async fn"), "async fn snippet offered: {labels:?}");
+        assert!(labels.contains(&"match"), "match snippet offered: {labels:?}");
+        assert!(labels.contains(&"capability"), "capability snippet offered: {labels:?}");
+
+        let fn_snippet = arr.iter().find(|i| i["label"] == "fn" && i["kind"] == 15).unwrap();
+        assert_eq!(fn_snippet["insertTextFormat"], 2); // Snippet format
+    }

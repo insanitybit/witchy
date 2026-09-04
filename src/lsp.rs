@@ -21,7 +21,9 @@ pub fn run() -> LspResult {
     // stays at the protocol defaults.
     let _ = connection.initialize(json!({
         "textDocumentSync": 1,
-        "completionProvider": {},
+        "completionProvider": {
+            "triggerCharacters": [".", ":"]
+        },
         "hoverProvider": true,
         "documentSymbolProvider": true,
         "definitionProvider": true,
@@ -298,18 +300,210 @@ fn link_document_with_origins(
 // --- completion -------------------------------------------------------------
 
 const KEYWORDS: &[&str] = &[
-    "fn", "gen", "yield", "async", "await", "let", "var", "if", "else", "match", "for", "in",
-    "while", "return", "break", "continue", "type", "trait", "impl", "import", "pub",
-    "own", "move", "where", "as", "capability", "region", "comptime", "from", "true", "false",
+    "fn", "pure", "once", "async", "gen", "yield", "await", "let", "var", "if", "else", "match",
+    "for", "in", "while", "return", "break", "continue", "type", "trait", "impl", "import", "from",
+    "pub", "capability", "sealed", "must", "grantable", "unique", "frozen", "local", "own", "move",
+    "where", "as", "comptime", "region", "true", "false",
 ];
 
-const BUILTINS: &[&str] = &[
-    // Capability operations (authority is loud and unprefixed) + the two
-    // universal staples. Pure data operations live in their modules
-    // (list./string./dict./math., offered via the prelude completion below).
-    "print", "now", "get_env", "read", "write", "append", "exists", "is_dir", "list", "subtree", "read_file", "write_file",
-    "make_dir", "exec", "connect", "try_connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
-    "recv_all", "recv_bytes", "close", "send", "fail",
+const BUILTIN_TYPES: &[(&str, &str)] = &[
+    ("Int", "64-bit signed integer"),
+    ("Float", "64-bit IEEE 754 floating point number"),
+    ("String", "UTF-8 string"),
+    ("Bool", "Boolean value (true or false)"),
+    ("Bytes", "Byte buffer"),
+    ("Nil", "Unit type and value"),
+    ("Duration", "Time duration (e.g. 30s, 250ms)"),
+    ("List", "Dynamically sized sequence: List(T) or [T]"),
+    ("Dict", "Hash map collection: Dict(K, V)"),
+    ("Option", "Optional value: Option(T) = Some(T) | None"),
+    ("Result", "Fallible outcome: Result(T, E) = Ok(T) | Err(E)"),
+    ("Console", "Standard I/O capability"),
+    ("Clock", "System clock and timer capability"),
+    ("Dir", "Directory and filesystem access capability"),
+    ("File", "File handle capability"),
+    ("Net", "Network access capability"),
+    ("Rand", "Random number generator capability"),
+    ("Env", "Environment variables capability"),
+    ("Exec", "Process execution capability"),
+    ("SecretStore", "Sealed secret storage capability"),
+    ("Secret", "Sealed secret capability"),
+];
+
+const CONSTRUCTORS: &[(&str, &str)] = &[
+    ("Some", "Some(value) — Option variant holding a value"),
+    ("None", "None — Option variant representing absence of value"),
+    ("Ok", "Ok(value) — Result variant representing successful outcome"),
+    ("Err", "Err(error) — Result variant representing failure"),
+    ("Nil", "Nil — unit value"),
+    ("true", "true — boolean true literal"),
+    ("false", "false — boolean false literal"),
+];
+
+const BUILTINS: &[(&str, &str)] = &[
+    ("print", "fn(console: Console, message: String) -> Nil\nPrint message to standard output."),
+    ("now", "fn(clock: Clock) -> Int\nCurrent time in milliseconds."),
+    ("get_env", "fn(env: Env, key: String) -> Option(String)\nRead an environment variable."),
+    ("read", "fn(file: File) -> Result(String, Error)\nRead entire file as string."),
+    ("write", "fn(file: File, content: String) -> Result(Nil, Error)\nWrite string to file."),
+    ("append", "fn(file: File, content: String) -> Result(Nil, Error)\nAppend string to file."),
+    ("exists", "fn(dir: Dir, path: String) -> Bool\nCheck if path exists."),
+    ("is_dir", "fn(dir: Dir, path: String) -> Bool\nCheck if path is a directory."),
+    ("list", "fn(dir: Dir) -> Result([String], Error)\nList directory entries."),
+    ("subtree", "fn(dir: Dir, path: String) -> Dir\nNarrow directory to subtree."),
+    ("read_file", "fn(path: String) -> Result(String, Error)\nRead file directly."),
+    ("write_file", "fn(path: String, content: String) -> Result(Nil, Error)\nWrite file directly."),
+    ("make_dir", "fn(path: String) -> Result(Nil, Error)\nCreate directory."),
+    ("exec", "fn(cmd: Exec, command: String, args: [String]) -> Result(String, Error)\nExecute external process."),
+    ("connect", "fn(net: Net, address: String) -> Result(NetConn, Error)\nConnect TCP socket."),
+    ("try_connect", "fn(net: Net, address: String) -> Result(NetConn, Error)\nAttempt TCP connection."),
+    ("listen", "fn(net: Net, address: String) -> Result(NetListener, Error)\nListen on TCP port."),
+    ("accept", "fn(listener: NetListener) -> Result(NetConn, Error)\nAccept incoming TCP connection."),
+    ("send_line", "fn(conn: NetConn, line: String) -> Result(Nil, Error)\nSend line over connection."),
+    ("send_bytes", "fn(conn: NetConn, bytes: Bytes) -> Result(Nil, Error)\nSend bytes over connection."),
+    ("recv_line", "fn(conn: NetConn) -> Result(String, Error)\nReceive line from connection."),
+    ("recv_all", "fn(conn: NetConn) -> Result(String, Error)\nReceive all data from connection."),
+    ("recv_bytes", "fn(conn: NetConn, count: Int) -> Result(Bytes, Error)\nReceive byte count from connection."),
+    ("close", "fn(handle: Closeable) -> Nil\nClose open handle."),
+    ("send", "fn(tx: Sender(T), value: T) -> Future(Nil)\nSend value on channel."),
+    ("fail", "fn(message: String) -> Never\nAbort with error message."),
+];
+
+const SNIPPETS: &[(&str, &str, &str)] = &[
+    ("fn", "fn ${1:name}(${2:params}) -> ${3:Type}:\n    ${0}", "Function definition"),
+    ("pure fn", "pure fn ${1:name}(${2:params}) -> ${3:Type}:\n    ${0}", "Pure function definition"),
+    ("async fn", "async fn ${1:name}(${2:params}) -> ${3:Type}:\n    ${0}", "Asynchronous function definition"),
+    ("gen fn", "gen fn ${1:name}(${2:params}) -> Iter(${3:Type}):\n    ${0}", "Generator function definition"),
+    ("match", "match ${1:expr}:\n    ${2:pattern} -> ${0}", "Pattern matching"),
+    ("for", "for ${1:item} in ${2:iter}:\n    ${0}", "For-in loop"),
+    ("for await", "for await ${1:item} in ${2:stream}:\n    ${0}", "Asynchronous stream iteration"),
+    ("if", "if ${1:condition}:\n    ${0}", "If condition"),
+    ("if-else", "if ${1:condition}:\n    ${2}\nelse:\n    ${0}", "If-else branch"),
+    ("type", "type ${1:Name}:\n    ${0}", "Type definition"),
+    ("type alias", "type ${1:Name} = ${2:Type}", "Type alias definition"),
+    ("trait", "trait ${1:Name}:\n    ${0}", "Trait definition"),
+    ("impl", "impl ${1:Type}:\n    ${0}", "Inherent impl block"),
+    ("impl trait", "impl ${1:Trait} for ${2:Type}:\n    ${0}", "Trait impl block"),
+    ("capability", "capability ${1:Name}:\n    ${0}", "Capability declaration"),
+];
+
+const LIST_METHODS: &[(&str, &str, &str)] = &[
+    ("push", "fn(item: T) -> [T]", "Appends an item to the end of the list."),
+    ("pop", "fn() -> Option(T)", "Removes and returns the last element, or None if empty."),
+    ("length", "fn() -> Int", "Returns the number of elements in the list."),
+    ("map", "fn(f: fn(T) -> U) -> [U]", "Applies a transformation function to each element."),
+    ("filter", "fn(predicate: fn(T) -> Bool) -> [T]", "Returns elements that satisfy the predicate."),
+    ("fold", "fn(initial: U, f: fn(U, T) -> U) -> U", "Reduces elements to a single value using an accumulator."),
+    ("contains", "fn(item: T) -> Bool", "Checks whether the list contains the given element."),
+    ("at", "fn(index: Int) -> Option(T)", "Returns the element at index, if within bounds."),
+    ("join", "fn(separator: String) -> String", "Joins string representations of elements with a separator."),
+    ("reverse", "fn() -> [T]", "Returns a new list with elements in reverse order."),
+    ("sort", "fn() -> [T]", "Returns a new list with elements sorted in ascending order."),
+    ("slice", "fn(start: Int, end: Int) -> [T]", "Returns a sub-slice from start to end index."),
+    ("first", "fn() -> Option(T)", "Returns the first element of the list, if non-empty."),
+    ("last", "fn() -> Option(T)", "Returns the last element of the list, if non-empty."),
+    ("is_empty", "fn() -> Bool", "Returns true if the list contains no elements."),
+    ("clear", "fn() -> [T]", "Returns an empty list."),
+    ("concat", "fn(other: [T]) -> [T]", "Concatenates another list onto the end."),
+];
+
+const STRING_METHODS: &[(&str, &str, &str)] = &[
+    ("length", "fn() -> Int", "Returns the number of Unicode characters in the string."),
+    ("split", "fn(separator: String) -> [String]", "Splits the string around occurrences of separator."),
+    ("lines", "fn() -> [String]", "Splits the string into individual lines."),
+    ("trim", "fn() -> String", "Removes leading and trailing whitespace."),
+    ("starts_with", "fn(prefix: String) -> Bool", "Tests whether the string begins with prefix."),
+    ("ends_with", "fn(suffix: String) -> Bool", "Tests whether the string ends with suffix."),
+    ("contains", "fn(needle: String) -> Bool", "Tests whether the string contains needle."),
+    ("replace", "fn(from: String, to: String) -> String", "Replaces occurrences of `from` with `to`."),
+    ("to_upper", "fn() -> String", "Converts all characters to uppercase."),
+    ("to_lower", "fn() -> String", "Converts all characters to lowercase."),
+    ("chars", "fn() -> [String]", "Returns a list of single-character strings."),
+    ("bytes", "fn() -> Bytes", "Returns the UTF-8 bytes of the string."),
+    ("at", "fn(index: Int) -> Option(String)", "Returns the character at character index."),
+    ("slice", "fn(start: Int, end: Int) -> String", "Extracts a substring slice from start to end."),
+    ("is_empty", "fn() -> Bool", "Returns true if string length is zero."),
+    ("repeat", "fn(count: Int) -> String", "Repeats the string count times."),
+];
+
+const DICT_METHODS: &[(&str, &str, &str)] = &[
+    ("get", "fn(key: K) -> Option(V)", "Returns the value associated with key, if present."),
+    ("set", "fn(key: K, value: V) -> Dict(K, V)", "Inserts or updates a key-value pair."),
+    ("remove", "fn(key: K) -> Dict(K, V)", "Removes the entry for key."),
+    ("contains_key", "fn(key: K) -> Bool", "Checks if key exists in the dictionary."),
+    ("keys", "fn() -> [K]", "Returns a list of all keys in the dictionary."),
+    ("values", "fn() -> [V]", "Returns a list of all values in the dictionary."),
+    ("items", "fn() -> [(K, V)]", "Returns key-value pairs as a list of tuples."),
+    ("length", "fn() -> Int", "Returns the number of entries in the dictionary."),
+    ("is_empty", "fn() -> Bool", "Returns true if dictionary has no entries."),
+    ("clear", "fn() -> Dict(K, V)", "Removes all entries from dictionary."),
+];
+
+const OPTION_METHODS: &[(&str, &str, &str)] = &[
+    ("unwrap", "fn() -> T", "Unwraps the Some value, aborting if None."),
+    ("unwrap_or", "fn(default: T) -> T", "Unwraps the Some value or returns default if None."),
+    ("is_some", "fn() -> Bool", "Returns true if Option is Some."),
+    ("is_none", "fn() -> Bool", "Returns true if Option is None."),
+    ("map", "fn(f: fn(T) -> U) -> Option(U)", "Applies f to contained value if Some."),
+    ("and_then", "fn(f: fn(T) -> Option(U)) -> Option(U)", "Chains an Option-producing computation."),
+];
+
+const RESULT_METHODS: &[(&str, &str, &str)] = &[
+    ("unwrap", "fn() -> T", "Unwraps the Ok value, aborting with error if Err."),
+    ("unwrap_or", "fn(default: T) -> T", "Unwraps the Ok value or returns default if Err."),
+    ("is_ok", "fn() -> Bool", "Returns true if Result is Ok."),
+    ("is_err", "fn() -> Bool", "Returns true if Result is Err."),
+    ("map", "fn(f: fn(T) -> U) -> Result(U, E)", "Applies f to contained value if Ok."),
+    ("map_err", "fn(f: fn(E) -> F) -> Result(T, F)", "Applies f to contained error if Err."),
+    ("and_then", "fn(f: fn(T) -> Result(U, E)) -> Result(U, E)", "Chains a Result-producing computation."),
+];
+
+const CAPABILITY_CONSOLE_METHODS: &[(&str, &str, &str)] = &[
+    ("print", "fn(message: String) -> Nil", "Prints message to standard output followed by newline."),
+    ("input", "fn() -> String", "Reads a line of text from standard input."),
+];
+
+const CAPABILITY_CLOCK_METHODS: &[(&str, &str, &str)] = &[
+    ("now", "fn() -> Int", "Returns current system time in milliseconds since Unix epoch."),
+    ("sleep", "fn(duration: Duration) -> Nil", "Pauses execution for the specified duration."),
+];
+
+const CAPABILITY_DIR_METHODS: &[(&str, &str, &str)] = &[
+    ("read", "fn(path: String) -> Result(String, Error)", "Reads contents of a file at path within directory."),
+    ("write", "fn(path: String, content: String) -> Result(Nil, Error)", "Writes content to file at path."),
+    ("append", "fn(path: String, content: String) -> Result(Nil, Error)", "Appends content to file at path."),
+    ("exists", "fn(path: String) -> Bool", "Returns true if path exists within directory."),
+    ("is_dir", "fn(path: String) -> Bool", "Returns true if path is a subdirectory."),
+    ("list", "fn() -> Result([String], Error)", "Lists entry names in this directory."),
+    ("subtree", "fn(subpath: String) -> Dir", "Narrows directory capability to a sub-path."),
+];
+
+const CAPABILITY_FILE_METHODS: &[(&str, &str, &str)] = &[
+    ("read", "fn() -> Result(String, Error)", "Reads entire file contents as UTF-8 string."),
+    ("write", "fn(content: String) -> Result(Nil, Error)", "Overwrites file with content."),
+    ("append", "fn(content: String) -> Result(Nil, Error)", "Appends content to file."),
+    ("read_bytes", "fn() -> Result(Bytes, Error)", "Reads entire file contents as bytes."),
+    ("write_bytes", "fn(content: Bytes) -> Result(Nil, Error)", "Writes bytes to file."),
+    ("close", "fn() -> Nil", "Closes open file handle."),
+];
+
+const CAPABILITY_NET_METHODS: &[(&str, &str, &str)] = &[
+    ("connect", "fn(address: String) -> Result(NetConn, Error)", "Connects TCP socket to address."),
+    ("try_connect", "fn(address: String) -> Result(NetConn, Error)", "Attempts TCP connection without blocking."),
+    ("listen", "fn(address: String) -> Result(NetListener, Error)", "Binds TCP listening socket."),
+    ("only", "fn(policy: NetPolicy) -> Net", "Narrows net capability to permitted destinations."),
+    ("deny", "fn(policy: NetPolicy) -> Net", "Narrows net capability by denying destinations."),
+];
+
+const CAPABILITY_RAND_METHODS: &[(&str, &str, &str)] = &[
+    ("int", "fn(min: Int, max: Int) -> Int", "Generates pseudo-random integer in [min, max]."),
+    ("float", "fn() -> Float", "Generates pseudo-random float in [0.0, 1.0)."),
+    ("bytes", "fn(count: Int) -> Bytes", "Generates random byte buffer of length count."),
+];
+
+const CAPABILITY_ENV_METHODS: &[(&str, &str, &str)] = &[
+    ("get", "fn(key: String) -> Option(String)", "Reads environment variable value."),
+    ("var", "fn(key: String) -> Option(String)", "Reads environment variable value."),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,11 +522,14 @@ fn function_declaration(line: &str) -> Option<FunctionDeclaration<'_>> {
     let signature = signature.strip_suffix(':').unwrap_or(signature).trim_end();
     let (public, rest) = signature
         .strip_prefix("pub ")
-        .map_or((false, signature), |rest| (true, rest));
+        .map_or((false, signature), |rest| (true, rest.trim_start()));
+    let rest = rest.trim_start();
     let rest = rest
         .strip_prefix("pure fn ")
         .or_else(|| rest.strip_prefix("async fn "))
         .or_else(|| rest.strip_prefix("gen fn "))
+        .or_else(|| rest.strip_prefix("comptime fn "))
+        .or_else(|| rest.strip_prefix("once fn "))
         .or_else(|| rest.strip_prefix("fn "))?;
     let name_rest = rest.trim_start();
     let name = name_rest.split_once('(')?.0.trim();
@@ -347,44 +544,786 @@ fn function_declaration(line: &str) -> Option<FunctionDeclaration<'_>> {
     })
 }
 
-/// Completion items: keywords, builtins, this document's functions, and the
-/// `pub fn`s of every prelude/imported module (offered as `module.name`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TypeDeclaration<'a> {
+    name: &'a str,
+    kind: &'a str,
+}
+
+fn type_declaration(line: &str) -> Option<TypeDeclaration<'_>> {
+    let s = line.trim_start().trim_end();
+    let s = s.strip_prefix("pub ").unwrap_or(s);
+    let s = s.strip_prefix("sealed ").unwrap_or(s);
+    let s = s.strip_prefix("must ").unwrap_or(s);
+    let s = s.strip_prefix("grantable ").unwrap_or(s);
+    let s = s.trim_start();
+    if let Some(rest) = s.strip_prefix("type ") {
+        let name_part = rest
+            .split_once(['(', ':', '=', ' '])
+            .map_or(rest, |(n, _)| n)
+            .trim();
+        if !name_part.is_empty() {
+            return Some(TypeDeclaration {
+                name: name_part,
+                kind: "type",
+            });
+        }
+    } else if let Some(rest) = s.strip_prefix("capability ") {
+        let name_part = rest
+            .split_once(['(', ':', '=', ' '])
+            .map_or(rest, |(n, _)| n)
+            .trim();
+        if !name_part.is_empty() {
+            return Some(TypeDeclaration {
+                name: name_part,
+                kind: "capability",
+            });
+        }
+    } else if let Some(rest) = s.strip_prefix("trait ") {
+        let name_part = rest
+            .split_once(['(', ':', '=', ' '])
+            .map_or(rest, |(n, _)| n)
+            .trim();
+        if !name_part.is_empty() {
+            return Some(TypeDeclaration {
+                name: name_part,
+                kind: "trait",
+            });
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+struct ScopeVar<'a> {
+    name: &'a str,
+    ty: Option<&'a str>,
+}
+
+fn extract_scope_vars<'a>(text: &'a str, cursor_line: usize) -> Vec<ScopeVar<'a>> {
+    let mut vars = Vec::new();
+    let lines: Vec<&'a str> = text.lines().collect();
+    if cursor_line >= lines.len() {
+        return vars;
+    }
+
+    let mut fn_line_idx = None;
+    for i in (0..=cursor_line).rev() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        if function_declaration(trimmed).is_some() {
+            fn_line_idx = Some(i);
+            break;
+        }
+    }
+
+    let Some(header_idx) = fn_line_idx else {
+        return vars;
+    };
+
+    let header_line = lines[header_idx];
+    if let Some(open_paren) = header_line.find('(') {
+        if let Some(close_paren) = header_line[open_paren..].find(')') {
+            let params_str = &header_line[open_paren + 1..open_paren + close_paren];
+            for param_chunk in params_str.split(',') {
+                let p = param_chunk.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                let clean = p
+                    .strip_prefix("own ")
+                    .or_else(|| p.strip_prefix("var "))
+                    .or_else(|| p.strip_prefix("let "))
+                    .or_else(|| p.strip_prefix("inout "))
+                    .or_else(|| p.strip_prefix("sink "))
+                    .unwrap_or(p)
+                    .trim_start();
+                if let Some((name, ty)) = clean.split_once(':') {
+                    vars.push(ScopeVar {
+                        name: name.trim(),
+                        ty: Some(ty.trim()),
+                    });
+                } else {
+                    vars.push(ScopeVar {
+                        name: clean.trim(),
+                        ty: None,
+                    });
+                }
+            }
+        }
+    }
+
+    for i in (header_idx + 1)..cursor_line {
+        let t = lines[i].trim_start();
+        if let Some(rest) = t.strip_prefix("let ").or_else(|| t.strip_prefix("var ")) {
+            let rest = rest.trim_start();
+            if let Some((left, right)) = rest.split_once('=') {
+                let right = right.trim();
+                let inferred_ty = if right.starts_with('[') {
+                    Some("[T]")
+                } else if right.starts_with('"') || right.starts_with("f\"") {
+                    Some("String")
+                } else if right.starts_with('{') {
+                    Some("Dict")
+                } else if right.starts_with("Some(") || right == "None" {
+                    Some("Option")
+                } else if right.starts_with("Ok(") || right.starts_with("Err(") {
+                    Some("Result")
+                } else {
+                    None
+                };
+
+                if let Some((name, ty)) = left.split_once(':') {
+                    vars.push(ScopeVar {
+                        name: name.trim(),
+                        ty: Some(ty.trim()),
+                    });
+                } else {
+                    let name = left.trim();
+                    if !name.is_empty() && !name.starts_with('(') {
+                        vars.push(ScopeVar {
+                            name,
+                            ty: inferred_ty,
+                        });
+                    }
+                }
+            }
+        } else if let Some(rest) = t.strip_prefix("for ") {
+            if let Some((item, _)) = rest.split_once(" in ") {
+                let name = item.trim();
+                if !name.is_empty() {
+                    vars.push(ScopeVar { name, ty: None });
+                }
+            }
+        }
+    }
+
+    vars
+}
+
+enum CompletionContext<'a> {
+    Dot {
+        receiver: &'a str,
+        _partial: &'a str,
+    },
+    TypeAnnotation {
+        _partial: &'a str,
+    },
+    Import {
+        _partial: &'a str,
+    },
+    FromImport {
+        module: &'a str,
+        _partial: &'a str,
+    },
+    General {
+        _partial: &'a str,
+        line: Option<usize>,
+    },
+}
+
+fn extract_receiver(s: &str) -> &str {
+    let s = s.trim_end();
+    if s.ends_with(')') {
+        let mut depth = 0;
+        let mut start_idx = 0;
+        for (i, c) in s.char_indices().rev() {
+            if c == ')' {
+                depth += 1;
+            } else if c == '(' {
+                depth -= 1;
+                if depth == 0 {
+                    start_idx = i;
+                    break;
+                }
+            }
+        }
+        let before_paren = &s[..start_idx];
+        let mut id_len = 0;
+        for c in before_paren.chars().rev() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                id_len += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        &s[start_idx - id_len..]
+    } else if s.ends_with(']') {
+        let mut depth = 0;
+        let mut start_idx = 0;
+        for (i, c) in s.char_indices().rev() {
+            if c == ']' {
+                depth += 1;
+            } else if c == '[' {
+                depth -= 1;
+                if depth == 0 {
+                    start_idx = i;
+                    break;
+                }
+            }
+        }
+        let before_bracket = &s[..start_idx];
+        let mut id_len = 0;
+        for c in before_bracket.chars().rev() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                id_len += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        &s[start_idx - id_len..]
+    } else {
+        let mut id_len = 0;
+        for c in s.chars().rev() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                id_len += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        &s[s.len() - id_len..]
+    }
+}
+
+fn detect_completion_context<'a>(
+    text: &'a str,
+    position: Option<(usize, usize)>,
+) -> CompletionContext<'a> {
+    let Some((line_idx, char_idx)) = position else {
+        return CompletionContext::General {
+            _partial: "",
+            line: None,
+        };
+    };
+
+    let Some(line_text) = text.lines().nth(line_idx) else {
+        return CompletionContext::General {
+            _partial: "",
+            line: Some(line_idx),
+        };
+    };
+
+    let byte_idx = line_text
+        .char_indices()
+        .nth(char_idx)
+        .map(|(i, _)| i)
+        .unwrap_or(line_text.len());
+    let prefix = &line_text[..byte_idx];
+    let trimmed_prefix = prefix.trim_start();
+
+    if trimmed_prefix.starts_with("import ") {
+        let partial = trimmed_prefix.strip_prefix("import ").unwrap_or("").trim_start();
+        return CompletionContext::Import { _partial: partial };
+    }
+    if trimmed_prefix.starts_with("from ") && trimmed_prefix.contains(" import ") {
+        let after_from = trimmed_prefix.strip_prefix("from ").unwrap_or("");
+        if let Some((mod_name, rest)) = after_from.split_once(" import ") {
+            let partial = rest.rsplit(',').next().unwrap_or(rest).trim_start();
+            return CompletionContext::FromImport {
+                module: mod_name.trim(),
+                _partial: partial,
+            };
+        }
+    }
+
+    let end_trimmed = prefix.trim_end();
+    let mut partial_len = 0;
+    for c in end_trimmed.chars().rev() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            partial_len += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let partial_start = end_trimmed.len() - partial_len;
+    let partial = &end_trimmed[partial_start..];
+    let before_partial = &end_trimmed[..partial_start];
+
+    if before_partial.ends_with('.') {
+        let before_dot = before_partial.strip_suffix('.').unwrap_or("").trim_end();
+        let is_float = !before_dot.is_empty()
+            && before_dot.chars().all(|c| c.is_ascii_digit())
+            && partial.chars().all(|c| c.is_ascii_digit())
+            && !partial.is_empty();
+        if !is_float && !before_dot.is_empty() {
+            let receiver = extract_receiver(before_dot);
+            if !receiver.is_empty() {
+                return CompletionContext::Dot {
+                    receiver,
+                    _partial: partial,
+                };
+            }
+        }
+    }
+
+    let clean = prefix.trim_end();
+    if clean.ends_with(':')
+        || clean.ends_with("->")
+        || clean.ends_with(" as")
+        || clean.ends_with("type ")
+    {
+        return CompletionContext::TypeAnnotation { _partial: "" };
+    }
+    if let Some((_before, after_colon)) = clean.rsplit_once(':') {
+        let after_trim = after_colon.trim_start();
+        if !after_trim.is_empty()
+            && after_trim.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && (clean.contains("fn ")
+                || clean.contains("let ")
+                || clean.contains("var ")
+                || clean.contains("type ")
+                || clean.contains("capability "))
+        {
+            return CompletionContext::TypeAnnotation {
+                _partial: after_trim,
+            };
+        }
+    }
+    if let Some((_before, after_arrow)) = clean.rsplit_once("->") {
+        let after_trim = after_arrow.trim_start();
+        if !after_trim.is_empty()
+            && after_trim.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return CompletionContext::TypeAnnotation {
+                _partial: after_trim,
+            };
+        }
+    }
+
+    CompletionContext::General {
+        _partial: partial,
+        line: Some(line_idx),
+    }
+}
+
+fn is_module_name(
+    name: &str,
+    text: &str,
+    uri: Option<&str>,
+    docs: &HashMap<String, String>,
+) -> bool {
+    witchy_syntax::linker::PRELUDE_MODULES.contains(&name)
+        || witchy_syntax::linker::STD_MODULES.contains(&name)
+        || text.lines().any(|l| {
+            let t = l.trim();
+            t == format!("import {name}")
+                || t.starts_with(&format!("import {name} "))
+                || t.starts_with(&format!("from {name} import "))
+        })
+        || module_source(name, uri, docs).is_some()
+}
+
+fn push_completion_item(
+    items: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    label: &str,
+    kind: u32,
+    detail: Option<&str>,
+    doc: Option<&str>,
+    insert_text: Option<&str>,
+    is_snippet: bool,
+    sort_priority: char,
+) {
+    let key = if is_snippet {
+        format!("snippet:{label}")
+    } else {
+        label.to_string()
+    };
+    if !seen.insert(key) {
+        return;
+    }
+    let mut obj = serde_json::Map::new();
+    obj.insert("label".to_string(), json!(label));
+    obj.insert("kind".to_string(), json!(kind));
+    if let Some(d) = detail {
+        obj.insert("detail".to_string(), json!(d));
+    }
+    if let Some(dc) = doc {
+        if !dc.is_empty() {
+            obj.insert(
+                "documentation".to_string(),
+                json!({ "kind": "markdown", "value": dc }),
+            );
+        }
+    }
+    if let Some(it) = insert_text {
+        obj.insert("insertText".to_string(), json!(it));
+    }
+    if is_snippet {
+        obj.insert("insertTextFormat".to_string(), json!(2));
+    }
+    obj.insert(
+        "sortText".to_string(),
+        json!(format!("{sort_priority}_{label}")),
+    );
+    items.push(Value::Object(obj));
+}
+
+/// Completion items: context-aware suggestions for dot/receiver access,
+/// type annotations, imports, local variables, functions, and language snippets.
 fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     let uri = params["textDocument"]["uri"].as_str();
     let Some(text) = uri.and_then(|u| docs.get(u)) else {
         return json!([]);
     };
+
+    let position = params.get("position").and_then(|p| {
+        let line = p.get("line")?.as_u64()? as usize;
+        let character = p.get("character")?.as_u64()? as usize;
+        Some((line, character))
+    });
+
+    let context = detect_completion_context(text, position);
     let mut items: Vec<Value> = Vec::new();
-    for module in witchy_syntax::linker::PRELUDE_MODULES {
-        // Prelude completion comes from the canonical source registry, so it
-        // cannot drift from the linker or be replaced by a sibling file.
-        push_module_completions(&mut items, module, None, docs);
-    }
-    for k in KEYWORDS {
-        items.push(json!({ "label": k, "kind": 14 })); // Keyword
-    }
-    for b in BUILTINS {
-        items.push(json!({ "label": b, "kind": 3 })); // Function
-    }
-    for line in text.lines() {
-        let t = line.trim_start();
-        if let Some(declaration) = function_declaration(t) {
-            items.push(json!({ "label": declaration.name, "kind": 3 }));
-        }
-        if let Some(module) = t.strip_prefix("import ") {
-            push_module_completions(&mut items, module.trim(), uri, docs);
-        }
-        // `from X import a, b` (RFC-0042) binds `a`/`b` UNQUALIFIED and implies
-        // `import X`, so offer the bare names plus the module's qualified fns.
-        if let Some((module, names)) = parse_from_import(t) {
-            for name in names {
-                items.push(json!({ "label": name, "kind": 3 }));
+    let mut seen: HashSet<String> = HashSet::new();
+
+    match context {
+        CompletionContext::Dot { receiver, .. } => {
+            // 1. Module dot completion: math., list., string., helper., etc.
+            if is_module_name(receiver, text, uri, docs) {
+                if let Some(src) = module_source(receiver, uri, docs) {
+                    let lines: Vec<&str> = src.lines().collect();
+                    for (idx, line) in lines.iter().enumerate() {
+                        if let Some(decl) = function_declaration(line).filter(|d| d.public) {
+                            let mut doc_lines = Vec::new();
+                            for j in (0..idx).rev() {
+                                let dt = lines[j].trim_start();
+                                if let Some(c) = dt.strip_prefix("//") {
+                                    doc_lines.push(c.trim());
+                                } else {
+                                    break;
+                                }
+                            }
+                            doc_lines.reverse();
+                            let doc = if doc_lines.is_empty() {
+                                None
+                            } else {
+                                Some(doc_lines.join("\n"))
+                            };
+
+                            push_completion_item(
+                                &mut items,
+                                &mut seen,
+                                decl.name,
+                                3, // Function
+                                Some(decl.signature),
+                                doc.as_deref(),
+                                Some(decl.name),
+                                false,
+                                '0',
+                            );
+                        }
+                        if let Some(type_decl) = type_declaration(line) {
+                            push_completion_item(
+                                &mut items,
+                                &mut seen,
+                                type_decl.name,
+                                7, // Class
+                                Some(type_decl.kind),
+                                None,
+                                Some(type_decl.name),
+                                false,
+                                '1',
+                            );
+                        }
+                    }
+                }
+                return json!(items);
             }
-            push_module_completions(&mut items, &module, uri, docs);
+
+            // 2. Capability operations: console., clock., dir., file., net., rand., env.
+            let vars = position.map_or_else(Vec::new, |(l, _)| extract_scope_vars(text, l));
+            let receiver_ty = vars.iter().find(|v| v.name == receiver).and_then(|v| v.ty);
+
+            let is_console = receiver == "console" || receiver_ty == Some("Console");
+            let is_clock = receiver == "clock" || receiver_ty == Some("Clock");
+            let is_dir = receiver == "dir" || receiver_ty == Some("Dir");
+            let is_file = receiver == "file" || receiver_ty == Some("File");
+            let is_net = receiver == "net" || receiver_ty == Some("Net");
+            let is_rand = receiver == "rand" || receiver_ty == Some("Rand");
+            let is_env = receiver == "env" || receiver_ty == Some("Env");
+
+            if is_console {
+                for (name, sig, doc) in CAPABILITY_CONSOLE_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_clock {
+                for (name, sig, doc) in CAPABILITY_CLOCK_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_dir {
+                for (name, sig, doc) in CAPABILITY_DIR_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_file {
+                for (name, sig, doc) in CAPABILITY_FILE_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_net {
+                for (name, sig, doc) in CAPABILITY_NET_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_rand {
+                for (name, sig, doc) in CAPABILITY_RAND_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_env {
+                for (name, sig, doc) in CAPABILITY_ENV_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+
+            // 3. Enum/Option/Result constructors: Option.Some, Option.None, Result.Ok, Result.Err
+            if receiver == "Option" {
+                push_completion_item(&mut items, &mut seen, "Some", 4, Some("Some(value)"), Some("Option constructor"), Some("Some"), false, '0');
+                push_completion_item(&mut items, &mut seen, "None", 4, Some("None"), Some("Option None variant"), Some("None"), false, '0');
+                return json!(items);
+            }
+            if receiver == "Result" {
+                push_completion_item(&mut items, &mut seen, "Ok", 4, Some("Ok(value)"), Some("Result Ok variant"), Some("Ok"), false, '0');
+                push_completion_item(&mut items, &mut seen, "Err", 4, Some("Err(error)"), Some("Result Err variant"), Some("Err"), false, '0');
+                return json!(items);
+            }
+            if receiver == "Net" {
+                push_completion_item(&mut items, &mut seen, "tcp", 3, Some("fn(host: String, port: Int) -> NetPolicy"), Some("Constructs TCP network policy."), Some("tcp"), false, '0');
+                push_completion_item(&mut items, &mut seen, "udp", 3, Some("fn(host: String, port: Int) -> NetPolicy"), Some("Constructs UDP network policy."), Some("udp"), false, '0');
+                push_completion_item(&mut items, &mut seen, "private", 3, Some("fn() -> NetPolicy"), Some("Policy matching private network addresses."), Some("private"), false, '0');
+                return json!(items);
+            }
+
+            // 4. Instance methods on typed variables / receivers
+            let is_string = receiver_ty == Some("String");
+            let is_list = receiver_ty.is_some_and(|t| t.contains('[') || t.contains("List"));
+            let is_dict = receiver_ty.is_some_and(|t| t.contains("Dict"));
+            let is_opt = receiver_ty.is_some_and(|t| t.contains("Option"));
+            let is_res = receiver_ty.is_some_and(|t| t.contains("Result"));
+
+            if is_string {
+                for (name, sig, doc) in STRING_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_list {
+                for (name, sig, doc) in LIST_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_dict {
+                for (name, sig, doc) in DICT_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_opt {
+                for (name, sig, doc) in OPTION_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_res {
+                for (name, sig, doc) in RESULT_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+
+            // 5. Document impl methods matching receiver owner or general receiver methods
+            let doc_lines: Vec<&str> = text.lines().collect();
+            let mut current_impl_owner: Option<&str> = None;
+            for (i, line) in doc_lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                if line.starts_with(' ') || line.starts_with('\t') {
+                    if let Some(decl) = function_declaration(trimmed) {
+                        let mut doc_lines_fn = Vec::new();
+                        for j in (0..i).rev() {
+                            let dt = doc_lines[j].trim_start();
+                            if let Some(c) = dt.strip_prefix("//") {
+                                doc_lines_fn.push(c.trim());
+                            } else {
+                                break;
+                            }
+                        }
+                        doc_lines_fn.reverse();
+                        let doc = if doc_lines_fn.is_empty() { None } else { Some(doc_lines_fn.join("\n")) };
+
+                        let matches_owner = current_impl_owner.is_some_and(|o| o == receiver || receiver_ty == Some(o));
+                        let sort_p = if matches_owner { '0' } else { '2' };
+                        push_completion_item(&mut items, &mut seen, decl.name, 2, Some(decl.signature), doc.as_deref(), Some(decl.name), false, sort_p);
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("impl ") {
+                    let owner_part = if let Some((_, type_part)) = rest.split_once(" for ") {
+                        type_part.split_once([':', ' ', '(']).map_or(type_part, |(n, _)| n).trim()
+                    } else {
+                        rest.split_once([':', ' ', '(']).map_or(rest, |(n, _)| n).trim()
+                    };
+                    current_impl_owner = Some(owner_part);
+                } else {
+                    current_impl_owner = None;
+                }
+            }
+
+            // Fallback for general receivers: offer standard collection and string methods
+            for (name, sig, doc) in LIST_METHODS {
+                push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '1');
+            }
+            for (name, sig, doc) in STRING_METHODS {
+                push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '1');
+            }
+            for (name, sig, doc) in DICT_METHODS {
+                push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '1');
+            }
+            for (name, sig, doc) in OPTION_METHODS {
+                push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '1');
+            }
+            for (name, sig, doc) in RESULT_METHODS {
+                push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '1');
+            }
+            json!(items)
+        }
+
+        CompletionContext::TypeAnnotation { .. } => {
+            // Built-in types
+            for (name, doc) in BUILTIN_TYPES {
+                push_completion_item(&mut items, &mut seen, name, 7, Some("type"), Some(doc), Some(name), false, '0');
+            }
+            // Types declared in document
+            for line in text.lines() {
+                if let Some(td) = type_declaration(line) {
+                    let kind_num = if td.kind == "trait" { 8 } else { 7 };
+                    push_completion_item(&mut items, &mut seen, td.name, kind_num, Some(td.kind), None, Some(td.name), false, '1');
+                }
+                if let Some((_, names)) = parse_from_import(line.trim_start()) {
+                    for name in names {
+                        if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                            push_completion_item(&mut items, &mut seen, &name, 7, Some("imported type"), None, Some(&name), false, '2');
+                        }
+                    }
+                }
+            }
+            // Conventions
+            for conv in &["own", "var", "let", "inout", "dyn"] {
+                push_completion_item(&mut items, &mut seen, conv, 14, Some("convention"), None, Some(conv), false, '3');
+            }
+            json!(items)
+        }
+
+        CompletionContext::Import { .. } => {
+            for m in witchy_syntax::linker::STD_MODULES {
+                push_completion_item(&mut items, &mut seen, m, 9, Some("standard module"), None, Some(m), false, '0');
+            }
+            for m in &["glamour", "markdown", "highlight"] {
+                push_completion_item(&mut items, &mut seen, m, 9, Some("playground module"), None, Some(m), false, '1');
+            }
+            json!(items)
+        }
+
+        CompletionContext::FromImport { module, .. } => {
+            if let Some(src) = module_source(module, uri, docs) {
+                for line in src.lines() {
+                    if let Some(decl) = function_declaration(line).filter(|d| d.public) {
+                        push_completion_item(&mut items, &mut seen, decl.name, 3, Some(decl.signature), None, Some(decl.name), false, '0');
+                    }
+                    if let Some(td) = type_declaration(line) {
+                        let kind_num = if td.kind == "trait" { 8 } else { 7 };
+                        push_completion_item(&mut items, &mut seen, td.name, kind_num, Some(td.kind), None, Some(td.name), false, '1');
+                    }
+                }
+            }
+            json!(items)
+        }
+
+        CompletionContext::General { line, .. } => {
+            // 1. Local scope variables and parameters
+            if let Some(l) = line {
+                let vars = extract_scope_vars(text, l);
+                for v in vars {
+                    let detail = v.ty.map_or_else(|| "local variable".to_string(), |t| format!(": {t}"));
+                    push_completion_item(&mut items, &mut seen, v.name, 6, Some(&detail), None, Some(v.name), false, '0');
+                }
+            }
+
+            // 2. Document functions, types, traits, capabilities
+            let doc_lines: Vec<&str> = text.lines().collect();
+            for (idx, line) in doc_lines.iter().enumerate() {
+                let t = line.trim_start();
+                if let Some(declaration) = function_declaration(t) {
+                    let mut doc_lines_fn = Vec::new();
+                    for j in (0..idx).rev() {
+                        let dt = doc_lines[j].trim_start();
+                        if let Some(c) = dt.strip_prefix("//") {
+                            doc_lines_fn.push(c.trim());
+                        } else {
+                            break;
+                        }
+                    }
+                    doc_lines_fn.reverse();
+                    let doc = if doc_lines_fn.is_empty() { None } else { Some(doc_lines_fn.join("\n")) };
+                    push_completion_item(&mut items, &mut seen, declaration.name, 3, Some(declaration.signature), doc.as_deref(), Some(declaration.name), false, '1');
+                }
+                if let Some(td) = type_declaration(t) {
+                    let kind_num = if td.kind == "trait" { 8 } else { 7 };
+                    push_completion_item(&mut items, &mut seen, td.name, kind_num, Some(td.kind), None, Some(td.name), false, '1');
+                }
+                if let Some(module) = t.strip_prefix("import ") {
+                    push_module_completions(&mut items, module.trim(), uri, docs);
+                }
+                if let Some((module, names)) = parse_from_import(t) {
+                    for name in names {
+                        push_completion_item(&mut items, &mut seen, &name, 3, Some("imported symbol"), None, Some(&name), false, '2');
+                    }
+                    push_module_completions(&mut items, &module, uri, docs);
+                }
+            }
+
+            // 3. Prelude modules and qualified functions
+            for module in witchy_syntax::linker::PRELUDE_MODULES {
+                push_completion_item(&mut items, &mut seen, module, 9, Some("prelude module"), None, Some(module), false, '3');
+                push_module_completions(&mut items, module, None, docs);
+            }
+
+            // 4. Constructors & Built-in types
+            for (c, doc) in CONSTRUCTORS {
+                push_completion_item(&mut items, &mut seen, c, 4, Some("constructor"), Some(doc), Some(c), false, '2');
+            }
+            for (t, doc) in BUILTIN_TYPES {
+                push_completion_item(&mut items, &mut seen, t, 7, Some("type"), Some(doc), Some(t), false, '2');
+            }
+
+            // 5. Built-in capability operations and functions
+            for (b, doc) in BUILTINS {
+                push_completion_item(&mut items, &mut seen, b, 3, Some("builtin"), Some(doc), Some(b), false, '3');
+            }
+
+            // 6. Keywords
+            for k in KEYWORDS {
+                push_completion_item(&mut items, &mut seen, k, 14, Some("keyword"), None, Some(k), false, '4');
+            }
+
+            // 7. Snippets
+            for (label, body, desc) in SNIPPETS {
+                push_completion_item(&mut items, &mut seen, label, 15, Some(desc), None, Some(body), true, '5');
+            }
+
+            json!(items)
         }
     }
-    json!(items)
 }
+
 
 /// The `module` label plus every `module.fn` of a resolvable module — the
 /// completions an `import module` (or the module half of a `from`-import) offers.
