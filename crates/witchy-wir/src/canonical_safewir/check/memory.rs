@@ -992,8 +992,22 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Load(reference)");
         }
         self.require_type(destination, expected)?;
-        if let Projection::Header(field) = place.projection() {
-            self.state.header_values
+        if let Projection::Header(field) = place.projection()
+            && matches!(
+                self.live_object(place.object())?.extent,
+                Extent::HeaderPrefix { .. }
+            )
+        {
+            // A header load observes the current header; it does not create a
+            // new logical length/capacity definition.  Counted objects already
+            // have their current extent in `ObjectState`, and replacing that
+            // identity with the load destination would discard guards proved
+            // against the definition that established the extent.  Header
+            // loads are recorded only while bootstrapping an unknown
+            // header-prefix object so `promote_header_extent` can authenticate
+            // its dynamic extent.
+            self.state
+                .header_values
                 .insert((place.object(), *field), destination);
         }
         Ok(())
