@@ -2034,6 +2034,12 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
+        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+            return Err(InitialCheckError::InvalidAllocationClass {
+                function: self.function.id,
+                object,
+            });
+        }
         self.state.objects
             .get_mut(&object)
             .expect("live object exists")
@@ -2609,6 +2615,20 @@ mod tests {
             assert!(matches!(
                 checker.move_value(DESTINATION, SOURCE),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn release_rejects_shared_value_without_refcount_authority() {
+        with_checker(false, |checker, _list| {
+            let source = checker.state.objects.get_mut(&SOURCE).expect("source");
+            source.ownership = Ownership::Shared;
+            source.allocation_class = None;
+
+            assert!(matches!(
+                checker.release(SOURCE),
+                Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
             ));
         });
     }
