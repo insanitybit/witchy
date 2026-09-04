@@ -268,6 +268,55 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_list_push_reallocates_and_preserves_mutation_syntax() {
+        let source = "fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[1]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked List(Int) push source");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical List(Int) push artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted List(Int) push artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted List(Int) push artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical List push"), 2);
+    }
+
+    #[test]
+    fn list_push_keeps_length_bounds_check_for_out_of_bounds_index() {
+        let source = "fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[2]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked out-of-bounds List(Int) push source");
+        let artifact = admit_checked_module(&checked)
+            .expect("bounds-checked List push still admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile bounds-checked List push artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate bounds-checked List push artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical main export");
+
+        assert!(main.call(&mut store, ()).is_err());
+    }
+
+    #[test]
     fn borrowed_list_parameter_index_reaches_admitted_execution() {
         let source = "fn first(xs: List(Int)) -> Int:\n    xs[0]\nfn main() -> Int:\n    first([42])\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

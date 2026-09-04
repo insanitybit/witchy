@@ -243,6 +243,7 @@ fn lower_function(
         values: BTreeMap::new(),
         bindings: HashMap::new(),
         list_counts: HashMap::new(),
+        known_list_lengths: HashMap::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
@@ -298,6 +299,7 @@ struct FunctionLowerer<'a> {
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
+    known_list_lengths: HashMap<ValueId, u64>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
@@ -327,6 +329,17 @@ impl FunctionLowerer<'_> {
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                    }
+                    if let Expr::Call { name: call, args } = value
+                        && matches!(call.as_str(), "list.push" | "list.__push")
+                    {
+                        self.lower_list_push(args)?;
+                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
+                            return Err(CanonicalLoweringError::UnsupportedExpression(
+                                "list.push assignment target",
+                            ));
+                        }
+                        continue;
                     }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
@@ -391,6 +404,9 @@ impl FunctionLowerer<'_> {
         match expression {
             Expr::While { cond, body } => self.lower_while(cond, body),
             Expr::Block(block) => self.lower_block_effect(block),
+            Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
+                self.lower_list_push(args)
+            }
             Expr::Call { name, args } => {
                 self.lower_direct_call(name, args)?;
                 Ok(())
@@ -424,6 +440,17 @@ impl FunctionLowerer<'_> {
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                    }
+                    if let Expr::Call { name: call, args } = value
+                        && matches!(call.as_str(), "list.push" | "list.__push")
+                    {
+                        self.lower_list_push(args)?;
+                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
+                            return Err(CanonicalLoweringError::UnsupportedExpression(
+                                "list.push assignment target",
+                            ));
+                        }
+                        continue;
                     }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
@@ -466,6 +493,17 @@ impl FunctionLowerer<'_> {
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                    }
+                    if let Expr::Call { name: call, args } = value
+                        && matches!(call.as_str(), "list.push" | "list.__push")
+                    {
+                        self.lower_list_push(args)?;
+                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
+                            return Err(CanonicalLoweringError::UnsupportedExpression(
+                                "list.push assignment target",
+                            ));
+                        }
+                        continue;
                     }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
@@ -940,6 +978,10 @@ impl FunctionLowerer<'_> {
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
         self.list_counts.insert(object, count);
+        self.known_list_lengths.insert(
+            object,
+            u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
 
         for (position, item) in items.iter().enumerate() {
             let value = self.lower_expr(item)?;
@@ -974,6 +1016,187 @@ impl FunctionLowerer<'_> {
             });
         }
         Ok(object)
+    }
+
+    /// Lower resolved `list.push(xs, value)` in normal mode. The operation
+    /// retains source-level mutation syntax while using copy-correct value
+    /// semantics: grow into a fresh allocation, initialize it, then reclaim
+    /// the old unique allocation and rebind the source name.
+    ///
+    /// The v1 template is deliberately limited to statically known lengths.
+    /// A dynamic-length move needs a checked generic range operation; guessing
+    /// from a helper name would violate the canonical SafeWIR boundary.
+    fn lower_list_push(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
+        let [Expr::Var(name), value] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.push arguments"));
+        };
+        let old_object = *self
+            .bindings
+            .get(name)
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+        let ValueType::Ref(layout) = self.values[&old_object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver"));
+        };
+        let list_type = Type::Named(
+            "List".into(),
+            vec![Type::Named("Int".into(), Vec::new())],
+        );
+        let (expected_layout, header_bytes, stride_bytes) =
+            list_int_layout(&list_type, self.layout_bundle, self.layouts)?;
+        if layout != expected_layout {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
+        }
+        let old_length = *self
+            .list_counts
+            .get(&old_object)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
+        let old_length_value = *self
+            .known_list_lengths
+            .get(&old_object)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
+        let value = self.lower_expr(value)?;
+        if self.values[&value] != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+        }
+
+        let maximum = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: maximum,
+            value: u64::from(u32::MAX),
+        });
+        let increment_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: increment_fits,
+            operator: ComparisonOperator::LessUnsigned,
+            left: old_length,
+            right: maximum,
+        });
+        self.push_operation(Operation::Guard {
+            condition: increment_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+        });
+        let one = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: one, value: 1 });
+        let new_length = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Arithmetic {
+            destination: new_length,
+            operator: ArithmeticOperator::Add,
+            left: old_length,
+            right: one,
+            overflow: OverflowBehavior::Wrap,
+        });
+        let capacity = self.fresh(ValueType::Size)?;
+        let new_length_value = old_length_value
+            .checked_add(1)
+            .ok_or(CanonicalLoweringError::IdOverflow)?;
+        self.push_operation(Operation::ConstSize {
+            destination: capacity,
+            value: new_length_value,
+        });
+        let initial_count_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: initial_count_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: old_length,
+            right: capacity,
+        });
+        self.push_operation(Operation::Guard {
+            condition: initial_count_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        let new_object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: new_object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count: old_length,
+                capacity,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+
+        for position in 0..old_length_value {
+            let index = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize { destination: index, value: position });
+            let in_bounds = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: in_bounds,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: old_length,
+            });
+            self.push_operation(Operation::Guard {
+                condition: in_bounds,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+            let copied = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::Load {
+                destination: copied,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    old_object,
+                    witchy_wir::canonical_safewir::Projection::Element { index },
+                    ValueType::Int,
+                    witchy_wir::canonical_safewir::AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            });
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    new_object,
+                    witchy_wir::canonical_safewir::Projection::Element { index },
+                    ValueType::Int,
+                    witchy_wir::canonical_safewir::AccessMode::Write,
+                ),
+                value: copied,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            });
+        }
+
+        let new_count_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: new_count_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: new_length,
+            right: capacity,
+        });
+        self.push_operation(Operation::Guard {
+            condition: new_count_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        self.push_operation(Operation::UpdateCount { object: new_object, count: new_length });
+        let append_index = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: append_index,
+            value: old_length_value,
+        });
+        let append_in_bounds = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: append_in_bounds,
+            operator: ComparisonOperator::LessUnsigned,
+            left: append_index,
+            right: new_length,
+        });
+        self.push_operation(Operation::Guard {
+            condition: append_in_bounds,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                new_object,
+                witchy_wir::canonical_safewir::Projection::Element { index: append_index },
+                ValueType::Int,
+                witchy_wir::canonical_safewir::AccessMode::Write,
+            ),
+            value,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        self.push_operation(Operation::Reclaim { object: old_object });
+        self.bindings.insert(name.clone(), new_object);
+        self.list_counts.insert(new_object, new_length);
+        self.known_list_lengths.insert(new_object, new_length_value);
+        Ok(())
     }
 
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
@@ -1494,6 +1717,38 @@ mod tests {
         )));
         let validation = check_initial(candidate);
         assert!(validation.is_ok(), "{validation:?}");
+    }
+
+    #[test]
+    fn list_push_lowering_has_checked_increment_and_rebinds_unique_storage() {
+        let checked = checked("fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[1]\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower List(Int) push source");
+        let operations = &candidate.functions()[0].blocks[0].operations;
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Guard { kind: GuardKind::Arithmetic, .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Arithmetic {
+                operator: witchy_wir::canonical_safewir::ArithmeticOperator::Add,
+                overflow: witchy_wir::canonical_safewir::OverflowBehavior::Wrap,
+                ..
+            }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::UpdateCount { .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Reclaim { .. }
+        )));
+        assert!(check_initial(candidate).is_ok());
     }
 
     #[test]
