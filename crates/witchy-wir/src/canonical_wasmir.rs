@@ -3013,6 +3013,7 @@ enum PlanToken {
     I64ExtendI32U,
     I64Mul,
     I64Add,
+    I64Sub,
     I32WrapI64,
     I64Eq,
     I64LtS,
@@ -3062,6 +3063,7 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I64ExtendI32U => PlanToken::I64ExtendI32U,
         wasmparser::Operator::I64Mul => PlanToken::I64Mul,
         wasmparser::Operator::I64Add => PlanToken::I64Add,
+        wasmparser::Operator::I64Sub => PlanToken::I64Sub,
         wasmparser::Operator::I32WrapI64 => PlanToken::I32WrapI64,
         wasmparser::Operator::I64Eq => PlanToken::I64Eq,
         wasmparser::Operator::I64LtS => PlanToken::I64LtS,
@@ -3793,6 +3795,9 @@ fn expected_linear_function_plan(
                 match (function.value_types.get(destination), operator) {
                     (Some(ValueType::Int), ArithmeticOperator::Add) => {
                         plan.push(PlanToken::I64Add)
+                    }
+                    (Some(ValueType::Int), ArithmeticOperator::Subtract) => {
+                        plan.push(PlanToken::I64Sub)
                     }
                     (Some(ValueType::Int), ArithmeticOperator::Multiply) => {
                         plan.push(PlanToken::I64Mul)
@@ -4839,11 +4844,12 @@ fn admit_canonical_with_bytes_for_test(
 mod tests {
     use super::*;
     use crate::canonical_safewir::{
-        BasicBlock, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
-        FunctionSignatureId,
+        BasicBlock, BlockId, BlockParameter, CallableContract, CheckedSourceIdentity,
+        FunctionSignature, FunctionSignatureId,
         GuardKind,
-        LoweredCandidate, LoweredModuleParts, ParameterContract, ParameterOwnership, Revision,
-        ResultContract, check_initial_with_test_witness, optimize_unreachable_blocks, validate_final,
+        LoweredCandidate, LoweredModuleParts, OverflowBehavior, ParameterContract,
+        ParameterOwnership, Revision, ResultContract, check_initial_with_test_witness,
+        optimize_unreachable_blocks, validate_final,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
@@ -4887,6 +4893,66 @@ mod tests {
         validate_final(&initial_snapshot, witness, optimized).expect("scalar fixture is final-valid")
     }
 
+    fn checked_int_subtraction() -> ValidatedSafeWir {
+        let left = ValueId::new(1);
+        let right = ValueId::new(2);
+        let result = ValueId::new(3);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(1),
+            parameters: Vec::new(),
+            results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(8),
+            checked_source: CheckedSourceIdentity::from_digest([8; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), [])
+                .expect("empty layout bundle is valid"),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(1),
+                signature: FunctionSignatureId::new(1),
+                entry: BlockId::new(1),
+                value_types: [
+                    (left, ValueType::Int),
+                    (right, ValueType::Int),
+                    (result, ValueType::Int),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: BlockId::new(1),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstInt { destination: left, value: 9 },
+                        Operation::ConstInt { destination: right, value: 4 },
+                        Operation::Arithmetic {
+                            destination: result,
+                            operator: ArithmeticOperator::Subtract,
+                            left,
+                            right,
+                            overflow: OverflowBehavior::Wrap,
+                        },
+                    ],
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let checked =
+            check_initial_with_test_witness(candidate).expect("subtraction fixture is valid");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).expect("subtraction fixture optimizes");
+        validate_final(&initial_snapshot, witness, optimized)
+            .expect("subtraction fixture is final-valid")
+    }
+
     #[test]
     fn scalar_lowering_has_one_mapping_per_operation_and_terminator() {
         let source = checked_scalar();
@@ -4900,6 +4966,13 @@ mod tests {
         let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
         wasmparser::validate(&wasm).expect("encoded scalar module is structurally valid");
         assert!(wasm.windows(2).any(|window| window == [0x42, 9]));
+    }
+
+    #[test]
+    fn int_subtraction_matches_the_exact_encoded_plan() {
+        let artifact = admit_canonical(checked_int_subtraction())
+            .expect("checked subtraction admits through exact-byte matching");
+        wasmparser::validate(artifact.wasm()).expect("subtraction artifact is valid Wasm");
     }
 
     #[test]
