@@ -1911,6 +1911,9 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if matches!(name.as_str(), "list.length" | "list.__length") => {
                 self.lower_list_length(args)
             }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.chars" | "string.__chars") => {
+                self.lower_string_chars(args)
+            }
             Expr::Call { name, args } => {
                 let results = if let Some(callee) = self.bindings.get(name).copied() {
                     let ValueType::Callable(signature) = self.values[&callee] else {
@@ -2603,6 +2606,95 @@ impl FunctionLowerer<'_> {
         let result = self.fresh(ValueType::Int)?;
         self.push_operation(Operation::WidenSize { destination: result, value: length });
         Ok(result)
+    }
+
+    /// Decode a compile-time UTF-8 string into its Unicode scalar strings.
+    ///
+    /// This is intentionally the first, narrow `string.chars` slice: the
+    /// source literal is already a valid Rust `str`, so `chars()` performs the
+    /// language-mandated scalar decoding before any bytes enter SafeWIR. Each
+    /// result is then materialized through the ordinary canonical owned-string
+    /// and pointer-list templates. Dynamic strings remain rejected until the
+    /// canonical kernel has an explicit checked UTF-8 decoder operation.
+    fn lower_string_chars(&mut self, arguments: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let [Expr::Str(source)] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "dynamic string.chars requires a canonical checked UTF-8 decoder",
+            ));
+        };
+        let list_type = Type::Named(
+            "List".into(),
+            vec![Type::Named("String".into(), Vec::new())],
+        );
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&list_type, self.layout_bundle, self.layouts)?;
+        let characters = source.chars().collect::<Vec<_>>();
+        let count = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: count,
+            value: u64::try_from(characters.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: capacity,
+            value: u64::try_from(characters.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        let zero = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count: zero,
+                capacity,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.list_counts.insert(object, count);
+        self.list_capacities.insert(object, capacity);
+        self.known_list_lengths.insert(
+            object,
+            u64::try_from(characters.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+
+        for (position, character) in characters.iter().enumerate() {
+            let source = self.lower_string_literal(&character.to_string())?;
+            let value = self.clone_string_for_storage(source)?;
+            if self.values[&value] != element_type {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
+            }
+            let index = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize {
+                destination: index,
+                value: u64::try_from(position).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            });
+            let in_capacity = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: in_capacity,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: capacity,
+            });
+            self.push_operation(Operation::Guard {
+                condition: in_capacity,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    witchy_wir::canonical_safewir::Projection::Element { index },
+                    element_type,
+                    witchy_wir::canonical_safewir::AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+            });
+        }
+        self.push_operation(Operation::UpdateCount { object, count });
+        Ok(object)
     }
 
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
@@ -3700,6 +3792,35 @@ mod tests {
             )));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "nested list literal rejected: {result:?}");
+    }
+
+    #[test]
+    fn string_chars_literal_decodes_utf8_scalars_into_owned_strings() {
+        let candidate = lower_with_derived_layouts(
+            "fn main() -> List(String):\n    \"h\u{00e9}\".chars()\n",
+        );
+        let operations = candidate.functions()[0]
+            .blocks
+            .iter()
+            .flat_map(|block| &block.operations)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|operation| matches!(operation, Operation::Store { .. }))
+                .count(),
+            2,
+            "one owned string is stored for each Unicode scalar",
+        );
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|operation| matches!(operation, Operation::CopyBytes { .. }))
+                .count(),
+            2,
+        );
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "UTF-8 chars candidate rejected: {result:?}");
     }
 
     #[test]
