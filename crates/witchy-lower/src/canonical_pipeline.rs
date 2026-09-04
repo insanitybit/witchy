@@ -69,7 +69,6 @@ pub(crate) fn validate_checked_module(
 mod tests {
     use super::*;
     use witchy_syntax::parser::parse_module;
-    use witchy_wir::canonical_safewir::ValueType;
 
     #[test]
     fn scalar_source_reaches_final_safewir_authority_without_raw_wir() {
@@ -253,13 +252,24 @@ mod tests {
             .expect("configure public production Wasm engine");
         let module = wasmtime::Module::new(&engine, &bytes)
             .expect("compile public production Wasm");
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let mut store = wasmtime::Store::new(&engine, None::<i64>);
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "print_int",
+                |mut caller: wasmtime::Caller<'_, Option<i64>>, value: i64| {
+                    *caller.data_mut() = Some(value);
+                },
+            )
+            .expect("bind frozen legacy print ABI");
+        let instance = linker.instantiate(&mut store, &module)
             .expect("instantiate public production Wasm");
-        let main = instance
-            .get_typed_func::<(), i64>(&mut store, "f0")
-            .expect("canonical public production main export");
-        assert_eq!(main.call(&mut store, ()).expect("run public production Wasm"), 42);
+        let run = instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("frozen public production run export");
+        run.call(&mut store, ()).expect("run public production Wasm");
+        assert_eq!(*store.data(), Some(42));
     }
 
     #[test]
@@ -382,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_variable_call_rejects_memory_bearing_result() {
+    fn checked_variable_call_admits_memory_bearing_result() {
         let source = "fn answer() -> String:\n    \"ok\"\nfn main() -> Int:\n    let f = answer\n    let result = f()\n    1\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
@@ -391,12 +401,18 @@ mod tests {
         )
         .expect("checked memory-bearing function-value source");
 
-        assert!(matches!(
-            validate_checked_module(&checked),
-            Err(CanonicalPipelineError::Lowering(
-                CanonicalLoweringError::UnsupportedIndirectResult(ValueType::Ref(_))
-            ))
-        ));
+        let artifact = admit_checked_module(&checked)
+            .expect("admit authenticated memory-bearing function-value result");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile memory-bearing function-value artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate memory-bearing function-value artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical memory-bearing function-value main export");
+        assert_eq!(main.call(&mut store, ()).expect("run function-value result"), 1);
     }
 
     #[test]

@@ -2700,7 +2700,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(base)?;
-        let (layout, element_type, header_bytes, stride_bytes) =
+        let (layout, element_type, _header_bytes, _stride_bytes) =
             list_layout(&logical_type, self.layout_bundle, self.layouts)?;
         let object = self.lower_expr(base)?;
         if self.values[&object] != ValueType::Ref(layout) {
@@ -2712,68 +2712,12 @@ impl FunctionLowerer<'_> {
         }
         let index_size = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::NarrowSize { destination: index_size, value: index_value });
-        let logical_length = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::Load {
-            destination: logical_length,
-            place: witchy_wir::canonical_safewir::Place::projected(
-                object,
-                witchy_wir::canonical_safewir::Projection::Header(
-                    witchy_wir::canonical_safewir::HeaderField::Length,
-                ),
-                ValueType::Size,
-                witchy_wir::canonical_safewir::AccessMode::Read,
-            ),
-            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
-        });
-        // A borrowed parameter starts with authority for its catalog-authenticated
-        // header only. Authenticate both dynamic header values before allowing a
-        // body projection: logical length is bounded by capacity, and capacity
-        // cannot overflow the Wasm32 allocation size for this layout.
-        if !self.list_counts.contains_key(&object) {
-            let capacity = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::Load {
-                destination: capacity,
-                place: witchy_wir::canonical_safewir::Place::projected(
-                    object,
-                    witchy_wir::canonical_safewir::Projection::Header(
-                        witchy_wir::canonical_safewir::HeaderField::Capacity,
-                    ),
-                    ValueType::Size,
-                    witchy_wir::canonical_safewir::AccessMode::Read,
-                ),
-                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
-            });
-            let count_fits = self.fresh(ValueType::Bool)?;
-            self.push_operation(Operation::Compare {
-                destination: count_fits,
-                operator: ComparisonOperator::LessEqualUnsigned,
-                left: logical_length,
-                right: capacity,
-            });
-            self.push_operation(Operation::Guard {
-                condition: count_fits,
-                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-            });
-            let maximum = (u64::from(u32::MAX) - u64::from(header_bytes))
-                / u64::from(stride_bytes);
-            let maximum_value = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::ConstSize {
-                destination: maximum_value,
-                value: maximum,
-            });
-            let allocation_fits = self.fresh(ValueType::Bool)?;
-            self.push_operation(Operation::Compare {
-                destination: allocation_fits,
-                operator: ComparisonOperator::LessEqualUnsigned,
-                left: capacity,
-                right: maximum_value,
-            });
-            self.push_operation(Operation::Guard {
-                condition: allocation_fits,
-                kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
-            });
-        }
-        let logical_count = logical_length;
+        // `lower_expr(base)` has already authenticated the list header and
+        // recorded the exact count definition related to its capacity. Do not
+        // reload the header here: a new definition would discard that relation.
+        let logical_count = *self.list_counts.get(&object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list index extent"),
+        )?;
         let condition = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: condition,
