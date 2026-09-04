@@ -229,34 +229,6 @@ impl OptimizationHistoryWitness {
         Ok(())
     }
 
-    pub(crate) fn zero_pass(
-        initial: &CanonicalModule<InitialValid>,
-        final_module: &CanonicalModule<OptimizedValid>,
-    ) -> Result<Self, HistoryError> {
-        let initial_digest = module_digest(initial);
-        let final_digest = module_digest(final_module);
-        if initial_digest != final_digest || initial.revision() != final_module.revision() {
-            return Err(HistoryError::FinalDigestMismatch);
-        }
-        Ok(Self {
-            body: OptimizationHistoryBody {
-                checked_lowering_revision_digest: initial_digest,
-                proper_tail_manifest_digest: tail_digest(initial),
-                ordered: Vec::new(),
-                final_safewir_revision_digest: final_digest,
-                optimizer_policy_and_route_digest: policy_and_route_digest(),
-            },
-        })
-    }
-
-    pub(crate) fn from_receipt(
-        initial: &CanonicalModule<InitialValid>,
-        final_module: &CanonicalModule<OptimizedValid>,
-        receipt: RefinementReceipt,
-    ) -> Result<Self, HistoryError> {
-        Self::from_receipts(initial, final_module, vec![receipt])
-    }
-
     pub(crate) fn from_receipts(
         initial: &CanonicalModule<InitialValid>,
         final_module: &CanonicalModule<OptimizedValid>,

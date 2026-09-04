@@ -4,8 +4,8 @@ use super::assurance::{self, AssuranceError};
 use super::history::{HistoryError, OptimizationHistoryWitness};
 use super::refinement::{self, RefinementError};
 use super::{
-    CanonicalModule, DischargedObligation, InitialCheckError, InitialValid,
-    OptimizedValid,
+    CanonicalModule, DischargedObligation, Function, InitialCheckError, InitialValid,
+    LoweredModuleParts, OptimizedValid,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +27,218 @@ fn map_assurance_error(error: AssuranceError) -> OptimizationError {
 pub struct OptimizationOutcome {
     optimized: CanonicalModule<OptimizedValid>,
     history: OptimizationHistoryWitness,
+}
+
+#[derive(Clone)]
+enum SessionRevision {
+    Initial(CanonicalModule<InitialValid>),
+    Optimized(CanonicalModule<OptimizedValid>),
+}
+
+impl SessionRevision {
+    fn revision(&self) -> super::Revision {
+        match self {
+            Self::Initial(module) => module.revision(),
+            Self::Optimized(module) => module.revision(),
+        }
+    }
+
+    fn functions(&self) -> &[Function] {
+        match self {
+            Self::Initial(module) => module.functions(),
+            Self::Optimized(module) => module.functions(),
+        }
+    }
+}
+
+/// An ordered, single-use optimization transaction.
+///
+/// The initial checked module is retained unchanged for the final history
+/// witness. `current` is always the latest safety-checked revision. A pass
+/// may only publish a revision after the registered refinement acceptance and
+/// common SafeWIR recheck both succeed; a refused candidate is discarded.
+pub struct OptimizationSession {
+    initial: CanonicalModule<InitialValid>,
+    current: SessionRevision,
+    receipts: Vec<super::history::RefinementReceipt>,
+}
+
+impl OptimizationSession {
+    pub fn new(initial: CanonicalModule<InitialValid>) -> Self {
+        Self {
+            current: SessionRevision::Initial(initial.clone()),
+            initial,
+            receipts: Vec::new(),
+        }
+    }
+
+    pub fn current_revision(&self) -> super::Revision {
+        self.current.revision()
+    }
+
+    fn candidate_for(
+        &self,
+        revision: super::Revision,
+        functions: Vec<Function>,
+    ) -> CanonicalModule<super::TransformedCandidate> {
+        // The canonical passes currently transform function bodies only. The
+        // immutable initial module supplies the unchanged module-level truth.
+        self.initial
+            .clone()
+            .into_transformed_candidate(revision, functions)
+    }
+
+    fn initial_view(
+        module: &CanonicalModule<OptimizedValid>,
+    ) -> Result<CanonicalModule<InitialValid>, OptimizationError> {
+        super::check_initial(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: module.revision(),
+            checked_source: module.checked_source(),
+            layouts: module.layouts().clone(),
+            signatures: module.signatures().to_vec(),
+            imports: module.imports().to_vec(),
+            functions: module.functions().to_vec(),
+            proper_tail_sites: module.proper_tail_sites().to_vec(),
+        }))
+        .map_err(OptimizationError::Safety)
+    }
+
+    pub fn apply_unreachable_blocks(&mut self) -> Result<(), OptimizationError> {
+        let before = match self.current.clone() {
+            SessionRevision::Initial(module) => module,
+            SessionRevision::Optimized(module) => Self::initial_view(&module)?,
+        };
+        let (functions, changed) = refinement::prune_functions(&before);
+        let revision = if changed {
+            super::Revision::new(
+                before
+                    .revision()
+                    .get()
+                    .checked_add(1)
+                    .ok_or(OptimizationError::RevisionOverflow)?,
+            )
+        } else {
+            before.revision()
+        };
+        let candidate = self.candidate_for(revision, functions);
+        let receipt = refinement::prove_unreachable_pruning(&before, &candidate)
+            .map_err(OptimizationError::Refinement)?;
+        match receipt {
+            Some(receipt) => {
+                let (optimized, receipt) = assurance::accept_transform(
+                    crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+                    &before,
+                    candidate,
+                    receipt,
+                )
+                .map_err(map_assurance_error)?;
+                self.current = SessionRevision::Optimized(optimized);
+                self.receipts.push(receipt);
+            }
+            None => {
+                let optimized = assurance::recheck(
+                    crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+                    candidate,
+                )
+                .map_err(map_assurance_error)?;
+                self.current = SessionRevision::Optimized(optimized);
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply all independently executable constant folds to the current
+    /// checked revision. A rejected fold leaves the last accepted revision in
+    /// place and does not append a receipt.
+    pub fn apply_constant_folding(&mut self) -> Result<(), OptimizationError> {
+        assurance::registered(crate::canonical_safewir::OptimizationPassId::ConstantFolding)
+            .map_err(map_assurance_error)?;
+        let mut current = self.current.clone();
+        let mut functions = current.functions().to_vec();
+        let mut revision = current.revision();
+        let mut accepted_any = false;
+
+        while let Some((next_functions, folded)) = constant_fold::first_fold(&functions) {
+            let next_revision = revision
+                .get()
+                .checked_add(1)
+                .map(super::Revision::new)
+                .ok_or(OptimizationError::RevisionOverflow)?;
+            let candidate = self.candidate_for(next_revision, next_functions.clone());
+            let obligation = DischargedObligation::FoldedScalarOperation {
+                function: folded.function,
+                block: folded.block,
+                operation_index: folded.operation_index,
+            };
+            let receipt = match &current {
+                SessionRevision::Initial(module) => {
+                    OptimizationHistoryWitness::constant_folding_receipt(module, &candidate, obligation)
+                }
+                SessionRevision::Optimized(module) => {
+                    OptimizationHistoryWitness::constant_folding_receipt(module, &candidate, obligation)
+                }
+            };
+            let accepted_result = match &current {
+                SessionRevision::Initial(module) => assurance::accept_transform(
+                    crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+                    module,
+                    candidate,
+                    receipt,
+                ),
+                SessionRevision::Optimized(module) => assurance::accept_transform(
+                    crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+                    module,
+                    candidate,
+                    receipt,
+                ),
+            };
+            let accepted = match accepted_result {
+                Ok(accepted) => accepted,
+                Err(AssuranceError::Safety(_)) => break,
+                Err(error) => return Err(map_assurance_error(error)),
+            };
+            self.receipts.push(accepted.1);
+            current = SessionRevision::Optimized(accepted.0);
+            functions = next_functions;
+            revision = next_revision;
+            accepted_any = true;
+        }
+
+        if !accepted_any {
+            let candidate = self.candidate_for(revision, functions);
+            let optimized = assurance::recheck(
+                crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+                candidate,
+            )
+            .map_err(map_assurance_error)?;
+            current = SessionRevision::Optimized(optimized);
+        }
+        self.current = current;
+        Ok(())
+    }
+
+    pub fn finalize(self) -> Result<OptimizationOutcome, OptimizationError> {
+        let Self { initial, current, receipts } = self;
+        let optimized = match current {
+            SessionRevision::Optimized(module) => module,
+            SessionRevision::Initial(_) => {
+                let candidate = initial
+                    .clone()
+                    .into_transformed_candidate(initial.revision(), initial.functions().to_vec());
+                assurance::recheck(
+                    crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+                    candidate,
+                )
+                .map_err(map_assurance_error)?
+            }
+        };
+        let history = OptimizationHistoryWitness::from_receipts(&initial, &optimized, receipts)
+            .map_err(OptimizationError::History)?;
+        history
+            .validate(&initial, &optimized)
+            .map_err(OptimizationError::History)?;
+        Ok(OptimizationOutcome { optimized, history })
+    }
 }
 
 impl OptimizationOutcome {
@@ -52,54 +264,9 @@ impl OptimizationOutcome {
 pub fn optimize_unreachable_blocks(
     initial: CanonicalModule<InitialValid>,
 ) -> Result<OptimizationOutcome, OptimizationError> {
-    assurance::registered(
-        crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
-    )
-    .map_err(map_assurance_error)?;
-    let before = initial.clone();
-    let (functions, changed) = refinement::prune_functions(&before);
-    let revision = if changed {
-        super::Revision::new(
-            before
-                .revision()
-                .get()
-                .checked_add(1)
-                .ok_or(OptimizationError::RevisionOverflow)?,
-        )
-    } else {
-        before.revision()
-    };
-    let candidate = initial.into_transformed_candidate(revision, functions);
-    let receipt = refinement::prove_unreachable_pruning(&before, &candidate)
-        .map_err(OptimizationError::Refinement)?;
-    let (optimized, history) = match receipt {
-        Some(receipt) => {
-            let (optimized, receipt) = assurance::accept_transform(
-                crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
-                &before,
-                candidate,
-                receipt,
-            )
-            .map_err(map_assurance_error)?;
-            let history = OptimizationHistoryWitness::from_receipt(&before, &optimized, receipt)
-                .map_err(OptimizationError::History)?;
-            (optimized, history)
-        }
-        None => {
-            let optimized = assurance::recheck(
-                crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
-                candidate,
-            )
-            .map_err(map_assurance_error)?;
-            let history = OptimizationHistoryWitness::zero_pass(&before, &optimized)
-                .map_err(OptimizationError::History)?;
-            (optimized, history)
-        }
-    };
-    history
-        .validate(&before, &optimized)
-        .map_err(OptimizationError::History)?;
-    Ok(OptimizationOutcome { optimized, history })
+    let mut session = OptimizationSession::new(initial);
+    session.apply_unreachable_blocks()?;
+    session.finalize()
 }
 
 /// Fold independently executable scalar operations one at a time.
@@ -111,70 +278,9 @@ pub fn optimize_unreachable_blocks(
 pub fn optimize_constant_folding(
     initial: CanonicalModule<InitialValid>,
 ) -> Result<OptimizationOutcome, OptimizationError> {
-    assurance::registered(crate::canonical_safewir::OptimizationPassId::ConstantFolding)
-        .map_err(map_assurance_error)?;
-    let before = initial.clone();
-    let mut functions = initial.functions().to_vec();
-    let mut revision = initial.revision();
-    let mut previous = initial
-        .clone()
-        .into_transformed_candidate(revision, functions.clone());
-    let mut receipts = Vec::new();
-    let mut optimized = None;
-
-    while let Some((next_functions, folded)) = constant_fold::first_fold(&functions) {
-        let next_revision = revision
-            .get()
-            .checked_add(1)
-            .map(super::Revision::new)
-            .ok_or(OptimizationError::RevisionOverflow)?;
-        let candidate = initial
-            .clone()
-            .into_transformed_candidate(next_revision, next_functions.clone());
-        let receipt = OptimizationHistoryWitness::constant_folding_receipt(
-            &previous,
-            &candidate,
-            DischargedObligation::FoldedScalarOperation {
-                function: folded.function,
-                block: folded.block,
-                operation_index: folded.operation_index,
-            },
-        );
-        let candidate_for_next = candidate.clone();
-        let (checked, receipt) = match assurance::accept_transform(
-            crate::canonical_safewir::OptimizationPassId::ConstantFolding,
-            &previous,
-            candidate,
-            receipt,
-        ) {
-            Ok(result) => result,
-            Err(AssuranceError::Safety(_)) => break,
-            Err(error) => return Err(map_assurance_error(error)),
-        };
-        receipts.push(receipt);
-        optimized = Some(checked);
-        previous = candidate_for_next;
-        functions = next_functions;
-        revision = next_revision;
-    }
-
-    let optimized = match optimized {
-        Some(optimized) => optimized,
-        None => {
-            let candidate = initial.into_transformed_candidate(revision, functions);
-            assurance::recheck(
-                crate::canonical_safewir::OptimizationPassId::ConstantFolding,
-                candidate,
-            )
-            .map_err(map_assurance_error)?
-        }
-    };
-    let history = OptimizationHistoryWitness::from_receipts(&before, &optimized, receipts)
-        .map_err(OptimizationError::History)?;
-    history
-        .validate(&before, &optimized)
-        .map_err(OptimizationError::History)?;
-    Ok(OptimizationOutcome { optimized, history })
+    let mut session = OptimizationSession::new(initial);
+    session.apply_constant_folding()?;
+    session.finalize()
 }
 
 #[cfg(test)]
@@ -313,6 +419,116 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         crate::canonical_safewir::check_initial(lowered).unwrap()
+    }
+
+    fn composition_fixture() -> CanonicalModule<InitialValid> {
+        let condition = ValueId::new(0);
+        let left = ValueId::new(1);
+        let right = ValueId::new(2);
+        let sum = ValueId::new(3);
+        let comparison = ValueId::new(4);
+        let live = crate::canonical_safewir::BlockId::new(1);
+        let dead = crate::canonical_safewir::BlockId::new(2);
+        let mut value_types: BTreeMap<ValueId, ValueType> = [
+            (condition, ValueType::Bool),
+            (left, ValueType::Int),
+            (right, ValueType::Int),
+            (sum, ValueType::Int),
+            (comparison, ValueType::Bool),
+        ]
+        .into_iter()
+        .collect();
+        value_types.insert(ValueId::new(9), ValueType::Bool);
+        let lowered = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(4),
+            checked_source: CheckedSourceIdentity::from_digest([6; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: Vec::new(),
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types,
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstBool { destination: condition, value: true }],
+                        terminator: Terminator::Branch { target: live, arguments: Vec::new() },
+                    },
+                    BasicBlock {
+                        id: live,
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::ConstInt { destination: left, value: 40 },
+                            Operation::ConstInt { destination: right, value: 2 },
+                            Operation::Arithmetic {
+                                destination: sum,
+                                operator: super::super::ArithmeticOperator::Add,
+                                left,
+                                right,
+                                overflow: super::super::OverflowBehavior::Wrap,
+                            },
+                            Operation::Compare {
+                                destination: comparison,
+                                operator: super::super::ComparisonOperator::Equal,
+                                left: sum,
+                                right,
+                            },
+                        ],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    },
+                    BasicBlock {
+                        id: dead,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstBool {
+                            destination: ValueId::new(9),
+                            value: false,
+                        }],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        crate::canonical_safewir::check_initial(lowered).unwrap()
+    }
+
+    #[test]
+    fn session_composes_pruning_then_folding_and_binds_the_ordered_chain() {
+        let initial = composition_fixture();
+        let mut session = OptimizationSession::new(initial.clone());
+        session.apply_unreachable_blocks().unwrap();
+        assert_eq!(session.current_revision(), Revision::new(5));
+        session.apply_constant_folding().unwrap();
+        let outcome = session.finalize().unwrap();
+
+        assert_eq!(outcome.optimized().functions()[0].blocks.len(), 2);
+        let operations = &outcome.optimized().functions()[0].blocks[1].operations;
+        assert!(matches!(operations[2], Operation::ConstInt { value: 42, .. }));
+        assert!(matches!(operations[3], Operation::ConstBool { value: false, .. }));
+        assert_eq!(
+            outcome.history().ordered().iter().map(|receipt| receipt.pass()).collect::<Vec<_>>(),
+            vec![
+                crate::canonical_safewir::OptimizationPassId::UnreachableBlockPruning,
+                crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+                crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+            ]
+        );
+
+        let mut forged = outcome.history().clone();
+        forged.tamper_first_after_digest();
+        assert!(forged.validate(&initial, outcome.optimized()).is_err());
     }
 
     #[test]
