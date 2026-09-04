@@ -1719,7 +1719,10 @@ impl<'a> MemoryChecker<'a> {
                     operation: "UpdateCount(pointer slot uninitialized)",
                 },
             )?;
-            if stored.layout != element || stored.ownership != Ownership::Unique {
+            if stored.layout != element {
+                return self.unsupported("UpdateCount(pointer slot layout)");
+            }
+            if stored.ownership != Ownership::Unique {
                 return self.unsupported("UpdateCount(pointer slot ownership)");
             }
             if existing.1.allocation_class.is_some()
@@ -1756,7 +1759,10 @@ impl<'a> MemoryChecker<'a> {
                     operation: "UpdateCount(pointer slot uninitialized)",
                 },
             )?;
-            if stored.layout != element || stored.ownership != Ownership::Unique {
+            if stored.layout != element {
+                return self.unsupported("UpdateCount(pointer slot layout)");
+            }
+            if stored.ownership != Ownership::Unique {
                 return self.unsupported("UpdateCount(pointer slot ownership)");
             }
             if allocation_class.is_some() && allocation_class != stored.allocation_class {
