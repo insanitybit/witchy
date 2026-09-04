@@ -371,7 +371,7 @@ fn propagate_operation_origins(
         Operation::StaticData { destination, layout, .. } => {
             join_origin(origins, *destination, Origin::StaticData(*layout));
         }
-        Operation::Share { destination, source } => {
+        Operation::CloneRef { destination, source } => {
             let origin = match origin_of(origins, *source) {
                 origin @ (Origin::Parameter { layout: Some(_), .. }
                 | Origin::ReallocatesParameter { .. }) => origin,
@@ -503,7 +503,7 @@ fn derive_operation(
             });
         }
         Operation::StaticData { destination, layout, .. } => { origins.insert(*destination, Origin::StaticData(*layout)); }
-        Operation::Share { destination, source } => {
+        Operation::CloneRef { destination, source } => {
             let origin = match origin_of(origins, *source) {
                 Origin::Parameter { layout: Some(layout), .. }
                 | Origin::Fresh { layout, .. }

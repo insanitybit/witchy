@@ -928,7 +928,7 @@ impl CanonicalWriter {
                 self.value_id(*destination);
                 self.value_id(*source);
             }
-            Operation::Share { destination, source } => {
+            Operation::CloneRef { destination, source } => {
                 self.u8(17);
                 self.value_id(*destination);
                 self.value_id(*source);

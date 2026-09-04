@@ -1590,7 +1590,7 @@ impl FunctionLowerer<'_> {
                 parameter.value == value && parameter.ownership == Some(Ownership::Shared)
             }) || block.operations.iter().any(|operation| match operation {
                 Operation::StaticData { destination, .. }
-                | Operation::Share { destination, .. } => *destination == value,
+                | Operation::CloneRef { destination, .. } => *destination == value,
                 Operation::Load {
                     destination,
                     transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,

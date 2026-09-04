@@ -1296,8 +1296,8 @@ impl<'a> MemoryChecker<'a> {
                 self.move_value(*destination, *source)?;
                 Ok(true)
             }
-            Operation::Share { destination, source } => {
-                self.share(*destination, *source)?;
+            Operation::CloneRef { destination, source } => {
+                self.clone_ref(*destination, *source)?;
                 Ok(true)
             }
             Operation::Release { object } => {
@@ -2037,15 +2037,25 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
-    fn share(&mut self, destination: ValueId, source: ValueId) -> Result<(), InitialCheckError> {
+    fn clone_ref(
+        &mut self,
+        destination: ValueId,
+        source: ValueId,
+    ) -> Result<(), InitialCheckError> {
         let source_type = value_type(self.function, source)?;
         let ValueType::Ref(layout) = source_type else {
-            return self.unsupported("Share(scalar)");
+            return self.unsupported("CloneRef(scalar)");
         };
         self.require_ref_type(destination, layout)?;
         let mut state = self.live_object(source)?.clone();
-        if state.ownership != Ownership::Unique {
+        if !matches!(state.ownership, Ownership::Unique | Ownership::Shared) {
             return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: source,
+            });
+        }
+        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+            return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
                 object: source,
             });
@@ -2055,7 +2065,7 @@ impl<'a> MemoryChecker<'a> {
         self.state.objects
             .get_mut(&source)
             .expect("live object exists")
-            .ownership = Ownership::Consumed;
+            .ownership = Ownership::Shared;
         Ok(())
     }
 
@@ -2542,7 +2552,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::CopyBytes { .. } => "CopyBytes",
         Operation::MoveRange { .. } => "MoveRange",
         Operation::CloneRange { .. } => "CloneRange",
-        Operation::Share { .. } => "Share",
+        Operation::CloneRef { .. } => "CloneRef",
         Operation::Retain { .. } => "Retain",
         Operation::Release { .. } => "Release",
         Operation::DropRef { .. } => "DropRef",
@@ -2728,6 +2738,38 @@ mod tests {
             assert!(matches!(
                 checker.move_value(DESTINATION, SOURCE),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn clone_ref_tracks_two_affine_shared_tokens() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            checker.clone_ref(DESTINATION, SOURCE).expect("clone reference");
+
+            let source = &checker.state.objects[&SOURCE];
+            let destination = &checker.state.objects[&DESTINATION];
+            assert_eq!(source.identity, destination.identity);
+            assert_eq!(source.ownership, Ownership::Shared);
+            assert_eq!(destination.ownership, Ownership::Shared);
+
+            checker.drop_ref(SOURCE).expect("drop source token");
+            checker.drop_ref(DESTINATION).expect("drop destination token");
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+            assert_eq!(checker.state.objects[&DESTINATION].ownership, Ownership::Consumed);
+        });
+    }
+
+    #[test]
+    fn clone_ref_rejects_storage_without_refcount_authority() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            checker.state.objects.get_mut(&SOURCE).expect("source").allocation_class = None;
+
+            assert!(matches!(
+                checker.clone_ref(DESTINATION, SOURCE),
+                Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
             ));
         });
     }

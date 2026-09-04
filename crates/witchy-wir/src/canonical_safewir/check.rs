@@ -730,7 +730,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
         | Operation::MoveValue { destination, .. }
-        | Operation::Share { destination, .. }
+        | Operation::CloneRef { destination, .. }
         | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. }
         | Operation::VarCall { destinations, .. }
@@ -763,7 +763,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::WidenSize { value, .. }
         | Operation::Guard { condition: value, .. }
         | Operation::MoveValue { source: value, .. }
-        | Operation::Share { source: value, .. }
+        | Operation::CloneRef { source: value, .. }
         | Operation::Retain { object: value }
         | Operation::Release { object: value }
         | Operation::DropRef { object: value }
@@ -1120,7 +1120,7 @@ fn check_operation(
         Operation::MoveRange { .. } => unsupported_memory(function, "MoveRange"),
         Operation::CloneRange { .. } => unsupported_memory(function, "CloneRange"),
         Operation::UpdateCount { .. } => unsupported_memory(function, "UpdateCount"),
-        Operation::Share { .. } => unsupported_memory(function, "Share"),
+        Operation::CloneRef { .. } => unsupported_memory(function, "CloneRef"),
         Operation::Retain { .. } => unsupported_memory(function, "Retain"),
         Operation::Release { .. } => unsupported_memory(function, "Release"),
         Operation::DropRef { .. } => unsupported_memory(function, "DropRef"),
@@ -3239,7 +3239,7 @@ mod tests {
                             },
                             class: AllocationClass::ReferenceCounted,
                         },
-                        Operation::Share { destination: shared, source: object },
+                        Operation::CloneRef { destination: shared, source: object },
                         Operation::Reclaim { object: shared },
                     ],
                     terminator: Terminator::Return { values: Vec::new() },

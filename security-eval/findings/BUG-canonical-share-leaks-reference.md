@@ -2,8 +2,9 @@
 
 ## Status
 
-Open. Found while replacing RFC-0165 v1 `CallBorrow` with affine owned
-references.
+Partially resolved on `impl/rfc0165-canonical-v1`. The operation-level
+checker/backend mismatch is fixed; function-exit affine accounting remains
+open.
 
 ## Defect
 
@@ -23,13 +24,13 @@ issue. `Share` cannot be used as the owned-reference clone required to remove
 
 ## Required correction
 
-Define an explicit affine clone operation. It must leave two tracked shared
-tokens, increment the runtime count exactly once, and require each token to be
-dropped or moved exactly once. Alternatively, define `Share` to perform that
-transition and update every caller and test. Tail calls move the caller's token
-rather than cloning it.
+`CloneRef` now leaves two tracked `Shared` tokens, rejects non-reference-counted
+storage, and increments the runtime count exactly once. Focused checker tests
+consume both tokens independently, and the executable backend fixture emits
+both drops.
 
-Add an executable probe that clones a reference-counted object, drops both
-tokens, and observes allocator reuse only after the second drop. Add a negative
-checker test for omitting either token from exit accounting.
-
+The remaining correction is function-exit accounting: every affine token must
+be dropped, moved, stored, or returned exactly once. Add a negative checker
+test for omitting either token and an executable allocator-reuse probe that
+observes reuse only after the second drop. Tail calls must move the caller's
+token rather than cloning it.

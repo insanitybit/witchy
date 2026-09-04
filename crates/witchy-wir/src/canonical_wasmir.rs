@@ -92,7 +92,7 @@ enum ScalarInstruction {
     MoveRange { destination: Place, source: Place, count: ValueId },
     CloneRange { destination: Place, source: Place, count: ValueId },
     UpdateCount { object: ValueId, count: ValueId },
-    Share { destination: ValueId, source: ValueId },
+    CloneRef { destination: ValueId, source: ValueId },
     Release { object: ValueId },
     Reclaim { object: ValueId },
     Call { destinations: Vec<ValueId>, callee: FunctionId, arguments: Vec<ValueId> },
@@ -768,12 +768,12 @@ fn lower_operation(
             }
             ScalarInstruction::UpdateCount { object: *object, count: *count }
         }
-        Operation::Share { destination, source } => {
+        Operation::CloneRef { destination, source } => {
             if allocation_classes.get(source) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
-                return Err(LoweringError::UnsupportedLayout { function, operation: "Share" });
+                return Err(LoweringError::UnsupportedLayout { function, operation: "CloneRef" });
             }
             allocation_classes.insert(*destination, crate::canonical_safewir::AllocationClass::ReferenceCounted);
-            ScalarInstruction::Share { destination: *destination, source: *source }
+            ScalarInstruction::CloneRef { destination: *destination, source: *source }
         }
         Operation::Release { object } | Operation::DropRef { object } | Operation::Reclaim { object } => {
             if allocation_classes.get(object) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
@@ -904,7 +904,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::UpdateCount { .. } => "UpdateCount",
         Operation::MoveValue { .. } => "MoveValue",
         Operation::FunctionValue { .. } => "FunctionValue",
-        Operation::Share { .. } => "Share",
+        Operation::CloneRef { .. } => "CloneRef",
         Operation::Retain { .. } => "Retain",
         Operation::Release { .. } => "Release",
         Operation::DropRef { .. } => "DropRef",
@@ -1026,7 +1026,7 @@ fn allocation_classes_across_cfg(
                 Operation::Alloc { destination, class, .. } => {
                     classes.insert(*destination, *class);
                 }
-                Operation::MoveValue { destination, source } | Operation::Share { destination, source } => {
+        Operation::MoveValue { destination, source } | Operation::CloneRef { destination, source } => {
                     if let Some(class) = classes.get(source).copied() {
                         classes.insert(*destination, class);
                     }
@@ -1151,7 +1151,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::MoveRange { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::CloneRange { .. } => Some(CorrespondenceRule::MemoryCopy),
         Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
-        Operation::Share { .. }
+        Operation::CloneRef { .. }
         | Operation::Release { .. }
         | Operation::DropRef { .. }
         | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
@@ -1182,7 +1182,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::MoveRange { destination, source, count }, ScalarInstruction::MoveRange { destination: actual_destination, source: actual_source, count: actual_count }) => destination == actual_destination && source == actual_source && count == actual_count,
         (Operation::CloneRange { destination, source, count }, ScalarInstruction::CloneRange { destination: actual_destination, source: actual_source, count: actual_count }) => destination == actual_destination && source == actual_source && count == actual_count,
         (Operation::UpdateCount { object, count }, ScalarInstruction::UpdateCount { object: actual_object, count: actual_count }) => object == actual_object && count == actual_count,
-        (Operation::Share { destination, source }, ScalarInstruction::Share { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::CloneRef { destination, source }, ScalarInstruction::CloneRef { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Release { object }, ScalarInstruction::Release { object: actual_object })
         | (Operation::DropRef { object }, ScalarInstruction::Release { object: actual_object })
         | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
@@ -1930,7 +1930,7 @@ fn emit_update_count(
     Ok(())
 }
 
-fn emit_share(
+fn emit_clone_ref(
     body: &mut wasm_encoder::Function,
     layout: &LocalLayout,
     destination: ValueId,
@@ -2477,7 +2477,7 @@ fn emit_instruction(
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
             if *transfer == LoadTransfer::CloneShared {
-                emit_share(body, layout, *destination, *destination, function)?;
+                emit_clone_ref(body, layout, *destination, *destination, function)?;
             }
         }
         ScalarInstruction::Store { place, value, transfer } => {
@@ -2497,7 +2497,7 @@ fn emit_instruction(
             emit_clone_range(body, function, layout, destination, source, *count, layouts)?;
         }
         ScalarInstruction::UpdateCount { object, count } => emit_update_count(body, function, layout, layouts, *object, *count)?,
-        ScalarInstruction::Share { destination, source } => emit_share(body, layout, *destination, *source, function)?,
+        ScalarInstruction::CloneRef { destination, source } => emit_clone_ref(body, layout, *destination, *source, function)?,
         ScalarInstruction::Release { object } => emit_release(body, layout, function, *object, layouts)?,
         ScalarInstruction::Reclaim { object } => emit_reclaim(body, layout, function, *object)?,
         ScalarInstruction::Call { destinations, callee, arguments } => {
@@ -6853,9 +6853,10 @@ mod tests {
                         Operation::ConstSize { destination: count, value: 1 },
                         Operation::ConstSize { destination: capacity, value: 1 },
                         Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
-                        Operation::Share { destination: shared, source: object },
+                        Operation::CloneRef { destination: shared, source: object },
                         Operation::Load { destination: loaded, place: Place::projected(shared, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
-                        Operation::Release { object: shared },
+                        Operation::DropRef { object: shared },
+                        Operation::DropRef { object },
                     ],
                     terminator: Terminator::Return { values: vec![loaded] },
                 }],
@@ -6946,7 +6947,7 @@ mod tests {
         };
         let mut boundary = WasmFunctionEncoder::new(vec![(5, ValType::I32)]);
         if share {
-            emit_share(&mut boundary, &layout, destination, object, &function).unwrap();
+            emit_clone_ref(&mut boundary, &layout, destination, object, &function).unwrap();
             boundary.instruction(&wasm_encoder::Instruction::I32Const(0));
             boundary.instruction(&wasm_encoder::Instruction::LocalGet(1));
             boundary.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
@@ -7311,7 +7312,7 @@ mod tests {
         let source = checked_share_fixture();
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();
-        assert_eq!(receipt.mappings.len(), 7);
+        assert_eq!(receipt.mappings.len(), 8);
         let wasm = encode_validated(source).expect("shared scalar collection encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();

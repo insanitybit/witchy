@@ -555,7 +555,7 @@ pub enum CanonicalRuleId {
     CloneRange,
     UpdateCount,
     MoveValue,
-    Share,
+    CloneRef,
     Retain,
     Release,
     DropRef,
@@ -625,7 +625,9 @@ pub enum Operation {
     CloneRange { destination: Place, source: Place, count: ValueId },
     UpdateCount { object: ValueId, count: ValueId },
     MoveValue { destination: ValueId, source: ValueId },
-    Share { destination: ValueId, source: ValueId },
+    /// Create a second affine token for reference-counted storage. Both the
+    /// source and destination become Shared and must be consumed separately.
+    CloneRef { destination: ValueId, source: ValueId },
     Retain { object: ValueId },
     Release { object: ValueId },
     /// Consume one affine reference-counted token. The runtime reclaims only
@@ -702,7 +704,7 @@ impl Operation {
             Self::CloneRange { .. } => CanonicalRuleId::CloneRange,
             Self::UpdateCount { .. } => CanonicalRuleId::UpdateCount,
             Self::MoveValue { .. } => CanonicalRuleId::MoveValue,
-            Self::Share { .. } => CanonicalRuleId::Share,
+            Self::CloneRef { .. } => CanonicalRuleId::CloneRef,
             Self::Retain { .. } => CanonicalRuleId::Retain,
             Self::Release { .. } => CanonicalRuleId::Release,
             Self::DropRef { .. } => CanonicalRuleId::DropRef,
