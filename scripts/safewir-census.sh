@@ -12,6 +12,8 @@
 #
 # The executor is called once per discovered source/profile as:
 #   executor --source PATH --profile PROFILE
+# Its committed contract is keyed by both PATH and PROFILE. Missing metadata is
+# an error; the executor may not classify a source from its name or exit code.
 # It must print one JSON object on stdout containing:
 #   classification: known-valid | intentionally-invalid | external-fixture
 #   adapter_admitted: boolean

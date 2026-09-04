@@ -1,12 +1,12 @@
 {
-  "schema_version": 2,
-  "description": "Exact per-source RFC-0165 fixture contracts. The production freeze fails closed until every discovered source has a reviewed entry.",
-  "fixture_kinds": {
-    "runnable-deterministic": "Run check and the ordinary production CLI; the merged process stream is a runtime observation.",
-    "library": "Run check only; no runtime compatibility claim is made.",
-    "external": "Run check only; the unavailable external host fixture remains an explicit gap.",
-    "runnable-nondeterministic": "Run check only until an explicit replayable input/environment domain exists.",
-    "intentionally-invalid": "Run check only and require rejection."
+  "schema_version": 3,
+  "description": "Explicit RFC-0165 source/profile contracts. The production freeze fails closed until every discovered source and normal/opt/native profile has a reviewed contract.",
+  "contract_fields": {
+    "classification": "known-valid, intentionally-invalid, or external-fixture; never inferred from a path or exit status.",
+    "freeze_class": "v1-direct, v1-materialized, v2-required, or null; explicit for every source/profile.",
+    "check_expectation": "admitted, rejected, or either; records the contract for the observed check result.",
+    "execution": "check-only or check-then-run; only the latter permits the post-check production CLI step.",
+    "normalization": "optional explicit stdout/stderr byte-regex replacements; absent means no normalization."
   },
-  "fixtures": {}
+  "contracts": {}
 }
