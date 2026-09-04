@@ -1391,10 +1391,35 @@ fn wasm_value_type(
 struct LocalLayout {
     indices: BTreeMap<ValueId, u32>,
     extra_types: Vec<ValType>,
-    scratch: [u32; 4],
+    scratch: Vec<u32>,
 }
 
-fn local_layout(function: &Function, signature: &FunctionSignature) -> Result<LocalLayout, EncodeError> {
+fn drop_layout_depth(
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    layout: crate::layout::LayoutId,
+    visiting: &mut BTreeSet<crate::layout::LayoutId>,
+) -> Result<usize, EncodeError> {
+    if !visiting.insert(layout) {
+        return Err(EncodeError::UnsupportedLayout { function, operation: "recursive DropRef layout" });
+    }
+    let collection = collection_layout(function, layouts, layout);
+    let depth = match collection {
+        Ok(collection) => match collection.pointer_layout {
+            Some(child) => 1 + drop_layout_depth(function, layouts, child, visiting)?,
+            None => 1,
+        },
+        Err(_) => 1,
+    };
+    visiting.remove(&layout);
+    Ok(depth)
+}
+
+fn local_layout(
+    function: &Function,
+    signature: &FunctionSignature,
+    layouts: &LayoutInterner,
+) -> Result<LocalLayout, EncodeError> {
     let entry = function
         .blocks
         .iter()
@@ -1421,7 +1446,26 @@ fn local_layout(function: &Function, signature: &FunctionSignature) -> Result<Lo
         indices.insert(*value, index);
         extra_types.push(wasm_value_type(function.id, *value, *value_type)?);
     }
-    let mut scratch = [0; 4];
+    let mut destructor_depth = 1;
+    for block in &function.blocks {
+        for operation in &block.operations {
+            let object = match operation {
+                Operation::DropRef { object } | Operation::Release { object } => Some(*object),
+                _ => None,
+            };
+            let Some(object) = object else { continue };
+            let Some(ValueType::Ref(object_layout)) = function.value_types.get(&object).copied() else {
+                continue;
+            };
+            destructor_depth = destructor_depth.max(drop_layout_depth(
+                function.id,
+                layouts,
+                object_layout,
+                &mut BTreeSet::new(),
+            )?);
+        }
+    }
+    let mut scratch = vec![0; destructor_depth.saturating_mul(4).max(4)];
     for (slot, index) in scratch.iter_mut().enumerate() {
         *index = entry.parameters.len() as u32 + extra_types.len() as u32;
         extra_types.push(ValType::I32);
@@ -1881,6 +1925,13 @@ fn emit_share(
     function: &Function,
 ) -> Result<(), EncodeError> {
     emit_get(body, layout, function.id, object)?;
+    emit_set_index(body, scratch_index(layout, 1));
+    emit_get_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(2));
+    body.instruction(&wasm_encoder::Instruction::I32LtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Else);
+    emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
@@ -1891,16 +1942,15 @@ fn emit_share(
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::I32Const(1));
-    body.instruction(&wasm_encoder::Instruction::I32Add);
-    emit_set_index(body, scratch_index(layout, 2));
-    emit_get(body, layout, function.id, object)?;
+    emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
     emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(1));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
-    emit_get(body, layout, function.id, object)?;
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 1));
     emit_set(body, layout, function.id, destination)?;
     Ok(())
 }
@@ -1916,34 +1966,129 @@ fn emit_reclaim(body: &mut wasm_encoder::Function, layout: &LocalLayout, functio
     Ok(())
 }
 
-fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, function: &Function, object: ValueId) -> Result<(), EncodeError> {
-    emit_get(body, layout, function.id, object)?;
-    emit_set_index(body, scratch_index(layout, 1));
-    emit_get_index(body, scratch_index(layout, 1));
+fn emit_reclaim_local(body: &mut wasm_encoder::Function, layout: &LocalLayout, slot: usize) {
+    emit_get_index(body, scratch_index(layout, slot));
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    emit_get_index(body, scratch_index(layout, slot));
+    body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
+}
+
+fn emit_drop_ref_local(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    object_layout: crate::layout::LayoutId,
+    depth: usize,
+) -> Result<(), EncodeError> {
+    let base = depth * 4;
+    if base + 3 >= layout.scratch.len() {
+        return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
+    }
+    emit_get_index(body, scratch_index(layout, base));
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(2));
+    body.instruction(&wasm_encoder::Instruction::I32LtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Else);
+    emit_get_index(body, scratch_index(layout, base));
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-    emit_set_index(body, scratch_index(layout, 2));
-    emit_get_index(body, scratch_index(layout, 2));
+    emit_set_index(body, scratch_index(layout, base + 1));
+    emit_get_index(body, scratch_index(layout, base + 1));
     body.instruction(&wasm_encoder::Instruction::I32Eqz);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 2));
+    emit_get_index(body, scratch_index(layout, base + 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Eq);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    emit_reclaim(body, layout, function, object)?;
+    if let Ok(collection) = collection_layout(function, layouts, object_layout) {
+        if let Some(child_layout) = collection.pointer_layout {
+            if let Some(capacity_offset) = collection.capacity_offset {
+                emit_get_index(body, scratch_index(layout, base));
+                body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+                emit_get_index(body, scratch_index(layout, base));
+                body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+                body.instruction(&wasm_encoder::Instruction::I32GtU);
+                body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+                body.instruction(&wasm_encoder::Instruction::Unreachable);
+                body.instruction(&wasm_encoder::Instruction::End);
+            }
+            body.instruction(&wasm_encoder::Instruction::I32Const(0));
+            emit_set_index(body, scratch_index(layout, base + 2));
+            body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+            emit_get_index(body, scratch_index(layout, base + 2));
+            emit_get_index(body, scratch_index(layout, base));
+            body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+            body.instruction(&wasm_encoder::Instruction::I32LtU);
+            body.instruction(&wasm_encoder::Instruction::I32Eqz);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Br(2));
+            body.instruction(&wasm_encoder::Instruction::End);
+            emit_get_index(body, scratch_index(layout, base));
+            body.instruction(&wasm_encoder::Instruction::I32Const(collection.data_offset as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_get_index(body, scratch_index(layout, base + 2));
+            body.instruction(&wasm_encoder::Instruction::I32Const(collection.stride as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Mul);
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+            emit_set_index(body, scratch_index(layout, base + 4));
+            emit_get_index(body, scratch_index(layout, base + 4));
+            body.instruction(&wasm_encoder::Instruction::I32Eqz);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Unreachable);
+            body.instruction(&wasm_encoder::Instruction::End);
+            emit_get_index(body, scratch_index(layout, base));
+            body.instruction(&wasm_encoder::Instruction::I32Const(collection.data_offset as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_get_index(body, scratch_index(layout, base + 2));
+            body.instruction(&wasm_encoder::Instruction::I32Const(collection.stride as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Mul);
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Const(0));
+            body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+            emit_drop_ref_local(body, layout, function, layouts, child_layout, depth + 1)?;
+            emit_get_index(body, scratch_index(layout, base + 2));
+            body.instruction(&wasm_encoder::Instruction::I32Const(1));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_set_index(body, scratch_index(layout, base + 2));
+            body.instruction(&wasm_encoder::Instruction::Br(0));
+            body.instruction(&wasm_encoder::Instruction::End);
+            body.instruction(&wasm_encoder::Instruction::End);
+        }
+    }
+    emit_reclaim_local(body, layout, base);
     body.instruction(&wasm_encoder::Instruction::Else);
-    emit_get_index(body, scratch_index(layout, 1));
+    emit_get_index(body, scratch_index(layout, base));
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
-    emit_get_index(body, scratch_index(layout, 2));
+    emit_get_index(body, scratch_index(layout, base + 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::End);
+    body.instruction(&wasm_encoder::Instruction::End);
     Ok(())
+}
+
+fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, function: &Function, object: ValueId, layouts: &LayoutInterner) -> Result<(), EncodeError> {
+    let Some(ValueType::Ref(object_layout)) = function.value_types.get(&object).copied() else {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "DropRef object" });
+    };
+    emit_get(body, layout, function.id, object)?;
+    emit_set_index(body, scratch_index(layout, 0));
+    emit_drop_ref_local(body, layout, function.id, layouts, object_layout, 0)
 }
 
 fn emit_call_arguments(
@@ -2340,7 +2485,7 @@ fn emit_instruction(
         }
         ScalarInstruction::UpdateCount { object, count } => emit_update_count(body, function, layout, layouts, *object, *count)?,
         ScalarInstruction::Share { destination, source } => emit_share(body, layout, *destination, *source, function)?,
-        ScalarInstruction::Release { object } => emit_release(body, layout, function, *object)?,
+        ScalarInstruction::Release { object } => emit_release(body, layout, function, *object, layouts)?,
         ScalarInstruction::Reclaim { object } => emit_reclaim(body, layout, function, *object)?,
         ScalarInstruction::Call { destinations, callee, arguments } => {
             emit_call_arguments(body, layout, function.id, arguments)?;
@@ -2835,7 +2980,7 @@ fn encode_function(
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
-    let layout = local_layout(source_function, signature)?;
+    let layout = local_layout(source_function, signature, layouts)?;
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
     if target_function.entry != source_function.entry {
@@ -2952,6 +3097,10 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
         &ConstExpr::i32_const(0),
+    );
+    globals.global(
+        GlobalType { val_type: ValType::I32, mutable: false, shared: false },
+        &ConstExpr::i32_const(target.heap_start as i32),
     );
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
@@ -3267,6 +3416,13 @@ fn push_share_plan(
 ) -> Result<(), CanonicalAdmissionError> {
     push_get(plan, layout, object)?;
     plan.extend([
+        PlanToken::LocalSet(layout.scratch[1]),
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::GlobalGet(2),
+        PlanToken::I32LtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Else,
+        PlanToken::LocalGet(layout.scratch[1]),
         PlanToken::I32Const(8),
         PlanToken::I32Sub,
         PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
@@ -3277,19 +3433,16 @@ fn push_share_plan(
         PlanToken::If("Empty".to_owned()),
         PlanToken::Unreachable,
         PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I32Const(1),
-        PlanToken::I32Add,
-        PlanToken::LocalSet(layout.scratch[2]),
-    ]);
-    push_get(plan, layout, object)?;
-    plan.extend([
+        PlanToken::LocalGet(layout.scratch[1]),
         PlanToken::I32Const(8),
         PlanToken::I32Sub,
         PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(1),
+        PlanToken::I32Add,
         PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[1]),
     ]);
-    push_get(plan, layout, object)?;
     push_set(plan, layout, destination)
 }
 
@@ -3645,38 +3798,147 @@ fn push_reclaim_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: Va
     Ok(())
 }
 
-fn push_drop_ref_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: ValueId) -> Result<(), CanonicalAdmissionError> {
-    push_get(plan, layout, object)?;
-    plan.push(PlanToken::LocalSet(layout.scratch[1]));
+fn push_reclaim_local_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, slot: usize) {
     plan.extend([
-        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::LocalGet(layout.scratch[slot]),
+        PlanToken::GlobalGet(1),
+        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        PlanToken::LocalGet(layout.scratch[slot]),
+        PlanToken::GlobalSet(1),
+    ]);
+}
+
+fn push_drop_ref_local_plan(
+    plan: &mut Vec<PlanToken>,
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    object_layout: crate::layout::LayoutId,
+    depth: usize,
+) -> Result<(), CanonicalAdmissionError> {
+    let base = depth * 4;
+    if base + 3 >= layout.scratch.len() {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[base]),
+        PlanToken::GlobalGet(2),
+        PlanToken::I32LtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Else,
+        PlanToken::LocalGet(layout.scratch[base]),
         PlanToken::I32Const(8),
         PlanToken::I32Sub,
         PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-        PlanToken::LocalSet(layout.scratch[2]),
-        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalSet(layout.scratch[base + 1]),
+        PlanToken::LocalGet(layout.scratch[base + 1]),
         PlanToken::I32Eqz,
         PlanToken::If("Empty".to_owned()),
         PlanToken::Unreachable,
         PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[base + 1]),
         PlanToken::I32Const(1),
         PlanToken::I32Eq,
         PlanToken::If("Empty".to_owned()),
     ]);
-    push_reclaim_plan(plan, layout, object)?;
+    if let Ok(collection) = collection_layout(function, layouts, object_layout) {
+        if let Some(child_layout) = collection.pointer_layout {
+            if let Some(capacity_offset) = collection.capacity_offset {
+                plan.extend([
+                    PlanToken::LocalGet(layout.scratch[base]),
+                    PlanToken::I32Const(collection.length_offset as i32),
+                    PlanToken::I32Add,
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                    PlanToken::LocalGet(layout.scratch[base]),
+                    PlanToken::I32Const(capacity_offset as i32),
+                    PlanToken::I32Add,
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                    PlanToken::I32GtU,
+                    PlanToken::If("Empty".to_owned()),
+                    PlanToken::Unreachable,
+                    PlanToken::End,
+                ]);
+            }
+            plan.extend([
+                PlanToken::I32Const(0),
+                PlanToken::LocalSet(layout.scratch[base + 2]),
+                PlanToken::Block("Empty".to_owned()),
+                PlanToken::Loop("Empty".to_owned()),
+                PlanToken::LocalGet(layout.scratch[base + 2]),
+                PlanToken::LocalGet(layout.scratch[base]),
+                PlanToken::I32Const(collection.length_offset as i32),
+                PlanToken::I32Add,
+                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                PlanToken::I32LtU,
+                PlanToken::I32Eqz,
+                PlanToken::If("Empty".to_owned()),
+                PlanToken::Br(2),
+                PlanToken::End,
+                PlanToken::LocalGet(layout.scratch[base]),
+                PlanToken::I32Const(collection.data_offset as i32),
+                PlanToken::I32Add,
+                PlanToken::LocalGet(layout.scratch[base + 2]),
+                PlanToken::I32Const(collection.stride as i32),
+                PlanToken::I32Mul,
+                PlanToken::I32Add,
+                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                PlanToken::LocalSet(layout.scratch[base + 4]),
+                PlanToken::LocalGet(layout.scratch[base + 4]),
+                PlanToken::I32Eqz,
+                PlanToken::If("Empty".to_owned()),
+                PlanToken::Unreachable,
+                PlanToken::End,
+                PlanToken::LocalGet(layout.scratch[base]),
+                PlanToken::I32Const(collection.data_offset as i32),
+                PlanToken::I32Add,
+                PlanToken::LocalGet(layout.scratch[base + 2]),
+                PlanToken::I32Const(collection.stride as i32),
+                PlanToken::I32Mul,
+                PlanToken::I32Add,
+                PlanToken::I32Const(0),
+                PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+            ]);
+            push_drop_ref_local_plan(plan, function, layouts, layout, child_layout, depth + 1)?;
+            plan.extend([
+                PlanToken::LocalGet(layout.scratch[base + 2]),
+                PlanToken::I32Const(1),
+                PlanToken::I32Add,
+                PlanToken::LocalSet(layout.scratch[base + 2]),
+                PlanToken::Br(0),
+                PlanToken::End,
+                PlanToken::End,
+            ]);
+        }
+    }
+    push_reclaim_local_plan(plan, layout, base);
     plan.extend([
         PlanToken::Else,
-        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::LocalGet(layout.scratch[base]),
         PlanToken::I32Const(8),
         PlanToken::I32Sub,
-        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[base + 1]),
         PlanToken::I32Const(1),
         PlanToken::I32Sub,
         PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
         PlanToken::End,
+        PlanToken::End,
     ]);
     Ok(())
+}
+
+fn push_drop_ref_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    object: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let Some(ValueType::Ref(object_layout)) = function.value_types.get(&object).copied() else {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    };
+    push_get(plan, layout, object)?;
+    plan.push(PlanToken::LocalSet(layout.scratch[0]));
+    push_drop_ref_local_plan(plan, function.id, layouts, layout, object_layout, 0)
 }
 
 fn expected_alloc_plan(
@@ -3782,7 +4044,7 @@ fn expected_linear_function_plan(
     if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
-    let layout = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let block = &function.blocks[0];
     let mut plan = Vec::new();
     for operation in &block.operations {
@@ -3993,7 +4255,7 @@ fn expected_linear_function_plan(
                 push_reclaim_plan(&mut plan, &layout, *object)?;
             }
             Operation::DropRef { object } => {
-                push_drop_ref_plan(&mut plan, &layout, *object)?;
+                push_drop_ref_plan(&mut plan, function, layouts, &layout, *object)?;
             }
             Operation::Call { destinations, callee, arguments } => {
                 for argument in arguments {
@@ -4423,7 +4685,7 @@ fn expected_function_plan(
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
-    let layout = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let mut emitter = PlanEmitter {
         source_function: function,
         signature,
@@ -4509,6 +4771,7 @@ fn expected_metadata_prefix(
     let mut globals = GlobalSection::new();
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     let mut module = WasmModule::new();
     module.section(&types).section(&imports).section(&functions);
     if target.table.is_some() {
@@ -4557,7 +4820,7 @@ fn decode_and_match_plan(
             let signature = source.signatures().iter()
                 .find(|signature| signature.id == function.signature)
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-            let local = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            let local = local_layout(function, signature, &layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
             let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
             Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets)?))
@@ -7133,7 +7396,7 @@ mod tests {
                 terminator: Terminator::Return { values: Vec::new() },
             }],
         };
-        let layout = local_layout(&function, &signature).unwrap();
+        let layout = local_layout(&function, &signature, &interner).unwrap();
         let mut body = WasmFunctionEncoder::new(layout.extra_types.iter().copied().map(|value_type| (1, value_type)));
         let source_place = Place::projected(
             source,

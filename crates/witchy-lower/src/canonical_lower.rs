@@ -2527,6 +2527,7 @@ impl FunctionLowerer<'_> {
                 ),
                 count: old_length,
             });
+            self.push_operation(Operation::UpdateCount { object: old_object, count: zero });
         } else {
             let zero = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize { destination: zero, value: 0 });

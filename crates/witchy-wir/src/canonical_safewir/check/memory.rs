@@ -1886,6 +1886,26 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         }
         let pointee = self.owned_pointer_slot_pointee(element)?;
+        if self.is_zero(count) {
+            if self.state.stored_objects.keys().any(|(stored_object, _)| *stored_object == object)
+                || self.state.range_states.iter().any(|(identity, state)| {
+                    identity.object == object && state.initialized && !self.is_zero(identity.length)
+                })
+            {
+                return self.unsupported("UpdateCount(pointer shrink with live elements)");
+            }
+            self.state.range_states.retain(|identity, _| identity.object != object);
+            self.state.range_states.insert(
+                RangeIdentity { object, start: count, length: count },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: None,
+                    initialized: true,
+                },
+            );
+            return Ok(());
+        }
         let existing = self.state.range_states.iter().find_map(|(identity, state)| {
             (identity.object == object && state.initialized && self.is_zero(identity.start))
                 .then_some((*identity, *state))
@@ -2065,17 +2085,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             },
         )?;
-        let pointer_free_payload = match descriptor.kind() {
-            LayoutKind::Scalar(_) => true,
-            LayoutKind::PackedList { element, .. }
-            | LayoutKind::RuntimeBuffer { element }
-            | LayoutKind::ScratchBuffer { element } => self
-                .layouts
-                .get(*element)
-                .is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(_))),
-            _ => false,
-        };
-        if !pointer_free_payload {
+        if !drop_ref_layout_supported(self.layouts, descriptor.layout_id(), &mut BTreeSet::new()) {
             return self.unsupported("DropRef(pointer-bearing recursive destructor)");
         }
         self.state.objects
@@ -2348,6 +2358,31 @@ impl<'a> MemoryChecker<'a> {
             operation,
         })
     }
+}
+
+fn drop_ref_layout_supported(
+    layouts: &LayoutInterner,
+    layout: crate::layout::LayoutId,
+    visiting: &mut BTreeSet<crate::layout::LayoutId>,
+) -> bool {
+    if !visiting.insert(layout) {
+        return false;
+    }
+    let supported = layouts.get(layout).is_some_and(|descriptor| match descriptor.kind() {
+        LayoutKind::Scalar(_) => true,
+        LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => {
+            layouts.get(*element).is_some_and(|element| match element.kind() {
+                LayoutKind::Scalar(_) => true,
+                LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } => {
+                    drop_ref_layout_supported(layouts, *pointee, visiting)
+                }
+                _ => false,
+            })
+        }
+        _ => false,
+    });
+    visiting.remove(&layout);
+    supported
 }
 
 fn remap_value(renames: &BTreeMap<ValueId, ValueId>, value: ValueId) -> ValueId {
