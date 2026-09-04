@@ -203,7 +203,7 @@ fn derive_summary(
             (*value, Origin::Parameter { parameter: *parameter, layout })
         })
         .collect::<BTreeMap<_, _>>();
-    let mut origins = derive_origins(function, summaries, &entry_origins)?;
+    let mut origins = derive_origins(function, functions, summaries, &entry_origins)?;
     let mut summary = initial_summary(function, signatures)?;
 
     for block in &function.blocks {
@@ -245,6 +245,7 @@ fn derive_summary(
 
 fn derive_origins(
     function: &Function,
+    functions: &BTreeMap<FunctionId, &Function>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     entry_origins: &BTreeMap<ValueId, Origin>,
 ) -> Result<BTreeMap<ValueId, Origin>, InitialCheckError> {
@@ -265,7 +266,7 @@ fn derive_origins(
         let before = origins.clone();
         for block in &function.blocks {
             for operation in &block.operations {
-                propagate_operation_origins(function.id, operation, summaries, &mut origins)?;
+                propagate_operation_origins(function.id, operation, functions, summaries, &mut origins)?;
             }
             match &block.terminator {
                 Terminator::Branch { target, arguments } => {
@@ -298,6 +299,7 @@ fn derive_origins(
 fn propagate_operation_origins(
     function: FunctionId,
     operation: &Operation,
+    functions: &BTreeMap<FunctionId, &Function>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
 ) -> Result<(), InitialCheckError> {
@@ -337,7 +339,19 @@ fn propagate_operation_origins(
                 join_origin(origins, *destination, origin);
             }
         }
-        Operation::VarCall { .. } => return Err(InitialCheckError::UnsupportedIndirectCall { function }),
+        Operation::VarCall { destinations, signature, .. } => {
+            let target = indirect_target_summary(function, *signature, functions, summaries)?;
+            if target.results.len() != destinations.len()
+                || target.results.iter().any(|result| {
+                    !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
+                })
+            {
+                return Err(InitialCheckError::UnsupportedIndirectCall { function });
+            }
+            for destination in destinations {
+                join_origin(origins, *destination, Origin::Unknown);
+            }
+        }
         Operation::ConstInt { destination, .. }
         | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. }
@@ -450,12 +464,56 @@ fn derive_operation(
             }
             derive_call_needs(*callee, arguments, functions, summaries, origins, summary)?;
         }
-        Operation::VarCall { .. } => {
-            return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+        Operation::VarCall { destinations, signature, .. } => {
+            let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
+            if target.results.len() != destinations.len()
+                || target.results.iter().any(|result| {
+                    !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
+                })
+            {
+                return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+            }
         }
         Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
     }
     Ok(())
+}
+
+/// Resolve an indirect callable only through the canonical target set for its
+/// checked signature. A callable signature with no lowered body is not an
+/// authenticated target. A target set that can return memory-bearing values
+/// remains outside canonical v1 until the backend supports it.
+fn indirect_target_summary(
+    function: FunctionId,
+    signature: FunctionSignatureId,
+    functions: &BTreeMap<FunctionId, &Function>,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+) -> Result<BodySummary, InitialCheckError> {
+    let mut target = None;
+    for candidate in functions.values().filter(|candidate| candidate.signature == signature) {
+        let summary = summaries
+            .get(&candidate.id)
+            .ok_or(InitialCheckError::MissingFunction(candidate.id))?;
+        if let Some(joined) = &mut target {
+            join_body_summary(joined, summary);
+        } else {
+            target = Some(summary.clone());
+        }
+    }
+    target.ok_or(InitialCheckError::UnsupportedIndirectCall { function })
+}
+
+fn join_body_summary(left: &mut BodySummary, right: &BodySummary) {
+    for (left, right) in left.results.iter_mut().zip(&right.results) {
+        left.join(right.clone());
+    }
+    for (left, right) in left.needs.iter_mut().zip(&right.needs) {
+        left.extend(right);
+    }
+    for (parameter, effects) in &right.effects {
+        left.effects.entry(*parameter).or_default().extend(effects);
+    }
+    left.escaped_parameters.extend(&right.escaped_parameters);
 }
 
 fn derive_tail_results(
@@ -610,6 +668,192 @@ mod tests {
     const ENTRY: BlockId = BlockId::new(0);
     fn layout() -> crate::layout::LayoutId { crate::layout::LayoutId::from_bytes([1; 32]) }
     fn maps(function: Function, signature: FunctionSignature) -> (BTreeMap<FunctionId, &'static Function>, BTreeMap<FunctionSignatureId, &'static FunctionSignature>) { let function: &'static Function = Box::leak(Box::new(function)); let signature: &'static FunctionSignature = Box::leak(Box::new(signature)); ([(function.id, function)].into_iter().collect(), [(signature.id, signature)].into_iter().collect()) }
+
+    #[test]
+    fn scalar_indirect_call_uses_the_body_derived_target_contract() {
+        let callable = ValueId::new(0);
+        let argument = ValueId::new(1);
+        let result = ValueId::new(2);
+        let target_argument = ValueId::new(3);
+        let target_result = ValueId::new(4);
+        let target_signature = FunctionSignature {
+            id: FunctionSignatureId::new(1),
+            parameters: vec![ValueType::Int],
+            results: vec![ValueType::Int],
+            contract: super::super::super::CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Int,
+                    ownership: ParameterOwnership::Value,
+                    non_escaping: false,
+                }],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let target: &'static Function = Box::leak(Box::new(Function {
+            id: FunctionId::new(1),
+            signature: target_signature.id,
+            entry: ENTRY,
+            value_types: [(target_argument, ValueType::Int), (target_result, ValueType::Int)]
+                .into_iter()
+                .collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![BlockParameter {
+                    value: target_argument,
+                    value_type: ValueType::Int,
+                    ownership: None,
+                }],
+                operations: vec![Operation::ConstInt {
+                    destination: target_result,
+                    value: 7,
+                }],
+                terminator: Terminator::Return { values: vec![target_result] },
+            }],
+        }));
+        let caller_signature = FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![ValueType::Callable(target_signature.id), ValueType::Int],
+            results: vec![ValueType::Int],
+            contract: super::super::super::CallableContract {
+                parameters: vec![
+                    ParameterContract {
+                        value_type: ValueType::Callable(target_signature.id),
+                        ownership: ParameterOwnership::Value,
+                        non_escaping: false,
+                    },
+                    ParameterContract {
+                        value_type: ValueType::Int,
+                        ownership: ParameterOwnership::Value,
+                        non_escaping: false,
+                    },
+                ],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let caller: &'static Function = Box::leak(Box::new(Function {
+            id: FunctionId::new(0),
+            signature: caller_signature.id,
+            entry: ENTRY,
+            value_types: [
+                (callable, ValueType::Callable(target_signature.id)),
+                (argument, ValueType::Int),
+                (result, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![
+                    BlockParameter {
+                        value: callable,
+                        value_type: ValueType::Callable(target_signature.id),
+                        ownership: None,
+                    },
+                    BlockParameter {
+                        value: argument,
+                        value_type: ValueType::Int,
+                        ownership: None,
+                    },
+                ],
+                operations: vec![Operation::VarCall {
+                    destinations: vec![result],
+                    callee: callable,
+                    signature: target_signature.id,
+                    arguments: vec![CallArgument::Value(argument)],
+                }],
+                terminator: Terminator::Return { values: vec![result] },
+            }],
+        }));
+        let caller_signature: &'static FunctionSignature = Box::leak(Box::new(caller_signature));
+        let target_signature: &'static FunctionSignature = Box::leak(Box::new(target_signature));
+        let functions = [(caller.id, caller), (target.id, target)].into_iter().collect();
+        let signatures = [(caller_signature.id, caller_signature), (target_signature.id, target_signature)]
+            .into_iter()
+            .collect();
+
+        assert!(check_all(&functions, &signatures).is_ok());
+    }
+
+    #[test]
+    fn indirect_call_without_a_lowered_target_fails_closed() {
+        let callable = ValueId::new(0);
+        let argument = ValueId::new(1);
+        let result = ValueId::new(2);
+        let target_signature = FunctionSignature {
+            id: FunctionSignatureId::new(1),
+            parameters: vec![ValueType::Int],
+            results: vec![ValueType::Int],
+            contract: super::super::super::CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Int,
+                    ownership: ParameterOwnership::Value,
+                    non_escaping: false,
+                }],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let caller_signature = FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![ValueType::Callable(target_signature.id), ValueType::Int],
+            results: vec![ValueType::Int],
+            contract: super::super::super::CallableContract {
+                parameters: vec![
+                    ParameterContract {
+                        value_type: ValueType::Callable(target_signature.id),
+                        ownership: ParameterOwnership::Value,
+                        non_escaping: false,
+                    },
+                    ParameterContract {
+                        value_type: ValueType::Int,
+                        ownership: ParameterOwnership::Value,
+                        non_escaping: false,
+                    },
+                ],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let caller: &'static Function = Box::leak(Box::new(Function {
+            id: FunctionId::new(0),
+            signature: caller_signature.id,
+            entry: ENTRY,
+            value_types: [
+                (callable, ValueType::Callable(target_signature.id)),
+                (argument, ValueType::Int),
+                (result, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![
+                    BlockParameter { value: callable, value_type: ValueType::Callable(target_signature.id), ownership: None },
+                    BlockParameter { value: argument, value_type: ValueType::Int, ownership: None },
+                ],
+                operations: vec![Operation::VarCall {
+                    destinations: vec![result],
+                    callee: callable,
+                    signature: target_signature.id,
+                    arguments: vec![CallArgument::Value(argument)],
+                }],
+                terminator: Terminator::Return { values: vec![result] },
+            }],
+        }));
+        let caller_signature: &'static FunctionSignature = Box::leak(Box::new(caller_signature));
+        let target_signature: &'static FunctionSignature = Box::leak(Box::new(target_signature));
+        let functions = [(caller.id, caller)].into_iter().collect();
+        let signatures = [(caller_signature.id, caller_signature), (target_signature.id, target_signature)]
+            .into_iter()
+            .collect();
+
+        assert!(matches!(
+            check_all(&functions, &signatures),
+            Err(InitialCheckError::UnsupportedIndirectCall { function }) if function == FunctionId::new(0)
+        ));
+    }
 
     #[test]
     fn static_result_cannot_claim_fresh() {
