@@ -813,6 +813,18 @@ pub struct CanonicalModule<S: ModuleStage> {
     stage: PhantomData<fn() -> S>,
 }
 
+/// Lowered candidates can only acquire validation authority through the
+/// canonical checker; clients cannot invoke the typestate transition.
+///
+/// ```compile_fail
+/// use witchy_wir::canonical_safewir::{CanonicalModule, InitialValid, LoweredCandidate};
+///
+/// fn forge(
+///     candidate: CanonicalModule<LoweredCandidate>,
+/// ) -> CanonicalModule<InitialValid> {
+///     candidate.into_initial_valid()
+/// }
+/// ```
 impl CanonicalModule<LoweredCandidate> {
     pub fn from_lowering(parts: LoweredModuleParts) -> Self {
         Self::from_lowering_with_static_data(parts, Vec::new())
