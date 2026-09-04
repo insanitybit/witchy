@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::{
     CallArgument, Function, FunctionId, FunctionSignature, FunctionSignatureId, MemoryEffect,
-    Operation, ParameterContract, ParameterOwnership, ResultContract, Terminator, ValueId,
-    ValueType,
+    LoadTransfer, Operation, ParameterContract, ParameterOwnership, ResultContract, Terminator,
+    ValueId, ValueType,
 };
 use super::InitialCheckError;
 
@@ -266,7 +266,7 @@ fn derive_origins(
         let before = origins.clone();
         for block in &function.blocks {
             for operation in &block.operations {
-                propagate_operation_origins(function.id, operation, functions, summaries, &mut origins)?;
+                propagate_operation_origins(function, operation, functions, summaries, &mut origins)?;
             }
             match &block.terminator {
                 Terminator::Branch { target, arguments } => {
@@ -297,7 +297,7 @@ fn derive_origins(
 }
 
 fn propagate_operation_origins(
-    function: FunctionId,
+    function: &Function,
     operation: &Operation,
     functions: &BTreeMap<FunctionId, &Function>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
@@ -325,7 +325,15 @@ fn propagate_operation_origins(
             join_origin(origins, *destination, origin);
         }
         Operation::FunctionValue { .. } => {}
-        Operation::Load { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
+        Operation::Load {
+            destination,
+            place,
+            transfer,
+        } => join_origin(
+            origins,
+            *destination,
+            load_result_origin(function, *destination, place.value_type(), *transfer),
+        ),
         Operation::Call { destinations, callee, arguments } => {
             let summary = summaries.get(callee).ok_or(InitialCheckError::MissingFunction(*callee))?;
             if destinations.len() != summary.results.len() {
@@ -341,13 +349,13 @@ fn propagate_operation_origins(
             }
         }
         Operation::VarCall { destinations, signature, .. } => {
-            let target = indirect_target_summary(function, *signature, functions, summaries)?;
+            let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
             if target.results.len() != destinations.len()
                 || target.results.iter().any(|result| {
                     !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
                 })
             {
-                return Err(InitialCheckError::UnsupportedIndirectCall { function });
+            return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
             }
             for destination in destinations {
                 join_origin(origins, *destination, Origin::Unknown);
@@ -431,9 +439,12 @@ fn derive_operation(
         }
         Operation::MoveValue { destination, source } => { origins.insert(*destination, origin_of(origins, *source)); }
         Operation::FunctionValue { .. } => {}
-        Operation::Load { destination, place, .. } => {
+        Operation::Load { destination, place, transfer } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);
-            origins.insert(*destination, Origin::Unknown);
+            origins.insert(
+                *destination,
+                load_result_origin(function, *destination, place.value_type(), *transfer),
+            );
         }
         Operation::Store { place, value, .. } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
@@ -586,6 +597,22 @@ fn origin_of(origins: &BTreeMap<ValueId, Origin>, value: ValueId) -> Origin {
     origins.get(&value).copied().unwrap_or(Origin::Unknown)
 }
 
+fn load_result_origin(
+    function: &Function,
+    destination: ValueId,
+    place_type: ValueType,
+    transfer: LoadTransfer,
+) -> Origin {
+    match (transfer, place_type, function.value_types.get(&destination).copied()) {
+        (
+            LoadTransfer::CloneShared,
+            ValueType::Ref(place_layout),
+            Some(ValueType::Ref(destination_layout)),
+        ) if place_layout == destination_layout => Origin::Shared(place_layout),
+        _ => Origin::Unknown,
+    }
+}
+
 fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &BTreeMap<ValueId, Origin>, _value_type: ValueType) -> Origin {
     match result {
         DerivedResult::Fresh(layout) => Origin::Fresh(*layout),
@@ -665,7 +692,10 @@ fn is_scalar(value_type: ValueType) -> bool { matches!(value_type, ValueType::In
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical_safewir::{AllocationClass, BasicBlock, BlockId, BlockParameter, Extent, Ownership, StaticDataId};
+    use crate::canonical_safewir::{
+        AccessMode, AllocationClass, BasicBlock, BlockId, BlockParameter, Extent, Ownership,
+        Projection, StaticDataId,
+    };
 
     const ENTRY: BlockId = BlockId::new(0);
     fn layout() -> crate::layout::LayoutId { crate::layout::LayoutId::from_bytes([1; 32]) }
@@ -879,6 +909,103 @@ mod tests {
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
         assert!(check_all(&functions, &signatures).is_ok());
+    }
+
+    #[test]
+    fn clone_shared_load_derives_shared_reference_result() {
+        let container = ValueId::new(0);
+        let index = ValueId::new(1);
+        let result = ValueId::new(2);
+        let container_layout = crate::layout::LayoutId::from_bytes([2; 32]);
+        let element_layout = layout();
+        let contract = super::super::super::CallableContract {
+            parameters: vec![
+                ParameterContract {
+                    value_type: ValueType::Ref(container_layout),
+                    ownership: ParameterOwnership::Shared,
+                    non_escaping: false,
+                },
+                ParameterContract {
+                    value_type: ValueType::Size,
+                    ownership: ParameterOwnership::Value,
+                    non_escaping: false,
+                },
+            ],
+            results: vec![ResultContract::Shared { layout: element_layout }],
+            parameter_effects: [(0, vec![MemoryEffect::Read])].into_iter().collect(),
+        };
+        let function = Function {
+            id: FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: ENTRY,
+            value_types: [
+                (container, ValueType::Ref(container_layout)),
+                (index, ValueType::Size),
+                (result, ValueType::Ref(element_layout)),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![
+                    BlockParameter {
+                        value: container,
+                        value_type: ValueType::Ref(container_layout),
+                        ownership: Some(Ownership::Shared),
+                    },
+                    BlockParameter {
+                        value: index,
+                        value_type: ValueType::Size,
+                        ownership: None,
+                    },
+                ],
+                operations: vec![Operation::Load {
+                    destination: result,
+                    place: super::super::super::Place::projected(
+                        container,
+                        Projection::Element { index },
+                        ValueType::Ref(element_layout),
+                        AccessMode::Read,
+                    ),
+                    transfer: LoadTransfer::CloneShared,
+                }],
+                terminator: Terminator::Return { values: vec![result] },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![ValueType::Ref(container_layout), ValueType::Size],
+            results: vec![ValueType::Ref(element_layout)],
+            contract,
+        };
+        let (functions, signatures) = maps(function, signature);
+
+        assert!(check_all(&functions, &signatures).is_ok());
+        assert_eq!(
+            derive_result_contracts(&functions, &signatures).unwrap()
+                [&FunctionSignatureId::new(0)],
+            vec![ResultContract::Shared { layout: element_layout }]
+        );
+    }
+
+    #[test]
+    fn move_unique_load_does_not_derive_fresh_result() {
+        let function = Function {
+            id: FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: ENTRY,
+            value_types: [(ValueId::new(0), ValueType::Ref(layout()))]
+                .into_iter()
+                .collect(),
+            blocks: Vec::new(),
+        };
+        let result = load_result_origin(
+            &function,
+            ValueId::new(0),
+            ValueType::Ref(layout()),
+            LoadTransfer::MoveUnique,
+        );
+        assert_eq!(result, Origin::Unknown);
     }
 
     #[test]
