@@ -1831,6 +1831,20 @@ impl<'a> MemoryChecker<'a> {
         let source_type = value_type(self.function, source)?;
         self.require_type(destination, source_type)?;
         let state = self.live_object(source)?.clone();
+        let has_live_object_alias = self.state.objects.iter().any(|(value, candidate)| {
+            *value != source
+                && candidate.identity == state.identity
+                && candidate.ownership != Ownership::Consumed
+        });
+        let has_stored_alias = self.state.stored_objects.values().any(|candidate| {
+            candidate.identity == state.identity && candidate.ownership != Ownership::Consumed
+        });
+        if state.ownership != Ownership::Unique || has_live_object_alias || has_stored_alias {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: source,
+            });
+        }
         self.state.objects.insert(destination, state);
         self.state.objects
             .get_mut(&source)
@@ -2404,6 +2418,49 @@ mod tests {
 
             assert!(matches!(
                 checker.transfer_edge(&target, &[SOURCE]),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn move_value_rejects_shared_source() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            checker.state.objects.get_mut(&SOURCE).expect("source").ownership = Ownership::Shared;
+
+            assert!(matches!(
+                checker.move_value(DESTINATION, SOURCE),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn move_value_rejects_live_object_alias() {
+        with_checker(false, |checker, _list| {
+            let alias = checker.state.objects[&SOURCE].clone();
+            checker.state.objects.insert(DESTINATION, alias);
+
+            assert!(matches!(
+                checker.move_value(DESTINATION, SOURCE),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn move_value_rejects_stored_alias() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            let alias = checker.state.objects[&SOURCE].clone();
+            checker
+                .state
+                .stored_objects
+                .insert((DESTINATION, SlotIdentity::Constant(0)), alias);
+
+            assert!(matches!(
+                checker.move_value(DESTINATION, SOURCE),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
         });
