@@ -410,6 +410,22 @@ pub struct ImportContract {
     pub reentrancy: HostReentrancy,
 }
 
+/// Trusted ABI facts are supplied by the canonical host catalog, never by a
+/// candidate module. The constructor is intentionally private to this module;
+/// production callers must obtain the catalog from the canonical host layer.
+pub(crate) struct CanonicalAbiCatalog {
+    imports: BTreeMap<ImportId, ImportContract>,
+}
+
+#[cfg(test)]
+impl CanonicalAbiCatalog {
+    fn from_imports(imports: Vec<ImportContract>) -> Self {
+        Self {
+            imports: imports.into_iter().map(|import| (import.id, import)).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
     ConstInt { destination: ValueId, value: i64 },

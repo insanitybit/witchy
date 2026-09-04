@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::super::{
-    Function, FunctionSignature, FunctionSignatureId, HostBufferExtent,
+    CanonicalAbiCatalog, Function, FunctionSignature, FunctionSignatureId, HostBufferExtent,
     HostCallArgument, HostMutation, HostParameterRole, HostReentrancy, HostResultRole,
     ImportContract, ImportContractIdentity, ImportId, ValueId, ValueType,
 };
@@ -10,8 +10,19 @@ use super::InitialCheckError;
 pub(super) fn check_imports(
     imports: &BTreeMap<ImportId, &ImportContract>,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    catalog: Option<&CanonicalAbiCatalog>,
 ) -> Result<(), InitialCheckError> {
+    if !imports.is_empty() && catalog.is_none() {
+        return Err(InitialCheckError::MissingCanonicalAbiCatalog);
+    }
     for import in imports.values() {
+        let Some(catalog) = catalog else { continue };
+        let expected = catalog.imports.get(&import.id).ok_or(
+            InitialCheckError::InvalidCanonicalAbiContract { import: import.id },
+        )?;
+        if **import != *expected {
+            return Err(InitialCheckError::InvalidCanonicalAbiContract { import: import.id });
+        }
         check_import(import, signatures)?;
     }
     Ok(())
@@ -24,6 +35,7 @@ pub(super) fn check_call(
     arguments: &[HostCallArgument],
     imports: &BTreeMap<ImportId, &ImportContract>,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    catalog: Option<&CanonicalAbiCatalog>,
 ) -> Result<(), InitialCheckError> {
     let import = imports.get(&import_id).copied().ok_or(
         InitialCheckError::MissingImportContract {
@@ -31,6 +43,15 @@ pub(super) fn check_call(
             import: import_id,
         },
     )?;
+    let Some(catalog) = catalog else {
+        return Err(InitialCheckError::MissingCanonicalAbiCatalog);
+    };
+    let expected = catalog.imports.get(&import.id).ok_or(
+        InitialCheckError::InvalidCanonicalAbiContract { import: import.id },
+    )?;
+    if *import != *expected {
+        return Err(InitialCheckError::InvalidCanonicalAbiContract { import: import.id });
+    }
     check_import(import, signatures)?;
     require_arity(
         "host call arguments",
@@ -104,6 +125,24 @@ fn check_import(
     if matches!(import.mutation, HostMutation::Unknown) {
         return Err(InitialCheckError::UnsupportedHostMutation { import: import.id });
     }
+    let has_write_buffer = import.parameter_roles.iter().any(|role| {
+        matches!(
+            role,
+            HostParameterRole::Buffer {
+                access: super::super::AccessMode::Write,
+                ..
+            }
+        )
+    });
+    match import.mutation {
+        HostMutation::ReadOnly if has_write_buffer => {
+            return Err(InitialCheckError::UnsupportedHostMutation { import: import.id });
+        }
+        HostMutation::WriteBuffers if !has_write_buffer => {
+            return Err(InitialCheckError::UnsupportedHostMutation { import: import.id });
+        }
+        HostMutation::ReadOnly | HostMutation::WriteBuffers | HostMutation::Unknown => {}
+    }
 
     for (role, expected) in import.parameter_roles.iter().zip(&signature.parameters) {
         if role_type(role) != *expected {
@@ -146,26 +185,15 @@ fn check_argument(
         }
         (
             HostParameterRole::Buffer {
-                value_type,
-                access,
-                extent: expected_extent,
+                ..
             },
-            HostCallArgument::Buffer { place, extent },
+            HostCallArgument::Buffer { .. },
         ) => {
-            if place.value_type() != *value_type || place.access() != *access {
-                return Err(InitialCheckError::HostParameterRoleMismatch {
-                    function: function.id,
-                    import,
-                    parameter,
-                });
-            }
-            if !extent_satisfies(expected_extent, extent) {
-                return Err(InitialCheckError::HostBufferExtentMismatch {
-                    function: function.id,
-                    import,
-                    parameter,
-                });
-            }
+            return Err(InitialCheckError::UnsupportedHostBuffer {
+                function: function.id,
+                import,
+                parameter,
+            });
         }
         _ => {
             let actual = match argument {
@@ -235,15 +263,6 @@ fn require_type(
 
 fn is_reference_like(value_type: ValueType) -> bool {
     matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Callable(_))
-}
-
-fn extent_satisfies(expected: &HostBufferExtent, actual: &HostBufferExtent) -> bool {
-    match (expected, actual) {
-        (HostBufferExtent::Exact(expected), HostBufferExtent::Exact(actual)) => expected == actual,
-        (HostBufferExtent::AtLeast(expected), HostBufferExtent::Exact(actual))
-        | (HostBufferExtent::AtLeast(expected), HostBufferExtent::AtLeast(actual)) => actual >= expected,
-        _ => false,
-    }
 }
 
 fn require_arity(

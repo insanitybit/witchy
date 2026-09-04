@@ -3,8 +3,8 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    BasicBlock, BlockId, CallArgument, CanonicalModule, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, GuardKind, HostCallArgument, ImportContract, ImportId, InitialValid,
+    BasicBlock, BlockId, CallArgument, CanonicalAbiCatalog, CanonicalModule, Function, FunctionId,
+    FunctionSignature, FunctionSignatureId, GuardKind, HostCallArgument, ImportContract, ImportId, InitialValid,
     LoweredCandidate, ModuleStage, Operation,
     OptimizedValid,
     ParameterOwnership, ProperTailSite, TailSiteId, Terminator, TransformedCandidate, ValueId,
@@ -93,6 +93,9 @@ pub enum InitialCheckError {
     UnknownHostBufferExtent { import: ImportId },
     UnsupportedHostMutation { import: ImportId },
     UnsupportedHostReentrancy { import: ImportId },
+    MissingCanonicalAbiCatalog,
+    InvalidCanonicalAbiContract { import: ImportId },
+    UnsupportedHostBuffer { function: FunctionId, import: ImportId, parameter: usize },
     UnsupportedBorrowArgument { function: FunctionId },
     UnsupportedIndirectCall { function: FunctionId },
     UnsupportedMemorySignature { signature: FunctionSignatureId },
@@ -116,25 +119,34 @@ impl Error for InitialCheckError {}
 pub fn check_initial(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    check_candidate(&candidate)?;
+    check_candidate(&candidate, None)?;
+    Ok(candidate.into_initial_valid())
+}
+
+pub(crate) fn check_initial_with_catalog(
+    candidate: CanonicalModule<LoweredCandidate>,
+    catalog: &CanonicalAbiCatalog,
+) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    check_candidate(&candidate, Some(catalog))?;
     Ok(candidate.into_initial_valid())
 }
 
 pub fn check_transform(
     candidate: CanonicalModule<TransformedCandidate>,
 ) -> Result<CanonicalModule<OptimizedValid>, InitialCheckError> {
-    check_candidate(&candidate)?;
+    check_candidate(&candidate, None)?;
     Ok(candidate.into_optimized_valid())
 }
 
 pub(crate) fn recheck_final(
     candidate: &CanonicalModule<OptimizedValid>,
 ) -> Result<(), InitialCheckError> {
-    check_candidate(candidate)
+    check_candidate(candidate, None)
 }
 
 fn check_candidate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
+    catalog: Option<&CanonicalAbiCatalog>,
 ) -> Result<(), InitialCheckError> {
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
@@ -143,7 +155,7 @@ fn check_candidate<S: ModuleStage>(
     let imports = index_imports(candidate.imports())?;
     let functions = index_functions(candidate.functions())?;
     contracts::check_all(&functions, &signatures)?;
-    host::check_imports(&imports, &signatures)?;
+    host::check_imports(&imports, &signatures, catalog)?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
     let mut observed_tail_sites = BTreeSet::new();
 
@@ -152,6 +164,7 @@ fn check_candidate<S: ModuleStage>(
             function,
             &signatures,
             &imports,
+            catalog,
             &functions,
             &tail_obligations,
             &mut observed_tail_sites,
@@ -220,6 +233,7 @@ fn check_function(
     function: &Function,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     imports: &BTreeMap<ImportId, &ImportContract>,
+    catalog: Option<&CanonicalAbiCatalog>,
     functions: &BTreeMap<FunctionId, &Function>,
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
@@ -256,7 +270,7 @@ fn check_function(
                 &definition_sites,
                 &dominators,
             )?;
-            check_operation(function, operation, signatures, imports, functions, &mut memory)?;
+            check_operation(function, operation, signatures, imports, catalog, functions, &mut memory)?;
         }
         check_uses_dominate(
             function,
@@ -678,6 +692,7 @@ fn check_operation(
     operation: &Operation,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     imports: &BTreeMap<ImportId, &ImportContract>,
+    catalog: Option<&CanonicalAbiCatalog>,
     functions: &BTreeMap<FunctionId, &Function>,
     memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
@@ -742,7 +757,7 @@ fn check_operation(
             check_call(function, destinations, arguments, signature)
         }
         Operation::HostCall { destinations, import, arguments } => {
-            host::check_call(function, *import, destinations, arguments, imports, signatures)
+            host::check_call(function, *import, destinations, arguments, imports, signatures, catalog)
         }
         Operation::Alloc { .. } => unsupported_memory(function, "Alloc"),
         Operation::StaticData { .. } => unsupported_memory(function, "StaticData"),
@@ -1018,7 +1033,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::super::{
-        AccessMode, AllocationClass, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
+        AccessMode, AllocationClass, BasicBlock, BlockId, BlockParameter, CallableContract,
+        CanonicalAbiCatalog, CanonicalModule,
         CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
         FunctionSignatureId, GuardKind, HeaderField, HostBufferExtent, HostCallArgument,
         HostMutation, HostParameterRole, HostReentrancy, HostResultRole, ImportContract,
@@ -1213,9 +1229,10 @@ mod tests {
             ValueType::Capability(kind),
             HostCallArgument::Capability(VALUE),
             empty_layouts(),
-            vec![import],
+            vec![import.clone()],
         );
-        assert!(check_initial(module).is_ok());
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
+        assert!(super::check_initial_with_catalog(module, &catalog).is_ok());
     }
 
     #[test]
@@ -1232,10 +1249,11 @@ mod tests {
             ValueType::Capability(kind),
             HostCallArgument::Value(VALUE),
             empty_layouts(),
-            vec![import],
+            vec![import.clone()],
         );
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
         assert!(matches!(
-            check_initial(module),
+            super::check_initial_with_catalog(module, &catalog),
             Err(InitialCheckError::TypeMismatch { .. })
         ));
     }
@@ -1255,10 +1273,11 @@ mod tests {
             ValueType::Capability(expected),
             HostCallArgument::Capability(VALUE),
             empty_layouts(),
-            vec![import],
+            vec![import.clone()],
         );
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
         assert!(matches!(
-            check_initial(module),
+            super::check_initial_with_catalog(module, &catalog),
             Err(InitialCheckError::TypeMismatch { .. })
         ));
     }
@@ -1283,6 +1302,36 @@ mod tests {
             matches!(result.as_ref(), Err(InitialCheckError::MissingImportContract { .. })),
             "unexpected result: {result:?}"
         );
+    }
+
+    #[test]
+    fn candidate_abi_bytes_do_not_authenticate_an_import() {
+        let kind = super::super::CapabilityKindId::new(4);
+        let expected = host_import(
+            HostParameterRole::Capability(kind),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        let catalog = CanonicalAbiCatalog::from_imports(vec![expected]);
+        let mut forged = host_import(
+            HostParameterRole::Capability(kind),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        forged.abi_identity = ImportContractIdentity::AuthenticatedAbi([8; 32]);
+        let module = host_module(
+            ValueType::Capability(kind),
+            ValueType::Capability(kind),
+            HostCallArgument::Capability(VALUE),
+            empty_layouts(),
+            vec![forged],
+        );
+        assert!(matches!(
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::InvalidCanonicalAbiContract { .. })
+        ));
     }
 
     #[test]
@@ -1313,12 +1362,54 @@ mod tests {
                 extent: HostBufferExtent::Exact(4),
             },
             layouts,
-            vec![import],
+            vec![import.clone()],
         );
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
         assert!(matches!(
-            check_initial(module),
-            Err(InitialCheckError::HostBufferExtentMismatch { .. })
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::UnsupportedHostBuffer { .. })
         ));
+    }
+
+    #[test]
+    fn forged_field_and_element_buffer_projections_are_rejected() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let role = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(layout),
+            access: AccessMode::Read,
+            extent: HostBufferExtent::Exact(8),
+        };
+        for projection in [
+            Projection::Field { index: 99 },
+            Projection::Element { index: VALUE },
+        ] {
+            let import = host_import(
+                role.clone(),
+                HostResultRole::Value(ValueType::Int),
+                HostMutation::ReadOnly,
+                HostReentrancy::Forbidden,
+            );
+            let catalog = CanonicalAbiCatalog::from_imports(vec![import.clone()]);
+            let module = host_module(
+                ValueType::Ref(layout),
+                ValueType::Ref(layout),
+                HostCallArgument::Buffer {
+                    place: Place::projected(
+                        VALUE,
+                        projection,
+                        ValueType::Ref(layout),
+                        AccessMode::Read,
+                    ),
+                    extent: HostBufferExtent::Exact(8),
+                },
+                layouts.clone(),
+                vec![import],
+            );
+            assert!(matches!(
+                super::check_initial_with_catalog(module, &catalog),
+                Err(InitialCheckError::UnsupportedHostBuffer { .. })
+            ));
+        }
     }
 
     #[test]
@@ -1334,14 +1425,59 @@ mod tests {
                 mutation,
                 reentrancy,
             );
-            let result = check_initial(host_module(
+            let import_for_catalog = import.clone();
+            let result = super::check_initial_with_catalog(host_module(
                 ValueType::Capability(kind),
                 ValueType::Capability(kind),
                 HostCallArgument::Capability(VALUE),
                 empty_layouts(),
                 vec![import],
-            ));
+            ), &CanonicalAbiCatalog::from_imports(vec![import_for_catalog]));
             assert_eq!(result.is_err(), expected);
+        }
+    }
+
+    #[test]
+    fn host_mutation_must_match_explicit_buffer_access() {
+        let (layouts, layout) = dynamic_u32_layout();
+        for (access, mutation) in [
+            (AccessMode::Write, HostMutation::ReadOnly),
+            (AccessMode::Read, HostMutation::WriteBuffers),
+        ] {
+            let role = HostParameterRole::Buffer {
+                value_type: ValueType::Ref(layout),
+                access,
+                extent: HostBufferExtent::Exact(8),
+            };
+            let import = host_import(
+                role,
+                HostResultRole::Value(ValueType::Int),
+                mutation,
+                HostReentrancy::Forbidden,
+            );
+            let catalog = CanonicalAbiCatalog::from_imports(vec![import.clone()]);
+            let result = super::check_initial_with_catalog(
+                host_module(
+                    ValueType::Ref(layout),
+                    ValueType::Ref(layout),
+                    HostCallArgument::Buffer {
+                        place: Place::projected(
+                            VALUE,
+                            Projection::Field { index: 0 },
+                            ValueType::Ref(layout),
+                            access,
+                        ),
+                        extent: HostBufferExtent::Exact(8),
+                    },
+                    layouts.clone(),
+                    vec![import],
+                ),
+                &catalog,
+            );
+            assert!(matches!(
+                result,
+                Err(InitialCheckError::UnsupportedHostMutation { .. })
+            ));
         }
     }
 
