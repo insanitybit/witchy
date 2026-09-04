@@ -246,35 +246,34 @@ struct CorrespondenceReceipt {
     mappings: Vec<CorrespondenceMapping>,
 }
 
-/// Encoder authority that can only be created in this private module after a
-/// concrete correspondence receipt has been checked.
-pub(crate) struct AuthorityWirWitness {
-    candidate_binding: [u8; 32],
-    final_module_digest: crate::canonical_safewir::ModuleDigest,
-    correspondence_digest: [u8; 32],
+/// Witness derived only from the exact emitted bytes after independent Wasm
+/// parsing and validation. It has no access to SafeWIR authority or lowering
+/// state and therefore cannot be a self-attestation of the source candidate.
+struct TargetWasmWitness {
+    wasm_digest: [u8; 32],
+    decoded_digest: [u8; 32],
 }
 
-impl AuthorityWirWitness {
-    fn from_correspondence(
-        validated: &ValidatedSafeWir,
-        receipt: &CorrespondenceReceipt,
+impl TargetWasmWitness {
+    fn from_decoded(
+        bytes: &[u8],
+        section_order: &[u8],
+        functions: &[(Vec<(u32, String)>, Vec<PlanToken>)],
+        data: &[(u32, Vec<u8>)],
     ) -> Self {
+        let decoded = format!("{section_order:?}{functions:?}{data:?}");
         Self {
-            candidate_binding: validated.candidate_binding(),
-            final_module_digest: validated.final_module_digest(),
-            correspondence_digest: correspondence_digest(receipt),
+            wasm_digest: digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[bytes]),
+            decoded_digest: digest_bytes(
+                b"witchy/canonical-wasmir/decoded-target/v1",
+                &[decoded.as_bytes()],
+            ),
         }
     }
 
-    pub(crate) fn matches(
-        &self,
-        candidate_binding: [u8; 32],
-        final_module_digest: crate::canonical_safewir::ModuleDigest,
-        correspondence_digest: [u8; 32],
-    ) -> bool {
-        self.candidate_binding == candidate_binding
-            && self.final_module_digest == final_module_digest
-            && self.correspondence_digest == correspondence_digest
+    fn matches_bytes(&self, bytes: &[u8]) -> bool {
+        self.wasm_digest == digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[bytes])
+            && self.decoded_digest != [0; 32]
     }
 }
 
@@ -283,8 +282,8 @@ impl AuthorityWirWitness {
 /// on one exact SafeWIR/WasmIR pair. Unchecked `WasmIr` cannot cross the
 /// encoding boundary.
 struct CheckedWasmIr {
-    source: CanonicalModule<OptimizedValid>,
-    target: WasmIr,
+    _source: CanonicalModule<OptimizedValid>,
+    _target: WasmIr,
     receipt: CorrespondenceReceipt,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
@@ -1332,6 +1331,7 @@ fn check_correspondence(
 enum EncodeError {
     Lowering(LoweringError),
     Correspondence(CorrespondenceError),
+    SourceWitness,
     UnsupportedValueType { function: FunctionId, value: ValueId, value_type: crate::canonical_safewir::ValueType },
     UnsupportedSignature { signature: crate::canonical_safewir::FunctionSignatureId },
     ParameterLayoutMismatch { function: FunctionId },
@@ -1368,6 +1368,7 @@ impl AdmittedCanonicalArtifact {
 pub enum CanonicalAdmissionError {
     Lowering,
     Correspondence,
+    SourceWitnessMismatch,
     WasmValidation,
     UnsupportedPlan,
     PlanMismatch(&'static str),
@@ -3029,10 +3030,30 @@ fn encode_function(
     Ok(body)
 }
 
-fn authorize_wasm_ir(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, EncodeError> {
+fn authorize_wasm_ir(
+    validated: ValidatedSafeWir,
+    source_witness: &witchy_types::pipeline::CanonicalCheckedSource,
+) -> Result<CheckedWasmIr, EncodeError> {
+    authorize_wasm_ir_inner(validated, Some(source_witness))
+}
+
+#[cfg(test)]
+fn authorize_wasm_ir_for_test(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, EncodeError> {
+    authorize_wasm_ir_inner(validated, None)
+}
+
+fn authorize_wasm_ir_inner(
+    validated: ValidatedSafeWir,
+    source_witness: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
+) -> Result<CheckedWasmIr, EncodeError> {
     validated.validate_pre_admission().map_err(|_| {
         EncodeError::Correspondence(CorrespondenceError::ModuleIdentityMismatch)
     })?;
+    if let Some(source_witness) = source_witness {
+        validated
+            .validate_external_source_witness(source_witness)
+            .map_err(|_| EncodeError::SourceWitness)?;
+    }
     let source = validated.module().clone();
     let checked_source = validated.checked_source();
     let final_module_digest = validated.final_module_digest();
@@ -3047,11 +3068,6 @@ fn authorize_wasm_ir(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, Encod
                 .expect("nonempty canonical module"),
         )));
     }
-    let digest = correspondence_digest(&receipt);
-    let authority_wir = AuthorityWirWitness::from_correspondence(&validated, &receipt);
-    validated.validate_authority_wir(&authority_wir, digest).map_err(|_| {
-        EncodeError::Correspondence(CorrespondenceError::ModuleIdentityMismatch)
-    })?;
     Ok(CheckedWasmIr {
         source,
         target,
@@ -3185,7 +3201,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
 
 #[cfg(test)]
 fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError> {
-    let checked = authorize_wasm_ir(validated)?;
+    let checked = authorize_wasm_ir_for_test(validated)?;
     encode_checked(&checked)
 }
 
@@ -4830,7 +4846,7 @@ fn decode_and_match_plan(
     source: &CanonicalModule<OptimizedValid>,
     target: &WasmIr,
     bytes: &[u8],
-) -> Result<(), CanonicalAdmissionError> {
+) -> Result<TargetWasmWitness, CanonicalAdmissionError> {
     wasmparser::Validator::new_with_features(
         wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL,
     )
@@ -5031,7 +5047,12 @@ fn decode_and_match_plan(
             }
         }
     }
-    Ok(())
+    Ok(TargetWasmWitness::from_decoded(
+        bytes,
+        &section_order,
+        &actual,
+        &actual_data,
+    ))
 }
 
 fn digest_bytes(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
@@ -5088,8 +5109,11 @@ fn admit_parts(
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
     history_digest: crate::canonical_safewir::ModuleDigest,
+    target_witness: TargetWasmWitness,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    decode_and_match_plan(&source, &target, &bytes)?;
+    if !target_witness.matches_bytes(&bytes) {
+        return Err(CanonicalAdmissionError::PlanMismatch("target witness"));
+    }
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
         bytes,
@@ -5101,10 +5125,15 @@ fn admit_parts(
     })
 }
 
-pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    let checked = authorize_wasm_ir(validated).map_err(|error| match error {
+#[cfg(not(test))]
+pub fn admit_canonical(
+    validated: ValidatedSafeWir,
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    let checked = authorize_wasm_ir(validated, source).map_err(|error| match error {
         EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => CanonicalAdmissionError::Lowering,
         EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
+        EncodeError::SourceWitness => CanonicalAdmissionError::SourceWitnessMismatch,
         EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
         _ => CanonicalAdmissionError::UnsupportedPlan,
     })?;
@@ -5117,15 +5146,27 @@ pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalA
         final_module_digest,
         history_digest,
     } = checked;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
+    let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest, target_witness)
 }
 
 #[cfg(test)]
-fn admit_canonical_with_bytes_for_test(
+pub fn admit_canonical(
     validated: ValidatedSafeWir,
-    bytes: Vec<u8>,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
-    let checked = authorize_wasm_ir(validated).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let checked = authorize_wasm_ir_for_test(validated).map_err(|error| match error {
+        EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => {
+            CanonicalAdmissionError::Lowering
+        }
+        EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
+        EncodeError::SourceWitness => CanonicalAdmissionError::SourceWitnessMismatch,
+        EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
+        _ => CanonicalAdmissionError::UnsupportedPlan,
+    })?;
+    let bytes = encode_checked(&checked).map_err(|error| match error {
+        EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
+        _ => CanonicalAdmissionError::UnsupportedPlan,
+    })?;
     let CheckedWasmIr {
         source,
         target,
@@ -5134,7 +5175,35 @@ fn admit_canonical_with_bytes_for_test(
         final_module_digest,
         history_digest,
     } = checked;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
+    let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
+    admit_parts(
+        source,
+        target,
+        receipt,
+        bytes,
+        checked_source,
+        final_module_digest,
+        history_digest,
+        target_witness,
+    )
+}
+
+#[cfg(test)]
+fn admit_canonical_with_bytes_for_test(
+    validated: ValidatedSafeWir,
+    bytes: Vec<u8>,
+) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    let checked = authorize_wasm_ir_for_test(validated).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let CheckedWasmIr {
+        source,
+        target,
+        receipt,
+        checked_source,
+        final_module_digest,
+        history_digest,
+    } = checked;
+    let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest, target_witness)
 }
 #[cfg(test)]
 mod tests {
@@ -5280,15 +5349,16 @@ mod tests {
     }
 
     #[test]
-    fn a3_final_validated_candidate_cannot_substitute_for_correspondence_authority() {
-        let first = checked_scalar();
-        let target = lower_validated(&first).unwrap();
-        let receipt = check_correspondence(first.module(), &target).unwrap();
-        let digest = correspondence_digest(&receipt);
-        let witness = AuthorityWirWitness::from_correspondence(&first, &receipt);
+    fn a3_target_witness_cannot_substitute_for_other_bytes() {
+        let validated = checked_scalar();
+        let target = lower_validated(&validated).unwrap();
+        let bytes = encode_validated(checked_scalar()).expect("validated scalar encodes");
+        let witness = decode_and_match_plan(validated.module(), &target, &bytes)
+            .expect("exact target witness");
+        let mut substituted = bytes;
+        substituted.push(0);
 
-        let other = checked_branch();
-        assert!(other.validate_authority_wir(&witness, digest).is_err());
+        assert!(!witness.matches_bytes(&substituted));
     }
 
     fn scalar_signature(id: FunctionSignatureId) -> FunctionSignature {

@@ -30,8 +30,11 @@ pub(crate) enum CanonicalPipelineError {
 pub(crate) fn admit_checked_module(
     checked: &CheckedModule,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
+    let source = checked
+        .canonical_source()
+        .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
     let validated = validate_checked_module(checked)?;
-    admit_canonical(validated).map_err(CanonicalPipelineError::Admission)
+    admit_canonical(validated, source).map_err(CanonicalPipelineError::Admission)
 }
 
 impl fmt::Display for CanonicalPipelineError {
@@ -84,6 +87,35 @@ mod tests {
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
         let _history = validated.optimization_history();
+    }
+
+    #[test]
+    fn checked_source_witness_cannot_substitute_between_modules() {
+        let first = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main() -> Int:\n    40 + 2\n".to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("first checked source");
+        let second = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main() -> Int:\n    41 + 1\n".to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("second checked source");
+        let validated = validate_checked_module(&first).expect("first module validates");
+        let error = match admit_canonical(
+            validated,
+            second.canonical_source().expect("second canonical witness"),
+        ) {
+            Ok(_) => panic!("a different source witness must not admit"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            CanonicalAdmissionError::SourceWitnessMismatch
+        ));
     }
 
     #[test]

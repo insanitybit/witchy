@@ -28,6 +28,7 @@ struct CheckedSourceWitness {
     checked_source: CheckedSourceIdentity,
     initial_module_digest: ModuleDigest,
     proper_tail_manifest_digest: ModuleDigest,
+    callable_abi_manifest_digest: [u8; 32],
 }
 
 /// Evidence returned only by the independent final SafeWIR checker.
@@ -76,7 +77,6 @@ pub(crate) enum AdmissionWitnessMismatch {
     CheckedSource,
     FinalSafety,
     ZeroPassRevision,
-    AuthorityWir,
 }
 
 impl ValidatedSafeWir {
@@ -106,10 +106,6 @@ impl ValidatedSafeWir {
 
     pub(crate) fn history_digest(&self) -> ModuleDigest {
         self.optimization_history.identity_digest()
-    }
-
-    pub(crate) const fn candidate_binding(&self) -> [u8; 32] {
-        self.candidate.0
     }
 
     pub(crate) fn validate_pre_admission(
@@ -143,17 +139,18 @@ impl ValidatedSafeWir {
         Ok(())
     }
 
-    pub(crate) fn validate_authority_wir(
+    pub(crate) fn validate_external_source_witness(
         &self,
-        witness: &crate::canonical_wasmir::AuthorityWirWitness,
-        correspondence_digest: [u8; 32],
+        source: &witchy_types::pipeline::CanonicalCheckedSource,
     ) -> Result<(), AdmissionWitnessMismatch> {
-        if !witness.matches(
-            self.candidate.0,
-            module_digest(&self.module),
-            correspondence_digest,
-        ) {
-            return Err(AdmissionWitnessMismatch::AuthorityWir);
+        let witness = source.source_witness();
+        if witness.source_bundle_digest() != self.checked_source().digest()
+            || witness.proper_tail_manifest_digest()
+                != self.checked_lowering.proper_tail_manifest_digest.bytes()
+            || witness.callable_abi_manifest_digest()
+                != self.checked_source_witness.callable_abi_manifest_digest
+        {
+            return Err(AdmissionWitnessMismatch::CheckedSource);
         }
         Ok(())
     }
@@ -235,6 +232,7 @@ pub fn check_initial_with_witness(
         checked_source: module.checked_source(),
         initial_module_digest: module_digest(&module),
         proper_tail_manifest_digest: expected,
+        callable_abi_manifest_digest: source.callable_abi_manifest().digest(),
     };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
@@ -317,6 +315,7 @@ fn check_initial_with_expected_digest(
         checked_source: module.checked_source(),
         initial_module_digest: module_digest(&module),
         proper_tail_manifest_digest: expected,
+        callable_abi_manifest_digest: [0; 32],
     };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
