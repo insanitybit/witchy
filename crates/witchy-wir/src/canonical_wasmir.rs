@@ -687,7 +687,7 @@ fn lower_operation(
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
                 Some(pointee) => {
-                    *transfer == LoadTransfer::CloneShared
+                    matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::MoveUnique)
                         && place.value_type() == ValueType::Ref(pointee)
                 }
                 None => *transfer == LoadTransfer::CopyScalar,
@@ -2029,9 +2029,6 @@ fn emit_instruction(
             emit_set(body, layout, function.id, *destination)?;
         }
         ScalarInstruction::Load { destination, place, transfer } => {
-            if *transfer == LoadTransfer::MoveUnique {
-                return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Load transfer" });
-            }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
             if *transfer == LoadTransfer::CloneShared {
@@ -3391,7 +3388,12 @@ fn expected_linear_function_plan(
                 expected_alloc_plan(&mut plan, function, &layout, collection, *destination, extent)?;
             }
             Operation::Load { destination, place, transfer }
-                if matches!(transfer, LoadTransfer::CopyScalar | LoadTransfer::CloneShared) =>
+                if matches!(
+                    transfer,
+                    LoadTransfer::CopyScalar
+                        | LoadTransfer::CloneShared
+                        | LoadTransfer::MoveUnique
+                ) =>
             {
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
                 if *transfer == LoadTransfer::CloneShared {

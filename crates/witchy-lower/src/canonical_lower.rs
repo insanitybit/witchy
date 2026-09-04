@@ -1213,7 +1213,9 @@ impl FunctionLowerer<'_> {
                         &Type::Named("String".into(), Vec::new()),
                         self.layout_bundle,
                         self.layouts,
-                    )? == layout
+                    )
+                    .ok()
+                        == Some(layout)
                     && !self.string_lengths.contains_key(&value)
                 {
                     let length = self.fresh(ValueType::Size)?;
@@ -1556,17 +1558,9 @@ impl FunctionLowerer<'_> {
         let ValueType::Ref(layout) = self.values[&old_object] else {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver"));
         };
-        let list_type = Type::Named(
-            "List".into(),
-            vec![Type::Named("Int".into(), Vec::new())],
-        );
+        let list_type = self.expression_type(&arguments[0])?;
         let (expected_layout, element_type, header_bytes, stride_bytes) =
             list_layout(&list_type, self.layout_bundle, self.layouts)?;
-        if element_type != ValueType::Int {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "list.push pointer-bearing element",
-            ));
-        }
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
@@ -1578,9 +1572,12 @@ impl FunctionLowerer<'_> {
             .known_list_lengths
             .get(&old_object)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("list.push dynamic length"))?;
-        let value = self.lower_expr(value)?;
-        if self.values[&value] != ValueType::Int {
+        let mut value = self.lower_expr(value)?;
+        if self.values[&value] != element_type {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+        }
+        if matches!(element_type, ValueType::Ref(_)) {
+            value = self.clone_string_for_storage(value)?;
         }
 
         let maximum = self.fresh(ValueType::Size)?;
@@ -1655,26 +1652,34 @@ impl FunctionLowerer<'_> {
                 condition: in_bounds,
                 kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
             });
-            let copied = self.fresh(ValueType::Int)?;
+            let copied = self.fresh(element_type)?;
             self.push_operation(Operation::Load {
                 destination: copied,
                 place: witchy_wir::canonical_safewir::Place::projected(
                     old_object,
                     witchy_wir::canonical_safewir::Projection::Element { index },
-                    ValueType::Int,
+                    element_type,
                     witchy_wir::canonical_safewir::AccessMode::Read,
                 ),
-                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+                transfer: if matches!(element_type, ValueType::Ref(_)) {
+                    witchy_wir::canonical_safewir::LoadTransfer::MoveUnique
+                } else {
+                    witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+                },
             });
             self.push_operation(Operation::Store {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     new_object,
                     witchy_wir::canonical_safewir::Projection::Element { index },
-                    ValueType::Int,
+                    element_type,
                     witchy_wir::canonical_safewir::AccessMode::Write,
                 ),
                 value: copied,
-                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+                transfer: if matches!(element_type, ValueType::Ref(_)) {
+                    witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+                } else {
+                    witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+                },
             });
         }
 
@@ -1710,11 +1715,15 @@ impl FunctionLowerer<'_> {
             place: witchy_wir::canonical_safewir::Place::projected(
                 new_object,
                 witchy_wir::canonical_safewir::Projection::Element { index: append_index },
-                ValueType::Int,
+                element_type,
                 witchy_wir::canonical_safewir::AccessMode::Write,
             ),
             value,
-            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            transfer: if matches!(element_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+            } else {
+                witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+            },
         });
         self.push_operation(Operation::Reclaim { object: old_object });
         self.bindings.insert(name.clone(), new_object);
