@@ -65,6 +65,7 @@ pub enum InitialCheckError {
     UnsupportedHostCall { function: FunctionId },
     UnsupportedBorrowArgument { function: FunctionId },
     UnsupportedMemorySignature { signature: FunctionSignatureId },
+    CallableContractMismatch { signature: FunctionSignatureId },
 }
 
 impl fmt::Display for InitialCheckError {
@@ -150,20 +151,41 @@ fn index_tail_obligations(
 }
 
 fn check_scalar_signature(signature: &FunctionSignature) -> Result<(), InitialCheckError> {
+    let parameters_match = signature.contract.parameters.len() == signature.parameters.len()
+        && signature
+            .contract
+            .parameters
+            .iter()
+            .zip(&signature.parameters)
+            .all(|(contract, value_type)| {
+                contract.value_type == *value_type
+                    && contract.ownership == ParameterOwnership::Value
+                    && !contract.non_escaping
+            });
+    let results_match = signature.contract.results.len() == signature.results.len()
+        && signature
+            .contract
+            .results
+            .iter()
+            .zip(&signature.results)
+            .all(|(contract, value_type)| {
+                matches!(contract, super::ResultContract::Value(actual) if actual == value_type)
+            });
+    if !parameters_match || !results_match || !signature.contract.parameter_effects.is_empty() {
+        return Err(InitialCheckError::CallableContractMismatch {
+            signature: signature.id,
+        });
+    }
     if signature
         .parameters
         .iter()
         .chain(&signature.results)
         .any(ValueType::is_memory_bearing)
-        || signature.contract.parameters.iter().any(|parameter| {
-            parameter.value_type.is_memory_bearing()
-                || parameter.ownership != ParameterOwnership::Value
-                || parameter.non_escaping
-        })
-        || !signature.contract.parameter_effects.is_empty()
-        || signature.contract.results.iter().any(|result| {
-            !matches!(result, super::ResultContract::Value(value) if !value.is_memory_bearing())
-        })
+        || signature
+            .contract
+            .parameters
+            .iter()
+            .any(|parameter| parameter.value_type.is_memory_bearing())
     {
         return Err(InitialCheckError::UnsupportedMemorySignature {
             signature: signature.id,
@@ -1314,6 +1336,47 @@ mod tests {
                 function: FUNCTION,
                 index: ValueId::new(2),
                 count: ValueId::new(0),
+            }
+        );
+    }
+
+    #[test]
+    fn declared_callable_result_must_match_checked_signature() {
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: vec![ValueType::Int],
+                contract: contract(vec![ResultContract::Value(ValueType::Float)]),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, ValueType::Int)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![Operation::ConstInt {
+                        destination: VALUE,
+                        value: 42,
+                    }],
+                    terminator: Terminator::Return {
+                        values: vec![VALUE],
+                    },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::CallableContractMismatch {
+                signature: SIGNATURE,
             }
         );
     }
