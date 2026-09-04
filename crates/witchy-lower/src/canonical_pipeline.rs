@@ -159,6 +159,31 @@ mod tests {
     }
 
     #[test]
+    fn list_int_source_reaches_admitted_executable_artifact() {
+        let source = "fn main() -> Int:\n    [10, 20][1]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked List(Int) source");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical List(Int) artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted List(Int) artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted List(Int) artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 20);
+    }
+
+    #[test]
     fn unsupported_string_layout_fails_closed_before_lowering() {
         let source = "fn text() -> String:\n    \"hello\"\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

@@ -71,16 +71,22 @@ pub(crate) fn derive_layout_bundle(
 
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             let Some(checked) = typed.table().type_of(expression) else {
-                // Variable references are resolved through their declaration
-                // and are intentionally absent from the expression side table.
-                // Their binding type is visited through the initializer or
-                // function signature, so this is not a missing layout fact.
-                return if matches!(expression, ast::Expr::Var(_)) {
-                    Ok(())
-                } else {
-                    Err(CanonicalLayoutError::MissingCheckedExpressionType(
+                // Intrinsic scalar literals and variable references are
+                // intentionally absent from the expression side table. Their
+                // semantics are fixed by the AST constructor or checked
+                // declaration and they add no layout root. A string literal is
+                // memory-bearing, so materialize its semantic type and let the
+                // v1 layout policy accept or reject it explicitly.
+                return match expression {
+                    ast::Expr::Int(_)
+                    | ast::Expr::Float(_)
+                    | ast::Expr::Duration(_)
+                    | ast::Expr::Bool(_)
+                    | ast::Expr::Var(_) => Ok(()),
+                    ast::Expr::Str(_) => projection.visit_type(&Type::Named("String".into(), Vec::new())),
+                    _ => Err(CanonicalLayoutError::MissingCheckedExpressionType(
                         format!("{expression:?}"),
-                    ))
+                    )),
                 };
             };
             let source_type = typeck::ty_to_ast(checked).ok_or_else(|| {
