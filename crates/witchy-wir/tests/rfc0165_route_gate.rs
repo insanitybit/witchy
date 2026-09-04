@@ -268,6 +268,77 @@ fn validated_safewir_has_one_checker_owned_construction_surface() {
     );
 }
 
+#[test]
+fn a3_witness_and_digest_types_have_no_public_minting_surface() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut declarations = BTreeSet::new();
+    let protected_public_types = [
+        "CheckedLoweringWitness",
+        "CheckedInitialSafeWir",
+        "ValidatedSafeWir",
+        "OptimizationHistoryBody",
+        "OptimizationHistoryWitness",
+        "RefinementReceipt",
+    ];
+    let protected_private_types = [
+        "CheckedSourceWitness",
+        "FinalSafeWirWitness",
+        "CandidateId",
+        "AuthorityWirWitness",
+    ];
+
+    for (path, source) in rust_sources(&source_root) {
+        let file = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("{} parses: {error}", path.display()));
+        for item in &file.items {
+            let Item::Struct(item) = item else { continue };
+            let name = item.ident.to_string();
+            if protected_public_types.contains(&name.as_str()) {
+                assert!(
+                    matches!(item.vis, Visibility::Public(_)),
+                    "{name} must remain publicly usable only through checker APIs"
+                );
+                let Fields::Named(fields) = &item.fields else {
+                    panic!("{name} must keep named private fields");
+                };
+                assert!(
+                    fields.named.iter().all(|field| matches!(field.vis, Visibility::Inherited)),
+                    "{name} fields must not be publicly constructible"
+                );
+                declarations.insert(name.clone());
+            }
+            if protected_private_types.contains(&name.as_str()) {
+                assert!(
+                    !matches!(item.vis, Visibility::Public(_)),
+                    "{name} must not be externally visible"
+                );
+                declarations.insert(name);
+            }
+        }
+    }
+
+    for name in protected_public_types.into_iter().chain(protected_private_types) {
+        assert!(declarations.contains(name), "missing protected A3 type {name}");
+    }
+
+    let history = read_source("src/canonical_safewir/history.rs");
+    let history_file = syn::parse_file(&history).expect("history.rs parses");
+    let module_digest_impl_has_public_constructor = history_file.items.iter().any(|item| {
+        let Item::Impl(item) = item else { return false };
+        let syn::Type::Path(self_ty) = item.self_ty.as_ref() else { return false };
+        self_ty.path.is_ident("ModuleDigest")
+            && item.items.iter().any(|item| {
+                let syn::ImplItem::Fn(function) = item else { return false };
+                function.sig.ident == "from_bytes"
+                    && matches!(function.vis, Visibility::Public(_))
+            })
+    });
+    assert!(
+        !module_digest_impl_has_public_constructor,
+        "ModuleDigest must not expose a public constructor"
+    );
+}
+
 fn workspace_manifests() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut manifests = vec![root.join("Cargo.toml")];
