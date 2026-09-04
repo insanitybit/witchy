@@ -9,7 +9,10 @@ use std::error::Error;
 use std::fmt;
 
 use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
-use witchy_types::typeck::{ProperTailSiteManifest, TypedModule};
+use witchy_types::typeck::{
+    ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
+    ProperTailSiteKey, ProperTailSiteManifest, TypedModule,
+};
 use witchy_wir::canonical_safewir::{
     BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
     CheckedSourceIdentity, Function, FunctionId, FunctionSignature, FunctionSignatureId,
@@ -27,7 +30,7 @@ pub enum CanonicalLoweringError {
     UnsupportedItem(&'static str),
     UnsupportedStatement(&'static str),
     UnsupportedExpression(&'static str),
-    UnsupportedProperTailSites(usize),
+    MissingProperTailSite(String),
     MissingBinding(String),
     DuplicateBinding(String),
     MissingReturn(String),
@@ -56,12 +59,6 @@ pub fn lower_typed_module(
     let tail_manifest = typed
         .proper_tail_manifest()
         .map_err(|error| CanonicalLoweringError::TailManifest(error.to_string()))?;
-    if !tail_manifest.sites().is_empty() {
-        return Err(CanonicalLoweringError::UnsupportedProperTailSites(
-            tail_manifest.sites().len(),
-        ));
-    }
-
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
@@ -92,11 +89,18 @@ pub fn lower_typed_module(
     }
 
     let mut functions = Vec::new();
-    for item in &typed.module().items {
+    for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
         let (function_id, signature_id) = functions_by_name[&function.name];
         let signature = &signatures[signature_id.get() as usize];
-        functions.push(lower_function(function, function_id, signature)?);
+        functions.push(lower_function(
+            function,
+            function_id,
+            u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            signature,
+            &functions_by_name,
+            &tail_manifest,
+        )?);
     }
 
     Ok(CanonicalModule::from_lowering(LoweredModuleParts {
@@ -185,7 +189,10 @@ fn checked_signature(
 fn lower_function(
     function: &witchy_syntax::ast::Function,
     id: FunctionId,
+    item: u32,
     signature: &FunctionSignature,
+    functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    tail_manifest: &ProperTailSiteManifest,
 ) -> Result<Function, CanonicalLoweringError> {
     let entry = BlockId::new(0);
     let mut lowerer = FunctionLowerer {
@@ -194,6 +201,9 @@ fn lower_function(
         values: BTreeMap::new(),
         bindings: HashMap::new(),
         operations: Vec::new(),
+        item,
+        functions,
+        tail_manifest,
     };
     let mut parameters = Vec::new();
     for (source, value_type) in function.params.iter().zip(&signature.parameters) {
@@ -223,15 +233,18 @@ fn lower_function(
     })
 }
 
-struct FunctionLowerer {
+struct FunctionLowerer<'a> {
     function: String,
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
     operations: Vec<Operation>,
+    item: u32,
+    functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
+    tail_manifest: &'a ProperTailSiteManifest,
 }
 
-impl FunctionLowerer {
+impl FunctionLowerer<'_> {
     fn lower_body(
         &mut self,
         statements: &[Stmt],
@@ -257,9 +270,25 @@ impl FunctionLowerer {
                     if !final_statement {
                         return Err(CanonicalLoweringError::UnsupportedStatement("early return"));
                     }
+                    if let Some(Expr::Call { name, args }) = value {
+                        return self.lower_direct_tail_call(
+                            name,
+                            args,
+                            index,
+                            ProperTailPathStep::ReturnValue,
+                        );
+                    }
                     return self.return_value(value.as_ref(), results);
                 }
                 Stmt::Expr(value) if final_statement => {
+                    if let Expr::Call { name, args } = value {
+                        return self.lower_direct_tail_call(
+                            name,
+                            args,
+                            index,
+                            ProperTailPathStep::Value,
+                        );
+                    }
                     return self.return_value(Some(value), results);
                 }
                 Stmt::Expr(value) => {
@@ -280,6 +309,52 @@ impl FunctionLowerer {
         } else {
             Err(CanonicalLoweringError::MissingReturn(self.function.clone()))
         }
+    }
+
+    fn lower_direct_tail_call(
+        &mut self,
+        name: &str,
+        arguments: &[Expr],
+        statement: usize,
+        position: ProperTailPathStep,
+    ) -> Result<Terminator, CanonicalLoweringError> {
+        let (callee, _) = self
+            .functions
+            .get(name)
+            .copied()
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.to_owned()))?;
+        let statement =
+            u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let key = ProperTailSiteKey {
+            callable: ProperTailCallableId {
+                item: self.item,
+                method: None,
+                lambda_path: Vec::new(),
+            },
+            path: vec![
+                ProperTailPathStep::Statement(statement),
+                position,
+                ProperTailPathStep::Node(ProperTailExprKind::Call),
+            ],
+            dispatch: ProperTailDispatchKind::Direct,
+        };
+        let site = self
+            .tail_manifest
+            .sites()
+            .iter()
+            .find(|site| site.key == key)
+            .ok_or_else(|| {
+                CanonicalLoweringError::MissingProperTailSite(self.function.clone())
+            })?;
+        let arguments = arguments
+            .iter()
+            .map(|argument| self.lower_expr(argument).map(witchy_wir::canonical_safewir::CallArgument::Value))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Terminator::TailCall {
+            site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
+            callee,
+            arguments,
+        })
     }
 
     fn return_value(
@@ -437,7 +512,7 @@ fn canonical_tail_sites(
 
 #[cfg(test)]
 mod tests {
-    use super::{CanonicalLoweringError, lower_typed_module};
+    use super::lower_typed_module;
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{CheckedSourceIdentity, check_initial};
     use witchy_wir::layout::{LayoutBundle, LayoutInterner};
@@ -463,21 +538,20 @@ mod tests {
     }
 
     #[test]
-    fn tail_bearing_source_fails_before_candidate_construction() {
+    fn proper_tail_source_lowers_with_manifest_identity() {
         let module = parse_module(
             "fn recurse(n: Int) -> Int:\n    return recurse(n)\n",
         )
         .expect("parse tail fixture");
         let typed = witchy_types::typeck::annotate_checked(module).expect("type check fixture");
 
-        assert_eq!(
-            lower_typed_module(
-                &typed,
-                CheckedSourceIdentity::from_digest([3; 32]),
-                empty_layouts(),
-            )
-            .unwrap_err(),
-            CanonicalLoweringError::UnsupportedProperTailSites(1)
-        );
+        let candidate = lower_typed_module(
+            &typed,
+            CheckedSourceIdentity::from_digest([3; 32]),
+            empty_layouts(),
+        )
+        .expect("lower proper tail call");
+
+        assert!(check_initial(candidate).is_ok());
     }
 }
