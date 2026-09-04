@@ -196,8 +196,6 @@ pub fn lower_typed_module(
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
 
-    refine_reference_result_contracts(&mut signatures, &functions)?;
-
     let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest(
@@ -1855,92 +1853,6 @@ fn contains_console_print(module: &witchy_syntax::ast::Module) -> bool {
 
 fn is_console_print(name: &str) -> bool {
     name == "__capop.print"
-}
-
-fn refine_reference_result_contracts(
-    signatures: &mut [FunctionSignature],
-    functions: &[Function],
-) -> Result<(), CanonicalLoweringError> {
-    for _ in 0..=functions.len() {
-        let mut changed = false;
-        for function in functions {
-            let result_types = signatures
-                .get(function.signature.get() as usize)
-                .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(format!("signature {}", function.signature.get())))?
-                .results
-                .clone();
-            let mut replacements = Vec::new();
-            for (index, value_type) in result_types.into_iter().enumerate() {
-                let ValueType::Ref(_) = value_type else { continue; };
-                let Some(contract) = derived_result_contract(function, index, signatures) else {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("unresolved reference result provenance"));
-                };
-                if signatures
-                    .get(function.signature.get() as usize)
-                    .and_then(|signature| signature.contract.results.get(index))
-                    != Some(&contract)
-                {
-                    replacements.push((index, contract));
-                }
-            }
-            if !replacements.is_empty() {
-                let signature = signatures
-                    .get_mut(function.signature.get() as usize)
-                    .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(format!("signature {}", function.signature.get())))?;
-                for (index, contract) in replacements {
-                    signature.contract.results[index] = contract;
-                    changed = true;
-                }
-            }
-        }
-        if !changed { return Ok(()); }
-    }
-    Err(CanonicalLoweringError::UnsupportedExpression("reference result contract did not converge"))
-}
-
-fn derived_result_contract(
-    function: &Function,
-    result_index: usize,
-    signatures: &[FunctionSignature],
-) -> Option<ResultContract> {
-    let mut origins = BTreeMap::new();
-    for block in &function.blocks {
-        for operation in &block.operations {
-            match operation {
-                Operation::Alloc { destination, layout, .. } => {
-                    origins.insert(*destination, ResultContract::Fresh { layout: *layout });
-                }
-                Operation::StaticData { destination, layout, .. } => {
-                    origins.insert(*destination, ResultContract::StaticData { layout: *layout });
-                }
-                Operation::Share { destination, source } => {
-                    let (ResultContract::Fresh { layout }
-                    | ResultContract::StaticData { layout }
-                    | ResultContract::Shared { layout }) = origins.get(source).cloned()? else { continue; };
-                    origins.insert(*destination, ResultContract::Shared { layout });
-                }
-                Operation::MoveValue { destination, source } => {
-                    if let Some(contract) = origins.get(source).cloned() { origins.insert(*destination, contract); }
-                }
-                Operation::Call { destinations, callee, .. } => {
-                    let signature = signatures.get(callee.get() as usize)?;
-                    for (destination, contract) in destinations.iter().zip(&signature.contract.results) {
-                        origins.insert(*destination, contract.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Terminator::Return { values } = &block.terminator {
-            let value = values.get(result_index)?;
-            return origins.get(value).cloned();
-        }
-        if let Terminator::TailCall { callee, .. } = &block.terminator {
-            let signature = signatures.get(callee.get() as usize)?;
-            return signature.contract.results.get(result_index).cloned();
-        }
-    }
-    None
 }
 
 fn list_int_layout(

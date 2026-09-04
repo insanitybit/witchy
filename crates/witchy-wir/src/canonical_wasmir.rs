@@ -1089,13 +1089,14 @@ impl AdmittedCanonicalArtifact {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalAdmissionError {
     Lowering,
     Correspondence,
     WasmValidation,
     UnsupportedPlan,
-    PlanMismatch,
+    PlanMismatch(&'static str),
+    SectionOrderMismatch { expected: Vec<u8>, actual: Vec<u8> },
 }
 
 impl std::fmt::Display for CanonicalAdmissionError {
@@ -3585,12 +3586,12 @@ fn decode_and_match_plan(
     .map_err(|_| CanonicalAdmissionError::WasmValidation)?;
     let metadata = expected_metadata_prefix(source, target)?;
     if bytes.len() < metadata.len() || bytes[..metadata.len()] != metadata[..] {
-        return Err(CanonicalAdmissionError::PlanMismatch);
+        return Err(CanonicalAdmissionError::PlanMismatch("module metadata"));
     }
     let (expected_static_data, expected_heap_start) = static_data_plan(source.static_data_segments())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     if target.heap_start != expected_heap_start || target.static_data != expected_static_data {
-        return Err(CanonicalAdmissionError::PlanMismatch);
+        return Err(CanonicalAdmissionError::PlanMismatch("static-data lowering"));
     }
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -3631,14 +3632,14 @@ fn decode_and_match_plan(
             wasmparser::Payload::ExportSection(_) => section_order.push(5),
             wasmparser::Payload::CodeSectionStart { count, .. } => {
                 if code_count.replace(count).is_some() {
-                    return Err(CanonicalAdmissionError::PlanMismatch);
+                    return Err(CanonicalAdmissionError::PlanMismatch("duplicate code section"));
                 }
                 section_order.push(6);
                 code_started = true;
             }
             wasmparser::Payload::CodeSectionEntry(body) => {
                 if !code_started {
-                    return Err(CanonicalAdmissionError::PlanMismatch);
+                    return Err(CanonicalAdmissionError::PlanMismatch("code body before section"));
                 }
                 let mut locals_reader = body.get_locals_reader().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
                 let mut locals = Vec::new();
@@ -3658,42 +3659,50 @@ fn decode_and_match_plan(
                 for data in reader {
                     let data = data.map_err(|_| CanonicalAdmissionError::WasmValidation)?;
                     let wasmparser::DataKind::Active { memory_index, offset_expr } = data.kind else {
-                        return Err(CanonicalAdmissionError::PlanMismatch);
+                        return Err(CanonicalAdmissionError::PlanMismatch("passive data segment"));
                     };
                     if memory_index != 0 {
-                        return Err(CanonicalAdmissionError::PlanMismatch);
+                        return Err(CanonicalAdmissionError::PlanMismatch("nonzero data memory"));
                     }
                     let mut operators = offset_expr.get_operators_reader();
                     let wasmparser::Operator::I32Const { value } = operators
                         .read()
                         .map_err(|_| CanonicalAdmissionError::WasmValidation)?
                     else {
-                        return Err(CanonicalAdmissionError::PlanMismatch);
+                        return Err(CanonicalAdmissionError::PlanMismatch("dynamic data offset"));
                     };
-                    let offset = u32::try_from(value).map_err(|_| CanonicalAdmissionError::PlanMismatch)?;
+                    let offset = u32::try_from(value)
+                        .map_err(|_| CanonicalAdmissionError::PlanMismatch("negative data offset"))?;
                     actual_data.push((offset, data.data.to_vec()));
                 }
             }
             wasmparser::Payload::End(_) => {}
-            _ => return Err(CanonicalAdmissionError::PlanMismatch),
+            _ => return Err(CanonicalAdmissionError::PlanMismatch("unexpected Wasm section")),
         }
     }
     let expected_count = u32::try_from(expected.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    let mut expected_sections = vec![0];
-    if !target.imports.is_empty() {
-        expected_sections.push(1);
-    }
-    expected_sections.extend([2, 3, 4, 5, 6]);
+    // The canonical encoder deliberately emits every fixed metadata section,
+    // including an empty import section. Match that exact byte policy rather
+    // than inferring section presence from the logical import count.
+    let mut expected_sections = vec![0, 1, 2, 3, 4, 5, 6];
     if !target.static_data.is_empty() {
         expected_sections.push(7);
     }
     let expected_data = expected_static_data.iter().map(|segment| (segment.offset, segment.bytes.clone())).collect::<Vec<_>>();
-    if section_order != expected_sections
-        || code_count != Some(expected_count)
-        || actual != expected
-        || actual_data != expected_data
-    {
-        return Err(CanonicalAdmissionError::PlanMismatch);
+    if section_order != expected_sections {
+        return Err(CanonicalAdmissionError::SectionOrderMismatch {
+            expected: expected_sections,
+            actual: section_order,
+        });
+    }
+    if code_count != Some(expected_count) {
+        return Err(CanonicalAdmissionError::PlanMismatch("function count"));
+    }
+    if actual != expected {
+        return Err(CanonicalAdmissionError::PlanMismatch("function body"));
+    }
+    if actual_data != expected_data {
+        return Err(CanonicalAdmissionError::PlanMismatch("data contents"));
     }
     Ok(())
 }
@@ -4107,7 +4116,7 @@ mod tests {
         bytes[block] = 0x03;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_loop(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch | CanonicalAdmissionError::WasmValidation)
+            Err(CanonicalAdmissionError::PlanMismatch(_) | CanonicalAdmissionError::WasmValidation)
         ));
     }
 
@@ -4433,7 +4442,7 @@ mod tests {
         bytes[call + 1] = 0;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_direct_call(false), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
 
@@ -4474,7 +4483,7 @@ mod tests {
         bytes[signature + 2] = 0x7f;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_parameterized_scalar_call(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::PlanMismatch(_))
                 | Err(CanonicalAdmissionError::WasmValidation)
         ));
     }
@@ -5237,7 +5246,7 @@ mod tests {
         bytes[opcode + 2] = 1;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_int_list_fixture(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
 
@@ -5252,7 +5261,7 @@ mod tests {
         bytes[immediate] = 10;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
 
@@ -5261,7 +5270,7 @@ mod tests {
         let bytes = encode_validated(checked_scalar()).unwrap();
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_packed_list_allocation_artifact(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
 
@@ -5275,7 +5284,7 @@ mod tests {
         bytes[body_start + 1] = 0x7e;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
-            Err(CanonicalAdmissionError::WasmValidation | CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::WasmValidation | CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
 
@@ -5290,7 +5299,7 @@ mod tests {
         bytes[block_type] = 0x00;
         assert!(matches!(
             admit_canonical_with_bytes_for_test(checked_guard_artifact(), bytes),
-            Err(CanonicalAdmissionError::PlanMismatch)
+            Err(CanonicalAdmissionError::PlanMismatch(_))
         ));
     }
     #[cfg(feature = "native")]
