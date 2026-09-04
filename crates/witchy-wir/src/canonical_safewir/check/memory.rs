@@ -119,6 +119,24 @@ impl<'a> MemoryChecker<'a> {
         self.state = state;
     }
 
+    pub(super) fn constant_condition(&self, condition: ValueId) -> Option<bool> {
+        let comparison = self.state.comparisons.get(&condition)?;
+        let left = *self.state.constants.get(&comparison.left)?;
+        let right = *self.state.constants.get(&comparison.right)?;
+        Some(match comparison.operator {
+            ComparisonOperator::Equal => left == right,
+            ComparisonOperator::NotEqual => left != right,
+            ComparisonOperator::LessSigned => (left as i64) < (right as i64),
+            ComparisonOperator::LessUnsigned => left < right,
+            ComparisonOperator::LessEqualSigned => (left as i64) <= (right as i64),
+            ComparisonOperator::LessEqualUnsigned => left <= right,
+            ComparisonOperator::GreaterSigned => (left as i64) > (right as i64),
+            ComparisonOperator::GreaterUnsigned => left > right,
+            ComparisonOperator::GreaterEqualSigned => (left as i64) >= (right as i64),
+            ComparisonOperator::GreaterEqualUnsigned => left >= right,
+        })
+    }
+
     /// Rename facts through an explicit SSA edge.  A block parameter is a new
     /// definition, so any count, capacity, header value, guard, or object state
     /// carried by an argument must be expressed in terms of that definition.
@@ -336,7 +354,7 @@ impl<'a> MemoryChecker<'a> {
         Ok(MemoryState {
             objects,
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
-            range_states: intersect_map(&existing.range_states, &incoming.range_states),
+            range_states: meet_range_states(existing, incoming),
             constants: intersect_map(&existing.constants, &incoming.constants),
             exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
             comparisons: intersect_map(&existing.comparisons, &incoming.comparisons),
@@ -688,6 +706,7 @@ impl<'a> MemoryChecker<'a> {
         let Some(length) = self.state.constants.get(&range.length).copied() else {
             return self.unsupported("MoveRange(uninitialized-source)");
         };
+        let pointee = self.owned_pointer_slot_pointee(element)?;
         let end = start.checked_add(length).ok_or(InitialCheckError::UnsupportedMemoryOperation {
             function: self.function.id,
             operation: "MoveRange(uninitialized-source)",
@@ -697,7 +716,7 @@ impl<'a> MemoryChecker<'a> {
             let Some(stored) = self.state.stored_objects.get(&(range.object, SlotIdentity::Constant(index))) else {
                 return self.unsupported("MoveRange(uninitialized-source)");
             };
-            if stored.ownership != Ownership::Unique || stored.layout != element {
+            if stored.ownership != Ownership::Unique || stored.layout != pointee {
                 return self.unsupported("MoveRange(uninitialized-source)");
             }
             if allocation_class.is_some() && allocation_class != stored.allocation_class {
@@ -1687,15 +1706,10 @@ impl<'a> MemoryChecker<'a> {
         // initialized prefix carries object ownership. Raw bytes and boolean
         // value slots are pointer-free storage, not SafeWIR value types, and
         // therefore have no prefix ownership facts to consolidate.
-        if !matches!(
-            self.descriptor(element)?.kind(),
-            LayoutKind::RuntimePointerValueSlot {
-                semantics: PointerSlot::Owned,
-                ..
-            }
-        ) {
+        if !matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. }) {
             return Ok(());
         }
+        let pointee = self.owned_pointer_slot_pointee(element)?;
         let existing = self.state.range_states.iter().find_map(|(identity, state)| {
             (identity.object == object && state.initialized && self.is_zero(identity.start))
                 .then_some((*identity, *state))
@@ -1704,6 +1718,13 @@ impl<'a> MemoryChecker<'a> {
             operation: "UpdateCount(pointer prefix missing)",
         })?;
         if self.same_scalar(existing.0.length, count) {
+            if existing.0.length != count {
+                self.state.range_states.remove(&existing.0);
+                self.state.range_states.insert(
+                    RangeIdentity { object, start: existing.0.start, length: count },
+                    existing.1,
+                );
+            }
             return Ok(());
         }
 
@@ -1719,7 +1740,7 @@ impl<'a> MemoryChecker<'a> {
                     operation: "UpdateCount(pointer slot uninitialized)",
                 },
             )?;
-            if stored.layout != element {
+            if stored.layout != pointee {
                 return self.unsupported("UpdateCount(pointer slot layout)");
             }
             if stored.ownership != Ownership::Unique {
@@ -1759,7 +1780,7 @@ impl<'a> MemoryChecker<'a> {
                     operation: "UpdateCount(pointer slot uninitialized)",
                 },
             )?;
-            if stored.layout != element {
+            if stored.layout != pointee {
                 return self.unsupported("UpdateCount(pointer slot layout)");
             }
             if stored.ownership != Ownership::Unique {
@@ -2005,6 +2026,25 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
+    /// A range records its storage-slot layout, while its stored token has the
+    /// layout of the object referenced by an owned slot. Borrowed and raw slots
+    /// never carry transferable v1 ownership tokens.
+    fn owned_pointer_slot_pointee(
+        &self,
+        layout: crate::layout::LayoutId,
+    ) -> Result<crate::layout::LayoutId, InitialCheckError> {
+        match self.descriptor(layout)?.kind() {
+            LayoutKind::RuntimePointerValueSlot {
+                pointee,
+                semantics: PointerSlot::Owned,
+            } => Ok(*pointee),
+            LayoutKind::RuntimePointerValueSlot { .. } => {
+                self.unsupported("borrowed or raw pointer slot")
+            }
+            _ => self.unsupported("owned pointer slot"),
+        }
+    }
+
     fn value_type_for_field(&self, field: FieldKind) -> Result<ValueType, InitialCheckError> {
         match field {
             FieldKind::Scalar(kind) => self.value_type_for_scalar(kind),
@@ -2094,6 +2134,70 @@ fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(
         .iter()
         .filter_map(|(key, value)| (right.get(key) == Some(value)).then(|| (*key, value.clone())))
         .collect()
+}
+
+/// Meet initialized aggregate prefixes across CFG edges. An empty prefix has
+/// no elements and therefore places no constraint on their allocation class;
+/// every other ownership and initialization fact must agree exactly.
+fn meet_range_states(
+    existing: &MemoryState,
+    incoming: &MemoryState,
+) -> BTreeMap<RangeIdentity, RangeState> {
+    existing
+        .range_states
+        .iter()
+        .filter_map(|(identity, current)| {
+            let (_, next) = incoming.range_states.iter().find(|(candidate, _)| {
+                candidate.object == identity.object
+                    && same_scalar_across(existing, identity.start, incoming, candidate.start)
+                    && same_scalar_across(existing, identity.length, incoming, candidate.length)
+            })?;
+            if current == next {
+                return Some((*identity, *current));
+            }
+            if current.element != next.element
+                || current.initialized != next.initialized
+                || !current.initialized
+            {
+                return None;
+            }
+            let ownership = match (current.ownership, next.ownership) {
+                (Ownership::Unique, Ownership::Unique) => Ownership::Unique,
+                (Ownership::Unique | Ownership::Shared, Ownership::Shared)
+                | (Ownership::Shared, Ownership::Unique) => Ownership::Shared,
+                _ => return None,
+            };
+            let current_empty = existing.constants.get(&identity.length) == Some(&0);
+            let next_empty = incoming.constants.get(&identity.length) == Some(&0);
+            let allocation_class = if current.allocation_class == next.allocation_class {
+                current.allocation_class
+            } else if current_empty {
+                next.allocation_class
+            } else if next_empty {
+                current.allocation_class
+            } else {
+                None
+            };
+            Some((
+                *identity,
+                RangeState { ownership, allocation_class, ..*current },
+            ))
+        })
+        .collect()
+}
+
+fn same_scalar_across(
+    left: &MemoryState,
+    left_value: ValueId,
+    right: &MemoryState,
+    right_value: ValueId,
+) -> bool {
+    left_value == right_value
+        || left
+            .constants
+            .get(&left_value)
+            .zip(right.constants.get(&right_value))
+            .is_some_and(|(left, right)| left == right)
 }
 
 fn operation_name(operation: &Operation) -> &'static str {

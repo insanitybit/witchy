@@ -526,7 +526,7 @@ fn check_memory_cfg(
             &mut memory,
         )?;
 
-        for (target, arguments) in memory_successor_edges(&block.terminator) {
+        for (target, arguments) in memory_successor_edges(&block.terminator, &memory) {
             let target_block = blocks[&target];
             let transferred = memory.transfer_edge(target_block, arguments)?;
             let next = match incoming.get(&target) {
@@ -542,16 +542,23 @@ fn check_memory_cfg(
     Ok(())
 }
 
-fn memory_successor_edges(terminator: &Terminator) -> Vec<(BlockId, &[ValueId])> {
+fn memory_successor_edges<'a>(
+    terminator: &'a Terminator,
+    memory: &MemoryChecker<'_>,
+) -> Vec<(BlockId, &'a [ValueId])> {
     match terminator {
         Terminator::Branch { target, arguments } => vec![(*target, arguments)],
         Terminator::BranchIf {
+            condition,
             then_target,
             then_arguments,
             else_target,
             else_arguments,
-            ..
-        } => vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+        } => match memory.constant_condition(*condition) {
+            Some(true) => vec![(*then_target, then_arguments)],
+            Some(false) => vec![(*else_target, else_arguments)],
+            None => vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+        },
         Terminator::Return { .. }
         | Terminator::TailCall { .. }
         | Terminator::VarTailCall { .. }
