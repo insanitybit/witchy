@@ -663,9 +663,6 @@ fn lower_operation(
         Operation::ConstBool { destination, value } => ScalarInstruction::BoolConst { destination: *destination, value: *value },
         Operation::ConstSize { destination, value } => ScalarInstruction::SizeConst { destination: *destination, value: *value },
         Operation::Arithmetic { destination, operator, left, right, overflow } => {
-            if *overflow == crate::canonical_safewir::OverflowBehavior::Trap {
-                return Err(LoweringError::UnsupportedOverflow { function });
-            }
             ScalarInstruction::Arithmetic {
                 destination: *destination,
                 operator: *operator,
@@ -1593,6 +1590,52 @@ fn emit_arithmetic(
     emit_set(body, layout, function.id, destination)
 }
 
+fn emit_checked_arithmetic(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destination: ValueId,
+    operator: ArithmeticOperator,
+    left: ValueId,
+    right: ValueId,
+    overflow: crate::canonical_safewir::OverflowBehavior,
+) -> Result<(), EncodeError> {
+    match (
+        function.value_types.get(&destination),
+        operator,
+        overflow,
+    ) {
+        (
+            Some(ValueType::Size),
+            ArithmeticOperator::Add,
+            crate::canonical_safewir::OverflowBehavior::Trap,
+        ) => {
+            emit_get(body, layout, function.id, left)?;
+            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_get(body, layout, function.id, right)?;
+            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            body.instruction(&wasm_encoder::Instruction::I64Add);
+            body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+            body.instruction(&wasm_encoder::Instruction::I64GtU);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Unreachable);
+            body.instruction(&wasm_encoder::Instruction::End);
+        }
+        (
+            Some(ValueType::Int),
+            ArithmeticOperator::DivideSigned | ArithmeticOperator::RemainderSigned,
+            crate::canonical_safewir::OverflowBehavior::Trap,
+        )
+        | (_, _, crate::canonical_safewir::OverflowBehavior::Wrap) => {}
+        _ => {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedOverflow {
+                function: function.id,
+            }));
+        }
+    }
+    emit_arithmetic(body, function, layout, destination, operator, left, right)
+}
+
 fn emit_compare(
     body: &mut wasm_encoder::Function,
     function: &Function,
@@ -2179,8 +2222,16 @@ fn emit_instruction(
             emit_set(body, layout, function.id, *destination)?;
         }
         ScalarInstruction::Arithmetic { destination, operator, left, right, overflow } => {
-            if *overflow != crate::canonical_safewir::OverflowBehavior::Wrap { return Err(EncodeError::Lowering(LoweringError::UnsupportedOverflow { function: function.id })); }
-            emit_arithmetic(body, function, layout, *destination, *operator, *left, *right)?;
+            emit_checked_arithmetic(
+                body,
+                function,
+                layout,
+                *destination,
+                *operator,
+                *left,
+                *right,
+                *overflow,
+            )?;
         }
         ScalarInstruction::Compare { destination, operator, left, right } => { emit_compare(body, function, layout, *destination, *operator, *left, *right)?; }
         ScalarInstruction::NarrowSize { destination, value } => emit_narrow_size(body, function, layout, *destination, *value)?,
@@ -2891,6 +2942,7 @@ enum PlanToken {
     I64Mul,
     I64Add,
     I32WrapI64,
+    I64Eq,
     I64LtS,
     I64GtS,
     GlobalGet(u32),
@@ -2938,6 +2990,7 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I64Mul => PlanToken::I64Mul,
         wasmparser::Operator::I64Add => PlanToken::I64Add,
         wasmparser::Operator::I32WrapI64 => PlanToken::I32WrapI64,
+        wasmparser::Operator::I64Eq => PlanToken::I64Eq,
         wasmparser::Operator::I64LtS => PlanToken::I64LtS,
         wasmparser::Operator::I64GtS => PlanToken::I64GtS,
         wasmparser::Operator::GlobalGet { global_index } => PlanToken::GlobalGet(global_index),
@@ -3590,18 +3643,45 @@ fn expected_linear_function_plan(
                 plan.push(PlanToken::I64Const(*value));
                 push_set(&mut plan, &layout, *destination)?;
             }
-            Operation::Arithmetic {
-                destination,
-                operator: ArithmeticOperator::Add,
-                left,
-                right,
-                overflow: crate::canonical_safewir::OverflowBehavior::Wrap,
-            } => {
+            Operation::Arithmetic { destination, operator, left, right, overflow } => {
+                if matches!(
+                    (function.value_types.get(destination), operator, overflow),
+                    (
+                        Some(ValueType::Size),
+                        ArithmeticOperator::Add,
+                        crate::canonical_safewir::OverflowBehavior::Trap,
+                    )
+                ) {
+                    push_get(&mut plan, &layout, *left)?;
+                    plan.push(PlanToken::I64ExtendI32U);
+                    push_get(&mut plan, &layout, *right)?;
+                    plan.extend([
+                        PlanToken::I64ExtendI32U,
+                        PlanToken::I64Add,
+                        PlanToken::I64Const(i64::from(u32::MAX)),
+                        PlanToken::I64GtU,
+                        PlanToken::If("Empty".to_owned()),
+                        PlanToken::Unreachable,
+                        PlanToken::End,
+                    ]);
+                } else if *overflow != crate::canonical_safewir::OverflowBehavior::Wrap {
+                    return Err(CanonicalAdmissionError::UnsupportedPlan);
+                }
                 push_get(&mut plan, &layout, *left)?;
                 push_get(&mut plan, &layout, *right)?;
-                match function.value_types.get(destination) {
-                    Some(ValueType::Int) => plan.push(PlanToken::I64Add),
-                    Some(ValueType::Size) => plan.push(PlanToken::I32Add),
+                match (function.value_types.get(destination), operator) {
+                    (Some(ValueType::Int), ArithmeticOperator::Add) => {
+                        plan.push(PlanToken::I64Add)
+                    }
+                    (Some(ValueType::Int), ArithmeticOperator::Multiply) => {
+                        plan.push(PlanToken::I64Mul)
+                    }
+                    (Some(ValueType::Size), ArithmeticOperator::Add) => {
+                        plan.push(PlanToken::I32Add)
+                    }
+                    (Some(ValueType::Size), ArithmeticOperator::Subtract) => {
+                        plan.push(PlanToken::I32Sub)
+                    }
                     _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
                 }
                 push_set(&mut plan, &layout, *destination)?;
@@ -3670,13 +3750,30 @@ fn expected_linear_function_plan(
             }
             Operation::Compare {
                 destination,
-                operator: ComparisonOperator::LessSigned,
+                operator: operator @ (ComparisonOperator::LessSigned | ComparisonOperator::GreaterSigned),
                 left,
                 right,
             } if function.value_types.get(left) == Some(&ValueType::Int) => {
                 push_get(&mut plan, &layout, *left)?;
                 push_get(&mut plan, &layout, *right)?;
-                plan.push(PlanToken::I64LtS);
+                plan.push(match operator {
+                    ComparisonOperator::LessSigned => PlanToken::I64LtS,
+                    ComparisonOperator::GreaterSigned => PlanToken::I64GtS,
+                    _ => unreachable!("pattern restricts signed comparisons"),
+                });
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::Compare {
+                destination,
+                operator: ComparisonOperator::Equal,
+                left,
+                right,
+            } if function.value_types.get(left) == Some(&ValueType::Int)
+                && function.value_types.get(right) == Some(&ValueType::Int) =>
+            {
+                push_get(&mut plan, &layout, *left)?;
+                push_get(&mut plan, &layout, *right)?;
+                plan.push(PlanToken::I64Eq);
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::Guard { condition, .. } => {
@@ -4728,6 +4825,113 @@ mod tests {
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).expect("fixture optimizes");
         validate_final(&initial_snapshot, witness, optimized).expect("fixture is final-valid")
+    }
+
+    fn checked_size_add(
+        left_value: u32,
+        right_value: u32,
+        overflow: crate::canonical_safewir::OverflowBehavior,
+    ) -> ValidatedSafeWir {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let result = ValueId::new(2);
+        let signature_id = FunctionSignatureId::new(70);
+        let function_id = FunctionId::new(70);
+        let signature = scalar_signature_with(
+            signature_id,
+            Vec::new(),
+            vec![ValueType::Size],
+        );
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(70),
+            checked_source: CheckedSourceIdentity::from_digest([70; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), [])
+                .expect("empty layout bundle is valid"),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: function_id,
+                signature: signature_id,
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [
+                    (left, ValueType::Size),
+                    (right, ValueType::Size),
+                    (result, ValueType::Size),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(0),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize {
+                            destination: left,
+                            value: u64::from(left_value),
+                        },
+                        Operation::ConstSize {
+                            destination: right,
+                            value: u64::from(right_value),
+                        },
+                        Operation::Arithmetic {
+                            destination: result,
+                            operator: ArithmeticOperator::Add,
+                            left,
+                            right,
+                            overflow,
+                        },
+                    ],
+                    terminator: Terminator::Return {
+                        values: vec![result],
+                    },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[cfg(feature = "native")]
+    fn run_size_add(module: ValidatedSafeWir) -> Result<u32, wasmtime::Error> {
+        let wasm = encode_validated(module).expect("validated size addition encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, wasm)?;
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
+        let run = instance.get_typed_func::<(), i32>(&mut store, "f70")?;
+        run.call(&mut store, ()).map(|value| value as u32)
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn trapping_size_add_accepts_the_unsigned_boundary() {
+        assert_eq!(
+            run_size_add(checked_size_add(
+                u32::MAX - 1,
+                1,
+                crate::canonical_safewir::OverflowBehavior::Trap,
+            ))
+            .unwrap(),
+            u32::MAX,
+        );
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn size_add_overflow_traps_or_wraps_exactly_as_declared() {
+        assert!(run_size_add(checked_size_add(
+            u32::MAX,
+            1,
+            crate::canonical_safewir::OverflowBehavior::Trap,
+        ))
+        .is_err());
+        assert_eq!(
+            run_size_add(checked_size_add(
+                u32::MAX,
+                1,
+                crate::canonical_safewir::OverflowBehavior::Wrap,
+            ))
+            .unwrap(),
+            0,
+        );
     }
 
     fn checked_branch() -> ValidatedSafeWir {
