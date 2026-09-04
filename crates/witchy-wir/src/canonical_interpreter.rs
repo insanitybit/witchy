@@ -973,7 +973,7 @@ mod tests {
         check_initial_with_test_witness, optimize_unreachable_blocks, validate_final, BasicBlock,
         AccessMode, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
         FunctionSignatureId, LoweredModuleParts, Operation, ParameterContract, ParameterOwnership,
-        ResultContract, Revision, ValueType,
+        ProperTailSite, ResultContract, Revision, TailSiteId, ValueType,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, RcHeader, ScalarKind};
 
@@ -1395,6 +1395,129 @@ mod tests {
         assert_eq!(
             interpret(&module, FUNCTION, Vec::new()),
             Ok(vec![InterpreterValue::Int(42)])
+        );
+    }
+
+    #[test]
+    fn validated_tail_call_trampolines_three_hundred_thousand_times() {
+        let base = BlockId::new(1);
+        let recurse = BlockId::new(2);
+        let n = ValueId::new(0);
+        let zero = ValueId::new(1);
+        let one = ValueId::new(2);
+        let done = ValueId::new(3);
+        let next = ValueId::new(4);
+        let site = TailSiteId::from_digest([33; 32]);
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([34; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: vec![ValueType::Int],
+                results: vec![ValueType::Int],
+                contract: CallableContract {
+                    parameters: vec![ParameterContract {
+                        value_type: ValueType::Int,
+                        ownership: ParameterOwnership::Value,
+                        non_escaping: false,
+                    }],
+                    results: vec![ResultContract::Value(ValueType::Int)],
+                    parameter_effects: BTreeMap::new(),
+                },
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (n, ValueType::Int),
+                    (zero, ValueType::Int),
+                    (one, ValueType::Int),
+                    (done, ValueType::Bool),
+                    (next, ValueType::Int),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: vec![BlockParameter {
+                            value: n,
+                            value_type: ValueType::Int,
+                            ownership: None,
+                        }],
+                        operations: vec![
+                            Operation::ConstInt {
+                                destination: zero,
+                                value: 0,
+                            },
+                            Operation::ConstInt {
+                                destination: one,
+                                value: 1,
+                            },
+                            Operation::Compare {
+                                destination: done,
+                                operator: ComparisonOperator::LessEqualSigned,
+                                left: n,
+                                right: zero,
+                            },
+                        ],
+                        terminator: Terminator::BranchIf {
+                            condition: done,
+                            then_target: base,
+                            then_arguments: Vec::new(),
+                            else_target: recurse,
+                            else_arguments: Vec::new(),
+                        },
+                    },
+                    BasicBlock {
+                        id: base,
+                        parameters: Vec::new(),
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: vec![zero] },
+                    },
+                    BasicBlock {
+                        id: recurse,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::Arithmetic {
+                            destination: next,
+                            operator: ArithmeticOperator::Subtract,
+                            left: n,
+                            right: one,
+                            overflow: OverflowBehavior::Trap,
+                        }],
+                        terminator: Terminator::TailCall {
+                            site,
+                            callee: FUNCTION,
+                            arguments: vec![CallArgument::Value(next)],
+                        },
+                    },
+                ],
+            }],
+            proper_tail_sites: vec![ProperTailSite {
+                id: site,
+                function: FUNCTION,
+            }],
+        });
+        let checked = check_initial_with_test_witness(candidate).expect("initial validation");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).expect("zero-risk optimization");
+        let module =
+            validate_final(&initial_snapshot, witness, optimized).expect("final validation");
+
+        assert_eq!(
+            interpret_with_config(
+                &module,
+                FUNCTION,
+                vec![InterpreterValue::Int(300_000)],
+                InterpreterConfig {
+                    max_steps: 2_000_010,
+                },
+            ),
+            Ok(vec![InterpreterValue::Int(0)])
         );
     }
 }
