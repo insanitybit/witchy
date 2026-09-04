@@ -1959,6 +1959,33 @@ mod tests {
     }
 
     #[test]
+    fn integer_cannot_be_wrapped_as_capability_host_argument() {
+        let kind = super::super::CapabilityKindId::new(4);
+        let import = host_import(
+            HostParameterRole::Capability(kind),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        let module = host_module(
+            ValueType::Int,
+            ValueType::Capability(kind),
+            HostCallArgument::Capability(VALUE),
+            empty_layouts(),
+            vec![import.clone()],
+        );
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
+        assert!(matches!(
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::TypeMismatch {
+                expected: ValueType::Capability(expected),
+                actual: ValueType::Int,
+                ..
+            }) if expected == kind
+        ));
+    }
+
+    #[test]
     fn wrong_capability_kind_is_rejected() {
         let expected = super::super::CapabilityKindId::new(4);
         let actual = super::super::CapabilityKindId::new(5);

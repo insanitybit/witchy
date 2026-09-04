@@ -378,6 +378,30 @@ fn canonical_wasm_encoding_is_private_and_requires_final_authority() {
 }
 
 #[test]
+fn canonical_capabilities_lower_only_to_externref() {
+    let source = read_source("src/canonical_wasmir.rs");
+
+    assert!(
+        source.contains("ValueType::Capability(_) => Ok(ValType::EXTERNREF)"),
+        "canonical capability values must be represented as Wasm externref"
+    );
+    assert!(
+        source.contains("HostParameterRole::Capability(_) => parameters.push(ValType::EXTERNREF)"),
+        "canonical capability parameters must be represented as Wasm externref"
+    );
+    assert!(
+        source.contains("HostResultRole::Capability(_) => results.push(ValType::EXTERNREF)"),
+        "canonical capability results must be represented as Wasm externref"
+    );
+    for integer_type in ["I32", "I64", "F32", "F64", "V128"] {
+        assert!(
+            !source.contains(&format!("ValueType::Capability(_) => Ok(ValType::{integer_type})")),
+            "canonical capability values must not map to ValType::{integer_type}"
+        );
+    }
+}
+
+#[test]
 fn validated_legacy_encoder_still_consumes_only_bound_authority() {
     let source = read_source("src/wir_encode.rs");
     let file = syn::parse_file(&source).expect("wir_encode.rs parses");
