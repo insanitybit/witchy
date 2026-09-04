@@ -7,13 +7,14 @@
 //! accepted.
 //!
 //! The target is an IR, not wasm bytes.  It has no raw constructors visible to
-//! callers and no encoder.  Every scalar source item emits exactly one target
-//! item, which makes the receipt matcher independently checkable without
-//! replaying the lowering function.
+//! callers.  Every scalar source item emits exactly one target item, which
+//! makes the receipt matcher independently checkable without replaying the
+//! lowering function.  The private encoder handles only the structured CFG
+//! forms recognized below.
 
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use wasm_encoder::{
     BlockType, CodeSection, ExportKind, ExportSection, Function as WasmFunctionEncoder,
@@ -779,6 +780,355 @@ fn emit_instruction(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StructuredLabel {
+    Block,
+    Loop,
+    If,
+}
+
+struct StructuredEmitter<'a> {
+    body: &'a mut WasmFunctionEncoder,
+    source_function: &'a Function,
+    target_function: &'a WasmFunction,
+    layout: &'a LocalLayout,
+    function_indices: &'a BTreeMap<FunctionId, u32>,
+    emitted: BTreeSet<crate::canonical_safewir::BlockId>,
+    labels: Vec<StructuredLabel>,
+    loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
+}
+
+impl StructuredEmitter<'_> {
+    fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&WasmBlock, EncodeError> {
+        self.target_function
+            .blocks
+            .iter()
+            .find(|block| block.id == id)
+            .ok_or(EncodeError::MissingBlock {
+                function: self.source_function.id,
+                block: id,
+            })
+    }
+
+    fn successors(
+        &self,
+        id: crate::canonical_safewir::BlockId,
+    ) -> Result<Vec<crate::canonical_safewir::BlockId>, EncodeError> {
+        let block = self.block(id)?;
+        Ok(match &block.terminator.operation {
+            ScalarTerminator::Branch { target, .. } => vec![*target],
+            ScalarTerminator::BranchIf {
+                then_target,
+                else_target,
+                ..
+            } => vec![*then_target, *else_target],
+            ScalarTerminator::Return { .. }
+            | ScalarTerminator::TailCall { .. }
+            | ScalarTerminator::VarTailCall { .. }
+            | ScalarTerminator::Trap
+            | ScalarTerminator::Unreachable => Vec::new(),
+        })
+    }
+
+    fn distances_from(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+    ) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, EncodeError> {
+        let mut distances = BTreeMap::new();
+        let mut pending = VecDeque::from([(start, 0)]);
+        while let Some((id, distance)) = pending.pop_front() {
+            if distances.contains_key(&id) {
+                continue;
+            }
+            self.block(id)?;
+            distances.insert(id, distance);
+            pending.extend(
+                self.successors(id)?
+                    .into_iter()
+                    .map(|successor| (successor, distance + 1)),
+            );
+        }
+        Ok(distances)
+    }
+
+    fn reaches(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        goal: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, EncodeError> {
+        Ok(self.distances_from(start)?.contains_key(&goal))
+    }
+
+    fn is_loop_header(
+        &self,
+        id: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, EncodeError> {
+        let block = self.block(id)?;
+        let ScalarTerminator::BranchIf {
+            then_target,
+            else_target,
+            ..
+        } = &block.terminator.operation
+        else {
+            return Ok(false);
+        };
+        if *then_target == id || *else_target == id || then_target == else_target {
+            return Ok(false);
+        }
+        Ok(self.reaches(*then_target, id)? && !self.reaches(*else_target, id)?)
+    }
+
+    fn find_join(
+        &self,
+        current: crate::canonical_safewir::BlockId,
+        then_target: crate::canonical_safewir::BlockId,
+        else_target: crate::canonical_safewir::BlockId,
+    ) -> Result<crate::canonical_safewir::BlockId, EncodeError> {
+        if then_target == else_target {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "non-distinct structured branches",
+            }));
+        }
+        let then_distances = self.distances_from(then_target)?;
+        let else_distances = self.distances_from(else_target)?;
+        let mut best = None;
+        for (candidate, then_distance) in then_distances {
+            if candidate == current || candidate == then_target || candidate == else_target {
+                continue;
+            }
+            let Some(else_distance) = else_distances.get(&candidate) else {
+                continue;
+            };
+            let score = (then_distance + else_distance, candidate);
+            if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
+                best = Some(score);
+            }
+        }
+        best.map(|(_, block)| block).ok_or(EncodeError::Lowering(
+            LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "irreducible or non-convergent BranchIf",
+            },
+        ))
+    }
+
+    fn label_depth(&self, index: usize) -> u32 {
+        (self.labels.len() - 1 - index) as u32
+    }
+
+    fn nearest_label_depth(&self, label: StructuredLabel) -> Option<u32> {
+        self.labels
+            .iter()
+            .rposition(|actual| *actual == label)
+            .map(|index| self.label_depth(index))
+    }
+
+    fn emit_branch_arguments(
+        &mut self,
+        target: crate::canonical_safewir::BlockId,
+        arguments: &[ValueId],
+    ) -> Result<(), EncodeError> {
+        self.block(target)?;
+        let source_block = self
+            .source_function
+            .blocks
+            .iter()
+            .find(|block| block.id == target)
+            .ok_or(EncodeError::MissingBlock {
+                function: self.source_function.id,
+                block: target,
+            })?;
+        if source_block.parameters.len() != arguments.len() {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "branch arity",
+            }));
+        }
+        // Evaluate every edge operand before assigning any destination.  This
+        // is the SSA phi transfer rule and also handles a valid parallel swap.
+        for argument in arguments {
+            emit_get(self.body, self.layout, self.source_function.id, *argument)?;
+        }
+        for parameter in source_block.parameters.iter().rev() {
+            emit_set(
+                self.body,
+                self.layout,
+                self.source_function.id,
+                parameter.value,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn emit_path(
+        &mut self,
+        start: crate::canonical_safewir::BlockId,
+        stop: Option<crate::canonical_safewir::BlockId>,
+    ) -> Result<(), EncodeError> {
+        if stop == Some(start) {
+            return Ok(());
+        }
+        if self.is_loop_header(start)? {
+            return self.emit_loop(start, stop);
+        }
+        if !self.emitted.insert(start) {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "block emitted twice",
+            }));
+        }
+        let block = self.block(start)?.clone();
+        for instruction in &block.instructions {
+            emit_instruction(
+                self.body,
+                self.source_function,
+                self.layout,
+                &instruction.operation,
+                self.function_indices,
+            )?;
+        }
+        match block.terminator.operation {
+            ScalarTerminator::Branch { target, arguments } => {
+                self.emit_branch_arguments(target, &arguments)?;
+                if let Some((_, label_index)) = self
+                    .loops
+                    .iter()
+                    .rev()
+                    .find(|(header, _)| *header == target)
+                {
+                    self.body
+                        .instruction(&wasm_encoder::Instruction::Br(self.label_depth(*label_index)));
+                } else if stop == Some(target) {
+                    return Ok(());
+                } else {
+                    self.emit_path(target, stop)?;
+                }
+            }
+            ScalarTerminator::BranchIf {
+                condition,
+                then_target,
+                then_arguments,
+                else_target,
+                else_arguments,
+            } => self.emit_if(
+                start,
+                condition,
+                then_target,
+                &then_arguments,
+                else_target,
+                &else_arguments,
+                stop,
+            )?,
+            terminator => emit_terminator(
+                self.body,
+                self.source_function,
+                self.layout,
+                &terminator,
+                self.function_indices,
+            )?,
+        }
+        Ok(())
+    }
+
+    fn emit_if(
+        &mut self,
+        current: crate::canonical_safewir::BlockId,
+        condition: ValueId,
+        then_target: crate::canonical_safewir::BlockId,
+        then_arguments: &[ValueId],
+        else_target: crate::canonical_safewir::BlockId,
+        else_arguments: &[ValueId],
+        stop: Option<crate::canonical_safewir::BlockId>,
+    ) -> Result<(), EncodeError> {
+        if self.is_loop_header(current)? {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "loop header outside structured loop",
+            }));
+        }
+        let join = self.find_join(current, then_target, else_target)?;
+        emit_get(self.body, self.layout, self.source_function.id, condition)?;
+        self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        self.labels.push(StructuredLabel::If);
+        self.emit_branch_arguments(then_target, then_arguments)?;
+        self.emit_path(then_target, Some(join))?;
+        self.body.instruction(&wasm_encoder::Instruction::Else);
+        self.emit_branch_arguments(else_target, else_arguments)?;
+        self.emit_path(else_target, Some(join))?;
+        self.body.instruction(&wasm_encoder::Instruction::End);
+        self.labels.pop();
+        self.emit_path(join, stop)
+    }
+
+    fn emit_loop(
+        &mut self,
+        header: crate::canonical_safewir::BlockId,
+        stop: Option<crate::canonical_safewir::BlockId>,
+    ) -> Result<(), EncodeError> {
+        if !self.emitted.insert(header) {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "loop header emitted twice",
+            }));
+        }
+        let block = self.block(header)?.clone();
+        let ScalarTerminator::BranchIf {
+            condition,
+            then_target,
+            then_arguments,
+            else_target,
+            else_arguments,
+        } = block.terminator.operation
+        else {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "non-conditional loop header",
+            }));
+        };
+        if !self.is_loop_header(header)? {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                function: self.source_function.id,
+                operation: "non-canonical loop shape",
+            }));
+        }
+
+        self.body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+        let block_label = self.labels.len();
+        self.labels.push(StructuredLabel::Block);
+        self.body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+        let loop_label = self.labels.len();
+        self.labels.push(StructuredLabel::Loop);
+        for instruction in &block.instructions {
+            emit_instruction(
+                self.body,
+                self.source_function,
+                self.layout,
+                &instruction.operation,
+                self.function_indices,
+            )?;
+        }
+        emit_get(self.body, self.layout, self.source_function.id, condition)?;
+        self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        self.labels.push(StructuredLabel::If);
+        self.loops.push((header, loop_label));
+        self.emit_branch_arguments(then_target, &then_arguments)?;
+        self.emit_path(then_target, Some(header))?;
+        self.loops.pop();
+        self.body.instruction(&wasm_encoder::Instruction::Else);
+        self.emit_branch_arguments(else_target, &else_arguments)?;
+        self.body
+            .instruction(&wasm_encoder::Instruction::Br(self.label_depth(block_label)));
+        self.body.instruction(&wasm_encoder::Instruction::End);
+        self.labels.pop();
+        self.body.instruction(&wasm_encoder::Instruction::End);
+        self.labels.pop();
+        self.body.instruction(&wasm_encoder::Instruction::End);
+        self.labels.pop();
+        self.emit_path(else_target, stop)
+    }
+}
+
 fn emit_terminator(
     body: &mut wasm_encoder::Function,
     source_function: &Function,
@@ -809,24 +1159,33 @@ fn encode_function(
     target_function: &WasmFunction,
     function_indices: &BTreeMap<FunctionId, u32>,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
-    if target_function.blocks.len() != 1 {
-        return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
-            function: source_function.id,
-            operation: "multi-block function",
-        }));
-    }
     let layout = local_layout(source_function)?;
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
-    let target_block = &target_function.blocks[0];
-    if matches!(target_block.terminator.operation, ScalarTerminator::Branch { .. } | ScalarTerminator::BranchIf { .. }) {
+    if target_function.entry != source_function.entry {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
             function: source_function.id,
-            operation: "branch terminator",
+            operation: "entry mismatch",
         }));
     }
-    for instruction in &target_block.instructions { emit_instruction(&mut body, source_function, &layout, &instruction.operation, function_indices)?; }
-    emit_terminator(&mut body, source_function, &layout, &target_block.terminator.operation, function_indices)?;
+    let entry = target_function.entry;
+    let mut emitter = StructuredEmitter {
+        body: &mut body,
+        source_function,
+        target_function,
+        layout: &layout,
+        function_indices,
+        emitted: BTreeSet::new(),
+        labels: Vec::new(),
+        loops: Vec::new(),
+    };
+    emitter.emit_path(entry, None)?;
+    if emitter.emitted.len() != target_function.blocks.len() {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+            function: source_function.id,
+            operation: "unstructured or unreachable block",
+        }));
+    }
     body.instruction(&wasm_encoder::Instruction::End);
     Ok(body)
 }
@@ -876,9 +1235,10 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
 mod tests {
     use super::*;
     use crate::canonical_safewir::{
-        CallableContract, CheckedSourceIdentity, FunctionSignature, FunctionSignatureId,
-        LoweredModuleParts, Revision, ResultContract, check_initial_with_witness,
-        optimize_unreachable_blocks, validate_final,
+        BasicBlock, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
+        FunctionSignatureId,
+        LoweredCandidate, LoweredModuleParts, ParameterContract, ParameterOwnership, Revision,
+        ResultContract, check_initial_with_witness, optimize_unreachable_blocks, validate_final,
     };
     use crate::layout::{LayoutBundle, LayoutInterner};
 
@@ -938,16 +1298,258 @@ mod tests {
     }
 
     fn scalar_signature(id: FunctionSignatureId) -> FunctionSignature {
+        scalar_signature_with(id, Vec::new(), vec![crate::canonical_safewir::ValueType::Int])
+    }
+
+    fn scalar_signature_with(
+        id: FunctionSignatureId,
+        parameters: Vec<crate::canonical_safewir::ValueType>,
+        results: Vec<crate::canonical_safewir::ValueType>,
+    ) -> FunctionSignature {
         FunctionSignature {
             id,
-            parameters: Vec::new(),
-            results: vec![crate::canonical_safewir::ValueType::Int],
+            parameters: parameters.clone(),
+            results: results.clone(),
             contract: CallableContract {
-                parameters: Vec::new(),
-                results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Int)],
+                parameters: parameters
+                    .into_iter()
+                    .map(|value_type| ParameterContract {
+                        value_type,
+                        ownership: ParameterOwnership::Value,
+                        non_escaping: false,
+                    })
+                    .collect(),
+                results: results.into_iter().map(ResultContract::Value).collect(),
                 parameter_effects: BTreeMap::new(),
             },
         }
+    }
+
+    fn finalize(candidate: CanonicalModule<LoweredCandidate>) -> ValidatedSafeWir {
+        let checked = check_initial_with_witness(candidate).expect("fixture is initially valid");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).expect("fixture optimizes");
+        validate_final(&initial_snapshot, witness, optimized).expect("fixture is final-valid")
+    }
+
+    fn checked_branch() -> ValidatedSafeWir {
+        let flag = ValueId::new(1);
+        let then_value = ValueId::new(2);
+        let else_value = ValueId::new(3);
+        let result = ValueId::new(4);
+        let signature = scalar_signature_with(
+            FunctionSignatureId::new(6),
+            vec![crate::canonical_safewir::ValueType::Bool],
+            vec![crate::canonical_safewir::ValueType::Int],
+        );
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(12),
+            checked_source: CheckedSourceIdentity::from_digest([9; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(6),
+                signature: FunctionSignatureId::new(6),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [
+                    (flag, crate::canonical_safewir::ValueType::Bool),
+                    (then_value, crate::canonical_safewir::ValueType::Int),
+                    (else_value, crate::canonical_safewir::ValueType::Int),
+                    (result, crate::canonical_safewir::ValueType::Int),
+                ].into_iter().collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(0),
+                        parameters: vec![BlockParameter { value: flag, value_type: crate::canonical_safewir::ValueType::Bool, ownership: None }],
+                        operations: Vec::new(),
+                        terminator: Terminator::BranchIf { condition: flag, then_target: crate::canonical_safewir::BlockId::new(1), then_arguments: Vec::new(), else_target: crate::canonical_safewir::BlockId::new(2), else_arguments: Vec::new() },
+                    },
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(1),
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt { destination: then_value, value: 11 }],
+                        terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(3), arguments: vec![then_value] },
+                    },
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(2),
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt { destination: else_value, value: 22 }],
+                        terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(3), arguments: vec![else_value] },
+                    },
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(3),
+                        parameters: vec![BlockParameter { value: result, value_type: crate::canonical_safewir::ValueType::Int, ownership: None }],
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: vec![result] },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_loop() -> ValidatedSafeWir {
+        let limit = ValueId::new(1);
+        let zero = ValueId::new(2);
+        let header_limit = ValueId::new(3);
+        let header_i = ValueId::new(4);
+        let condition = ValueId::new(5);
+        let one = ValueId::new(6);
+        let next_i = ValueId::new(7);
+        let exit_limit = ValueId::new(8);
+        let result = ValueId::new(9);
+        let signature = scalar_signature_with(
+            FunctionSignatureId::new(7),
+            vec![crate::canonical_safewir::ValueType::Int],
+            vec![crate::canonical_safewir::ValueType::Int],
+        );
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(13),
+            checked_source: CheckedSourceIdentity::from_digest([10; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(7),
+                signature: FunctionSignatureId::new(7),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [
+                    (limit, crate::canonical_safewir::ValueType::Int),
+                    (zero, crate::canonical_safewir::ValueType::Int),
+                    (header_limit, crate::canonical_safewir::ValueType::Int),
+                    (header_i, crate::canonical_safewir::ValueType::Int),
+                    (condition, crate::canonical_safewir::ValueType::Bool),
+                    (one, crate::canonical_safewir::ValueType::Int),
+                    (next_i, crate::canonical_safewir::ValueType::Int),
+                    (exit_limit, crate::canonical_safewir::ValueType::Int),
+                    (result, crate::canonical_safewir::ValueType::Int),
+                ].into_iter().collect(),
+                blocks: vec![
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(0), parameters: vec![BlockParameter { value: limit, value_type: crate::canonical_safewir::ValueType::Int, ownership: None }], operations: vec![Operation::ConstInt { destination: zero, value: 0 }], terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(1), arguments: vec![limit, zero] } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(1), parameters: vec![BlockParameter { value: header_limit, value_type: crate::canonical_safewir::ValueType::Int, ownership: None }, BlockParameter { value: header_i, value_type: crate::canonical_safewir::ValueType::Int, ownership: None }], operations: vec![Operation::Compare { destination: condition, operator: ComparisonOperator::LessSigned, left: header_i, right: header_limit }], terminator: Terminator::BranchIf { condition, then_target: crate::canonical_safewir::BlockId::new(2), then_arguments: Vec::new(), else_target: crate::canonical_safewir::BlockId::new(3), else_arguments: vec![header_limit, header_i] } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(2), parameters: Vec::new(), operations: vec![Operation::ConstInt { destination: one, value: 1 }, Operation::Arithmetic { destination: next_i, operator: ArithmeticOperator::Add, left: header_i, right: one, overflow: crate::canonical_safewir::OverflowBehavior::Wrap }], terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(1), arguments: vec![header_limit, next_i] } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(3), parameters: vec![BlockParameter { value: exit_limit, value_type: crate::canonical_safewir::ValueType::Int, ownership: None }, BlockParameter { value: result, value_type: crate::canonical_safewir::ValueType::Int, ownership: None }], operations: Vec::new(), terminator: Terminator::Return { values: vec![result] } },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_trap() -> ValidatedSafeWir {
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(14),
+            checked_source: CheckedSourceIdentity::from_digest([11; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(9), Vec::new(), Vec::new())],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(9),
+                signature: FunctionSignatureId::new(9),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: BTreeMap::new(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(0),
+                    parameters: Vec::new(),
+                    operations: Vec::new(),
+                    terminator: Terminator::Trap,
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_irreducible() -> ValidatedSafeWir {
+        let condition = ValueId::new(1);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(15),
+            checked_source: CheckedSourceIdentity::from_digest([12; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(10), Vec::new(), Vec::new())],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(10),
+                signature: FunctionSignatureId::new(10),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [(condition, crate::canonical_safewir::ValueType::Bool)].into_iter().collect(),
+                blocks: vec![
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(0), parameters: Vec::new(), operations: vec![Operation::ConstBool { destination: condition, value: true }], terminator: Terminator::BranchIf { condition, then_target: crate::canonical_safewir::BlockId::new(1), then_arguments: Vec::new(), else_target: crate::canonical_safewir::BlockId::new(2), else_arguments: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(1), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(3), arguments: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(2), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(3), arguments: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(3), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::BranchIf { condition, then_target: crate::canonical_safewir::BlockId::new(1), then_arguments: Vec::new(), else_target: crate::canonical_safewir::BlockId::new(2), else_arguments: Vec::new() } },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn encoded_structured_branch_executes_both_arms() {
+        let wasm = encode_validated(checked_branch()).expect("structured branch encodes");
+        wasmparser::validate(&wasm).expect("structured branch is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<i32, i64>(&mut store, "f6").unwrap();
+        assert_eq!(function.call(&mut store, 1).unwrap(), 11);
+        assert_eq!(function.call(&mut store, 0).unwrap(), 22);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn encoded_structured_loop_executes_carried_arguments() {
+        let wasm = encode_validated(checked_loop()).expect("structured loop encodes");
+        wasmparser::validate(&wasm).expect("structured loop is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<i64, i64>(&mut store, "f7").unwrap();
+        assert_eq!(function.call(&mut store, 0).unwrap(), 0);
+        assert_eq!(function.call(&mut store, 5).unwrap(), 5);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn encoded_trap_terminator_remains_terminal() {
+        let wasm = encode_validated(checked_trap()).expect("trap terminator encodes");
+        wasmparser::validate(&wasm).expect("trap module is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<(), ()>(&mut store, "f9").unwrap();
+        assert!(function.call(&mut store, ()).is_err());
+    }
+
+    #[test]
+    fn irreducible_cfg_is_refused_without_dispatcher_lowering() {
+        assert!(matches!(
+            encode_validated(checked_irreducible()),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
+        ));
+    }
+
+    #[test]
+    fn variable_call_is_refused_fail_closed() {
+        let operation = Operation::VarCall {
+            destinations: Vec::new(),
+            callee: ValueId::new(1),
+            signature: FunctionSignatureId::new(1),
+            arguments: Vec::new(),
+        };
+        assert!(matches!(
+            lower_operation(
+                FunctionId::new(1),
+                crate::canonical_safewir::BlockId::new(0),
+                0,
+                &operation,
+            ),
+            Err(LoweringError::UnsupportedOperation { operation: "VarCall", .. })
+        ));
     }
 
     fn checked_direct_call(tail: bool) -> ValidatedSafeWir {
