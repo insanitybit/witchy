@@ -47,13 +47,19 @@ struct Comparison {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryState {
     objects: BTreeMap<ValueId, ObjectState>,
-    stored_objects: BTreeMap<(ValueId, ValueId), ObjectState>,
+    stored_objects: BTreeMap<(ValueId, SlotIdentity), ObjectState>,
     constants: BTreeMap<ValueId, u64>,
     exact_additions: BTreeMap<ValueId, (ValueId, ValueId)>,
     comparisons: BTreeMap<ValueId, Comparison>,
     guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
     header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
     static_data_objects: BTreeSet<ValueId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SlotIdentity {
+    Constant(u64),
+    Dynamic(ValueId),
 }
 
 pub(super) struct MemoryChecker<'a> {
@@ -146,7 +152,15 @@ impl<'a> MemoryChecker<'a> {
                 .iter()
                 .map(|((container, index), state)| {
                     (
-                        (remap_value(&renames, *container), remap_value(&renames, *index)),
+                        (
+                            remap_value(&renames, *container),
+                            match index {
+                                SlotIdentity::Constant(value) => SlotIdentity::Constant(*value),
+                                SlotIdentity::Dynamic(value) => {
+                                    SlotIdentity::Dynamic(remap_value(&renames, *value))
+                                }
+                            },
+                        ),
                         state.clone(),
                     )
                 })
@@ -790,8 +804,22 @@ impl<'a> MemoryChecker<'a> {
     /// Returns true when this operation belongs to the memory judgment.
     pub(super) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
         match operation {
+            Operation::ConstInt { destination, value } => {
+                if let Ok(value) = u64::try_from(*value) {
+                    self.state.constants.insert(*destination, value);
+                }
+                Ok(false)
+            }
             Operation::ConstSize { destination, value } => {
                 self.state.constants.insert(*destination, *value);
+                Ok(false)
+            }
+            Operation::NarrowSize { destination, value } => {
+                if let Some(value) = self.state.constants.get(value).copied()
+                    && value <= u64::from(u32::MAX)
+                {
+                    self.state.constants.insert(*destination, value);
+                }
                 Ok(false)
             }
             Operation::Arithmetic {
@@ -1026,12 +1054,7 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Load(scalar transfer)");
             }
             self.require_type(destination, expected)?;
-            if let Projection::Header(field) = place.projection()
-                && matches!(
-                    self.live_object(place.object())?.extent,
-                    Extent::HeaderPrefix { .. }
-                )
-            {
+            if let Projection::Header(field) = place.projection() {
                 self.state
                     .header_values
                     .insert((place.object(), *field), destination);
@@ -1155,11 +1178,21 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
-    fn reference_slot(&self, place: &Place) -> Result<(ValueId, ValueId), InitialCheckError> {
+    fn reference_slot(
+        &self,
+        place: &Place,
+    ) -> Result<(ValueId, SlotIdentity), InitialCheckError> {
         let Projection::Element { index } = place.projection() else {
             return self.unsupported("reference slot(non-element)");
         };
-        Ok((place.object(), *index))
+        let slot = self
+            .state
+            .constants
+            .get(index)
+            .copied()
+            .map(SlotIdentity::Constant)
+            .unwrap_or(SlotIdentity::Dynamic(*index));
+        Ok((place.object(), slot))
     }
 
     fn check_place(&mut self, place: &Place) -> Result<ValueType, InitialCheckError> {
@@ -1930,7 +1963,7 @@ mod tests {
             );
             assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Shared);
             assert_eq!(
-                checker.state.stored_objects[&(SOURCE, START)].ownership,
+                checker.state.stored_objects[&(SOURCE, SlotIdentity::Constant(0))].ownership,
                 Ownership::Shared
             );
         });

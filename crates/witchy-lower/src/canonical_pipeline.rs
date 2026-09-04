@@ -620,6 +620,36 @@ mod tests {
     }
 
     #[test]
+    fn list_string_index_reaches_final_safewir_validation() {
+        let source =
+            "fn main(console: Console):\n    let xs = [\"first\", \"second\"]\n    console.print(xs[1])\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked indexed List(String) source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("canonical pointer-list layouts");
+        let candidate =
+            lower_typed_module(canonical, layouts).expect("canonical List(String) index lowering");
+        assert!(candidate.functions()[0].blocks[0]
+            .operations
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                witchy_wir::canonical_safewir::Operation::Load {
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,
+                    ..
+                }
+            )));
+        let initial = witchy_wir::canonical_safewir::check_initial(candidate.clone());
+        assert!(initial.is_ok(), "{initial:?}\n{candidate:#?}");
+        validate_checked_module(&checked)
+            .expect("indexed List(String) reaches final SafeWIR validation");
+    }
+
+    #[test]
     fn utf8_string_concat_reaches_admitted_execution() {
         let source = "fn main(console: Console):\n    console.print(\"hi\" + \"!\")\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

@@ -1492,11 +1492,6 @@ impl FunctionLowerer<'_> {
         let logical_type = self.expression_type(base)?;
         let (layout, element_type, header_bytes, stride_bytes) =
             list_layout(&logical_type, self.layout_bundle, self.layouts)?;
-        if element_type != ValueType::Int {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "pointer-bearing list index",
-            ));
-        }
         let object = self.lower_expr(base)?;
         if self.values[&object] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
@@ -1524,9 +1519,7 @@ impl FunctionLowerer<'_> {
         // header only. Authenticate both dynamic header values before allowing a
         // body projection: logical length is bounded by capacity, and capacity
         // cannot overflow the Wasm32 allocation size for this layout.
-        let logical_count = if let Some(count) = self.list_counts.get(&object).copied() {
-            count
-        } else {
+        if !self.list_counts.contains_key(&object) {
             let capacity = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::Load {
                 destination: capacity,
@@ -1569,8 +1562,8 @@ impl FunctionLowerer<'_> {
                 condition: allocation_fits,
                 kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
             });
-            logical_length
-        };
+        }
+        let logical_count = logical_length;
         let condition = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: condition,
@@ -1582,17 +1575,52 @@ impl FunctionLowerer<'_> {
             condition,
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
-        let destination = self.fresh(ValueType::Int)?;
+        let destination = self.fresh(element_type)?;
         self.push_operation(Operation::Load {
             destination,
             place: witchy_wir::canonical_safewir::Place::projected(
                 object,
                 witchy_wir::canonical_safewir::Projection::Element { index: index_size },
-                ValueType::Int,
+                element_type,
                 witchy_wir::canonical_safewir::AccessMode::Read,
             ),
-            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            transfer: if matches!(element_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+            } else {
+                witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+            },
         });
+        if let ValueType::Ref(string_layout) = element_type {
+            let length = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::Load {
+                destination: length,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    destination,
+                    Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            });
+            let maximum_length = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize {
+                destination: maximum_length,
+                value: u64::from(u32::MAX - 4),
+            });
+            let length_fits = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: length_fits,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: length,
+                right: maximum_length,
+            });
+            self.push_operation(Operation::Guard {
+                condition: length_fits,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+            debug_assert_eq!(self.values[&destination], ValueType::Ref(string_layout));
+            self.string_lengths.insert(destination, length);
+        }
         Ok(destination)
     }
 
