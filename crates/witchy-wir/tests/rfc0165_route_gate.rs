@@ -449,6 +449,58 @@ fn canonical_wasm_encoding_is_private_and_requires_final_authority() {
 }
 
 #[test]
+fn production_encoding_requires_checked_wasm_ir_authority() {
+    let source = read_source("src/canonical_wasmir.rs");
+    let file = syn::parse_file(&source).expect("canonical_wasmir.rs parses");
+
+    let checked = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(structure) if structure.ident == "CheckedWasmIr" => Some(structure),
+            _ => None,
+        })
+        .expect("canonical backend must declare CheckedWasmIr");
+    assert!(matches!(checked.vis, Visibility::Inherited));
+
+    let encoder = named(&file, "encode_checked");
+    assert!(matches!(encoder.vis, Visibility::Inherited));
+    assert!(takes(encoder, "CheckedWasmIr"));
+    assert!(
+        !takes(encoder, "ValidatedSafeWir"),
+        "production encoding must not accept SafeWIR authority directly"
+    );
+
+    let admission = named(&file, "admit_canonical");
+    let mut calls = CalledFunctions::default();
+    calls.visit_item_fn(admission);
+    assert!(
+        calls.0.contains("encode_checked"),
+        "canonical admission must encode only checked WasmIR authority"
+    );
+    assert!(
+        !calls.0.contains("encode_validated"),
+        "canonical admission must not call the test-only SafeWIR encoder helper"
+    );
+
+    let direct_safe_wir_encoders = functions(&file)
+        .filter(|function| function.sig.ident.to_string().contains("encode"))
+        .filter(|function| takes(function, "ValidatedSafeWir"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        direct_safe_wir_encoders.len(),
+        1,
+        "only one test helper may accept ValidatedSafeWir directly"
+    );
+    let test_helper = direct_safe_wir_encoders[0];
+    assert_eq!(test_helper.sig.ident, "encode_validated");
+    assert!(
+        has_cfg(test_helper, "test"),
+        "direct SafeWIR encoding must remain test-only"
+    );
+}
+
+#[test]
 fn canonical_capabilities_lower_only_to_externref() {
     let source = read_source("src/canonical_wasmir.rs");
 
