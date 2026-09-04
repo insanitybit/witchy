@@ -75,6 +75,7 @@ enum ScalarInstruction {
     NarrowSize { destination: ValueId, value: ValueId },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
     MoveValue { destination: ValueId, source: ValueId },
+    FunctionValue { destination: ValueId, function: FunctionId, table_index: u32 },
     Alloc {
         destination: ValueId,
         layout: crate::layout::LayoutId,
@@ -564,6 +565,22 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
     )
 }
 
+fn checked_table_index(
+    function_indices: &BTreeMap<FunctionId, u32>,
+    function: FunctionId,
+) -> Result<u32, CanonicalAdmissionError> {
+    let first_defined = function_indices
+        .values()
+        .copied()
+        .min()
+        .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    function_indices
+        .get(&function)
+        .copied()
+        .and_then(|index| index.checked_sub(first_defined))
+        .ok_or(CanonicalAdmissionError::UnsupportedPlan)
+}
+
 fn lower_operation(
     function: FunctionId,
     block: crate::canonical_safewir::BlockId,
@@ -571,6 +588,7 @@ fn lower_operation(
     operation: &Operation,
     value_types: &BTreeMap<ValueId, ValueType>,
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
+    table_indices: &BTreeMap<FunctionId, u32>,
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
     allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
@@ -608,6 +626,19 @@ fn lower_operation(
                 }
             }
             ScalarInstruction::MoveValue { destination: *destination, source: *source }
+        }
+        Operation::FunctionValue { destination, function: target } => {
+            let table_index = table_indices.get(target).copied().ok_or(
+                LoweringError::UnsupportedOperation {
+                    function,
+                    operation: "FunctionValue target",
+                },
+            )?;
+            ScalarInstruction::FunctionValue {
+                destination: *destination,
+                function: *target,
+                table_index,
+            }
         }
         Operation::Alloc { destination, layout, extent, class } => {
             if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted
@@ -755,6 +786,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::CloneRange { .. } => "CloneRange",
         Operation::UpdateCount { .. } => "UpdateCount",
         Operation::MoveValue { .. } => "MoveValue",
+        Operation::FunctionValue { .. } => "FunctionValue",
         Operation::Share { .. } => "Share",
         Operation::Retain { .. } => "Retain",
         Operation::Release { .. } => "Release",
@@ -801,13 +833,14 @@ fn lower_block(
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
+    table_indices: &BTreeMap<FunctionId, u32>,
     allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmBlock, LoweringError> {
     let instructions = block
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, layouts, imports, allocation_classes))
+        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, table_indices, layouts, imports, allocation_classes))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(WasmBlock {
         id: block.id,
@@ -821,6 +854,7 @@ fn lower_function(
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
+    table_indices: &BTreeMap<FunctionId, u32>,
 ) -> Result<WasmFunction, LoweringError> {
     let mut allocation_classes = allocation_classes_across_cfg(function);
     Ok(WasmFunction {
@@ -830,7 +864,7 @@ fn lower_function(
         blocks: function
             .blocks
             .iter()
-            .map(|block| lower_block(function, block, layouts, imports, signatures, &mut allocation_classes))
+            .map(|block| lower_block(function, block, layouts, imports, signatures, table_indices, &mut allocation_classes))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -898,22 +932,35 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
     let (static_data, heap_start) = static_data_plan(module.static_data_segments())?;
     let imports = module.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
     let signatures = module.signatures().iter().map(|signature| (signature.id, signature.clone())).collect::<BTreeMap<_, _>>();
-    let has_var_call = module.functions().iter().flat_map(|function| function.blocks.iter()).any(|block| {
-        block.operations.iter().any(|operation| matches!(operation, Operation::VarCall { .. }))
+    let has_function_table = module.functions().iter().flat_map(|function| function.blocks.iter()).any(|block| {
+        block.operations.iter().any(|operation| matches!(operation, Operation::VarCall { .. } | Operation::FunctionValue { .. }))
     });
+    let table_indices = module
+        .functions()
+        .iter()
+        .enumerate()
+        .map(|(index, function)| {
+            u32::try_from(index)
+                .map(|index| (function.id, index))
+                .map_err(|_| LoweringError::UnsupportedOperation {
+                    function: function.id,
+                    operation: "function table size",
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
         static_data,
         imports: module.imports().iter().map(|import| WasmImport { id: import.id, signature: import.signature }).collect(),
-        table: has_var_call.then(|| WasmTable {
+        table: has_function_table.then(|| WasmTable {
             functions: module.functions().iter().map(|function| function.id).collect(),
         }),
         heap_start,
         functions: module
             .functions()
             .iter()
-            .map(|function| lower_function(function, &layouts, &imports, &signatures))
+            .map(|function| lower_function(function, &layouts, &imports, &signatures, &table_indices))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -948,6 +995,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::NarrowSize { .. } => Some(CorrespondenceRule::ScalarConversion),
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
+        Operation::FunctionValue { .. } => Some(CorrespondenceRule::ScalarConstant),
         Operation::Alloc { .. } => Some(CorrespondenceRule::MemoryAlloc),
         Operation::StaticData { .. } => Some(CorrespondenceRule::MemoryStaticData),
         Operation::Load { .. } => Some(CorrespondenceRule::MemoryLoad),
@@ -976,6 +1024,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::NarrowSize { destination, value }, ScalarInstruction::NarrowSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::FunctionValue { destination, function }, ScalarInstruction::FunctionValue { destination: actual_destination, function: actual_function, .. }) => destination == actual_destination && function == actual_function,
         (Operation::Alloc { destination, layout, extent, class }, ScalarInstruction::Alloc { destination: actual_destination, layout: actual_layout, extent: actual_extent, class: actual_class }) => destination == actual_destination && layout == actual_layout && extent == actual_extent && class == actual_class,
         (Operation::StaticData { destination, data, .. }, ScalarInstruction::StaticData { destination: actual_destination, data: actual_data }) => destination == actual_destination && data == actual_data,
         (Operation::Load { destination, place, transfer }, ScalarInstruction::Load { destination: actual_destination, place: actual_place, transfer: actual_transfer }) => destination == actual_destination && place == actual_place && transfer == actual_transfer,
@@ -1893,6 +1942,10 @@ fn emit_instruction(
         ScalarInstruction::NarrowSize { destination, value } => emit_narrow_size(body, function, layout, *destination, *value)?,
         ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
         ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::FunctionValue { destination, table_index, .. } => {
+            body.instruction(&wasm_encoder::Instruction::I32Const(*table_index as i32));
+            emit_set(body, layout, function.id, *destination)?;
+        }
         ScalarInstruction::Alloc { destination, layout: layout_id, extent, class } => {
             if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted {
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc class" });
@@ -3164,6 +3217,11 @@ fn expected_linear_function_plan(
                 push_get(&mut plan, &layout, *source)?;
                 push_set(&mut plan, &layout, *destination)?;
             }
+            Operation::FunctionValue { destination, function: target } => {
+                let table_index = checked_table_index(function_indices, *target)?;
+                plan.push(PlanToken::I32Const(table_index as i32));
+                push_set(&mut plan, &layout, *destination)?;
+            }
             Operation::Compare {
                 destination,
                 operator: operator @ (ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned),
@@ -4406,6 +4464,7 @@ mod tests {
                 &operation,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                &BTreeMap::new(),
                 &LayoutInterner::new(),
                 &BTreeMap::new(),
                 &mut BTreeMap::new(),
@@ -4418,11 +4477,7 @@ mod tests {
         let callable = ValueId::new(1);
         let result = ValueId::new(2);
         let callee_result = ValueId::new(3);
-        let caller_signature = scalar_signature_with(
-            FunctionSignatureId::new(20),
-            vec![ValueType::Callable(FunctionSignatureId::new(21))],
-            vec![ValueType::Int],
-        );
+        let caller_signature = scalar_signature(FunctionSignatureId::new(20));
         let callee_signature = scalar_signature(FunctionSignatureId::new(21));
         finalize(CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(20),
@@ -4438,13 +4493,19 @@ mod tests {
                     value_types: [(callable, ValueType::Callable(FunctionSignatureId::new(21))), (result, ValueType::Int)].into_iter().collect(),
                     blocks: vec![BasicBlock {
                         id: crate::canonical_safewir::BlockId::new(20),
-                        parameters: vec![BlockParameter { value: callable, value_type: ValueType::Callable(FunctionSignatureId::new(21)), ownership: None }],
-                        operations: vec![Operation::VarCall {
-                            destinations: vec![result],
-                            callee: callable,
-                            signature: FunctionSignatureId::new(21),
-                            arguments: Vec::new(),
-                        }],
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::FunctionValue {
+                                destination: callable,
+                                function: FunctionId::new(21),
+                            },
+                            Operation::VarCall {
+                                destinations: vec![result],
+                                callee: callable,
+                                signature: FunctionSignatureId::new(21),
+                                arguments: Vec::new(),
+                            },
+                        ],
                         terminator: Terminator::Return { values: vec![result] },
                     }],
                 },
@@ -4475,8 +4536,8 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let function = instance.get_typed_func::<i32, i64>(&mut store, "f20").unwrap();
-        assert_eq!(function.call(&mut store, 1).unwrap(), 42);
+        let function = instance.get_typed_func::<(), i64>(&mut store, "f20").unwrap();
+        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
     }
 
     #[test]

@@ -566,6 +566,10 @@ pub enum Operation {
     Retain { object: ValueId },
     Release { object: ValueId },
     Reclaim { object: ValueId },
+    /// Construct a callable value from an authenticated function table entry.
+    /// The checker derives the exact signature from the referenced function;
+    /// this is never represented by a scalar carrier.
+    FunctionValue { destination: ValueId, function: FunctionId },
     Call {
         destinations: Vec<ValueId>,
         callee: FunctionId,

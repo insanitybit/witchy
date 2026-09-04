@@ -677,7 +677,8 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
         | Operation::MoveValue { destination, .. }
-        | Operation::Share { destination, .. } => vec![*destination],
+        | Operation::Share { destination, .. }
+        | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. }
         | Operation::VarCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
@@ -700,7 +701,8 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::ConstBool { .. }
         | Operation::ConstSize { .. }
         | Operation::Alloc { .. }
-        | Operation::StaticData { .. } => Vec::new(),
+        | Operation::StaticData { .. }
+        | Operation::FunctionValue { .. } => Vec::new(),
         Operation::Arithmetic { left, right, .. }
         | Operation::Compare { left, right, .. } => vec![*left, *right],
         Operation::NarrowSize { value, .. }
@@ -998,6 +1000,13 @@ fn check_operation(
                 return unsupported_memory(function, "MoveValue");
             }
             require_type(function, *destination, source_type)
+        }
+        Operation::FunctionValue { destination, function: target } => {
+            let target = functions
+                .get(target)
+                .copied()
+                .ok_or(InitialCheckError::MissingFunction(*target))?;
+            require_type(function, *destination, ValueType::Callable(target.signature))
         }
         Operation::Call { destinations, callee, arguments } => {
             let callee = functions
@@ -2249,6 +2258,69 @@ mod tests {
         );
 
         assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn function_value_authenticates_checked_target_signature() {
+        let destination = ValueId::new(1);
+        let module = lowered(
+            [(destination, ValueType::Callable(SIGNATURE))].into_iter().collect(),
+            vec![Operation::FunctionValue {
+                destination,
+                function: FUNCTION,
+            }],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn function_value_rejects_destination_signature_mismatch() {
+        let destination = ValueId::new(1);
+        let module = lowered(
+            [(destination, ValueType::Int)].into_iter().collect(),
+            vec![Operation::FunctionValue {
+                destination,
+                function: FUNCTION,
+            }],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::TypeMismatch {
+                function: FUNCTION,
+                value: destination,
+                expected: ValueType::Callable(SIGNATURE),
+                actual: ValueType::Int,
+            }
+        );
+    }
+
+    #[test]
+    fn function_value_rejects_unknown_function() {
+        let destination = ValueId::new(1);
+        let unknown = FunctionId::new(99);
+        let module = lowered(
+            [(destination, ValueType::Callable(SIGNATURE))].into_iter().collect(),
+            vec![Operation::FunctionValue {
+                destination,
+                function: unknown,
+            }],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::MissingFunction(unknown)
+        );
     }
 
     #[test]

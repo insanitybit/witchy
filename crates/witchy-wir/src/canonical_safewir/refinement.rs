@@ -252,7 +252,8 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
         | Operation::MoveValue { destination, .. }
-        | Operation::Share { destination, .. } => vec![*destination],
+        | Operation::Share { destination, .. }
+        | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. }
         | Operation::VarCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),

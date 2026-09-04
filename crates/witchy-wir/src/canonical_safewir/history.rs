@@ -920,6 +920,11 @@ impl CanonicalWriter {
                 self.u8(20);
                 self.value_id(*object);
             }
+            Operation::FunctionValue { destination, function } => {
+                self.u8(24);
+                self.value_id(*destination);
+                self.u32(function.get());
+            }
             Operation::Call { destinations, callee, arguments } => {
                 self.u8(21);
                 self.value_ids(destinations);
@@ -1142,6 +1147,17 @@ mod tests {
     #[test]
     fn semantic_field_mutation_changes_sha256_identity() {
         assert_ne!(module_digest(&candidate(1, false)), module_digest(&candidate(2, false)));
+    }
+
+    #[test]
+    fn function_value_changes_sha256_identity() {
+        let first = candidate(1, false);
+        let mut changed = candidate(1, false);
+        changed.functions[0].blocks[0].operations = vec![Operation::FunctionValue {
+            destination: ValueId::new(0),
+            function: FunctionId::new(0),
+        }];
+        assert_ne!(module_digest(&first), module_digest(&changed));
     }
 
     #[test]

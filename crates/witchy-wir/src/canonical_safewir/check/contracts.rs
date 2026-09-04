@@ -324,6 +324,7 @@ fn propagate_operation_origins(
             let origin = origin_of(origins, *source);
             join_origin(origins, *destination, origin);
         }
+        Operation::FunctionValue { .. } => {}
         Operation::Load { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
         Operation::Call { destinations, callee, arguments } => {
             let summary = summaries.get(callee).ok_or(InitialCheckError::MissingFunction(*callee))?;
@@ -429,6 +430,7 @@ fn derive_operation(
             add_effect(summary, origin_of(origins, *source), MemoryEffect::Retain);
         }
         Operation::MoveValue { destination, source } => { origins.insert(*destination, origin_of(origins, *source)); }
+        Operation::FunctionValue { .. } => {}
         Operation::Load { destination, place, .. } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);
             origins.insert(*destination, Origin::Unknown);
