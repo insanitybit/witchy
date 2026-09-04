@@ -4,7 +4,8 @@ use std::fmt;
 
 use super::{
     BasicBlock, BlockId, CallArgument, CanonicalModule, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, InitialValid, LoweredCandidate, ModuleStage, Operation, OptimizedValid,
+    FunctionSignatureId, GuardKind, InitialValid, LoweredCandidate, ModuleStage, Operation,
+    OptimizedValid,
     ParameterOwnership, ProperTailSite, TailSiteId, Terminator, TransformedCandidate, ValueId,
     ValueType,
 };
@@ -33,6 +34,11 @@ pub enum InitialCheckError {
         function: FunctionId,
         capacity: ValueId,
         maximum: u64,
+    },
+    InvalidGuard {
+        function: FunctionId,
+        condition: ValueId,
+        kind: GuardKind,
     },
     InvalidOwnership { function: FunctionId, object: ValueId },
     InvalidAllocationClass { function: FunctionId, object: ValueId },
@@ -86,10 +92,9 @@ impl Error for InitialCheckError {}
 
 /// Validate the currently implemented canonical v1 subset.
 ///
-/// This first checker slice admits only single-block scalar functions. It is
-/// intentionally useful for bringing up lowering and tail-site completeness,
-/// while rejecting every memory-bearing operation until the corresponding
-/// RFC-0165 judgment is implemented. Only success can mint `InitialValid`.
+/// The memory slice is deliberately small and fail-closed: generic allocation,
+/// counted collections, projected scalar access, explicit runtime guards, and
+/// structural ownership are admitted; loans and pointer-bearing copies are not.
 pub fn check_initial(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
@@ -970,12 +975,12 @@ mod tests {
     use super::super::{
         AccessMode, AllocationClass, BasicBlock, BlockId, CallableContract, CanonicalModule,
         CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
-        FunctionSignatureId, GuardKind, LoadTransfer, LoweredModuleParts, Operation, Place,
+        FunctionSignatureId, GuardKind, HeaderField, LoadTransfer, LoweredModuleParts, Operation, Place,
         Projection, ProperTailSite, ResultContract, Revision, TailSiteId, Terminator, ValueId,
         ValueType,
     };
     use super::{InitialCheckError, check_initial};
-    use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, ScalarKind};
+    use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, RcHeader, ScalarKind};
 
     const FUNCTION: FunctionId = FunctionId::new(0);
     const SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(0);
@@ -1006,6 +1011,19 @@ mod tests {
             .expect("u32 runtime buffer layout is valid");
         let bundle = LayoutBundle::from_interner(&layouts, [list])
             .expect("runtime buffer layout bundle is valid");
+        (bundle, list)
+    }
+
+    fn packed_u32_layout() -> (LayoutBundle, LayoutId) {
+        let mut layouts = LayoutInterner::new();
+        let element = layouts
+            .intern_scalar(ScalarKind::U32)
+            .expect("u32 layout is valid");
+        let list = layouts
+            .intern_packed_list(element, RcHeader::Required)
+            .expect("u32 packed list layout is valid");
+        let bundle = LayoutBundle::from_interner(&layouts, [list])
+            .expect("packed list layout bundle is valid");
         (bundle, list)
     }
 
@@ -1475,5 +1493,368 @@ mod tests {
         });
 
         assert!(check_initial(module).is_ok());
+    }
+
+    fn counted_access_module(
+        count_value: u64,
+        capacity_value: u64,
+        index_value: u64,
+        guard_right: ValueId,
+        with_guard: bool,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let index = ValueId::new(2);
+        let condition = ValueId::new(3);
+        let object = ValueId::new(4);
+        let loaded = ValueId::new(5);
+        let (layouts, layout) = dynamic_u32_layout();
+        let mut operations = vec![
+            Operation::ConstSize { destination: count, value: count_value },
+            Operation::ConstSize { destination: capacity, value: capacity_value },
+            Operation::ConstSize { destination: index, value: index_value },
+            Operation::Compare {
+                destination: condition,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: guard_right,
+            },
+        ];
+        if with_guard {
+            operations.push(Operation::Guard { condition, kind: GuardKind::Bounds });
+        }
+        operations.extend([
+            Operation::Alloc {
+                destination: object,
+                layout,
+                extent: Extent::Counted {
+                    header_bytes: 4,
+                    count,
+                    capacity,
+                    stride_bytes: 4,
+                },
+                class: AllocationClass::ReferenceCounted,
+            },
+            Operation::Load {
+                destination: loaded,
+                place: Place::projected(
+                    object,
+                    Projection::Element { index },
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            },
+            Operation::Reclaim { object },
+        ]);
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (index, ValueType::Size),
+                    (condition, ValueType::Bool),
+                    (object, ValueType::Ref(layout)),
+                    (loaded, ValueType::Size),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn logical_length_guard_is_not_satisfied_by_capacity_guard() {
+        let capacity = ValueId::new(1);
+        assert_eq!(
+            check_initial(counted_access_module(1, 2, 1, capacity, true)).unwrap_err(),
+            InitialCheckError::MissingBoundsGuard {
+                function: FUNCTION,
+                index: ValueId::new(2),
+                count: ValueId::new(0),
+            }
+        );
+    }
+
+    #[test]
+    fn update_count_grows_logical_length_only_after_capacity_guard() {
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let new_count = ValueId::new(2);
+        let index = ValueId::new(3);
+        let capacity_condition = ValueId::new(4);
+        let index_condition = ValueId::new(5);
+        let object = ValueId::new(6);
+        let loaded = ValueId::new(7);
+        let (layouts, layout) = dynamic_u32_layout();
+        let operations = vec![
+            Operation::ConstSize { destination: count, value: 1 },
+            Operation::ConstSize { destination: capacity, value: 2 },
+            Operation::ConstSize { destination: new_count, value: 2 },
+            Operation::ConstSize { destination: index, value: 1 },
+            Operation::Compare {
+                destination: capacity_condition,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: new_count,
+                right: capacity,
+            },
+            Operation::Guard { condition: capacity_condition, kind: GuardKind::Bounds },
+            Operation::Alloc {
+                destination: object,
+                layout,
+                extent: Extent::Counted {
+                    header_bytes: 4,
+                    count,
+                    capacity,
+                    stride_bytes: 4,
+                },
+                class: AllocationClass::ReferenceCounted,
+            },
+            Operation::UpdateCount { object, count: new_count },
+            Operation::Compare {
+                destination: index_condition,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: new_count,
+            },
+            Operation::Guard { condition: index_condition, kind: GuardKind::Bounds },
+            Operation::Load {
+                destination: loaded,
+                place: Place::projected(
+                    object,
+                    Projection::Element { index },
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            },
+            Operation::Reclaim { object },
+        ];
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (new_count, ValueType::Size),
+                    (index, ValueType::Size),
+                    (capacity_condition, ValueType::Bool),
+                    (index_condition, ValueType::Bool),
+                    (object, ValueType::Ref(layout)),
+                    (loaded, ValueType::Size),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert!(check_initial(module).is_ok());
+    }
+
+    fn header_load_module(length_type: ValueType) -> CanonicalModule<super::super::LoweredCandidate> {
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let object = ValueId::new(2);
+        let loaded_length = ValueId::new(3);
+        let loaded_capacity = ValueId::new(4);
+        let (layouts, layout) = packed_u32_layout();
+        let header = |field, destination, value_type| Operation::Load {
+            destination,
+            place: Place::projected(
+                object,
+                Projection::Header(field),
+                value_type,
+                AccessMode::Read,
+            ),
+            transfer: LoadTransfer::CopyScalar,
+        };
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (object, ValueType::Ref(layout)),
+                    (loaded_length, length_type),
+                    (loaded_capacity, ValueType::Size),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 1 },
+                        Operation::ConstSize { destination: capacity, value: 2 },
+                        Operation::Alloc {
+                            destination: object,
+                            layout,
+                            extent: Extent::Counted {
+                                header_bytes: 8,
+                                count,
+                                capacity,
+                                stride_bytes: 4,
+                            },
+                            class: AllocationClass::ReferenceCounted,
+                        },
+                        header(HeaderField::Length, loaded_length, length_type),
+                        header(HeaderField::Capacity, loaded_capacity, ValueType::Size),
+                        Operation::Reclaim { object },
+                    ],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn counted_header_projections_load_typed_scalars() {
+        assert!(check_initial(header_load_module(ValueType::Size)).is_ok());
+    }
+
+    #[test]
+    fn header_projection_cannot_claim_non_scalar_type() {
+        assert!(matches!(
+            check_initial(header_load_module(ValueType::Bool)),
+            Err(InitialCheckError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn bounds_guard_without_a_comparison_is_refused() {
+        let condition = ValueId::new(1);
+        let module = lowered(
+            [(condition, ValueType::Bool)].into_iter().collect(),
+            vec![
+                Operation::ConstBool { destination: condition, value: true },
+                Operation::Guard { condition, kind: GuardKind::Bounds },
+            ],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidGuard {
+                function: FUNCTION,
+                condition,
+                kind: GuardKind::Bounds,
+            }
+        );
+    }
+
+    #[test]
+    fn shared_ownership_cannot_be_reclaimed_as_unique() {
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let object = ValueId::new(2);
+        let shared = ValueId::new(3);
+        let (layouts, layout) = dynamic_u32_layout();
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (object, ValueType::Ref(layout)),
+                    (shared, ValueType::Ref(layout)),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 0 },
+                        Operation::ConstSize { destination: capacity, value: 1 },
+                        Operation::Alloc {
+                            destination: object,
+                            layout,
+                            extent: Extent::Counted {
+                                header_bytes: 4,
+                                count,
+                                capacity,
+                                stride_bytes: 4,
+                            },
+                            class: AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Share { destination: shared, source: object },
+                        Operation::Reclaim { object: shared },
+                    ],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidOwnership {
+                function: FUNCTION,
+                object: shared,
+            }
+        );
     }
 }

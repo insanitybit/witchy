@@ -6,8 +6,8 @@ use crate::layout::{
 
 use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
-    AccessMode, AllocationClass, ComparisonOperator, Extent, Function, HeaderField, LoadTransfer,
-    Operation, Ownership, Place, Projection, StoreTransfer, ValueId, ValueType,
+    AccessMode, AllocationClass, ComparisonOperator, Extent, Function, GuardKind, HeaderField,
+    LoadTransfer, Operation, Ownership, Place, Projection, StoreTransfer, ValueId, ValueType,
 };
 
 #[derive(Debug, Clone)]
@@ -32,6 +32,7 @@ pub(super) struct MemoryChecker<'a> {
     constants: BTreeMap<ValueId, u64>,
     comparisons: BTreeMap<ValueId, Comparison>,
     guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
+    header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
 }
 
 impl<'a> MemoryChecker<'a> {
@@ -58,6 +59,7 @@ impl<'a> MemoryChecker<'a> {
             constants: BTreeMap::new(),
             comparisons: BTreeMap::new(),
             guards: BTreeSet::new(),
+            header_values: BTreeMap::new(),
         })
     }
 
@@ -79,8 +81,26 @@ impl<'a> MemoryChecker<'a> {
                 );
                 Ok(false)
             }
-            Operation::Guard { condition, .. } => {
-                if let Some(comparison) = self.comparisons.get(condition) {
+            Operation::Guard { condition, kind } => {
+                let comparison = self.comparisons.get(condition).copied().ok_or(
+                    InitialCheckError::InvalidGuard {
+                        function: self.function.id,
+                        condition: *condition,
+                        kind: *kind,
+                    },
+                )?;
+                if *kind == GuardKind::Bounds {
+                    if !matches!(
+                        comparison.operator,
+                        ComparisonOperator::LessUnsigned
+                            | ComparisonOperator::LessEqualUnsigned
+                    ) {
+                        return Err(InitialCheckError::InvalidGuard {
+                            function: self.function.id,
+                            condition: *condition,
+                            kind: *kind,
+                        });
+                    }
                     self.guards
                         .insert((comparison.operator, comparison.left, comparison.right));
                 }
@@ -106,6 +126,20 @@ impl<'a> MemoryChecker<'a> {
                 self.update_count(*object, *count)?;
                 Ok(true)
             }
+            Operation::MoveValue { destination, source }
+                if value_type(self.function, *source)?.is_memory_bearing() =>
+            {
+                self.move_value(*destination, *source)?;
+                Ok(true)
+            }
+            Operation::Share { destination, source } => {
+                self.share(*destination, *source)?;
+                Ok(true)
+            }
+            Operation::Release { object } => {
+                self.release(*object)?;
+                Ok(true)
+            }
             Operation::Reclaim { object } => {
                 self.reclaim(*object)?;
                 Ok(true)
@@ -113,20 +147,11 @@ impl<'a> MemoryChecker<'a> {
             Operation::CopyBytes { .. }
             | Operation::MoveRange { .. }
             | Operation::CloneRange { .. }
-            | Operation::Share { .. }
             | Operation::Retain { .. }
-            | Operation::Release { .. } => Err(InitialCheckError::UnsupportedMemoryOperation {
+                => Err(InitialCheckError::UnsupportedMemoryOperation {
                 function: self.function.id,
                 operation: operation_name(operation),
             }),
-            Operation::MoveValue { source, .. }
-                if value_type(self.function, *source)?.is_memory_bearing() =>
-            {
-                Err(InitialCheckError::UnsupportedMemoryOperation {
-                    function: self.function.id,
-                    operation: "MoveValue",
-                })
-            }
             _ => Ok(false),
         }
     }
@@ -242,7 +267,7 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn load(
-        &self,
+        &mut self,
         destination: ValueId,
         place: &Place,
         transfer: LoadTransfer,
@@ -254,7 +279,12 @@ impl<'a> MemoryChecker<'a> {
         if expected.is_memory_bearing() {
             return self.unsupported("Load(reference)");
         }
-        self.require_type(destination, expected)
+        self.require_type(destination, expected)?;
+        if let Projection::Header(field) = place.projection() {
+            self.header_values
+                .insert((place.object(), *field), destination);
+        }
+        Ok(())
     }
 
     fn store(
@@ -265,6 +295,12 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         if place.access() != AccessMode::Write || transfer != StoreTransfer::CopyScalar {
             return self.unsupported("Store(non-scalar)");
+        }
+        if self.live_object(place.object())?.ownership != Ownership::Unique {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: place.object(),
+            });
         }
         let expected = self.check_place(place)?;
         if expected.is_memory_bearing() {
@@ -354,6 +390,16 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         };
+        if self
+            .header_values
+            .get(&(object, HeaderField::Capacity))
+            .is_some_and(|loaded| *loaded != capacity)
+        {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object,
+            });
+        }
         if !self.less_equal(count, capacity) {
             return Err(InitialCheckError::MissingCapacityGuard {
                 function: self.function.id,
@@ -367,6 +413,56 @@ impl<'a> MemoryChecker<'a> {
             capacity,
             stride_bytes,
         };
+        self.header_values.insert((object, HeaderField::Length), count);
+        Ok(())
+    }
+
+    fn move_value(&mut self, destination: ValueId, source: ValueId) -> Result<(), InitialCheckError> {
+        let source_type = value_type(self.function, source)?;
+        self.require_type(destination, source_type)?;
+        let state = self.live_object(source)?.clone();
+        self.objects.insert(destination, state);
+        self.objects
+            .get_mut(&source)
+            .expect("live object exists")
+            .ownership = Ownership::Consumed;
+        Ok(())
+    }
+
+    fn share(&mut self, destination: ValueId, source: ValueId) -> Result<(), InitialCheckError> {
+        let source_type = value_type(self.function, source)?;
+        let ValueType::Ref(layout) = source_type else {
+            return self.unsupported("Share(scalar)");
+        };
+        self.require_ref_type(destination, layout)?;
+        let mut state = self.live_object(source)?.clone();
+        if state.ownership != Ownership::Unique {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: source,
+            });
+        }
+        state.ownership = Ownership::Shared;
+        self.objects.insert(destination, state);
+        self.objects
+            .get_mut(&source)
+            .expect("live object exists")
+            .ownership = Ownership::Consumed;
+        Ok(())
+    }
+
+    fn release(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(object)?;
+        if state.ownership != Ownership::Shared {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object,
+            });
+        }
+        self.objects
+            .get_mut(&object)
+            .expect("live object exists")
+            .ownership = Ownership::Consumed;
         Ok(())
     }
 
