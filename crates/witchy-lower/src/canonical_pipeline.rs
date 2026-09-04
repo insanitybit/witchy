@@ -73,6 +73,7 @@ pub(crate) fn validate_checked_module(
 mod tests {
     use super::*;
     use witchy_syntax::parser::parse_module;
+    use witchy_wir::canonical_safewir::ValueType;
 
     #[test]
     fn scalar_source_reaches_final_safewir_authority_without_raw_wir() {
@@ -238,6 +239,60 @@ mod tests {
             .expect("canonical main export");
 
         assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 42);
+    }
+
+    #[test]
+    fn checked_function_value_variable_call_reaches_admitted_execution() {
+        let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    let f = answer\n    f() + 1\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked function-value source");
+
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("canonical layouts");
+        let candidate = lower_typed_module(canonical, layouts).expect("canonical lowering");
+        let operations = candidate.functions()[1].blocks[0].operations.as_slice();
+        assert!(operations.iter().any(|operation| {
+            matches!(operation, witchy_wir::canonical_safewir::Operation::FunctionValue { .. })
+        }));
+        assert!(operations.iter().any(|operation| {
+            matches!(operation, witchy_wir::canonical_safewir::Operation::VarCall { .. })
+        }));
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical function-value artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted function-value artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted function-value artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical function value"), 43);
+    }
+
+    #[test]
+    fn checked_variable_call_rejects_memory_bearing_result() {
+        let source = "fn answer() -> String:\n    \"ok\"\nfn main() -> Int:\n    let f = answer\n    let result = f()\n    1\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked memory-bearing function-value source");
+
+        assert!(matches!(
+            validate_checked_module(&checked),
+            Err(CanonicalPipelineError::Lowering(
+                CanonicalLoweringError::UnsupportedIndirectResult(ValueType::Ref(_))
+            ))
+        ));
     }
 
     #[test]

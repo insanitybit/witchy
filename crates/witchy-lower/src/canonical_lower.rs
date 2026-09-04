@@ -53,6 +53,8 @@ pub enum CanonicalLoweringError {
         expected: ValueType,
         actual: ValueType,
     },
+    IndirectCalleeType(ValueType),
+    UnsupportedIndirectResult(ValueType),
     UnsupportedCallOwnership { callee: String, parameter: usize, ownership: ParameterOwnership },
     IdOverflow,
     TailManifest(String),
@@ -94,6 +96,7 @@ pub fn lower_typed_module(
         .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
+    let mut function_types = HashMap::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else {
             match item {
@@ -119,9 +122,37 @@ pub fn lower_typed_module(
         let signature_id = FunctionSignatureId::new(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
-        let signature = checked_signature(typed, function, signature_id, &layouts, &layout_catalog)?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
-        signatures.push(signature);
+        let function_type = typed
+            .table()
+            .function_type(&function.name)
+            .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone()))?;
+        function_types.insert(function_type, signature_id);
+        signatures.push(FunctionSignature {
+            id: signature_id,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        });
+    }
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
+        let (_, signature_id) = functions_by_name[&function.name];
+        signatures[signature_id.get() as usize] = checked_signature(
+            typed,
+            function,
+            signature_id,
+            &layouts,
+            &layout_catalog,
+            &function_types,
+        )?;
     }
 
     let mut imports = Vec::new();
@@ -221,6 +252,7 @@ fn checked_signature(
     id: FunctionSignatureId,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    function_types: &HashMap<Type, FunctionSignatureId>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let checked = typed
         .table()
@@ -254,7 +286,7 @@ fn checked_signature(
                 convention,
             });
         }
-        let value_type = source_value_type(parameter, layout_bundle, layouts)?;
+        let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
         value_parameters.push(value_type);
         let (ownership, non_escaping) = match (value_type, convention) {
             (ValueType::Ref(_), Convention::Let | Convention::Borrow) => {
@@ -275,7 +307,7 @@ fn checked_signature(
             non_escaping,
         });
     }
-    let result = source_value_type(&result, layout_bundle, layouts)?;
+    let result = source_value_type(&result, layout_bundle, layouts, function_types)?;
     let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
     let result_contracts = results
         .iter()
@@ -440,13 +472,18 @@ impl FunctionLowerer<'_> {
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
                             return Ok(());
                         }
-                        let terminator = self.lower_direct_tail_call(
-                            name,
-                            args,
-                            index,
-                            ProperTailPathStep::ReturnValue,
-                        )?;
-                        self.finish_current(terminator)?;
+                        if !self.bindings.contains_key(name) {
+                            let terminator = self.lower_direct_tail_call(
+                                name,
+                                args,
+                                index,
+                                ProperTailPathStep::ReturnValue,
+                            )?;
+                            self.finish_current(terminator)?;
+                        } else {
+                            let value = self.lower_expr(value.as_ref().unwrap())?;
+                            self.finish_current(self.return_value(Some(value), results)?)?;
+                        }
                         return Ok(());
                     }
                     let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
@@ -465,13 +502,18 @@ impl FunctionLowerer<'_> {
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
                             return Ok(());
                         }
-                        let terminator = self.lower_direct_tail_call(
-                            name,
-                            args,
-                            index,
-                            ProperTailPathStep::Value,
-                        )?;
-                        self.finish_current(terminator)?;
+                        if !self.bindings.contains_key(name) {
+                            let terminator = self.lower_direct_tail_call(
+                                name,
+                                args,
+                                index,
+                                ProperTailPathStep::Value,
+                            )?;
+                            self.finish_current(terminator)?;
+                        } else {
+                            let value = self.lower_expr(value)?;
+                            self.finish_current(self.return_value(Some(value), results)?)?;
+                        }
                         return Ok(());
                     }
                     if results.is_empty() && matches!(value, Expr::While { .. }) {
@@ -897,6 +939,53 @@ impl FunctionLowerer<'_> {
         Ok(destinations)
     }
 
+    fn lower_indirect_call(
+        &mut self,
+        callee: ValueId,
+        arguments: &[Expr],
+        signature_id: FunctionSignatureId,
+    ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        let signature = self
+            .signatures
+            .get(signature_id.get() as usize)
+            .cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression(
+                "indirect call signature",
+            ))?;
+        if signature
+            .parameters
+            .iter()
+            .copied()
+            .any(|value_type| !is_indirect_scalar(value_type))
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "memory-bearing indirect call parameter",
+            ));
+        }
+        if let Some(result) = signature
+            .results
+            .iter()
+            .copied()
+            .find(|value_type| !is_indirect_scalar(*value_type))
+        {
+            return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
+        }
+        let arguments = self.lower_call_arguments("<indirect>", arguments, &signature)?;
+        let destinations = signature
+            .results
+            .iter()
+            .copied()
+            .map(|value_type| self.fresh(value_type))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.push_operation(Operation::VarCall {
+            destinations: destinations.clone(),
+            callee,
+            signature: signature_id,
+            arguments,
+        });
+        Ok(destinations)
+    }
+
     fn lower_call_arguments(
         &mut self,
         callee: &str,
@@ -986,11 +1075,15 @@ impl FunctionLowerer<'_> {
                 Ok(destination)
             }
             Expr::Var(name) => {
-                let value = self
-                    .bindings
-                    .get(name)
-                    .copied()
-                    .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                let value = if let Some(value) = self.bindings.get(name).copied() {
+                    value
+                } else if let Some((function, signature)) = self.functions.get(name).copied() {
+                    let destination = self.fresh(ValueType::Callable(signature))?;
+                    self.push_operation(Operation::FunctionValue { destination, function });
+                    destination
+                } else {
+                    return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                };
                 if let ValueType::Ref(layout) = self.values[&value]
                     && string_layout(
                         &Type::Named("String".into(), Vec::new()),
@@ -1034,7 +1127,14 @@ impl FunctionLowerer<'_> {
                 CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
             ),
             Expr::Call { name, args } => {
-                let results = self.lower_direct_call(name, args)?;
+                let results = if let Some(callee) = self.bindings.get(name).copied() {
+                    let ValueType::Callable(signature) = self.values[&callee] else {
+                        return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                    };
+                    self.lower_indirect_call(callee, args, signature)?
+                } else {
+                    self.lower_direct_call(name, args)?
+                };
                 match results.as_slice() {
                     [value] => Ok(*value),
                     [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
@@ -1043,8 +1143,19 @@ impl FunctionLowerer<'_> {
             }
             Expr::LabeledCall { .. }
             | Expr::LabeledMethodCall { .. }
-            | Expr::MethodCall { .. }
-            | Expr::Apply { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
+            | Expr::MethodCall { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
+            Expr::Apply { func, args } => {
+                let callee = self.lower_expr(func)?;
+                let ValueType::Callable(signature) = self.values[&callee] else {
+                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                };
+                let results = self.lower_indirect_call(callee, args, signature)?;
+                match results.as_slice() {
+                    [value] => Ok(*value),
+                    [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
+                    _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
+                }
+            }
             Expr::Str(value) => self.lower_string_literal(value),
             Expr::List(items) => self.lower_list_literal(expression, items),
             Expr::Tuple(_) => Err(CanonicalLoweringError::UnsupportedExpression("tuple")),
@@ -1880,8 +1991,15 @@ fn source_value_type(
     source: &Type,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    function_types: &HashMap<Type, FunctionSignatureId>,
 ) -> Result<ValueType, CanonicalLoweringError> {
     match source.unqualified() {
+        Type::Fn(..) => function_types
+            .get(source)
+            .or_else(|| function_types.get(source.unqualified()))
+            .copied()
+            .map(ValueType::Callable)
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             list_layout(source, layout_bundle, layouts).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
@@ -1893,6 +2011,13 @@ fn source_value_type(
         }
         _ => scalar_type(source),
     }
+}
+
+fn is_indirect_scalar(value_type: ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Size | ValueType::V128
+    )
 }
 
 fn string_layout(
