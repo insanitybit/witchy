@@ -6164,6 +6164,141 @@ mod tests {
         }))
     }
 
+    fn checked_scalar_clone_range(range_count: u64, source_start: u64, destination_start: u64) -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&interner, [list]).unwrap();
+        let allocation_count = ValueId::new(1);
+        let source_start_value = ValueId::new(2);
+        let destination_start_value = ValueId::new(3);
+        let range_count_value = ValueId::new(4);
+        let source = ValueId::new(5);
+        let destination = ValueId::new(6);
+        let index = ValueId::new(7);
+        let value = ValueId::new(8);
+        let loaded = ValueId::new(9);
+        let index_in_bounds = ValueId::new(10);
+        let source_start_in_bounds = ValueId::new(11);
+        let destination_start_in_bounds = ValueId::new(12);
+        let signature_id = FunctionSignatureId::new(165);
+        let function_id = FunctionId::new(165);
+        let source_place = Place::projected(
+            source,
+            Projection::Slice { start: source_start_value, length: range_count_value },
+            ValueType::Ref(list),
+            AccessMode::Read,
+        );
+        let destination_place = Place::projected(
+            destination,
+            Projection::Slice { start: destination_start_value, length: range_count_value },
+            ValueType::Ref(list),
+            AccessMode::Write,
+        );
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(165),
+            checked_source: CheckedSourceIdentity::from_digest([0x65; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(signature_id, Vec::new(), vec![ValueType::Int])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: function_id,
+                signature: signature_id,
+                entry: crate::canonical_safewir::BlockId::new(165),
+                value_types: [
+                    (allocation_count, ValueType::Size),
+                    (source_start_value, ValueType::Size),
+                    (destination_start_value, ValueType::Size),
+                    (range_count_value, ValueType::Size),
+                    (source, ValueType::Ref(list)),
+                    (destination, ValueType::Ref(list)),
+                    (index, ValueType::Size),
+                    (value, ValueType::Int),
+                    (loaded, ValueType::Int),
+                    (index_in_bounds, ValueType::Bool),
+                    (source_start_in_bounds, ValueType::Bool),
+                    (destination_start_in_bounds, ValueType::Bool),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(165),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: allocation_count, value: 1 },
+                        Operation::ConstSize { destination: source_start_value, value: source_start },
+                        Operation::ConstSize { destination: destination_start_value, value: destination_start },
+                        Operation::ConstSize { destination: range_count_value, value: range_count },
+                        Operation::Alloc {
+                            destination: source,
+                            layout: list,
+                            extent: Extent::Counted {
+                                header_bytes: 8,
+                                count: allocation_count,
+                                capacity: allocation_count,
+                                stride_bytes: 8,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Alloc {
+                            destination: destination,
+                            layout: list,
+                            extent: Extent::Counted {
+                                header_bytes: 8,
+                                count: allocation_count,
+                                capacity: allocation_count,
+                                stride_bytes: 8,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::ConstSize { destination: index, value: 0 },
+                        Operation::ConstInt { destination: value, value: 42 },
+                        Operation::Compare {
+                            destination: index_in_bounds,
+                            operator: ComparisonOperator::LessUnsigned,
+                            left: index,
+                            right: allocation_count,
+                        },
+                        Operation::Guard { condition: index_in_bounds, kind: GuardKind::Bounds },
+                        Operation::Store {
+                            place: Place::projected(source, Projection::Element { index }, ValueType::Int, AccessMode::Write),
+                            value,
+                            transfer: StoreTransfer::CopyScalar,
+                        },
+                        Operation::Compare {
+                            destination: source_start_in_bounds,
+                            operator: ComparisonOperator::LessUnsigned,
+                            left: source_start_value,
+                            right: allocation_count,
+                        },
+                        Operation::Guard { condition: source_start_in_bounds, kind: GuardKind::Bounds },
+                        Operation::Compare {
+                            destination: destination_start_in_bounds,
+                            operator: ComparisonOperator::LessUnsigned,
+                            left: destination_start_value,
+                            right: allocation_count,
+                        },
+                        Operation::Guard { condition: destination_start_in_bounds, kind: GuardKind::Bounds },
+                        Operation::CloneRange {
+                            destination: destination_place,
+                            source: source_place,
+                            count: range_count_value,
+                        },
+                        Operation::Load {
+                            destination: loaded,
+                            place: Place::projected(destination, Projection::Element { index }, ValueType::Int, AccessMode::Read),
+                            transfer: LoadTransfer::CopyScalar,
+                        },
+                        Operation::Reclaim { object: source },
+                        Operation::Reclaim { object: destination },
+                    ],
+                    terminator: Terminator::Return { values: vec![loaded] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
     fn checked_int_list_loop() -> ValidatedSafeWir {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::Int).unwrap();
@@ -6869,6 +7004,246 @@ mod tests {
             encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 8, 1)),
             Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { operation: "Alloc", .. }))
         ));
+    }
+
+    #[cfg(feature = "native")]
+    fn run_scalar_clone_range(range_count: u64, source_start: u64, destination_start: u64) -> Result<i64, wasmtime::Error> {
+        let artifact = admit_canonical(checked_scalar_clone_range(range_count, source_start, destination_start))
+            .expect("scalar CloneRange fixture admits before execution");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())?;
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
+        let run = instance.get_typed_func::<(), i64>(&mut store, "f165")?;
+        run.call(&mut store, ())
+    }
+
+    #[cfg(feature = "native")]
+    fn raw_scalar_clone_range_probe() -> Vec<u8> {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let source = ValueId::new(1);
+        let destination = ValueId::new(2);
+        let source_start = ValueId::new(3);
+        let destination_start = ValueId::new(4);
+        let count = ValueId::new(5);
+        let parameters = [
+            (source, ValueType::Ref(list)),
+            (destination, ValueType::Ref(list)),
+            (source_start, ValueType::Size),
+            (destination_start, ValueType::Size),
+            (count, ValueType::Size),
+        ];
+        let signature = scalar_signature_with(
+            FunctionSignatureId::new(166),
+            parameters.iter().map(|(_, value_type)| *value_type).collect(),
+            Vec::new(),
+        );
+        let function = Function {
+            id: FunctionId::new(166),
+            signature: signature.id,
+            entry: crate::canonical_safewir::BlockId::new(166),
+            value_types: parameters.iter().copied().collect(),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(166),
+                parameters: parameters
+                    .iter()
+                    .map(|(value, value_type)| BlockParameter { value: *value, value_type: *value_type, ownership: None })
+                    .collect(),
+                operations: Vec::new(),
+                terminator: Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let layout = local_layout(&function, &signature).unwrap();
+        let mut body = WasmFunctionEncoder::new(layout.extra_types.iter().copied().map(|value_type| (1, value_type)));
+        let source_place = Place::projected(
+            source,
+            Projection::Slice { start: source_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Read,
+        );
+        let destination_place = Place::projected(
+            destination,
+            Projection::Slice { start: destination_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Write,
+        );
+        emit_clone_range(&mut body, &function, &layout, &destination_place, &source_place, count, &interner).unwrap();
+        body.instruction(&wasm_encoder::Instruction::End);
+
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32; 5], Vec::new());
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        let mut memories = MemorySection::new();
+        memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        let mut exports = ExportSection::new();
+        exports.export("probe", ExportKind::Func, 0);
+        let mut code = CodeSection::new();
+        code.function(&body);
+        let mut module = WasmModule::new();
+        module
+            .section(&types)
+            .section(&functions)
+            .section(&memories)
+            .section(&exports)
+            .section(&code);
+        module.finish()
+    }
+
+    #[cfg(feature = "native")]
+    fn run_raw_scalar_clone_range_probe(arguments: [i32; 5]) -> Result<(), wasmtime::Error> {
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, raw_scalar_clone_range_probe())?;
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
+        let run = instance.get_typed_func::<(i32, i32, i32, i32, i32), ()>(&mut store, "probe")?;
+        run.call(&mut store, arguments.into())
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn scalar_clone_range_admits_emits_and_matches_exact_correspondence() {
+        let validated = checked_scalar_clone_range(1, 0, 0);
+        let target = lower_validated(&validated).expect("scalar CloneRange lowers");
+        assert!(target.functions.iter().flat_map(|function| function.blocks.iter()).flat_map(|block| block.instructions.iter()).any(
+            |instruction| matches!(instruction.operation, ScalarInstruction::CloneRange { .. })
+        ));
+        let receipt = check_correspondence(validated.module(), &target).expect("CloneRange correspondence is exact");
+        assert!(receipt.mappings.iter().any(|mapping| mapping.rule == CorrespondenceRule::MemoryCopy));
+
+        let artifact = admit_canonical(validated).expect("scalar CloneRange admits with its exact plan");
+        wasmparser::validate(artifact.wasm()).expect("admitted scalar CloneRange is valid Wasm");
+        assert!(artifact.wasm().windows(2).any(|window| window == [0xfc, 0x0a]));
+        assert_eq!(run_scalar_clone_range(1, 0, 0).unwrap(), 42);
+    }
+
+    #[test]
+    fn pointer_bearing_clone_range_is_refused_by_canonical_backend() {
+        let mut interner = LayoutInterner::new();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = interner.intern_runtime_buffer(byte).unwrap();
+        let slot = interner
+            .intern_runtime_pointer_value_slot(string, PointerSlot::Owned)
+            .unwrap();
+        let list = interner.intern_packed_list(slot, RcHeader::Required).unwrap();
+        let count = ValueId::new(1);
+        let source_start = ValueId::new(2);
+        let destination_start = ValueId::new(3);
+        let source = ValueId::new(4);
+        let destination = ValueId::new(5);
+        let source_place = Place::projected(
+            source,
+            Projection::Slice { start: source_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Read,
+        );
+        let destination_place = Place::projected(
+            destination,
+            Projection::Slice { start: destination_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Write,
+        );
+        let operation = Operation::CloneRange { destination: destination_place, source: source_place, count };
+        let value_types = [
+            (count, ValueType::Size),
+            (source_start, ValueType::Size),
+            (destination_start, ValueType::Size),
+            (source, ValueType::Ref(list)),
+            (destination, ValueType::Ref(list)),
+        ]
+        .into_iter()
+        .collect();
+        assert!(matches!(
+            lower_operation(
+                FunctionId::new(165),
+                crate::canonical_safewir::BlockId::new(165),
+                0,
+                &operation,
+                &value_types,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &interner,
+                &BTreeMap::new(),
+                &mut BTreeMap::new(),
+            ),
+            Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_clone_range_places_are_refused_by_canonical_backend() {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let count = ValueId::new(1);
+        let wrong_length = ValueId::new(2);
+        let source_start = ValueId::new(3);
+        let destination_start = ValueId::new(4);
+        let source = ValueId::new(5);
+        let destination = ValueId::new(6);
+        let value_types = [
+            (count, ValueType::Size),
+            (wrong_length, ValueType::Size),
+            (source_start, ValueType::Size),
+            (destination_start, ValueType::Size),
+            (source, ValueType::Ref(list)),
+            (destination, ValueType::Ref(list)),
+        ]
+        .into_iter()
+        .collect();
+        let source_place = Place::projected(
+            source,
+            Projection::Slice { start: source_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Read,
+        );
+        let mismatched_destination = Place::projected(
+            destination,
+            Projection::Slice { start: destination_start, length: wrong_length },
+            ValueType::Ref(list),
+            AccessMode::Write,
+        );
+        let mismatched = Operation::CloneRange {
+            destination: mismatched_destination,
+            source: source_place.clone(),
+            count,
+        };
+        let non_slice = Operation::CloneRange {
+            destination: Place::projected(destination, Projection::Element { index: destination_start }, ValueType::Int, AccessMode::Write),
+            source: source_place,
+            count,
+        };
+        for operation in [mismatched, non_slice] {
+            assert!(matches!(
+                lower_operation(
+                    FunctionId::new(165),
+                    crate::canonical_safewir::BlockId::new(165),
+                    0,
+                    &operation,
+                    &value_types,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &interner,
+                    &BTreeMap::new(),
+                    &mut BTreeMap::new(),
+                ),
+                Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
+            ));
+        }
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn scalar_clone_range_count_stride_overflow_traps_before_copy() {
+        assert!(run_raw_scalar_clone_range_probe([0, 0, 0, 0, u32::MAX as i32]).is_err());
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn scalar_clone_range_start_stride_overflow_traps_before_copy() {
+        assert!(run_raw_scalar_clone_range_probe([0, 0, (u32::MAX - 1) as i32, 0, 0]).is_err());
     }
 
     #[test]
