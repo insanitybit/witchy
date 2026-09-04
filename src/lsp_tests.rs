@@ -1116,3 +1116,26 @@ fn main(console: Console):
         let fn_snippet = arr.iter().find(|i| i["label"] == "fn" && i["kind"] == 15).unwrap();
         assert_eq!(fn_snippet["insertTextFormat"], 2); // Snippet format
     }
+
+    #[test]
+    fn dot_completion_on_capability_with_rights_offers_dir_methods_not_list_methods() {
+        let code = "async fn inner_main(console: Console, root: Dir[Read]):\n    root.\n";
+        let mut docs = HashMap::new();
+        docs.insert("file:///test.witchy".to_string(), code.to_string());
+        let params = json!({
+            "textDocument": { "uri": "file:///test.witchy" },
+            "position": { "line": 1, "character": 9 }
+        });
+        let result = completion_response(&docs, &params);
+        let arr = result.as_array().expect("array of completion items");
+        let labels: Vec<&str> = arr.iter().filter_map(|i| i["label"].as_str()).collect();
+
+        assert!(labels.contains(&"read"), "dir read offered: {labels:?}");
+        assert!(labels.contains(&"list"), "dir list offered: {labels:?}");
+        assert!(labels.contains(&"exists"), "dir exists offered: {labels:?}");
+        assert!(labels.contains(&"subtree"), "dir subtree offered: {labels:?}");
+
+        // Must NOT suggest list methods
+        assert!(!labels.contains(&"push"), "list push should NOT be offered on Dir[Read]: {labels:?}");
+        assert!(!labels.contains(&"at"), "list at should NOT be offered on Dir[Read]: {labels:?}");
+    }

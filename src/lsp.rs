@@ -470,12 +470,31 @@ const CAPABILITY_CLOCK_METHODS: &[(&str, &str, &str)] = &[
 
 const CAPABILITY_DIR_METHODS: &[(&str, &str, &str)] = &[
     ("read", "fn(path: String) -> Result(String, Error)", "Reads contents of a file at path within directory."),
+    ("read_bytes", "fn(path: String) -> Result(Bytes, Error)", "Reads binary contents of a file at path."),
     ("write", "fn(path: String, content: String) -> Result(Nil, Error)", "Writes content to file at path."),
+    ("write_bytes", "fn(path: String, content: Bytes) -> Result(Nil, Error)", "Writes binary data to file at path."),
     ("append", "fn(path: String, content: String) -> Result(Nil, Error)", "Appends content to file at path."),
+    ("append_bytes", "fn(path: String, content: Bytes) -> Result(Nil, Error)", "Appends binary data to file at path."),
     ("exists", "fn(path: String) -> Bool", "Returns true if path exists within directory."),
     ("is_dir", "fn(path: String) -> Bool", "Returns true if path is a subdirectory."),
     ("list", "fn() -> Result([String], Error)", "Lists entry names in this directory."),
     ("subtree", "fn(subpath: String) -> Dir", "Narrows directory capability to a sub-path."),
+    ("make_dir", "fn(path: String) -> Result(Nil, Error)", "Creates a directory at path."),
+    ("create_new", "fn(path: String, content: String) -> Result(Bool, Error)", "Creates new file only if it does not exist."),
+    ("replace", "fn(path: String, content: String) -> Result(Nil, Error)", "Atomically replaces file contents."),
+    ("rename", "fn(from: String, to: String) -> Result(Nil, Error)", "Renames or moves a file or directory."),
+    ("set_executable", "fn(path: String) -> Result(Nil, Error)", "Sets executable permission on file."),
+    ("only", "fn(policy: DirPolicy) -> Dir", "Narrows directory capability to permitted paths."),
+];
+
+const CAPABILITY_EXEC_METHODS: &[(&str, &str, &str)] = &[
+    ("exec", "fn(dir: Dir, path: String, args: String, stdin: String) -> Result(String, Error)", "Executes binary within directory capability."),
+    ("only", "fn(programs: [String]) -> Exec", "Narrows exec capability to allowlisted programs."),
+];
+
+const CAPABILITY_SECRET_METHODS: &[(&str, &str, &str)] = &[
+    ("reveal", "fn() -> Bytes", "Reveals raw secret bytes (requires Reveal right)."),
+    ("seal", "fn() -> Secret", "Seals secret for handle-only usage."),
 ];
 
 const CAPABILITY_FILE_METHODS: &[(&str, &str, &str)] = &[
@@ -1031,17 +1050,30 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
                 return json!(items);
             }
 
-            // 2. Capability operations: console., clock., dir., file., net., rand., env.
+            // 2. Capability operations: console., clock., dir., file., net., rand., env., exec., secret.
             let vars = position.map_or_else(Vec::new, |(l, _)| extract_scope_vars(text, l));
             let receiver_ty = vars.iter().find(|v| v.name == receiver).and_then(|v| v.ty);
 
-            let is_console = receiver == "console" || receiver_ty == Some("Console");
-            let is_clock = receiver == "clock" || receiver_ty == Some("Clock");
-            let is_dir = receiver == "dir" || receiver_ty == Some("Dir");
-            let is_file = receiver == "file" || receiver_ty == Some("File");
-            let is_net = receiver == "net" || receiver_ty == Some("Net");
-            let is_rand = receiver == "rand" || receiver_ty == Some("Rand");
-            let is_env = receiver == "env" || receiver_ty == Some("Env");
+            let (base_ty, rights) = receiver_ty.map_or(("", None), |ty| {
+                let trimmed = ty.trim();
+                if let Some((base, r)) = trimmed.split_once('[') {
+                    (base.trim(), Some(r.strip_suffix(']').unwrap_or(r).trim()))
+                } else if let Some((base, _)) = trimmed.split_once('(') {
+                    (base.trim(), None)
+                } else {
+                    (trimmed, None)
+                }
+            });
+
+            let is_console = receiver == "console" || base_ty == "Console";
+            let is_clock = receiver == "clock" || base_ty == "Clock";
+            let is_dir = receiver == "dir" || receiver == "root" || receiver == "cwd" || base_ty == "Dir";
+            let is_file = receiver == "file" || base_ty == "File";
+            let is_net = receiver == "net" || base_ty == "Net";
+            let is_rand = receiver == "rand" || base_ty == "Rand";
+            let is_env = receiver == "env" || base_ty == "Env";
+            let is_exec = receiver == "exec" || receiver == "runner" || base_ty == "Exec";
+            let is_secret = receiver == "secret" || base_ty == "Secret";
 
             if is_console {
                 for (name, sig, doc) in CAPABILITY_CONSOLE_METHODS {
@@ -1056,14 +1088,25 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
                 return json!(items);
             }
             if is_dir {
+                let has_write = rights.map_or(true, |r| r.contains("Write"));
                 for (name, sig, doc) in CAPABILITY_DIR_METHODS {
-                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                    let is_write_op = matches!(*name, "write" | "write_bytes" | "append" | "append_bytes" | "make_dir" | "create_new" | "replace" | "rename" | "set_executable");
+                    let sort_p = if is_write_op && !has_write { '1' } else { '0' };
+                    let doc_text = if is_write_op && !has_write {
+                        format!("{doc}\n\n*Requires `Dir[Write]` capability right.*")
+                    } else {
+                        doc.to_string()
+                    };
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(&doc_text), Some(name), false, sort_p);
                 }
                 return json!(items);
             }
             if is_file {
+                let has_write = rights.map_or(true, |r| r.contains("Write"));
                 for (name, sig, doc) in CAPABILITY_FILE_METHODS {
-                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                    let is_write_op = matches!(*name, "write" | "write_bytes" | "append" | "close");
+                    let sort_p = if is_write_op && !has_write { '1' } else { '0' };
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, sort_p);
                 }
                 return json!(items);
             }
@@ -1081,6 +1124,18 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
             }
             if is_env {
                 for (name, sig, doc) in CAPABILITY_ENV_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_exec {
+                for (name, sig, doc) in CAPABILITY_EXEC_METHODS {
+                    push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
+                }
+                return json!(items);
+            }
+            if is_secret {
+                for (name, sig, doc) in CAPABILITY_SECRET_METHODS {
                     push_completion_item(&mut items, &mut seen, name, 2, Some(sig), Some(doc), Some(name), false, '0');
                 }
                 return json!(items);
@@ -1105,11 +1160,11 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
             }
 
             // 4. Instance methods on typed variables / receivers
-            let is_string = receiver_ty == Some("String");
-            let is_list = receiver_ty.is_some_and(|t| t.contains('[') || t.contains("List"));
-            let is_dict = receiver_ty.is_some_and(|t| t.contains("Dict"));
-            let is_opt = receiver_ty.is_some_and(|t| t.contains("Option"));
-            let is_res = receiver_ty.is_some_and(|t| t.contains("Result"));
+            let is_string = base_ty == "String";
+            let is_list = receiver_ty.is_some_and(|t| t.trim().starts_with('[')) || base_ty == "List";
+            let is_dict = base_ty == "Dict";
+            let is_opt = base_ty == "Option";
+            let is_res = base_ty == "Result";
 
             if is_string {
                 for (name, sig, doc) in STRING_METHODS {
@@ -1161,7 +1216,7 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
                         doc_lines_fn.reverse();
                         let doc = if doc_lines_fn.is_empty() { None } else { Some(doc_lines_fn.join("\n")) };
 
-                        let matches_owner = current_impl_owner.is_some_and(|o| o == receiver || receiver_ty == Some(o));
+                        let matches_owner = current_impl_owner.is_some_and(|o| o == receiver || base_ty == o);
                         let sort_p = if matches_owner { '0' } else { '2' };
                         push_completion_item(&mut items, &mut seen, decl.name, 2, Some(decl.signature), doc.as_deref(), Some(decl.name), false, sort_p);
                     }
