@@ -15,6 +15,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use wasm_encoder::{
+    BlockType, CodeSection, ExportKind, ExportSection, Function as WasmFunctionEncoder,
+    FunctionSection, Ieee64, Module as WasmModule, TypeSection, ValType,
+};
+
 use crate::canonical_safewir::{
     ArithmeticOperator, BasicBlock, CallArgument, CanonicalModule, ComparisonOperator,
     Function, FunctionId, ModuleStage, Operation, OptimizedValid, Terminator, ValidatedSafeWir,
@@ -154,6 +159,8 @@ struct CorrespondenceReceipt {
 enum LoweringError {
     UnsupportedOperation { function: FunctionId, operation: &'static str },
     UnsupportedCallArgument { function: FunctionId },
+    UnsupportedOverflow { function: FunctionId },
+    UnsupportedControlFlow { function: FunctionId, operation: &'static str },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +177,7 @@ enum CorrespondenceError {
     WrongSourcePosition { expected: SourceItemId, actual: SourceItemId },
     InstructionMismatch(SourceItemId),
     TerminatorMismatch(SourceItemId),
+    UnsupportedSourceItem(SourceItemId),
 }
 
 fn scalar_arguments(
@@ -199,13 +207,18 @@ fn lower_operation(
         Operation::ConstFloat { destination, bits } => ScalarInstruction::FloatConst { destination: *destination, bits: *bits },
         Operation::ConstBool { destination, value } => ScalarInstruction::BoolConst { destination: *destination, value: *value },
         Operation::ConstSize { destination, value } => ScalarInstruction::SizeConst { destination: *destination, value: *value },
-        Operation::Arithmetic { destination, operator, left, right, overflow } => ScalarInstruction::Arithmetic {
-            destination: *destination,
-            operator: *operator,
-            left: *left,
-            right: *right,
-            overflow: *overflow,
-        },
+        Operation::Arithmetic { destination, operator, left, right, overflow } => {
+            if *overflow == crate::canonical_safewir::OverflowBehavior::Trap {
+                return Err(LoweringError::UnsupportedOverflow { function });
+            }
+            ScalarInstruction::Arithmetic {
+                destination: *destination,
+                operator: *operator,
+                left: *left,
+                right: *right,
+                overflow: *overflow,
+            }
+        }
         Operation::Compare { destination, operator, left, right } => ScalarInstruction::Compare {
             destination: *destination,
             operator: *operator,
@@ -220,12 +233,9 @@ fn lower_operation(
             callee: *callee,
             arguments: scalar_arguments(function, arguments)?,
         },
-        Operation::VarCall { destinations, callee, signature, arguments } => ScalarInstruction::VarCall {
-            destinations: destinations.clone(),
-            callee: *callee,
-            signature: *signature,
-            arguments: scalar_arguments(function, arguments)?,
-        },
+        Operation::VarCall { .. } => {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "VarCall" });
+        }
         Operation::Alloc { .. }
         | Operation::StaticData { .. }
         | Operation::Load { .. }
@@ -295,12 +305,9 @@ fn lower_terminator(
             callee: *callee,
             arguments: scalar_arguments(function, arguments)?,
         },
-        Terminator::VarTailCall { site, callee, signature, arguments } => ScalarTerminator::VarTailCall {
-            site: *site,
-            callee: *callee,
-            signature: *signature,
-            arguments: scalar_arguments(function, arguments)?,
-        },
+        Terminator::VarTailCall { .. } => {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "VarTailCall" });
+        }
         Terminator::Trap => ScalarTerminator::Trap,
         Terminator::Unreachable => ScalarTerminator::Unreachable,
     };
@@ -508,7 +515,10 @@ fn check_correspondence(
                 if !matches_operation(&source_block.operations[index], &instruction.operation) {
                     return Err(CorrespondenceError::InstructionMismatch(expected_source));
                 }
-                mappings.push(CorrespondenceMapping { source: expected_source, target: TargetItemId::Instruction { function: function.id, block: block.id, index }, rule: operation_rule(&source_block.operations[index]).expect("validated scalar operation") });
+                let Some(rule) = operation_rule(&source_block.operations[index]) else {
+                    return Err(CorrespondenceError::UnsupportedSourceItem(expected_source));
+                };
+                mappings.push(CorrespondenceMapping { source: expected_source, target: TargetItemId::Instruction { function: function.id, block: block.id, index }, rule });
             }
             let expected_source = SourceItemId::Terminator { function: function.id, block: block.id };
             if block.terminator.source != expected_source {
@@ -521,6 +531,389 @@ fn check_correspondence(
         }
     }
     Ok(CorrespondenceReceipt { revision: source.revision(), checked_source: source.checked_source(), mappings })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EncodeError {
+    Lowering(LoweringError),
+    Correspondence(CorrespondenceError),
+    UnsupportedValueType { function: FunctionId, value: ValueId, value_type: crate::canonical_safewir::ValueType },
+    UnsupportedSignature { signature: crate::canonical_safewir::FunctionSignatureId },
+    MissingFunction(FunctionId),
+    MissingValue { function: FunctionId, value: ValueId },
+    MissingBlock { function: FunctionId, block: crate::canonical_safewir::BlockId },
+    WasmValidation(String),
+}
+
+fn wasm_value_type(
+    function: FunctionId,
+    value: ValueId,
+    value_type: crate::canonical_safewir::ValueType,
+) -> Result<ValType, EncodeError> {
+    match value_type {
+        crate::canonical_safewir::ValueType::Int => Ok(ValType::I64),
+        crate::canonical_safewir::ValueType::Float => Ok(ValType::F64),
+        crate::canonical_safewir::ValueType::Bool => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::Size => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::V128 => Ok(ValType::V128),
+        unsupported => Err(EncodeError::UnsupportedValueType { function, value, value_type: unsupported }),
+    }
+}
+
+struct LocalLayout {
+    indices: BTreeMap<ValueId, u32>,
+    state: u32,
+    extra_types: Vec<ValType>,
+}
+
+fn local_layout(function: &Function) -> Result<LocalLayout, EncodeError> {
+    let entry = function
+        .blocks
+        .iter()
+        .find(|block| block.id == function.entry)
+        .ok_or(EncodeError::MissingBlock { function: function.id, block: function.entry })?;
+    let mut indices = BTreeMap::new();
+    for (index, parameter) in entry.parameters.iter().enumerate() {
+        indices.insert(parameter.value, index as u32);
+    }
+    let mut extra_types = Vec::new();
+    for (value, value_type) in &function.value_types {
+        if indices.contains_key(value) {
+            continue;
+        }
+        let index = entry.parameters.len() as u32 + extra_types.len() as u32;
+        indices.insert(*value, index);
+        extra_types.push(wasm_value_type(function.id, *value, *value_type)?);
+    }
+    Ok(LocalLayout {
+        indices,
+        state: entry.parameters.len() as u32 + extra_types.len() as u32,
+        extra_types,
+    })
+}
+
+fn local_index(layout: &LocalLayout, function: FunctionId, value: ValueId) -> Result<u32, EncodeError> {
+    layout.indices.get(&value).copied().ok_or(EncodeError::MissingValue { function, value })
+}
+
+fn emit_get(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    value: ValueId,
+) -> Result<(), EncodeError> {
+    body.instruction(&wasm_encoder::Instruction::LocalGet(local_index(layout, function, value)?));
+    Ok(())
+}
+
+fn emit_set(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    value: ValueId,
+) -> Result<(), EncodeError> {
+    body.instruction(&wasm_encoder::Instruction::LocalSet(local_index(layout, function, value)?));
+    Ok(())
+}
+
+fn emit_arithmetic(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destination: ValueId,
+    operator: ArithmeticOperator,
+    left: ValueId,
+    right: ValueId,
+) -> Result<(), EncodeError> {
+    let value_type = function
+        .value_types
+        .get(&destination)
+        .copied()
+        .ok_or(EncodeError::MissingValue { function: function.id, value: destination })?;
+    emit_get(body, layout, function.id, left)?;
+    emit_get(body, layout, function.id, right)?;
+    match value_type {
+        crate::canonical_safewir::ValueType::Int => match operator {
+            ArithmeticOperator::Add => { body.instruction(&wasm_encoder::Instruction::I64Add); }
+            ArithmeticOperator::Subtract => { body.instruction(&wasm_encoder::Instruction::I64Sub); }
+            ArithmeticOperator::Multiply => { body.instruction(&wasm_encoder::Instruction::I64Mul); }
+            ArithmeticOperator::DivideSigned => { body.instruction(&wasm_encoder::Instruction::I64DivS); }
+            ArithmeticOperator::DivideUnsigned => { body.instruction(&wasm_encoder::Instruction::I64DivU); }
+            ArithmeticOperator::RemainderSigned => { body.instruction(&wasm_encoder::Instruction::I64RemS); }
+            ArithmeticOperator::RemainderUnsigned => { body.instruction(&wasm_encoder::Instruction::I64RemU); }
+            ArithmeticOperator::BitAnd => { body.instruction(&wasm_encoder::Instruction::I64And); }
+            ArithmeticOperator::BitOr => { body.instruction(&wasm_encoder::Instruction::I64Or); }
+            ArithmeticOperator::BitXor => { body.instruction(&wasm_encoder::Instruction::I64Xor); }
+            ArithmeticOperator::ShiftLeft => { body.instruction(&wasm_encoder::Instruction::I64Shl); }
+            ArithmeticOperator::ShiftRightSigned => { body.instruction(&wasm_encoder::Instruction::I64ShrS); }
+            ArithmeticOperator::ShiftRightUnsigned => { body.instruction(&wasm_encoder::Instruction::I64ShrU); }
+        },
+        crate::canonical_safewir::ValueType::Size => match operator {
+            ArithmeticOperator::Add => { body.instruction(&wasm_encoder::Instruction::I32Add); }
+            ArithmeticOperator::Subtract => { body.instruction(&wasm_encoder::Instruction::I32Sub); }
+            ArithmeticOperator::Multiply => { body.instruction(&wasm_encoder::Instruction::I32Mul); }
+            ArithmeticOperator::DivideSigned => { body.instruction(&wasm_encoder::Instruction::I32DivS); }
+            ArithmeticOperator::DivideUnsigned => { body.instruction(&wasm_encoder::Instruction::I32DivU); }
+            ArithmeticOperator::RemainderSigned => { body.instruction(&wasm_encoder::Instruction::I32RemS); }
+            ArithmeticOperator::RemainderUnsigned => { body.instruction(&wasm_encoder::Instruction::I32RemU); }
+            ArithmeticOperator::BitAnd => { body.instruction(&wasm_encoder::Instruction::I32And); }
+            ArithmeticOperator::BitOr => { body.instruction(&wasm_encoder::Instruction::I32Or); }
+            ArithmeticOperator::BitXor => { body.instruction(&wasm_encoder::Instruction::I32Xor); }
+            ArithmeticOperator::ShiftLeft => { body.instruction(&wasm_encoder::Instruction::I32Shl); }
+            ArithmeticOperator::ShiftRightSigned => { body.instruction(&wasm_encoder::Instruction::I32ShrS); }
+            ArithmeticOperator::ShiftRightUnsigned => { body.instruction(&wasm_encoder::Instruction::I32ShrU); }
+        },
+        _ => return Err(EncodeError::UnsupportedValueType { function: function.id, value: destination, value_type }),
+    }
+    emit_set(body, layout, function.id, destination)
+}
+
+fn emit_compare(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destination: ValueId,
+    operator: ComparisonOperator,
+    left: ValueId,
+) -> Result<(), EncodeError> {
+    let value_type = function
+        .value_types
+        .get(&left)
+        .copied()
+        .ok_or(EncodeError::MissingValue { function: function.id, value: left })?;
+    let instruction = match value_type {
+        crate::canonical_safewir::ValueType::Int => match operator {
+            ComparisonOperator::Equal => wasm_encoder::Instruction::I64Eq,
+            ComparisonOperator::NotEqual => wasm_encoder::Instruction::I64Ne,
+            ComparisonOperator::LessSigned => wasm_encoder::Instruction::I64LtS,
+            ComparisonOperator::LessUnsigned => wasm_encoder::Instruction::I64LtU,
+            ComparisonOperator::LessEqualSigned => wasm_encoder::Instruction::I64LeS,
+            ComparisonOperator::LessEqualUnsigned => wasm_encoder::Instruction::I64LeU,
+            ComparisonOperator::GreaterSigned => wasm_encoder::Instruction::I64GtS,
+            ComparisonOperator::GreaterUnsigned => wasm_encoder::Instruction::I64GtU,
+            ComparisonOperator::GreaterEqualSigned => wasm_encoder::Instruction::I64GeS,
+            ComparisonOperator::GreaterEqualUnsigned => wasm_encoder::Instruction::I64GeU,
+        },
+        crate::canonical_safewir::ValueType::Size | crate::canonical_safewir::ValueType::Bool => match operator {
+            ComparisonOperator::Equal => wasm_encoder::Instruction::I32Eq,
+            ComparisonOperator::NotEqual => wasm_encoder::Instruction::I32Ne,
+            ComparisonOperator::LessSigned => wasm_encoder::Instruction::I32LtS,
+            ComparisonOperator::LessUnsigned => wasm_encoder::Instruction::I32LtU,
+            ComparisonOperator::LessEqualSigned => wasm_encoder::Instruction::I32LeS,
+            ComparisonOperator::LessEqualUnsigned => wasm_encoder::Instruction::I32LeU,
+            ComparisonOperator::GreaterSigned => wasm_encoder::Instruction::I32GtS,
+            ComparisonOperator::GreaterUnsigned => wasm_encoder::Instruction::I32GtU,
+            ComparisonOperator::GreaterEqualSigned => wasm_encoder::Instruction::I32GeS,
+            ComparisonOperator::GreaterEqualUnsigned => wasm_encoder::Instruction::I32GeU,
+        },
+        crate::canonical_safewir::ValueType::Float => match operator {
+            ComparisonOperator::Equal => wasm_encoder::Instruction::F64Eq,
+            ComparisonOperator::NotEqual => wasm_encoder::Instruction::F64Ne,
+            ComparisonOperator::LessSigned | ComparisonOperator::LessUnsigned => wasm_encoder::Instruction::F64Lt,
+            ComparisonOperator::LessEqualSigned | ComparisonOperator::LessEqualUnsigned => wasm_encoder::Instruction::F64Le,
+            ComparisonOperator::GreaterSigned | ComparisonOperator::GreaterUnsigned => wasm_encoder::Instruction::F64Gt,
+            ComparisonOperator::GreaterEqualSigned | ComparisonOperator::GreaterEqualUnsigned => wasm_encoder::Instruction::F64Ge,
+        },
+        _ => return Err(EncodeError::UnsupportedValueType { function: function.id, value: left, value_type }),
+    };
+    body.instruction(&instruction);
+    emit_set(body, layout, function.id, destination)
+}
+
+fn emit_call_arguments(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    arguments: &[ValueId],
+) -> Result<(), EncodeError> {
+    for value in arguments {
+        emit_get(body, layout, function, *value)?;
+    }
+    Ok(())
+}
+
+fn emit_results(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    destinations: &[ValueId],
+) -> Result<(), EncodeError> {
+    for value in destinations.iter().rev() {
+        emit_set(body, layout, function, *value)?;
+    }
+    Ok(())
+}
+
+fn emit_instruction(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    instruction: &ScalarInstruction,
+    function_indices: &BTreeMap<FunctionId, u32>,
+) -> Result<(), EncodeError> {
+    match instruction {
+        ScalarInstruction::IntConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I64Const(*value)); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::FloatConst { destination, bits } => { body.instruction(&wasm_encoder::Instruction::F64Const(Ieee64::new(*bits))); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::BoolConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I32Const(i32::from(*value))); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::SizeConst { destination, value } => {
+            let value = i32::try_from(*value).map_err(|_| EncodeError::UnsupportedValueType { function: function.id, value: *destination, value_type: crate::canonical_safewir::ValueType::Size })?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(value));
+            emit_set(body, layout, function.id, *destination)?;
+        }
+        ScalarInstruction::Arithmetic { destination, operator, left, right, overflow } => {
+            if *overflow != crate::canonical_safewir::OverflowBehavior::Wrap { return Err(EncodeError::Lowering(LoweringError::UnsupportedOverflow { function: function.id })); }
+            emit_arithmetic(body, function, layout, *destination, *operator, *left, *right)?;
+        }
+        ScalarInstruction::Compare { destination, operator, left, right } => { emit_get(body, layout, function.id, *left)?; emit_get(body, layout, function.id, *right)?; emit_compare(body, function, layout, *destination, *operator, *left)?; }
+        ScalarInstruction::NarrowSize { destination, value } => { emit_get(body, layout, function.id, *value)?; body.instruction(&wasm_encoder::Instruction::I32WrapI64); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
+        ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::Call { destinations, callee, arguments } => {
+            emit_call_arguments(body, layout, function.id, arguments)?;
+            let index = function_indices.get(callee).copied().ok_or(EncodeError::MissingFunction(*callee))?;
+            body.instruction(&wasm_encoder::Instruction::Call(index));
+            emit_results(body, layout, function.id, destinations)?;
+        }
+        ScalarInstruction::VarCall { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "VarCall" })),
+    }
+    Ok(())
+}
+
+fn emit_branch_arguments(
+    body: &mut wasm_encoder::Function,
+    source_function: &Function,
+    layout: &LocalLayout,
+    target: crate::canonical_safewir::BlockId,
+    arguments: &[ValueId],
+) -> Result<(), EncodeError> {
+    let block = source_function.blocks.iter().find(|block| block.id == target).ok_or(EncodeError::MissingBlock { function: source_function.id, block: target })?;
+    if block.parameters.len() != arguments.len() { return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { function: source_function.id, operation: "branch arity" })); }
+    for (argument, parameter) in arguments.iter().zip(&block.parameters) {
+        emit_get(body, layout, source_function.id, *argument)?;
+        emit_set(body, layout, source_function.id, parameter.value)?;
+    }
+    Ok(())
+}
+
+fn emit_terminator(
+    body: &mut wasm_encoder::Function,
+    source_function: &Function,
+    target_function: &WasmFunction,
+    layout: &LocalLayout,
+    block_index: usize,
+    terminator: &ScalarTerminator,
+    function_indices: &BTreeMap<FunctionId, u32>,
+    block_indices: &BTreeMap<crate::canonical_safewir::BlockId, usize>,
+) -> Result<(), EncodeError> {
+    let loop_depth = block_index as u32;
+    match terminator {
+        ScalarTerminator::Branch { target, arguments } => {
+            emit_branch_arguments(body, source_function, layout, *target, arguments)?;
+            let target_index = block_indices.get(target).copied().ok_or(EncodeError::MissingBlock { function: source_function.id, block: *target })?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(target_index as i32));
+            body.instruction(&wasm_encoder::Instruction::LocalSet(layout.state));
+            body.instruction(&wasm_encoder::Instruction::Br(loop_depth));
+        }
+        ScalarTerminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
+            emit_get(body, layout, source_function.id, *condition)?;
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            emit_branch_arguments(body, source_function, layout, *then_target, then_arguments)?;
+            let then_index = block_indices.get(then_target).copied().ok_or(EncodeError::MissingBlock { function: source_function.id, block: *then_target })?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(then_index as i32));
+            body.instruction(&wasm_encoder::Instruction::LocalSet(layout.state));
+            body.instruction(&wasm_encoder::Instruction::Br(loop_depth + 1));
+            body.instruction(&wasm_encoder::Instruction::Else);
+            emit_branch_arguments(body, source_function, layout, *else_target, else_arguments)?;
+            let else_index = block_indices.get(else_target).copied().ok_or(EncodeError::MissingBlock { function: source_function.id, block: *else_target })?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(else_index as i32));
+            body.instruction(&wasm_encoder::Instruction::LocalSet(layout.state));
+            body.instruction(&wasm_encoder::Instruction::Br(loop_depth + 1));
+            body.instruction(&wasm_encoder::Instruction::End);
+        }
+        ScalarTerminator::Return { values } => {
+            for value in values { emit_get(body, layout, source_function.id, *value)?; }
+            body.instruction(&wasm_encoder::Instruction::Return);
+        }
+        ScalarTerminator::TailCall { callee, arguments, .. } => {
+            emit_call_arguments(body, layout, source_function.id, arguments)?;
+            let index = function_indices.get(callee).copied().ok_or(EncodeError::MissingFunction(*callee))?;
+            body.instruction(&wasm_encoder::Instruction::ReturnCall(index));
+        }
+        ScalarTerminator::VarTailCall { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: source_function.id, operation: "VarTailCall" })),
+        ScalarTerminator::Trap | ScalarTerminator::Unreachable => { body.instruction(&wasm_encoder::Instruction::Unreachable); }
+    }
+    let _ = target_function;
+    Ok(())
+}
+
+fn encode_function(
+    source_function: &Function,
+    target_function: &WasmFunction,
+    function_indices: &BTreeMap<FunctionId, u32>,
+) -> Result<WasmFunctionEncoder, EncodeError> {
+    if target_function.blocks.len() != 1 {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+            function: source_function.id,
+            operation: "multi-block function",
+        }));
+    }
+    let layout = local_layout(source_function)?;
+    let mut local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
+    local_declarations.push((1, ValType::I32));
+    let mut body = WasmFunctionEncoder::new(local_declarations);
+    let block_indices: BTreeMap<_, _> = target_function.blocks.iter().enumerate().map(|(index, block)| (block.id, index)).collect();
+    let target_block = &target_function.blocks[0];
+    if matches!(target_block.terminator.operation, ScalarTerminator::Branch { .. } | ScalarTerminator::BranchIf { .. }) {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+            function: source_function.id,
+            operation: "branch terminator",
+        }));
+    }
+    for instruction in &target_block.instructions { emit_instruction(&mut body, source_function, &layout, &instruction.operation, function_indices)?; }
+    emit_terminator(&mut body, source_function, target_function, &layout, 0, &target_block.terminator.operation, function_indices, &block_indices)?;
+    body.instruction(&wasm_encoder::Instruction::End);
+    Ok(body)
+}
+
+/// Encode only final canonical SafeWIR authority. The correspondence receipt
+/// is independently minted immediately before bytes exist; no candidate or
+/// private WasmIR value can enter this function.
+fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError> {
+    let target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
+    let source = validated.module();
+    let receipt = check_correspondence(source, &target).map_err(EncodeError::Correspondence)?;
+    if receipt.mappings.len() != expected_source_items(source).len() {
+        return Err(EncodeError::Correspondence(CorrespondenceError::MissingSourceItem(
+            expected_source_items(source).into_iter().next().expect("nonempty canonical module"),
+        )));
+    }
+    let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, index as u32)).collect();
+    let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate().map(|(index, signature)| (signature.id, index as u32)).collect();
+    let mut types = TypeSection::new();
+    for signature in source.signatures() {
+        let parameters = signature.parameters.iter().enumerate().map(|(index, value_type)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(index as u32), *value_type));
+        let results = signature.results.iter().enumerate().map(|(index, value_type)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(index as u32), *value_type));
+        let parameters = parameters.collect::<Result<Vec<_>, _>>()?;
+        let results = results.collect::<Result<Vec<_>, _>>()?;
+        types.ty().function(parameters, results);
+    }
+    let mut functions = FunctionSection::new();
+    let mut exports = ExportSection::new();
+    let mut code = CodeSection::new();
+    for target_function in &target.functions {
+        let source_function = source.functions().iter().find(|function| function.id == target_function.id).ok_or(EncodeError::MissingFunction(target_function.id))?;
+        let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
+        functions.function(type_index);
+        exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
+        code.function(&encode_function(source_function, target_function, &function_indices)?);
+    }
+    let mut module = WasmModule::new();
+    module.section(&types).section(&functions).section(&exports).section(&code);
+    let bytes = module.finish();
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
+        .validate_all(&bytes)
+        .map_err(|error| EncodeError::WasmValidation(error.to_string()))?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -579,6 +972,99 @@ mod tests {
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();
         assert_eq!(receipt.mappings.len(), 2);
+    }
+
+    #[test]
+    fn zero_pass_scalar_module_encodes_and_validates_real_wasm() {
+        let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
+        wasmparser::validate(&wasm).expect("encoded scalar module is structurally valid");
+        assert!(wasm.windows(2).any(|window| window == [0x42, 9]));
+    }
+
+    fn scalar_signature(id: FunctionSignatureId) -> FunctionSignature {
+        FunctionSignature {
+            id,
+            parameters: Vec::new(),
+            results: vec![crate::canonical_safewir::ValueType::Int],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn checked_direct_call(tail: bool) -> ValidatedSafeWir {
+        let result = ValueId::new(9);
+        let callee_result = ValueId::new(10);
+        let tail_site = crate::canonical_safewir::TailSiteId::from_digest([8; 32]);
+        let caller_terminator = if tail {
+            Terminator::TailCall { site: tail_site, callee: FunctionId::new(2), arguments: Vec::new() }
+        } else {
+            Terminator::Return { values: vec![result] }
+        };
+        let caller_operations = if tail {
+            Vec::new()
+        } else {
+            vec![Operation::Call { destinations: vec![result], callee: FunctionId::new(2), arguments: Vec::new() }]
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(8),
+            checked_source: CheckedSourceIdentity::from_digest([5; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).expect("empty layout bundle is valid"),
+            signatures: vec![scalar_signature(FunctionSignatureId::new(1)), scalar_signature(FunctionSignatureId::new(2))],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FunctionId::new(1),
+                    signature: FunctionSignatureId::new(1),
+                    entry: crate::canonical_safewir::BlockId::new(1),
+                    value_types: if tail { BTreeMap::new() } else { [(result, crate::canonical_safewir::ValueType::Int)].into_iter().collect() },
+                    blocks: vec![BasicBlock { id: crate::canonical_safewir::BlockId::new(1), parameters: Vec::new(), operations: caller_operations, terminator: caller_terminator }],
+                },
+                Function {
+                    id: FunctionId::new(2),
+                    signature: FunctionSignatureId::new(2),
+                    entry: crate::canonical_safewir::BlockId::new(2),
+                    value_types: [(callee_result, crate::canonical_safewir::ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock { id: crate::canonical_safewir::BlockId::new(2), parameters: Vec::new(), operations: vec![Operation::ConstInt { destination: callee_result, value: 17 }], terminator: Terminator::Return { values: vec![callee_result] } }],
+                },
+            ],
+            proper_tail_sites: if tail { vec![crate::canonical_safewir::ProperTailSite { id: tail_site, function: FunctionId::new(1) }] } else { Vec::new() },
+        });
+        let checked = check_initial_with_witness(candidate).expect("direct scalar call is initially valid");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).expect("direct scalar call optimizes");
+        validate_final(&initial_snapshot, witness, optimized).expect("direct scalar call is final-valid")
+    }
+
+    #[test]
+    fn direct_call_encodes_as_wasm_call() {
+        let wasm = encode_validated(checked_direct_call(false)).expect("validated direct call encodes");
+        wasmparser::validate(&wasm).expect("direct call module is structurally valid");
+        assert!(wasm.windows(2).any(|window| window == [0x10, 0x01]));
+    }
+
+    #[test]
+    fn proper_tail_call_encodes_as_wasm_return_call() {
+        let wasm = encode_validated(checked_direct_call(true)).expect("validated proper tail call encodes");
+        wasmparser::validate(&wasm).expect("tail-call module is structurally valid");
+        assert!(wasm.windows(2).any(|window| window == [0x12, 0x01]));
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn encoded_scalar_module_executes() {
+        let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).expect("wasmtime accepts encoded scalar");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instance creates");
+        let function = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("scalar export has the checked signature");
+        assert_eq!(function.call(&mut store, ()).unwrap(), 9);
     }
 
     #[test]
