@@ -215,7 +215,16 @@ fn derive_summary(
                 }
             }
             Terminator::TailCall { callee, arguments, .. } => {
-                derive_tail_results(function, *callee, arguments, functions, summaries, &origins, &mut summary)?;
+                derive_tail_results(
+                    function,
+                    *callee,
+                    arguments,
+                    functions,
+                    signatures,
+                    summaries,
+                    &origins,
+                    &mut summary,
+                )?;
                 derive_call_needs(*callee, arguments, functions, summaries, &parameter_values, &mut summary)?;
             }
             Terminator::VarTailCall { .. } => {
@@ -297,21 +306,27 @@ fn derive_tail_results(
     callee: FunctionId,
     arguments: &[CallArgument],
     functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
 ) -> Result<(), InitialCheckError> {
     let callee_function = functions.get(&callee).ok_or(InitialCheckError::MissingFunction(callee))?;
     let callee_summary = summaries.get(&callee).ok_or(InitialCheckError::MissingFunction(callee))?;
-    let result_types = callee_function
-        .blocks
-        .iter()
-        .flat_map(|block| match &block.terminator { Terminator::Return { values } => values.clone(), _ => Vec::new() })
-        .collect::<Vec<_>>();
+    let callee_signature = signatures
+        .get(&callee_function.signature)
+        .copied()
+        .ok_or(InitialCheckError::MissingSignature(callee_function.signature))?;
     let expected_results = summary.results.len();
     for (index, slot) in summary.results.iter_mut().enumerate() {
         let result = callee_summary.results.get(index).ok_or(InitialCheckError::ArityMismatch { context: "derived tail-call results", expected: expected_results, actual: callee_summary.results.len() })?;
-        let value_type = result_types.get(index).and_then(|value| callee_function.value_types.get(value)).copied().unwrap_or(ValueType::Unit);
+        let value_type = callee_signature.results.get(index).copied().ok_or(
+            InitialCheckError::ArityMismatch {
+                context: "tail-call signature results",
+                expected: expected_results,
+                actual: callee_signature.results.len(),
+            },
+        )?;
         slot.join(result_origin(result, arguments, origins, value_type).result(value_type));
     }
     let _ = function;

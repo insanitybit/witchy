@@ -915,7 +915,8 @@ mod tests {
     #[test]
     fn proper_tail_source_lowers_with_manifest_identity() {
         let candidate = lower("fn recurse(n: Int) -> Int:\n    return recurse(n)\n");
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
