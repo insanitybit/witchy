@@ -701,10 +701,21 @@ impl CanonicalWriter {
                 self.u8(0);
                 self.value_type(*value_type);
             }
-            ResultContract::Fresh { layout, class } => {
+            ResultContract::Fresh { layout, class, extent } => {
                 self.u8(1);
                 self.layout_id(*layout);
                 self.allocation_class(*class);
+                match extent {
+                    super::ReturnedExtent::FixedBytes(bytes) => {
+                        self.u8(0);
+                        self.u64(*bytes);
+                    }
+                    super::ReturnedExtent::Counted { header_bytes, stride_bytes } => {
+                        self.u8(1);
+                        self.u32(*header_bytes);
+                        self.u32(*stride_bytes);
+                    }
+                }
             }
             ResultContract::Shared { layout } => {
                 self.u8(2);

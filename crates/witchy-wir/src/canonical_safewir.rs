@@ -315,6 +315,12 @@ pub struct ParameterContract {
     pub non_escaping: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnedExtent {
+    FixedBytes(u64),
+    Counted { header_bytes: u32, stride_bytes: u32 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultContract {
     /// Non-authoritative lowering placeholder. Initial checking replaces this
@@ -322,7 +328,11 @@ pub enum ResultContract {
     /// it is never valid for an import or a validated module.
     BodyDerived(ValueType),
     Value(ValueType),
-    Fresh { layout: LayoutId, class: AllocationClass },
+    Fresh {
+        layout: LayoutId,
+        class: AllocationClass,
+        extent: ReturnedExtent,
+    },
     Shared { layout: LayoutId },
     AliasesParameter { parameter: u32, layout: LayoutId },
     ReallocatesParameter { parameter: u32, layout: LayoutId },

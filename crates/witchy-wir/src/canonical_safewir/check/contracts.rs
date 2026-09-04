@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::{
     AllocationClass, CallArgument, Function, FunctionId, FunctionSignature, FunctionSignatureId, MemoryEffect,
-    LoadTransfer, Operation, ParameterContract, ParameterOwnership, ResultContract, Terminator,
+    Extent, LoadTransfer, Operation, ParameterContract, ParameterOwnership, ResultContract,
+    ReturnedExtent, Terminator,
     ValueId, ValueType,
 };
 use super::InitialCheckError;
@@ -22,7 +23,11 @@ enum DerivedResult {
     Unseen,
     Unknown,
     Value(ValueType),
-    Fresh { layout: crate::layout::LayoutId, class: AllocationClass },
+    Fresh {
+        layout: crate::layout::LayoutId,
+        class: AllocationClass,
+        extent: ReturnedExtent,
+    },
     StaticData(crate::layout::LayoutId),
     Shared(crate::layout::LayoutId),
     AliasesParameter { parameter: u32, layout: crate::layout::LayoutId },
@@ -43,7 +48,11 @@ impl DerivedResult {
     fn checked_contract(&self, function: FunctionId) -> Result<ResultContract, InitialCheckError> {
         match self {
             Self::Value(value_type) => Ok(ResultContract::Value(*value_type)),
-            Self::Fresh { layout, class } => Ok(ResultContract::Fresh { layout: *layout, class: *class }),
+            Self::Fresh { layout, class, extent } => Ok(ResultContract::Fresh {
+                layout: *layout,
+                class: *class,
+                extent: extent.clone(),
+            }),
             Self::StaticData(layout) => Ok(ResultContract::StaticData { layout: *layout }),
             Self::Shared(layout) => Ok(ResultContract::Shared { layout: *layout }),
             Self::AliasesParameter { parameter, layout } => Ok(ResultContract::AliasesParameter {
@@ -66,7 +75,11 @@ enum Origin {
     Unseen,
     Unknown,
     Parameter { parameter: u32, layout: Option<crate::layout::LayoutId> },
-    Fresh { layout: crate::layout::LayoutId, class: AllocationClass },
+    Fresh {
+        layout: crate::layout::LayoutId,
+        class: AllocationClass,
+        extent: ReturnedExtent,
+    },
     StaticData(crate::layout::LayoutId),
     Shared(crate::layout::LayoutId),
     ReallocatesParameter { parameter: u32, layout: crate::layout::LayoutId },
@@ -77,8 +90,8 @@ impl Origin {
         match (self, value_type) {
             (Origin::Unseen, _) => DerivedResult::Unseen,
             (Origin::Unknown, value_type) if is_scalar(value_type) => DerivedResult::Value(value_type),
-            (Origin::Fresh { layout, class }, ValueType::Ref(actual)) if layout == actual => {
-                DerivedResult::Fresh { layout, class }
+            (Origin::Fresh { layout, class, extent }, ValueType::Ref(actual)) if layout == actual => {
+                DerivedResult::Fresh { layout, class, extent }
             }
             (Origin::StaticData(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::StaticData(layout),
             (Origin::Shared(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::Shared(layout),
@@ -340,8 +353,12 @@ fn propagate_operation_origins(
     origins: &mut BTreeMap<ValueId, Origin>,
 ) -> Result<(), InitialCheckError> {
     match operation {
-        Operation::Alloc { destination, layout, class, .. } => {
-            join_origin(origins, *destination, Origin::Fresh { layout: *layout, class: *class });
+        Operation::Alloc { destination, layout, class, extent } => {
+            join_origin(origins, *destination, Origin::Fresh {
+                layout: *layout,
+                class: *class,
+                extent: returned_extent(extent),
+            });
         }
         Operation::StaticData { destination, layout, .. } => {
             join_origin(origins, *destination, Origin::StaticData(*layout));
@@ -465,8 +482,12 @@ fn derive_operation(
     summary: &mut BodySummary,
 ) -> Result<(), InitialCheckError> {
     match operation {
-        Operation::Alloc { destination, layout, class, .. } => {
-            origins.insert(*destination, Origin::Fresh { layout: *layout, class: *class });
+        Operation::Alloc { destination, layout, class, extent } => {
+            origins.insert(*destination, Origin::Fresh {
+                layout: *layout,
+                class: *class,
+                extent: returned_extent(extent),
+            });
         }
         Operation::StaticData { destination, layout, .. } => { origins.insert(*destination, Origin::StaticData(*layout)); }
         Operation::Share { destination, source } => {
@@ -659,7 +680,11 @@ fn load_result_origin(
 
 fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &BTreeMap<ValueId, Origin>, _value_type: ValueType) -> Origin {
     match result {
-        DerivedResult::Fresh { layout, class } => Origin::Fresh { layout: *layout, class: *class },
+        DerivedResult::Fresh { layout, class, extent } => Origin::Fresh {
+            layout: *layout,
+            class: *class,
+            extent: extent.clone(),
+        },
         DerivedResult::StaticData(layout) => Origin::StaticData(*layout),
         DerivedResult::Shared(layout) => Origin::Shared(*layout),
         DerivedResult::AliasesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).map(|origin| match origin { Origin::Parameter { parameter, .. } => Origin::Parameter { parameter, layout: Some(*layout) }, other => other }).unwrap_or(Origin::Unknown),
@@ -726,9 +751,9 @@ fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
     match (declared, derived) {
         (ResultContract::Value(expected), DerivedResult::Value(actual)) => expected == actual,
         (
-            ResultContract::Fresh { layout: expected_layout, class: expected_class },
-            DerivedResult::Fresh { layout: actual_layout, class: actual_class },
-        ) => expected_layout == actual_layout && expected_class == actual_class,
+            ResultContract::Fresh { layout: expected_layout, class: expected_class, extent: expected_extent },
+            DerivedResult::Fresh { layout: actual_layout, class: actual_class, extent: actual_extent },
+        ) => expected_layout == actual_layout && expected_class == actual_class && expected_extent == actual_extent,
         (ResultContract::StaticData { layout: expected }, DerivedResult::StaticData(actual))
         | (ResultContract::Shared { layout: expected }, DerivedResult::Shared(actual)) => expected == actual,
         (ResultContract::AliasesParameter { parameter, layout }, DerivedResult::AliasesParameter { parameter: actual_parameter, layout: actual_layout }) | (ResultContract::ReallocatesParameter { parameter, layout }, DerivedResult::ReallocatesParameter { parameter: actual_parameter, layout: actual_layout }) => parameter == actual_parameter && layout == actual_layout,
@@ -737,6 +762,17 @@ fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
 }
 
 fn is_scalar(value_type: ValueType) -> bool { matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128) }
+
+fn returned_extent(extent: &Extent) -> ReturnedExtent {
+    match extent {
+        Extent::FixedBytes(bytes) => ReturnedExtent::FixedBytes(*bytes),
+        Extent::Counted { header_bytes, stride_bytes, .. } => ReturnedExtent::Counted {
+            header_bytes: *header_bytes,
+            stride_bytes: *stride_bytes,
+        },
+        Extent::HeaderPrefix { minimum_bytes } => ReturnedExtent::FixedBytes(u64::from(*minimum_bytes)),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -939,7 +975,7 @@ mod tests {
     #[test]
     fn static_result_cannot_claim_fresh() {
         let object = ValueId::new(0); let layout = layout();
-        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout, class: AllocationClass::Bump }], parameter_effects: BTreeMap::new() };
+        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout, class: AllocationClass::Bump, extent: ReturnedExtent::FixedBytes(4) }], parameter_effects: BTreeMap::new() };
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::StaticData { destination: object, layout, extent: Extent::FixedBytes(4), data: StaticDataId::new(0) }], terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
@@ -953,7 +989,7 @@ mod tests {
     #[test]
     fn allocation_derives_fresh_result() {
         let object = ValueId::new(0); let layout = layout();
-        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout, class: AllocationClass::Bump }], parameter_effects: BTreeMap::new() };
+        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout, class: AllocationClass::Bump, extent: ReturnedExtent::FixedBytes(4) }], parameter_effects: BTreeMap::new() };
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::Alloc { destination: object, layout, extent: Extent::FixedBytes(4), class: AllocationClass::Bump }], terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
@@ -963,7 +999,7 @@ mod tests {
     #[test]
     fn allocation_class_mismatch_cannot_claim_a_fresh_result() {
         let object = ValueId::new(0); let layout = layout();
-        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout, class: AllocationClass::ReferenceCounted }], parameter_effects: BTreeMap::new() };
+        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout, class: AllocationClass::ReferenceCounted, extent: ReturnedExtent::FixedBytes(4) }], parameter_effects: BTreeMap::new() };
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::Alloc { destination: object, layout, extent: Extent::FixedBytes(4), class: AllocationClass::Bump }], terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);

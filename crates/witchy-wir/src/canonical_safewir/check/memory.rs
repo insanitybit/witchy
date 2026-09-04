@@ -10,7 +10,8 @@ use crate::canonical_safewir::{
     AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument,
     CallableContract, ComparisonOperator, Extent, Function, FunctionSignature, GuardKind,
     HeaderField, LoadTransfer, Operation, OverflowBehavior, Ownership, ParameterContract,
-    ParameterOwnership, Place, Projection, ResultContract, StoreTransfer, ValueId, ValueType,
+    ParameterOwnership, Place, Projection, ResultContract, ReturnedExtent, StoreTransfer, ValueId,
+    ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -519,11 +520,12 @@ impl<'a> MemoryChecker<'a> {
         for (value, result) in values.iter().zip(results) {
             match result {
                 ResultContract::Value(value_type) if !value_type.is_memory_bearing() => {}
-                ResultContract::Fresh { layout, class } => {
+                ResultContract::Fresh { layout, class, extent } => {
                     let state = self.live_object(*value)?;
                     if state.layout != *layout
                         || state.ownership != Ownership::Unique
                         || state.allocation_class != Some(*class)
+                        || !returned_extent_matches(&state.extent, extent)
                         || !self.is_sole_live_token(*value, state.identity)
                     {
                         return Err(InitialCheckError::InvalidOwnership {
@@ -2307,6 +2309,17 @@ fn operation_name(operation: &Operation) -> &'static str {
     }
 }
 
+fn returned_extent_matches(actual: &Extent, expected: &ReturnedExtent) -> bool {
+    match (actual, expected) {
+        (Extent::FixedBytes(actual), ReturnedExtent::FixedBytes(expected)) => actual == expected,
+        (
+            Extent::Counted { header_bytes: actual_header, stride_bytes: actual_stride, .. },
+            ReturnedExtent::Counted { header_bytes: expected_header, stride_bytes: expected_stride },
+        ) => actual_header == expected_header && actual_stride == expected_stride,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2511,10 +2524,8 @@ mod tests {
     #[test]
     fn return_contract_accepts_only_sole_unique_fresh_object() {
         with_checker(false, |checker, list| {
-            let contract = ResultContract::Fresh {
-                layout: list,
-                class: AllocationClass::ReferenceCounted,
-            };
+            let LayoutSize::Dynamic { base, stride } = checker.descriptor(list).expect("list layout").size() else { panic!("dynamic list") };
+            let contract = ResultContract::Fresh { layout: list, class: AllocationClass::ReferenceCounted, extent: ReturnedExtent::Counted { header_bytes: base, stride_bytes: stride } };
             assert!(checker.check_return(&[SOURCE], std::slice::from_ref(&contract)).is_ok());
 
             let alias = checker.state.objects[&SOURCE].clone();
@@ -2535,12 +2546,15 @@ mod tests {
                     &[ResultContract::Fresh {
                         layout: list,
                         class: AllocationClass::Bump,
+                        extent: ReturnedExtent::Counted { header_bytes: 4, stride_bytes: 4 },
                     }],
                 ),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
         });
     }
+
+
 
     #[test]
     fn guarded_wrapping_size_add_records_an_exact_relation() {
