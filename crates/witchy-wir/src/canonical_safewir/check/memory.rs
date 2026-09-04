@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::layout::{
-    FieldKind, HeaderLayout, LayoutDescriptor, LayoutInterner, LayoutKind, LayoutSize, ScalarKind,
+    FieldKind, HeaderLayout, LayoutDescriptor, LayoutInterner, LayoutKind, LayoutSize, PointerSlot,
+    RcHeader, ScalarKind,
 };
 
 use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
-    AccessMode, AllocationClass, BasicBlock, BorrowMode, CallArgument, ComparisonOperator, Extent,
-    Function, FunctionSignature, GuardKind, HeaderField, LoadTransfer, Operation, Ownership,
-    ParameterContract, ParameterOwnership, Place, Projection, ResultContract, StoreTransfer, ValueId,
-    ValueType,
+    AccessMode, AllocationClass, BasicBlock, BorrowMode, CallArgument, CallableContract,
+    ComparisonOperator, Extent, Function, FunctionSignature, GuardKind, HeaderField,
+    LoadTransfer, Operation, Ownership, ParameterContract, ParameterOwnership, Place, Projection,
+    ResultContract, StoreTransfer, ValueId, ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,16 @@ struct ObjectState {
     extent: Extent,
     ownership: Ownership,
     allocation_class: Option<AllocationClass>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CheckedRange {
+    object: ValueId,
+    length: ValueId,
+    layout: crate::layout::LayoutId,
+    element: crate::layout::LayoutId,
+    identity: ValueId,
+    ownership: Ownership,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +466,194 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    fn move_range(
+        &mut self,
+        destination: &Place,
+        source: &Place,
+        count: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        self.require_type(count, ValueType::Size)?;
+        let destination = self.check_typed_range(destination, AccessMode::Write, "MoveRange")?;
+        let source = self.check_typed_range(source, AccessMode::Read, "MoveRange")?;
+        self.check_range_pair(destination, source, count, "MoveRange")?;
+
+        // A range move consumes the initialized elements. The v1 IR has no
+        // per-element initialization map or clear operation, so admitting a
+        // pointer-bearing element would leave physical owners duplicated or
+        // uncleared. Scalar elements have no ownership state to transfer.
+        self.require_scalar_range_element(destination.element, "MoveRange")?;
+        if destination.ownership != Ownership::Unique
+            || source.ownership != Ownership::Unique
+            || self.state.static_data_objects.contains(&destination.object)
+        {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: destination.object,
+            });
+        }
+        Ok(())
+    }
+
+    fn clone_range(
+        &mut self,
+        destination: &Place,
+        source: &Place,
+        count: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        self.require_type(count, ValueType::Size)?;
+        let destination = self.check_typed_range(destination, AccessMode::Write, "CloneRange")?;
+        let source = self.check_typed_range(source, AccessMode::Read, "CloneRange")?;
+        self.check_range_pair(destination, source, count, "CloneRange")?;
+
+        // CloneRange would need to retain every shared pointer element and
+        // roll back already-cloned elements on failure. Neither per-element
+        // ownership nor rollback is representable in the v1 operation, so
+        // pointer-bearing ranges fail closed until the typed transfer kernel
+        // exists. Scalar cloning is an ordinary value copy.
+        self.require_scalar_range_element(destination.element, "CloneRange")?;
+        if destination.ownership != Ownership::Unique
+            || self.state.static_data_objects.contains(&destination.object)
+        {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: destination.object,
+            });
+        }
+        Ok(())
+    }
+
+    fn check_typed_range(
+        &mut self,
+        place: &Place,
+        required_access: AccessMode,
+        operation: &'static str,
+    ) -> Result<CheckedRange, InitialCheckError> {
+        let Projection::Slice { start, length } = place.projection() else {
+            return self.unsupported("range(non-slice)");
+        };
+        if place.access() != required_access {
+            return self.unsupported("range(access)");
+        }
+        self.promote_header_extent(place.object())?;
+        let state = self.live_object(place.object())?.clone();
+        self.require_ref_type(place.object(), state.layout)?;
+        if place.value_type() != ValueType::Ref(state.layout) {
+            return Err(InitialCheckError::TypeMismatch {
+                function: self.function.id,
+                value: place.object(),
+                expected: ValueType::Ref(state.layout),
+                actual: place.value_type(),
+            });
+        }
+        self.require_type(*start, ValueType::Size)?;
+        self.require_type(*length, ValueType::Size)?;
+        let Extent::Counted {
+            count: logical_count,
+            stride_bytes,
+            ..
+        } = state.extent
+        else {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: place.object(),
+            });
+        };
+        let descriptor = self.descriptor(state.layout)?;
+        let Some(element) = descriptor.kind().packed_element_layout() else {
+            return self.unsupported("range(non-packed-layout)");
+        };
+        let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: place.object(),
+            });
+        };
+        if stride != stride_bytes {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: place.object(),
+            });
+        }
+        if !self.range_within(*start, *length, logical_count) {
+            return Err(InitialCheckError::MissingBoundsGuard {
+                function: self.function.id,
+                index: *start,
+                count: logical_count,
+            });
+        }
+        let _ = operation;
+        Ok(CheckedRange {
+            object: place.object(),
+            length: *length,
+            layout: state.layout,
+            element,
+            identity: state.identity,
+            ownership: state.ownership,
+        })
+    }
+
+    fn check_range_pair(
+        &self,
+        destination: CheckedRange,
+        source: CheckedRange,
+        count: ValueId,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        if destination.layout != source.layout
+            || destination.element != source.element
+            || destination.length != count
+            || source.length != count
+        {
+            return self.unsupported(match operation {
+                "MoveRange" => "MoveRange(incompatible-range)",
+                "CloneRange" => "CloneRange(incompatible-range)",
+                _ => "range(incompatible-range)",
+            });
+        }
+        // There is no overlap mode in the v1 operation. Distinct allocation
+        // identities are therefore required; same-root aliases are rejected
+        // even when a caller claims that their slices do not overlap.
+        if destination.identity == source.identity {
+            return self.unsupported(match operation {
+                "MoveRange" => "MoveRange(overlap)",
+                "CloneRange" => "CloneRange(overlap)",
+                _ => "range(overlap)",
+            });
+        }
+        Ok(())
+    }
+
+    fn require_scalar_range_element(
+        &self,
+        element: crate::layout::LayoutId,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        let element_type = self.value_type_for_layout(element)?;
+        if element_type.is_memory_bearing() {
+            return self.unsupported(match operation {
+                "MoveRange" => "MoveRange(pointer-bearing element)",
+                "CloneRange" => "CloneRange(pointer-bearing element)",
+                _ => "range(pointer-bearing element)",
+            });
+        }
+        Ok(())
+    }
+
+    fn range_within(&self, start: ValueId, length: ValueId, count: ValueId) -> bool {
+        let whole_logical_range = self.state.constants.get(&start) == Some(&0)
+            && length == count;
+        let constant_range = self
+            .state
+            .constants
+            .get(&start)
+            .zip(self.state.constants.get(&length))
+            .zip(self.state.constants.get(&count))
+            .is_some_and(|((start, length), count)| {
+                start.checked_add(*length).is_some_and(|end| end <= *count)
+            });
+        whole_logical_range || constant_range
+    }
+
     fn check_byte_slice(
         &mut self,
         place: &Place,
@@ -650,10 +849,15 @@ impl<'a> MemoryChecker<'a> {
                 self.copy_bytes(destination, source, *length)?;
                 Ok(true)
             }
-            Operation::MoveRange { .. }
-            | Operation::CloneRange { .. }
-            | Operation::Retain { .. }
-                => Err(InitialCheckError::UnsupportedMemoryOperation {
+            Operation::MoveRange { destination, source, count } => {
+                self.move_range(destination, source, *count)?;
+                Ok(true)
+            }
+            Operation::CloneRange { destination, source, count } => {
+                self.clone_range(destination, source, *count)?;
+                Ok(true)
+            }
+            Operation::Retain { .. } => Err(InitialCheckError::UnsupportedMemoryOperation {
                 function: self.function.id,
                 operation: operation_name(operation),
             }),
@@ -1242,5 +1446,188 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Retain { .. } => "Retain",
         Operation::Release { .. } => "Release",
         _ => "memory operation",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const COUNT: ValueId = ValueId::new(0);
+    const CAPACITY: ValueId = ValueId::new(1);
+    const START: ValueId = ValueId::new(2);
+    const LENGTH: ValueId = ValueId::new(3);
+    const LONG_LENGTH: ValueId = ValueId::new(4);
+    const SOURCE: ValueId = ValueId::new(5);
+    const DESTINATION: ValueId = ValueId::new(6);
+
+    fn with_checker(
+        pointer_element: bool,
+        test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let element = layouts
+            .intern_scalar(ScalarKind::U32)
+            .expect("scalar layout");
+        let list = if pointer_element {
+            let pointee = layouts
+                .intern_scalar(ScalarKind::Int)
+                .expect("pointee layout");
+            let pointer = layouts
+                .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+                .expect("pointer slot layout");
+            layouts
+                .intern_packed_list(pointer, RcHeader::Required)
+                .expect("pointer list layout")
+        } else {
+            layouts
+                .intern_runtime_buffer(element)
+                .expect("scalar buffer layout")
+        };
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: [
+                (COUNT, ValueType::Size),
+                (CAPACITY, ValueType::Size),
+                (START, ValueType::Size),
+                (LENGTH, ValueType::Size),
+                (LONG_LENGTH, ValueType::Size),
+                (SOURCE, ValueType::Ref(list)),
+                (DESTINATION, ValueType::Ref(list)),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature)
+            .expect("checker construction");
+        for (destination, value) in [(COUNT, 1), (CAPACITY, 1), (START, 0), (LENGTH, 1), (LONG_LENGTH, 2)] {
+            checker
+                .check(&Operation::ConstSize { destination, value })
+                .expect("constant is accepted");
+        }
+        let LayoutSize::Dynamic { base, stride } = layouts.get(list).expect("list descriptor").size() else {
+            panic!("range test requires a dynamic layout");
+        };
+        for object in [SOURCE, DESTINATION] {
+            checker
+                .check(&Operation::Alloc {
+                    destination: object,
+                    layout: list,
+                    extent: Extent::Counted {
+                        header_bytes: base,
+                        count: COUNT,
+                        capacity: CAPACITY,
+                        stride_bytes: stride,
+                    },
+                    class: AllocationClass::ReferenceCounted,
+                })
+                .expect("allocation is accepted");
+        }
+        test(&mut checker, list);
+    }
+
+    fn range_place(object: ValueId, list: crate::layout::LayoutId, length: ValueId, access: AccessMode) -> Place {
+        Place::projected(
+            object,
+            Projection::Slice { start: START, length },
+            ValueType::Ref(list),
+            access,
+        )
+    }
+
+    #[test]
+    fn scalar_move_range_is_bounds_checked_and_admitted() {
+        with_checker(false, |checker, list| {
+            assert_eq!(
+                checker.check(&Operation::MoveRange {
+                    destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
+                    source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
+                    count: LENGTH,
+                }),
+                Ok(true)
+            );
+        });
+    }
+
+    #[test]
+    fn scalar_clone_range_is_ownership_safe_and_admitted() {
+        with_checker(false, |checker, list| {
+            assert_eq!(
+                checker.check(&Operation::CloneRange {
+                    destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
+                    source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
+                    count: LENGTH,
+                }),
+                Ok(true)
+            );
+        });
+    }
+
+    #[test]
+    fn range_transfer_rejects_a_slice_past_logical_length() {
+        with_checker(false, |checker, list| {
+            assert!(matches!(
+                checker.check(&Operation::CloneRange {
+                    destination: range_place(DESTINATION, list, LONG_LENGTH, AccessMode::Write),
+                    source: range_place(SOURCE, list, LONG_LENGTH, AccessMode::Read),
+                    count: LONG_LENGTH,
+                }),
+                Err(InitialCheckError::MissingBoundsGuard { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn range_transfer_rejects_same_storage_without_overlap_policy() {
+        with_checker(false, |checker, list| {
+            assert!(matches!(
+                checker.check(&Operation::MoveRange {
+                    destination: range_place(SOURCE, list, LENGTH, AccessMode::Write),
+                    source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
+                    count: LENGTH,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "MoveRange(overlap)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_bearing_ranges_fail_closed_without_element_transfer_state() {
+        with_checker(true, |checker, list| {
+            let result = checker.check(&Operation::CloneRange {
+                destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
+                source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
+                count: LENGTH,
+            });
+            assert!(matches!(
+                result,
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "CloneRange(pointer-bearing element)",
+                    ..
+                })
+            ));
+        });
     }
 }
