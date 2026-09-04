@@ -859,6 +859,65 @@ impl StructuredEmitter<'_> {
         Ok(self.distances_from(start)?.contains_key(&goal))
     }
 
+    fn is_terminal(
+        &self,
+        id: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, EncodeError> {
+        Ok(matches!(
+            &self.block(id)?.terminator.operation,
+            ScalarTerminator::Return { .. }
+                | ScalarTerminator::TailCall { .. }
+                | ScalarTerminator::VarTailCall { .. }
+                | ScalarTerminator::Trap
+                | ScalarTerminator::Unreachable
+        ))
+    }
+
+    /// Check finite paths to a proposed merge.  A terminal path is allowed to
+    /// bypass a merge, but a cycle that can avoid it is not.  Recognized loop
+    /// headers are treated as structured boundaries: their body must return to
+    /// the header (or terminate), and their exit must still reach the merge.
+    fn all_paths_reach_or_terminate(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        merge: crate::canonical_safewir::BlockId,
+        active: &mut BTreeSet<crate::canonical_safewir::BlockId>,
+    ) -> Result<bool, EncodeError> {
+        if start == merge || self.is_terminal(start)? {
+            return Ok(true);
+        }
+        if !active.insert(start) {
+            return Ok(false);
+        }
+        let result = if self.is_loop_header(start)? {
+            let block = self.block(start)?;
+            let ScalarTerminator::BranchIf {
+                then_target,
+                else_target,
+                ..
+            } = &block.terminator.operation
+            else {
+                unreachable!("is_loop_header checked the terminator");
+            };
+            self.all_paths_reach_or_terminate(
+                *then_target,
+                start,
+                &mut BTreeSet::new(),
+            )? && self.all_paths_reach_or_terminate(*else_target, merge, active)?
+        } else {
+            let mut result = true;
+            for successor in self.successors(start)? {
+                if !self.all_paths_reach_or_terminate(successor, merge, active)? {
+                    result = false;
+                    break;
+                }
+            }
+            result
+        };
+        active.remove(&start);
+        Ok(result)
+    }
+
     fn is_loop_header(
         &self,
         id: crate::canonical_safewir::BlockId,
@@ -893,14 +952,25 @@ impl StructuredEmitter<'_> {
         let then_distances = self.distances_from(then_target)?;
         let else_distances = self.distances_from(else_target)?;
         let mut best = None;
-        for (candidate, then_distance) in then_distances {
+        for candidate in then_distances.keys().copied() {
             if candidate == current || candidate == then_target || candidate == else_target {
                 continue;
             }
             let Some(else_distance) = else_distances.get(&candidate) else {
                 continue;
             };
-            let score = (then_distance + else_distance, candidate);
+            if !self.all_paths_reach_or_terminate(
+                then_target,
+                candidate,
+                &mut BTreeSet::new(),
+            )? || !self.all_paths_reach_or_terminate(
+                else_target,
+                candidate,
+                &mut BTreeSet::new(),
+            )? {
+                continue;
+            }
+            let score = (then_distances[&candidate] + else_distance, candidate);
             if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
                 best = Some(score);
             }
@@ -915,13 +985,6 @@ impl StructuredEmitter<'_> {
 
     fn label_depth(&self, index: usize) -> u32 {
         (self.labels.len() - 1 - index) as u32
-    }
-
-    fn nearest_label_depth(&self, label: StructuredLabel) -> Option<u32> {
-        self.labels
-            .iter()
-            .rposition(|actual| *actual == label)
-            .map(|index| self.label_depth(index))
     }
 
     fn emit_branch_arguments(
@@ -1484,6 +1547,31 @@ mod tests {
         }))
     }
 
+    fn checked_join_bypass() -> ValidatedSafeWir {
+        let condition = ValueId::new(1);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(16),
+            checked_source: CheckedSourceIdentity::from_digest([13; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(11), Vec::new(), Vec::new())],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(11),
+                signature: FunctionSignatureId::new(11),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [(condition, crate::canonical_safewir::ValueType::Bool)].into_iter().collect(),
+                blocks: vec![
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(0), parameters: Vec::new(), operations: vec![Operation::ConstBool { destination: condition, value: true }], terminator: Terminator::BranchIf { condition, then_target: crate::canonical_safewir::BlockId::new(1), then_arguments: Vec::new(), else_target: crate::canonical_safewir::BlockId::new(2), else_arguments: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(1), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::BranchIf { condition, then_target: crate::canonical_safewir::BlockId::new(3), then_arguments: Vec::new(), else_target: crate::canonical_safewir::BlockId::new(4), else_arguments: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(2), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(3), arguments: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(3), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::Return { values: Vec::new() } },
+                    BasicBlock { id: crate::canonical_safewir::BlockId::new(4), parameters: Vec::new(), operations: Vec::new(), terminator: Terminator::Branch { target: crate::canonical_safewir::BlockId::new(4), arguments: Vec::new() } },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
     #[cfg(feature = "native")]
     #[test]
     fn encoded_structured_branch_executes_both_arms() {
@@ -1529,6 +1617,14 @@ mod tests {
     fn irreducible_cfg_is_refused_without_dispatcher_lowering() {
         assert!(matches!(
             encode_validated(checked_irreducible()),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
+        ));
+    }
+
+    #[test]
+    fn common_reachable_join_with_non_terminating_bypass_is_refused() {
+        assert!(matches!(
+            encode_validated(checked_join_bypass()),
             Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
         ));
     }
