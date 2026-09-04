@@ -10,6 +10,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitialCheckError {
+    InvalidLayoutBundle(String),
     DuplicateSignature(FunctionSignatureId),
     DuplicateFunction(FunctionId),
     DuplicateBlock { function: FunctionId, block: BlockId },
@@ -63,6 +64,8 @@ impl Error for InitialCheckError {}
 pub fn check_initial(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
+        .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
     let signatures = index_signatures(candidate.signatures())?;
     let functions = index_functions(candidate.functions())?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
@@ -363,7 +366,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
 fn place_uses(place: &super::Place) -> Vec<ValueId> {
     let mut result = vec![place.object()];
     match place.projection() {
-        super::Projection::Header { .. } | super::Projection::Field { .. } => {}
+        super::Projection::Header(_) | super::Projection::Field { .. } => {}
         super::Projection::Element { index } => result.push(*index),
         super::Projection::Slice { start, length } => {
             result.push(*start);
@@ -879,6 +882,7 @@ mod tests {
         ProperTailSite, ResultContract, Revision, TailSiteId, Terminator, ValueId, ValueType,
     };
     use super::{InitialCheckError, check_initial};
+    use crate::layout::{LayoutBundle, LayoutInterner};
 
     const FUNCTION: FunctionId = FunctionId::new(0);
     const SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(0);
@@ -892,6 +896,11 @@ mod tests {
             results,
             parameter_effects: BTreeMap::new(),
         }
+    }
+
+    fn empty_layouts() -> LayoutBundle {
+        LayoutBundle::from_interner(&LayoutInterner::new(), [])
+            .expect("an empty canonical layout bundle is valid")
     }
 
     fn lowered(
@@ -909,6 +918,7 @@ mod tests {
         CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
             signatures: vec![FunctionSignature {
                 id: SIGNATURE,
                 parameters: Vec::new(),
@@ -1021,6 +1031,7 @@ mod tests {
         let module = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
             signatures: vec![FunctionSignature {
                 id: SIGNATURE,
                 parameters: Vec::new(),
@@ -1077,6 +1088,7 @@ mod tests {
         let module = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
             signatures: vec![FunctionSignature {
                 id: SIGNATURE,
                 parameters: Vec::new(),

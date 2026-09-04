@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use crate::layout::LayoutId;
+use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
 pub use check::{InitialCheckError, check_initial};
@@ -44,7 +44,6 @@ id_type!(ImportId, u32);
 id_type!(StaticDataId, u32);
 id_type!(GcTypeId, u32);
 id_type!(CapabilityKindId, u32);
-id_type!(KernelAllocationClassId, u32);
 
 /// Stable identity supplied by canonical type checking. It identifies the
 /// checked source but grants no validation or encoding authority by itself.
@@ -139,6 +138,13 @@ pub enum Ownership {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AllocationClass {
+    Bump,
+    ReferenceCounted,
+    Scratch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AccessMode {
     Read,
     Write,
@@ -146,10 +152,16 @@ pub enum AccessMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Projection {
-    Header { component: u32 },
+    Header(HeaderField),
     Field { index: u32 },
     Element { index: ValueId },
     Slice { start: ValueId, length: ValueId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HeaderField {
+    Length,
+    Capacity,
 }
 
 /// The only v1 representation of an addressable memory location.
@@ -336,7 +348,7 @@ pub enum Operation {
         destination: ValueId,
         layout: LayoutId,
         extent: Extent,
-        class: KernelAllocationClassId,
+        class: AllocationClass,
     },
     StaticData {
         destination: ValueId,
@@ -449,6 +461,7 @@ pub struct ProperTailSite {
 pub struct LoweredModuleParts {
     pub revision: Revision,
     pub checked_source: CheckedSourceIdentity,
+    pub layouts: LayoutBundle,
     pub signatures: Vec<FunctionSignature>,
     pub imports: Vec<ImportContract>,
     pub functions: Vec<Function>,
@@ -487,6 +500,7 @@ impl ModuleStage for OptimizedValid {}
 pub struct CanonicalModule<S: ModuleStage> {
     revision: Revision,
     checked_source: CheckedSourceIdentity,
+    layouts: LayoutBundle,
     signatures: Vec<FunctionSignature>,
     imports: Vec<ImportContract>,
     functions: Vec<Function>,
@@ -499,6 +513,7 @@ impl CanonicalModule<LoweredCandidate> {
         Self {
             revision: parts.revision,
             checked_source: parts.checked_source,
+            layouts: parts.layouts,
             signatures: parts.signatures,
             imports: parts.imports,
             functions: parts.functions,
@@ -511,6 +526,7 @@ impl CanonicalModule<LoweredCandidate> {
         CanonicalModule {
             revision: self.revision,
             checked_source: self.checked_source,
+            layouts: self.layouts,
             signatures: self.signatures,
             imports: self.imports,
             functions: self.functions,
@@ -527,6 +543,10 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub const fn checked_source(&self) -> CheckedSourceIdentity {
         self.checked_source
+    }
+
+    pub const fn layouts(&self) -> &LayoutBundle {
+        &self.layouts
     }
 
     pub fn signatures(&self) -> &[FunctionSignature] {
