@@ -1315,4 +1315,86 @@ mod tests {
 
         assert_eq!(interpret(&module, FUNCTION, Vec::new()), Ok(Vec::new()));
     }
+
+    #[test]
+    fn validated_direct_call_executes_callee() {
+        let callee_id = FunctionId::new(1);
+        let callee_signature = FunctionSignatureId::new(1);
+        let caller_result = ValueId::new(0);
+        let callee_result = ValueId::new(0);
+        let scalar_contract = || CallableContract {
+            parameters: Vec::new(),
+            results: vec![ResultContract::Value(ValueType::Int)],
+            parameter_effects: BTreeMap::new(),
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([32; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Int],
+                    contract: scalar_contract(),
+                },
+                FunctionSignature {
+                    id: callee_signature,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Int],
+                    contract: scalar_contract(),
+                },
+            ],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FUNCTION,
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types: [(caller_result, ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::Call {
+                            destinations: vec![caller_result],
+                            callee: callee_id,
+                            arguments: Vec::new(),
+                        }],
+                        terminator: Terminator::Return {
+                            values: vec![caller_result],
+                        },
+                    }],
+                },
+                Function {
+                    id: callee_id,
+                    signature: callee_signature,
+                    entry: ENTRY,
+                    value_types: [(callee_result, ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt {
+                            destination: callee_result,
+                            value: 42,
+                        }],
+                        terminator: Terminator::Return {
+                            values: vec![callee_result],
+                        },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        });
+        let checked = check_initial_with_test_witness(candidate).expect("initial validation");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).expect("zero-risk optimization");
+        let module =
+            validate_final(&initial_snapshot, witness, optimized).expect("final validation");
+
+        assert_eq!(
+            interpret(&module, FUNCTION, Vec::new()),
+            Ok(vec![InterpreterValue::Int(42)])
+        );
+    }
 }
