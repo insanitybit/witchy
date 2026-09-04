@@ -341,13 +341,73 @@ pub struct FunctionSignature {
     pub contract: CallableContract,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportContractIdentity {
+    /// The canonical catalog authenticates the ABI contract only. Host
+    /// implementation authentication remains a launch-context dependency.
+    AuthenticatedAbi([u8; 32]),
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HostBufferExtent {
+    Exact(u64),
+    AtLeast(u64),
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostParameterRole {
+    Value(ValueType),
+    Capability(CapabilityKindId),
+    Buffer {
+        value_type: ValueType,
+        access: AccessMode,
+        extent: HostBufferExtent,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostResultRole {
+    Value(ValueType),
+    Capability(CapabilityKindId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HostMutation {
+    ReadOnly,
+    WriteBuffers,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HostReentrancy {
+    Forbidden,
+    Allowed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostCallArgument {
+    Value(ValueId),
+    Capability(ValueId),
+    Buffer {
+        place: Place,
+        extent: HostBufferExtent,
+    },
+}
+
 /// Imported contracts are keyed by authenticated ABI identity. The concrete
 /// host implementation identity belongs to launch context, not artifact ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportContract {
     pub id: ImportId,
     pub signature: FunctionSignatureId,
-    pub abi_identity: [u8; 32],
+    pub abi_identity: ImportContractIdentity,
+    pub parameter_roles: Vec<HostParameterRole>,
+    pub result_roles: Vec<HostResultRole>,
+    pub mutation: HostMutation,
+    pub reentrancy: HostReentrancy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,7 +479,7 @@ pub enum Operation {
     HostCall {
         destinations: Vec<ValueId>,
         import: ImportId,
-        arguments: Vec<CallArgument>,
+        arguments: Vec<HostCallArgument>,
     },
 }
 

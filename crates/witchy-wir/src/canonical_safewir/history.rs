@@ -6,8 +6,9 @@ use crate::layout::LayoutBundle;
 
 use super::{AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BorrowMode,
     CallArgument, CallBorrow, CallableContract, CanonicalModule, ComparisonOperator, Extent,
-    Function, FunctionId, FunctionSignature, FunctionSignatureId,
-    GuardKind, HeaderField, ImportContract, InitialValid, LoadTransfer, MemoryEffect, ModuleStage,
+    Function, FunctionId, FunctionSignature, FunctionSignatureId, HostBufferExtent,
+    HostCallArgument, HostMutation, HostParameterRole, HostReentrancy, HostResultRole,
+    GuardKind, HeaderField, ImportContract, ImportContractIdentity, InitialValid, LoadTransfer, MemoryEffect, ModuleStage,
     Operation, OptimizedValid, Ownership, ParameterContract, ParameterOwnership,
     Place, Projection, ProperTailSite, ResultContract, Revision, StoreTransfer, Terminator,
     TransformedCandidate, ValueId, ValueType};
@@ -495,6 +496,25 @@ impl CanonicalWriter {
         }
     }
 
+    fn host_argument(&mut self, argument: &HostCallArgument) {
+        match argument {
+            HostCallArgument::Value(value) => { self.u8(0); self.value_id(*value); }
+            HostCallArgument::Capability(value) => { self.u8(1); self.value_id(*value); }
+            HostCallArgument::Buffer { place, extent } => {
+                self.u8(2);
+                self.place(place);
+                self.host_buffer_extent(extent);
+            }
+        }
+    }
+
+    fn host_arguments(&mut self, arguments: &[HostCallArgument]) {
+        self.len(arguments.len());
+        for argument in arguments {
+            self.host_argument(argument);
+        }
+    }
+
     fn parameter_ownership(&mut self, ownership: ParameterOwnership) {
         match ownership {
             ParameterOwnership::Value => self.u8(0),
@@ -511,6 +531,50 @@ impl CanonicalWriter {
         self.value_type(parameter.value_type);
         self.parameter_ownership(parameter.ownership);
         self.bool(parameter.non_escaping);
+    }
+
+    fn host_buffer_extent(&mut self, extent: &HostBufferExtent) {
+        match extent {
+            HostBufferExtent::Exact(bytes) => { self.u8(0); self.u64(*bytes); }
+            HostBufferExtent::AtLeast(bytes) => { self.u8(1); self.u64(*bytes); }
+            HostBufferExtent::Unknown => self.u8(2),
+        }
+    }
+
+    fn host_parameter_role(&mut self, role: &HostParameterRole) {
+        match role {
+            HostParameterRole::Value(value_type) => { self.u8(0); self.value_type(*value_type); }
+            HostParameterRole::Capability(kind) => { self.u8(1); self.u32(kind.get()); }
+            HostParameterRole::Buffer { value_type, access, extent } => {
+                self.u8(2);
+                self.value_type(*value_type);
+                self.access_mode(*access);
+                self.host_buffer_extent(extent);
+            }
+        }
+    }
+
+    fn host_result_role(&mut self, role: &HostResultRole) {
+        match role {
+            HostResultRole::Value(value_type) => { self.u8(0); self.value_type(*value_type); }
+            HostResultRole::Capability(kind) => { self.u8(1); self.u32(kind.get()); }
+        }
+    }
+
+    fn host_mutation(&mut self, mutation: HostMutation) {
+        self.u8(match mutation {
+            HostMutation::ReadOnly => 0,
+            HostMutation::WriteBuffers => 1,
+            HostMutation::Unknown => 2,
+        });
+    }
+
+    fn host_reentrancy(&mut self, reentrancy: HostReentrancy) {
+        self.u8(match reentrancy {
+            HostReentrancy::Forbidden => 0,
+            HostReentrancy::Allowed => 1,
+            HostReentrancy::Unknown => 2,
+        });
     }
 
     fn result_contract(&mut self, result: &ResultContract) {
@@ -596,7 +660,23 @@ impl CanonicalWriter {
     fn import(&mut self, import: &ImportContract) {
         self.u32(import.id.get());
         self.u32(import.signature.get());
-        self.fixed_bytes(&import.abi_identity);
+        match &import.abi_identity {
+            ImportContractIdentity::AuthenticatedAbi(identity) => {
+                self.u8(0);
+                self.fixed_bytes(identity);
+            }
+            ImportContractIdentity::Unknown => self.u8(1),
+        }
+        self.len(import.parameter_roles.len());
+        for role in &import.parameter_roles {
+            self.host_parameter_role(role);
+        }
+        self.len(import.result_roles.len());
+        for role in &import.result_roles {
+            self.host_result_role(role);
+        }
+        self.host_mutation(import.mutation);
+        self.host_reentrancy(import.reentrancy);
     }
 
     fn imports(&mut self, imports: &[ImportContract]) {
@@ -741,7 +821,7 @@ impl CanonicalWriter {
                 self.u8(23);
                 self.value_ids(destinations);
                 self.u32(import.get());
-                self.arguments(arguments);
+                self.host_arguments(arguments);
             }
         }
     }

@@ -4,7 +4,8 @@ use std::fmt;
 
 use super::{
     BasicBlock, BlockId, CallArgument, CanonicalModule, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, GuardKind, InitialValid, LoweredCandidate, ModuleStage, Operation,
+    FunctionSignatureId, GuardKind, HostCallArgument, ImportContract, ImportId, InitialValid,
+    LoweredCandidate, ModuleStage, Operation,
     OptimizedValid,
     ParameterOwnership, ProperTailSite, TailSiteId, Terminator, TransformedCandidate, ValueId,
     ValueType,
@@ -13,6 +14,7 @@ use super::{
 mod memory;
 use memory::MemoryChecker;
 mod contracts;
+mod host;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitialCheckError {
@@ -75,6 +77,22 @@ pub enum InitialCheckError {
     },
     UnsupportedMemoryOperation { function: FunctionId, operation: &'static str },
     UnsupportedHostCall { function: FunctionId },
+    DuplicateImport(ImportId),
+    MissingImportContract { function: FunctionId, import: ImportId },
+    UnknownImportIdentity { import: ImportId },
+    HostContractRoleMismatch { import: ImportId },
+    HostParameterRoleMismatch { function: FunctionId, import: ImportId, parameter: usize },
+    HostResultRoleMismatch {
+        function: FunctionId,
+        import: ImportId,
+        result: usize,
+        expected: ValueType,
+        actual: ValueType,
+    },
+    HostBufferExtentMismatch { function: FunctionId, import: ImportId, parameter: usize },
+    UnknownHostBufferExtent { import: ImportId },
+    UnsupportedHostMutation { import: ImportId },
+    UnsupportedHostReentrancy { import: ImportId },
     UnsupportedBorrowArgument { function: FunctionId },
     UnsupportedIndirectCall { function: FunctionId },
     UnsupportedMemorySignature { signature: FunctionSignatureId },
@@ -122,8 +140,10 @@ fn check_candidate<S: ModuleStage>(
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
     let signatures = index_signatures(candidate.signatures())?;
+    let imports = index_imports(candidate.imports())?;
     let functions = index_functions(candidate.functions())?;
     contracts::check_all(&functions, &signatures)?;
+    host::check_imports(&imports, &signatures)?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
     let mut observed_tail_sites = BTreeSet::new();
 
@@ -131,6 +151,7 @@ fn check_candidate<S: ModuleStage>(
         check_function(
             function,
             &signatures,
+            &imports,
             &functions,
             &tail_obligations,
             &mut observed_tail_sites,
@@ -171,6 +192,18 @@ fn index_functions(
     Ok(result)
 }
 
+fn index_imports(
+    imports: &[ImportContract],
+) -> Result<BTreeMap<ImportId, &ImportContract>, InitialCheckError> {
+    let mut result = BTreeMap::new();
+    for import in imports {
+        if result.insert(import.id, import).is_some() {
+            return Err(InitialCheckError::DuplicateImport(import.id));
+        }
+    }
+    Ok(result)
+}
+
 fn index_tail_obligations(
     obligations: &[ProperTailSite],
 ) -> Result<BTreeMap<TailSiteId, FunctionId>, InitialCheckError> {
@@ -186,6 +219,7 @@ fn index_tail_obligations(
 fn check_function(
     function: &Function,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    imports: &BTreeMap<ImportId, &ImportContract>,
     functions: &BTreeMap<FunctionId, &Function>,
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
@@ -222,7 +256,7 @@ fn check_function(
                 &definition_sites,
                 &dominators,
             )?;
-            check_operation(function, operation, signatures, functions, &mut memory)?;
+            check_operation(function, operation, signatures, imports, functions, &mut memory)?;
         }
         check_uses_dominate(
             function,
@@ -415,9 +449,8 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
             result
         }
         Operation::UpdateCount { object, count } => vec![*object, *count],
-        Operation::Call { arguments, .. } | Operation::HostCall { arguments, .. } => {
-            argument_uses(arguments)
-        }
+        Operation::Call { arguments, .. } => argument_uses(arguments),
+        Operation::HostCall { arguments, .. } => host_argument_uses(arguments),
         Operation::VarCall { callee, arguments, .. } => {
             let mut result = vec![*callee];
             result.extend(argument_uses(arguments));
@@ -449,6 +482,17 @@ fn argument_uses(arguments: &[CallArgument]) -> Vec<ValueId> {
             CallArgument::Borrow(borrow) => borrow.source(),
         })
         .collect()
+}
+
+fn host_argument_uses(arguments: &[HostCallArgument]) -> Vec<ValueId> {
+    let mut result = Vec::new();
+    for argument in arguments {
+        match argument {
+            HostCallArgument::Value(value) | HostCallArgument::Capability(value) => result.push(*value),
+            HostCallArgument::Buffer { place, .. } => result.extend(place_uses(place)),
+        }
+    }
+    result
 }
 
 fn terminator_uses(terminator: &Terminator) -> Vec<ValueId> {
@@ -633,6 +677,7 @@ fn check_operation(
     function: &Function,
     operation: &Operation,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    imports: &BTreeMap<ImportId, &ImportContract>,
     functions: &BTreeMap<FunctionId, &Function>,
     memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
@@ -696,9 +741,9 @@ fn check_operation(
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
             check_call(function, destinations, arguments, signature)
         }
-        Operation::HostCall { .. } => Err(InitialCheckError::UnsupportedHostCall {
-            function: function.id,
-        }),
+        Operation::HostCall { destinations, import, arguments } => {
+            host::check_call(function, *import, destinations, arguments, imports, signatures)
+        }
         Operation::Alloc { .. } => unsupported_memory(function, "Alloc"),
         Operation::StaticData { .. } => unsupported_memory(function, "StaticData"),
         Operation::Load { .. } => unsupported_memory(function, "Load"),
@@ -973,11 +1018,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::super::{
-        AccessMode, AllocationClass, BasicBlock, BlockId, CallableContract, CanonicalModule,
+        AccessMode, AllocationClass, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
         CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
-        FunctionSignatureId, GuardKind, HeaderField, LoadTransfer, LoweredModuleParts, Operation, Place,
-        Projection, ProperTailSite, ResultContract, Revision, TailSiteId, Terminator, ValueId,
-        ValueType,
+        FunctionSignatureId, GuardKind, HeaderField, HostBufferExtent, HostCallArgument,
+        HostMutation, HostParameterRole, HostReentrancy, HostResultRole, ImportContract,
+        ImportContractIdentity, ImportId, LoadTransfer, LoweredModuleParts, Operation, ParameterContract,
+        ParameterOwnership, Place, Projection, ProperTailSite, ResultContract, Revision, TailSiteId,
+        Terminator, ValueId, ValueType,
     };
     use super::{InitialCheckError, check_initial};
     use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, RcHeader, ScalarKind};
@@ -1064,6 +1111,238 @@ mod tests {
             }],
             proper_tail_sites: tail_sites,
         })
+    }
+
+    fn host_module(
+        function_parameter: ValueType,
+        import_parameter: ValueType,
+        argument: HostCallArgument,
+        layouts: LayoutBundle,
+        imports: Vec<ImportContract>,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        let function_signature = FunctionSignature {
+            id: SIGNATURE,
+            parameters: vec![function_parameter],
+            results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: function_parameter,
+                    ownership: ParameterOwnership::Value,
+                    non_escaping: false,
+                }],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let import_signature = FunctionSignature {
+            id: FunctionSignatureId::new(1),
+            parameters: vec![import_parameter],
+            results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: import_parameter,
+                    ownership: ParameterOwnership::Value,
+                    non_escaping: false,
+                }],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![function_signature, import_signature],
+            imports,
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, function_parameter), (ValueId::new(1), ValueType::Int)]
+                    .into_iter()
+                    .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: vec![BlockParameter {
+                        value: VALUE,
+                        value_type: function_parameter,
+                        ownership: None,
+                    }],
+                    operations: vec![Operation::HostCall {
+                        destinations: vec![ValueId::new(1)],
+                        import: ImportId::new(0),
+                        arguments: vec![argument],
+                    }],
+                    terminator: Terminator::Return {
+                        values: vec![ValueId::new(1)],
+                    },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
+    }
+
+    fn host_import(
+        parameter_role: HostParameterRole,
+        result_role: HostResultRole,
+        mutation: HostMutation,
+        reentrancy: HostReentrancy,
+    ) -> ImportContract {
+        ImportContract {
+            id: ImportId::new(0),
+            signature: FunctionSignatureId::new(1),
+            abi_identity: ImportContractIdentity::AuthenticatedAbi([9; 32]),
+            parameter_roles: vec![parameter_role],
+            result_roles: vec![result_role],
+            mutation,
+            reentrancy,
+        }
+    }
+
+    #[test]
+    fn typed_capability_host_call_is_admitted() {
+        let kind = super::super::CapabilityKindId::new(4);
+        let import = host_import(
+            HostParameterRole::Capability(kind),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        let module = host_module(
+            ValueType::Capability(kind),
+            ValueType::Capability(kind),
+            HostCallArgument::Capability(VALUE),
+            empty_layouts(),
+            vec![import],
+        );
+        assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn integer_cannot_fill_capability_host_role() {
+        let kind = super::super::CapabilityKindId::new(4);
+        let import = host_import(
+            HostParameterRole::Capability(kind),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        let module = host_module(
+            ValueType::Int,
+            ValueType::Capability(kind),
+            HostCallArgument::Value(VALUE),
+            empty_layouts(),
+            vec![import],
+        );
+        assert!(matches!(
+            check_initial(module),
+            Err(InitialCheckError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn wrong_capability_kind_is_rejected() {
+        let expected = super::super::CapabilityKindId::new(4);
+        let actual = super::super::CapabilityKindId::new(5);
+        let import = host_import(
+            HostParameterRole::Capability(expected),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        let module = host_module(
+            ValueType::Capability(actual),
+            ValueType::Capability(expected),
+            HostCallArgument::Capability(VALUE),
+            empty_layouts(),
+            vec![import],
+        );
+        assert!(matches!(
+            check_initial(module),
+            Err(InitialCheckError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_import_contract_is_rejected() {
+        let module = lowered(
+            [(ValueId::new(1), ValueType::Int)].into_iter().collect(),
+            vec![Operation::HostCall {
+                destinations: vec![ValueId::new(1)],
+                import: ImportId::new(99),
+                arguments: vec![],
+            }],
+            Terminator::Return {
+                values: vec![ValueId::new(1)],
+            },
+            vec![ValueType::Int],
+            Vec::new(),
+        );
+        let result = check_initial(module);
+        assert!(
+            matches!(result.as_ref(), Err(InitialCheckError::MissingImportContract { .. })),
+            "unexpected result: {result:?}"
+        );
+    }
+
+    #[test]
+    fn host_buffer_extent_must_satisfy_contract() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let place = Place::projected(
+            VALUE,
+            Projection::Field { index: 0 },
+            ValueType::Ref(layout),
+            AccessMode::Read,
+        );
+        let role = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(layout),
+            access: AccessMode::Read,
+            extent: HostBufferExtent::Exact(8),
+        };
+        let import = host_import(
+            role.clone(),
+            HostResultRole::Value(ValueType::Int),
+            HostMutation::ReadOnly,
+            HostReentrancy::Forbidden,
+        );
+        let module = host_module(
+            ValueType::Ref(layout),
+            ValueType::Ref(layout),
+            HostCallArgument::Buffer {
+                place,
+                extent: HostBufferExtent::Exact(4),
+            },
+            layouts,
+            vec![import],
+        );
+        assert!(matches!(
+            check_initial(module),
+            Err(InitialCheckError::HostBufferExtentMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn unsupported_host_mutation_and_reentrancy_fail_closed() {
+        let kind = super::super::CapabilityKindId::new(4);
+        for (mutation, reentrancy, expected) in [
+            (HostMutation::Unknown, HostReentrancy::Forbidden, true),
+            (HostMutation::ReadOnly, HostReentrancy::Allowed, true),
+        ] {
+            let import = host_import(
+                HostParameterRole::Capability(kind),
+                HostResultRole::Value(ValueType::Int),
+                mutation,
+                reentrancy,
+            );
+            let result = check_initial(host_module(
+                ValueType::Capability(kind),
+                ValueType::Capability(kind),
+                HostCallArgument::Capability(VALUE),
+                empty_layouts(),
+                vec![import],
+            ));
+            assert_eq!(result.is_err(), expected);
+        }
     }
 
     #[test]
