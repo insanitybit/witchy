@@ -473,6 +473,13 @@ impl<'a> MemoryChecker<'a> {
                 }
             };
             let extent = self.parameter_extent(layout)?;
+            let allocation_class = match contract.ownership {
+                ParameterOwnership::Unique | ParameterOwnership::Shared => {
+                    Some(AllocationClass::ReferenceCounted)
+                }
+                ParameterOwnership::CallBorrow { .. } => None,
+                ParameterOwnership::Value => unreachable!(),
+            };
             self.state.objects.insert(
                 parameter.value,
                 ObjectState {
@@ -480,7 +487,7 @@ impl<'a> MemoryChecker<'a> {
                     layout,
                     extent,
                     ownership,
-                    allocation_class: None,
+                    allocation_class,
                 },
             );
         }
@@ -524,12 +531,7 @@ impl<'a> MemoryChecker<'a> {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Share(_) => return self.unsupported("Call(Share)"),
                 CallArgument::Move(value) => {
-                    if !matches!(parameter.ownership, ParameterOwnership::Unique) {
-                        return Err(InitialCheckError::UnsupportedBorrowArgument {
-                            function: self.function.id,
-                        });
-                    }
-                    self.consume_call_move(*value)?;
+                    self.consume_call_move(*value, parameter.ownership)?;
                 }
                 CallArgument::Borrow(borrow) => {
                     if !matches!(
@@ -605,6 +607,21 @@ impl<'a> MemoryChecker<'a> {
                     self.state.static_data_objects.insert(*destination);
                 }
                 _ => return self.unsupported("Call(memory result)"),
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_exit(&self, returned: &[ValueId]) -> Result<(), InitialCheckError> {
+        for (object, state) in &self.state.objects {
+            if state.ownership != Ownership::Consumed
+                && state.allocation_class == Some(AllocationClass::ReferenceCounted)
+                && !returned.contains(object)
+            {
+                return Err(InitialCheckError::UnconsumedReference {
+                    function: self.function.id,
+                    object: *object,
+                });
             }
         }
         Ok(())
@@ -1176,9 +1193,20 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
-    fn consume_call_move(&mut self, source: ValueId) -> Result<(), InitialCheckError> {
+    fn consume_call_move(
+        &mut self,
+        source: ValueId,
+        parameter: ParameterOwnership,
+    ) -> Result<(), InitialCheckError> {
         let state = self.live_object(source)?;
-        if state.ownership != Ownership::Unique {
+        let permitted = match parameter {
+            ParameterOwnership::Unique => state.ownership == Ownership::Unique,
+            ParameterOwnership::Shared => {
+                matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+            }
+            _ => false,
+        };
+        if !permitted {
             return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,
                 object: source,

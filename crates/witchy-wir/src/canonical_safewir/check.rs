@@ -43,6 +43,7 @@ pub enum InitialCheckError {
         kind: GuardKind,
     },
     InvalidOwnership { function: FunctionId, object: ValueId },
+    UnconsumedReference { function: FunctionId, object: ValueId },
     InvalidAllocationClass { function: FunctionId, object: ValueId },
     UseAfterConsume { function: FunctionId, object: ValueId },
     IncompatibleMemoryJoin { function: FunctionId, block: BlockId, object: ValueId },
@@ -1151,6 +1152,9 @@ fn check_call(
         let accepted = match (expected.ownership, ownership) {
             (ParameterOwnership::Value, ParameterOwnership::Value)
             | (ParameterOwnership::Unique, ParameterOwnership::Unique)
+            // Moving a unique token into a shared parameter is a safe
+            // ownership weakening; the callee receives that token.
+            | (ParameterOwnership::Shared, ParameterOwnership::Unique)
             | (ParameterOwnership::Shared, ParameterOwnership::Shared) => true,
             (
                 ParameterOwnership::CallBorrow { mode: expected_mode },
@@ -1239,6 +1243,7 @@ fn check_terminator(
                 require_type(function, *value, *expected)?;
             }
             memory.check_return(values, &current_signature.contract.results)?;
+            memory.check_exit(values)?;
             Ok(())
         }
         Terminator::TailCall { site, callee, arguments } => {
@@ -3577,6 +3582,220 @@ mod tests {
             InitialCheckError::UnsupportedMemoryOperation {
                 function: FUNCTION,
                 operation: "Call(Share)",
+            }
+        );
+    }
+
+    #[test]
+    fn owned_parameter_must_be_discharged_at_exit() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (values, mut operations) = allocated_list(layout);
+        let object = ValueId::new(2);
+        operations.push(Operation::DropRef { object });
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            [(ValueId::new(10), ValueType::Ref(layout))].into_iter().collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(layout, ParameterOwnership::Shared, Vec::new(), BTreeMap::new()),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Shared),
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::UnconsumedReference {
+                function: CALLEE,
+                object: ValueId::new(10),
+            }
+        );
+    }
+
+    #[test]
+    fn owned_parameter_read_then_drop_is_accepted() {
+        let (layouts, layout) = packed_u32_layout();
+        let object = ValueId::new(2);
+        let destination = ValueId::new(12);
+        let (mut values, mut operations) = allocated_list_with_header(layout, 8);
+        values.insert(destination, ValueType::Size);
+        operations.push(Operation::Call {
+            destinations: vec![destination],
+            callee: CALLEE,
+            arguments: vec![super::super::CallArgument::Move(object)],
+        });
+        let parameter = ValueId::new(10);
+        let length = ValueId::new(11);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            vec![
+                Operation::Load {
+                    destination: length,
+                    place: Place::projected(
+                        parameter,
+                        Projection::Header(HeaderField::Length),
+                        ValueType::Size,
+                        super::super::AccessMode::Read,
+                    ),
+                    transfer: LoadTransfer::CopyScalar,
+                },
+                Operation::DropRef { object: parameter },
+            ],
+            [(parameter, ValueType::Ref(layout)), (length, ValueType::Size)]
+                .into_iter()
+                .collect(),
+            Terminator::Return { values: vec![length] },
+            call_contract(
+                layout,
+                ParameterOwnership::Shared,
+                vec![ResultContract::Value(ValueType::Size)],
+                [(0, vec![MemoryEffect::Read, MemoryEffect::Release])]
+                    .into_iter()
+                    .collect(),
+            ),
+            vec![ValueType::Size],
+            vec![BlockParameter {
+                value: parameter,
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Shared),
+            }],
+            Vec::new(),
+        );
+        assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn clone_then_move_requires_caller_source_cleanup() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (mut values, mut operations) = allocated_list(layout);
+        let source = ValueId::new(2);
+        let clone = ValueId::new(3);
+        values.insert(clone, ValueType::Ref(layout));
+        operations.extend([
+            Operation::CloneRef { destination: clone, source },
+            Operation::Call {
+                destinations: Vec::new(),
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Move(clone)],
+            },
+        ]);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            vec![Operation::DropRef { object: ValueId::new(10) }],
+            [(ValueId::new(10), ValueType::Ref(layout))].into_iter().collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Shared,
+                Vec::new(),
+                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Shared),
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::UnconsumedReference {
+                function: FUNCTION,
+                object: source,
+            }
+        );
+    }
+
+    #[test]
+    fn tail_shared_move_transfers_without_reclaim() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (values, operations) = allocated_list(layout);
+        let object = ValueId::new(2);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::TailCall {
+                site: TAIL_SITE,
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Move(object)],
+            },
+            vec![Operation::DropRef { object: ValueId::new(10) }],
+            [(ValueId::new(10), ValueType::Ref(layout))].into_iter().collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Shared,
+                Vec::new(),
+                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Shared),
+            }],
+            vec![ProperTailSite { id: TAIL_SITE, function: FUNCTION }],
+        );
+        assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn shared_move_into_unique_parameter_is_rejected() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let (mut values, mut operations) = allocated_list(layout);
+        let source = ValueId::new(2);
+        let shared = ValueId::new(3);
+        values.insert(shared, ValueType::Ref(layout));
+        operations.extend([
+            Operation::CloneRef { destination: shared, source },
+            Operation::Call {
+                destinations: Vec::new(),
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Move(shared)],
+            },
+            Operation::DropRef { object: source },
+        ]);
+        let module = call_module(
+            layouts,
+            values,
+            operations,
+            Terminator::Return { values: Vec::new() },
+            vec![Operation::DropRef { object: ValueId::new(10) }],
+            [(ValueId::new(10), ValueType::Ref(layout))].into_iter().collect(),
+            Terminator::Return { values: Vec::new() },
+            call_contract(
+                layout,
+                ParameterOwnership::Unique,
+                Vec::new(),
+                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
+            ),
+            Vec::new(),
+            vec![BlockParameter {
+                value: ValueId::new(10),
+                value_type: ValueType::Ref(layout),
+                ownership: Some(super::super::Ownership::Unique),
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidOwnership {
+                function: FUNCTION,
+                object: shared,
             }
         );
     }

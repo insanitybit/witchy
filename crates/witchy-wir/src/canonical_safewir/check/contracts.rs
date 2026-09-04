@@ -670,9 +670,6 @@ fn derive_call_needs(
             .get_mut(parameter as usize)
             .ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?;
         slot.extend(need.iter().copied());
-        if matches!(argument, CallArgument::Move(_)) {
-            slot.insert(MemoryEffect::Reclaim);
-        }
     }
     Ok(())
 }
