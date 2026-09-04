@@ -619,6 +619,10 @@ mod tests {
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
         assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+        assert_eq!(
+            derive_result_contracts(&functions, &signatures).unwrap()[&FunctionSignatureId::new(0)],
+            vec![ResultContract::StaticData { layout }]
+        );
     }
 
     #[test]
