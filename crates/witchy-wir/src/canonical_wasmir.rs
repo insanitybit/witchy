@@ -790,6 +790,44 @@ enum EncodeError {
     WasmValidation(String),
 }
 
+/// Opaque exact bytes admitted by the canonical backend.
+///
+/// `wasm` is a read-only byte view for existing consumers. This artifact does
+/// not itself seal or authorize launch; receipt-bound launch remains a later
+/// boundary.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AdmittedCanonicalArtifact {
+    bytes: Vec<u8>,
+    checked_source: crate::canonical_safewir::CheckedSourceIdentity,
+    final_module_digest: crate::canonical_safewir::ModuleDigest,
+    history_digest: crate::canonical_safewir::ModuleDigest,
+    correspondence_digest: [u8; 32],
+    wasm_digest: [u8; 32],
+}
+
+impl AdmittedCanonicalArtifact {
+    /// Borrow the exact admitted Wasm bytes without transferring ownership.
+    pub fn wasm(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalAdmissionError {
+    Lowering,
+    Correspondence,
+    WasmValidation,
+    UnsupportedPlan,
+    PlanMismatch,
+}
+
+impl std::fmt::Display for CanonicalAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "canonical Wasm admission failed: {self:?}")
+    }
+}
+
+impl std::error::Error for CanonicalAdmissionError {}
 fn wasm_value_type(
     function: FunctionId,
     value: ValueId,
@@ -1913,6 +1951,428 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
     Ok(bytes)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlanToken {
+    LocalGet(u32),
+    LocalSet(u32),
+    I32Const(i32),
+    I64Const(i64),
+    I64ExtendI32U,
+    I64Mul,
+    I64Add,
+    I32WrapI64,
+    GlobalGet(u32),
+    GlobalSet(u32),
+    I32Add,
+    I32LtU,
+    I32Eqz,
+    I32Store { offset: u64, align: u8, memory: u32 },
+    I64GtU,
+    If(String),
+    Unreachable,
+    Return,
+    End,
+}
+
+fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, CanonicalAdmissionError> {
+    Ok(match operator {
+        wasmparser::Operator::LocalGet { local_index } => PlanToken::LocalGet(local_index),
+        wasmparser::Operator::LocalSet { local_index } => PlanToken::LocalSet(local_index),
+        wasmparser::Operator::I32Const { value } => PlanToken::I32Const(value),
+        wasmparser::Operator::I64Const { value } => PlanToken::I64Const(value),
+        wasmparser::Operator::I64ExtendI32U => PlanToken::I64ExtendI32U,
+        wasmparser::Operator::I64Mul => PlanToken::I64Mul,
+        wasmparser::Operator::I64Add => PlanToken::I64Add,
+        wasmparser::Operator::I32WrapI64 => PlanToken::I32WrapI64,
+        wasmparser::Operator::GlobalGet { global_index } => PlanToken::GlobalGet(global_index),
+        wasmparser::Operator::GlobalSet { global_index } => PlanToken::GlobalSet(global_index),
+        wasmparser::Operator::I32Add => PlanToken::I32Add,
+        wasmparser::Operator::I32LtU => PlanToken::I32LtU,
+        wasmparser::Operator::I32Eqz => PlanToken::I32Eqz,
+        wasmparser::Operator::I32Store { memarg } => PlanToken::I32Store {
+            offset: memarg.offset,
+            align: memarg.align,
+            memory: memarg.memory,
+        },
+        wasmparser::Operator::I64GtU => PlanToken::I64GtU,
+        wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
+        wasmparser::Operator::Unreachable => PlanToken::Unreachable,
+        wasmparser::Operator::Return => PlanToken::Return,
+        wasmparser::Operator::End => PlanToken::End,
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    })
+}
+
+fn plan_local(layout: &LocalLayout, value: ValueId) -> Result<u32, CanonicalAdmissionError> {
+    layout.indices.get(&value).copied().ok_or(CanonicalAdmissionError::UnsupportedPlan)
+}
+
+fn push_get(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> Result<(), CanonicalAdmissionError> {
+    plan.push(PlanToken::LocalGet(plan_local(layout, value)?));
+    Ok(())
+}
+
+fn push_set(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> Result<(), CanonicalAdmissionError> {
+    plan.push(PlanToken::LocalSet(plan_local(layout, value)?));
+    Ok(())
+}
+
+fn push_store(plan: &mut Vec<PlanToken>) {
+    plan.push(PlanToken::I32Store { offset: 0, align: 2, memory: 0 });
+}
+
+fn expected_alloc_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    collection: CollectionLayout,
+    destination: ValueId,
+    extent: &Extent,
+) -> Result<(), CanonicalAdmissionError> {
+    let Extent::Counted { capacity, count, header_bytes, stride_bytes } = extent else {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    };
+    if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    let maximum = (u32::MAX - collection.data_offset) / collection.stride;
+    push_get(plan, layout, *capacity)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(maximum)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    push_get(plan, layout, *capacity)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(collection.stride)),
+        PlanToken::I64Mul,
+        PlanToken::I64Const(i64::from(collection.data_offset)),
+        PlanToken::I64Add,
+        PlanToken::I32WrapI64,
+        PlanToken::LocalSet(layout.scratch[0]),
+        PlanToken::GlobalGet(0),
+        PlanToken::LocalSet(layout.scratch[1]),
+    ]);
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Const(i64::from(RC_PREFIX_BYTES)),
+        PlanToken::I64Add,
+        PlanToken::LocalGet(layout.scratch[0]),
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Add,
+        PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::I32Const(RC_PREFIX_BYTES as i32),
+        PlanToken::I32Add,
+        PlanToken::LocalSet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[0]),
+        PlanToken::I32Add,
+        PlanToken::GlobalSet(0),
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::I32Const(1),
+    ]);
+    push_store(plan);
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[1]),
+        PlanToken::I32Const(4),
+        PlanToken::I32Add,
+        PlanToken::LocalGet(layout.scratch[0]),
+    ]);
+    push_store(plan);
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalSet(plan_local(layout, destination)?),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(collection.length_offset as i32),
+        PlanToken::I32Add,
+    ]);
+    push_get(plan, layout, *count)?;
+    push_store(plan);
+    if let Some(capacity_offset) = collection.capacity_offset {
+        plan.extend([
+            PlanToken::LocalGet(layout.scratch[2]),
+            PlanToken::I32Const(capacity_offset as i32),
+            PlanToken::I32Add,
+        ]);
+        push_get(plan, layout, *capacity)?;
+        push_store(plan);
+    }
+    let _ = function;
+    Ok(())
+}
+
+fn expected_function_plan(
+    function: &Function,
+    layouts: &LayoutInterner,
+) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
+    if function.blocks.len() != 1 || function.blocks[0].id != function.entry || !function.blocks[0].parameters.is_empty() {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    let layout = local_layout(function).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let block = &function.blocks[0];
+    let mut plan = Vec::new();
+    for operation in &block.operations {
+        match operation {
+            Operation::ConstInt { destination, value } => {
+                plan.push(PlanToken::I64Const(*value));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::ConstBool { destination, value } => {
+                plan.push(PlanToken::I32Const(i32::from(*value)));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::ConstSize { destination, value } => {
+                let value = i32::try_from(*value).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+                plan.push(PlanToken::I32Const(value));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::MoveValue { destination, source } => {
+                push_get(&mut plan, &layout, *source)?;
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::Compare { destination, operator: ComparisonOperator::LessUnsigned, left, right } => {
+                push_get(&mut plan, &layout, *left)?;
+                push_get(&mut plan, &layout, *right)?;
+                plan.push(PlanToken::I32LtU);
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::Guard { condition, kind: crate::canonical_safewir::GuardKind::Bounds } => {
+                push_get(&mut plan, &layout, *condition)?;
+                plan.extend([
+                    PlanToken::I32Eqz,
+                    PlanToken::If("Empty".to_owned()),
+                    PlanToken::Unreachable,
+                    PlanToken::End,
+                ]);
+            }
+            Operation::Alloc { destination, layout: layout_id, extent, class } => {
+                if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted {
+                    return Err(CanonicalAdmissionError::UnsupportedPlan);
+                }
+                let collection = collection_layout(function.id, layouts, *layout_id)
+                    .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+                expected_alloc_plan(&mut plan, function, &layout, collection, *destination, extent)?;
+            }
+            _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+        }
+    }
+    let Terminator::Return { values } = &block.terminator else {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    };
+    for value in values {
+        push_get(&mut plan, &layout, *value)?;
+    }
+    plan.push(PlanToken::Return);
+    plan.push(PlanToken::End);
+    Ok(plan)
+}
+
+fn expected_metadata_prefix(
+    source: &CanonicalModule<OptimizedValid>,
+    target: &WasmIr,
+) -> Result<Vec<u8>, CanonicalAdmissionError> {
+    let mut types = TypeSection::new();
+    for signature in source.signatures() {
+        let parameters = signature.parameters.iter().enumerate()
+            .map(|(index, value_type)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(index as u32), *value_type))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+        let results = signature.results.iter().enumerate()
+            .map(|(index, value_type)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(index as u32), *value_type))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+        types.ty().function(parameters, results);
+    }
+    let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate()
+        .map(|(index, signature)| (signature.id, index as u32)).collect();
+    let mut functions = FunctionSection::new();
+    let mut exports = ExportSection::new();
+    for (index, function) in target.functions.iter().enumerate() {
+        let type_index = signature_indices.get(&function.signature).copied()
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        functions.function(type_index);
+        exports.export(&format!("f{}", function.id.get()), ExportKind::Func, index as u32);
+    }
+    let mut memory = MemorySection::new();
+    memory.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    let mut globals = GlobalSection::new();
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(16));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
+    let mut module = WasmModule::new();
+    module.section(&types).section(&functions).section(&memory).section(&globals).section(&exports);
+    Ok(module.finish())
+}
+
+fn decode_and_match_plan(
+    source: &CanonicalModule<OptimizedValid>,
+    target: &WasmIr,
+    bytes: &[u8],
+) -> Result<(), CanonicalAdmissionError> {
+    wasmparser::Validator::new().validate_all(bytes).map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+    let metadata = expected_metadata_prefix(source, target)?;
+    if bytes.len() < metadata.len() || bytes[..metadata.len()] != metadata[..] {
+        return Err(CanonicalAdmissionError::PlanMismatch);
+    }
+    let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let expected = source.functions().iter()
+        .map(|function| {
+            let local = local_layout(function).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
+            Ok((locals, expected_function_plan(function, &layouts)?))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut actual = Vec::new();
+    let mut code_count = None;
+    let mut section_order = Vec::new();
+    let mut code_started = false;
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
+            wasmparser::Payload::Version { .. } => {}
+            wasmparser::Payload::TypeSection(_) => section_order.push(0),
+            wasmparser::Payload::FunctionSection(_) => section_order.push(1),
+            wasmparser::Payload::MemorySection(_) => section_order.push(2),
+            wasmparser::Payload::GlobalSection(_) => section_order.push(3),
+            wasmparser::Payload::ExportSection(_) => section_order.push(4),
+            wasmparser::Payload::CodeSectionStart { count, .. } => {
+                if code_count.replace(count).is_some() {
+                    return Err(CanonicalAdmissionError::PlanMismatch);
+                }
+                section_order.push(5);
+                code_started = true;
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => {
+                if !code_started {
+                    return Err(CanonicalAdmissionError::PlanMismatch);
+                }
+                let mut locals_reader = body.get_locals_reader().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                let mut locals = Vec::new();
+                for _ in 0..locals_reader.get_count() {
+                    let (count, ty) = locals_reader.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                    locals.push((count, format!("{ty:?}")));
+                }
+                let mut operators = body.get_operators_reader().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                let mut plan = Vec::new();
+                while !operators.eof() {
+                    plan.push(decode_plan_token(operators.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?)?);
+                }
+                actual.push((locals, plan));
+            }
+            wasmparser::Payload::End(_) => {}
+            _ => return Err(CanonicalAdmissionError::PlanMismatch),
+        }
+    }
+    let expected_count = u32::try_from(expected.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    if section_order != [0, 1, 2, 3, 4, 5]
+        || code_count != Some(expected_count)
+        || actual != expected
+    {
+        return Err(CanonicalAdmissionError::PlanMismatch);
+    }
+    Ok(())
+}
+
+fn digest_bytes(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+fn correspondence_digest(receipt: &CorrespondenceReceipt) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&receipt.revision.get().to_le_bytes());
+    bytes.extend_from_slice(&receipt.checked_source.digest());
+    for mapping in &receipt.mappings {
+        match mapping.source {
+            SourceItemId::Operation { function, block, index } => {
+                bytes.push(0);
+                bytes.extend_from_slice(&function.get().to_le_bytes());
+                bytes.extend_from_slice(&block.get().to_le_bytes());
+                bytes.extend_from_slice(&(index as u64).to_le_bytes());
+            }
+            SourceItemId::Terminator { function, block } => {
+                bytes.push(1);
+                bytes.extend_from_slice(&function.get().to_le_bytes());
+                bytes.extend_from_slice(&block.get().to_le_bytes());
+            }
+        }
+        match mapping.target {
+            TargetItemId::Instruction { function, block, index } => {
+                bytes.push(0);
+                bytes.extend_from_slice(&function.get().to_le_bytes());
+                bytes.extend_from_slice(&block.get().to_le_bytes());
+                bytes.extend_from_slice(&(index as u64).to_le_bytes());
+            }
+            TargetItemId::Terminator { function, block } => {
+                bytes.push(1);
+                bytes.extend_from_slice(&function.get().to_le_bytes());
+                bytes.extend_from_slice(&block.get().to_le_bytes());
+            }
+        }
+        bytes.push(mapping.rule as u8);
+    }
+    digest_bytes(b"witchy/canonical-wasmir/correspondence/v1", &[&bytes])
+}
+
+fn admit_parts(
+    source: CanonicalModule<OptimizedValid>,
+    target: WasmIr,
+    receipt: CorrespondenceReceipt,
+    bytes: Vec<u8>,
+    checked_source: crate::canonical_safewir::CheckedSourceIdentity,
+    final_module_digest: crate::canonical_safewir::ModuleDigest,
+    history_digest: crate::canonical_safewir::ModuleDigest,
+) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    decode_and_match_plan(&source, &target, &bytes)?;
+    let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
+    Ok(AdmittedCanonicalArtifact {
+        bytes,
+        checked_source,
+        final_module_digest,
+        history_digest,
+        correspondence_digest: correspondence_digest(&receipt),
+        wasm_digest,
+    })
+}
+
+pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    let source = validated.module().clone();
+    let checked_source = validated.checked_source();
+    let final_module_digest = validated.final_module_digest();
+    let history_digest = validated.history_digest();
+    let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let bytes = encode_validated(validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
+}
+
+#[cfg(test)]
+fn admit_canonical_with_bytes_for_test(
+    validated: ValidatedSafeWir,
+    bytes: Vec<u8>,
+) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    let source = validated.module().clone();
+    let checked_source = validated.checked_source();
+    let final_module_digest = validated.final_module_digest();
+    let history_digest = validated.history_digest();
+    let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2787,6 +3247,116 @@ mod tests {
         module.finish()
     }
 
+    fn checked_packed_list_allocation_artifact() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
+        checked_alloc_only(
+            layout,
+            bundle,
+            crate::canonical_safewir::AllocationClass::ReferenceCounted,
+            8,
+            4,
+            1,
+        )
+    }
+
+    fn checked_guard_artifact() -> ValidatedSafeWir {
+        let left = ValueId::new(1);
+        let right = ValueId::new(2);
+        let condition = ValueId::new(3);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(35),
+            checked_source: CheckedSourceIdentity::from_digest([0x35; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(35), Vec::new(), Vec::new())],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(35),
+                signature: FunctionSignatureId::new(35),
+                entry: crate::canonical_safewir::BlockId::new(35),
+                value_types: [
+                    (left, ValueType::Size),
+                    (right, ValueType::Size),
+                    (condition, ValueType::Bool),
+                ].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(35),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: left, value: 0 },
+                        Operation::ConstSize { destination: right, value: 1 },
+                        Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left, right },
+                        Operation::Guard { condition, kind: GuardKind::Bounds },
+                    ],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[test]
+    fn valid_scalar_and_packed_list_artifacts_admit() {
+        let scalar = admit_canonical(checked_scalar()).expect("scalar artifact admits");
+        wasmparser::validate(scalar.wasm()).expect("admitted scalar bytes validate");
+        let list = admit_canonical(checked_packed_list_allocation_artifact()).expect("list allocation artifact admits");
+        wasmparser::validate(list.wasm()).expect("admitted list bytes validate");
+    }
+
+    #[test]
+    fn mutated_emitted_bytes_fail_independent_admission_plan() {
+        let mut bytes = encode_validated(checked_scalar()).unwrap();
+        let immediate = bytes
+            .windows(2)
+            .position(|window| window == [0x42, 9])
+            .expect("scalar i64.const immediate exists")
+            + 1;
+        bytes[immediate] = 10;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch)
+        ));
+    }
+
+    #[test]
+    fn mismatched_source_plan_fails_admission() {
+        let bytes = encode_validated(checked_scalar()).unwrap();
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_packed_list_allocation_artifact(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch)
+        ));
+    }
+
+    #[test]
+    fn mutated_local_declaration_fails_admission() {
+        let mut bytes = encode_validated(checked_scalar()).unwrap();
+        let body_start = bytes
+            .windows(2)
+            .rposition(|window| window == [1, 0x7f])
+            .expect("scalar body has an i32 local declaration");
+        bytes[body_start + 1] = 0x7e;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_scalar(), bytes),
+            Err(CanonicalAdmissionError::WasmValidation | CanonicalAdmissionError::PlanMismatch)
+        ));
+    }
+
+    #[test]
+    fn mutated_if_block_type_fails_admission() {
+        let mut bytes = encode_validated(checked_guard_artifact()).unwrap();
+        let block_type = bytes
+            .windows(2)
+            .position(|window| window == [0x04, 0x40])
+            .expect("guard body has an empty if block")
+            + 1;
+        bytes[block_type] = 0x00;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_guard_artifact(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch)
+        ));
+    }
     #[test]
     fn packed_scalar_collection_access_mutates_and_preserves_headers() {
         let source = checked_packed_list_fixture(false);

@@ -160,6 +160,10 @@ impl OptimizationHistoryWitness {
         self.body.proper_tail_manifest_digest
     }
 
+    pub(crate) fn identity_digest(&self) -> ModuleDigest {
+        self.digest()
+    }
+
     pub fn validate(
         &self,
         initial: &CanonicalModule<InitialValid>,
@@ -1157,5 +1161,21 @@ mod tests {
             module_digest(&candidate(1, false)),
             module_digest(&candidate(1, true))
         );
+    }
+
+    #[test]
+    fn history_identity_binds_the_initial_checked_module() {
+        let first = OptimizationHistoryWitness {
+            body: OptimizationHistoryBody {
+                checked_lowering_revision_digest: ModuleDigest([1; 32]),
+                ordered: Vec::new(),
+                final_safewir_revision_digest: ModuleDigest([2; 32]),
+                optimizer_policy_and_route_digest: policy_and_route_digest(),
+            },
+        };
+        let mut second = first.clone();
+        second.body.checked_lowering_revision_digest = ModuleDigest([3; 32]);
+        assert_ne!(first.canonical_bytes(), second.canonical_bytes());
+        assert_ne!(first.identity_digest(), second.identity_digest());
     }
 }
