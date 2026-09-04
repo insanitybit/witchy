@@ -34,6 +34,7 @@ pub(super) struct MemoryChecker<'a> {
     comparisons: BTreeMap<ValueId, Comparison>,
     guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
     header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
+    static_data_objects: BTreeSet<ValueId>,
 }
 
 impl<'a> MemoryChecker<'a> {
@@ -62,6 +63,7 @@ impl<'a> MemoryChecker<'a> {
             comparisons: BTreeMap::new(),
             guards: BTreeSet::new(),
             header_values: BTreeMap::new(),
+            static_data_objects: BTreeSet::new(),
         };
         checker.initialize_parameters(signature)?;
         Ok(checker)
@@ -356,6 +358,7 @@ impl<'a> MemoryChecker<'a> {
                 allocation_class: None,
             },
         );
+        self.static_data_objects.insert(destination);
         Ok(())
     }
 
@@ -449,6 +452,12 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         if place.access() != AccessMode::Write || transfer != StoreTransfer::CopyScalar {
             return self.unsupported("Store(non-scalar)");
+        }
+        if self.static_data_objects.contains(&place.object()) {
+            return Err(InitialCheckError::WritableStaticData {
+                function: self.function.id,
+                object: place.object(),
+            });
         }
         if self.live_object(place.object())?.ownership != Ownership::Unique {
             return Err(InitialCheckError::InvalidOwnership {
@@ -587,6 +596,12 @@ impl<'a> MemoryChecker<'a> {
 
     fn update_count(&mut self, object: ValueId, count: ValueId) -> Result<(), InitialCheckError> {
         self.require_type(count, ValueType::Size)?;
+        if self.static_data_objects.contains(&object) {
+            return Err(InitialCheckError::WritableStaticData {
+                function: self.function.id,
+                object,
+            });
+        }
         let state = self.live_object(object)?.clone();
         if state.ownership != Ownership::Unique {
             return Err(InitialCheckError::InvalidOwnership {

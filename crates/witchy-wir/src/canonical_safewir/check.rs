@@ -85,6 +85,12 @@ pub enum InitialCheckError {
         actual: FunctionId,
     },
     UnsupportedMemoryOperation { function: FunctionId, operation: &'static str },
+    DuplicateStaticDataId(crate::canonical_safewir::StaticDataId),
+    MissingStaticDataId { function: FunctionId, data: crate::canonical_safewir::StaticDataId },
+    UnexpectedStaticDataId(crate::canonical_safewir::StaticDataId),
+    StaticDataExtentMismatch { function: FunctionId, object: ValueId },
+    PointerBearingStaticData { function: FunctionId, object: ValueId },
+    WritableStaticData { function: FunctionId, object: ValueId },
     UnsupportedHostCall { function: FunctionId },
     DuplicateImport(ImportId),
     MissingImportContract { function: FunctionId, import: ImportId },
@@ -160,6 +166,7 @@ fn check_candidate<S: ModuleStage>(
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
+    check_static_data(candidate, &layouts)?;
     let signatures = index_signatures(candidate.signatures())?;
     let imports = index_imports(candidate.imports())?;
     let functions = index_functions(candidate.functions())?;
@@ -188,6 +195,128 @@ fn check_candidate<S: ModuleStage>(
     }
 
     Ok(())
+}
+
+fn check_static_data<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    layouts: &crate::layout::LayoutInterner,
+) -> Result<(), InitialCheckError> {
+    let mut segments = BTreeMap::new();
+    for segment in candidate.static_data_segments() {
+        if segments.insert(segment.id(), segment).is_some() {
+            return Err(InitialCheckError::DuplicateStaticDataId(segment.id()));
+        }
+    }
+    let mut referenced = BTreeSet::new();
+    for function in candidate.functions() {
+        let constants: BTreeMap<_, _> = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.operations.iter())
+            .filter_map(|operation| match operation {
+                Operation::ConstSize { destination, value } => Some((*destination, *value)),
+                _ => None,
+            })
+            .collect();
+        for block in &function.blocks {
+            for operation in &block.operations {
+                let Operation::StaticData { destination, layout, extent, data } = operation else {
+                    continue;
+                };
+                let segment = segments.get(data).ok_or(InitialCheckError::MissingStaticDataId {
+                    function: function.id,
+                    data: *data,
+                })?;
+                referenced.insert(*data);
+                if layout_contains_pointer(*layout, layouts, &mut Vec::new()) {
+                    return Err(InitialCheckError::PointerBearingStaticData {
+                        function: function.id,
+                        object: *destination,
+                    });
+                }
+                if !static_data_extent_matches(*layout, extent, segment.bytes(), &constants, layouts) {
+                    return Err(InitialCheckError::StaticDataExtentMismatch {
+                        function: function.id,
+                        object: *destination,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(id) = segments.keys().find(|id| !referenced.contains(id)) {
+        return Err(InitialCheckError::UnexpectedStaticDataId(*id));
+    }
+    Ok(())
+}
+
+fn layout_contains_pointer(
+    layout: crate::layout::LayoutId,
+    layouts: &crate::layout::LayoutInterner,
+    visiting: &mut Vec<crate::layout::LayoutId>,
+) -> bool {
+    if visiting.contains(&layout) {
+        return true;
+    }
+    let Some(descriptor) = layouts.get(layout) else {
+        return true;
+    };
+    visiting.push(layout);
+    let result = descriptor.fields().iter().any(|field| match field.kind() {
+        crate::layout::FieldKind::Scalar(_) => false,
+        crate::layout::FieldKind::Pointer { .. } => true,
+        crate::layout::FieldKind::Inline(child) => layout_contains_pointer(child, layouts, visiting),
+    });
+    visiting.pop();
+    result
+}
+
+fn static_data_extent_matches(
+    layout: crate::layout::LayoutId,
+    extent: &super::Extent,
+    bytes: &[u8],
+    constants: &BTreeMap<ValueId, u64>,
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    let Some(descriptor) = layouts.get(layout) else {
+        return false;
+    };
+    match (extent, descriptor.size()) {
+        (super::Extent::FixedBytes(expected), crate::layout::LayoutSize::Fixed(actual)) => {
+            *expected == u64::from(actual) && bytes.len() == actual as usize
+        }
+        (
+            super::Extent::Counted { header_bytes, count, capacity, stride_bytes },
+            crate::layout::LayoutSize::Dynamic { base, stride },
+        ) => {
+            let crate::layout::HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, .. } = descriptor.header() else {
+                return false;
+            };
+            let (Some(count), Some(capacity)) = (constants.get(count), constants.get(capacity)) else {
+                return false;
+            };
+            let Some(body_bytes) = capacity.checked_mul(u64::from(*stride_bytes)) else {
+                return false;
+            };
+            let Some(end) = u64::from(*header_bytes).checked_add(body_bytes) else {
+                return false;
+            };
+            let header_end = usize::try_from(*header_bytes).ok();
+            let length_end = usize::try_from(length_offset).ok().and_then(|offset| offset.checked_add(4));
+            let capacity_end = usize::try_from(capacity_offset).ok().and_then(|offset| offset.checked_add(4));
+            *header_bytes == base
+                && *stride_bytes == stride
+                && *count <= *capacity
+                && *count <= u64::from(u32::MAX)
+                && *capacity <= u64::from(u32::MAX)
+                && end == bytes.len() as u64
+                && header_end == Some(data_offset as usize)
+                && length_end.is_some_and(|end| end <= bytes.len())
+                && capacity_end.is_some_and(|end| end <= bytes.len())
+                && u32::from_le_bytes(bytes[length_offset as usize..length_offset as usize + 4].try_into().unwrap()) == *count as u32
+                && u32::from_le_bytes(bytes[capacity_offset as usize..capacity_offset as usize + 4].try_into().unwrap()) == *capacity as u32
+        }
+        _ => false,
+    }
 }
 
 fn index_signatures(

@@ -570,6 +570,29 @@ pub struct ProperTailSite {
     pub function: FunctionId,
 }
 
+/// Immutable bytes installed by the canonical backend before heap allocation.
+/// Segment identity is part of the authenticated module digest; callers can
+/// only borrow the bytes after construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticDataSegment {
+    id: StaticDataId,
+    bytes: Vec<u8>,
+}
+
+impl StaticDataSegment {
+    pub fn new(id: StaticDataId, bytes: Vec<u8>) -> Self {
+        Self { id, bytes }
+    }
+
+    pub const fn id(&self) -> StaticDataId {
+        self.id
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredModuleParts {
     pub revision: Revision,
@@ -618,11 +641,22 @@ pub struct CanonicalModule<S: ModuleStage> {
     imports: Vec<ImportContract>,
     functions: Vec<Function>,
     proper_tail_sites: Vec<ProperTailSite>,
+    static_data_segments: Vec<StaticDataSegment>,
     stage: PhantomData<fn() -> S>,
 }
 
 impl CanonicalModule<LoweredCandidate> {
     pub fn from_lowering(parts: LoweredModuleParts) -> Self {
+        Self::from_lowering_with_static_data(parts, Vec::new())
+    }
+
+    /// Construct a candidate with module-level immutable static data. This is
+    /// intentionally separate from source lowering: only canonical producers
+    /// that already own the exact bytes may bind them here.
+    pub fn from_lowering_with_static_data(
+        parts: LoweredModuleParts,
+        static_data_segments: Vec<StaticDataSegment>,
+    ) -> Self {
         Self {
             revision: parts.revision,
             checked_source: parts.checked_source,
@@ -631,6 +665,7 @@ impl CanonicalModule<LoweredCandidate> {
             imports: parts.imports,
             functions: parts.functions,
             proper_tail_sites: parts.proper_tail_sites,
+            static_data_segments,
             stage: PhantomData,
         }
     }
@@ -644,6 +679,7 @@ impl CanonicalModule<LoweredCandidate> {
             imports: self.imports,
             functions: self.functions,
             proper_tail_sites: self.proper_tail_sites,
+            static_data_segments: self.static_data_segments,
             stage: PhantomData,
         }
     }
@@ -663,6 +699,7 @@ impl CanonicalModule<InitialValid> {
             imports: self.imports,
             functions,
             proper_tail_sites: self.proper_tail_sites,
+            static_data_segments: self.static_data_segments,
             stage: PhantomData,
         }
     }
@@ -678,6 +715,7 @@ impl CanonicalModule<TransformedCandidate> {
             imports: self.imports,
             functions: self.functions,
             proper_tail_sites: self.proper_tail_sites,
+            static_data_segments: self.static_data_segments,
             stage: PhantomData,
         }
     }
@@ -710,5 +748,9 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn proper_tail_sites(&self) -> &[ProperTailSite] {
         &self.proper_tail_sites
+    }
+
+    pub fn static_data_segments(&self) -> &[StaticDataSegment] {
+        &self.static_data_segments
     }
 }

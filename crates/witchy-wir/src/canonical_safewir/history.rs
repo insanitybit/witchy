@@ -294,6 +294,7 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     writer.u64(module.revision().get());
     writer.fixed_bytes(&module.checked_source().digest());
     writer.bytes(&module.layouts().canonical_bytes());
+    writer.static_data_segments(module.static_data_segments());
     writer.signatures(module.signatures());
     writer.imports(module.imports());
     writer.functions(module.functions());
@@ -326,10 +327,10 @@ fn policy_and_route_digest() -> ModuleDigest {
     digest_bytes(POLICY_DIGEST_DOMAIN, &super::assurance::policy_digest_bytes())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 1;
+const MODULE_SERIALIZATION_VERSION: u32 = 2;
 const HISTORY_SERIALIZATION_VERSION: u32 = 1;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v1";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v1";
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v2";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v2";
 const HISTORY_DOMAIN: &[u8] = b"witchy/canonical-safewir/optimization-history/v1";
 const HISTORY_DIGEST_DOMAIN: &[u8] =
     b"witchy/canonical-safewir/optimization-history-sha256/v1";
@@ -1061,6 +1062,16 @@ impl CanonicalWriter {
             self.tail_site(site);
         }
     }
+
+    fn static_data_segments(&mut self, segments: &[super::StaticDataSegment]) {
+        let mut ordered = segments.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|segment| segment.id());
+        self.len(ordered.len());
+        for segment in ordered {
+            self.u32(segment.id().get());
+            self.bytes(segment.bytes());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1136,6 +1147,57 @@ mod tests {
             module_digest(&candidate(1, false)),
             module_digest(&candidate(1, true))
         );
+    }
+
+    fn with_static_data(
+        module: CanonicalModule<super::super::LoweredCandidate>,
+        segments: Vec<super::super::StaticDataSegment>,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        CanonicalModule::from_lowering_with_static_data(super::super::LoweredModuleParts {
+            revision: module.revision(),
+            checked_source: module.checked_source(),
+            layouts: module.layouts().clone(),
+            signatures: module.signatures().to_vec(),
+            imports: module.imports().to_vec(),
+            functions: module.functions().to_vec(),
+            proper_tail_sites: module.proper_tail_sites().to_vec(),
+        }, segments)
+    }
+
+    #[test]
+    fn module_digest_binds_static_segment_bytes_and_ids() {
+        let first = with_static_data(
+            candidate(1, false),
+            vec![super::super::StaticDataSegment::new(super::super::StaticDataId::new(4), vec![1, 2, 3])],
+        );
+        let changed = with_static_data(
+            candidate(1, false),
+            vec![super::super::StaticDataSegment::new(super::super::StaticDataId::new(4), vec![1, 2, 4])],
+        );
+        let changed_id = with_static_data(
+            candidate(1, false),
+            vec![super::super::StaticDataSegment::new(super::super::StaticDataId::new(5), vec![1, 2, 3])],
+        );
+        assert_ne!(module_digest(&first), module_digest(&changed));
+        assert_ne!(module_digest(&first), module_digest(&changed_id));
+    }
+
+    #[test]
+    fn duplicate_and_unreferenced_static_segments_are_rejected() {
+        let duplicate = with_static_data(
+            candidate(1, false),
+            vec![
+                super::super::StaticDataSegment::new(super::super::StaticDataId::new(0), vec![1]),
+                super::super::StaticDataSegment::new(super::super::StaticDataId::new(0), vec![1]),
+            ],
+        );
+        assert!(matches!(super::super::check_initial(duplicate), Err(super::super::InitialCheckError::DuplicateStaticDataId(_))));
+
+        let unreferenced = with_static_data(
+            candidate(1, false),
+            vec![super::super::StaticDataSegment::new(super::super::StaticDataId::new(0), vec![1])],
+        );
+        assert!(matches!(super::super::check_initial(unreferenced), Err(super::super::InitialCheckError::UnexpectedStaticDataId(_))));
     }
 
     #[test]

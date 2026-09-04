@@ -78,6 +78,7 @@ enum ScalarInstruction {
         extent: Extent,
         class: crate::canonical_safewir::AllocationClass,
     },
+    StaticData { destination: ValueId, data: crate::canonical_safewir::StaticDataId },
     Load { destination: ValueId, place: Place, transfer: LoadTransfer },
     Store { place: Place, value: ValueId, transfer: StoreTransfer },
     UpdateCount { object: ValueId, count: ValueId },
@@ -170,7 +171,16 @@ struct WasmFunction {
 struct WasmIr {
     revision: crate::canonical_safewir::Revision,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
+    static_data: Vec<WasmStaticData>,
+    heap_start: u32,
     functions: Vec<WasmFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WasmStaticData {
+    id: crate::canonical_safewir::StaticDataId,
+    offset: u32,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +192,7 @@ enum CorrespondenceRule {
     ScalarGuard,
     ScalarMove,
     MemoryAlloc,
+    MemoryStaticData,
     MemoryLoad,
     MemoryStore,
     MemoryUpdateCount,
@@ -212,6 +223,7 @@ enum LoweringError {
     UnsupportedControlFlow { function: FunctionId, operation: &'static str },
     UnsupportedLayout { function: FunctionId, operation: &'static str },
     InvalidLayoutBundle,
+    StaticDataAddressOverflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,6 +439,9 @@ fn lower_operation(
             allocation_classes.insert(*destination, *class);
             ScalarInstruction::Alloc { destination: *destination, layout: *layout, extent: extent.clone(), class: *class }
         }
+        Operation::StaticData { destination, data, .. } => {
+            ScalarInstruction::StaticData { destination: *destination, data: *data }
+        }
         Operation::Load { destination, place, transfer } => {
             if *transfer != LoadTransfer::CopyScalar || place.access() != AccessMode::Read
                 || resolve_memory_place_for_values(function, value_types, layouts, place).is_err()
@@ -475,8 +490,7 @@ fn lower_operation(
         Operation::VarCall { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: "VarCall" });
         }
-        Operation::StaticData { .. }
-        | Operation::CopyBytes { .. }
+        Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
         | Operation::Retain { .. }
@@ -583,15 +597,37 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
     let module = module.module();
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
         .map_err(|_| LoweringError::InvalidLayoutBundle)?;
+    let (static_data, heap_start) = static_data_plan(module.static_data_segments())?;
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
+        static_data,
+        heap_start,
         functions: module
             .functions()
             .iter()
             .map(|function| lower_function(function, &layouts))
             .collect::<Result<Vec<_>, _>>()?,
     })
+}
+
+const STATIC_DATA_BASE: u32 = 16;
+
+fn static_data_plan(
+    segments: &[crate::canonical_safewir::StaticDataSegment],
+) -> Result<(Vec<WasmStaticData>, u32), LoweringError> {
+    let mut ordered = segments.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|segment| segment.id());
+    let mut offset = STATIC_DATA_BASE;
+    let mut plan = Vec::with_capacity(ordered.len());
+    for segment in ordered {
+        let bytes = u32::try_from(segment.bytes().len()).map_err(|_| LoweringError::StaticDataAddressOverflow)?;
+        let end = offset.checked_add(bytes).ok_or(LoweringError::StaticDataAddressOverflow)?;
+        plan.push(WasmStaticData { id: segment.id(), offset, bytes: segment.bytes().to_vec() });
+        offset = end;
+    }
+    let heap_start = offset.checked_add(7).map(|value| value & !7).ok_or(LoweringError::StaticDataAddressOverflow)?;
+    Ok((plan, heap_start))
 }
 
 fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
@@ -606,6 +642,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
         Operation::Alloc { .. } => Some(CorrespondenceRule::MemoryAlloc),
+        Operation::StaticData { .. } => Some(CorrespondenceRule::MemoryStaticData),
         Operation::Load { .. } => Some(CorrespondenceRule::MemoryLoad),
         Operation::Store { .. } => Some(CorrespondenceRule::MemoryStore),
         Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
@@ -613,8 +650,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         | Operation::Release { .. }
         | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
-        Operation::StaticData { .. }
-        | Operation::CopyBytes { .. }
+        Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
         | Operation::Retain { .. }
@@ -634,6 +670,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Alloc { destination, layout, extent, class }, ScalarInstruction::Alloc { destination: actual_destination, layout: actual_layout, extent: actual_extent, class: actual_class }) => destination == actual_destination && layout == actual_layout && extent == actual_extent && class == actual_class,
+        (Operation::StaticData { destination, data, .. }, ScalarInstruction::StaticData { destination: actual_destination, data: actual_data }) => destination == actual_destination && data == actual_data,
         (Operation::Load { destination, place, transfer }, ScalarInstruction::Load { destination: actual_destination, place: actual_place, transfer: actual_transfer }) => destination == actual_destination && place == actual_place && transfer == actual_transfer,
         (Operation::Store { place, value, transfer }, ScalarInstruction::Store { place: actual_place, value: actual_value, transfer: actual_transfer }) => place == actual_place && value == actual_value && transfer == actual_transfer,
         (Operation::UpdateCount { object, count }, ScalarInstruction::UpdateCount { object: actual_object, count: actual_count }) => object == actual_object && count == actual_count,
@@ -1390,6 +1427,7 @@ fn emit_instruction(
     layout: &LocalLayout,
     instruction: &ScalarInstruction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
 ) -> Result<(), EncodeError> {
     match instruction {
@@ -1414,6 +1452,14 @@ fn emit_instruction(
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc class" });
             }
             emit_alloc(body, function, layout, layouts, *destination, *layout_id, extent)?;
+        }
+        ScalarInstruction::StaticData { destination, data } => {
+            let offset = static_data.get(data).copied().ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id,
+                operation: "StaticData",
+            }))?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(offset as i32));
+            emit_set(body, layout, function.id, *destination)?;
         }
         ScalarInstruction::Load { destination, place, transfer } => {
             if *transfer != LoadTransfer::CopyScalar {
@@ -1457,6 +1503,7 @@ struct StructuredEmitter<'a> {
     target_function: &'a WasmFunction,
     layout: &'a LocalLayout,
     function_indices: &'a BTreeMap<FunctionId, u32>,
+    static_data: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &'a LayoutInterner,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
@@ -1714,6 +1761,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.static_data,
                 self.layouts,
             )?;
         }
@@ -1835,6 +1883,7 @@ impl StructuredEmitter<'_> {
                 self.layout,
                 &instruction.operation,
                 self.function_indices,
+                self.static_data,
                 self.layouts,
             )?;
         }
@@ -1889,6 +1938,7 @@ fn encode_function(
     signature: &FunctionSignature,
     target_function: &WasmFunction,
     function_indices: &BTreeMap<FunctionId, u32>,
+    static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
     let layout = local_layout(source_function, signature)?;
@@ -1907,6 +1957,7 @@ fn encode_function(
         target_function,
         layout: &layout,
         function_indices,
+        static_data,
         layouts,
         emitted: BTreeSet::new(),
         labels: Vec::new(),
@@ -1959,7 +2010,7 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
     let mut globals = GlobalSection::new();
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
-        &ConstExpr::i32_const(16),
+        &ConstExpr::i32_const(target.heap_start as i32),
     );
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
@@ -1967,13 +2018,18 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
     );
     let mut exports = ExportSection::new();
     let mut code = CodeSection::new();
+    let static_data_offsets: BTreeMap<_, _> = target.static_data.iter().map(|segment| (segment.id, segment.offset)).collect();
+    let mut data = DataSection::new();
+    for segment in &target.static_data {
+        data.active(0, &ConstExpr::i32_const(segment.offset as i32), segment.bytes.clone());
+    }
     for target_function in &target.functions {
         let source_function = source.functions().iter().find(|function| function.id == target_function.id).ok_or(EncodeError::MissingFunction(target_function.id))?;
         let signature = source.signatures().iter().find(|signature| signature.id == source_function.signature).ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, signature, target_function, &function_indices, &layouts)?);
+        code.function(&encode_function(source_function, signature, target_function, &function_indices, &static_data_offsets, &layouts)?);
     }
     let mut module = WasmModule::new();
     module
@@ -1983,6 +2039,9 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         .section(&globals)
         .section(&exports)
         .section(&code);
+    if !target.static_data.is_empty() {
+        module.section(&data);
+    }
     let bytes = module.finish();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
         .validate_all(&bytes)
@@ -2363,6 +2422,7 @@ fn expected_function_plan(
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
+    static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
@@ -2400,6 +2460,14 @@ fn expected_function_plan(
                 let value = u32::try_from(*value)
                     .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
                 plan.push(PlanToken::I32Const(value as i32));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::StaticData { destination, data, .. } => {
+                let offset = static_data_offsets
+                    .get(data)
+                    .copied()
+                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+                plan.push(PlanToken::I32Const(offset as i32));
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::NarrowSize { destination, value } => {
@@ -2538,7 +2606,7 @@ fn expected_metadata_prefix(
     let mut memory = MemorySection::new();
     memory.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
-    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(16));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
     let mut module = WasmModule::new();
     module.section(&types).section(&functions).section(&memory).section(&globals).section(&exports);
@@ -2559,10 +2627,18 @@ fn decode_and_match_plan(
     if bytes.len() < metadata.len() || bytes[..metadata.len()] != metadata[..] {
         return Err(CanonicalAdmissionError::PlanMismatch);
     }
+    let (expected_static_data, expected_heap_start) = static_data_plan(source.static_data_segments())
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    if target.heap_start != expected_heap_start || target.static_data != expected_static_data {
+        return Err(CanonicalAdmissionError::PlanMismatch);
+    }
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
         .map(|(index, function)| (function.id, index as u32))
+        .collect();
+    let static_data_offsets: BTreeMap<_, _> = target.static_data.iter()
+        .map(|segment| (segment.id, segment.offset))
         .collect();
     let expected = source.functions().iter()
         .map(|function| {
@@ -2571,13 +2647,14 @@ fn decode_and_match_plan(
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
             let local = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices)?))
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &static_data_offsets)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut actual = Vec::new();
     let mut code_count = None;
     let mut section_order = Vec::new();
     let mut code_started = false;
+    let mut actual_data = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
         match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
             wasmparser::Payload::Version { .. } => {}
@@ -2610,14 +2687,41 @@ fn decode_and_match_plan(
                 }
                 actual.push((locals, plan));
             }
+            wasmparser::Payload::DataSection(reader) => {
+                section_order.push(6);
+                for data in reader {
+                    let data = data.map_err(|_| CanonicalAdmissionError::WasmValidation)?;
+                    let wasmparser::DataKind::Active { memory_index, offset_expr } = data.kind else {
+                        return Err(CanonicalAdmissionError::PlanMismatch);
+                    };
+                    if memory_index != 0 {
+                        return Err(CanonicalAdmissionError::PlanMismatch);
+                    }
+                    let mut operators = offset_expr.get_operators_reader();
+                    let wasmparser::Operator::I32Const { value } = operators
+                        .read()
+                        .map_err(|_| CanonicalAdmissionError::WasmValidation)?
+                    else {
+                        return Err(CanonicalAdmissionError::PlanMismatch);
+                    };
+                    let offset = u32::try_from(value).map_err(|_| CanonicalAdmissionError::PlanMismatch)?;
+                    actual_data.push((offset, data.data.to_vec()));
+                }
+            }
             wasmparser::Payload::End(_) => {}
             _ => return Err(CanonicalAdmissionError::PlanMismatch),
         }
     }
     let expected_count = u32::try_from(expected.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    if section_order != [0, 1, 2, 3, 4, 5]
+    let mut expected_sections = vec![0, 1, 2, 3, 4, 5];
+    if !target.static_data.is_empty() {
+        expected_sections.push(6);
+    }
+    let expected_data = expected_static_data.iter().map(|segment| (segment.offset, segment.bytes.clone())).collect::<Vec<_>>();
+    if section_order != expected_sections
         || code_count != Some(expected_count)
         || actual != expected
+        || actual_data != expected_data
     {
         return Err(CanonicalAdmissionError::PlanMismatch);
     }
