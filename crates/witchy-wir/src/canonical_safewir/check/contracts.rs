@@ -1,0 +1,462 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::super::{
+    CallArgument, Function, FunctionId, FunctionSignature, FunctionSignatureId, MemoryEffect,
+    Operation, ParameterContract, ParameterOwnership, ResultContract, Terminator, ValueId,
+    ValueType,
+};
+use super::InitialCheckError;
+
+const MAX_CONTRACT_ITERATIONS: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BodySummary {
+    needs: Vec<ParameterNeed>,
+    results: Vec<DerivedResult>,
+    effects: BTreeMap<u32, BTreeSet<MemoryEffect>>,
+    escaped_parameters: BTreeSet<u32>,
+}
+
+/// Finite summary lattice. Unknown is never accepted; it only lets direct
+/// recursive calls iterate without treating declarations as body authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParameterNeed {
+    None,
+    Read,
+    Write,
+    Retain,
+    Release,
+    Reclaim,
+    Unknown,
+}
+
+impl ParameterNeed {
+    fn join(self, other: Self) -> Self {
+        use ParameterNeed::{None, Read, Reclaim, Release, Retain, Unknown, Write};
+        match (self, other) {
+            (Unknown, _) | (_, Unknown) => Unknown,
+            (None, value) | (value, None) => value,
+            (Read, Read) => Read,
+            (Write, Write) => Write,
+            (Retain, Retain) => Retain,
+            (Release, Release) => Release,
+            (Reclaim, Reclaim) => Reclaim,
+            (Reclaim, _) | (_, Reclaim) => Reclaim,
+            (Read, Write) | (Write, Read) => Write,
+            (Write, Retain) | (Retain, Write) | (Write, Release) | (Release, Write) => Write,
+            (Read, Retain) | (Retain, Read) | (Read, Release) | (Release, Read) => Read,
+            (Retain, Release) | (Release, Retain) => Unknown,
+        }
+    }
+
+    fn effect(self) -> Option<MemoryEffect> {
+        match self {
+            Self::None | Self::Unknown => None,
+            Self::Read => Some(MemoryEffect::Read),
+            Self::Write => Some(MemoryEffect::Write),
+            Self::Retain => Some(MemoryEffect::Retain),
+            Self::Release => Some(MemoryEffect::Release),
+            Self::Reclaim => Some(MemoryEffect::Reclaim),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DerivedResult {
+    Unseen,
+    Unknown,
+    Value(ValueType),
+    Fresh(crate::layout::LayoutId),
+    StaticData(crate::layout::LayoutId),
+    Shared(crate::layout::LayoutId),
+    AliasesParameter { parameter: u32, layout: crate::layout::LayoutId },
+    ReallocatesParameter { parameter: u32, layout: crate::layout::LayoutId },
+}
+
+impl DerivedResult {
+    fn join(&mut self, other: Self) {
+        if matches!(self, Self::Unseen) {
+            *self = other;
+        } else if matches!(other, Self::Unseen) || *self == other {
+            return;
+        } else {
+            *self = Self::Unknown;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Unknown,
+    Parameter { parameter: u32, layout: Option<crate::layout::LayoutId> },
+    Fresh(crate::layout::LayoutId),
+    StaticData(crate::layout::LayoutId),
+    Shared(crate::layout::LayoutId),
+    ReallocatesParameter { parameter: u32, layout: crate::layout::LayoutId },
+}
+
+impl Origin {
+    fn result(self, value_type: ValueType) -> DerivedResult {
+        match (self, value_type) {
+            (Origin::Unknown, value_type) if is_scalar(value_type) => DerivedResult::Value(value_type),
+            (Origin::Fresh(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::Fresh(layout),
+            (Origin::StaticData(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::StaticData(layout),
+            (Origin::Shared(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::Shared(layout),
+            (Origin::Parameter { parameter, layout: Some(layout) }, ValueType::Ref(actual)) if layout == actual => {
+                DerivedResult::AliasesParameter { parameter, layout }
+            }
+            (Origin::ReallocatesParameter { parameter, layout }, ValueType::Ref(actual)) if layout == actual => {
+                DerivedResult::ReallocatesParameter { parameter, layout }
+            }
+            _ => DerivedResult::Unknown,
+        }
+    }
+}
+
+pub(super) fn check_all(
+    functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+) -> Result<(), InitialCheckError> {
+    let mut summaries = functions
+        .iter()
+        .map(|(id, function)| Ok((*id, initial_summary(function, signatures)?)))
+        .collect::<Result<BTreeMap<_, _>, InitialCheckError>>()?;
+
+    let mut converged = false;
+    for _ in 0..MAX_CONTRACT_ITERATIONS {
+        let next = functions
+            .iter()
+            .map(|(id, function)| Ok((*id, derive_summary(function, functions, signatures, &summaries)?)))
+            .collect::<Result<BTreeMap<_, _>, InitialCheckError>>()?;
+        if next == summaries {
+            converged = true;
+            summaries = next;
+            break;
+        }
+        summaries = next;
+    }
+    if !converged {
+        return Err(InitialCheckError::UnknownCallableContract {
+            function: functions.keys().next().copied().unwrap_or(FunctionId::new(0)),
+        });
+    }
+
+    for function in functions.values() {
+        let signature = signatures
+            .get(&function.signature)
+            .copied()
+            .ok_or(InitialCheckError::MissingSignature(function.signature))?;
+        check_declaration(signature, &summaries[&function.id])?;
+    }
+    Ok(())
+}
+
+fn initial_summary(
+    function: &Function,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+) -> Result<BodySummary, InitialCheckError> {
+    let signature = signatures
+        .get(&function.signature)
+        .copied()
+        .ok_or(InitialCheckError::MissingSignature(function.signature))?;
+    Ok(BodySummary {
+        needs: vec![ParameterNeed::None; signature.parameters.len()],
+        results: vec![DerivedResult::Unseen; signature.results.len()],
+        effects: BTreeMap::new(),
+        escaped_parameters: BTreeSet::new(),
+    })
+}
+
+fn derive_summary(
+    function: &Function,
+    functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+) -> Result<BodySummary, InitialCheckError> {
+    let entry = function
+        .blocks
+        .iter()
+        .find(|block| block.id == function.entry)
+        .ok_or(InitialCheckError::MissingBlock { function: function.id, block: function.entry })?;
+    let parameter_values = entry
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| (parameter.value, index as u32))
+        .collect::<BTreeMap<_, _>>();
+    let mut origins = parameter_values
+        .iter()
+        .map(|(value, parameter)| {
+            let layout = match function.value_types.get(value).copied() {
+                Some(ValueType::Ref(layout)) => Some(layout),
+                _ => None,
+            };
+            (*value, Origin::Parameter { parameter: *parameter, layout })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut summary = initial_summary(function, signatures)?;
+
+    for block in &function.blocks {
+        for operation in &block.operations {
+            derive_operation(function, operation, functions, summaries, &parameter_values, &mut origins, &mut summary)?;
+        }
+        match &block.terminator {
+            Terminator::Return { values } => {
+                for (index, value) in values.iter().enumerate() {
+                    let value_type = function.value_types.get(value).copied().unwrap_or(ValueType::Unit);
+                    let result = origins.get(value).copied().unwrap_or(Origin::Unknown).result(value_type);
+                    if let Some(slot) = summary.results.get_mut(index) {
+                        slot.join(result);
+                    }
+                    if let Some(parameter) = parameter_values.get(value).copied() {
+                        summary.escaped_parameters.insert(parameter);
+                        summary.needs[parameter as usize] = summary.needs[parameter as usize].join(ParameterNeed::Read);
+                    }
+                }
+            }
+            Terminator::TailCall { callee, arguments, .. } => {
+                derive_tail_results(function, *callee, arguments, functions, summaries, &origins, &mut summary)?;
+                derive_call_needs(*callee, arguments, functions, summaries, &parameter_values, &mut summary)?;
+            }
+            Terminator::VarTailCall { .. } => {
+                return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+            }
+            Terminator::Branch { .. } | Terminator::BranchIf { .. } | Terminator::Trap | Terminator::Unreachable => {}
+        }
+    }
+    Ok(summary)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_operation(
+    function: &Function,
+    operation: &Operation,
+    functions: &BTreeMap<FunctionId, &Function>,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+    parameter_values: &BTreeMap<ValueId, u32>,
+    origins: &mut BTreeMap<ValueId, Origin>,
+    summary: &mut BodySummary,
+) -> Result<(), InitialCheckError> {
+    match operation {
+        Operation::Alloc { destination, layout, .. } => { origins.insert(*destination, Origin::Fresh(*layout)); }
+        Operation::StaticData { destination, layout, .. } => { origins.insert(*destination, Origin::StaticData(*layout)); }
+        Operation::Share { destination, source } => {
+            let origin = match origin_of(origins, *source) {
+                Origin::Parameter { layout: Some(layout), .. } | Origin::Fresh(layout) | Origin::StaticData(layout) | Origin::Shared(layout) | Origin::ReallocatesParameter { layout, .. } => Origin::Shared(layout),
+                _ => Origin::Unknown,
+            };
+            origins.insert(*destination, origin);
+            add_effect(summary, origin_of(origins, *source), MemoryEffect::Retain);
+        }
+        Operation::MoveValue { destination, source } => { origins.insert(*destination, origin_of(origins, *source)); }
+        Operation::Load { destination, place, .. } => {
+            add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);
+            origins.insert(*destination, Origin::Unknown);
+        }
+        Operation::Store { place, value, .. } => {
+            add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
+            if matches!(origin_of(origins, *value), Origin::Parameter { .. }) { mark_escape(summary, origin_of(origins, *value)); }
+        }
+        Operation::UpdateCount { object, .. } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Write); }
+        Operation::Reclaim { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Reclaim); }
+        Operation::Retain { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Retain); }
+        Operation::Release { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Release); }
+        Operation::CopyBytes { destination, source, .. } => {
+            add_effect(summary, origin_of(origins, source.object()), MemoryEffect::Read);
+            add_effect(summary, origin_of(origins, destination.object()), MemoryEffect::Write);
+        }
+        Operation::MoveRange { destination, source, .. } => {
+            add_effect(summary, origin_of(origins, source.object()), MemoryEffect::Write);
+            add_effect(summary, origin_of(origins, destination.object()), MemoryEffect::Write);
+        }
+        Operation::CloneRange { destination, source, .. } => {
+            add_effect(summary, origin_of(origins, source.object()), MemoryEffect::Read);
+            add_effect(summary, origin_of(origins, destination.object()), MemoryEffect::Write);
+        }
+        Operation::Call { destinations, callee, arguments } => {
+            let callee_summary = summaries.get(callee).ok_or(InitialCheckError::MissingFunction(*callee))?;
+            if destinations.len() != callee_summary.results.len() {
+                return Err(InitialCheckError::ArityMismatch { context: "derived call results", expected: callee_summary.results.len(), actual: destinations.len() });
+            }
+            for (destination, result) in destinations.iter().zip(&callee_summary.results) {
+                let value_type = function.value_types.get(destination).copied().unwrap_or(ValueType::Unit);
+                origins.insert(*destination, result_origin(result, arguments, origins, value_type));
+            }
+            derive_call_needs(*callee, arguments, functions, summaries, parameter_values, summary)?;
+        }
+        Operation::VarCall { .. } => {
+            return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+        }
+        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
+    }
+    Ok(())
+}
+
+fn derive_tail_results(
+    function: &Function,
+    callee: FunctionId,
+    arguments: &[CallArgument],
+    functions: &BTreeMap<FunctionId, &Function>,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+    origins: &BTreeMap<ValueId, Origin>,
+    summary: &mut BodySummary,
+) -> Result<(), InitialCheckError> {
+    let callee_function = functions.get(&callee).ok_or(InitialCheckError::MissingFunction(callee))?;
+    let callee_summary = summaries.get(&callee).ok_or(InitialCheckError::MissingFunction(callee))?;
+    let result_types = callee_function
+        .blocks
+        .iter()
+        .flat_map(|block| match &block.terminator { Terminator::Return { values } => values.clone(), _ => Vec::new() })
+        .collect::<Vec<_>>();
+    let expected_results = summary.results.len();
+    for (index, slot) in summary.results.iter_mut().enumerate() {
+        let result = callee_summary.results.get(index).ok_or(InitialCheckError::ArityMismatch { context: "derived tail-call results", expected: expected_results, actual: callee_summary.results.len() })?;
+        let value_type = result_types.get(index).and_then(|value| callee_function.value_types.get(value)).copied().unwrap_or(ValueType::Unit);
+        slot.join(result_origin(result, arguments, origins, value_type).result(value_type));
+    }
+    let _ = function;
+    Ok(())
+}
+
+fn derive_call_needs(
+    callee: FunctionId,
+    arguments: &[CallArgument],
+    functions: &BTreeMap<FunctionId, &Function>,
+    summaries: &BTreeMap<FunctionId, BodySummary>,
+    parameter_values: &BTreeMap<ValueId, u32>,
+    summary: &mut BodySummary,
+) -> Result<(), InitialCheckError> {
+    if !functions.contains_key(&callee) { return Err(InitialCheckError::MissingFunction(callee)); }
+    let callee_summary = summaries.get(&callee).ok_or(InitialCheckError::MissingFunction(callee))?;
+    for (index, argument) in arguments.iter().enumerate() {
+        let Some(parameter) = parameter_values.get(&argument_value(argument)).copied() else { continue; };
+        let need = callee_summary.needs.get(index).copied().unwrap_or(ParameterNeed::Unknown);
+        if let Some(effect) = need.effect() { add_effect(summary, Origin::Parameter { parameter, layout: None }, effect); }
+        let mut merged = summary.needs.get(parameter as usize).copied().ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?.join(need);
+        if matches!(argument, CallArgument::Move(_)) { merged = merged.join(ParameterNeed::Reclaim); }
+        summary.needs[parameter as usize] = merged;
+    }
+    Ok(())
+}
+
+fn origin_of(origins: &BTreeMap<ValueId, Origin>, value: ValueId) -> Origin {
+    origins.get(&value).copied().unwrap_or(Origin::Unknown)
+}
+
+fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &BTreeMap<ValueId, Origin>, _value_type: ValueType) -> Origin {
+    match result {
+        DerivedResult::Fresh(layout) => Origin::Fresh(*layout),
+        DerivedResult::StaticData(layout) => Origin::StaticData(*layout),
+        DerivedResult::Shared(layout) => Origin::Shared(*layout),
+        DerivedResult::AliasesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).map(|origin| match origin { Origin::Parameter { parameter, .. } => Origin::Parameter { parameter, layout: Some(*layout) }, other => other }).unwrap_or(Origin::Unknown),
+        DerivedResult::ReallocatesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).and_then(|origin| match origin { Origin::Parameter { parameter, .. } => Some(Origin::ReallocatesParameter { parameter, layout: *layout }), _ => None }).unwrap_or(Origin::Unknown),
+        DerivedResult::Unseen | DerivedResult::Unknown | DerivedResult::Value(_) => Origin::Unknown,
+    }
+}
+
+fn argument_value(argument: &CallArgument) -> ValueId {
+    match argument { CallArgument::Value(value) | CallArgument::Move(value) | CallArgument::Share(value) => *value, CallArgument::Borrow(borrow) => borrow.source() }
+}
+
+fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
+    let (Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. }) = origin else { return; };
+    summary.effects.entry(parameter).or_default().insert(effect);
+    let need = match effect { MemoryEffect::Read => ParameterNeed::Read, MemoryEffect::Write => ParameterNeed::Write, MemoryEffect::Retain => ParameterNeed::Retain, MemoryEffect::Release => ParameterNeed::Release, MemoryEffect::Reclaim => ParameterNeed::Reclaim };
+    if let Some(slot) = summary.needs.get_mut(parameter as usize) { *slot = slot.join(need); }
+}
+
+fn mark_escape(summary: &mut BodySummary, origin: Origin) { if let Origin::Parameter { parameter, .. } = origin { summary.escaped_parameters.insert(parameter); } }
+
+fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Result<(), InitialCheckError> {
+    if signature.contract.parameters.len() != signature.parameters.len() || signature.contract.results.len() != signature.results.len() { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+    for (parameter, value_type) in signature.contract.parameters.iter().zip(&signature.parameters) {
+        if parameter.value_type != *value_type { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+    }
+    for (index, result) in signature.contract.results.iter().enumerate() {
+        if !result_matches(result, &summary.results[index]) { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+    }
+    for (parameter, effects) in &signature.contract.parameter_effects {
+        if *parameter as usize >= signature.parameters.len() || effects.iter().copied().collect::<BTreeSet<_>>().len() != effects.len() { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+    }
+    for (index, need) in summary.needs.iter().copied().enumerate() {
+        let parameter = &signature.contract.parameters[index];
+        let declared = signature.contract.parameter_effects.get(&(index as u32)).cloned().unwrap_or_default().into_iter().collect::<BTreeSet<_>>();
+        let derived = summary.effects.get(&(index as u32)).cloned().unwrap_or_default();
+        if !derived.is_subset(&declared) || !ownership_supports(parameter, need) || (summary.escaped_parameters.contains(&(index as u32)) && parameter.non_escaping) { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+    }
+    Ok(())
+}
+
+fn ownership_supports(parameter: &ParameterContract, need: ParameterNeed) -> bool {
+    use ParameterNeed::{None, Read, Reclaim, Release, Retain, Unknown, Write};
+    match (parameter.ownership, need) {
+        (_, None) => true,
+        (_, Unknown) => false,
+        (ParameterOwnership::Unique, Read | Write | Retain | Release | Reclaim) => true,
+        (ParameterOwnership::Shared, Read | Retain | Release) => true,
+        (ParameterOwnership::CallBorrow { mode }, Read) => matches!(mode, super::super::BorrowMode::Read | super::super::BorrowMode::Write),
+        (ParameterOwnership::CallBorrow { mode }, Write) => matches!(mode, super::super::BorrowMode::Write),
+        _ => false,
+    }
+}
+
+fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
+    match (declared, derived) {
+        (ResultContract::Value(expected), DerivedResult::Value(actual)) => expected == actual,
+        (ResultContract::Fresh { layout: expected }, DerivedResult::Fresh(actual)) | (ResultContract::StaticData { layout: expected }, DerivedResult::StaticData(actual)) | (ResultContract::Shared { layout: expected }, DerivedResult::Shared(actual)) => expected == actual,
+        (ResultContract::AliasesParameter { parameter, layout }, DerivedResult::AliasesParameter { parameter: actual_parameter, layout: actual_layout }) | (ResultContract::ReallocatesParameter { parameter, layout }, DerivedResult::ReallocatesParameter { parameter: actual_parameter, layout: actual_layout }) => parameter == actual_parameter && layout == actual_layout,
+        _ => false,
+    }
+}
+
+fn is_scalar(value_type: ValueType) -> bool { matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canonical_safewir::{AllocationClass, BasicBlock, BlockId, BlockParameter, Extent, Ownership, StaticDataId};
+
+    const ENTRY: BlockId = BlockId::new(0);
+    fn layout() -> crate::layout::LayoutId { crate::layout::LayoutId::from_bytes([1; 32]) }
+    fn maps(function: Function, signature: FunctionSignature) -> (BTreeMap<FunctionId, &'static Function>, BTreeMap<FunctionSignatureId, &'static FunctionSignature>) { let function: &'static Function = Box::leak(Box::new(function)); let signature: &'static FunctionSignature = Box::leak(Box::new(signature)); ([(function.id, function)].into_iter().collect(), [(signature.id, signature)].into_iter().collect()) }
+
+    #[test]
+    fn static_result_cannot_claim_fresh() {
+        let object = ValueId::new(0); let layout = layout();
+        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout }], parameter_effects: BTreeMap::new() };
+        let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::StaticData { destination: object, layout, extent: Extent::FixedBytes(4), data: StaticDataId::new(0) }], terminator: Terminator::Return { values: vec![object] } }] };
+        let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
+        let (functions, signatures) = maps(function, signature);
+        assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+    }
+
+    #[test]
+    fn allocation_derives_fresh_result() {
+        let object = ValueId::new(0); let layout = layout();
+        let contract = super::super::super::CallableContract { parameters: Vec::new(), results: vec![ResultContract::Fresh { layout }], parameter_effects: BTreeMap::new() };
+        let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::Alloc { destination: object, layout, extent: Extent::FixedBytes(4), class: AllocationClass::Bump }], terminator: Terminator::Return { values: vec![object] } }] };
+        let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
+        let (functions, signatures) = maps(function, signature);
+        assert!(check_all(&functions, &signatures).is_ok());
+    }
+
+    #[test]
+    fn returning_a_parameter_derives_alias_result() {
+        let object = ValueId::new(0); let layout = layout();
+        let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared, non_escaping: false }], results: vec![ResultContract::AliasesParameter { parameter: 0, layout }], parameter_effects: BTreeMap::new() };
+        let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Shared) }], operations: Vec::new(), terminator: Terminator::Return { values: vec![object] } }] };
+        let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: vec![ValueType::Ref(layout)], contract };
+        let (functions, signatures) = maps(function, signature);
+        assert!(check_all(&functions, &signatures).is_ok());
+    }
+
+    #[test]
+    fn weaker_effect_declaration_is_rejected() {
+        let object = ValueId::new(0); let layout = layout();
+        let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Unique, non_escaping: false }], results: Vec::new(), parameter_effects: BTreeMap::new() };
+        let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Unique) }], operations: vec![Operation::Reclaim { object }], terminator: Terminator::Return { values: Vec::new() } }] };
+        let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: Vec::new(), contract };
+        let (functions, signatures) = maps(function, signature);
+        assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+    }
+}

@@ -11,6 +11,7 @@ use super::{
 
 mod memory;
 use memory::MemoryChecker;
+mod contracts;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitialCheckError {
@@ -69,8 +70,10 @@ pub enum InitialCheckError {
     UnsupportedMemoryOperation { function: FunctionId, operation: &'static str },
     UnsupportedHostCall { function: FunctionId },
     UnsupportedBorrowArgument { function: FunctionId },
+    UnsupportedIndirectCall { function: FunctionId },
     UnsupportedMemorySignature { signature: FunctionSignatureId },
     CallableContractMismatch { signature: FunctionSignatureId },
+    UnknownCallableContract { function: FunctionId },
 }
 
 impl fmt::Display for InitialCheckError {
@@ -115,6 +118,7 @@ fn check_candidate<S: ModuleStage>(
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
     let signatures = index_signatures(candidate.signatures())?;
     let functions = index_functions(candidate.functions())?;
+    contracts::check_all(&functions, &signatures)?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
     let mut observed_tail_sites = BTreeSet::new();
 
@@ -146,7 +150,6 @@ fn index_signatures(
         if result.insert(signature.id, signature).is_some() {
             return Err(InitialCheckError::DuplicateSignature(signature.id));
         }
-        check_scalar_signature(signature)?;
     }
     Ok(result)
 }
@@ -173,50 +176,6 @@ fn index_tail_obligations(
         }
     }
     Ok(result)
-}
-
-fn check_scalar_signature(signature: &FunctionSignature) -> Result<(), InitialCheckError> {
-    let parameters_match = signature.contract.parameters.len() == signature.parameters.len()
-        && signature
-            .contract
-            .parameters
-            .iter()
-            .zip(&signature.parameters)
-            .all(|(contract, value_type)| {
-                contract.value_type == *value_type
-                    && contract.ownership == ParameterOwnership::Value
-                    && !contract.non_escaping
-            });
-    let results_match = signature.contract.results.len() == signature.results.len()
-        && signature
-            .contract
-            .results
-            .iter()
-            .zip(&signature.results)
-            .all(|(contract, value_type)| {
-                matches!(contract, super::ResultContract::Value(actual) if actual == value_type)
-            });
-    if !parameters_match || !results_match || !signature.contract.parameter_effects.is_empty() {
-        return Err(InitialCheckError::CallableContractMismatch {
-            signature: signature.id,
-        });
-    }
-    if signature
-        .parameters
-        .iter()
-        .chain(&signature.results)
-        .any(ValueType::is_memory_bearing)
-        || signature
-            .contract
-            .parameters
-            .iter()
-            .any(|parameter| parameter.value_type.is_memory_bearing())
-    {
-        return Err(InitialCheckError::UnsupportedMemorySignature {
-            signature: signature.id,
-        });
-    }
-    Ok(())
 }
 
 fn check_function(
@@ -301,7 +260,9 @@ fn check_entry_parameters(
     signature: &FunctionSignature,
 ) -> Result<(), InitialCheckError> {
     require_arity("entry parameters", signature.parameters.len(), block.parameters.len())?;
-    for (parameter, expected) in block.parameters.iter().zip(&signature.parameters) {
+    for (parameter_index, (parameter, expected)) in
+        block.parameters.iter().zip(&signature.parameters).enumerate()
+    {
         require_type(function, parameter.value, *expected)?;
         if parameter.value_type != *expected {
             return Err(InitialCheckError::TypeMismatch {
@@ -311,10 +272,36 @@ fn check_entry_parameters(
                 actual: parameter.value_type,
             });
         }
-        if parameter.ownership.is_some() {
-            return Err(InitialCheckError::UnsupportedMemorySignature {
-                signature: signature.id,
-            });
+        let contract = &signature.contract.parameters[parameter_index];
+        match contract.ownership {
+            ParameterOwnership::Value => {
+                if parameter.ownership.is_some() {
+                    return Err(InitialCheckError::UnsupportedMemorySignature {
+                        signature: signature.id,
+                    });
+                }
+            }
+            ParameterOwnership::Unique => {
+                if parameter.ownership != Some(super::Ownership::Unique) {
+                    return Err(InitialCheckError::CallableContractMismatch {
+                        signature: signature.id,
+                    });
+                }
+            }
+            ParameterOwnership::Shared => {
+                if parameter.ownership != Some(super::Ownership::Shared) {
+                    return Err(InitialCheckError::CallableContractMismatch {
+                        signature: signature.id,
+                    });
+                }
+            }
+            ParameterOwnership::CallBorrow { .. } => {
+                if parameter.ownership.is_some() {
+                    return Err(InitialCheckError::CallableContractMismatch {
+                        signature: signature.id,
+                    });
+                }
+            }
         }
     }
     Ok(())
@@ -730,19 +717,55 @@ fn check_call(
 ) -> Result<(), InitialCheckError> {
     require_arity("call arguments", signature.parameters.len(), arguments.len())?;
     require_arity("call results", signature.results.len(), destinations.len())?;
-    for (argument, expected) in arguments.iter().zip(&signature.parameters) {
-        let value = match argument {
-            CallArgument::Value(value) => *value,
-            CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
-                return Err(InitialCheckError::UnsupportedBorrowArgument {
-                    function: function.id,
-                });
+    for (argument, expected) in arguments.iter().zip(&signature.contract.parameters) {
+        let (value, ownership) = match argument {
+            CallArgument::Value(value) => (*value, ParameterOwnership::Value),
+            CallArgument::Move(value) => (*value, ParameterOwnership::Unique),
+            CallArgument::Share(value) => (*value, ParameterOwnership::Shared),
+            CallArgument::Borrow(borrow) => (
+                borrow.source(),
+                ParameterOwnership::CallBorrow { mode: borrow.mode() },
+            ),
+        };
+        require_type(function, value, expected.value_type)?;
+        let accepted = match (expected.ownership, ownership) {
+            (ParameterOwnership::Value, ParameterOwnership::Value)
+            | (ParameterOwnership::Unique, ParameterOwnership::Unique)
+            | (ParameterOwnership::Shared, ParameterOwnership::Shared) => true,
+            (
+                ParameterOwnership::CallBorrow { mode: expected_mode },
+                ParameterOwnership::CallBorrow { mode: actual_mode },
+            ) => {
+                expected_mode == actual_mode && expected.non_escaping
+            }
+            _ => false,
+        };
+        if !accepted {
+            return Err(InitialCheckError::UnsupportedBorrowArgument {
+                function: function.id,
+            });
+        }
+    }
+    for (destination, (expected, contract)) in destinations
+        .iter()
+        .zip(signature.results.iter().zip(&signature.contract.results))
+    {
+        require_type(function, *destination, *expected)?;
+        let contract_type = match contract {
+            super::ResultContract::Value(value_type) => *value_type,
+            super::ResultContract::Fresh { layout }
+            | super::ResultContract::Shared { layout }
+            | super::ResultContract::StaticData { layout }
+            | super::ResultContract::AliasesParameter { layout, .. }
+            | super::ResultContract::ReallocatesParameter { layout, .. } => {
+                ValueType::Ref(*layout)
             }
         };
-        require_type(function, value, *expected)?;
-    }
-    for (destination, expected) in destinations.iter().zip(&signature.results) {
-        require_type(function, *destination, *expected)?;
+        if contract_type != *expected {
+            return Err(InitialCheckError::CallableContractMismatch {
+                signature: signature.id,
+            });
+        }
     }
     Ok(())
 }
