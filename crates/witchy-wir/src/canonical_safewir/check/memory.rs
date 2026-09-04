@@ -47,6 +47,7 @@ struct Comparison {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryState {
     objects: BTreeMap<ValueId, ObjectState>,
+    stored_objects: BTreeMap<(ValueId, ValueId), ObjectState>,
     constants: BTreeMap<ValueId, u64>,
     exact_additions: BTreeMap<ValueId, (ValueId, ValueId)>,
     comparisons: BTreeMap<ValueId, Comparison>,
@@ -72,6 +73,7 @@ impl<'a> MemoryChecker<'a> {
             layouts,
             state: MemoryState {
                 objects: BTreeMap::new(),
+                stored_objects: BTreeMap::new(),
                 constants: BTreeMap::new(),
                 exact_additions: BTreeMap::new(),
                 comparisons: BTreeMap::new(),
@@ -138,6 +140,17 @@ impl<'a> MemoryChecker<'a> {
 
         Ok(MemoryState {
             objects,
+            stored_objects: self
+                .state
+                .stored_objects
+                .iter()
+                .map(|((container, index), state)| {
+                    (
+                        (remap_value(&renames, *container), remap_value(&renames, *index)),
+                        state.clone(),
+                    )
+                })
+                .collect(),
             constants: self
                 .state
                 .constants
@@ -234,6 +247,7 @@ impl<'a> MemoryChecker<'a> {
 
         Ok(MemoryState {
             objects,
+            stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
             constants: intersect_map(&existing.constants, &incoming.constants),
             exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
             comparisons: intersect_map(&existing.comparisons, &incoming.comparisons),
@@ -1003,33 +1017,71 @@ impl<'a> MemoryChecker<'a> {
         place: &Place,
         transfer: LoadTransfer,
     ) -> Result<(), InitialCheckError> {
-        if place.access() != AccessMode::Read || transfer != LoadTransfer::CopyScalar {
-            return self.unsupported("Load(non-scalar)");
+        if place.access() != AccessMode::Read {
+            return self.unsupported("Load(access)");
         }
         let expected = self.check_place(place)?;
-        if expected.is_memory_bearing() {
-            return self.unsupported("Load(reference)");
+        if !expected.is_memory_bearing() {
+            if transfer != LoadTransfer::CopyScalar {
+                return self.unsupported("Load(scalar transfer)");
+            }
+            self.require_type(destination, expected)?;
+            if let Projection::Header(field) = place.projection()
+                && matches!(
+                    self.live_object(place.object())?.extent,
+                    Extent::HeaderPrefix { .. }
+                )
+            {
+                self.state
+                    .header_values
+                    .insert((place.object(), *field), destination);
+            }
+            return Ok(());
         }
-        self.require_type(destination, expected)?;
-        if let Projection::Header(field) = place.projection()
-            && matches!(
-                self.live_object(place.object())?.extent,
-                Extent::HeaderPrefix { .. }
-            )
-        {
-            // A header load observes the current header; it does not create a
-            // new logical length/capacity definition.  Counted objects already
-            // have their current extent in `ObjectState`, and replacing that
-            // identity with the load destination would discard guards proved
-            // against the definition that established the extent.  Header
-            // loads are recorded only while bootstrapping an unknown
-            // header-prefix object so `promote_header_extent` can authenticate
-            // its dynamic extent.
-            self.state
-                .header_values
-                .insert((place.object(), *field), destination);
+        let ValueType::Ref(layout) = expected else {
+            return self.unsupported("Load(non-linear reference)");
+        };
+        self.require_ref_type(destination, layout)?;
+        let key = self.reference_slot(place)?;
+        let mut stored = self
+            .state
+            .stored_objects
+            .get(&key)
+            .cloned()
+            .ok_or(InitialCheckError::UnsupportedMemoryOperation {
+                function: self.function.id,
+                operation: "Load(uninitialized reference)",
+            })?;
+        match transfer {
+            LoadTransfer::CloneShared => {
+                if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
+                    || stored.allocation_class != Some(AllocationClass::ReferenceCounted)
+                {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: place.object(),
+                    });
+                }
+                stored.ownership = Ownership::Shared;
+                self.state.stored_objects.insert(key, stored.clone());
+                self.state.objects.insert(destination, stored);
+                Ok(())
+            }
+            LoadTransfer::MoveUnique => {
+                if self.live_object(place.object())?.ownership != Ownership::Unique
+                    || stored.ownership != Ownership::Unique
+                {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: place.object(),
+                    });
+                }
+                self.state.stored_objects.remove(&key);
+                self.state.objects.insert(destination, stored);
+                Ok(())
+            }
+            LoadTransfer::CopyScalar => self.unsupported("Load(reference copy)"),
         }
-        Ok(())
     }
 
     fn store(
@@ -1038,8 +1090,8 @@ impl<'a> MemoryChecker<'a> {
         value: ValueId,
         transfer: StoreTransfer,
     ) -> Result<(), InitialCheckError> {
-        if place.access() != AccessMode::Write || transfer != StoreTransfer::CopyScalar {
-            return self.unsupported("Store(non-scalar)");
+        if place.access() != AccessMode::Write {
+            return self.unsupported("Store(access)");
         }
         if matches!(place.projection(), Projection::Header(_)) {
             return self.unsupported("Store(header)");
@@ -1057,10 +1109,57 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         let expected = self.check_place(place)?;
-        if expected.is_memory_bearing() {
-            return self.unsupported("Store(reference)");
+        if !expected.is_memory_bearing() {
+            if transfer != StoreTransfer::CopyScalar {
+                return self.unsupported("Store(scalar transfer)");
+            }
+            return self.require_type(value, expected);
         }
-        self.require_type(value, expected)
+        let ValueType::Ref(layout) = expected else {
+            return self.unsupported("Store(non-linear reference)");
+        };
+        self.require_ref_type(value, layout)?;
+        let key = self.reference_slot(place)?;
+        if self.state.stored_objects.contains_key(&key) {
+            return self.unsupported("Store(overwrite reference)");
+        }
+        let mut stored = self.live_object(value)?.clone();
+        match transfer {
+            StoreTransfer::MoveUnique => {
+                if stored.ownership != Ownership::Unique {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: value,
+                    });
+                }
+                self.state
+                    .objects
+                    .get_mut(&value)
+                    .expect("live source exists")
+                    .ownership = Ownership::Consumed;
+            }
+            StoreTransfer::CloneShared => {
+                if stored.ownership != Ownership::Shared
+                    || stored.allocation_class != Some(AllocationClass::ReferenceCounted)
+                {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: value,
+                    });
+                }
+                stored.ownership = Ownership::Shared;
+            }
+            StoreTransfer::CopyScalar => return self.unsupported("Store(reference copy)"),
+        }
+        self.state.stored_objects.insert(key, stored);
+        Ok(())
+    }
+
+    fn reference_slot(&self, place: &Place) -> Result<(ValueId, ValueId), InitialCheckError> {
+        let Projection::Element { index } = place.projection() else {
+            return self.unsupported("reference slot(non-element)");
+        };
+        Ok((place.object(), *index))
     }
 
     fn check_place(&mut self, place: &Place) -> Result<ValueType, InitialCheckError> {
@@ -1399,6 +1498,13 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<ValueType, InitialCheckError> {
         match self.descriptor(layout)?.kind() {
             LayoutKind::Scalar(kind) => self.value_type_for_scalar(*kind),
+            LayoutKind::RuntimePointerValueSlot {
+                pointee,
+                semantics: PointerSlot::Owned,
+            } => Ok(ValueType::Ref(*pointee)),
+            LayoutKind::RuntimePointerValueSlot { .. } => {
+                self.unsupported("borrowed or raw pointer slot")
+            }
             _ => Ok(ValueType::Ref(layout)),
         }
     }
@@ -1519,6 +1625,9 @@ mod tests {
     const SOURCE: ValueId = ValueId::new(5);
     const DESTINATION: ValueId = ValueId::new(6);
     const END: ValueId = ValueId::new(7);
+    const CHILD: ValueId = ValueId::new(8);
+    const LOADED: ValueId = ValueId::new(9);
+    const CONDITION: ValueId = ValueId::new(10);
 
     fn with_checker(
         pointer_element: bool,
@@ -1612,6 +1721,104 @@ mod tests {
         )
     }
 
+    fn with_pointer_slot_checker(
+        test: impl FnOnce(
+            &mut MemoryChecker<'_>,
+            crate::layout::LayoutId,
+            crate::layout::LayoutId,
+        ),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let pointee = layouts.intern_scalar(ScalarKind::Int).expect("pointee layout");
+        let pointer = layouts
+            .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+            .expect("owned pointer slot");
+        let list = layouts
+            .intern_packed_list(pointer, RcHeader::Required)
+            .expect("pointer list layout");
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: [
+                (COUNT, ValueType::Size),
+                (CAPACITY, ValueType::Size),
+                (START, ValueType::Size),
+                (CHILD, ValueType::Ref(pointee)),
+                (LOADED, ValueType::Ref(pointee)),
+                (SOURCE, ValueType::Ref(list)),
+                (CONDITION, ValueType::Bool),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature)
+            .expect("checker construction");
+        for (destination, value) in [(COUNT, 1), (CAPACITY, 1), (START, 0)] {
+            checker
+                .check(&Operation::ConstSize { destination, value })
+                .expect("constant is accepted");
+        }
+        checker
+            .check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            })
+            .expect("comparison is accepted");
+        checker
+            .check(&Operation::Guard {
+                condition: CONDITION,
+                kind: GuardKind::Bounds,
+            })
+            .expect("bounds guard is accepted");
+        let LayoutSize::Dynamic { base, stride } = layouts.get(list).unwrap().size() else {
+            panic!("pointer list must be dynamic");
+        };
+        checker
+            .check(&Operation::Alloc {
+                destination: SOURCE,
+                layout: list,
+                extent: Extent::Counted {
+                    header_bytes: base,
+                    count: COUNT,
+                    capacity: CAPACITY,
+                    stride_bytes: stride,
+                },
+                class: AllocationClass::ReferenceCounted,
+            })
+            .expect("list allocation is accepted");
+        let LayoutSize::Fixed(bytes) = layouts.get(pointee).unwrap().size() else {
+            panic!("pointee must be fixed");
+        };
+        checker
+            .check(&Operation::Alloc {
+                destination: CHILD,
+                layout: pointee,
+                extent: Extent::FixedBytes(u64::from(bytes)),
+                class: AllocationClass::ReferenceCounted,
+            })
+            .expect("child allocation is accepted");
+        test(&mut checker, list, pointee);
+    }
+
     #[test]
     fn scalar_move_range_is_bounds_checked_and_admitted() {
         with_checker(false, |checker, list| {
@@ -1683,6 +1890,68 @@ mod tests {
                 result,
                 Err(InitialCheckError::UnsupportedMemoryOperation {
                     operation: "CloneRange(pointer-bearing element)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_slot_move_and_clone_preserve_structural_ownership() {
+        with_pointer_slot_checker(|checker, _list, pointee| {
+            let place = Place::projected(
+                SOURCE,
+                Projection::Element { index: START },
+                ValueType::Ref(pointee),
+                AccessMode::Write,
+            );
+            assert_eq!(
+                checker.check(&Operation::Store {
+                    place,
+                    value: CHILD,
+                    transfer: StoreTransfer::MoveUnique,
+                }),
+                Ok(true)
+            );
+            assert_eq!(checker.state.objects[&CHILD].ownership, Ownership::Consumed);
+
+            assert_eq!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(
+                        SOURCE,
+                        Projection::Element { index: START },
+                        ValueType::Ref(pointee),
+                        AccessMode::Read,
+                    ),
+                    transfer: LoadTransfer::CloneShared,
+                }),
+                Ok(true)
+            );
+            assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Shared);
+            assert_eq!(
+                checker.state.stored_objects[&(SOURCE, START)].ownership,
+                Ownership::Shared
+            );
+        });
+    }
+
+    #[test]
+    fn pointer_slot_rejects_scalar_copy_transfer() {
+        with_pointer_slot_checker(|checker, _list, pointee| {
+            assert!(matches!(
+                checker.check(&Operation::Store {
+                    place: Place::projected(
+                        SOURCE,
+                        Projection::Element { index: START },
+                        ValueType::Ref(pointee),
+                        AccessMode::Write,
+                    ),
+                    value: CHILD,
+                    transfer: StoreTransfer::CopyScalar,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Store(reference copy)",
                     ..
                 })
             ));
