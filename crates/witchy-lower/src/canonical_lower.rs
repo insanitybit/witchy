@@ -2670,6 +2670,10 @@ fn source_value_type(
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             list_layout(source, layout_bundle, layouts).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
+        Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
+            dictionary_layout(source, layout_bundle, layouts)
+                .map(|(layout, _, _)| ValueType::Ref(layout))
+        }
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
             string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
         }
@@ -2794,6 +2798,73 @@ fn list_layout(
         [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
         [candidate] => Ok(*candidate),
         _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
+    }
+}
+
+fn dictionary_layout(
+    source: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<(witchy_wir::layout::LayoutId, ValueType, ValueType), CanonicalLoweringError> {
+    let Type::Named(name, arguments) = source.unqualified() else {
+        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
+    };
+    if name != "Dict" || arguments.len() != 2 {
+        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
+    }
+    let key_type = dictionary_slot_type(&arguments[0], layout_bundle, layouts)?;
+    let value_type = dictionary_slot_type(&arguments[1], layout_bundle, layouts)?;
+    let mut candidates = Vec::new();
+    for root in layout_bundle.roots() {
+        let Some(descriptor) = layouts.get(*root) else { continue };
+        let LayoutKind::RuntimeDictionaryBody { key, value, .. } = descriptor.kind() else {
+            continue;
+        };
+        if dictionary_slot_matches(*key, key_type, layouts)
+            && dictionary_slot_matches(*value, value_type, layouts)
+        {
+            candidates.push(*root);
+        }
+    }
+    match candidates.as_slice() {
+        [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
+        [candidate] => Ok((*candidate, key_type, value_type)),
+        _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
+    }
+}
+
+fn dictionary_slot_type(
+    source: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<ValueType, CanonicalLoweringError> {
+    match source.unqualified() {
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+            string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
+        }
+        _ => scalar_type(source),
+    }
+}
+
+fn dictionary_slot_matches(
+    layout: witchy_wir::layout::LayoutId,
+    value_type: ValueType,
+    layouts: &LayoutInterner,
+) -> bool {
+    let Some(descriptor) = layouts.get(layout) else { return false };
+    match (descriptor.kind(), value_type) {
+        (LayoutKind::Scalar(ScalarKind::Int), ValueType::Int)
+        | (LayoutKind::Scalar(ScalarKind::Float), ValueType::Float)
+        | (LayoutKind::Scalar(ScalarKind::Duration), ValueType::Int)
+        | (LayoutKind::Scalar(ScalarKind::BoolValueSlot), ValueType::Bool) => true,
+        (
+            LayoutKind::RuntimePointerValueSlot {
+                pointee,
+                semantics: PointerSlot::Owned,
+            },
+            ValueType::Ref(value_layout),
+        ) => *pointee == value_layout,
+        _ => false,
     }
 }
 
