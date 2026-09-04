@@ -77,6 +77,9 @@ pub fn lower_typed_module(
                 Item::Function(_) => unreachable!(),
             }
         };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
         let function_id = FunctionId::new(
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
@@ -91,6 +94,9 @@ pub fn lower_typed_module(
     let mut functions = Vec::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
         let (function_id, signature_id) = functions_by_name[&function.name];
         let signature = &signatures[signature_id.get() as usize];
         functions.push(lower_function(
@@ -112,7 +118,7 @@ pub fn lower_typed_module(
         signatures,
         imports: Vec::new(),
         functions,
-        proper_tail_sites: canonical_tail_sites(tail_manifest)?,
+        proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module())?,
     }))
 }
 
@@ -855,10 +861,22 @@ const fn is_unit(value_type: ValueType) -> bool {
 
 fn canonical_tail_sites(
     manifest: &ProperTailSiteManifest,
+    module: &witchy_syntax::ast::Module,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
     manifest
         .sites()
         .iter()
+        .filter(|site| {
+            module
+                .items
+                .get(site.key.callable.item as usize)
+                .is_some_and(|item| match item {
+                    Item::Function(function) => {
+                        is_canonical_source_function(module, &function.name)
+                    }
+                    _ => false,
+                })
+        })
         .map(|site| {
             if site.key.callable.method.is_some() || !site.key.callable.lambda_path.is_empty() {
                 return Err(CanonicalLoweringError::UnsupportedExpression("method or closure tail site"));
@@ -871,9 +889,18 @@ fn canonical_tail_sites(
         .collect()
 }
 
+fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str) -> bool {
+    let Some(entry) = module.linked_entry.as_deref() else {
+        return true;
+    };
+    name == entry || name.starts_with(&format!("{entry}."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::lower_typed_module;
+    use witchy_syntax::ast::Item;
+    use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{check_initial, Terminator};
     use witchy_wir::layout::{LayoutBundle, LayoutInterner};
 
@@ -900,6 +927,39 @@ mod tests {
     fn checked_scalar_source_lowers_and_validates_without_wir() {
         let candidate = lower("fn answer() -> Int:\n    let x = 40\n    x + 2\n");
         assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn canonical_lowering_uses_expanded_final_typed_source() {
+        fn append_expanded_function(
+            name: &str,
+            module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            if name == "main" {
+                module.items.extend(
+                    parse_module("fn expanded() -> Int:\n    42\n")
+                        .expect("expanded fixture parses")
+                        .items,
+                );
+            }
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main() -> Int:\n    1\n".to_vec())],
+            "main",
+            append_expanded_function,
+        )
+        .expect("expanded source checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        assert!(canonical.typed_module().module().items.iter().any(|item| {
+            matches!(item, Item::Function(function) if function.name.ends_with(".expanded"))
+        }));
+
+        let candidate = lower_typed_module(canonical, empty_layouts())
+            .expect("canonical lowering includes expanded function");
+        assert_eq!(candidate.functions().len(), 2);
     }
 
     #[test]

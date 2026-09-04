@@ -418,11 +418,16 @@ fn link_checked_with(
     expand: ComptimeExpander,
     mode: LinkMode,
     user_modules: Option<&HashSet<String>>,
+    capture_canonical_typed_source: bool,
     module_owners: Option<AuthenticatedModuleOwners>,
-) -> Result<CheckedModule, PipelineError> {
+) -> Result<(CheckedModule, Option<typeck::TypedModule>), PipelineError> {
     let typed_async_source = RefCell::new(None);
+    let canonical_typed_source = RefCell::new(None);
     let check_source = |source: &witchy_syntax::source_check::ResolvedSource| {
-        typeck::check_linked_source_semantics(source)?;
+        let typed = typeck::check_linked_source_semantics_typed(source)?;
+        if capture_canonical_typed_source {
+            *canonical_typed_source.borrow_mut() = Some(typed);
+        }
         let has_async = source.modules().iter().any(|(_, module)| module.items.iter().any(|item| match item {
             witchy_syntax::ast::Item::Function(function) => function.is_async,
             witchy_syntax::ast::Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
@@ -460,12 +465,12 @@ fn link_checked_with(
     if let Some(module_owners) = &module_owners {
         module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     }
-    Ok(CheckedModule {
+    Ok((CheckedModule {
         linked,
         module_owners,
         typed_async_source: typed_async_source.into_inner(),
         canonical_source: None,
-    })
+    }, canonical_typed_source.into_inner()))
 }
 
 fn checked_source_digest(sources: &[(String, Vec<u8>)]) -> [u8; 32] {
@@ -537,7 +542,20 @@ pub fn link_checked_from_source_bundle(
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
-    let checked = link_checked_with(modules, entry, expand, LinkMode::Production, None, None)?;
+    let (checked, typed_source) = link_checked_with(
+        modules,
+        entry,
+        expand,
+        LinkMode::Production,
+        None,
+        true,
+        None,
+    )?;
+    let typed_source = typed_source.ok_or_else(|| {
+        PipelineError::Type(TypeError {
+            message: "canonical checked link did not return its typed source".to_string(),
+        })
+    })?;
     attach_canonical_source(checked, typed_source, source_bundle_digest, proper_tail_manifest)
 }
 
@@ -547,7 +565,8 @@ pub fn link_checked(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_with(modules, entry, expand, LinkMode::Production, None, None)
+    link_checked_with(modules, entry, expand, LinkMode::Production, None, false, None)
+        .map(|(checked, _)| checked)
 }
 
 /// Production-ready checked link with loader-authenticated package ownership.
@@ -567,8 +586,10 @@ pub fn link_checked_authenticated(
         expand,
         LinkMode::Production,
         None,
+        false,
         Some(module_owners),
     )
+    .map(|(checked, _)| checked)
 }
 
 /// Link a test source graph under test syntax policy, then type-check it.
@@ -588,8 +609,10 @@ pub fn link_checked_test_with_user_modules(
         expand,
         LinkMode::Test,
         Some(user_modules),
+        false,
         None,
     )
+    .map(|(checked, _)| checked)
 }
 
 /// Production-ready checked link with both exact source provenance and
@@ -607,8 +630,10 @@ pub fn link_checked_authenticated_with_user_modules(
         expand,
         LinkMode::Production,
         Some(user_modules),
+        false,
         Some(module_owners),
     )
+    .map(|(checked, _)| checked)
 }
 
 #[cfg(test)]

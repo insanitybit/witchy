@@ -11342,7 +11342,7 @@ impl Checker {
 
 /// Type-check a whole module. Returns the first error found.
 pub fn check(module: &Module) -> Result<(), TypeError> {
-    check_with_compiler_syntax(module, false)
+    check_with_compiler_syntax(module, false).map(|_| ())
 }
 
 /// Type-check source async contracts before CPS lowering erases them.
@@ -11396,6 +11396,15 @@ fn check_source_async_contracts(module: &Module) -> Result<(), TypeError> {
 pub fn check_linked_source_semantics(
     source: &witchy_syntax::source_check::ResolvedSource,
 ) -> Result<(), witchy_syntax::linker::SourceLinkError> {
+    check_linked_source_semantics_typed(source).map(|_| ())
+}
+
+/// Validate expanded linked-source semantics and return the exact typed
+/// runtime projection produced by that check. The caller must retain this
+/// product rather than independently annotating a pre-link AST.
+pub fn check_linked_source_semantics_typed(
+    source: &witchy_syntax::source_check::ResolvedSource,
+) -> Result<TypedModule, witchy_syntax::linker::SourceLinkError> {
     fn source_error(
         module_name: &str,
         module: &Module,
@@ -11448,7 +11457,14 @@ pub fn check_linked_source_semantics(
     // every declaration and body before the production lowering sequence can
     // consume its source representation.
     let mut modules = source.modules().iter();
-    let Some((_, first)) = modules.next() else { return Ok(()) };
+    let Some((_, first)) = modules.next() else {
+        return Err(witchy_syntax::linker::SourceLinkError::Link(
+            witchy_syntax::linker::LinkError {
+                message: "resolved source set is empty".to_string(),
+                location: None,
+            },
+        ));
+    };
     let mut aggregate = first.clone();
     aggregate.imports.clear();
     aggregate.import_lines.clear();
@@ -11488,8 +11504,7 @@ pub fn check_linked_source_semantics(
         .runtime_projection()
         .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
     check_source_async_contracts(&body_projection).map_err(source_error)?;
-    check_with_compiler_syntax(&body_projection, false).map_err(source_error)?;
-    Ok(())
+    check_with_compiler_syntax(&body_projection, false).map_err(source_error)
 }
 
 /// Type-check the isolated program used to execute a `comptime:` block.
@@ -11498,10 +11513,13 @@ pub fn check_linked_source_semantics(
 /// through helper expressions while the ordinary public checker still rejects
 /// them from runtime modules.
 pub fn check_comptime(module: &Module) -> Result<(), TypeError> {
-    check_with_compiler_syntax(module, true)
+    check_with_compiler_syntax(module, true).map(|_| ())
 }
 
-fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) -> Result<(), TypeError> {
+fn check_with_compiler_syntax(
+    module: &Module,
+    compiler_syntax_allowed: bool,
+) -> Result<TypedModule, TypeError> {
     // Catch duplicate top-level functions before lowering, while `impl` methods
     // are still distinct from free functions (so overloaded methods aren't
     // mistaken for duplicates) and source lines are still available.
@@ -11578,7 +11596,10 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
             crate::access::verify_module(&lowered).map_err(|error| TypeError {
                 message: error.to_string(),
             })?;
-            Ok(())
+            Ok(TypedModule {
+                module: lowered,
+                table: type_table,
+            })
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
