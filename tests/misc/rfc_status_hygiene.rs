@@ -27,6 +27,7 @@ fn is_companion(name: &str) -> bool {
         || name.contains("-migration-report")
         || name.contains("-performance-report")
         || name.contains("-judgment")
+        || name.contains("-review")
 }
 
 fn rfcs_dir() -> PathBuf {
