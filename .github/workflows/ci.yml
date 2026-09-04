@@ -65,6 +65,14 @@ jobs:
           tool: nextest
       - name: Build
         run: cargo build --workspace --all-targets --features witchy-wir/native
+      # RFC-0165 A1: package-local feature selection is intentional. The
+      # workspace test below also enables native, but this direct invocation
+      # prevents Cargo feature unification from silently compiling the WIR
+      # security modules out of a package test target. Run once after Build so
+      # the focused suites reuse its artifacts; shard 1 is the required owner.
+      - name: RFC-0165 native SafeWIR security suites
+        if: matrix.shard == 1
+        run: bash ./scripts/rfc0165-native-gate.sh
       # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
       # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
       # still print but do not fail CI — a needless borrow is not a merge blocker.
