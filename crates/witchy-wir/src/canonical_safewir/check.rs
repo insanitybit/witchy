@@ -17,8 +17,14 @@ pub enum InitialCheckError {
     MissingSignature(FunctionSignatureId),
     MissingFunction(FunctionId),
     MissingBlock { function: FunctionId, block: BlockId },
+    UnreachableBlock { function: FunctionId, block: BlockId },
     MissingValueType { function: FunctionId, value: ValueId },
     UndeclaredValue { function: FunctionId, value: ValueId },
+    ValueDoesNotDominateUse {
+        function: FunctionId,
+        value: ValueId,
+        block: BlockId,
+    },
     TypeMismatch {
         function: FunctionId,
         value: ValueId,
@@ -34,7 +40,6 @@ pub enum InitialCheckError {
         expected: FunctionId,
         actual: FunctionId,
     },
-    UnsupportedControlFlow { function: FunctionId },
     UnsupportedMemoryOperation { function: FunctionId, operation: &'static str },
     UnsupportedHostCall { function: FunctionId },
     UnsupportedBorrowArgument { function: FunctionId },
@@ -154,34 +159,66 @@ fn check_function(
         .copied()
         .ok_or(InitialCheckError::MissingSignature(function.signature))?;
 
-    if function.blocks.len() != 1 {
-        return Err(InitialCheckError::UnsupportedControlFlow {
-            function: function.id,
-        });
-    }
-    let block = &function.blocks[0];
-    if block.id != function.entry {
-        return Err(InitialCheckError::MissingBlock {
+    let blocks = index_blocks(function)?;
+    let entry = blocks
+        .get(&function.entry)
+        .copied()
+        .ok_or(InitialCheckError::MissingBlock {
             function: function.id,
             block: function.entry,
-        });
-    }
+        })?;
+    check_entry_parameters(function, entry, signature)?;
+    check_value_definitions(function)?;
 
-    check_entry_parameters(function, block, signature)?;
-    check_value_definitions(function, block)?;
+    let predecessors = predecessor_map(function, &blocks)?;
+    let dominators = dominators(function, &blocks, &predecessors)?;
+    let definition_sites = definition_sites(function);
 
-    for operation in &block.operations {
-        check_operation(function, operation, signatures, functions)?;
+    for block in &function.blocks {
+        for (operation_index, operation) in block.operations.iter().enumerate() {
+            check_uses_dominate(
+                function,
+                block.id,
+                operation_index,
+                operation_uses(operation),
+                &definition_sites,
+                &dominators,
+            )?;
+            check_operation(function, operation, signatures, functions)?;
+        }
+        check_uses_dominate(
+            function,
+            block.id,
+            block.operations.len(),
+            terminator_uses(&block.terminator),
+            &definition_sites,
+            &dominators,
+        )?;
+        check_terminator(
+            function,
+            &block.terminator,
+            signature,
+            signatures,
+            functions,
+            &blocks,
+            tail_obligations,
+            observed_tail_sites,
+        )?;
     }
-    check_terminator(
-        function,
-        &block.terminator,
-        signature,
-        signatures,
-        functions,
-        tail_obligations,
-        observed_tail_sites,
-    )
+    Ok(())
+}
+
+fn index_blocks(function: &Function) -> Result<BTreeMap<BlockId, &BasicBlock>, InitialCheckError> {
+    let mut result = BTreeMap::new();
+    for block in &function.blocks {
+        if result.insert(block.id, block).is_some() {
+            return Err(InitialCheckError::DuplicateBlock {
+                function: function.id,
+                block: block.id,
+            });
+        }
+    }
+    Ok(result)
 }
 
 fn check_entry_parameters(
@@ -209,17 +246,16 @@ fn check_entry_parameters(
     Ok(())
 }
 
-fn check_value_definitions(
-    function: &Function,
-    block: &BasicBlock,
-) -> Result<(), InitialCheckError> {
+fn check_value_definitions(function: &Function) -> Result<(), InitialCheckError> {
     let mut definitions = BTreeSet::new();
-    for parameter in &block.parameters {
-        insert_definition(function.id, &mut definitions, parameter.value)?;
-    }
-    for operation in &block.operations {
-        for destination in operation_destinations(operation) {
-            insert_definition(function.id, &mut definitions, destination)?;
+    for block in &function.blocks {
+        for parameter in &block.parameters {
+            insert_definition(function.id, &mut definitions, parameter.value)?;
+        }
+        for operation in &block.operations {
+            for destination in operation_destinations(operation) {
+                insert_definition(function.id, &mut definitions, destination)?;
+            }
         }
     }
     for value in &definitions {
@@ -278,6 +314,259 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::Retain { .. }
         | Operation::Release { .. }
         | Operation::Reclaim { .. } => Vec::new(),
+    }
+}
+
+fn operation_uses(operation: &Operation) -> Vec<ValueId> {
+    match operation {
+        Operation::ConstInt { .. }
+        | Operation::ConstFloat { .. }
+        | Operation::ConstBool { .. }
+        | Operation::ConstSize { .. }
+        | Operation::Alloc { .. }
+        | Operation::StaticData { .. } => Vec::new(),
+        Operation::Arithmetic { left, right, .. }
+        | Operation::Compare { left, right, .. } => vec![*left, *right],
+        Operation::NarrowSize { value, .. }
+        | Operation::Guard { condition: value, .. }
+        | Operation::MoveValue { source: value, .. }
+        | Operation::Share { source: value, .. }
+        | Operation::Retain { object: value }
+        | Operation::Release { object: value }
+        | Operation::Reclaim { object: value } => vec![*value],
+        Operation::Load { place, .. } => place_uses(place),
+        Operation::Store { place, value, .. } => {
+            let mut result = place_uses(place);
+            result.push(*value);
+            result
+        }
+        Operation::CopyBytes { destination, source, length }
+        | Operation::MoveRange { destination, source, count: length }
+        | Operation::CloneRange { destination, source, count: length } => {
+            let mut result = place_uses(destination);
+            result.extend(place_uses(source));
+            result.push(*length);
+            result
+        }
+        Operation::UpdateCount { object, count } => vec![*object, *count],
+        Operation::Call { arguments, .. } | Operation::HostCall { arguments, .. } => {
+            argument_uses(arguments)
+        }
+        Operation::VarCall { callee, arguments, .. } => {
+            let mut result = vec![*callee];
+            result.extend(argument_uses(arguments));
+            result
+        }
+    }
+}
+
+fn place_uses(place: &super::Place) -> Vec<ValueId> {
+    let mut result = vec![place.object()];
+    match place.projection() {
+        super::Projection::Header { .. } | super::Projection::Field { .. } => {}
+        super::Projection::Element { index } => result.push(*index),
+        super::Projection::Slice { start, length } => {
+            result.push(*start);
+            result.push(*length);
+        }
+    }
+    result
+}
+
+fn argument_uses(arguments: &[CallArgument]) -> Vec<ValueId> {
+    arguments
+        .iter()
+        .map(|argument| match argument {
+            CallArgument::Value(value) | CallArgument::Move(value) | CallArgument::Share(value) => {
+                *value
+            }
+            CallArgument::Borrow(borrow) => borrow.source(),
+        })
+        .collect()
+}
+
+fn terminator_uses(terminator: &Terminator) -> Vec<ValueId> {
+    match terminator {
+        Terminator::Branch { arguments, .. } | Terminator::Return { values: arguments } => {
+            arguments.clone()
+        }
+        Terminator::BranchIf {
+            condition,
+            then_arguments,
+            else_arguments,
+            ..
+        } => {
+            let mut result = vec![*condition];
+            result.extend(then_arguments.iter().copied());
+            result.extend(else_arguments.iter().copied());
+            result
+        }
+        Terminator::TailCall { arguments, .. } => argument_uses(arguments),
+        Terminator::VarTailCall { callee, arguments, .. } => {
+            let mut result = vec![*callee];
+            result.extend(argument_uses(arguments));
+            result
+        }
+        Terminator::Trap | Terminator::Unreachable => Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DefinitionSite {
+    block: BlockId,
+    operation_index: Option<usize>,
+}
+
+fn definition_sites(function: &Function) -> BTreeMap<ValueId, DefinitionSite> {
+    let mut result = BTreeMap::new();
+    for block in &function.blocks {
+        for parameter in &block.parameters {
+            result.insert(
+                parameter.value,
+                DefinitionSite {
+                    block: block.id,
+                    operation_index: None,
+                },
+            );
+        }
+        for (operation_index, operation) in block.operations.iter().enumerate() {
+            for destination in operation_destinations(operation) {
+                result.insert(
+                    destination,
+                    DefinitionSite {
+                        block: block.id,
+                        operation_index: Some(operation_index),
+                    },
+                );
+            }
+        }
+    }
+    result
+}
+
+fn check_uses_dominate(
+    function: &Function,
+    use_block: BlockId,
+    use_operation_index: usize,
+    uses: Vec<ValueId>,
+    definitions: &BTreeMap<ValueId, DefinitionSite>,
+    dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+) -> Result<(), InitialCheckError> {
+    for value in uses {
+        let definition = definitions
+            .get(&value)
+            .copied()
+            .ok_or(InitialCheckError::UndeclaredValue {
+                function: function.id,
+                value,
+            })?;
+        let dominates = if definition.block == use_block {
+            definition
+                .operation_index
+                .is_none_or(|definition_index| definition_index < use_operation_index)
+        } else {
+            dominators
+                .get(&use_block)
+                .is_some_and(|set| set.contains(&definition.block))
+        };
+        if !dominates {
+            return Err(InitialCheckError::ValueDoesNotDominateUse {
+                function: function.id,
+                value,
+                block: use_block,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn predecessor_map(
+    function: &Function,
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
+) -> Result<BTreeMap<BlockId, BTreeSet<BlockId>>, InitialCheckError> {
+    let mut predecessors: BTreeMap<_, BTreeSet<_>> =
+        blocks.keys().copied().map(|block| (block, BTreeSet::new())).collect();
+    for block in &function.blocks {
+        for successor in successors(&block.terminator) {
+            let incoming = predecessors
+                .get_mut(&successor)
+                .ok_or(InitialCheckError::MissingBlock {
+                    function: function.id,
+                    block: successor,
+                })?;
+            incoming.insert(block.id);
+        }
+    }
+    Ok(predecessors)
+}
+
+fn successors(terminator: &Terminator) -> Vec<BlockId> {
+    match terminator {
+        Terminator::Branch { target, .. } => vec![*target],
+        Terminator::BranchIf { then_target, else_target, .. } => {
+            vec![*then_target, *else_target]
+        }
+        Terminator::Return { .. }
+        | Terminator::TailCall { .. }
+        | Terminator::VarTailCall { .. }
+        | Terminator::Trap
+        | Terminator::Unreachable => Vec::new(),
+    }
+}
+
+fn dominators(
+    function: &Function,
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
+    predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+) -> Result<BTreeMap<BlockId, BTreeSet<BlockId>>, InitialCheckError> {
+    let all: BTreeSet<_> = blocks.keys().copied().collect();
+    let mut reachable = BTreeSet::new();
+    let mut pending = vec![function.entry];
+    while let Some(block) = pending.pop() {
+        if reachable.insert(block) {
+            let body = blocks.get(&block).copied().ok_or(InitialCheckError::MissingBlock {
+                function: function.id,
+                block,
+            })?;
+            pending.extend(successors(&body.terminator));
+        }
+    }
+    if let Some(block) = all.difference(&reachable).next().copied() {
+        return Err(InitialCheckError::UnreachableBlock {
+            function: function.id,
+            block,
+        });
+    }
+
+    let mut result = BTreeMap::new();
+    for block in blocks.keys().copied() {
+        result.insert(
+            block,
+            if block == function.entry {
+                [block].into_iter().collect()
+            } else {
+                all.clone()
+            },
+        );
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks.keys().copied().filter(|block| *block != function.entry) {
+            let incoming = predecessors.get(&block).expect("all blocks have predecessor sets");
+            let mut updated = incoming
+                .iter()
+                .map(|predecessor| result[predecessor].clone())
+                .reduce(|left, right| left.intersection(&right).copied().collect())
+                .unwrap_or_default();
+            updated.insert(block);
+            if result[&block] != updated {
+                result.insert(block, updated);
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(result);
+        }
     }
 }
 
@@ -394,6 +683,7 @@ fn check_terminator(
     current_signature: &FunctionSignature,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     functions: &BTreeMap<FunctionId, &Function>,
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
 ) -> Result<(), InitialCheckError> {
@@ -426,13 +716,42 @@ fn check_terminator(
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
             check_tail_call(function, arguments, signature, current_signature)
         }
-        Terminator::Trap | Terminator::Unreachable => Ok(()),
-        Terminator::Branch { .. } | Terminator::BranchIf { .. } => {
-            Err(InitialCheckError::UnsupportedControlFlow {
-                function: function.id,
-            })
+        Terminator::Branch { target, arguments } => {
+            check_branch(function, *target, arguments, blocks)
         }
+        Terminator::BranchIf {
+            condition,
+            then_target,
+            then_arguments,
+            else_target,
+            else_arguments,
+        } => {
+            require_type(function, *condition, ValueType::Bool)?;
+            check_branch(function, *then_target, then_arguments, blocks)?;
+            check_branch(function, *else_target, else_arguments, blocks)
+        }
+        Terminator::Trap | Terminator::Unreachable => Ok(()),
     }
+}
+
+fn check_branch(
+    function: &Function,
+    target: BlockId,
+    arguments: &[ValueId],
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
+) -> Result<(), InitialCheckError> {
+    let target_block = blocks
+        .get(&target)
+        .copied()
+        .ok_or(InitialCheckError::MissingBlock {
+            function: function.id,
+            block: target,
+        })?;
+    require_arity("branch arguments", target_block.parameters.len(), arguments.len())?;
+    for (argument, parameter) in arguments.iter().zip(&target_block.parameters) {
+        require_type(function, *argument, parameter.value_type)?;
+    }
+    Ok(())
 }
 
 fn check_tail_call(
@@ -691,6 +1010,143 @@ mod tests {
             InitialCheckError::UnsupportedMemoryOperation {
                 function: FUNCTION,
                 operation: "Reclaim",
+            }
+        );
+    }
+
+    #[test]
+    fn block_arguments_are_typed_ssa_definitions() {
+        let next = BlockId::new(1);
+        let parameter = ValueId::new(1);
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: vec![ValueType::Int],
+                contract: contract(vec![ResultContract::Value(ValueType::Int)]),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, ValueType::Int), (parameter, ValueType::Int)]
+                    .into_iter()
+                    .collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt {
+                            destination: VALUE,
+                            value: 42,
+                        }],
+                        terminator: Terminator::Branch {
+                            target: next,
+                            arguments: vec![VALUE],
+                        },
+                    },
+                    BasicBlock {
+                        id: next,
+                        parameters: vec![super::super::BlockParameter {
+                            value: parameter,
+                            value_type: ValueType::Int,
+                            ownership: None,
+                        }],
+                        operations: Vec::new(),
+                        terminator: Terminator::Return {
+                            values: vec![parameter],
+                        },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+
+        assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn definition_on_one_branch_does_not_dominate_join() {
+        let condition = ValueId::new(1);
+        let then_block = BlockId::new(1);
+        let else_block = BlockId::new(2);
+        let join_block = BlockId::new(3);
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: vec![ValueType::Int],
+                contract: contract(vec![ResultContract::Value(ValueType::Int)]),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, ValueType::Int), (condition, ValueType::Bool)]
+                    .into_iter()
+                    .collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstBool {
+                            destination: condition,
+                            value: true,
+                        }],
+                        terminator: Terminator::BranchIf {
+                            condition,
+                            then_target: then_block,
+                            then_arguments: Vec::new(),
+                            else_target: else_block,
+                            else_arguments: Vec::new(),
+                        },
+                    },
+                    BasicBlock {
+                        id: then_block,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstInt {
+                            destination: VALUE,
+                            value: 1,
+                        }],
+                        terminator: Terminator::Branch {
+                            target: join_block,
+                            arguments: Vec::new(),
+                        },
+                    },
+                    BasicBlock {
+                        id: else_block,
+                        parameters: Vec::new(),
+                        operations: Vec::new(),
+                        terminator: Terminator::Branch {
+                            target: join_block,
+                            arguments: Vec::new(),
+                        },
+                    },
+                    BasicBlock {
+                        id: join_block,
+                        parameters: Vec::new(),
+                        operations: Vec::new(),
+                        terminator: Terminator::Return {
+                            values: vec![VALUE],
+                        },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::ValueDoesNotDominateUse {
+                function: FUNCTION,
+                value: VALUE,
+                block: join_block,
             }
         );
     }
