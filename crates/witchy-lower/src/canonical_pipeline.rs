@@ -342,6 +342,31 @@ mod tests {
     }
 
     #[test]
+    fn list_object_survives_loop_cfg_join_and_admitted_execution() {
+        let source = "fn main() -> Int:\n    let xs = [42]\n    var i = 0\n    while i < 1:\n        xs[0]\n        i = i + 1\n    xs[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked list loop source");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical list loop artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted list loop artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted list loop artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical main export");
+
+        assert_eq!(main.call(&mut store, ()).expect("run canonical list loop"), 42);
+    }
+
+    #[test]
     fn list_int_out_of_bounds_source_admits_then_traps() {
         let source = "fn main() -> Int:\n    [10][1]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
