@@ -110,6 +110,13 @@ impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         match ty {
             Type::Qualified(_, inner) => self.visit_type(inner),
+            Type::Tuple(fields) => {
+                for field in fields {
+                    self.visit_type(field)?;
+                }
+                self.roots.push(ty.clone());
+                Ok(())
+            }
             Type::Fn(parameters, result, _, _) => {
                 for parameter in parameters {
                     self.visit_type(parameter)?;
@@ -118,7 +125,7 @@ impl LayoutProjection {
             }
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
                 "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" => Ok(()),
-                "String" => {
+                "String" | "Bytes" => {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
@@ -183,7 +190,7 @@ fn intern_v1_layout(
     interner: &mut LayoutInterner,
     ty: &Type,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    if is_string_type(ty) {
+    if is_byte_buffer_type(ty) {
         // String is `[u32 byte_length][UTF-8 bytes...]`. RawByte is
         // representation-only and grants no scalar or pointer authority.
         let byte = interner
@@ -196,7 +203,7 @@ fn intern_v1_layout(
     if let Type::Named(name, arguments) = ty.unqualified()
         && name == "List"
         && arguments.len() == 1
-        && is_string_type(&arguments[0])
+        && is_byte_buffer_type(&arguments[0])
     {
         let pointee = intern_v1_layout(interner, &arguments[0])?;
         let element = interner
@@ -225,7 +232,7 @@ fn intern_dictionary_slot(
     interner: &mut LayoutInterner,
     ty: &Type,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    if is_string_type(ty) {
+    if is_byte_buffer_type(ty) {
         let pointee = intern_v1_layout(interner, ty)?;
         return interner
             .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
@@ -236,10 +243,11 @@ fn intern_dictionary_slot(
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
-fn is_string_type(ty: &Type) -> bool {
+fn is_byte_buffer_type(ty: &Type) -> bool {
     matches!(
         ty.unqualified(),
-        Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+        Type::Named(name, arguments)
+            if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty()
     )
 }
 
@@ -309,5 +317,43 @@ mod tests {
         let bundle = projection.finish().expect("iterator projection is canonical");
 
         assert!(bundle.roots().is_empty());
+    }
+
+    #[test]
+    fn tuple_projection_uses_canonical_inline_fields() {
+        let mut projection = LayoutProjection::default();
+        projection
+            .visit_type(&Type::Tuple(vec![named("Int"), named("Int")]))
+            .expect("(Int, Int) has canonical scalar fields");
+        let bundle = projection.finish().expect("tuple layout is canonical");
+
+        assert_eq!(bundle.roots().len(), 1);
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(
+            &bundle.canonical_bytes(),
+        )
+        .expect("decode canonical tuple layout");
+        assert!(matches!(
+            layouts.get(bundle.roots()[0]).expect("tuple root").kind(),
+            LayoutKind::Tuple { .. }
+        ));
+    }
+
+    #[test]
+    fn bytes_projection_uses_the_canonical_byte_buffer() {
+        let mut projection = LayoutProjection::default();
+        projection
+            .visit_type(&named("Bytes"))
+            .expect("Bytes has the canonical byte-buffer representation");
+        let bundle = projection.finish().expect("bytes layout is canonical");
+
+        assert_eq!(bundle.roots().len(), 1);
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(
+            &bundle.canonical_bytes(),
+        )
+        .expect("decode canonical bytes layout");
+        assert!(matches!(
+            layouts.get(bundle.roots()[0]).expect("bytes root").kind(),
+            LayoutKind::RuntimeBuffer { .. }
+        ));
     }
 }
