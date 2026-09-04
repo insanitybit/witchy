@@ -12,6 +12,7 @@
 
 pub mod analysis;
 pub mod canonical_lower;
+mod canonical_layouts;
 mod canonical_pipeline;
 pub mod codegen;
 pub mod escape;

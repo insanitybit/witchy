@@ -11,14 +11,15 @@ use witchy_wir::canonical_safewir::{
     FinalValidationError, InitialCheckError, OptimizationError, ValidatedSafeWir,
     check_initial_with_witness, optimize_unreachable_blocks, validate_final,
 };
-use witchy_wir::layout::LayoutBundle;
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
 
+use crate::canonical_layouts::{CanonicalLayoutError, derive_layout_bundle};
 use crate::canonical_lower::{CanonicalLoweringError, lower_typed_module};
 
 #[derive(Debug)]
 pub(crate) enum CanonicalPipelineError {
     MissingCheckedSourceWitness,
+    Layout(CanonicalLayoutError),
     Lowering(CanonicalLoweringError),
     InitialValidation(InitialCheckError),
     Optimization(OptimizationError),
@@ -28,9 +29,8 @@ pub(crate) enum CanonicalPipelineError {
 
 pub(crate) fn admit_checked_module(
     checked: &CheckedModule,
-    layouts: LayoutBundle,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
-    let validated = validate_checked_module(checked, layouts)?;
+    let validated = validate_checked_module(checked)?;
     admit_canonical(validated).map_err(CanonicalPipelineError::Admission)
 }
 
@@ -44,11 +44,11 @@ impl std::error::Error for CanonicalPipelineError {}
 
 pub(crate) fn validate_checked_module(
     checked: &CheckedModule,
-    layouts: LayoutBundle,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
     let source = checked
         .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
+    let layouts = derive_layout_bundle(source).map_err(CanonicalPipelineError::Layout)?;
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?;
     let checked = check_initial_with_witness(candidate, source)
@@ -65,7 +65,6 @@ pub(crate) fn validate_checked_module(
 mod tests {
     use super::*;
     use witchy_syntax::parser::parse_module;
-    use witchy_wir::layout::{LayoutInterner, LayoutBundle};
 
     #[test]
     fn scalar_source_reaches_final_safewir_authority_without_raw_wir() {
@@ -76,9 +75,7 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked source");
-        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
-            .expect("empty scalar layout bundle");
-        let validated = validate_checked_module(&checked, layouts)
+        let validated = validate_checked_module(&checked)
         .expect("validate canonical scalar pipeline");
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
@@ -94,10 +91,7 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked source");
-        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
-            .expect("empty scalar layout bundle");
-
-        let artifact = admit_checked_module(&checked, layouts)
+        let artifact = admit_checked_module(&checked)
             .expect("admit canonical scalar artifact");
 
         wasmparser::validate(artifact.wasm()).expect("admitted bytes remain valid Wasm");
@@ -122,11 +116,8 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked AST source");
-        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
-            .expect("empty scalar layout bundle");
-
         assert!(matches!(
-            validate_checked_module(&checked, layouts),
+            validate_checked_module(&checked),
             Err(CanonicalPipelineError::MissingCheckedSourceWitness)
         ));
     }
@@ -140,10 +131,50 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked source with prefix items");
-        let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
-            .expect("empty scalar layout bundle");
-
-        validate_checked_module(&checked, layouts)
+        validate_checked_module(&checked)
             .expect("proper-tail source mapping should use canonical function ordinals");
+    }
+
+    #[test]
+    fn list_int_layout_is_projected_from_checked_types() {
+        let source = "fn read(i: Int) -> Int:\n    let xs = [10, 20]\n    xs[i]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked List(Int) source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let bundle = derive_layout_bundle(canonical).expect("project canonical layouts");
+
+        assert_eq!(bundle.roots().len(), 1);
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
+            .expect("decode projected layout bundle");
+        let descriptor = layouts.get(bundle.roots()[0]).expect("List(Int) descriptor");
+        assert!(matches!(
+            descriptor.kind(),
+            witchy_wir::layout::LayoutKind::PackedList { .. }
+        ));
+        validate_checked_module(&checked).expect("validate projected List(Int) source");
+    }
+
+    #[test]
+    fn unsupported_string_layout_fails_closed_before_lowering() {
+        let source = "fn text() -> String:\n    \"hello\"\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked String source");
+
+        let error = match validate_checked_module(&checked) {
+            Ok(_) => panic!("String is outside canonical v1"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            CanonicalPipelineError::Layout(CanonicalLayoutError::UnsupportedType(_))
+        ));
     }
 }
