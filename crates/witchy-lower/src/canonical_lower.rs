@@ -18,7 +18,8 @@ use witchy_wir::canonical_safewir::{
     ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
     BorrowMode, CallArgument, CallBorrow, CheckedSourceIdentity, ComparisonOperator, Function,
     FunctionId, FunctionSignature, FunctionSignatureId, LoweredCandidate, LoweredModuleParts,
-    Operation, OverflowBehavior, ParameterContract, ParameterOwnership, ResultContract, Revision,
+    MemoryEffect, Operation, OverflowBehavior, ParameterContract, ParameterOwnership, ResultContract,
+    Revision,
     Terminator, ValueId, ValueType,
 };
 use witchy_wir::layout::{HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, ScalarKind};
@@ -169,7 +170,10 @@ fn checked_signature(
 
     let mut value_parameters = Vec::with_capacity(parameters.len());
     let mut contract_parameters = Vec::with_capacity(parameters.len());
-    for ((parameter, source), convention) in parameters.iter().zip(&function.params).zip(conventions) {
+    let mut parameter_effects = BTreeMap::new();
+    for (parameter_index, ((parameter, source), convention)) in
+        parameters.iter().zip(&function.params).zip(conventions).enumerate()
+    {
         if !matches!(convention, Convention::Let | Convention::Borrow) {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
@@ -186,6 +190,12 @@ fn checked_signature(
             (_, Convention::Let | Convention::Borrow) => (ParameterOwnership::Value, false),
             _ => unreachable!("unsupported conventions are rejected above"),
         };
+        if matches!(value_type, ValueType::Ref(_)) {
+            parameter_effects.insert(
+                u32::try_from(parameter_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                vec![MemoryEffect::Read],
+            );
+        }
         contract_parameters.push(ParameterContract {
             value_type,
             ownership,
@@ -210,7 +220,7 @@ fn checked_signature(
         contract: CallableContract {
             parameters: contract_parameters,
             results: result_contracts,
-            parameter_effects: BTreeMap::new(),
+            parameter_effects,
         },
     })
 }
@@ -992,11 +1002,12 @@ impl FunctionLowerer<'_> {
             ),
             transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
         });
-        let logical_count = self
-            .list_counts
-            .get(&object)
-            .copied()
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("list length provenance"))?;
+        // Allocated literals retain their checked compile-time count. A borrowed
+        // parameter has no caller-supplied extent authority, so its logical count
+        // is the authenticated header value loaded above. The checker must still
+        // establish that this header bootstrap permits the subsequent element
+        // access; capacity is deliberately not used as a bounds source.
+        let logical_count = self.list_counts.get(&object).copied().unwrap_or(logical_length);
         let condition = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: condition,
@@ -1437,6 +1448,90 @@ mod tests {
         )));
         let validation = check_initial(candidate);
         assert!(validation.is_ok(), "{validation:?}");
+    }
+
+    #[test]
+    fn borrowed_list_parameter_index_uses_loaded_length_for_bounds_guard() {
+        let checked = checked("fn first(xs: List(Int)) -> Int:\n    xs[0]\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower borrowed List(Int) parameter index");
+        let operations = &candidate.functions()[0].blocks[0].operations;
+
+        let (header_position, logical_length) = operations
+            .iter()
+            .enumerate()
+            .find_map(|(position, operation)| match operation {
+                Operation::Load {
+                    destination,
+                    place,
+                    transfer: LoadTransfer::CopyScalar,
+                } if matches!(
+                    place.projection(),
+                    Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length)
+                ) => Some((position, *destination)),
+                _ => None,
+            })
+            .expect("borrowed parameter length is loaded from its semantic header");
+        let (compare_position, condition, index) = operations
+            .iter()
+            .enumerate()
+            .find_map(|(position, operation)| match operation {
+                Operation::Compare {
+                    destination,
+                    operator: witchy_wir::canonical_safewir::ComparisonOperator::LessUnsigned,
+                    left,
+                    right,
+                } if *right == logical_length => Some((position, *destination, *left)),
+                _ => None,
+            })
+            .expect("index is compared against the loaded logical length");
+        let guard_position = operations
+            .iter()
+            .enumerate()
+            .find_map(|(position, operation)| match operation {
+                Operation::Guard { condition: actual, kind: GuardKind::Bounds }
+                    if *actual == condition => Some(position),
+                _ => None,
+            })
+            .expect("the length comparison is guarded");
+        let element_position = operations
+            .iter()
+            .enumerate()
+            .find_map(|(position, operation)| match operation {
+                Operation::Load {
+                    place,
+                    transfer: LoadTransfer::CopyScalar,
+                    ..
+                } if matches!(place.projection(), Projection::Element { index: actual } if *actual == index) => {
+                    Some(position)
+                }
+                _ => None,
+            })
+            .expect("the guarded element is loaded");
+
+        assert!(header_position < compare_position);
+        assert!(compare_position < guard_position);
+        assert!(guard_position < element_position);
+    }
+
+    #[test]
+    fn borrowed_list_parameter_index_reports_missing_header_extent_promotion() {
+        let checked = checked("fn first(xs: List(Int)) -> Int:\n    xs[0]\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower borrowed List(Int) parameter index");
+        let error = check_initial(candidate).expect_err(
+            "the current checker must not silently treat a header prefix as a counted extent",
+        );
+        assert!(matches!(
+            error,
+            witchy_wir::canonical_safewir::InitialCheckError::InvalidProjection { .. }
+        ));
     }
 
     #[test]
