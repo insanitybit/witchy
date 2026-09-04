@@ -91,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn console_print_reaches_final_safewir_validation() {
+    fn console_print_reaches_admitted_execution() {
         let source = "fn main(console: Console):\n    console.print(\"ok\")\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
@@ -131,6 +131,38 @@ mod tests {
         }));
 
         validate_checked_module(&checked).expect("console.print reaches final SafeWIR validation");
+        let artifact = admit_checked_module(&checked).expect("admit canonical console.print artifact");
+        wasmparser::validate(artifact.wasm()).expect("admitted console.print bytes remain valid Wasm");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted console.print artifact");
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "print",
+                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(wasmtime::Extern::into_memory)
+                        .expect("canonical memory export");
+                    let start = usize::try_from(pointer).expect("non-negative print pointer");
+                    let length = usize::try_from(length).expect("non-negative print length");
+                    let bytes = memory.data(&caller)[start..start + length].to_vec();
+                    caller.data_mut().extend_from_slice(&bytes);
+                },
+            )
+            .expect("bind authenticated print ABI");
+        let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted console.print artifact");
+        let main = instance
+            .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f0")
+            .expect("canonical console main export");
+        main.call(&mut store, None).expect("run canonical console.print");
+        assert_eq!(store.data(), b"ok");
     }
 
     #[test]

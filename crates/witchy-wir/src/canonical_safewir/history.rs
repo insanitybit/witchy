@@ -781,6 +781,8 @@ impl CanonicalWriter {
             }
             ImportContractIdentity::Unknown => self.u8(1),
         }
+        self.bytes(import.module.as_bytes());
+        self.bytes(import.name.as_bytes());
         self.len(import.parameter_roles.len());
         for role in &import.parameter_roles {
             self.host_parameter_role(role);

@@ -1672,6 +1672,8 @@ mod tests {
             id: ImportId::new(0),
             signature: import_signature_id,
             abi_identity: ImportContractIdentity::AuthenticatedAbi([9; 32]),
+            module: "test".to_string(),
+            name: "buffer".to_string(),
             parameter_roles: vec![HostParameterRole::Buffer {
                 value_type: ValueType::Ref(layout),
                 access: AccessMode::Read,
@@ -1879,6 +1881,8 @@ mod tests {
             id: ImportId::new(0),
             signature: FunctionSignatureId::new(1),
             abi_identity: ImportContractIdentity::AuthenticatedAbi([9; 32]),
+            module: "test".to_string(),
+            name: "host".to_string(),
             parameter_roles: vec![parameter_role],
             result_roles: vec![result_role],
             mutation,

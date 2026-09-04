@@ -271,13 +271,6 @@ fn scalar_arguments(
         .collect()
 }
 
-fn canonical_import_name(import: ImportId) -> String {
-    // ImportContract deliberately carries no authority-bearing source name.
-    // Linkage is therefore a deterministic serialization of its authenticated
-    // slot, never a lookup into the legacy helper-name tables.
-    format!("canonical.import.{}", import.get())
-}
-
 fn host_scalar_wasm_type(
     function: FunctionId,
     value: ValueId,
@@ -2318,7 +2311,7 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         let type_index = import_type_indices.get(&import.id).copied().ok_or(
             EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "HostCall import" }),
         )?;
-        imports.import("witchy", &canonical_import_name(import.id), EntityType::Function(type_index));
+        imports.import(&import.module, &import.name, EntityType::Function(type_index));
     }
     let mut functions = FunctionSection::new();
     let mut memory = MemorySection::new();
@@ -2339,6 +2332,7 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
         &ConstExpr::i32_const(0),
     );
     let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
     let mut code = CodeSection::new();
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter().map(|segment| (segment.id, segment.offset)).collect();
     let mut data = DataSection::new();
@@ -2655,7 +2649,7 @@ fn push_host_slice_plan(
     let (object, start, length) = runtime_byte_slice(function.id, &function.value_types, layouts, argument)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     push_get(plan, layout, object)?;
-    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(4)]);
+    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(4), PlanToken::I64Add]);
     push_get(plan, layout, start)?;
     plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Add]);
     push_get(plan, layout, length)?;
@@ -3379,10 +3373,13 @@ fn expected_metadata_prefix(
     for import in &target.imports {
         let type_index = import_type_indices.get(&import.id).copied()
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-        imports.import("witchy", &canonical_import_name(import.id), EntityType::Function(type_index));
+        let contract = source.imports().iter().find(|candidate| candidate.id == import.id)
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        imports.import(&contract.module, &contract.name, EntityType::Function(type_index));
     }
     let mut functions = FunctionSection::new();
     let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
     let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     for (index, function) in target.functions.iter().enumerate() {
         let type_index = signature_indices.get(&function.signature).copied()
@@ -3510,7 +3507,7 @@ fn decode_and_match_plan(
     if !target.imports.is_empty() {
         expected_sections.push(1);
     }
-    expected_sections.extend([2, 3, 4, 5]);
+    expected_sections.extend([2, 3, 4, 5, 6]);
     if !target.static_data.is_empty() {
         expected_sections.push(7);
     }

@@ -418,6 +418,10 @@ pub struct ImportContract {
     pub id: ImportId,
     pub signature: FunctionSignatureId,
     pub abi_identity: ImportContractIdentity,
+    /// Physical linkage is authenticated as part of `abi_identity` and is
+    /// never consulted to derive memory or capability authority.
+    pub module: String,
+    pub name: String,
     pub parameter_roles: Vec<HostParameterRole>,
     pub result_roles: Vec<HostResultRole>,
     pub mutation: HostMutation,
@@ -483,6 +487,8 @@ impl CanonicalAbiCatalog {
             id: import_id,
             signature,
             abi_identity: ImportContractIdentity::AuthenticatedAbi(*digest.finalize().as_bytes()),
+            module: import.module.clone(),
+            name: import.name.clone(),
             parameter_roles: vec![HostParameterRole::Buffer {
                 value_type: ValueType::Ref(string_layout),
                 access: AccessMode::Read,
