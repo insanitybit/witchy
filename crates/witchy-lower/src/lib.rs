@@ -11,5 +11,6 @@
 #![deny(unsafe_code)]
 
 pub mod analysis;
+pub mod canonical_lower;
 pub mod codegen;
 pub mod escape;
