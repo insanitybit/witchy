@@ -39,7 +39,6 @@ id_type!(Revision, u64);
 id_type!(FunctionId, u32);
 id_type!(BlockId, u32);
 id_type!(ValueId, u32);
-id_type!(TailSiteId, u32);
 id_type!(ImportId, u32);
 id_type!(StaticDataId, u32);
 id_type!(GcTypeId, u32);
@@ -75,6 +74,19 @@ pub enum ValueType {
 }
 
 id_type!(FunctionSignatureId, u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TailSiteId([u8; 32]);
+
+impl TailSiteId {
+    pub const fn from_digest(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+
+    pub const fn digest(self) -> [u8; 32] {
+        self.0
+    }
+}
 
 /// Overflow is part of program meaning, never an optimizer annotation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

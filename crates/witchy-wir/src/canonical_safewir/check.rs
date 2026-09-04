@@ -918,7 +918,7 @@ mod tests {
     const SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(0);
     const ENTRY: BlockId = BlockId::new(0);
     const VALUE: ValueId = ValueId::new(0);
-    const TAIL_SITE: TailSiteId = TailSiteId::new(0);
+    const TAIL_SITE: TailSiteId = TailSiteId::from_digest([11; 32]);
 
     fn contract(results: Vec<ResultContract>) -> CallableContract {
         CallableContract {
