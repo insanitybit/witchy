@@ -17,6 +17,16 @@ use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
 pub use check::{InitialCheckError, check_initial, check_transform};
+mod history;
+mod optimization;
+mod refinement;
+
+pub use history::{
+    DischargedObligation, HistoryError, ModuleDigest, OptimizationHistoryBody,
+    OptimizationHistoryWitness, OptimizationPassId, RefinementReceipt,
+};
+pub use optimization::{OptimizationError, OptimizationOutcome, optimize_unreachable_blocks};
+pub use refinement::RefinementError;
 
 macro_rules! id_type {
     ($name:ident, $inner:ty) => {
@@ -486,22 +496,22 @@ mod stage {
 
 pub trait ModuleStage: stage::Sealed {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum LoweredCandidate {}
 impl stage::Sealed for LoweredCandidate {}
 impl ModuleStage for LoweredCandidate {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TransformedCandidate {}
 impl stage::Sealed for TransformedCandidate {}
 impl ModuleStage for TransformedCandidate {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum InitialValid {}
 impl stage::Sealed for InitialValid {}
 impl ModuleStage for InitialValid {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum OptimizedValid {}
 impl stage::Sealed for OptimizedValid {}
 impl ModuleStage for OptimizedValid {}
@@ -542,6 +552,25 @@ impl CanonicalModule<LoweredCandidate> {
             signatures: self.signatures,
             imports: self.imports,
             functions: self.functions,
+            proper_tail_sites: self.proper_tail_sites,
+            stage: PhantomData,
+        }
+    }
+}
+
+impl CanonicalModule<InitialValid> {
+    pub(crate) fn into_transformed_candidate(
+        self,
+        revision: Revision,
+        functions: Vec<Function>,
+    ) -> CanonicalModule<TransformedCandidate> {
+        CanonicalModule {
+            revision,
+            checked_source: self.checked_source,
+            layouts: self.layouts,
+            signatures: self.signatures,
+            imports: self.imports,
+            functions,
             proper_tail_sites: self.proper_tail_sites,
             stage: PhantomData,
         }
