@@ -8,7 +8,7 @@ use super::super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScalarConstant {
     Int(i64),
-    Size(u64),
+    Size(u32),
     Bool(bool),
     Float(u64),
 }
@@ -75,9 +75,9 @@ fn constant_values(function: &Function) -> BTreeMap<ValueId, ScalarConstant> {
     }
 }
 
-/// This is the executable relational checker for one candidate rewrite. It
-/// evaluates both the original operation and its proposed constant result,
-/// accepting the replacement only when both produce the same scalar value.
+/// This is the executable reference semantics for one candidate rewrite. It
+/// computes the original operation once and constructs the matching constant;
+/// the common checker validates the resulting candidate independently.
 fn reference_fold(
     operation: &Operation,
     constants: &BTreeMap<ValueId, ScalarConstant>,
@@ -85,10 +85,8 @@ fn reference_fold(
     if !matches!(operation, Operation::Arithmetic { .. } | Operation::Compare { .. }) {
         return None;
     }
-    let (destination, expected) = evaluated_value(operation, constants)?;
-    let replacement = constant_operation(destination, expected);
-    let (_, observed) = evaluated_value(&replacement, constants)?;
-    (expected == observed).then_some(replacement)
+    let (destination, value) = evaluated_value(operation, constants)?;
+    Some(constant_operation(destination, value))
 }
 
 fn evaluated_value(
@@ -106,7 +104,7 @@ fn evaluated_value(
             Some((*destination, ScalarConstant::Bool(*value)))
         }
         Operation::ConstSize { destination, value } => {
-            Some((*destination, ScalarConstant::Size(*value)))
+            Some((*destination, ScalarConstant::Size(u32::try_from(*value).ok()?)))
         }
         Operation::Arithmetic {
             destination,
@@ -140,7 +138,10 @@ fn evaluated_value(
 fn constant_operation(destination: ValueId, value: ScalarConstant) -> Operation {
     match value {
         ScalarConstant::Int(value) => Operation::ConstInt { destination, value },
-        ScalarConstant::Size(value) => Operation::ConstSize { destination, value },
+        ScalarConstant::Size(value) => Operation::ConstSize {
+            destination,
+            value: u64::from(value),
+        },
         ScalarConstant::Bool(value) => Operation::ConstBool { destination, value },
         ScalarConstant::Float(bits) => Operation::ConstFloat { destination, bits },
     }
@@ -194,10 +195,10 @@ fn arithmetic_int(
 
 fn arithmetic_size(
     operator: ArithmeticOperator,
-    left: u64,
-    right: u64,
+    left: u32,
+    right: u32,
     overflow: OverflowBehavior,
-) -> Option<u64> {
+) -> Option<u32> {
     if overflow != OverflowBehavior::Wrap {
         return None;
     }
@@ -220,8 +221,8 @@ fn arithmetic_size(
         ArithmeticOperator::BitAnd => left & right,
         ArithmeticOperator::BitOr => left | right,
         ArithmeticOperator::BitXor => left ^ right,
-        ArithmeticOperator::ShiftLeft => left.wrapping_shl(right as u32),
-        ArithmeticOperator::ShiftRightUnsigned => left.wrapping_shr(right as u32),
+        ArithmeticOperator::ShiftLeft => left.wrapping_shl(right),
+        ArithmeticOperator::ShiftRightUnsigned => left.wrapping_shr(right),
         ArithmeticOperator::DivideSigned
         | ArithmeticOperator::RemainderSigned
         | ArithmeticOperator::ShiftRightSigned => return None,

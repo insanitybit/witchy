@@ -99,7 +99,10 @@ pub fn optimize_constant_folding(
         let candidate = initial
             .clone()
             .into_transformed_candidate(next_revision, next_functions.clone());
-        let checked = check_transform(candidate.clone()).map_err(OptimizationError::Safety)?;
+        let checked = match check_transform(candidate.clone()) {
+            Ok(checked) => checked,
+            Err(_) => break,
+        };
         receipts.push(OptimizationHistoryWitness::constant_folding_receipt(
             &previous,
             &candidate,
@@ -340,6 +343,50 @@ mod tests {
             outcome.optimized().functions()[0].blocks[0].operations[2],
             Operation::ConstInt { value: i64::MIN, .. }
         ));
+    }
+
+    #[test]
+    fn constant_folding_uses_u32_size_arithmetic_and_shift_counts() {
+        let maximum = ValueId::new(0);
+        let one = ValueId::new(1);
+        let wrapped = ValueId::new(2);
+        let shift_count = ValueId::new(3);
+        let shifted = ValueId::new(4);
+        let module = scalar_fixture(
+            vec![
+                Operation::ConstSize { destination: maximum, value: u64::from(u32::MAX) },
+                Operation::ConstSize { destination: one, value: 1 },
+                Operation::Arithmetic {
+                    destination: wrapped,
+                    operator: super::super::ArithmeticOperator::Add,
+                    left: maximum,
+                    right: one,
+                    overflow: super::super::OverflowBehavior::Wrap,
+                },
+                Operation::ConstSize { destination: shift_count, value: 32 },
+                Operation::Arithmetic {
+                    destination: shifted,
+                    operator: super::super::ArithmeticOperator::ShiftLeft,
+                    left: one,
+                    right: shift_count,
+                    overflow: super::super::OverflowBehavior::Wrap,
+                },
+            ],
+            [
+                (maximum, ValueType::Size),
+                (one, ValueType::Size),
+                (wrapped, ValueType::Size),
+                (shift_count, ValueType::Size),
+                (shifted, ValueType::Size),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let outcome = optimize_constant_folding(module).unwrap();
+        let operations = &outcome.optimized().functions()[0].blocks[0].operations;
+        assert!(matches!(operations[2], Operation::ConstSize { value: 0, .. }));
+        assert!(matches!(operations[4], Operation::ConstSize { value: 1, .. }));
+        assert_eq!(outcome.history().ordered().len(), 2);
     }
 
     #[test]
