@@ -135,6 +135,34 @@ impl LayoutProjection {
                 self.roots.push(ty.clone());
                 Ok(())
             }
+            Type::Named(name, arguments) if name == "Dict" => {
+                if arguments.len() != 2
+                    || !arguments.iter().all(|argument| {
+                        matches!(
+                            argument.unqualified(),
+                            Type::Named(element, args)
+                                if args.is_empty()
+                                    && matches!(element.as_str(), "Int" | "Float" | "Duration" | "String")
+                        )
+                    })
+                {
+                    return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
+                }
+                for argument in arguments {
+                    self.visit_type(argument)?;
+                }
+                self.roots.push(ty.clone());
+                Ok(())
+            }
+            // Iterators are GC/state-machine values, not linear-memory roots.
+            // Their element type still participates in the layout graph because
+            // an iterator may yield an owned linear-memory value.
+            Type::Named(name, arguments) if name == "Iter" => {
+                if arguments.len() != 1 {
+                    return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
+                }
+                self.visit_type(&arguments[0])
+            }
             _ => Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}"))),
         }
     }
@@ -178,6 +206,31 @@ fn intern_v1_layout(
             .intern_packed_list(element, RcHeader::Required)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
+    if let Type::Named(name, arguments) = ty.unqualified()
+        && name == "Dict"
+        && arguments.len() == 2
+    {
+        let key = intern_dictionary_slot(interner, &arguments[0])?;
+        let value = intern_dictionary_slot(interner, &arguments[1])?;
+        return interner
+            .intern_runtime_dictionary_body(key, value)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+    }
+    interner
+        .intern_type(ty, &V1Resolver)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
+}
+
+fn intern_dictionary_slot(
+    interner: &mut LayoutInterner,
+    ty: &Type,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
+    if is_string_type(ty) {
+        let pointee = intern_v1_layout(interner, ty)?;
+        return interner
+            .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+    }
     interner
         .intern_type(ty, &V1Resolver)
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
@@ -214,4 +267,47 @@ fn is_canonical_source_function(module: &ast::Module, name: &str) -> bool {
         return true;
     };
     name == entry || name.starts_with(&format!("{entry}."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LayoutProjection, Type};
+    use witchy_wir::layout::LayoutKind;
+
+    fn named(name: &str) -> Type {
+        Type::Named(name.to_owned(), Vec::new())
+    }
+
+    #[test]
+    fn dictionary_projection_uses_the_canonical_dense_body() {
+        let mut projection = LayoutProjection::default();
+        projection
+            .visit_type(&Type::Named(
+                "Dict".into(),
+                vec![named("Int"), named("Int")],
+            ))
+            .expect("Dict(Int, Int) has canonical scalar lanes");
+        let bundle = projection.finish().expect("dictionary layout is canonical");
+
+        assert_eq!(bundle.roots().len(), 1);
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(
+            &bundle.canonical_bytes(),
+        )
+        .expect("decode canonical dictionary layout");
+        assert!(matches!(
+            layouts.get(bundle.roots()[0]).expect("dictionary root" ).kind(),
+            LayoutKind::RuntimeDictionaryBody { .. }
+        ));
+    }
+
+    #[test]
+    fn iterator_projection_does_not_mint_a_linear_memory_root() {
+        let mut projection = LayoutProjection::default();
+        projection
+            .visit_type(&Type::Named("Iter".into(), vec![named("Int")]))
+            .expect("Iter(Int) is a non-linear-memory value");
+        let bundle = projection.finish().expect("iterator projection is canonical");
+
+        assert!(bundle.roots().is_empty());
+    }
 }
