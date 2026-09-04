@@ -156,9 +156,13 @@ fn install_body_derived_result_contracts(
     let signatures = index_signatures(candidate.signatures())?;
     let functions = index_functions(candidate.functions())?;
     let derived = contracts::derive_result_contracts(&functions, &signatures)?;
-    for signature in &mut candidate.signatures {
+    for signature in &candidate.signatures {
         if let Some(results) = derived.get(&signature.id) {
-            signature.contract.results = results.clone();
+            if signature.contract.results != *results {
+                return Err(InitialCheckError::CallableContractMismatch {
+                    signature: signature.id,
+                });
+            }
         }
     }
     Ok(())
@@ -2752,6 +2756,42 @@ mod tests {
                 signature: SIGNATURE,
             }
         );
+    }
+
+    #[test]
+    fn matching_callable_result_contract_is_accepted() {
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: vec![ValueType::Int],
+                contract: contract(vec![ResultContract::Value(ValueType::Int)]),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, ValueType::Int)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![Operation::ConstInt {
+                        destination: VALUE,
+                        value: 42,
+                    }],
+                    terminator: Terminator::Return {
+                        values: vec![VALUE],
+                    },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+
+        assert!(check_initial(module).is_ok());
     }
 
     #[test]
