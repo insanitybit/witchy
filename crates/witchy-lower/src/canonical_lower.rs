@@ -985,11 +985,51 @@ impl FunctionLowerer<'_> {
                 self.push_operation(Operation::ConstBool { destination, value: *value });
                 Ok(destination)
             }
-            Expr::Var(name) => self
-                .bindings
-                .get(name)
-                .copied()
-                .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())),
+            Expr::Var(name) => {
+                let value = self
+                    .bindings
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                if let ValueType::Ref(layout) = self.values[&value]
+                    && string_layout(
+                        &Type::Named("String".into(), Vec::new()),
+                        self.layout_bundle,
+                        self.layouts,
+                    )? == layout
+                    && !self.string_lengths.contains_key(&value)
+                {
+                    let length = self.fresh(ValueType::Size)?;
+                    self.push_operation(Operation::Load {
+                        destination: length,
+                        place: witchy_wir::canonical_safewir::Place::projected(
+                            value,
+                            Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length),
+                            ValueType::Size,
+                            AccessMode::Read,
+                        ),
+                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+                    });
+                    let maximum_length = self.fresh(ValueType::Size)?;
+                    self.push_operation(Operation::ConstSize {
+                        destination: maximum_length,
+                        value: u64::from(u32::MAX - 4),
+                    });
+                    let length_fits = self.fresh(ValueType::Bool)?;
+                    self.push_operation(Operation::Compare {
+                        destination: length_fits,
+                        operator: ComparisonOperator::LessEqualUnsigned,
+                        left: length,
+                        right: maximum_length,
+                    });
+                    self.push_operation(Operation::Guard {
+                        condition: length_fits,
+                        kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+                    });
+                    self.string_lengths.insert(value, length);
+                }
+                Ok(value)
+            }
             Expr::Call { name, args } if is_console_print(name) => Err(
                 CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
             ),
@@ -1500,9 +1540,19 @@ impl FunctionLowerer<'_> {
         left: &Expr,
         right: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if matches!(operator, BinOp::Concat | BinOp::And | BinOp::Or | BinOp::Coalesce) {
+        let string_operands = matches!(
+            self.expression_type(left)?.unqualified(),
+            Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+        ) && matches!(
+            self.expression_type(right)?.unqualified(),
+            Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+        );
+        if operator == BinOp::Concat || (operator == BinOp::Add && string_operands) {
+            return self.lower_string_concat(left, right);
+        }
+        if matches!(operator, BinOp::And | BinOp::Or | BinOp::Coalesce) {
             return Err(CanonicalLoweringError::UnsupportedExpression(
-                "short-circuit or concatenating binary operation",
+                "short-circuit binary operation",
             ));
         }
         let left = self.lower_expr(left)?;
@@ -1563,6 +1613,153 @@ impl FunctionLowerer<'_> {
             overflow,
         });
         Ok(destination)
+    }
+
+    /// Concatenate UTF-8 byte strings into a fresh, uniquely-owned buffer.
+    /// Dynamic operands remain fail-closed until symbolic slice ranges are
+    /// available to the canonical checker.
+    fn lower_string_concat(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let left = self.lower_expr(left)?;
+        let right = self.lower_expr(right)?;
+        let layout = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            self.layout_bundle,
+            self.layouts,
+        )?;
+        if self.values.get(&left).copied() != Some(ValueType::Ref(layout))
+            || self.values.get(&right).copied() != Some(ValueType::Ref(layout))
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "string concatenation operands",
+            ));
+        }
+        let left_length = *self.string_lengths.get(&left).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("dynamic string concatenation operand"),
+        )?;
+        let right_length = *self.string_lengths.get(&right).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("dynamic string concatenation operand"),
+        )?;
+
+        let maximum = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: maximum,
+            value: u64::from(u32::MAX - 4),
+        });
+        let right_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: right_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: right_length,
+            right: maximum,
+        });
+        self.push_operation(Operation::Guard {
+            condition: right_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+        });
+        let remaining = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Arithmetic {
+            destination: remaining,
+            operator: ArithmeticOperator::Subtract,
+            left: maximum,
+            right: right_length,
+            overflow: OverflowBehavior::Wrap,
+        });
+        let left_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: left_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: left_length,
+            right: remaining,
+        });
+        self.push_operation(Operation::Guard {
+            condition: left_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+        });
+        let total = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Arithmetic {
+            destination: total,
+            operator: ArithmeticOperator::Add,
+            left: left_length,
+            right: right_length,
+            overflow: OverflowBehavior::Trap,
+        });
+        let total_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: total_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: total,
+            right: maximum,
+        });
+        self.push_operation(Operation::Guard {
+            condition: total_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes: 4,
+                count: total,
+                capacity: total,
+                stride_bytes: 1,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::UpdateCount { object, count: total });
+        let zero = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
+        self.push_string_copy(object, left, zero, left_length, total, layout)?;
+        self.push_string_copy(object, right, left_length, right_length, total, layout)?;
+        self.string_lengths.insert(object, total);
+        Ok(object)
+    }
+
+    fn push_string_copy(
+        &mut self,
+        destination: ValueId,
+        source: ValueId,
+        start: ValueId,
+        length: ValueId,
+        total: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<(), CanonicalLoweringError> {
+        let in_bounds = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: in_bounds,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: length,
+            right: total,
+        });
+        self.push_operation(Operation::Guard {
+            condition: in_bounds,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        let destination_place = witchy_wir::canonical_safewir::Place::projected(
+            destination,
+            Projection::Slice { start, length },
+            ValueType::Ref(layout),
+            AccessMode::Write,
+        );
+        let source_start = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination: source_start, value: 0 });
+        let source_place = witchy_wir::canonical_safewir::Place::projected(
+            source,
+            Projection::Slice { start: source_start, length },
+            ValueType::Ref(layout),
+            AccessMode::Read,
+        );
+        self.push_operation(Operation::CopyBytes {
+            destination: destination_place,
+            source: source_place,
+            length,
+        });
+        Ok(())
     }
 }
 

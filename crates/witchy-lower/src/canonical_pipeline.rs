@@ -549,4 +549,80 @@ mod tests {
         assert_eq!(candidate.static_data_segments()[0].id(), witchy_wir::canonical_safewir::StaticDataId::new(0));
         assert_eq!(candidate.static_data_segments()[0].bytes(), &[4, 0, 0, 0, b's', b'a', b'm', b'e']);
     }
+
+    #[test]
+    fn utf8_string_concat_reaches_final_safewir_validation() {
+        let source = "fn worker(console: Console, suffix: String):\n    console.print(\"hi\" + suffix)\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked UTF-8 concat source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("canonical layouts");
+        let candidate = lower_typed_module(canonical, layouts).expect("canonical concat lowering");
+        let operations = candidate
+            .functions()
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .flat_map(|block| block.operations.iter())
+            .collect::<Vec<_>>();
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            witchy_wir::canonical_safewir::Operation::Alloc { .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            witchy_wir::canonical_safewir::Operation::CopyBytes { .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            witchy_wir::canonical_safewir::Operation::UpdateCount { .. }
+        )));
+        validate_checked_module(&checked).expect("UTF-8 concat reaches final SafeWIR validation");
+    }
+
+    #[test]
+    fn utf8_string_concat_reaches_admitted_execution() {
+        let source = "fn main(console: Console):\n    console.print(\"hi\" + \"!\")\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked UTF-8 concat source");
+        let artifact = admit_checked_module(&checked).expect("admit UTF-8 concat artifact");
+        wasmparser::validate(artifact.wasm()).expect("UTF-8 concat bytes remain valid Wasm");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted UTF-8 concat artifact");
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "print",
+                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(wasmtime::Extern::into_memory)
+                        .expect("canonical memory export");
+                    let start = usize::try_from(pointer).expect("non-negative print pointer");
+                    let length = usize::try_from(length).expect("non-negative print length");
+                    let bytes = memory.data(&caller)[start..start + length].to_vec();
+                    caller.data_mut().extend_from_slice(&bytes);
+                },
+            )
+            .expect("bind authenticated print ABI");
+        let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted UTF-8 concat artifact");
+        let main = instance
+            .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f0")
+            .expect("canonical concat main export");
+        main.call(&mut store, None).expect("run canonical UTF-8 concat");
+        assert_eq!(store.data(), b"hi!");
+    }
 }

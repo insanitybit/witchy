@@ -84,6 +84,7 @@ enum ScalarInstruction {
     StaticData { destination: ValueId, data: crate::canonical_safewir::StaticDataId },
     Load { destination: ValueId, place: Place, transfer: LoadTransfer },
     Store { place: Place, value: ValueId, transfer: StoreTransfer },
+    CopyBytes { destination: Place, source: Place, length: ValueId },
     UpdateCount { object: ValueId, count: ValueId },
     Share { destination: ValueId, source: ValueId },
     Release { object: ValueId },
@@ -206,6 +207,7 @@ enum CorrespondenceRule {
     MemoryStaticData,
     MemoryLoad,
     MemoryStore,
+    MemoryCopy,
     MemoryUpdateCount,
     MemoryOwnership,
     ScalarCall,
@@ -292,30 +294,48 @@ fn runtime_byte_slice(
     let HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } = argument else {
         return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer" });
     };
-    if place.access() != AccessMode::Read {
-        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer access" });
-    }
     let Projection::Slice { start, length } = place.projection() else {
         return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
     };
+    raw_byte_slice_place(function, value_types, layouts, place, AccessMode::Read, *length)?;
+    Ok((place.object(), *start, *length))
+}
+
+fn raw_byte_slice_place(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    place: &Place,
+    access: AccessMode,
+    operation_length: ValueId,
+) -> Result<(ValueId, ValueId, ValueId), LoweringError> {
+    if place.access() != access {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes access" });
+    }
+    let Projection::Slice { start, length } = place.projection() else {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes projection" });
+    };
+    if *length != operation_length {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes length" });
+    }
     if value_types.get(start) != Some(&ValueType::Size) || value_types.get(length) != Some(&ValueType::Size) {
-        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall slice bounds" });
+        return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes slice bounds" });
     }
     let ValueType::Ref(layout) = value_types.get(&place.object()).copied().ok_or(
-        LoweringError::UnsupportedOperation { function, operation: "HostCall buffer object" },
+        LoweringError::UnsupportedOperation { function, operation: "CopyBytes object" },
     )? else {
-        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer object" });
+        return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes object" });
     };
     if place.value_type() != ValueType::Ref(layout) {
-        return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer type" });
+        return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes type" });
     }
-    let descriptor = layouts.get(layout).ok_or(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer layout" })?;
+    let descriptor = layouts.get(layout).ok_or(LoweringError::UnsupportedLayout { function, operation: "CopyBytes layout" })?;
     let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else {
-        return Err(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer layout" });
+        return Err(LoweringError::UnsupportedLayout { function, operation: "CopyBytes layout" });
     };
-    let element = layouts.get(*element).ok_or(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer element" })?;
+    let element = layouts.get(*element).ok_or(LoweringError::UnsupportedLayout { function, operation: "CopyBytes element" })?;
     if element.kind() != &LayoutKind::Scalar(ScalarKind::RawByte) {
-        return Err(LoweringError::UnsupportedLayout { function, operation: "HostCall buffer element" });
+        return Err(LoweringError::UnsupportedLayout { function, operation: "CopyBytes element" });
     }
     Ok((place.object(), *start, *length))
 }
@@ -638,8 +658,16 @@ fn lower_operation(
             validate_host_call_lowering(function, value_types, layouts, contract, arguments, destinations)?;
             ScalarInstruction::HostCall { destinations: destinations.clone(), import: *import, arguments: arguments.clone() }
         }
-        Operation::CopyBytes { .. }
-        | Operation::MoveRange { .. }
+        Operation::CopyBytes { destination, source, length } => {
+            raw_byte_slice_place(function, value_types, layouts, destination, AccessMode::Write, *length)?;
+            raw_byte_slice_place(function, value_types, layouts, source, AccessMode::Read, *length)?;
+            ScalarInstruction::CopyBytes {
+                destination: destination.clone(),
+                source: source.clone(),
+                length: *length,
+            }
+        }
+        Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
         | Operation::Retain { .. } => {
             return Err(LoweringError::UnsupportedOperation { function, operation: operation_name(operation) });
@@ -851,14 +879,14 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::StaticData { .. } => Some(CorrespondenceRule::MemoryStaticData),
         Operation::Load { .. } => Some(CorrespondenceRule::MemoryLoad),
         Operation::Store { .. } => Some(CorrespondenceRule::MemoryStore),
+        Operation::CopyBytes { .. } => Some(CorrespondenceRule::MemoryCopy),
         Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
         Operation::Share { .. }
         | Operation::Release { .. }
         | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
         Operation::HostCall { .. } => Some(CorrespondenceRule::HostCall),
-        Operation::CopyBytes { .. }
-        | Operation::MoveRange { .. }
+        Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
         | Operation::Retain { .. } => None,
     }
@@ -879,6 +907,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::StaticData { destination, data, .. }, ScalarInstruction::StaticData { destination: actual_destination, data: actual_data }) => destination == actual_destination && data == actual_data,
         (Operation::Load { destination, place, transfer }, ScalarInstruction::Load { destination: actual_destination, place: actual_place, transfer: actual_transfer }) => destination == actual_destination && place == actual_place && transfer == actual_transfer,
         (Operation::Store { place, value, transfer }, ScalarInstruction::Store { place: actual_place, value: actual_value, transfer: actual_transfer }) => place == actual_place && value == actual_value && transfer == actual_transfer,
+        (Operation::CopyBytes { destination, source, length }, ScalarInstruction::CopyBytes { destination: actual_destination, source: actual_source, length: actual_length }) => destination == actual_destination && source == actual_source && length == actual_length,
         (Operation::UpdateCount { object, count }, ScalarInstruction::UpdateCount { object: actual_object, count: actual_count }) => object == actual_object && count == actual_count,
         (Operation::Share { destination, source }, ScalarInstruction::Share { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Release { object }, ScalarInstruction::Release { object: actual_object }) | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
@@ -1625,7 +1654,28 @@ fn emit_host_slice(
     layouts: &LayoutInterner,
     argument: &HostCallArgument,
 ) -> Result<(), EncodeError> {
-    let (object, start, length) = runtime_byte_slice(function, value_types, layouts, argument)
+    let HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } = argument else {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer" }));
+    };
+    let Projection::Slice { length, .. } = place.projection() else {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" }));
+    };
+    emit_raw_byte_slice_address(body, layout, function, value_types, layouts, place, AccessMode::Read, *length)?;
+    emit_get(body, layout, function, *length)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_raw_byte_slice_address(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    layouts: &LayoutInterner,
+    place: &Place,
+    access: AccessMode,
+    length: ValueId,
+) -> Result<(), EncodeError> {
+    let (object, start, length) = raw_byte_slice_place(function, value_types, layouts, place, access, length)
         .map_err(EncodeError::Lowering)?;
     // Authenticate the complete physical range before narrowing it to the
     // two i32 ABI lanes. This is redundant with the SafeWIR checker by design:
@@ -1650,7 +1700,41 @@ fn emit_host_slice(
     body.instruction(&wasm_encoder::Instruction::I32Add);
     emit_get(body, layout, function, start)?;
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    emit_get(body, layout, function, length)
+    Ok(())
+}
+
+fn emit_copy_bytes(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destination: &Place,
+    source: &Place,
+    length: ValueId,
+    layouts: &LayoutInterner,
+) -> Result<(), EncodeError> {
+    emit_raw_byte_slice_address(
+        body,
+        layout,
+        function.id,
+        &function.value_types,
+        layouts,
+        destination,
+        AccessMode::Write,
+        length,
+    )?;
+    emit_raw_byte_slice_address(
+        body,
+        layout,
+        function.id,
+        &function.value_types,
+        layouts,
+        source,
+        AccessMode::Read,
+        length,
+    )?;
+    emit_get(body, layout, function.id, length)?;
+    body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    Ok(())
 }
 
 fn emit_host_call(
@@ -1758,6 +1842,9 @@ fn emit_instruction(
             }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_store(body, function, layout, access, *value)?;
+        }
+        ScalarInstruction::CopyBytes { destination, source, length } => {
+            emit_copy_bytes(body, function, layout, destination, source, *length, layouts)?;
         }
         ScalarInstruction::UpdateCount { object, count } => emit_update_count(body, function, layout, layouts, *object, *count)?,
         ScalarInstruction::Share { destination, source } => emit_share(body, layout, *destination, *source, function)?,
@@ -2395,6 +2482,7 @@ enum PlanToken {
     I32Store16 { offset: u64, align: u8, memory: u32 },
     I64Store { offset: u64, align: u8, memory: u32 },
     F64Store { offset: u64, align: u8, memory: u32 },
+    MemoryCopy { source: u32, destination: u32 },
     I64GtU,
     Block(String),
     Loop(String),
@@ -2441,6 +2529,10 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I32Store16 { memarg } => PlanToken::I32Store16 { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::I64Store { memarg } => PlanToken::I64Store { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::F64Store { memarg } => PlanToken::F64Store { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
+        wasmparser::Operator::MemoryCopy { src_mem, dst_mem } => PlanToken::MemoryCopy {
+            source: src_mem,
+            destination: dst_mem,
+        },
         wasmparser::Operator::I64GtU => PlanToken::I64GtU,
         wasmparser::Operator::Block { blockty } => PlanToken::Block(format!("{blockty:?}")),
         wasmparser::Operator::Loop { blockty } => PlanToken::Loop(format!("{blockty:?}")),
@@ -2698,6 +2790,79 @@ fn push_host_call_plan(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn push_raw_byte_slice_address_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    place: &Place,
+    access: AccessMode,
+    length: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    let (object, start, length) = raw_byte_slice_place(
+        function.id,
+        &function.value_types,
+        layouts,
+        place,
+        access,
+        length,
+    )
+    .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(4), PlanToken::I64Add]);
+    push_get(plan, layout, start)?;
+    plan.push(PlanToken::I64ExtendI32U);
+    plan.push(PlanToken::I64Add);
+    push_get(plan, layout, length)?;
+    plan.extend([
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Add,
+        PlanToken::I64Const(i64::from(u32::MAX)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    push_get(plan, layout, object)?;
+    plan.extend([PlanToken::I32Const(4), PlanToken::I32Add]);
+    push_get(plan, layout, start)?;
+    plan.push(PlanToken::I32Add);
+    Ok(())
+}
+
+fn push_copy_bytes_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    destination: &Place,
+    source: &Place,
+    length: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    push_raw_byte_slice_address_plan(
+        plan,
+        function,
+        layout,
+        layouts,
+        destination,
+        AccessMode::Write,
+        length,
+    )?;
+    push_raw_byte_slice_address_plan(
+        plan,
+        function,
+        layout,
+        layouts,
+        source,
+        AccessMode::Read,
+        length,
+    )?;
+    push_get(plan, layout, length)?;
+    plan.push(PlanToken::MemoryCopy { source: 0, destination: 0 });
+    Ok(())
+}
+
 fn push_reclaim_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, object: ValueId) -> Result<(), CanonicalAdmissionError> {
     push_get(plan, layout, object)?;
     plan.push(PlanToken::LocalSet(layout.scratch[1]));
@@ -2928,6 +3093,17 @@ fn expected_linear_function_plan(
             }
             Operation::Store { place, value, transfer: StoreTransfer::CopyScalar } => {
                 push_memory_store_plan(&mut plan, function, layouts, &layout, place, *value)?;
+            }
+            Operation::CopyBytes { destination, source, length } => {
+                push_copy_bytes_plan(
+                    &mut plan,
+                    function,
+                    &layout,
+                    layouts,
+                    destination,
+                    source,
+                    *length,
+                )?;
             }
             Operation::UpdateCount { object, count } => {
                 push_update_count_plan(&mut plan, function, layouts, &layout, *object, *count)?;

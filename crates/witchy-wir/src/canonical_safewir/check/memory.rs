@@ -7,10 +7,10 @@ use crate::layout::{
 
 use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
-    AccessMode, AllocationClass, BasicBlock, BorrowMode, CallArgument, CallableContract,
-    ComparisonOperator, Extent, Function, FunctionSignature, GuardKind, HeaderField,
-    LoadTransfer, Operation, Ownership, ParameterContract, ParameterOwnership, Place, Projection,
-    ResultContract, StoreTransfer, ValueId, ValueType,
+    AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument,
+    CallableContract, ComparisonOperator, Extent, Function, FunctionSignature, GuardKind,
+    HeaderField, LoadTransfer, Operation, OverflowBehavior, Ownership, ParameterContract,
+    ParameterOwnership, Place, Projection, ResultContract, StoreTransfer, ValueId, ValueType,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,7 @@ struct Comparison {
 pub(super) struct MemoryState {
     objects: BTreeMap<ValueId, ObjectState>,
     constants: BTreeMap<ValueId, u64>,
+    exact_additions: BTreeMap<ValueId, (ValueId, ValueId)>,
     comparisons: BTreeMap<ValueId, Comparison>,
     guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
     header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
@@ -72,6 +73,7 @@ impl<'a> MemoryChecker<'a> {
             state: MemoryState {
                 objects: BTreeMap::new(),
                 constants: BTreeMap::new(),
+                exact_additions: BTreeMap::new(),
                 comparisons: BTreeMap::new(),
                 guards: BTreeSet::new(),
                 header_values: BTreeMap::new(),
@@ -141,6 +143,17 @@ impl<'a> MemoryChecker<'a> {
                 .constants
                 .iter()
                 .map(|(value, constant)| (remap_value(&renames, *value), *constant))
+                .collect(),
+            exact_additions: self
+                .state
+                .exact_additions
+                .iter()
+                .map(|(result, (left, right))| {
+                    (
+                        remap_value(&renames, *result),
+                        (remap_value(&renames, *left), remap_value(&renames, *right)),
+                    )
+                })
                 .collect(),
             comparisons: self
                 .state
@@ -222,6 +235,7 @@ impl<'a> MemoryChecker<'a> {
         Ok(MemoryState {
             objects,
             constants: intersect_map(&existing.constants, &incoming.constants),
+            exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
             comparisons: intersect_map(&existing.comparisons, &incoming.comparisons),
             guards: existing.guards.intersection(&incoming.guards).copied().collect(),
             header_values: intersect_map(&existing.header_values, &incoming.header_values),
@@ -640,8 +654,14 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn range_within(&self, start: ValueId, length: ValueId, count: ValueId) -> bool {
-        let whole_logical_range = self.state.constants.get(&start) == Some(&0)
-            && length == count;
+        let from_body_start = self.state.constants.get(&start) == Some(&0)
+            && self.less_equal(length, count);
+        let guarded_exact_end = self.state.exact_additions.iter().any(
+            |(end, (left, right))| {
+                ((*left == start && *right == length) || (*left == length && *right == start))
+                    && self.less_equal(*end, count)
+            },
+        );
         let constant_range = self
             .state
             .constants
@@ -651,7 +671,7 @@ impl<'a> MemoryChecker<'a> {
             .is_some_and(|((start, length), count)| {
                 start.checked_add(*length).is_some_and(|end| end <= *count)
             });
-        whole_logical_range || constant_range
+        from_body_start || guarded_exact_end || constant_range
     }
 
     fn check_byte_slice(
@@ -696,18 +716,7 @@ impl<'a> MemoryChecker<'a> {
             .get(&(place.object(), HeaderField::Length))
             .copied()
             .unwrap_or(count);
-        let whole_logical_body = self.state.constants.get(start) == Some(&0)
-            && *length == logical_count;
-        let constant_range = self
-            .state
-            .constants
-            .get(start)
-            .zip(self.state.constants.get(length))
-            .zip(self.state.constants.get(&logical_count))
-            .is_some_and(|((start, length), count)| {
-                start.checked_add(*length).is_some_and(|end| end <= *count)
-            });
-        if !whole_logical_body && !constant_range {
+        if !self.range_within(*start, *length, logical_count) {
             return Err(InitialCheckError::MissingBoundsGuard {
                 function: self.function.id,
                 index: *start,
@@ -769,6 +778,16 @@ impl<'a> MemoryChecker<'a> {
         match operation {
             Operation::ConstSize { destination, value } => {
                 self.state.constants.insert(*destination, *value);
+                Ok(false)
+            }
+            Operation::Arithmetic {
+                destination,
+                operator: ArithmeticOperator::Add,
+                left,
+                right,
+                overflow: OverflowBehavior::Trap,
+            } => {
+                self.state.exact_additions.insert(*destination, (*left, *right));
                 Ok(false)
             }
             Operation::Compare { destination, operator, left, right } => {
@@ -1052,21 +1071,27 @@ impl<'a> MemoryChecker<'a> {
         let descriptor = self.descriptor(object.layout)?;
         let derived = match place.projection() {
             Projection::Header(field) => {
-                let HeaderLayout::PackedList {
-                    length_offset,
-                    capacity_offset,
-                    data_offset,
-                    ..
-                } = descriptor.header()
-                else {
-                    return self.invalid_projection(place.object());
-                };
-                let offset = match field {
-                    HeaderField::Length => length_offset,
-                    HeaderField::Capacity => capacity_offset,
-                };
-                if offset >= data_offset {
-                    return self.invalid_projection(place.object());
+                match descriptor.header() {
+                    HeaderLayout::PackedList {
+                        length_offset,
+                        capacity_offset,
+                        data_offset,
+                        ..
+                    } => {
+                        let offset = match field {
+                            HeaderField::Length => length_offset,
+                            HeaderField::Capacity => capacity_offset,
+                        };
+                        if offset >= data_offset {
+                            return self.invalid_projection(place.object());
+                        }
+                    }
+                    HeaderLayout::None
+                        if *field == HeaderField::Length
+                            && matches!(descriptor.kind(), LayoutKind::RuntimeBuffer { element }
+                                if self.descriptor(*element).is_ok_and(|element| element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)))
+                            && descriptor.size() == (LayoutSize::Dynamic { base: 4, stride: 1 }) => {}
+                    _ => return self.invalid_projection(place.object()),
                 }
                 ValueType::Size
             }
@@ -1140,6 +1165,24 @@ impl<'a> MemoryChecker<'a> {
                 function: self.function.id,
                 object,
             })?;
+        let is_raw_runtime_buffer = matches!(self.descriptor(state.layout)?.kind(), LayoutKind::RuntimeBuffer { element }
+            if self.descriptor(*element).is_ok_and(|element| element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)));
+        if is_raw_runtime_buffer {
+            if !self.allocation_fits(count, base, stride) {
+                return Err(InitialCheckError::MissingAllocationSizeGuard {
+                    function: self.function.id,
+                    capacity: count,
+                    maximum: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
+                });
+            }
+            self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+                header_bytes: base,
+                count,
+                capacity: count,
+                stride_bytes: stride,
+            };
+            return Ok(());
+        }
         let capacity = self
             .state.header_values
             .get(&(object, HeaderField::Capacity))
@@ -1475,6 +1518,7 @@ mod tests {
     const LONG_LENGTH: ValueId = ValueId::new(4);
     const SOURCE: ValueId = ValueId::new(5);
     const DESTINATION: ValueId = ValueId::new(6);
+    const END: ValueId = ValueId::new(7);
 
     fn with_checker(
         pointer_element: bool,
@@ -1643,5 +1687,92 @@ mod tests {
                 })
             ));
         });
+    }
+
+    #[test]
+    fn byte_copy_requires_a_dominating_dynamic_end_guard() {
+        let mut layouts = LayoutInterner::new();
+        let byte = layouts
+            .intern_scalar(ScalarKind::RawByte)
+            .expect("raw-byte layout");
+        let buffer = layouts.intern_runtime_buffer(byte).expect("byte buffer layout");
+        let value_types = [
+            (COUNT, ValueType::Size),
+            (CAPACITY, ValueType::Size),
+            (START, ValueType::Size),
+            (LENGTH, ValueType::Size),
+            (END, ValueType::Size),
+            (SOURCE, ValueType::Ref(buffer)),
+            (DESTINATION, ValueType::Ref(buffer)),
+        ]
+        .into_iter()
+        .collect();
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types,
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature)
+            .expect("checker construction");
+        for object in [SOURCE, DESTINATION] {
+            checker.state.objects.insert(
+                object,
+                ObjectState {
+                    identity: object,
+                    layout: buffer,
+                    extent: Extent::Counted {
+                        header_bytes: 4,
+                        count: COUNT,
+                        capacity: CAPACITY,
+                        stride_bytes: 1,
+                    },
+                    ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                },
+            );
+        }
+        checker.state.exact_additions.insert(END, (START, LENGTH));
+        let operation = Operation::CopyBytes {
+            destination: Place::projected(
+                DESTINATION,
+                Projection::Slice { start: START, length: LENGTH },
+                ValueType::Ref(buffer),
+                AccessMode::Write,
+            ),
+            source: Place::projected(
+                SOURCE,
+                Projection::Slice { start: START, length: LENGTH },
+                ValueType::Ref(buffer),
+                AccessMode::Read,
+            ),
+            length: LENGTH,
+        };
+
+        assert!(matches!(
+            checker.check(&operation),
+            Err(InitialCheckError::MissingBoundsGuard { index: START, count: COUNT, .. })
+        ));
+        checker
+            .state
+            .guards
+            .insert((ComparisonOperator::LessEqualUnsigned, END, COUNT));
+        assert_eq!(checker.check(&operation), Ok(true));
     }
 }
