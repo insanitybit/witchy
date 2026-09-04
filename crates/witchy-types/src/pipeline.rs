@@ -21,7 +21,7 @@ use witchy_syntax::type_resolve::ResolvedDeclarations;
 use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
-use crate::typeck::{self, TypeError};
+use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
 ///
@@ -44,6 +44,38 @@ impl CheckedSourceWitness {
     }
 }
 
+/// The canonical source product consumed by SafeWIR lowering.
+///
+/// Its fields are private so the typed module, source witness, and proper-tail
+/// manifest can only be paired by the canonical source-bearing frontend. The
+/// AST-only checked-link APIs never mint this product.
+#[derive(Debug, PartialEq)]
+pub struct CanonicalCheckedSource {
+    typed: typeck::TypedModule,
+    source_witness: CheckedSourceWitness,
+    proper_tail_manifest: ProperTailSiteManifest,
+}
+
+impl CanonicalCheckedSource {
+    /// Borrow the exact typed module retained for canonical lowering.
+    #[doc(hidden)]
+    pub fn typed_module(&self) -> &typeck::TypedModule {
+        &self.typed
+    }
+
+    /// Borrow the source identity minted for the same typed module.
+    #[doc(hidden)]
+    pub fn source_witness(&self) -> &CheckedSourceWitness {
+        &self.source_witness
+    }
+
+    /// Borrow the proper-tail obligations derived from the same typed module.
+    #[doc(hidden)]
+    pub fn proper_tail_manifest(&self) -> &ProperTailSiteManifest {
+        &self.proper_tail_manifest
+    }
+}
+
 /// A linked module that has successfully passed the ordinary runtime checker.
 ///
 /// The wrapped AST remains private so APIs that require checked input can use
@@ -53,7 +85,7 @@ pub struct CheckedModule {
     linked: LinkedModule,
     module_owners: Option<AuthenticatedModuleOwners>,
     typed_async_source: Option<typeck::TypedModule>,
-    source_witness: Option<CheckedSourceWitness>,
+    canonical_source: Option<CanonicalCheckedSource>,
 }
 
 /// A type-checked compiler rewrite that may be evaluated with the declaration
@@ -96,12 +128,21 @@ impl CheckedTestDriverModule {
 }
 
 impl CheckedModule {
+    /// Borrow the opaque canonical source product, if this came from the
+    /// exact-source frontend.
+    #[doc(hidden)]
+    pub fn canonical_source(&self) -> Option<&CanonicalCheckedSource> {
+        self.canonical_source.as_ref()
+    }
+
     /// Borrow the source witness minted by the exact-source checked pipeline.
     /// AST-only link APIs intentionally return `None` and cannot enter
     /// canonical production lowering.
     #[doc(hidden)]
     pub fn canonical_source_witness(&self) -> Option<&CheckedSourceWitness> {
-        self.source_witness.as_ref()
+        self.canonical_source
+            .as_ref()
+            .map(CanonicalCheckedSource::source_witness)
     }
 
     /// Borrow the checked linked AST.
@@ -423,7 +464,7 @@ fn link_checked_with(
         linked,
         module_owners,
         typed_async_source: typed_async_source.into_inner(),
-        source_witness: None,
+        canonical_source: None,
     })
 }
 
@@ -439,14 +480,19 @@ fn checked_source_digest(sources: &[(String, Vec<u8>)]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-fn attach_source_witness(
+fn attach_canonical_source(
     mut checked: CheckedModule,
+    typed: typeck::TypedModule,
     source_bundle_digest: [u8; 32],
-    proper_tail_manifest_digest: [u8; 32],
+    proper_tail_manifest: ProperTailSiteManifest,
 ) -> Result<CheckedModule, PipelineError> {
-    checked.source_witness = Some(CheckedSourceWitness {
-        source_bundle_digest,
-        proper_tail_manifest_digest,
+    checked.canonical_source = Some(CanonicalCheckedSource {
+        typed,
+        source_witness: CheckedSourceWitness {
+            source_bundle_digest,
+            proper_tail_manifest_digest: proper_tail_manifest.digest(),
+        },
+        proper_tail_manifest,
     });
     Ok(checked)
 }
@@ -488,12 +534,11 @@ pub fn link_checked_from_source_bundle(
         })
         .collect::<Result<Vec<_>, PipelineError>>()?;
     let typed_source = typeck::annotate_checked(modules[0].1.clone())?;
-    let proper_tail_manifest_digest = typed_source
+    let proper_tail_manifest = typed_source
         .proper_tail_manifest()
-        .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?
-        .digest();
+        .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     let checked = link_checked_with(modules, entry, expand, LinkMode::Production, None, None)?;
-    attach_source_witness(checked, source_bundle_digest, proper_tail_manifest_digest)
+    attach_canonical_source(checked, typed_source, source_bundle_digest, proper_tail_manifest)
 }
 
 /// Link with the injected compile-time expander, then type-check the result.

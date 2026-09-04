@@ -1,7 +1,7 @@
 //! Internal RFC-0165 stage composition.
 //!
 //! This is intentionally crate-private until its inputs come directly from a
-//! `CheckedModule` source witness. It produces final SafeWIR authority, never
+//! `CheckedModule` canonical source product. It produces final SafeWIR authority, never
 //! bytes, and has no raw-WIR fallback.
 
 use std::fmt;
@@ -32,15 +32,14 @@ impl fmt::Display for CanonicalPipelineError {
 
 impl std::error::Error for CanonicalPipelineError {}
 
-pub(crate) fn validate_typed_module(
-    typed: &witchy_types::typeck::TypedModule,
+pub(crate) fn validate_checked_module(
     checked: &CheckedModule,
     layouts: LayoutBundle,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
-    let witness = checked
-        .canonical_source_witness()
+    let source = checked
+        .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
-    let candidate = lower_typed_module(typed, witness, layouts)
+    let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?;
     let checked = check_initial_with_witness(candidate)
         .map_err(CanonicalPipelineError::InitialValidation)?;
@@ -69,15 +68,7 @@ mod tests {
         .expect("checked source");
         let layouts = LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty scalar layout bundle");
-        let typed = witchy_types::typeck::annotate_checked(
-            parse_module(source).expect("parse fixture"),
-        )
-            .expect("type check fixture");
-        let validated = validate_typed_module(
-            &typed,
-            &checked,
-            layouts,
-        )
+        let validated = validate_checked_module(&checked, layouts)
         .expect("validate canonical scalar pipeline");
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
@@ -97,14 +88,7 @@ mod tests {
             .expect("empty scalar layout bundle");
 
         assert!(matches!(
-            validate_typed_module(
-                &witchy_types::typeck::annotate_checked(
-                    parse_module("fn main() -> Int:\n    42\n").unwrap(),
-                )
-                .unwrap(),
-                &checked,
-                layouts,
-            ),
+            validate_checked_module(&checked, layouts),
             Err(CanonicalPipelineError::MissingCheckedSourceWitness)
         ));
     }

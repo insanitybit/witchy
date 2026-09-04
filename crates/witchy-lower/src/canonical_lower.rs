@@ -9,7 +9,7 @@ use std::error::Error;
 use std::fmt;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Stmt, Type};
-use witchy_types::pipeline::CheckedSourceWitness;
+use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
     ProperTailSiteKey, ProperTailSiteManifest, TypedModule,
@@ -51,21 +51,14 @@ impl Error for CanonicalLoweringError {}
 
 /// Lower the exact final typed AST into canonical SafeWIR.
 ///
-/// The source identity and layout bundle are independent checked-pipeline
-/// inputs. Supplying them does not grant validation or encoding authority.
+/// The frontend product owns the exact typed module, source identity, and
+/// proper-tail manifest used by this lowering. No caller can cross-pair them.
 pub fn lower_typed_module(
-    typed: &TypedModule,
-    checked_source: &CheckedSourceWitness,
+    source: &CanonicalCheckedSource,
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
-    let tail_manifest = typed
-        .proper_tail_manifest()
-        .map_err(|error| CanonicalLoweringError::TailManifest(error.to_string()))?;
-    if tail_manifest.digest() != checked_source.proper_tail_manifest_digest() {
-        return Err(CanonicalLoweringError::TailManifest(
-            "proper-tail obligations do not match the checked source witness".to_string(),
-        ));
-    }
+    let typed = source.typed_module();
+    let tail_manifest = source.proper_tail_manifest();
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
@@ -112,12 +105,14 @@ pub fn lower_typed_module(
 
     Ok(CanonicalModule::from_lowering(LoweredModuleParts {
         revision: Revision::new(0),
-        checked_source: CheckedSourceIdentity::from_digest(checked_source.source_bundle_digest()),
+        checked_source: CheckedSourceIdentity::from_digest(
+            source.source_witness().source_bundle_digest(),
+        ),
         layouts,
         signatures,
         imports: Vec::new(),
         functions,
-        proper_tail_sites: canonical_tail_sites(&tail_manifest)?,
+        proper_tail_sites: canonical_tail_sites(tail_manifest)?,
     }))
 }
 
@@ -879,7 +874,6 @@ fn canonical_tail_sites(
 #[cfg(test)]
 mod tests {
     use super::lower_typed_module;
-    use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{check_initial, Terminator};
     use witchy_wir::layout::{LayoutBundle, LayoutInterner};
 
@@ -897,12 +891,8 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked source");
-        let typed = witchy_types::typeck::annotate_checked(
-            parse_module(source).expect("parse fixture"),
-        )
-        .expect("type check fixture");
-        let witness = checked.canonical_source_witness().expect("source witness");
-        lower_typed_module(&typed, witness, empty_layouts())
+        let canonical = checked.canonical_source().expect("canonical source");
+        lower_typed_module(canonical, empty_layouts())
             .expect("lower canonical SafeWIR")
     }
 
@@ -958,12 +948,7 @@ mod tests {
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked source");
-        let typed = witchy_types::typeck::annotate_checked(
-            parse_module("fn bad(flag: Bool) -> Nil:\n    if flag:\n        return\n")
-                .expect("parse fixture"),
-        )
-        .expect("type check fixture");
-        let witness = checked.canonical_source_witness().expect("source witness");
-        assert!(lower_typed_module(&typed, witness, empty_layouts()).is_err());
+        let canonical = checked.canonical_source().expect("canonical source");
+        assert!(lower_typed_module(canonical, empty_layouts()).is_err());
     }
 }
