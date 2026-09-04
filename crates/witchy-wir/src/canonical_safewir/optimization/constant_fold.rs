@@ -47,6 +47,23 @@ pub(crate) fn first_fold(functions: &[Function]) -> Option<(Vec<Function>, Folde
     None
 }
 
+/// Independently reconstruct the only constant replacement permitted at one
+/// receipt location. The assurance boundary calls this from the immutable
+/// pre-transform function rather than trusting the optimizer's candidate.
+pub(crate) fn expected_fold(
+    function: &Function,
+    block: BlockId,
+    operation_index: usize,
+) -> Option<Operation> {
+    let operation = function
+        .blocks
+        .iter()
+        .find(|candidate| candidate.id == block)?
+        .operations
+        .get(operation_index)?;
+    reference_fold(operation, &constant_values(function))
+}
+
 fn constant_values(function: &Function) -> BTreeMap<ValueId, ScalarConstant> {
     let mut constants = BTreeMap::new();
     for block in &function.blocks {

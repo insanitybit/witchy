@@ -247,8 +247,8 @@ impl OptimizationHistoryWitness {
         Ok(witness)
     }
 
-    pub(crate) fn unreachable_receipt(
-        before: &CanonicalModule<InitialValid>,
+    pub(crate) fn unreachable_receipt<S: ModuleStage>(
+        before: &CanonicalModule<S>,
         after: &CanonicalModule<TransformedCandidate>,
         obligations: Vec<DischargedObligation>,
     ) -> RefinementReceipt {

@@ -3,7 +3,7 @@ use super::history::{
 };
 use super::{
     check_transform, CanonicalModule, InitialCheckError, ModuleStage, OptimizedValid,
-    TransformedCandidate,
+    RefinementError, TransformedCandidate,
 };
 
 /// The semantic family a production optimization belongs to. This is part of
@@ -41,6 +41,7 @@ pub enum AssuranceError {
     ReceiptNotBound(OptimizationPassId),
     RefinementMechanismMismatch(OptimizationPassId),
     Safety(InitialCheckError),
+    Refinement(RefinementError),
 }
 
 impl PassAssurance {
@@ -198,6 +199,19 @@ pub(crate) fn accept_transform<S: ModuleStage>(
     }
     if !record.accepts_receipt(&receipt) {
         return Err(AssuranceError::RefinementMechanismMismatch(pass));
+    }
+    match pass {
+        OptimizationPassId::UnreachableBlockPruning => {
+            let proven = super::refinement::prove_unreachable_pruning(before, &candidate)
+                .map_err(AssuranceError::Refinement)?;
+            if proven.as_ref() != Some(&receipt) {
+                return Err(AssuranceError::ReceiptNotBound(pass));
+            }
+        }
+        OptimizationPassId::ConstantFolding => {
+            super::refinement::prove_constant_folding(before, &candidate, &receipt)
+                .map_err(AssuranceError::Refinement)?;
+        }
     }
     let optimized = recheck(pass, candidate)?;
     Ok((optimized, receipt))

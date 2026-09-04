@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::history::{DischargedObligation, OptimizationHistoryWitness, RefinementReceipt};
-use super::{BasicBlock, CanonicalModule, Function, FunctionId, InitialValid, Operation,
+use super::{BasicBlock, CanonicalModule, Function, FunctionId, InitialValid, ModuleStage, Operation,
     Terminator, TransformedCandidate, ValueId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +13,9 @@ pub enum RefinementError {
     ValueDefinitionsChanged(FunctionId),
     RevisionChangedWithoutPruning,
     RevisionDidNotAdvance,
+    InvalidFoldReceipt,
+    FoldLocationMissing { function: FunctionId, block: super::BlockId, operation_index: usize },
+    FoldCandidateMismatch,
 }
 
 pub(crate) fn prune_functions(before: &CanonicalModule<InitialValid>) -> (Vec<Function>, bool) {
@@ -44,14 +47,15 @@ pub(crate) fn prune_functions(before: &CanonicalModule<InitialValid>) -> (Vec<Fu
     (functions, changed)
 }
 
-pub(crate) fn prove_unreachable_pruning(
-    before: &CanonicalModule<InitialValid>,
+pub(crate) fn prove_unreachable_pruning<S: ModuleStage>(
+    before: &CanonicalModule<S>,
     after: &CanonicalModule<TransformedCandidate>,
 ) -> Result<Option<RefinementReceipt>, RefinementError> {
     if before.checked_source() != after.checked_source()
         || before.layouts().canonical_bytes() != after.layouts().canonical_bytes()
         || before.signatures() != after.signatures()
         || before.imports() != after.imports()
+        || before.static_data_segments() != after.static_data_segments()
         || before.proper_tail_sites() != after.proper_tail_sites()
         || before.functions().len() != after.functions().len()
     {
@@ -119,6 +123,72 @@ pub(crate) fn prove_unreachable_pruning(
     Ok(Some(OptimizationHistoryWitness::unreachable_receipt(
         before, after, obligations,
     )))
+}
+
+pub(crate) fn prove_constant_folding<S: ModuleStage>(
+    before: &CanonicalModule<S>,
+    after: &CanonicalModule<TransformedCandidate>,
+    receipt: &RefinementReceipt,
+) -> Result<(), RefinementError> {
+    if before.checked_source() != after.checked_source()
+        || before.layouts().canonical_bytes() != after.layouts().canonical_bytes()
+        || before.signatures() != after.signatures()
+        || before.imports() != after.imports()
+        || before.static_data_segments() != after.static_data_segments()
+        || before.proper_tail_sites() != after.proper_tail_sites()
+        || after.revision().get() != before.revision().get().saturating_add(1)
+    {
+        return Err(RefinementError::ModuleShapeChanged);
+    }
+    let [DischargedObligation::FoldedScalarOperation {
+        function,
+        block,
+        operation_index,
+    }] = receipt.discharged_obligations()
+    else {
+        return Err(RefinementError::InvalidFoldReceipt);
+    };
+    let mut expected = before.functions().to_vec();
+    let expected_function = expected
+        .iter_mut()
+        .find(|candidate| candidate.id == *function)
+        .ok_or(RefinementError::FoldLocationMissing {
+            function: *function,
+            block: *block,
+            operation_index: *operation_index,
+        })?;
+    let replacement = super::optimization::constant_fold::expected_fold(
+        expected_function,
+        *block,
+        *operation_index,
+    )
+    .ok_or(RefinementError::FoldLocationMissing {
+        function: *function,
+        block: *block,
+        operation_index: *operation_index,
+    })?;
+    let expected_block = expected_function
+        .blocks
+        .iter_mut()
+        .find(|candidate| candidate.id == *block)
+        .ok_or(RefinementError::FoldLocationMissing {
+            function: *function,
+            block: *block,
+            operation_index: *operation_index,
+        })?;
+    let expected_operation = expected_block
+        .operations
+        .get_mut(*operation_index)
+        .ok_or(RefinementError::FoldLocationMissing {
+            function: *function,
+            block: *block,
+            operation_index: *operation_index,
+        })?;
+    *expected_operation = replacement;
+    if expected != after.functions() {
+        return Err(RefinementError::FoldCandidateMismatch);
+    }
+    Ok(())
 }
 
 fn reachable_blocks(function: &Function) -> Result<BTreeSet<super::BlockId>, super::BlockId> {

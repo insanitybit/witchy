@@ -1,4 +1,4 @@
-mod constant_fold;
+pub(super) mod constant_fold;
 
 use super::assurance::{self, AssuranceError};
 use super::history::{HistoryError, OptimizationHistoryWitness};
@@ -20,6 +20,7 @@ pub enum OptimizationError {
 fn map_assurance_error(error: AssuranceError) -> OptimizationError {
     match error {
         AssuranceError::Safety(error) => OptimizationError::Safety(error),
+        AssuranceError::Refinement(error) => OptimizationError::Refinement(error),
         error => OptimizationError::Assurance(error),
     }
 }
@@ -386,6 +387,58 @@ mod tests {
         let mut forged = outcome.history().clone();
         forged.tamper_first_after_digest();
         assert!(forged.validate(&before, outcome.optimized()).is_err());
+    }
+
+    #[test]
+    fn correctly_bound_fold_receipt_cannot_authorize_the_wrong_replacement() {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let sum = ValueId::new(2);
+        let before = scalar_fixture(
+            vec![
+                Operation::ConstInt { destination: left, value: 40 },
+                Operation::ConstInt { destination: right, value: 2 },
+                Operation::Arithmetic {
+                    destination: sum,
+                    operator: super::super::ArithmeticOperator::Add,
+                    left,
+                    right,
+                    overflow: super::super::OverflowBehavior::Wrap,
+                },
+            ],
+            [
+                (left, ValueType::Int),
+                (right, ValueType::Int),
+                (sum, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut functions = before.functions().to_vec();
+        functions[0].blocks[0].operations[2] =
+            Operation::ConstInt { destination: sum, value: 41 };
+        let candidate = before.clone().into_transformed_candidate(
+            Revision::new(before.revision().get() + 1),
+            functions,
+        );
+        let receipt = OptimizationHistoryWitness::constant_folding_receipt(
+            &before,
+            &candidate,
+            DischargedObligation::FoldedScalarOperation {
+                function: FUNCTION,
+                block: ENTRY,
+                operation_index: 2,
+            },
+        );
+        assert!(matches!(
+            assurance::accept_transform(
+                crate::canonical_safewir::OptimizationPassId::ConstantFolding,
+                &before,
+                candidate,
+                receipt,
+            ),
+            Err(AssuranceError::Refinement(RefinementError::FoldCandidateMismatch))
+        ));
     }
 
     fn scalar_fixture(operations: Vec<Operation>, value_types: BTreeMap<ValueId, ValueType>) -> CanonicalModule<InitialValid> {
