@@ -549,6 +549,11 @@ impl FunctionLowerer<'_> {
                         return Err(CanonicalLoweringError::UnsupportedStatement("early return"));
                     }
                     if let Some(Expr::Call { name, args }) = value {
+                        if matches!(name.as_str(), "list.length" | "list.__length") {
+                            let value = self.lower_list_length(args)?;
+                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            return Ok(());
+                        }
                         if is_console_print(name) {
                             if !results.is_empty() {
                                 return Err(CanonicalLoweringError::UnsupportedExpression(
@@ -612,6 +617,11 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Expr(value) if final_statement => {
                     if let Expr::Call { name, args } = value {
+                        if matches!(name.as_str(), "list.length" | "list.__length") {
+                            let value = self.lower_list_length(args)?;
+                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            return Ok(());
+                        }
                         if is_console_print(name) {
                             if !results.is_empty() {
                                 return Err(CanonicalLoweringError::UnsupportedExpression(
@@ -1898,6 +1908,9 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if is_console_print(name) => Err(
                 CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
             ),
+            Expr::Call { name, args } if matches!(name.as_str(), "list.length" | "list.__length") => {
+                self.lower_list_length(args)
+            }
             Expr::Call { name, args } => {
                 let results = if let Some(callee) = self.bindings.get(name).copied() {
                     let ValueType::Callable(signature) = self.values[&callee] else {
@@ -2566,6 +2579,21 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    fn lower_list_length(&mut self, arguments: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let [receiver] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.length arguments"));
+        };
+        let object = self.lower_expr(receiver)?;
+        self.ensure_list_extent(object)?;
+        let length = *self
+            .list_counts
+            .get(&object)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("list.length receiver"))?;
+        let result = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: result, value: length });
+        Ok(result)
+    }
+
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(base)?;
         let (layout, element_type, header_bytes, stride_bytes) =
@@ -3190,7 +3218,7 @@ fn canonical_tail_sites(
                 .is_some_and(|item| match item {
                     Item::Function(function) => {
                         is_canonical_source_function(module, &function.name)
-                            && !is_console_print_tail_site(site, function)
+                            && !is_intrinsic_tail_site(site, function)
                     }
                     _ => false,
                 })
@@ -3232,7 +3260,7 @@ fn canonical_tail_sites(
         .collect()
 }
 
-fn is_console_print_tail_site(
+fn is_intrinsic_tail_site(
     site: &ProperTailSite,
     function: &witchy_syntax::ast::Function,
 ) -> bool {
@@ -3243,8 +3271,10 @@ fn is_console_print_tail_site(
         return false;
     };
     match function.body.stmts.get(statement) {
-        Some(Stmt::Expr(Expr::Call { name, .. })) if is_console_print(name) => true,
-        Some(Stmt::Return(Some(Expr::Call { name, .. }))) if is_console_print(name) => true,
+        Some(Stmt::Expr(Expr::Call { name, .. }))
+        | Some(Stmt::Return(Some(Expr::Call { name, .. })))
+            if is_console_print(name)
+                || matches!(name.as_str(), "list.length" | "list.__length") => true,
         _ => false,
     }
 }
@@ -3609,6 +3639,28 @@ mod tests {
         }));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "dynamic list push rejected: {result:?}");
+    }
+
+    #[test]
+    fn list_length_loads_authenticated_header_and_widens_to_int() {
+        let checked = checked("fn count(xs: List(Int)) -> Int:\n    xs.length()\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower List.length source");
+        let operations = &candidate.functions()[0].blocks[0].operations;
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Load { place, transfer: LoadTransfer::CopyScalar, .. }
+                if matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length))
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::WidenSize { .. }
+        )));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "list length candidate rejected: {result:?}");
     }
 
     #[test]

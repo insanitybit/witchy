@@ -864,6 +864,11 @@ impl CanonicalWriter {
                 self.value_id(*destination);
                 self.value_id(*value);
             }
+            Operation::WidenSize { destination, value } => {
+                self.u8(25);
+                self.value_id(*destination);
+                self.value_id(*value);
+            }
             Operation::Guard { condition, kind } => {
                 self.u8(7);
                 self.value_id(*condition);

@@ -725,6 +725,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::Arithmetic { destination, .. }
         | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. }
+        | Operation::WidenSize { destination, .. }
         | Operation::Alloc { destination, .. }
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
@@ -758,6 +759,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         Operation::Arithmetic { left, right, .. }
         | Operation::Compare { left, right, .. } => vec![*left, *right],
         Operation::NarrowSize { value, .. }
+        | Operation::WidenSize { value, .. }
         | Operation::Guard { condition: value, .. }
         | Operation::MoveValue { source: value, .. }
         | Operation::Share { source: value, .. }
@@ -1044,6 +1046,10 @@ fn check_operation(
         Operation::NarrowSize { destination, value } => {
             require_type(function, *destination, ValueType::Size)?;
             require_type(function, *value, ValueType::Int)
+        }
+        Operation::WidenSize { destination, value } => {
+            require_type(function, *destination, ValueType::Int)?;
+            require_type(function, *value, ValueType::Size)
         }
         Operation::Guard { condition, .. } => require_type(function, *condition, ValueType::Bool),
         Operation::MoveValue { destination, source } => {

@@ -75,6 +75,7 @@ enum ScalarInstruction {
         right: ValueId,
     },
     NarrowSize { destination: ValueId, value: ValueId },
+    WidenSize { destination: ValueId, value: ValueId },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
     MoveValue { destination: ValueId, source: ValueId },
     FunctionValue { destination: ValueId, function: FunctionId, table_index: u32 },
@@ -683,6 +684,7 @@ fn lower_operation(
             right: *right,
         },
         Operation::NarrowSize { destination, value } => ScalarInstruction::NarrowSize { destination: *destination, value: *value },
+        Operation::WidenSize { destination, value } => ScalarInstruction::WidenSize { destination: *destination, value: *value },
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },
         Operation::MoveValue { destination, source } => {
             if matches!(value_types.get(source), Some(ValueType::Ref(_))) {
@@ -876,6 +878,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Arithmetic { .. } => "Arithmetic",
         Operation::Compare { .. } => "Compare",
         Operation::NarrowSize { .. } => "NarrowSize",
+        Operation::WidenSize { .. } => "WidenSize",
         Operation::Guard { .. } => "Guard",
         Operation::Alloc { .. } => "Alloc",
         Operation::StaticData { .. } => "StaticData",
@@ -1121,7 +1124,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         | Operation::ConstSize { .. } => Some(CorrespondenceRule::ScalarConstant),
         Operation::Arithmetic { .. } => Some(CorrespondenceRule::ScalarArithmetic),
         Operation::Compare { .. } => Some(CorrespondenceRule::ScalarComparison),
-        Operation::NarrowSize { .. } => Some(CorrespondenceRule::ScalarConversion),
+        Operation::NarrowSize { .. } | Operation::WidenSize { .. } => Some(CorrespondenceRule::ScalarConversion),
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
         Operation::FunctionValue { .. } => Some(CorrespondenceRule::ScalarConstant),
@@ -1151,6 +1154,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::Arithmetic { destination, operator, left, right, overflow }, ScalarInstruction::Arithmetic { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right, overflow: actual_overflow }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right && overflow == actual_overflow,
         (Operation::Compare { destination, operator, left, right }, ScalarInstruction::Compare { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right,
         (Operation::NarrowSize { destination, value }, ScalarInstruction::NarrowSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
+        (Operation::WidenSize { destination, value }, ScalarInstruction::WidenSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::FunctionValue { destination, function }, ScalarInstruction::FunctionValue { destination: actual_destination, function: actual_function, .. }) => destination == actual_destination && function == actual_function,
@@ -2295,6 +2299,11 @@ fn emit_instruction(
         }
         ScalarInstruction::Compare { destination, operator, left, right } => { emit_compare(body, function, layout, *destination, *operator, *left, *right)?; }
         ScalarInstruction::NarrowSize { destination, value } => emit_narrow_size(body, function, layout, *destination, *value)?,
+        ScalarInstruction::WidenSize { destination, value } => {
+            emit_get(body, layout, function.id, *value)?;
+            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_set(body, layout, function.id, *destination)?;
+        }
         ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
         ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::FunctionValue { destination, table_index, .. } => {
@@ -3835,6 +3844,13 @@ fn expected_linear_function_plan(
                 ]);
                 push_get(&mut plan, &layout, *value)?;
                 plan.extend([PlanToken::I32WrapI64, PlanToken::LocalSet(plan_local(&layout, *destination)?)])
+            }
+            Operation::WidenSize { destination, value } => {
+                push_get(&mut plan, &layout, *value)?;
+                plan.extend([
+                    PlanToken::I64ExtendI32U,
+                    PlanToken::LocalSet(plan_local(&layout, *destination)?),
+                ]);
             }
             Operation::MoveValue { destination, source } => {
                 push_get(&mut plan, &layout, *source)?;

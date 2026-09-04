@@ -544,6 +544,7 @@ pub enum CanonicalRuleId {
     Arithmetic,
     Compare,
     NarrowSize,
+    WidenSize,
     Guard,
     Alloc,
     StaticData,
@@ -591,6 +592,7 @@ pub enum Operation {
         right: ValueId,
     },
     NarrowSize { destination: ValueId, value: ValueId },
+    WidenSize { destination: ValueId, value: ValueId },
     Guard { condition: ValueId, kind: GuardKind },
     Alloc {
         destination: ValueId,
@@ -685,6 +687,7 @@ impl Operation {
             Self::Arithmetic { .. } => CanonicalRuleId::Arithmetic,
             Self::Compare { .. } => CanonicalRuleId::Compare,
             Self::NarrowSize { .. } => CanonicalRuleId::NarrowSize,
+            Self::WidenSize { .. } => CanonicalRuleId::WidenSize,
             Self::Guard { .. } => CanonicalRuleId::Guard,
             Self::Alloc { .. } => CanonicalRuleId::Alloc,
             Self::StaticData { .. } => CanonicalRuleId::StaticData,

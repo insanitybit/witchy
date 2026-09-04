@@ -248,6 +248,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::Arithmetic { destination, .. }
         | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. }
+        | Operation::WidenSize { destination, .. }
         | Operation::Alloc { destination, .. }
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
