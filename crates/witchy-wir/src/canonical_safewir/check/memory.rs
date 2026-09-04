@@ -512,7 +512,7 @@ impl<'a> MemoryChecker<'a> {
                 CallArgument::Borrow(borrow) => borrow.source(),
             };
             let actual = value_type(self.function, value)?;
-            if !actual.is_memory_bearing() {
+            if !actual.is_linear_memory_ref() {
                 if !matches!(argument, CallArgument::Value(_)) {
                     return self.unsupported("Call(non-memory ownership)");
                 }
@@ -544,7 +544,21 @@ impl<'a> MemoryChecker<'a> {
         }
         for (destination, result) in destinations.iter().zip(results) {
             match result {
-                ResultContract::Value(value_type) if !value_type.is_memory_bearing() => {}
+                ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
+                ResultContract::Fresh { layout, class, .. } => {
+                    self.require_ref_type(*destination, *layout)?;
+                    let extent = self.parameter_extent(*layout)?;
+                    self.state.objects.insert(
+                        *destination,
+                        ObjectState {
+                            identity: *destination,
+                            layout: *layout,
+                            extent,
+                            ownership: Ownership::Unique,
+                            allocation_class: Some(*class),
+                        },
+                    );
+                }
                 ResultContract::Shared { layout } => {
                     self.require_ref_type(*destination, *layout)?;
                     let extent = self.parameter_extent(*layout)?;
@@ -587,7 +601,7 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         for (value, result) in values.iter().zip(results) {
             match result {
-                ResultContract::Value(value_type) if !value_type.is_memory_bearing() => {}
+                ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
                 ResultContract::Fresh { layout, class, extent } => {
                     let state = self.live_object(*value)?;
                     if state.layout != *layout

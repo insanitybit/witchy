@@ -1704,9 +1704,13 @@ impl FunctionLowerer<'_> {
         if signature
             .parameters
             .iter()
-            .chain(&signature.results)
             .copied()
             .any(|value_type| !is_indirect_scalar(value_type))
+            || signature
+                .results
+                .iter()
+                .copied()
+                .any(|value_type| !is_indirect_result(value_type))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "memory-bearing indirect tail call",
@@ -1769,7 +1773,7 @@ impl FunctionLowerer<'_> {
             .results
             .iter()
             .copied()
-            .find(|value_type| !is_indirect_scalar(*value_type))
+            .find(|value_type| !is_indirect_result(*value_type))
         {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
@@ -2987,6 +2991,10 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
     )
 }
 
+fn is_indirect_result(value_type: ValueType) -> bool {
+    is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
+}
+
 fn string_layout(
     source: &Type,
     layout_bundle: &LayoutBundle,
@@ -3415,6 +3423,21 @@ mod tests {
             .any(|block| matches!(block.terminator, Terminator::VarTailCall { .. })));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "callable candidate rejected: {result:?}");
+    }
+
+    #[test]
+    fn indirect_string_result_uses_body_derived_contract() {
+        let candidate = lower_with_derived_layouts(
+            "fn stringify(n: Int) -> String:\n    \"value\"\n\nfn apply(f: fn(Int) -> String, n: Int) -> String:\n    let value = f(n)\n    value\n\nfn main() -> Int:\n    let value = apply(stringify, 1)\n    0\n",
+        );
+        assert!(candidate
+            .functions()
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .flat_map(|block| &block.operations)
+            .any(|operation| matches!(operation, Operation::VarCall { .. })));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "memory-result callable candidate rejected: {result:?}");
     }
 
     #[test]

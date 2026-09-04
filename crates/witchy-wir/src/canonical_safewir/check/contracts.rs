@@ -272,13 +272,10 @@ fn derive_summary(
                     .ok_or(InitialCheckError::MissingSignature(*signature))?;
                 if target.results.len() != summary.results.len()
                     || signature.results.len() != summary.results.len()
-                    || target.results.iter().any(|result| {
-                        !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
-                    })
+                    || target.results.iter().any(|result| !is_indirect_result(result))
                     || signature
                         .parameters
                         .iter()
-                        .chain(&signature.results)
                         .copied()
                         .any(|value_type| value_type.is_memory_bearing())
                 {
@@ -414,17 +411,20 @@ fn propagate_operation_origins(
                 join_origin(origins, *destination, origin);
             }
         }
-        Operation::VarCall { destinations, signature, .. } => {
+        Operation::VarCall { destinations, signature, arguments, .. } => {
             let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
             if target.results.len() != destinations.len()
-                || target.results.iter().any(|result| {
-                    !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
-                })
+                || target.results.iter().any(|result| !is_indirect_result(result))
             {
-            return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+                return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
             }
-            for destination in destinations {
-                join_origin(origins, *destination, Origin::Unknown);
+            for (destination, result) in destinations.iter().zip(&target.results) {
+                let value_type = function.value_types.get(destination).copied().unwrap_or(ValueType::Unit);
+                join_origin(
+                    origins,
+                    *destination,
+                    result_origin(result, arguments, origins, value_type),
+                );
             }
         }
         Operation::ConstInt { destination, .. }
@@ -553,14 +553,19 @@ fn derive_operation(
             }
             derive_call_needs(*callee, arguments, functions, summaries, origins, summary)?;
         }
-        Operation::VarCall { destinations, signature, .. } => {
+        Operation::VarCall { destinations, signature, arguments, .. } => {
             let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
             if target.results.len() != destinations.len()
-                || target.results.iter().any(|result| {
-                    !matches!(result, DerivedResult::Value(_) | DerivedResult::Unseen)
-                })
+                || target.results.iter().any(|result| !is_indirect_result(result))
             {
                 return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+            }
+            for (destination, result) in destinations.iter().zip(&target.results) {
+                let value_type = function.value_types.get(destination).copied().unwrap_or(ValueType::Unit);
+                origins.insert(
+                    *destination,
+                    result_origin(result, arguments, origins, value_type),
+                );
             }
         }
         Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
@@ -570,8 +575,8 @@ fn derive_operation(
 
 /// Resolve an indirect callable only through the canonical target set for its
 /// checked signature. A callable signature with no lowered body is not an
-/// authenticated target. A target set that can return memory-bearing values
-/// remains outside canonical v1 until the backend supports it.
+/// authenticated target. Every target must derive the same result contract;
+/// unknown, parameter-aliasing, and reallocating results remain fail-closed.
 fn indirect_target_summary(
     function: FunctionId,
     signature: FunctionSignatureId,
@@ -773,6 +778,17 @@ fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
 }
 
 fn is_scalar(value_type: ValueType) -> bool { matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128) }
+
+fn is_indirect_result(result: &DerivedResult) -> bool {
+    matches!(
+        result,
+        DerivedResult::Value(_)
+            | DerivedResult::Fresh { .. }
+            | DerivedResult::StaticData(_)
+            | DerivedResult::Shared(_)
+            | DerivedResult::Unseen
+    )
+}
 
 fn returned_extent(extent: &Extent) -> ReturnedExtent {
     match extent {

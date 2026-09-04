@@ -1062,8 +1062,8 @@ fn check_operation(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            reject_indirect_memory_call(function, destinations, arguments)?;
-            check_call(function, destinations, arguments, signature, None)
+            reject_indirect_memory_arguments(function, arguments)?;
+            check_call(function, destinations, arguments, signature, Some(memory))
         }
         Operation::HostCall { destinations, import, arguments } => {
             host::check_call(function, *import, destinations, arguments, imports, signatures, catalog)?;
@@ -1175,9 +1175,8 @@ fn check_call(
     Ok(())
 }
 
-fn reject_indirect_memory_call(
+fn reject_indirect_memory_arguments(
     function: &Function,
-    destinations: &[ValueId],
     arguments: &[CallArgument],
 ) -> Result<(), InitialCheckError> {
     if arguments.iter().any(|argument| {
@@ -1188,10 +1187,6 @@ fn reject_indirect_memory_call(
             CallArgument::Borrow(borrow) => borrow.source(),
         };
         value_type(function, value)
-            .map(|value_type| value_type.is_memory_bearing())
-            .unwrap_or(true)
-    }) || destinations.iter().any(|destination| {
-        value_type(function, *destination)
             .map(|value_type| value_type.is_memory_bearing())
             .unwrap_or(true)
     }) {
@@ -1240,7 +1235,7 @@ fn check_terminator(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            reject_indirect_memory_call(function, &[], arguments)?;
+            reject_indirect_memory_arguments(function, arguments)?;
             check_tail_call(function, arguments, signature, current_signature, None)
         }
         Terminator::Branch { target, arguments } => {
@@ -1389,6 +1384,10 @@ fn unsupported_memory<T>(
 }
 
 impl ValueType {
+    const fn is_linear_memory_ref(&self) -> bool {
+        matches!(self, Self::Ref(_))
+    }
+
     const fn is_memory_bearing(&self) -> bool {
         matches!(
             self,

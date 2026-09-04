@@ -629,6 +629,10 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
     )
 }
 
+fn is_indirect_result(value_type: ValueType) -> bool {
+    is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
+}
+
 fn checked_table_index(
     function_indices: &BTreeMap<FunctionId, u32>,
     function: FunctionId,
@@ -781,7 +785,7 @@ fn lower_operation(
                 || signature_def.parameters.len() != arguments.len()
                 || signature_def.results.len() != destinations.len()
                 || signature_def.parameters.iter().copied().any(|value_type| !is_indirect_scalar(value_type))
-                || signature_def.results.iter().copied().any(|value_type| !is_indirect_scalar(value_type))
+                || signature_def.results.iter().copied().any(|value_type| !is_indirect_result(value_type))
             {
                 return Err(LoweringError::UnsupportedOperation {
                     function,
@@ -926,9 +930,13 @@ fn lower_terminator(
                 || signature_def
                     .parameters
                     .iter()
-                    .chain(&signature_def.results)
                     .copied()
                     .any(|value_type| !is_indirect_scalar(value_type))
+                || signature_def
+                    .results
+                    .iter()
+                    .copied()
+                    .any(|value_type| !is_indirect_result(value_type))
             {
                 return Err(LoweringError::UnsupportedOperation {
                     function: function.id,
