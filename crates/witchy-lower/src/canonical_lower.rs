@@ -12,7 +12,7 @@ use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Stmt, Type};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
-    ProperTailSiteKey, ProperTailSiteManifest, TypedModule,
+    ProperTailSiteKey, ProperTailSiteManifest, TypeTable, TypedModule,
 };
 use witchy_wir::canonical_safewir::{
     ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract, CanonicalModule,
@@ -21,10 +21,15 @@ use witchy_wir::canonical_safewir::{
     ParameterContract, ParameterOwnership, ResultContract, Revision, Terminator, ValueId,
     ValueType,
 };
-use witchy_wir::layout::LayoutBundle;
+use witchy_wir::layout::{HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, ScalarKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalLoweringError {
+    InvalidLayoutBundle(String),
+    MissingLayout(Type),
+    AmbiguousLayout(Type),
+    UnsupportedListElement(Type),
+    MissingCheckedExpressionType(String),
     MissingCheckedFunctionType(String),
     InvalidCheckedFunctionType(String),
     UnsupportedType(Type),
@@ -58,6 +63,8 @@ pub fn lower_typed_module(
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let typed = source.typed_module();
+    let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
@@ -86,7 +93,7 @@ pub fn lower_typed_module(
         let signature_id = FunctionSignatureId::new(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
-        let signature = checked_signature(typed, function, signature_id)?;
+        let signature = checked_signature(typed, function, signature_id, &layouts, &layout_catalog)?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
         signatures.push(signature);
     }
@@ -106,6 +113,9 @@ pub fn lower_typed_module(
             signature,
             &functions_by_name,
             &tail_manifest,
+            typed.table(),
+            &layouts,
+            &layout_catalog,
         )?);
     }
 
@@ -126,6 +136,8 @@ fn checked_signature(
     typed: &TypedModule,
     function: &witchy_syntax::ast::Function,
     id: FunctionSignatureId,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let checked = typed
         .table()
@@ -156,7 +168,7 @@ fn checked_signature(
                 convention,
             });
         }
-        let value_type = scalar_type(parameter)?;
+        let value_type = source_value_type(parameter, layout_bundle, layouts)?;
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract {
             value_type,
@@ -164,9 +176,16 @@ fn checked_signature(
             non_escaping: false,
         });
     }
-    let result = scalar_type(&result)?;
+    let result = source_value_type(&result, layout_bundle, layouts)?;
     let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
-    let result_contracts = results.iter().copied().map(ResultContract::Value).collect();
+    let result_contracts = results
+        .iter()
+        .copied()
+        .map(|result| match result {
+            ValueType::Ref(layout) => ResultContract::Fresh { layout },
+            result => ResultContract::Value(result),
+        })
+        .collect();
 
     Ok(FunctionSignature {
         id,
@@ -187,17 +206,24 @@ fn lower_function(
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
     tail_manifest: &ProperTailSiteManifest,
+    type_table: &TypeTable,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
         next_value: 0,
         values: BTreeMap::new(),
         bindings: HashMap::new(),
+        list_counts: HashMap::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
         functions,
         tail_manifest,
+        type_table,
+        layout_bundle,
+        layouts,
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     let parameters = lowerer.blocks[entry.get() as usize].parameters.clone();
@@ -243,11 +269,15 @@ struct FunctionLowerer<'a> {
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
+    list_counts: HashMap<ValueId, ValueId>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
     tail_manifest: &'a ProperTailSiteManifest,
+    type_table: &'a TypeTable,
+    layout_bundle: &'a LayoutBundle,
+    layouts: &'a LayoutInterner,
 }
 
 impl FunctionLowerer<'_> {
@@ -720,7 +750,7 @@ impl FunctionLowerer<'_> {
             | Expr::MethodCall { .. }
             | Expr::Apply { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
             Expr::Str(_) => Err(CanonicalLoweringError::UnsupportedExpression("string")),
-            Expr::List(_) => Err(CanonicalLoweringError::UnsupportedExpression("list")),
+            Expr::List(items) => self.lower_list_literal(expression, items),
             Expr::Tuple(_) => Err(CanonicalLoweringError::UnsupportedExpression("tuple")),
             Expr::Ctor { .. } | Expr::AnonCtor { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
@@ -752,12 +782,141 @@ impl FunctionLowerer<'_> {
             Expr::While { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while value")),
             Expr::For { .. } => Err(CanonicalLoweringError::UnsupportedExpression("for")),
             Expr::Range { .. } => Err(CanonicalLoweringError::UnsupportedExpression("range")),
-            Expr::Index { .. } => Err(CanonicalLoweringError::UnsupportedExpression("index")),
+            Expr::Index { base, index } => self.lower_index(base, index),
             Expr::WhileLet { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while let")),
             Expr::TaggedLit { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("tagged literal"))
             }
         }
+    }
+
+    fn expression_type(&self, expression: &Expr) -> Result<Type, CanonicalLoweringError> {
+        self.type_table
+            .type_of(expression)
+            .and_then(witchy_types::typeck::ty_to_ast)
+            .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
+    }
+
+    fn lower_list_literal(
+        &mut self,
+        expression: &Expr,
+        items: &[Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let logical_type = self.expression_type(expression)?;
+        let (layout, header_bytes, stride_bytes) = list_int_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        let count = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: count,
+            value: u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: capacity,
+            value: u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count,
+                capacity,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.list_counts.insert(object, count);
+
+        for (position, item) in items.iter().enumerate() {
+            let value = self.lower_expr(item)?;
+            if self.values[&value] != ValueType::Int {
+                return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
+            }
+            let index = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize {
+                destination: index,
+                value: u64::try_from(position).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            });
+            let condition = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: condition,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: count,
+            });
+            self.push_operation(Operation::Guard {
+                condition,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    witchy_wir::canonical_safewir::Projection::Element { index },
+                    ValueType::Int,
+                    witchy_wir::canonical_safewir::AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            });
+        }
+        Ok(object)
+    }
+
+    fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let logical_type = self.expression_type(base)?;
+        let (layout, _, _) = list_int_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        let object = self.lower_expr(base)?;
+        if self.values[&object] != ValueType::Ref(layout) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
+        }
+        let index_value = self.lower_expr(index)?;
+        if self.values[&index_value] != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list index type"));
+        }
+        let index_size = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: index_size, value: index_value });
+        let logical_length = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Load {
+            destination: logical_length,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                witchy_wir::canonical_safewir::Projection::Header(
+                    witchy_wir::canonical_safewir::HeaderField::Length,
+                ),
+                ValueType::Size,
+                witchy_wir::canonical_safewir::AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        });
+        let logical_count = self
+            .list_counts
+            .get(&object)
+            .copied()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("list length provenance"))?;
+        let condition = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: condition,
+            operator: ComparisonOperator::LessUnsigned,
+            left: index_size,
+            right: logical_count,
+        });
+        self.push_operation(Operation::Guard {
+            condition,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        let destination = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::Load {
+            destination,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                witchy_wir::canonical_safewir::Projection::Element { index: index_size },
+                ValueType::Int,
+                witchy_wir::canonical_safewir::AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        });
+        Ok(destination)
     }
 
     fn fresh(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
@@ -855,6 +1014,55 @@ fn scalar_type(source: &Type) -> Result<ValueType, CanonicalLoweringError> {
     }
 }
 
+fn source_value_type(
+    source: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<ValueType, CanonicalLoweringError> {
+    match source.unqualified() {
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            list_int_layout(source, layout_bundle, layouts).map(|(layout, _, _)| ValueType::Ref(layout))
+        }
+        _ => scalar_type(source),
+    }
+}
+
+fn list_int_layout(
+    source: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<(witchy_wir::layout::LayoutId, u32, u32), CanonicalLoweringError> {
+    let Type::Named(name, arguments) = source.unqualified() else {
+        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
+    };
+    if name != "List" || arguments.len() != 1 {
+        return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
+    }
+    if !matches!(arguments[0].unqualified(), Type::Named(element, args) if element == "Int" && args.is_empty()) {
+        return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
+    }
+
+    let mut candidates = Vec::new();
+    for root in layout_bundle.roots() {
+        let Some(descriptor) = layouts.get(*root) else { continue };
+        let LayoutKind::PackedList { element, .. } = descriptor.kind() else { continue };
+        let Some(element_descriptor) = layouts.get(*element) else { continue };
+        if !matches!(element_descriptor.kind(), LayoutKind::Scalar(ScalarKind::Int)) {
+            continue;
+        }
+        let LayoutSize::Dynamic { base, stride } = descriptor.size() else { continue };
+        if !matches!(descriptor.header(), HeaderLayout::PackedList { data_offset, .. } if data_offset == base) {
+            continue;
+        }
+        candidates.push((*root, base, stride));
+    }
+    match candidates.as_slice() {
+        [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
+        [candidate] => Ok(*candidate),
+        _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
+    }
+}
+
 const fn is_unit(value_type: ValueType) -> bool {
     matches!(value_type, ValueType::Unit)
 }
@@ -898,15 +1106,56 @@ fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str)
 
 #[cfg(test)]
 mod tests {
-    use super::lower_typed_module;
+    use super::{lower_typed_module, CanonicalLoweringError};
     use witchy_syntax::ast::Item;
     use witchy_syntax::parser::parse_module;
-    use witchy_wir::canonical_safewir::{check_initial, Terminator};
-    use witchy_wir::layout::{LayoutBundle, LayoutInterner};
+    use witchy_wir::canonical_safewir::{
+        check_initial, Extent, GuardKind, LoadTransfer, Operation, Projection, Terminator,
+    };
+    use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind};
+
+    struct ListResolver;
+
+    impl ClosedTypeResolver for ListResolver {
+        fn resolve_named<'a>(
+            &'a self,
+            name: &str,
+            _arguments: &[witchy_syntax::ast::Type],
+        ) -> Option<ResolvedNamed<'a>> {
+            match name {
+                "Int" => Some(ResolvedNamed::Scalar(ScalarKind::Int)),
+                "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
+                _ => None,
+            }
+        }
+    }
 
     fn empty_layouts() -> LayoutBundle {
         LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty layouts are canonical")
+    }
+
+    fn list_layouts() -> LayoutBundle {
+        let mut interner = LayoutInterner::new();
+        let list = interner
+            .intern_type(
+                &witchy_syntax::ast::Type::Named(
+                    "List".into(),
+                    vec![witchy_syntax::ast::Type::Named("Int".into(), Vec::new())],
+                ),
+                &ListResolver,
+            )
+            .expect("canonical List(Int) layout");
+        LayoutBundle::from_interner(&interner, [list]).expect("list layout bundle is canonical")
+    }
+
+    fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
+        witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source")
     }
 
     fn lower(source: &str) -> witchy_wir::canonical_safewir::CanonicalModule<
@@ -1011,6 +1260,80 @@ mod tests {
         assert_eq!(function.blocks[1].parameters.len(), 2);
         assert_eq!(function.blocks[3].parameters.len(), 2);
         assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn list_literal_and_index_lower_to_validated_length_guarded_safewir() {
+        let checked = checked("fn read(i: Int) -> Int:\n    let xs = [10, 20]\n    xs[i]\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower List(Int) source");
+        let operations = &candidate.functions()[0].blocks[0].operations;
+
+        let (count, capacity) = operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Alloc { extent: Extent::Counted { count, capacity, .. }, .. } => {
+                    Some((*count, *capacity))
+                }
+                _ => None,
+            })
+            .expect("list allocation has counted extent");
+        assert_ne!(count, capacity, "logical count and capacity use distinct SSA values");
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Store { place, .. }
+                if place.value_type() == witchy_wir::canonical_safewir::ValueType::Int
+                    && matches!(place.projection(), Projection::Element { .. })
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Compare { operator: witchy_wir::canonical_safewir::ComparisonOperator::LessUnsigned, .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Guard { kind: GuardKind::Bounds, .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Load { place, transfer: LoadTransfer::CopyScalar, .. }
+                if matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length))
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Load { place, .. }
+                if matches!(place.projection(), Projection::Element { .. })
+        )));
+        let validation = check_initial(candidate);
+        assert!(validation.is_ok(), "{validation:?}");
+    }
+
+    #[test]
+    fn empty_list_literal_is_a_fresh_validated_safewir_object() {
+        let checked = checked("fn empty() -> List(Int):\n    []\n");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            list_layouts(),
+        )
+        .expect("lower empty List(Int) source");
+        assert!(candidate.functions()[0].blocks[0]
+            .operations
+            .iter()
+            .any(|operation| matches!(operation, Operation::Alloc { extent: Extent::Counted { .. }, .. })));
+        assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn list_lowering_refuses_a_missing_layout() {
+        let checked = checked("fn read() -> Int:\n    let xs = [1]\n    xs[0]\n");
+        let error = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            empty_layouts(),
+        )
+        .expect_err("a List(Int) root must be supplied by the layout bundle");
+        assert!(matches!(error, CanonicalLoweringError::MissingLayout(_)));
     }
 
     #[test]
