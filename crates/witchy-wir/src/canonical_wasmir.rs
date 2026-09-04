@@ -32,7 +32,9 @@ use crate::canonical_safewir::{
     OptimizedValid, Place, Projection, StoreTransfer, Terminator, ValidatedSafeWir, ValueId,
     ValueType,
 };
-use crate::layout::{HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, RcHeader, ScalarKind};
+use crate::layout::{
+    HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, RcHeader, ScalarKind,
+};
 
 // Ref values point at the canonical layout root.  RC metadata occupies the
 // eight bytes immediately before that root; the private module keeps one
@@ -114,6 +116,7 @@ struct CollectionLayout {
     data_offset: u32,
     stride: u32,
     scalar: ScalarKind,
+    pointer_layout: Option<crate::layout::LayoutId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +126,7 @@ struct MemoryAccess {
     offset: u32,
     width: u32,
     scalar: ScalarKind,
+    pointer_layout: Option<crate::layout::LayoutId>,
     index: Option<ValueId>,
 }
 
@@ -439,26 +443,42 @@ fn collection_layout(
     let descriptor = layouts
         .get(layout)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
-    let element = match descriptor.kind() {
-        LayoutKind::PackedList { element, .. } => *element,
-        LayoutKind::RuntimeBuffer { .. } => {
-            return Err(LoweringError::UnsupportedLayout { function, operation: "RuntimeBuffer" });
-        }
+    let (element, raw_runtime_buffer) = match descriptor.kind() {
+        LayoutKind::PackedList { element, .. } => (*element, false),
+        LayoutKind::RuntimeBuffer { element } => (*element, true),
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "layout" }),
     };
     let element_descriptor = layouts
         .get(element)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
-    let scalar = match element_descriptor.kind() {
-        LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => *scalar,
+    let (scalar, pointer_layout) = match element_descriptor.kind() {
+        LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (*scalar, None),
+        LayoutKind::Scalar(ScalarKind::RawByte) if raw_runtime_buffer => {
+            (ScalarKind::RawByte, None)
+        }
+        LayoutKind::RuntimePointerValueSlot {
+            pointee,
+            semantics: PointerSlot::Owned,
+        } => (ScalarKind::U32, Some(*pointee)),
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "pointer-bearing layout" }),
     };
     let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
         return Err(LoweringError::UnsupportedLayout { function, operation: "layout" });
     };
-    let (length_offset, capacity_offset, data_offset) = match descriptor.header() {
-        HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, rc: RcHeader::Required } =>
-            (length_offset, Some(capacity_offset), data_offset),
+    let (length_offset, capacity_offset, data_offset) = match (
+        raw_runtime_buffer,
+        descriptor.header(),
+    ) {
+        (true, HeaderLayout::None) if base == 4 && stride == 1 => (0, None, 4),
+        (
+            false,
+            HeaderLayout::PackedList {
+                length_offset,
+                capacity_offset,
+                data_offset,
+                rc: RcHeader::Required,
+            },
+        ) => (length_offset, Some(capacity_offset), data_offset),
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "layout" }),
     };
     let LayoutSize::Fixed(element_size) = element_descriptor.size() else {
@@ -467,7 +487,15 @@ fn collection_layout(
     if data_offset != base || stride != element_size {
         return Err(LoweringError::UnsupportedLayout { function, operation: "layout" });
     }
-    Ok(CollectionLayout { layout, length_offset, capacity_offset, data_offset, stride, scalar })
+    Ok(CollectionLayout {
+        layout,
+        length_offset,
+        capacity_offset,
+        data_offset,
+        stride,
+        scalar,
+        pointer_layout,
+    })
 }
 
 fn resolve_collection_layout(
@@ -508,7 +536,7 @@ fn resolve_memory_place(
                     operation: "header",
                 })?,
             };
-            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, index: None })
+            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, pointer_layout: None, index: None })
         }
         Projection::Element { index } => Ok(MemoryAccess {
             object: place.object(),
@@ -516,6 +544,7 @@ fn resolve_memory_place(
             offset: collection.data_offset,
             width: collection.scalar.size(),
             scalar: collection.scalar,
+            pointer_layout: collection.pointer_layout,
             index: Some(*index),
         }),
         Projection::Field { .. } | Projection::Slice { .. } => Err(LoweringError::UnsupportedLayout {
@@ -541,7 +570,7 @@ fn resolve_memory_place_for_values(
                     operation: "header",
                 })?,
             };
-            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, index: None })
+            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, pointer_layout: None, index: None })
         }
         Projection::Element { index } => Ok(MemoryAccess {
             object: place.object(),
@@ -549,6 +578,7 @@ fn resolve_memory_place_for_values(
             offset: collection.data_offset,
             width: collection.scalar.size(),
             scalar: collection.scalar,
+            pointer_layout: collection.pointer_layout,
             index: Some(*index),
         }),
         Projection::Field { .. } | Projection::Slice { .. } => Err(LoweringError::UnsupportedLayout {
@@ -654,17 +684,30 @@ fn lower_operation(
             ScalarInstruction::StaticData { destination: *destination, data: *data }
         }
         Operation::Load { destination, place, transfer } => {
-            if *transfer != LoadTransfer::CopyScalar || place.access() != AccessMode::Read
-                || resolve_memory_place_for_values(function, value_types, layouts, place).is_err()
-            {
+            let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
+            let valid_transfer = match access.pointer_layout {
+                Some(pointee) => {
+                    *transfer == LoadTransfer::CloneShared
+                        && place.value_type() == ValueType::Ref(pointee)
+                }
+                None => *transfer == LoadTransfer::CopyScalar,
+            };
+            if !valid_transfer || place.access() != AccessMode::Read {
                 return Err(LoweringError::UnsupportedLayout { function, operation: "Load" });
             }
             ScalarInstruction::Load { destination: *destination, place: place.clone(), transfer: *transfer }
         }
         Operation::Store { place, value, transfer } => {
-            if *transfer != StoreTransfer::CopyScalar || place.access() != AccessMode::Write
-                || resolve_memory_place_for_values(function, value_types, layouts, place).is_err()
-            {
+            let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
+            let valid_transfer = match access.pointer_layout {
+                Some(pointee) => {
+                    *transfer == StoreTransfer::MoveUnique
+                        && place.value_type() == ValueType::Ref(pointee)
+                        && value_types.get(value) == Some(&ValueType::Ref(pointee))
+                }
+                None => *transfer == StoreTransfer::CopyScalar,
+            };
+            if !valid_transfer || place.access() != AccessMode::Write {
                 return Err(LoweringError::UnsupportedLayout { function, operation: "Store" });
             }
             ScalarInstruction::Store { place: place.clone(), value: *value, transfer: *transfer }
@@ -1961,14 +2004,17 @@ fn emit_instruction(
             emit_set(body, layout, function.id, *destination)?;
         }
         ScalarInstruction::Load { destination, place, transfer } => {
-            if *transfer != LoadTransfer::CopyScalar {
+            if *transfer == LoadTransfer::MoveUnique {
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Load transfer" });
             }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
+            if *transfer == LoadTransfer::CloneShared {
+                emit_share(body, layout, *destination, *destination, function)?;
+            }
         }
         ScalarInstruction::Store { place, value, transfer } => {
-            if *transfer != StoreTransfer::CopyScalar {
+            if !matches!(*transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique) {
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Store transfer" });
             }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
@@ -2637,10 +2683,12 @@ enum PlanToken {
     GlobalGet(u32),
     GlobalSet(u32),
     I32Add,
+    I32Sub,
     I32LtU,
     I32LeU,
     I32GtU,
     I32Eqz,
+    I32Eq,
     I32Load { offset: u64, align: u8, memory: u32 },
     I32Load8U { offset: u64, align: u8, memory: u32 },
     I32Load16U { offset: u64, align: u8, memory: u32 },
@@ -2681,10 +2729,12 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::GlobalGet { global_index } => PlanToken::GlobalGet(global_index),
         wasmparser::Operator::GlobalSet { global_index } => PlanToken::GlobalSet(global_index),
         wasmparser::Operator::I32Add => PlanToken::I32Add,
+        wasmparser::Operator::I32Sub => PlanToken::I32Sub,
         wasmparser::Operator::I32LtU => PlanToken::I32LtU,
         wasmparser::Operator::I32LeU => PlanToken::I32LeU,
         wasmparser::Operator::I32GtU => PlanToken::I32GtU,
         wasmparser::Operator::I32Eqz => PlanToken::I32Eqz,
+        wasmparser::Operator::I32Eq => PlanToken::I32Eq,
         wasmparser::Operator::I32Load { memarg } => PlanToken::I32Load { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::I32Load8U { memarg } => PlanToken::I32Load8U { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::I32Load16U { memarg } => PlanToken::I32Load16U { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
@@ -2870,6 +2920,40 @@ fn push_memory_store_plan(
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     });
     Ok(())
+}
+
+fn push_share_plan(
+    plan: &mut Vec<PlanToken>,
+    layout: &LocalLayout,
+    destination: ValueId,
+    object: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    push_get(plan, layout, object)?;
+    plan.extend([
+        PlanToken::I32Const(8),
+        PlanToken::I32Sub,
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::LocalSet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(-1),
+        PlanToken::I32Eq,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(1),
+        PlanToken::I32Add,
+        PlanToken::LocalSet(layout.scratch[2]),
+    ]);
+    push_get(plan, layout, object)?;
+    plan.extend([
+        PlanToken::I32Const(8),
+        PlanToken::I32Sub,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+    ]);
+    push_get(plan, layout, object)?;
+    push_set(plan, layout, destination)
 }
 
 fn push_update_count_plan(
@@ -3265,10 +3349,17 @@ fn expected_linear_function_plan(
                     .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
                 expected_alloc_plan(&mut plan, function, &layout, collection, *destination, extent)?;
             }
-            Operation::Load { destination, place, transfer: LoadTransfer::CopyScalar } => {
+            Operation::Load { destination, place, transfer }
+                if matches!(transfer, LoadTransfer::CopyScalar | LoadTransfer::CloneShared) =>
+            {
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
+                if *transfer == LoadTransfer::CloneShared {
+                    push_share_plan(&mut plan, &layout, *destination, *destination)?;
+                }
             }
-            Operation::Store { place, value, transfer: StoreTransfer::CopyScalar } => {
+            Operation::Store { place, value, transfer }
+                if matches!(transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique) =>
+            {
                 push_memory_store_plan(&mut plan, function, layouts, &layout, place, *value)?;
             }
             Operation::CopyBytes { destination, source, length } => {
@@ -5549,6 +5640,135 @@ mod tests {
             4,
             1,
         )
+    }
+
+    fn checked_pointer_list_transfer_artifact() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = interner.intern_runtime_buffer(byte).unwrap();
+        let slot = interner
+            .intern_runtime_pointer_value_slot(string, PointerSlot::Owned)
+            .unwrap();
+        let list = interner.intern_packed_list(slot, RcHeader::Required).unwrap();
+        let LayoutSize::Dynamic {
+            base: string_header,
+            stride: string_stride,
+        } = interner.get(string).unwrap().size()
+        else {
+            panic!("string layout must be dynamic");
+        };
+        let LayoutSize::Dynamic {
+            base: list_header,
+            stride: list_stride,
+        } = interner.get(list).unwrap().size()
+        else {
+            panic!("pointer-list layout must be dynamic");
+        };
+        let bundle = LayoutBundle::from_interner(&interner, [string, list]).unwrap();
+        let zero = ValueId::new(0);
+        let one = ValueId::new(1);
+        let child = ValueId::new(2);
+        let container = ValueId::new(3);
+        let in_bounds = ValueId::new(4);
+        let loaded = ValueId::new(5);
+        let signature = scalar_signature_with(FunctionSignatureId::new(36), Vec::new(), Vec::new());
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(36),
+            checked_source: CheckedSourceIdentity::from_digest([0x36; 32]),
+            layouts: bundle,
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(36),
+                signature: FunctionSignatureId::new(36),
+                entry: crate::canonical_safewir::BlockId::new(36),
+                value_types: [
+                    (zero, ValueType::Size),
+                    (one, ValueType::Size),
+                    (child, ValueType::Ref(string)),
+                    (container, ValueType::Ref(list)),
+                    (in_bounds, ValueType::Bool),
+                    (loaded, ValueType::Ref(string)),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(36),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: zero, value: 0 },
+                        Operation::ConstSize { destination: one, value: 1 },
+                        Operation::Alloc {
+                            destination: child,
+                            layout: string,
+                            extent: Extent::Counted {
+                                header_bytes: string_header,
+                                count: zero,
+                                capacity: one,
+                                stride_bytes: string_stride,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Alloc {
+                            destination: container,
+                            layout: list,
+                            extent: Extent::Counted {
+                                header_bytes: list_header,
+                                count: one,
+                                capacity: one,
+                                stride_bytes: list_stride,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Compare {
+                            destination: in_bounds,
+                            operator: ComparisonOperator::LessUnsigned,
+                            left: zero,
+                            right: one,
+                        },
+                        Operation::Guard { condition: in_bounds, kind: GuardKind::Bounds },
+                        Operation::Store {
+                            place: Place::projected(
+                                container,
+                                Projection::Element { index: zero },
+                                ValueType::Ref(string),
+                                AccessMode::Write,
+                            ),
+                            value: child,
+                            transfer: StoreTransfer::MoveUnique,
+                        },
+                        Operation::Load {
+                            destination: loaded,
+                            place: Place::projected(
+                                container,
+                                Projection::Element { index: zero },
+                                ValueType::Ref(string),
+                                AccessMode::Read,
+                            ),
+                            transfer: LoadTransfer::CloneShared,
+                        },
+                    ],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn admitted_pointer_list_move_and_clone_execute_with_retained_child() {
+        let artifact = admit_canonical(checked_pointer_list_transfer_artifact())
+            .expect("pointer-list transfers match exact admission plan");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), ()>(&mut store, "f36").unwrap();
+        run.call(&mut store, ()).unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let rc = u32::from_le_bytes(memory.data(&store)[16..20].try_into().unwrap());
+        assert_eq!(rc, 2);
     }
 
     fn checked_guard_artifact() -> ValidatedSafeWir {
