@@ -25,9 +25,9 @@ use wasm_encoder::{
 
 use crate::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument, CanonicalModule,
-    ComparisonOperator, Extent, Function, FunctionId, HeaderField, LoadTransfer,
-    ModuleStage, Operation, OptimizedValid, Place, Projection, StoreTransfer, Terminator,
-    ValidatedSafeWir, ValueId, ValueType,
+    ComparisonOperator, Extent, Function, FunctionId, FunctionSignature, HeaderField,
+    LoadTransfer, ModuleStage, Operation, OptimizedValid, Place, Projection, StoreTransfer,
+    Terminator, ValidatedSafeWir, ValueId, ValueType,
 };
 use crate::layout::{HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, RcHeader, ScalarKind};
 
@@ -786,6 +786,7 @@ enum EncodeError {
     Correspondence(CorrespondenceError),
     UnsupportedValueType { function: FunctionId, value: ValueId, value_type: crate::canonical_safewir::ValueType },
     UnsupportedSignature { signature: crate::canonical_safewir::FunctionSignatureId },
+    ParameterLayoutMismatch { function: FunctionId },
     MissingFunction(FunctionId),
     MissingValue { function: FunctionId, value: ValueId },
     MissingBlock { function: FunctionId, block: crate::canonical_safewir::BlockId },
@@ -853,15 +854,23 @@ struct LocalLayout {
     scratch: [u32; 4],
 }
 
-fn local_layout(function: &Function) -> Result<LocalLayout, EncodeError> {
+fn local_layout(function: &Function, signature: &FunctionSignature) -> Result<LocalLayout, EncodeError> {
     let entry = function
         .blocks
         .iter()
         .find(|block| block.id == function.entry)
         .ok_or(EncodeError::MissingBlock { function: function.id, block: function.entry })?;
+    if entry.parameters.len() != signature.parameters.len() {
+        return Err(EncodeError::ParameterLayoutMismatch { function: function.id });
+    }
     let mut indices = BTreeMap::new();
     for (index, parameter) in entry.parameters.iter().enumerate() {
-        indices.insert(parameter.value, index as u32);
+        if parameter.value_type != signature.parameters[index]
+            || function.value_types.get(&parameter.value) != Some(&parameter.value_type)
+            || indices.insert(parameter.value, index as u32).is_some()
+        {
+            return Err(EncodeError::ParameterLayoutMismatch { function: function.id });
+        }
     }
     let mut extra_types = Vec::new();
     for (value, value_type) in &function.value_types {
@@ -1877,11 +1886,12 @@ fn emit_terminator(
 
 fn encode_function(
     source_function: &Function,
+    signature: &FunctionSignature,
     target_function: &WasmFunction,
     function_indices: &BTreeMap<FunctionId, u32>,
     layouts: &LayoutInterner,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
-    let layout = local_layout(source_function)?;
+    let layout = local_layout(source_function, signature)?;
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
     if target_function.entry != source_function.entry {
@@ -1959,10 +1969,11 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
     let mut code = CodeSection::new();
     for target_function in &target.functions {
         let source_function = source.functions().iter().find(|function| function.id == target_function.id).ok_or(EncodeError::MissingFunction(target_function.id))?;
+        let signature = source.signatures().iter().find(|signature| signature.id == source_function.signature).ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, target_function, &function_indices, &layouts)?);
+        code.function(&encode_function(source_function, signature, target_function, &function_indices, &layouts)?);
     }
     let mut module = WasmModule::new();
     module
@@ -2347,19 +2358,36 @@ fn expected_alloc_plan(
 
 fn expected_function_plan(
     function: &Function,
+    signature: &FunctionSignature,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
-    let layout = local_layout(function).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let layout = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let block = &function.blocks[0];
     let mut plan = Vec::new();
     for operation in &block.operations {
         match operation {
             Operation::ConstInt { destination, value } => {
                 plan.push(PlanToken::I64Const(*value));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::Arithmetic {
+                destination,
+                operator: ArithmeticOperator::Add,
+                left,
+                right,
+                overflow: crate::canonical_safewir::OverflowBehavior::Wrap,
+            } => {
+                push_get(&mut plan, &layout, *left)?;
+                push_get(&mut plan, &layout, *right)?;
+                match function.value_types.get(destination) {
+                    Some(ValueType::Int) => plan.push(PlanToken::I64Add),
+                    Some(ValueType::Size) => plan.push(PlanToken::I32Add),
+                    _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+                }
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::ConstBool { destination, value } => {
@@ -2526,9 +2554,12 @@ fn decode_and_match_plan(
         .collect();
     let expected = source.functions().iter()
         .map(|function| {
-            let local = local_layout(function).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            let signature = source.signatures().iter()
+                .find(|signature| signature.id == function.signature)
+                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let local = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
-            Ok((locals, expected_function_plan(function, &layouts, &function_indices)?))
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut actual = Vec::new();
@@ -3075,6 +3106,95 @@ mod tests {
         validate_final(&initial_snapshot, witness, optimized).expect("direct scalar call is final-valid")
     }
 
+    fn checked_parameterized_scalar_call() -> ValidatedSafeWir {
+        let parameter = ValueId::new(50);
+        let one = ValueId::new(51);
+        let incremented = ValueId::new(52);
+        let argument = ValueId::new(53);
+        let result = ValueId::new(54);
+        let increment_signature = scalar_signature_with(
+            FunctionSignatureId::new(50),
+            vec![ValueType::Int],
+            vec![ValueType::Int],
+        );
+        let main_signature = scalar_signature_with(
+            FunctionSignatureId::new(51),
+            Vec::new(),
+            vec![ValueType::Int],
+        );
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(50),
+            checked_source: CheckedSourceIdentity::from_digest([0x50; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), [])
+                .expect("empty layout bundle is valid"),
+            signatures: vec![increment_signature, main_signature],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FunctionId::new(50),
+                    signature: FunctionSignatureId::new(50),
+                    entry: crate::canonical_safewir::BlockId::new(50),
+                    value_types: [
+                        (parameter, ValueType::Int),
+                        (one, ValueType::Int),
+                        (incremented, ValueType::Int),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(50),
+                        parameters: vec![BlockParameter {
+                            value: parameter,
+                            value_type: ValueType::Int,
+                            ownership: None,
+                        }],
+                        operations: vec![
+                            Operation::ConstInt { destination: one, value: 1 },
+                            Operation::Arithmetic {
+                                destination: incremented,
+                                operator: ArithmeticOperator::Add,
+                                left: parameter,
+                                right: one,
+                                overflow: crate::canonical_safewir::OverflowBehavior::Wrap,
+                            },
+                        ],
+                        terminator: Terminator::Return { values: vec![incremented] },
+                    }],
+                },
+                Function {
+                    id: FunctionId::new(51),
+                    signature: FunctionSignatureId::new(51),
+                    entry: crate::canonical_safewir::BlockId::new(51),
+                    value_types: [(argument, ValueType::Int), (result, ValueType::Int)]
+                        .into_iter()
+                        .collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(51),
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::ConstInt { destination: argument, value: 41 },
+                            Operation::Call {
+                                destinations: vec![result],
+                                callee: FunctionId::new(50),
+                                arguments: vec![CallArgument::Value(argument)],
+                            },
+                        ],
+                        terminator: Terminator::Return { values: vec![result] },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        });
+        let checked = check_initial_with_test_witness(candidate)
+            .expect("parameterized scalar call is initially valid");
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial)
+            .expect("parameterized scalar call optimizes");
+        validate_final(&initial_snapshot, witness, optimized)
+            .expect("parameterized scalar call is final-valid")
+    }
+
     fn checked_object_call_borrow() -> ValidatedSafeWir {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
@@ -3213,6 +3333,36 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let function = instance.get_typed_func::<(), ()>(&mut store, "f40").unwrap();
         function.call(&mut store, ()).unwrap();
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn parameterized_scalar_call_artifact_executes() {
+        let artifact = admit_canonical(checked_parameterized_scalar_call())
+            .expect("parameterized scalar call artifact admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance
+            .get_typed_func::<(), i64>(&mut store, "f51")
+            .unwrap();
+        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
+    }
+
+    #[test]
+    fn parameterized_call_signature_mutation_fails_exact_admission() {
+        let mut bytes = encode_validated(checked_parameterized_scalar_call()).unwrap();
+        let signature = bytes
+            .windows(5)
+            .position(|window| window == [0x60, 0x01, 0x7e, 0x01, 0x7e])
+            .expect("increment signature exists");
+        bytes[signature + 2] = 0x7f;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_parameterized_scalar_call(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch)
+                | Err(CanonicalAdmissionError::WasmValidation)
+        ));
     }
 
     fn checked_comparison() -> ValidatedSafeWir {
