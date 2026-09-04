@@ -11,54 +11,10 @@ const MAX_CONTRACT_ITERATIONS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BodySummary {
-    needs: Vec<ParameterNeed>,
+    needs: Vec<BTreeSet<MemoryEffect>>,
     results: Vec<DerivedResult>,
     effects: BTreeMap<u32, BTreeSet<MemoryEffect>>,
     escaped_parameters: BTreeSet<u32>,
-}
-
-/// Finite summary lattice. Unknown is never accepted; it only lets direct
-/// recursive calls iterate without treating declarations as body authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParameterNeed {
-    None,
-    Read,
-    Write,
-    Retain,
-    Release,
-    Reclaim,
-    Unknown,
-}
-
-impl ParameterNeed {
-    fn join(self, other: Self) -> Self {
-        use ParameterNeed::{None, Read, Reclaim, Release, Retain, Unknown, Write};
-        match (self, other) {
-            (Unknown, _) | (_, Unknown) => Unknown,
-            (None, value) | (value, None) => value,
-            (Read, Read) => Read,
-            (Write, Write) => Write,
-            (Retain, Retain) => Retain,
-            (Release, Release) => Release,
-            (Reclaim, Reclaim) => Reclaim,
-            (Reclaim, _) | (_, Reclaim) => Reclaim,
-            (Read, Write) | (Write, Read) => Write,
-            (Write, Retain) | (Retain, Write) | (Write, Release) | (Release, Write) => Write,
-            (Read, Retain) | (Retain, Read) | (Read, Release) | (Release, Read) => Read,
-            (Retain, Release) | (Release, Retain) => Unknown,
-        }
-    }
-
-    fn effect(self) -> Option<MemoryEffect> {
-        match self {
-            Self::None | Self::Unknown => None,
-            Self::Read => Some(MemoryEffect::Read),
-            Self::Write => Some(MemoryEffect::Write),
-            Self::Retain => Some(MemoryEffect::Retain),
-            Self::Release => Some(MemoryEffect::Release),
-            Self::Reclaim => Some(MemoryEffect::Reclaim),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +118,7 @@ fn initial_summary(
         .copied()
         .ok_or(InitialCheckError::MissingSignature(function.signature))?;
     Ok(BodySummary {
-        needs: vec![ParameterNeed::None; signature.parameters.len()],
+        needs: vec![BTreeSet::new(); signature.parameters.len()],
         results: vec![DerivedResult::Unseen; signature.results.len()],
         effects: BTreeMap::new(),
         escaped_parameters: BTreeSet::new(),
@@ -301,11 +257,11 @@ fn propagate_operation_origins(
         }
         Operation::Share { destination, source } => {
             let origin = match origin_of(origins, *source) {
-                Origin::Parameter { layout: Some(layout), .. }
-                | Origin::Fresh(layout)
-                | Origin::StaticData(layout)
-                | Origin::Shared(layout)
-                | Origin::ReallocatesParameter { layout, .. } => Origin::Shared(layout),
+                origin @ (Origin::Parameter { layout: Some(_), .. }
+                | Origin::ReallocatesParameter { .. }) => origin,
+                Origin::Fresh(layout) | Origin::StaticData(layout) | Origin::Shared(layout) => {
+                    Origin::Shared(layout)
+                }
                 Origin::Unseen => Origin::Unseen,
                 _ => Origin::Unknown,
             };
@@ -414,7 +370,7 @@ fn derive_operation(
         }
         Operation::Store { place, value, .. } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
-            if matches!(origin_of(origins, *value), Origin::Parameter { .. }) { mark_escape(summary, origin_of(origins, *value)); }
+            mark_escape(summary, origin_of(origins, *value));
         }
         Operation::UpdateCount { object, .. } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Write); }
         Operation::Reclaim { object } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Reclaim); }
@@ -499,11 +455,18 @@ fn derive_call_needs(
             Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. } => parameter,
             _ => continue,
         };
-        let need = callee_summary.needs.get(index).copied().unwrap_or(ParameterNeed::Unknown);
-        if let Some(effect) = need.effect() { add_effect(summary, Origin::Parameter { parameter, layout: None }, effect); }
-        let mut merged = summary.needs.get(parameter as usize).copied().ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?.join(need);
-        if matches!(argument, CallArgument::Move(_)) { merged = merged.join(ParameterNeed::Reclaim); }
-        summary.needs[parameter as usize] = merged;
+        let need = callee_summary
+            .needs
+            .get(index)
+            .ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?;
+        let slot = summary
+            .needs
+            .get_mut(parameter as usize)
+            .ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?;
+        slot.extend(need.iter().copied());
+        if matches!(argument, CallArgument::Move(_)) {
+            slot.insert(MemoryEffect::Reclaim);
+        }
     }
     Ok(())
 }
@@ -531,15 +494,16 @@ fn argument_value(argument: &CallArgument) -> ValueId {
 fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
     let (Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. }) = origin else { return; };
     summary.effects.entry(parameter).or_default().insert(effect);
-    let need = match effect { MemoryEffect::Read => ParameterNeed::Read, MemoryEffect::Write => ParameterNeed::Write, MemoryEffect::Retain => ParameterNeed::Retain, MemoryEffect::Release => ParameterNeed::Release, MemoryEffect::Reclaim => ParameterNeed::Reclaim };
-    if let Some(slot) = summary.needs.get_mut(parameter as usize) { *slot = slot.join(need); }
+    if let Some(slot) = summary.needs.get_mut(parameter as usize) {
+        slot.insert(effect);
+    }
 }
 
 fn mark_escape(summary: &mut BodySummary, origin: Origin) {
     if let Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. } = origin {
         summary.escaped_parameters.insert(parameter);
         if let Some(need) = summary.needs.get_mut(parameter as usize) {
-            *need = need.join(ParameterNeed::Read);
+            need.insert(MemoryEffect::Read);
         }
     }
 }
@@ -555,7 +519,7 @@ fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Re
     for (parameter, effects) in &signature.contract.parameter_effects {
         if *parameter as usize >= signature.parameters.len() || effects.iter().copied().collect::<BTreeSet<_>>().len() != effects.len() { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
     }
-    for (index, need) in summary.needs.iter().copied().enumerate() {
+    for (index, need) in summary.needs.iter().enumerate() {
         let parameter = &signature.contract.parameters[index];
         let declared = signature.contract.parameter_effects.get(&(index as u32)).cloned().unwrap_or_default().into_iter().collect::<BTreeSet<_>>();
         let derived = summary.effects.get(&(index as u32)).cloned().unwrap_or_default();
@@ -564,17 +528,16 @@ fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Re
     Ok(())
 }
 
-fn ownership_supports(parameter: &ParameterContract, need: ParameterNeed) -> bool {
-    use ParameterNeed::{None, Read, Reclaim, Release, Retain, Unknown, Write};
-    match (parameter.ownership, need) {
-        (_, None) => true,
-        (_, Unknown) => false,
-        (ParameterOwnership::Unique, Read | Write | Retain | Release | Reclaim) => true,
-        (ParameterOwnership::Shared, Read | Retain | Release) => true,
-        (ParameterOwnership::CallBorrow { mode }, Read) => matches!(mode, super::super::BorrowMode::Read | super::super::BorrowMode::Write),
-        (ParameterOwnership::CallBorrow { mode }, Write) => matches!(mode, super::super::BorrowMode::Write),
+fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffect>) -> bool {
+    needs.iter().all(|need| match (parameter.ownership, need) {
+        (ParameterOwnership::Unique, _) => true,
+        (ParameterOwnership::Shared, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release) => true,
+        (ParameterOwnership::CallBorrow { mode }, MemoryEffect::Read) => {
+            matches!(mode, super::super::BorrowMode::Read | super::super::BorrowMode::Write)
+        }
+        (ParameterOwnership::CallBorrow { mode: super::super::BorrowMode::Write }, MemoryEffect::Write) => true,
         _ => false,
-    }
+    })
 }
 
 fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
@@ -696,5 +659,20 @@ mod tests {
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: Vec::new(), contract };
         let (functions, signatures) = maps(function, signature);
         assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+    }
+
+    #[test]
+    fn call_borrow_cannot_hide_release_behind_a_read_need() {
+        let parameter = ParameterContract {
+            value_type: ValueType::Ref(layout()),
+            ownership: ParameterOwnership::CallBorrow {
+                mode: super::super::super::BorrowMode::Read,
+            },
+            non_escaping: true,
+        };
+        let needs = [MemoryEffect::Read, MemoryEffect::Release]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert!(!ownership_supports(&parameter, &needs));
     }
 }
