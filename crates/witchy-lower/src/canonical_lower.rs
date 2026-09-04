@@ -116,6 +116,11 @@ pub fn lower_typed_module(
         if !is_canonical_source_function(typed.module(), &function.name) {
             continue;
         }
+        let Some(function_type) = source.callable_signature(&function.name).cloned() else {
+            // A generic source template has no concrete checked callable body.
+            // The sealed frontend witness lists only generated instances.
+            continue;
+        };
         let function_id = FunctionId::new(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
@@ -123,15 +128,6 @@ pub fn lower_typed_module(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
-        // A generic source declaration is a template, not a callable with a
-        // physical ABI.  Its concrete uses are represented by checked
-        // monomorphized items (for example `map__List__Int__Int`) and only
-        // those items have a finalized function type in the checked table.
-        // Keeping templates out of the executable map makes the table, not a
-        // source-name convention, the authority for canonical callables.
-        let Some(function_type) = typed.table().function_type(&function.name) else {
-            continue;
-        };
         function_types.insert(function_type, signature_id);
         signatures.push(FunctionSignature {
             id: signature_id,
@@ -149,8 +145,11 @@ pub fn lower_typed_module(
         if !is_canonical_source_function(typed.module(), &function.name) {
             continue;
         }
-        let (_, signature_id) = functions_by_name[&function.name];
+        let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
+            continue;
+        };
         signatures[signature_id.get() as usize] = checked_signature(
+            source,
             typed,
             function,
             signature_id,
@@ -199,7 +198,9 @@ pub fn lower_typed_module(
         if !is_canonical_source_function(typed.module(), &function.name) {
             continue;
         }
-        let (function_id, signature_id) = functions_by_name[&function.name];
+        let Some((function_id, signature_id)) = functions_by_name.get(&function.name).copied() else {
+            continue;
+        };
         let signature = &signatures[signature_id.get() as usize];
         functions.push(lower_function(
             function,
@@ -252,6 +253,7 @@ pub fn lower_typed_module(
 }
 
 fn checked_signature(
+    source: &CanonicalCheckedSource,
     typed: &TypedModule,
     function: &witchy_syntax::ast::Function,
     id: FunctionSignatureId,
@@ -259,9 +261,9 @@ fn checked_signature(
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
-    let checked = typed
-        .table()
-        .function_type(&function.name)
+    let checked = source
+        .callable_signature(&function.name)
+        .cloned()
         .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone()))?;
     let Type::Fn(parameters, result, conventions, _) = checked else {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
@@ -3076,6 +3078,25 @@ mod tests {
         let candidate = lower_typed_module(canonical, empty_layouts())
             .expect("canonical lowering includes expanded function");
         assert_eq!(candidate.functions().len(), 2);
+    }
+
+    #[test]
+    fn canonical_lowering_uses_checked_generic_callable_witness() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n".to_vec(),
+            )],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("generic source checks");
+        let candidate = lower_typed_module(
+            checked.canonical_source().expect("canonical source"),
+            empty_layouts(),
+        )
+        .expect("generic direct call lowers through its checked instance");
+        assert_eq!(candidate.functions().len(), 2, "main plus concrete identity");
     }
 
     #[test]

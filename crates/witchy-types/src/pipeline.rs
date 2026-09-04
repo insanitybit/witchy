@@ -6,7 +6,7 @@
 //! destructive source lowering.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use std::fmt;
 
@@ -22,6 +22,16 @@ use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};
+
+/// The executable callable inventory produced by the canonical checked
+/// frontend.  Generic templates deliberately have no entry: a direct call may
+/// target only a concrete function whose body and signature were rechecked
+/// after monomorphization.
+#[derive(Debug, PartialEq)]
+struct CanonicalCallableWitness {
+    signatures: BTreeMap<String, witchy_syntax::ast::Type>,
+    generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
+}
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
 ///
@@ -54,6 +64,7 @@ pub struct CanonicalCheckedSource {
     typed: typeck::TypedModule,
     source_witness: CheckedSourceWitness,
     proper_tail_manifest: ProperTailSiteManifest,
+    callable_witness: CanonicalCallableWitness,
 }
 
 impl CanonicalCheckedSource {
@@ -73,6 +84,26 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn proper_tail_manifest(&self) -> &ProperTailSiteManifest {
         &self.proper_tail_manifest
+    }
+
+    /// Return the exact rechecked callable signature for a final executable
+    /// declaration.  This is intentionally not a TypeTable name lookup: the
+    /// map is sealed with the canonical typed module and excludes templates.
+    #[doc(hidden)]
+    pub fn callable_signature(&self, name: &str) -> Option<&witchy_syntax::ast::Type> {
+        self.callable_witness.signatures.get(name)
+    }
+
+    /// Return the typechecker-owned specialization identity for a generated
+    /// generic callable.  The identity is retained only as authority that the
+    /// concrete body originated from monomorphization, never reconstructed by
+    /// a backend from the callable spelling.
+    #[doc(hidden)]
+    pub fn generic_specialization(
+        &self,
+        name: &str,
+    ) -> Option<&crate::traits::LogicalSpecializationIdentity> {
+        self.callable_witness.generic_instances.get(name)
     }
 }
 
@@ -490,6 +521,7 @@ fn attach_canonical_source(
     typed: typeck::TypedModule,
     source_bundle_digest: [u8; 32],
     proper_tail_manifest: ProperTailSiteManifest,
+    callable_witness: CanonicalCallableWitness,
 ) -> Result<CheckedModule, PipelineError> {
     checked.canonical_source = Some(CanonicalCheckedSource {
         typed,
@@ -498,8 +530,58 @@ fn attach_canonical_source(
             proper_tail_manifest_digest: proper_tail_manifest.digest(),
         },
         proper_tail_manifest,
+        callable_witness,
     });
     Ok(checked)
+}
+
+/// Turn the typechecker-owned monomorphization result into the exact canonical
+/// lowering input.  The trait transform supplies identities, but its output is
+/// never trusted directly: the transformed module is immediately checked and
+/// the witness rejects any generated identity without a concrete checked body
+/// and signature.
+fn canonicalize_callable_instances(
+    typed: typeck::TypedModule,
+) -> Result<(typeck::TypedModule, CanonicalCallableWitness), PipelineError> {
+    let (module, generic_instances) =
+        crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
+    let typed = typeck::annotate_checked(module)?;
+    let callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
+    Ok((typed, callable_witness))
+}
+
+fn bind_canonical_callable_witness(
+    typed: &typeck::TypedModule,
+    generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
+) -> Result<CanonicalCallableWitness, PipelineError> {
+    let functions = typed
+        .module()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => Some(function.name.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut signatures = BTreeMap::new();
+    for name in &functions {
+        if let Some(signature) = typed.table().function_type(name) {
+            signatures.insert((*name).to_string(), signature);
+        }
+    }
+    for name in generic_instances.keys() {
+        if !functions.contains(name.as_str()) || !signatures.contains_key(name) {
+            return Err(PipelineError::Type(TypeError {
+                message: format!(
+                    "canonical generic specialization `{name}` lacks an exact checked concrete body or signature"
+                ),
+            }));
+        }
+    }
+    Ok(CanonicalCallableWitness {
+        signatures,
+        generic_instances,
+    })
 }
 
 /// Parse exact source bytes, type-check the resulting linked module, and mint
@@ -556,12 +638,19 @@ fn link_checked_source_bundle_with(
             message: "canonical checked link did not return its typed source".to_string(),
         })
     })?;
+    let (typed_source, callable_witness) = canonicalize_callable_instances(typed_source)?;
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     let proper_tail_manifest =
         proper_tail_manifest.for_canonical_functions(typed_source.module());
-    attach_canonical_source(checked, typed_source, source_bundle_digest, proper_tail_manifest)
+    attach_canonical_source(
+        checked,
+        typed_source,
+        source_bundle_digest,
+        proper_tail_manifest,
+        callable_witness,
+    )
 }
 
 /// Source-bearing production link with loader-authenticated package ownership.
@@ -711,6 +800,57 @@ mod tests {
         assert_eq!(checked.module(), &old.module);
         assert_eq!(checked.origins(), &old.origins);
         assert_eq!(EXPANSIONS.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn canonical_source_binds_rechecked_generic_callable_instances() {
+        let checked = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("generic source checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let instance = canonical
+            .typed_module()
+            .module()
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function)
+                    if function.name.contains("identity") && function.name != "main.identity" =>
+                {
+                    Some(function.name.as_str())
+                }
+                _ => None,
+            })
+            .next()
+            .expect("checked concrete identity instance");
+        assert!(canonical.generic_specialization(instance).is_some());
+        assert!(canonical.callable_signature(instance).is_some());
+        assert!(canonical.callable_signature("main.identity").is_none());
+    }
+
+    #[test]
+    fn canonical_source_refuses_specialization_without_checked_body() {
+        let module = parse(
+            "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+        );
+        let (module, mut instances) =
+            crate::traits::lower_for_wasm_with_specializations(module).into_parts();
+        let typed = typeck::annotate_checked(module).expect("lowered generic source rechecks");
+        let identity = instances
+            .values()
+            .next()
+            .expect("generic instance identity")
+            .clone();
+        instances.insert("forged_generic_instance".to_string(), identity);
+        let error = bind_canonical_callable_witness(&typed, instances)
+            .expect_err("a specialization without a checked body must refuse");
+        assert!(error.to_string().contains("forged_generic_instance"));
     }
 
     #[test]

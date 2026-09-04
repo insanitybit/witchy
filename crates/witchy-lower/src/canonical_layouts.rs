@@ -69,7 +69,7 @@ pub(crate) fn derive_layout_bundle(
         // every resolved use site and records its finalized signature in the
         // same authoritative table.  Do not try to invent a layout for the
         // unresolved template (its `a`/`b` types have no physical layout).
-        let Some(signature) = typed.table().function_type(&function.name) else {
+        let Some(signature) = source.callable_signature(&function.name).cloned() else {
             continue;
         };
         projection.visit_type(&signature)?;
