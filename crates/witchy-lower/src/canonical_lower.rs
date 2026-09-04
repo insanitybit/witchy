@@ -23,7 +23,9 @@ use witchy_wir::canonical_safewir::{
     ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, ValueId, ValueType,
 };
-use witchy_wir::layout::{HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, ScalarKind};
+use witchy_wir::layout::{
+    HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, ScalarKind,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalLoweringError {
@@ -1139,7 +1141,8 @@ impl FunctionLowerer<'_> {
         items: &[Expr],
     ) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(expression)?;
-        let (layout, header_bytes, stride_bytes) = list_int_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&logical_type, self.layout_bundle, self.layouts)?;
         let count = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ConstSize {
             destination: count,
@@ -1169,9 +1172,12 @@ impl FunctionLowerer<'_> {
         );
 
         for (position, item) in items.iter().enumerate() {
-            let value = self.lower_expr(item)?;
-            if self.values[&value] != ValueType::Int {
+            let mut value = self.lower_expr(item)?;
+            if self.values[&value] != element_type {
                 return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
+            }
+            if matches!(element_type, ValueType::Ref(_)) {
+                value = self.clone_string_for_storage(value)?;
             }
             let index = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize {
@@ -1193,11 +1199,15 @@ impl FunctionLowerer<'_> {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     object,
                     witchy_wir::canonical_safewir::Projection::Element { index },
-                    ValueType::Int,
+                    element_type,
                     witchy_wir::canonical_safewir::AccessMode::Write,
                 ),
                 value,
-                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+                transfer: if matches!(element_type, ValueType::Ref(_)) {
+                    witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+                } else {
+                    witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+                },
             });
         }
         Ok(object)
@@ -1238,6 +1248,60 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+    /// Materialize a string value into independently owned storage before it
+    /// enters an owned pointer slot. Static data and borrowed parameters may be
+    /// read, but neither is silently promoted to unique ownership.
+    fn clone_string_for_storage(
+        &mut self,
+        source: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.values[&source] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "non-string pointer-list element",
+            ));
+        };
+        let length = *self.string_lengths.get(&source).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string element without byte extent"),
+        )?;
+        let maximum = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: maximum,
+            value: u64::from(u32::MAX - 4),
+        });
+        let fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: length,
+            right: maximum,
+        });
+        self.push_operation(Operation::Guard {
+            condition: fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+        });
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes: 4,
+                count: length,
+                capacity: length,
+                stride_bytes: 1,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::UpdateCount { object, count: length });
+        let zero = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: zero,
+            value: 0,
+        });
+        self.push_string_copy(object, source, zero, length, length, layout)?;
+        self.string_lengths.insert(object, length);
+        Ok(object)
+    }
+
     /// Lower resolved `list.push(xs, value)` in normal mode. The operation
     /// retains source-level mutation syntax while using copy-correct value
     /// semantics: grow into a fresh allocation, initialize it, then reclaim
@@ -1261,8 +1325,13 @@ impl FunctionLowerer<'_> {
             "List".into(),
             vec![Type::Named("Int".into(), Vec::new())],
         );
-        let (expected_layout, header_bytes, stride_bytes) =
-            list_int_layout(&list_type, self.layout_bundle, self.layouts)?;
+        let (expected_layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&list_type, self.layout_bundle, self.layouts)?;
+        if element_type != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "list.push pointer-bearing element",
+            ));
+        }
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
@@ -1421,8 +1490,13 @@ impl FunctionLowerer<'_> {
 
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(base)?;
-        let (layout, header_bytes, stride_bytes) =
-            list_int_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&logical_type, self.layout_bundle, self.layouts)?;
+        if element_type != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "pointer-bearing list index",
+            ));
+        }
         let object = self.lower_expr(base)?;
         if self.values[&object] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
@@ -1781,7 +1855,7 @@ fn source_value_type(
 ) -> Result<ValueType, CanonicalLoweringError> {
     match source.unqualified() {
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            list_int_layout(source, layout_bundle, layouts).map(|(layout, _, _)| ValueType::Ref(layout))
+            list_layout(source, layout_bundle, layouts).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
             string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
@@ -1855,34 +1929,46 @@ fn is_console_print(name: &str) -> bool {
     name == "__capop.print"
 }
 
-fn list_int_layout(
+fn list_layout(
     source: &Type,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
-) -> Result<(witchy_wir::layout::LayoutId, u32, u32), CanonicalLoweringError> {
+) -> Result<(witchy_wir::layout::LayoutId, ValueType, u32, u32), CanonicalLoweringError> {
     let Type::Named(name, arguments) = source.unqualified() else {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     };
     if name != "List" || arguments.len() != 1 {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     }
-    if !matches!(arguments[0].unqualified(), Type::Named(element, args) if element == "Int" && args.is_empty()) {
-        return Err(CanonicalLoweringError::UnsupportedListElement(source.clone()));
-    }
+    let element_name = match arguments[0].unqualified() {
+        Type::Named(element, args) if args.is_empty() => element.as_str(),
+        _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
+    };
 
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
         let Some(descriptor) = layouts.get(*root) else { continue };
         let LayoutKind::PackedList { element, .. } = descriptor.kind() else { continue };
         let Some(element_descriptor) = layouts.get(*element) else { continue };
-        if !matches!(element_descriptor.kind(), LayoutKind::Scalar(ScalarKind::Int)) {
-            continue;
-        }
+        let element_type = match (element_name, element_descriptor.kind()) {
+            ("Int", LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
+            (
+                "String",
+                LayoutKind::RuntimePointerValueSlot {
+                    pointee,
+                    semantics: PointerSlot::Owned,
+                },
+            ) if layouts.get(*pointee).is_some_and(|descriptor| {
+                matches!(descriptor.kind(), LayoutKind::RuntimeBuffer { element }
+                    if layouts.get(*element).is_some_and(|element| element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)))
+            }) => ValueType::Ref(*pointee),
+            _ => continue,
+        };
         let LayoutSize::Dynamic { base, stride } = descriptor.size() else { continue };
         if !matches!(descriptor.header(), HeaderLayout::PackedList { data_offset, .. } if data_offset == base) {
             continue;
         }
-        candidates.push((*root, base, stride));
+        candidates.push((*root, element_type, base, stride));
     }
     match candidates.as_slice() {
         [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),

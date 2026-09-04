@@ -11,7 +11,8 @@ use witchy_syntax::ast::{self, Item, Type};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
 use witchy_wir::layout::{
-    ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind,
+    ClosedTypeResolver, LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ResolvedNamed,
+    ScalarKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,10 +127,11 @@ impl LayoutProjection {
             Type::Named(name, arguments) if name == "List" => {
                 if arguments.len() != 1
                     || !matches!(arguments[0].unqualified(), Type::Named(element, args)
-                        if element == "Int" && args.is_empty())
+                        if matches!(element.as_str(), "Int" | "String") && args.is_empty())
                 {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
+                self.visit_type(&arguments[0])?;
                 self.roots.push(ty.clone());
                 Ok(())
             }
@@ -141,28 +143,44 @@ impl LayoutProjection {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
         for ty in self.roots {
-            let root = if is_string_type(&ty) {
-                // String uses the existing runtime `[u32 byte_length][raw
-                // bytes...]` carrier. RawByte is representation-only and is
-                // intentionally distinct from Bool and tag lanes. The RC
-                // allocator word is outside this object descriptor, so this
-                // runtime buffer has no length/capacity header variant.
-                let byte = interner
-                    .intern_scalar(ScalarKind::RawByte)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-                interner
-                    .intern_runtime_buffer(byte)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
-            } else {
-                interner
-                    .intern_type(&ty, &V1Resolver)
-                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
-            };
+            let root = intern_v1_layout(&mut interner, &ty)?;
             roots.insert(root);
         }
         LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
     }
+}
+
+fn intern_v1_layout(
+    interner: &mut LayoutInterner,
+    ty: &Type,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
+    if is_string_type(ty) {
+        // String is `[u32 byte_length][UTF-8 bytes...]`. RawByte is
+        // representation-only and grants no scalar or pointer authority.
+        let byte = interner
+            .intern_scalar(ScalarKind::RawByte)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        return interner
+            .intern_runtime_buffer(byte)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+    }
+    if let Type::Named(name, arguments) = ty.unqualified()
+        && name == "List"
+        && arguments.len() == 1
+        && is_string_type(&arguments[0])
+    {
+        let pointee = intern_v1_layout(interner, &arguments[0])?;
+        let element = interner
+            .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        return interner
+            .intern_packed_list(element, RcHeader::Required)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+    }
+    interner
+        .intern_type(ty, &V1Resolver)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
 fn is_string_type(ty: &Type) -> bool {

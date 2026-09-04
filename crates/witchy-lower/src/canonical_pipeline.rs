@@ -584,6 +584,42 @@ mod tests {
     }
 
     #[test]
+    fn list_string_literal_reaches_final_safewir_validation() {
+        let source = "fn main() -> Int:\n    let xs = [\"a\", \"b\"]\n    1\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked List(String) source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("canonical pointer-list layouts");
+        let candidate =
+            lower_typed_module(canonical, layouts).expect("canonical List(String) lowering");
+        let operations = candidate
+            .functions()
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .flat_map(|block| block.operations.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|operation| matches!(
+                    operation,
+                    witchy_wir::canonical_safewir::Operation::Store {
+                        transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+        validate_checked_module(&checked)
+            .expect("List(String) reaches final SafeWIR validation");
+    }
+
+    #[test]
     fn utf8_string_concat_reaches_admitted_execution() {
         let source = "fn main(console: Console):\n    console.print(\"hi\" + \"!\")\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
