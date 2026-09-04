@@ -357,6 +357,7 @@ fn lower_function(
         values: BTreeMap::new(),
         bindings: HashMap::new(),
         string_lengths: HashMap::new(),
+        string_capacities: HashMap::new(),
         list_counts: HashMap::new(),
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
@@ -417,6 +418,7 @@ struct FunctionLowerer<'a> {
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
     string_lengths: HashMap<ValueId, ValueId>,
+    string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
@@ -803,6 +805,18 @@ impl FunctionLowerer<'_> {
             (None, None) => None,
             _ => unreachable!(),
         };
+        let shared_result_extents = result_type.and_then(|(then_value, else_value, result_type)| {
+            (matches!(result_type, ValueType::Ref(_))
+                && self.known_shared_value(then_value)
+                && self.known_shared_value(else_value))
+            .then(|| {
+                Some((
+                    self.dynamic_extent_lanes(then_value)?,
+                    self.dynamic_extent_lanes(else_value)?,
+                ))
+            })
+            .flatten()
+        });
         let mut names = outer.keys().cloned().collect::<Vec<_>>();
         names.sort();
         let changed_names = names
@@ -816,8 +830,15 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         if let Some((_, _, result_type)) = result_type {
             parameter_types.push(result_type);
+            if shared_result_extents.is_some() {
+                parameter_types.extend([ValueType::Size, ValueType::Size]);
+            }
         }
         let join_id = self.new_block(&parameter_types)?;
+        if shared_result_extents.is_some() {
+            self.blocks[join_id.get() as usize].parameters[changed_names.len()].ownership =
+                Some(Ownership::Shared);
+        }
         let join_parameters = self.blocks[join_id.get() as usize].parameters.clone();
         let mut then_arguments = Vec::with_capacity(parameter_types.len());
         let mut else_arguments = Vec::with_capacity(parameter_types.len());
@@ -832,7 +853,22 @@ impl FunctionLowerer<'_> {
         let result = result_type.map(|(then_value, else_value, _)| {
             then_arguments.push(then_value);
             else_arguments.push(else_value);
-            join_parameters[parameter_index].value
+            let result = join_parameters[parameter_index].value;
+            if let Some(((then_count, then_capacity), (else_count, else_capacity))) =
+                shared_result_extents
+            {
+                then_arguments.extend([then_count, then_capacity]);
+                else_arguments.extend([else_count, else_capacity]);
+                let count = join_parameters[parameter_index + 1].value;
+                let capacity = join_parameters[parameter_index + 2].value;
+                self.record_joined_extent(
+                    result,
+                    count,
+                    capacity,
+                    &[then_value, else_value],
+                );
+            }
+            result
         });
         self.blocks[then_end.get() as usize].terminator = Some(Terminator::Branch {
             target: join_id,
@@ -952,11 +988,33 @@ impl FunctionLowerer<'_> {
         if let Some(result_type) = result_type {
             parameter_types.push(result_type);
         }
+        let result_values = arm_results
+            .iter()
+            .filter_map(|(_, _, value)| *value)
+            .collect::<Vec<_>>();
+        let shared_result_extents = (result_type.is_some()
+            && !result_values.is_empty()
+            && result_values.iter().all(|value| self.known_shared_value(*value)))
+        .then(|| {
+            result_values
+                .iter()
+                .map(|value| self.dynamic_extent_lanes(*value))
+                .collect::<Option<Vec<_>>>()
+        })
+        .flatten();
+        if shared_result_extents.is_some() {
+            parameter_types.extend([ValueType::Size, ValueType::Size]);
+        }
         let join = self.new_block(&parameter_types)?;
+        let result_parameter_index = changed_names.len();
+        if shared_result_extents.is_some() {
+            self.blocks[join.get() as usize].parameters[result_parameter_index].ownership =
+                Some(Ownership::Shared);
+        }
         let join_parameters = self.blocks[join.get() as usize].parameters.clone();
         let mut merged = outer;
-        let mut result = None;
-        for (body_end, bindings, value) in arm_results {
+        let result = result_type.map(|_| join_parameters[result_parameter_index].value);
+        for (arm_index, (body_end, bindings, value)) in arm_results.into_iter().enumerate() {
             let mut arguments = changed_names
                 .iter()
                 .map(|name| bindings[name])
@@ -966,12 +1024,23 @@ impl FunctionLowerer<'_> {
             }
             if let Some(value) = value {
                 arguments.push(value);
-                result = join_parameters.last().map(|parameter| parameter.value);
+                if let Some(extents) = &shared_result_extents {
+                    arguments.extend([extents[arm_index].0, extents[arm_index].1]);
+                }
             }
             self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
                 target: join,
                 arguments,
             });
+        }
+        if shared_result_extents.is_some() {
+            let result = result.expect("a shared match join has a result parameter");
+            self.record_joined_extent(
+                result,
+                join_parameters[result_parameter_index + 1].value,
+                join_parameters[result_parameter_index + 2].value,
+                &result_values,
+            );
         }
         self.current = join;
         self.bindings = merged;
@@ -1357,6 +1426,51 @@ impl FunctionLowerer<'_> {
 
     fn push_operation(&mut self, operation: Operation) {
         self.blocks[self.current.get() as usize].operations.push(operation);
+    }
+
+    fn known_shared_value(&self, value: ValueId) -> bool {
+        self.blocks.iter().any(|block| {
+            block.parameters.iter().any(|parameter| {
+                parameter.value == value && parameter.ownership == Some(Ownership::Shared)
+            }) || block.operations.iter().any(|operation| match operation {
+                Operation::StaticData { destination, .. }
+                | Operation::Share { destination, .. } => *destination == value,
+                Operation::Load {
+                    destination,
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,
+                    ..
+                } => *destination == value,
+                _ => false,
+            })
+        })
+    }
+
+    fn dynamic_extent_lanes(&self, value: ValueId) -> Option<(ValueId, ValueId)> {
+        if let (Some(length), Some(capacity)) = (
+            self.string_lengths.get(&value),
+            self.string_capacities.get(&value),
+        ) {
+            return Some((*length, *capacity));
+        }
+        Some((*self.list_counts.get(&value)?, *self.list_capacities.get(&value)?))
+    }
+
+    fn record_joined_extent(
+        &mut self,
+        result: ValueId,
+        count: ValueId,
+        capacity: ValueId,
+        sources: &[ValueId],
+    ) {
+        if sources.iter().all(|source| self.string_lengths.contains_key(source)) {
+            self.string_lengths.insert(result, count);
+            self.string_capacities.insert(result, capacity);
+        } else if sources.iter().all(|source| {
+            self.list_counts.contains_key(source) && self.list_capacities.contains_key(source)
+        }) {
+            self.list_counts.insert(result, count);
+            self.list_capacities.insert(result, capacity);
+        }
     }
 
     fn lower_direct_tail_call(
@@ -1941,6 +2055,7 @@ impl FunctionLowerer<'_> {
             data,
         });
         self.string_lengths.insert(object, count);
+        self.string_capacities.insert(object, capacity);
         Ok(object)
     }
 
@@ -2966,7 +3081,7 @@ mod tests {
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
         check_initial, BorrowMode, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
-        ParameterOwnership, Projection, Terminator,
+        Ownership, ParameterOwnership, Projection, Terminator, ValueType,
     };
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind};
 
@@ -3026,6 +3141,18 @@ mod tests {
         let canonical = checked.canonical_source().expect("canonical source");
         lower_typed_module(canonical, empty_layouts())
             .expect("lower canonical SafeWIR")
+    }
+
+    fn lower_with_derived_layouts(
+        source: &str,
+    ) -> witchy_wir::canonical_safewir::CanonicalModule<
+        witchy_wir::canonical_safewir::LoweredCandidate,
+    > {
+        let checked = checked(source);
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(canonical)
+            .expect("derive canonical layouts");
+        lower_typed_module(canonical, layouts).expect("lower canonical SafeWIR")
     }
 
     #[test]
@@ -3117,6 +3244,35 @@ mod tests {
     }
 
     #[test]
+    fn shared_static_if_carries_object_and_dynamic_extent_through_phi() {
+        let candidate = lower_with_derived_layouts(
+            "fn choose(flag: Bool) -> String:\n    if flag:\n        \"left\"\n    else:\n        \"right\"\n",
+        );
+        let join = candidate.functions()[0].blocks.last().expect("if join");
+        assert_eq!(join.parameters.len(), 3);
+        assert_eq!(join.parameters[0].ownership, Some(Ownership::Shared));
+        assert_eq!(join.parameters[1].value_type, ValueType::Size);
+        assert_eq!(join.parameters[2].value_type, ValueType::Size);
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn shared_parameter_if_does_not_forge_a_shared_phi() {
+        let candidate = lower_with_derived_layouts(
+            "fn choose(flag: Bool, left: String, right: String) -> String:\n    if flag:\n        left\n    else:\n        right\n",
+        );
+        let join = candidate.functions()[0].blocks.last().expect("if join");
+        assert_eq!(join.parameters[0].ownership, None);
+        assert!(matches!(
+            check_initial(candidate),
+            Err(witchy_wir::canonical_safewir::InitialCheckError::UnknownCallableContract {
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn scalar_match_uses_typed_cfg_join() {
         let candidate = lower(
             "fn choose(flag: Bool) -> Int:\n    match flag:\n        true -> 1\n        false -> 2\n",
@@ -3128,6 +3284,18 @@ mod tests {
         )));
         assert_eq!(function.blocks.last().unwrap().parameters.len(), 1);
         assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn shared_static_match_carries_object_and_dynamic_extent_through_phi() {
+        let candidate = lower_with_derived_layouts(
+            "fn choose(flag: Bool) -> String:\n    match flag:\n        true -> \"left\"\n        false -> \"right\"\n",
+        );
+        let join = candidate.functions()[0].blocks.last().expect("match join");
+        assert_eq!(join.parameters.len(), 3);
+        assert_eq!(join.parameters[0].ownership, Some(Ownership::Shared));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

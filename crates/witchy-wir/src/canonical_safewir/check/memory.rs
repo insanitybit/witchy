@@ -65,6 +65,11 @@ struct Comparison {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryState {
     objects: BTreeMap<ValueId, ObjectState>,
+    /// Physical identities that a Shared phi may select at runtime. The phi
+    /// value is the SSA identity used by subsequent operations; this side
+    /// relation prevents the checker from pretending distinct allocations
+    /// became one allocation merely because control flow joined.
+    shared_phi_origins: BTreeMap<ValueId, BTreeSet<ValueId>>,
     stored_objects: BTreeMap<(ValueId, SlotIdentity), ObjectState>,
     range_states: BTreeMap<RangeIdentity, RangeState>,
     constants: BTreeMap<ValueId, u64>,
@@ -98,6 +103,7 @@ impl<'a> MemoryChecker<'a> {
             layouts,
             state: MemoryState {
                 objects: BTreeMap::new(),
+                shared_phi_origins: BTreeMap::new(),
                 stored_objects: BTreeMap::new(),
                 range_states: BTreeMap::new(),
                 constants: BTreeMap::new(),
@@ -148,6 +154,7 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<MemoryState, InitialCheckError> {
         let mut renames = BTreeMap::new();
         let mut unique_phi_rebases = BTreeMap::new();
+        let mut shared_phi_rebases = BTreeMap::new();
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
             if parameter.ownership == Some(Ownership::Unique) {
                 if !matches!(parameter.value_type, ValueType::Ref(_)) {
@@ -172,6 +179,27 @@ impl<'a> MemoryChecker<'a> {
                 }
                 unique_phi_rebases.insert(*argument, parameter.value);
             }
+            if parameter.ownership == Some(Ownership::Shared) {
+                let ValueType::Ref(parameter_layout) = parameter.value_type else {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: parameter.value,
+                    });
+                };
+                let state = self.state.objects.get(argument).ok_or(
+                    InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: *argument,
+                    },
+                )?;
+                if state.ownership != Ownership::Shared || state.layout != parameter_layout {
+                    return Err(InitialCheckError::InvalidOwnership {
+                        function: self.function.id,
+                        object: *argument,
+                    });
+                }
+                shared_phi_rebases.insert(*argument, parameter.value);
+            }
             if self.state.objects.contains_key(argument)
                 && renames.insert(*argument, parameter.value).is_some_and(|previous| previous != parameter.value)
             {
@@ -192,6 +220,25 @@ impl<'a> MemoryChecker<'a> {
             if let Some(identity) = unique_phi_rebases.get(&original_value) {
                 state.identity = *identity;
             }
+            if let Some(identity) = shared_phi_rebases.get(&original_value) {
+                state.identity = *identity;
+                match &state.extent {
+                    Extent::Counted { count, capacity, .. }
+                        if target.parameters.iter().any(|parameter| {
+                            parameter.value == *count && parameter.value_type == ValueType::Size
+                        }) && target.parameters.iter().any(|parameter| {
+                            parameter.value == *capacity
+                                && parameter.value_type == ValueType::Size
+                        }) => {}
+                    Extent::FixedBytes(_) => {}
+                    _ => {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: value,
+                        });
+                    }
+                }
+            }
             if let Some(previous) = objects.insert(value, state.clone()) {
                 if previous != state {
                     return Err(InitialCheckError::InvalidOwnership {
@@ -210,8 +257,28 @@ impl<'a> MemoryChecker<'a> {
             }
         }
 
+        let mut shared_phi_origins = self
+            .state
+            .shared_phi_origins
+            .iter()
+            .map(|(value, origins)| (remap_value(&renames, *value), origins.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for (argument, parameter) in shared_phi_rebases {
+            let origins = self
+                .state
+                .shared_phi_origins
+                .get(&argument)
+                .cloned()
+                .unwrap_or_else(|| BTreeSet::from([self.state.objects[&argument].identity]));
+            shared_phi_origins
+                .entry(parameter)
+                .or_default()
+                .extend(origins);
+        }
+
         Ok(MemoryState {
             objects,
+            shared_phi_origins,
             stored_objects: self
                 .state
                 .stored_objects
@@ -354,6 +421,7 @@ impl<'a> MemoryChecker<'a> {
 
         Ok(MemoryState {
             objects,
+            shared_phi_origins: meet_shared_phi_origins(existing, incoming),
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
             range_states: meet_range_states(existing, incoming),
             constants: intersect_map(&existing.constants, &incoming.constants),
@@ -2230,6 +2298,21 @@ fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(
     left
         .iter()
         .filter_map(|(key, value)| (right.get(key) == Some(value)).then(|| (*key, value.clone())))
+        .collect()
+}
+
+fn meet_shared_phi_origins(
+    left: &MemoryState,
+    right: &MemoryState,
+) -> BTreeMap<ValueId, BTreeSet<ValueId>> {
+    left.shared_phi_origins
+        .iter()
+        .filter_map(|(value, left_origins)| {
+            let right_origins = right.shared_phi_origins.get(value)?;
+            let mut origins = left_origins.clone();
+            origins.extend(right_origins);
+            Some((*value, origins))
+        })
         .collect()
 }
 
