@@ -580,7 +580,7 @@ fn lower_block(
 }
 
 fn lower_function(function: &Function, layouts: &LayoutInterner) -> Result<WasmFunction, LoweringError> {
-    let mut allocation_classes = BTreeMap::new();
+    let mut allocation_classes = allocation_classes_across_cfg(function);
     Ok(WasmFunction {
         id: function.id,
         signature: function.signature,
@@ -591,6 +591,62 @@ fn lower_function(function: &Function, layouts: &LayoutInterner) -> Result<WasmF
             .map(|block| lower_block(function, block, layouts, &mut allocation_classes))
             .collect::<Result<Vec<_>, _>>()?,
     })
+}
+
+fn allocation_classes_across_cfg(
+    function: &Function,
+) -> BTreeMap<ValueId, crate::canonical_safewir::AllocationClass> {
+    let mut classes = BTreeMap::new();
+    for block in &function.blocks {
+        for operation in &block.operations {
+            match operation {
+                Operation::Alloc { destination, class, .. } => {
+                    classes.insert(*destination, *class);
+                }
+                Operation::MoveValue { destination, source } | Operation::Share { destination, source } => {
+                    if let Some(class) = classes.get(source).copied() {
+                        classes.insert(*destination, class);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Block parameters are new SSA definitions.  Propagate the allocation
+    // class of edge arguments until loops reach a fixed point, so a valid
+    // object remains recognizable after a structured CFG transfer.
+    loop {
+        let mut changed = false;
+        for block in &function.blocks {
+            let edges = match &block.terminator {
+                Terminator::Branch { target, arguments } => vec![(*target, arguments.as_slice())],
+                Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. } => {
+                    vec![(*then_target, then_arguments.as_slice()), (*else_target, else_arguments.as_slice())]
+                }
+                Terminator::Return { .. }
+                | Terminator::TailCall { .. }
+                | Terminator::VarTailCall { .. }
+                | Terminator::Trap
+                | Terminator::Unreachable => Vec::new(),
+            };
+            for (target, arguments) in edges {
+                let Some(target_block) = function.blocks.iter().find(|candidate| candidate.id == target) else {
+                    continue;
+                };
+                for (parameter, argument) in target_block.parameters.iter().zip(arguments) {
+                    if let Some(class) = classes.get(argument).copied() {
+                        if classes.insert(parameter.value, class) != Some(class) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    classes
 }
 
 fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
@@ -2079,7 +2135,11 @@ enum PlanToken {
     I64Store { offset: u64, align: u8, memory: u32 },
     F64Store { offset: u64, align: u8, memory: u32 },
     I64GtU,
+    Block(String),
+    Loop(String),
     If(String),
+    Else,
+    Br(u32),
     Unreachable,
     Return,
     Call(u32),
@@ -2121,7 +2181,11 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I64Store { memarg } => PlanToken::I64Store { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::F64Store { memarg } => PlanToken::F64Store { offset: memarg.offset, align: memarg.align, memory: memarg.memory },
         wasmparser::Operator::I64GtU => PlanToken::I64GtU,
+        wasmparser::Operator::Block { blockty } => PlanToken::Block(format!("{blockty:?}")),
+        wasmparser::Operator::Loop { blockty } => PlanToken::Loop(format!("{blockty:?}")),
         wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
+        wasmparser::Operator::Else => PlanToken::Else,
+        wasmparser::Operator::Br { relative_depth } => PlanToken::Br(relative_depth),
         wasmparser::Operator::Unreachable => PlanToken::Unreachable,
         wasmparser::Operator::Return => PlanToken::Return,
         wasmparser::Operator::Call { function_index } => PlanToken::Call(function_index),
@@ -2417,7 +2481,7 @@ fn expected_alloc_plan(
     Ok(())
 }
 
-fn expected_function_plan(
+fn expected_linear_function_plan(
     function: &Function,
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
@@ -2509,6 +2573,17 @@ fn expected_function_plan(
                 });
                 push_set(&mut plan, &layout, *destination)?;
             }
+            Operation::Compare {
+                destination,
+                operator: ComparisonOperator::LessSigned,
+                left,
+                right,
+            } if function.value_types.get(left) == Some(&ValueType::Int) => {
+                push_get(&mut plan, &layout, *left)?;
+                push_get(&mut plan, &layout, *right)?;
+                plan.push(PlanToken::I64LtS);
+                push_set(&mut plan, &layout, *destination)?;
+            }
             Operation::Guard { condition, .. } => {
                 push_get(&mut plan, &layout, *condition)?;
                 plan.extend([
@@ -2575,6 +2650,357 @@ fn expected_function_plan(
     }
     plan.push(PlanToken::End);
     Ok(plan)
+}
+
+fn expected_block_operations_plan(
+    function: &Function,
+    signature: &FunctionSignature,
+    block: &BasicBlock,
+    layouts: &LayoutInterner,
+    function_indices: &BTreeMap<FunctionId, u32>,
+    static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
+) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
+    // Reuse only the source-operation rules above.  The synthetic terminator
+    // is never emitted; it exists solely to satisfy the operation-level
+    // planner's normal local-layout checks.  CFG structure is handled by the
+    // independent PlanEmitter below.
+    let entry = function
+        .blocks
+        .iter()
+        .find(|candidate| candidate.id == function.entry)
+        .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    let synthetic = Function {
+        id: function.id,
+        signature: function.signature,
+        entry: function.entry,
+        value_types: function.value_types.clone(),
+        blocks: vec![BasicBlock {
+            id: function.entry,
+            parameters: entry.parameters.clone(),
+            operations: block.operations.clone(),
+            terminator: Terminator::Return { values: Vec::new() },
+        }],
+    };
+    let mut plan = expected_linear_function_plan(
+        &synthetic,
+        signature,
+        layouts,
+        function_indices,
+        static_data_offsets,
+    )?;
+    if plan.pop() != Some(PlanToken::End) || plan.pop() != Some(PlanToken::Return) {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    Ok(plan)
+}
+
+struct PlanEmitter<'a> {
+    source_function: &'a Function,
+    signature: &'a FunctionSignature,
+    layout: &'a LocalLayout,
+    layouts: &'a LayoutInterner,
+    function_indices: &'a BTreeMap<FunctionId, u32>,
+    static_data_offsets: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
+    plan: Vec<PlanToken>,
+    emitted: BTreeSet<crate::canonical_safewir::BlockId>,
+    labels: Vec<StructuredLabel>,
+    loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
+}
+
+impl PlanEmitter<'_> {
+    fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&BasicBlock, CanonicalAdmissionError> {
+        self.source_function
+            .blocks
+            .iter()
+            .find(|block| block.id == id)
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)
+    }
+
+    fn successors(&self, id: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        Ok(match &self.block(id)?.terminator {
+            Terminator::Branch { target, .. } => vec![*target],
+            Terminator::BranchIf { then_target, else_target, .. } => vec![*then_target, *else_target],
+            Terminator::Return { .. }
+            | Terminator::TailCall { .. }
+            | Terminator::VarTailCall { .. }
+            | Terminator::Trap
+            | Terminator::Unreachable => Vec::new(),
+        })
+    }
+
+    fn distances_from(&self, start: crate::canonical_safewir::BlockId) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, CanonicalAdmissionError> {
+        let mut distances = BTreeMap::new();
+        let mut pending = VecDeque::from([(start, 0)]);
+        while let Some((id, distance)) = pending.pop_front() {
+            if distances.contains_key(&id) {
+                continue;
+            }
+            self.block(id)?;
+            distances.insert(id, distance);
+            pending.extend(self.successors(id)?.into_iter().map(|successor| (successor, distance + 1)));
+        }
+        Ok(distances)
+    }
+
+    fn reaches(&self, start: crate::canonical_safewir::BlockId, goal: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        Ok(self.distances_from(start)?.contains_key(&goal))
+    }
+
+    fn is_terminal(&self, id: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        Ok(matches!(
+            self.block(id)?.terminator,
+            Terminator::Return { .. }
+                | Terminator::TailCall { .. }
+                | Terminator::VarTailCall { .. }
+                | Terminator::Trap
+                | Terminator::Unreachable
+        ))
+    }
+
+    fn all_paths_reach_or_terminate(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        merge: crate::canonical_safewir::BlockId,
+        active: &mut BTreeSet<crate::canonical_safewir::BlockId>,
+    ) -> Result<bool, CanonicalAdmissionError> {
+        if start == merge || self.is_terminal(start)? {
+            return Ok(true);
+        }
+        if !active.insert(start) {
+            return Ok(false);
+        }
+        let result = if self.is_loop_header(start)? {
+            let Terminator::BranchIf { then_target, else_target, .. } = &self.block(start)?.terminator else {
+                unreachable!("is_loop_header checked the terminator");
+            };
+            self.all_paths_reach_or_terminate(*then_target, start, &mut BTreeSet::new())?
+                && self.all_paths_reach_or_terminate(*else_target, merge, active)?
+        } else {
+            let mut result = true;
+            for successor in self.successors(start)? {
+                if !self.all_paths_reach_or_terminate(successor, merge, active)? {
+                    result = false;
+                    break;
+                }
+            }
+            result
+        };
+        active.remove(&start);
+        Ok(result)
+    }
+
+    fn is_loop_header(&self, id: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        let Terminator::BranchIf { then_target, else_target, .. } = &self.block(id)?.terminator else {
+            return Ok(false);
+        };
+        if *then_target == id || *else_target == id || then_target == else_target {
+            return Ok(false);
+        }
+        Ok(self.reaches(*then_target, id)? && !self.reaches(*else_target, id)?)
+    }
+
+    fn find_join(
+        &self,
+        current: crate::canonical_safewir::BlockId,
+        then_target: crate::canonical_safewir::BlockId,
+        else_target: crate::canonical_safewir::BlockId,
+    ) -> Result<crate::canonical_safewir::BlockId, CanonicalAdmissionError> {
+        if then_target == else_target {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        let then_distances = self.distances_from(then_target)?;
+        let else_distances = self.distances_from(else_target)?;
+        let mut best = None;
+        for candidate in then_distances.keys().copied() {
+            if candidate == current || candidate == then_target || candidate == else_target {
+                continue;
+            }
+            let Some(else_distance) = else_distances.get(&candidate) else {
+                continue;
+            };
+            if !self.all_paths_reach_or_terminate(then_target, candidate, &mut BTreeSet::new())?
+                || !self.all_paths_reach_or_terminate(else_target, candidate, &mut BTreeSet::new())?
+            {
+                continue;
+            }
+            let score = (then_distances[&candidate] + else_distance, candidate);
+            if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
+                best = Some(score);
+            }
+        }
+        best.map(|(_, block)| block).ok_or(CanonicalAdmissionError::UnsupportedPlan)
+    }
+
+    fn label_depth(&self, index: usize) -> u32 {
+        (self.labels.len() - 1 - index) as u32
+    }
+
+    fn push_branch_arguments(&mut self, target: crate::canonical_safewir::BlockId, arguments: &[ValueId]) -> Result<(), CanonicalAdmissionError> {
+        let parameters = self.block(target)?.parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        if parameters.len() != arguments.len() {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        for argument in arguments {
+            push_get(&mut self.plan, self.layout, *argument)?;
+        }
+        for parameter in parameters.into_iter().rev() {
+            push_set(&mut self.plan, self.layout, parameter)?;
+        }
+        Ok(())
+    }
+
+    fn push_terminator(&mut self, terminator: &Terminator) -> Result<(), CanonicalAdmissionError> {
+        match terminator {
+            Terminator::Return { values } => {
+                for value in values {
+                    push_get(&mut self.plan, self.layout, *value)?;
+                }
+                self.plan.push(PlanToken::Return);
+            }
+            Terminator::TailCall { callee, arguments, .. } => {
+                for argument in arguments {
+                    push_get(&mut self.plan, self.layout, plan_call_argument(argument)?)?;
+                }
+                self.plan.push(PlanToken::ReturnCall(self.function_indices.get(callee).copied().ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
+            }
+            Terminator::Trap | Terminator::Unreachable => self.plan.push(PlanToken::Unreachable),
+            Terminator::Branch { .. } | Terminator::BranchIf { .. } | Terminator::VarTailCall { .. } => {
+                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_path(&mut self, start: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
+        if stop == Some(start) {
+            return Ok(());
+        }
+        if self.is_loop_header(start)? {
+            return self.emit_loop(start, stop);
+        }
+        if !self.emitted.insert(start) {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        let block = self.block(start)?.clone();
+        self.plan.extend(expected_block_operations_plan(
+            self.source_function,
+            self.signature,
+            &block,
+            self.layouts,
+            self.function_indices,
+            self.static_data_offsets,
+        )?);
+        match block.terminator {
+            Terminator::Branch { target, arguments } => {
+                self.push_branch_arguments(target, &arguments)?;
+                if let Some((_, label_index)) = self.loops.iter().rev().find(|(header, _)| *header == target) {
+                    self.plan.push(PlanToken::Br(self.label_depth(*label_index)));
+                    return Ok(());
+                }
+                if stop == Some(target) {
+                    return Ok(());
+                }
+                self.emit_path(target, stop)?;
+            }
+            Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
+                self.emit_if(start, condition, then_target, &then_arguments, else_target, &else_arguments, stop)?;
+            }
+            terminator => self.push_terminator(&terminator)?,
+        }
+        Ok(())
+    }
+
+    fn emit_if(
+        &mut self,
+        current: crate::canonical_safewir::BlockId,
+        condition: ValueId,
+        then_target: crate::canonical_safewir::BlockId,
+        then_arguments: &[ValueId],
+        else_target: crate::canonical_safewir::BlockId,
+        else_arguments: &[ValueId],
+        stop: Option<crate::canonical_safewir::BlockId>,
+    ) -> Result<(), CanonicalAdmissionError> {
+        if self.is_loop_header(current)? {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        let join = self.find_join(current, then_target, else_target)?;
+        push_get(&mut self.plan, self.layout, condition)?;
+        self.plan.push(PlanToken::If("Empty".to_owned()));
+        self.labels.push(StructuredLabel::If);
+        self.push_branch_arguments(then_target, then_arguments)?;
+        self.emit_path(then_target, Some(join))?;
+        self.plan.push(PlanToken::Else);
+        self.push_branch_arguments(else_target, else_arguments)?;
+        self.emit_path(else_target, Some(join))?;
+        self.plan.push(PlanToken::End);
+        self.labels.pop();
+        self.emit_path(join, stop)
+    }
+
+    fn emit_loop(&mut self, header: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
+        if !self.emitted.insert(header) {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        let block = self.block(header)?.clone();
+        let Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } = &block.terminator else {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        };
+        if !self.is_loop_header(header)? {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        self.plan.push(PlanToken::Block("Empty".to_owned()));
+        let block_label = self.labels.len();
+        self.labels.push(StructuredLabel::Block);
+        self.plan.push(PlanToken::Loop("Empty".to_owned()));
+        let loop_label = self.labels.len();
+        self.labels.push(StructuredLabel::Loop);
+        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.static_data_offsets)?);
+        push_get(&mut self.plan, self.layout, *condition)?;
+        self.plan.push(PlanToken::If("Empty".to_owned()));
+        self.labels.push(StructuredLabel::If);
+        self.loops.push((header, loop_label));
+        self.push_branch_arguments(*then_target, then_arguments)?;
+        self.emit_path(*then_target, Some(header))?;
+        self.loops.pop();
+        self.plan.push(PlanToken::Else);
+        self.push_branch_arguments(*else_target, else_arguments)?;
+        self.plan.push(PlanToken::Br(self.label_depth(block_label)));
+        self.plan.push(PlanToken::End);
+        self.labels.pop();
+        self.plan.push(PlanToken::End);
+        self.labels.pop();
+        self.plan.push(PlanToken::End);
+        self.labels.pop();
+        self.emit_path(*else_target, stop)
+    }
+}
+
+fn expected_function_plan(
+    function: &Function,
+    signature: &FunctionSignature,
+    layouts: &LayoutInterner,
+    function_indices: &BTreeMap<FunctionId, u32>,
+    static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
+) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
+    let layout = local_layout(function, signature).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let mut emitter = PlanEmitter {
+        source_function: function,
+        signature,
+        layout: &layout,
+        layouts,
+        function_indices,
+        static_data_offsets,
+        plan: Vec::new(),
+        emitted: BTreeSet::new(),
+        labels: Vec::new(),
+        loops: Vec::new(),
+    };
+    emitter.emit_path(function.entry, None)?;
+    if emitter.emitted.len() != function.blocks.len() {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    emitter.plan.push(PlanToken::End);
+    Ok(emitter.plan)
 }
 
 fn expected_metadata_prefix(
@@ -3115,7 +3541,8 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn encoded_structured_loop_executes_carried_arguments() {
-        let wasm = encode_validated(checked_loop()).expect("structured loop encodes");
+        let artifact = admit_canonical(checked_loop()).expect("structured loop artifact admits");
+        let wasm = artifact.wasm();
         wasmparser::validate(&wasm).expect("structured loop is valid Wasm");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
@@ -3124,6 +3551,32 @@ mod tests {
         let function = instance.get_typed_func::<i64, i64>(&mut store, "f7").unwrap();
         assert_eq!(function.call(&mut store, 0).unwrap(), 0);
         assert_eq!(function.call(&mut store, 5).unwrap(), 5);
+    }
+
+    #[test]
+    fn structured_loop_plan_rejects_control_opcode_mutation() {
+        let mut bytes = encode_validated(checked_loop()).expect("structured loop encodes");
+        let block = bytes
+            .windows(2)
+            .position(|window| window == [0x02, 0x40])
+            .expect("structured loop has an outer empty block");
+        bytes[block] = 0x03;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_loop(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch | CanonicalAdmissionError::WasmValidation)
+        ));
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn admitted_int_list_loop_executes_with_bounds_checks() {
+        let artifact = admit_canonical(checked_int_list_loop()).expect("validated List(Int) loop admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let function = instance.get_typed_func::<(), i64>(&mut store, "f37").unwrap();
+        assert_eq!(function.call(&mut store, ()).unwrap(), 42);
     }
 
     #[cfg(feature = "native")]
@@ -3848,6 +4301,131 @@ mod tests {
                     ],
                     terminator: Terminator::Return { values: vec![loaded] },
                 }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    fn checked_int_list_loop() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let layouts = LayoutBundle::from_interner(&interner, [list]).unwrap();
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let object = ValueId::new(3);
+        let index = ValueId::new(4);
+        let value = ValueId::new(5);
+        let initial_condition = ValueId::new(6);
+        let header_object = ValueId::new(7);
+        let header_index = ValueId::new(8);
+        let header_count = ValueId::new(9);
+        let condition = ValueId::new(10);
+        let one = ValueId::new(11);
+        let next_index = ValueId::new(12);
+        let loaded = ValueId::new(13);
+        let exit_object = ValueId::new(14);
+        let exit_index = ValueId::new(15);
+        let exit_count = ValueId::new(16);
+        let exit_condition = ValueId::new(17);
+        let values = [
+            (count, ValueType::Size),
+            (capacity, ValueType::Size),
+            (object, ValueType::Ref(list)),
+            (index, ValueType::Size),
+            (value, ValueType::Int),
+            (initial_condition, ValueType::Bool),
+            (header_object, ValueType::Ref(list)),
+            (header_index, ValueType::Size),
+            (header_count, ValueType::Size),
+            (condition, ValueType::Bool),
+            (one, ValueType::Size),
+            (next_index, ValueType::Size),
+            (loaded, ValueType::Int),
+            (exit_object, ValueType::Ref(list)),
+            (exit_index, ValueType::Size),
+            (exit_count, ValueType::Size),
+            (exit_condition, ValueType::Bool),
+        ];
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(37),
+            checked_source: CheckedSourceIdentity::from_digest([0x37; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(37), Vec::new(), vec![ValueType::Int])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(37),
+                signature: FunctionSignatureId::new(37),
+                entry: crate::canonical_safewir::BlockId::new(37),
+                value_types: values.into_iter().collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(37),
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::ConstSize { destination: count, value: 1 },
+                            Operation::ConstSize { destination: capacity, value: 1 },
+                            Operation::Alloc {
+                                destination: object,
+                                layout: list,
+                                extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 8 },
+                                class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                            },
+                            Operation::ConstSize { destination: index, value: 0 },
+                            Operation::Compare { destination: initial_condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
+                            Operation::Guard { condition: initial_condition, kind: GuardKind::Bounds },
+                            Operation::ConstInt { destination: value, value: 42 },
+                            Operation::Store { place: Place::projected(object, Projection::Element { index }, ValueType::Int, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
+                        ],
+                        terminator: Terminator::Branch {
+                            target: crate::canonical_safewir::BlockId::new(38),
+                            arguments: vec![object, index, count],
+                        },
+                    },
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(38),
+                        parameters: vec![
+                            BlockParameter { value: header_object, value_type: ValueType::Ref(list), ownership: None },
+                            BlockParameter { value: header_index, value_type: ValueType::Size, ownership: None },
+                            BlockParameter { value: header_count, value_type: ValueType::Size, ownership: None },
+                        ],
+                        operations: vec![Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: header_index, right: header_count }],
+                        terminator: Terminator::BranchIf {
+                            condition,
+                            then_target: crate::canonical_safewir::BlockId::new(39),
+                            then_arguments: Vec::new(),
+                            else_target: crate::canonical_safewir::BlockId::new(40),
+                            else_arguments: vec![header_object, header_index, header_count],
+                        },
+                    },
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(39),
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::ConstSize { destination: one, value: 1 },
+                            Operation::Arithmetic { destination: next_index, operator: ArithmeticOperator::Add, left: header_index, right: one, overflow: crate::canonical_safewir::OverflowBehavior::Wrap },
+                        ],
+                        terminator: Terminator::Branch {
+                            target: crate::canonical_safewir::BlockId::new(38),
+                            arguments: vec![header_object, next_index, header_count],
+                        },
+                    },
+                    BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(40),
+                        parameters: vec![
+                            BlockParameter { value: exit_object, value_type: ValueType::Ref(list), ownership: None },
+                            BlockParameter { value: exit_index, value_type: ValueType::Size, ownership: None },
+                            BlockParameter { value: exit_count, value_type: ValueType::Size, ownership: None },
+                        ],
+                        operations: vec![
+                            Operation::Compare { destination: exit_condition, operator: ComparisonOperator::LessUnsigned, left: index, right: exit_count },
+                            Operation::Guard { condition: exit_condition, kind: GuardKind::Bounds },
+                            Operation::Load { destination: loaded, place: Place::projected(exit_object, Projection::Element { index }, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                            Operation::Reclaim { object: exit_object },
+                        ],
+                        terminator: Terminator::Return { values: vec![loaded] },
+                    },
+                ],
             }],
             proper_tail_sites: Vec::new(),
         }))
