@@ -8,9 +8,29 @@ use super::{
     ProperTailSite, TailSiteId, Terminator, ValueId, ValueType,
 };
 
+mod memory;
+use memory::MemoryChecker;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitialCheckError {
     InvalidLayoutBundle(String),
+    UnknownLayout(crate::layout::LayoutId),
+    InvalidExtent { function: FunctionId, object: ValueId },
+    InvalidProjection { function: FunctionId, object: ValueId },
+    MissingBoundsGuard {
+        function: FunctionId,
+        index: ValueId,
+        count: ValueId,
+    },
+    MissingCapacityGuard {
+        function: FunctionId,
+        count: ValueId,
+        capacity: ValueId,
+    },
+    InvalidOwnership { function: FunctionId, object: ValueId },
+    InvalidAllocationClass { function: FunctionId, object: ValueId },
+    UseAfterConsume { function: FunctionId, object: ValueId },
+    UnsupportedMemoryControlFlow { function: FunctionId },
     DuplicateSignature(FunctionSignatureId),
     DuplicateFunction(FunctionId),
     DuplicateBlock { function: FunctionId, block: BlockId },
@@ -64,8 +84,9 @@ impl Error for InitialCheckError {}
 pub fn check_initial(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
-        .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
+    let (_, layouts) =
+        crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
+            .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
     let signatures = index_signatures(candidate.signatures())?;
     let functions = index_functions(candidate.functions())?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
@@ -78,6 +99,7 @@ pub fn check_initial(
             &functions,
             &tail_obligations,
             &mut observed_tail_sites,
+            &layouts,
         )?;
     }
 
@@ -156,6 +178,7 @@ fn check_function(
     functions: &BTreeMap<FunctionId, &Function>,
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
+    layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), InitialCheckError> {
     let signature = signatures
         .get(&function.signature)
@@ -176,6 +199,7 @@ fn check_function(
     let predecessors = predecessor_map(function, &blocks)?;
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
+    let mut memory = MemoryChecker::new(function, layouts)?;
 
     for block in &function.blocks {
         for (operation_index, operation) in block.operations.iter().enumerate() {
@@ -187,7 +211,7 @@ fn check_function(
                 &definition_sites,
                 &dominators,
             )?;
-            check_operation(function, operation, signatures, functions)?;
+            check_operation(function, operation, signatures, functions, &mut memory)?;
         }
         check_uses_dominate(
             function,
@@ -578,7 +602,11 @@ fn check_operation(
     operation: &Operation,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     functions: &BTreeMap<FunctionId, &Function>,
+    memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
+    if memory.check(operation)? {
+        return Ok(());
+    }
     match operation {
         Operation::ConstInt { destination, .. } => {
             require_type(function, *destination, ValueType::Int)
@@ -877,12 +905,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::super::{
-        BasicBlock, BlockId, CallableContract, CanonicalModule, CheckedSourceIdentity, Function,
-        FunctionId, FunctionSignature, FunctionSignatureId, LoweredModuleParts, Operation,
-        ProperTailSite, ResultContract, Revision, TailSiteId, Terminator, ValueId, ValueType,
+        AccessMode, AllocationClass, BasicBlock, BlockId, CallableContract, CanonicalModule,
+        CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
+        FunctionSignatureId, GuardKind, LoadTransfer, LoweredModuleParts, Operation, Place,
+        Projection, ProperTailSite, ResultContract, Revision, TailSiteId, Terminator, ValueId,
+        ValueType,
     };
     use super::{InitialCheckError, check_initial};
-    use crate::layout::{LayoutBundle, LayoutInterner};
+    use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, ScalarKind};
 
     const FUNCTION: FunctionId = FunctionId::new(0);
     const SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(0);
@@ -901,6 +931,19 @@ mod tests {
     fn empty_layouts() -> LayoutBundle {
         LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("an empty canonical layout bundle is valid")
+    }
+
+    fn dynamic_u32_layout() -> (LayoutBundle, LayoutId) {
+        let mut layouts = LayoutInterner::new();
+        let element = layouts
+            .intern_scalar(ScalarKind::U32)
+            .expect("u32 layout is valid");
+        let list = layouts
+            .intern_runtime_buffer(element)
+            .expect("u32 runtime buffer layout is valid");
+        let bundle = LayoutBundle::from_interner(&layouts, [list])
+            .expect("runtime buffer layout bundle is valid");
+        (bundle, list)
     }
 
     fn lowered(
@@ -1000,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_memory_judgment_fails_closed() {
+    fn reclaim_without_unique_object_authority_fails_closed() {
         let module = lowered(
             [(VALUE, ValueType::Int)].into_iter().collect(),
             vec![
@@ -1017,9 +1060,9 @@ mod tests {
 
         assert_eq!(
             check_initial(module).unwrap_err(),
-            InitialCheckError::UnsupportedMemoryOperation {
+            InitialCheckError::InvalidOwnership {
                 function: FUNCTION,
-                operation: "Reclaim",
+                object: VALUE,
             }
         );
     }
@@ -1159,6 +1202,118 @@ mod tests {
                 function: FUNCTION,
                 value: VALUE,
                 block: join_block,
+            }
+        );
+    }
+
+    fn dynamic_load_module(with_guard: bool) -> CanonicalModule<super::super::LoweredCandidate> {
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let index = ValueId::new(2);
+        let condition = ValueId::new(3);
+        let object = ValueId::new(4);
+        let loaded = ValueId::new(5);
+        let (layouts, layout) = dynamic_u32_layout();
+        let mut operations = vec![
+            Operation::ConstSize {
+                destination: count,
+                value: 1,
+            },
+            Operation::ConstSize {
+                destination: capacity,
+                value: 1,
+            },
+            Operation::ConstSize {
+                destination: index,
+                value: 0,
+            },
+            Operation::Compare {
+                destination: condition,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: count,
+            },
+        ];
+        if with_guard {
+            operations.push(Operation::Guard {
+                condition,
+                kind: GuardKind::Bounds,
+            });
+        }
+        operations.extend([
+            Operation::Alloc {
+                destination: object,
+                layout,
+                extent: Extent::Counted {
+                    header_bytes: 4,
+                    count,
+                    capacity,
+                    stride_bytes: 4,
+                },
+                class: AllocationClass::ReferenceCounted,
+            },
+            Operation::Load {
+                destination: loaded,
+                place: Place::projected(
+                    object,
+                    Projection::Element { index },
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            },
+            Operation::Reclaim { object },
+        ]);
+
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (index, ValueType::Size),
+                    (condition, ValueType::Bool),
+                    (object, ValueType::Ref(layout)),
+                    (loaded, ValueType::Size),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn guarded_dynamic_element_load_is_admitted() {
+        assert!(check_initial(dynamic_load_module(true)).is_ok());
+    }
+
+    #[test]
+    fn dynamic_element_load_without_guard_is_refused() {
+        assert_eq!(
+            check_initial(dynamic_load_module(false)).unwrap_err(),
+            InitialCheckError::MissingBoundsGuard {
+                function: FUNCTION,
+                index: ValueId::new(2),
+                count: ValueId::new(0),
             }
         );
     }
