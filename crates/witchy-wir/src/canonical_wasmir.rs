@@ -57,7 +57,6 @@ enum ScalarInstruction {
         left: ValueId,
         right: ValueId,
     },
-    NarrowSize { destination: ValueId, value: ValueId },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
     MoveValue { destination: ValueId, source: ValueId },
     Call { destinations: Vec<ValueId>, callee: FunctionId, arguments: Vec<ValueId> },
@@ -225,7 +224,9 @@ fn lower_operation(
             left: *left,
             right: *right,
         },
-        Operation::NarrowSize { destination, value } => ScalarInstruction::NarrowSize { destination: *destination, value: *value },
+        Operation::NarrowSize { .. } => {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "NarrowSize" });
+        }
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },
         Operation::MoveValue { destination, source } => ScalarInstruction::MoveValue { destination: *destination, source: *source },
         Operation::Call { destinations, callee, arguments } => ScalarInstruction::Call {
@@ -362,7 +363,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         | Operation::ConstSize { .. } => Some(CorrespondenceRule::ScalarConstant),
         Operation::Arithmetic { .. } => Some(CorrespondenceRule::ScalarArithmetic),
         Operation::Compare { .. } => Some(CorrespondenceRule::ScalarComparison),
-        Operation::NarrowSize { .. } => Some(CorrespondenceRule::ScalarConversion),
+        Operation::NarrowSize { .. } => None,
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
         Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
@@ -390,7 +391,6 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::ConstSize { destination, value }, ScalarInstruction::SizeConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
         (Operation::Arithmetic { destination, operator, left, right, overflow }, ScalarInstruction::Arithmetic { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right, overflow: actual_overflow }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right && overflow == actual_overflow,
         (Operation::Compare { destination, operator, left, right }, ScalarInstruction::Compare { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right,
-        (Operation::NarrowSize { destination, value }, ScalarInstruction::NarrowSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Call { destinations, callee, arguments }, ScalarInstruction::Call { destinations: actual_destinations, callee: actual_callee, arguments: actual_arguments }) => *callee == *actual_callee && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
@@ -562,7 +562,6 @@ fn wasm_value_type(
 
 struct LocalLayout {
     indices: BTreeMap<ValueId, u32>,
-    state: u32,
     extra_types: Vec<ValType>,
 }
 
@@ -587,7 +586,6 @@ fn local_layout(function: &Function) -> Result<LocalLayout, EncodeError> {
     }
     Ok(LocalLayout {
         indices,
-        state: entry.parameters.len() as u32 + extra_types.len() as u32,
         extra_types,
     })
 }
@@ -675,6 +673,7 @@ fn emit_compare(
     destination: ValueId,
     operator: ComparisonOperator,
     left: ValueId,
+    right: ValueId,
 ) -> Result<(), EncodeError> {
     let value_type = function
         .value_types
@@ -716,6 +715,8 @@ fn emit_compare(
         },
         _ => return Err(EncodeError::UnsupportedValueType { function: function.id, value: left, value_type }),
     };
+    emit_get(body, layout, function.id, left)?;
+    emit_get(body, layout, function.id, right)?;
     body.instruction(&instruction);
     emit_set(body, layout, function.id, destination)
 }
@@ -756,16 +757,15 @@ fn emit_instruction(
         ScalarInstruction::FloatConst { destination, bits } => { body.instruction(&wasm_encoder::Instruction::F64Const(Ieee64::new(*bits))); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::BoolConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I32Const(i32::from(*value))); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::SizeConst { destination, value } => {
-            let value = i32::try_from(*value).map_err(|_| EncodeError::UnsupportedValueType { function: function.id, value: *destination, value_type: crate::canonical_safewir::ValueType::Size })?;
-            body.instruction(&wasm_encoder::Instruction::I32Const(value));
+            let value = u32::try_from(*value).map_err(|_| EncodeError::UnsupportedValueType { function: function.id, value: *destination, value_type: crate::canonical_safewir::ValueType::Size })?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(value as i32));
             emit_set(body, layout, function.id, *destination)?;
         }
         ScalarInstruction::Arithmetic { destination, operator, left, right, overflow } => {
             if *overflow != crate::canonical_safewir::OverflowBehavior::Wrap { return Err(EncodeError::Lowering(LoweringError::UnsupportedOverflow { function: function.id })); }
             emit_arithmetic(body, function, layout, *destination, *operator, *left, *right)?;
         }
-        ScalarInstruction::Compare { destination, operator, left, right } => { emit_get(body, layout, function.id, *left)?; emit_get(body, layout, function.id, *right)?; emit_compare(body, function, layout, *destination, *operator, *left)?; }
-        ScalarInstruction::NarrowSize { destination, value } => { emit_get(body, layout, function.id, *value)?; body.instruction(&wasm_encoder::Instruction::I32WrapI64); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::Compare { destination, operator, left, right } => { emit_compare(body, function, layout, *destination, *operator, *left, *right)?; }
         ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
         ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::Call { destinations, callee, arguments } => {
@@ -779,57 +779,16 @@ fn emit_instruction(
     Ok(())
 }
 
-fn emit_branch_arguments(
-    body: &mut wasm_encoder::Function,
-    source_function: &Function,
-    layout: &LocalLayout,
-    target: crate::canonical_safewir::BlockId,
-    arguments: &[ValueId],
-) -> Result<(), EncodeError> {
-    let block = source_function.blocks.iter().find(|block| block.id == target).ok_or(EncodeError::MissingBlock { function: source_function.id, block: target })?;
-    if block.parameters.len() != arguments.len() { return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { function: source_function.id, operation: "branch arity" })); }
-    for (argument, parameter) in arguments.iter().zip(&block.parameters) {
-        emit_get(body, layout, source_function.id, *argument)?;
-        emit_set(body, layout, source_function.id, parameter.value)?;
-    }
-    Ok(())
-}
-
 fn emit_terminator(
     body: &mut wasm_encoder::Function,
     source_function: &Function,
-    target_function: &WasmFunction,
     layout: &LocalLayout,
-    block_index: usize,
     terminator: &ScalarTerminator,
     function_indices: &BTreeMap<FunctionId, u32>,
-    block_indices: &BTreeMap<crate::canonical_safewir::BlockId, usize>,
 ) -> Result<(), EncodeError> {
-    let loop_depth = block_index as u32;
     match terminator {
-        ScalarTerminator::Branch { target, arguments } => {
-            emit_branch_arguments(body, source_function, layout, *target, arguments)?;
-            let target_index = block_indices.get(target).copied().ok_or(EncodeError::MissingBlock { function: source_function.id, block: *target })?;
-            body.instruction(&wasm_encoder::Instruction::I32Const(target_index as i32));
-            body.instruction(&wasm_encoder::Instruction::LocalSet(layout.state));
-            body.instruction(&wasm_encoder::Instruction::Br(loop_depth));
-        }
-        ScalarTerminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
-            emit_get(body, layout, source_function.id, *condition)?;
-            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-            emit_branch_arguments(body, source_function, layout, *then_target, then_arguments)?;
-            let then_index = block_indices.get(then_target).copied().ok_or(EncodeError::MissingBlock { function: source_function.id, block: *then_target })?;
-            body.instruction(&wasm_encoder::Instruction::I32Const(then_index as i32));
-            body.instruction(&wasm_encoder::Instruction::LocalSet(layout.state));
-            body.instruction(&wasm_encoder::Instruction::Br(loop_depth + 1));
-            body.instruction(&wasm_encoder::Instruction::Else);
-            emit_branch_arguments(body, source_function, layout, *else_target, else_arguments)?;
-            let else_index = block_indices.get(else_target).copied().ok_or(EncodeError::MissingBlock { function: source_function.id, block: *else_target })?;
-            body.instruction(&wasm_encoder::Instruction::I32Const(else_index as i32));
-            body.instruction(&wasm_encoder::Instruction::LocalSet(layout.state));
-            body.instruction(&wasm_encoder::Instruction::Br(loop_depth + 1));
-            body.instruction(&wasm_encoder::Instruction::End);
-        }
+        ScalarTerminator::Branch { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { function: source_function.id, operation: "Branch" })),
+        ScalarTerminator::BranchIf { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { function: source_function.id, operation: "BranchIf" })),
         ScalarTerminator::Return { values } => {
             for value in values { emit_get(body, layout, source_function.id, *value)?; }
             body.instruction(&wasm_encoder::Instruction::Return);
@@ -842,7 +801,6 @@ fn emit_terminator(
         ScalarTerminator::VarTailCall { .. } => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: source_function.id, operation: "VarTailCall" })),
         ScalarTerminator::Trap | ScalarTerminator::Unreachable => { body.instruction(&wasm_encoder::Instruction::Unreachable); }
     }
-    let _ = target_function;
     Ok(())
 }
 
@@ -858,10 +816,8 @@ fn encode_function(
         }));
     }
     let layout = local_layout(source_function)?;
-    let mut local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
-    local_declarations.push((1, ValType::I32));
+    let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
-    let block_indices: BTreeMap<_, _> = target_function.blocks.iter().enumerate().map(|(index, block)| (block.id, index)).collect();
     let target_block = &target_function.blocks[0];
     if matches!(target_block.terminator.operation, ScalarTerminator::Branch { .. } | ScalarTerminator::BranchIf { .. }) {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
@@ -870,7 +826,7 @@ fn encode_function(
         }));
     }
     for instruction in &target_block.instructions { emit_instruction(&mut body, source_function, &layout, &instruction.operation, function_indices)?; }
-    emit_terminator(&mut body, source_function, target_function, &layout, 0, &target_block.terminator.operation, function_indices, &block_indices)?;
+    emit_terminator(&mut body, source_function, &layout, &target_block.terminator.operation, function_indices)?;
     body.instruction(&wasm_encoder::Instruction::End);
     Ok(body)
 }
@@ -1051,6 +1007,171 @@ mod tests {
         let wasm = encode_validated(checked_direct_call(true)).expect("validated proper tail call encodes");
         wasmparser::validate(&wasm).expect("tail-call module is structurally valid");
         assert!(wasm.windows(2).any(|window| window == [0x12, 0x01]));
+    }
+
+    fn checked_comparison() -> ValidatedSafeWir {
+        let left = ValueId::new(1);
+        let right = ValueId::new(2);
+        let result = ValueId::new(3);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(3),
+            parameters: Vec::new(),
+            results: vec![crate::canonical_safewir::ValueType::Bool],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Bool)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(9),
+            checked_source: CheckedSourceIdentity::from_digest([6; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(3),
+                signature: FunctionSignatureId::new(3),
+                entry: crate::canonical_safewir::BlockId::new(3),
+                value_types: [
+                    (left, crate::canonical_safewir::ValueType::Int),
+                    (right, crate::canonical_safewir::ValueType::Int),
+                    (result, crate::canonical_safewir::ValueType::Bool),
+                ].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(3),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstInt { destination: left, value: 4 },
+                        Operation::ConstInt { destination: right, value: 9 },
+                        Operation::Compare { destination: result, operator: ComparisonOperator::LessSigned, left, right },
+                    ],
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let checked = check_initial_with_witness(candidate).unwrap();
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).unwrap();
+        validate_final(&initial_snapshot, witness, optimized).unwrap()
+    }
+
+    #[test]
+    fn comparison_encodes_and_validates() {
+        let wasm = encode_validated(checked_comparison()).expect("validated comparison encodes");
+        wasmparser::validate(&wasm).expect("comparison module is structurally valid");
+    }
+
+    fn checked_size_operation(operation: Operation, input: ValueId, result: ValueId) -> ValidatedSafeWir {
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(4),
+            parameters: Vec::new(),
+            results: vec![crate::canonical_safewir::ValueType::Size],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Size)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(10),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(4),
+                signature: FunctionSignatureId::new(4),
+                entry: crate::canonical_safewir::BlockId::new(4),
+                value_types: [(input, crate::canonical_safewir::ValueType::Int), (result, crate::canonical_safewir::ValueType::Size)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(4),
+                    parameters: Vec::new(),
+                    operations: vec![Operation::ConstInt { destination: input, value: -1 }, operation],
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let checked = check_initial_with_witness(candidate).unwrap();
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).unwrap();
+        validate_final(&initial_snapshot, witness, optimized).unwrap()
+    }
+
+    #[test]
+    fn narrow_size_fails_closed_in_the_scalar_backend() {
+        let input = ValueId::new(1);
+        let result = ValueId::new(2);
+        let validated = checked_size_operation(Operation::NarrowSize { destination: result, value: input }, input, result);
+        assert!(matches!(
+            encode_validated(validated),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { operation: "NarrowSize", .. }))
+        ));
+    }
+
+    fn checked_full_u32_size() -> ValidatedSafeWir {
+        let result = ValueId::new(1);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(5),
+            parameters: Vec::new(),
+            results: vec![crate::canonical_safewir::ValueType::Size],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Size)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(11),
+            checked_source: CheckedSourceIdentity::from_digest([8; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(5),
+                signature: FunctionSignatureId::new(5),
+                entry: crate::canonical_safewir::BlockId::new(5),
+                value_types: [(result, crate::canonical_safewir::ValueType::Size)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(5),
+                    parameters: Vec::new(),
+                    operations: vec![Operation::ConstSize { destination: result, value: u64::from(u32::MAX) }],
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let checked = check_initial_with_witness(candidate).unwrap();
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = optimize_unreachable_blocks(initial).unwrap();
+        validate_final(&initial_snapshot, witness, optimized).unwrap()
+    }
+
+    #[test]
+    fn full_u32_size_constant_encodes_and_validates() {
+        let wasm = encode_validated(checked_full_u32_size()).expect("full u32 size encodes");
+        wasmparser::validate(&wasm).expect("full u32 size module is structurally valid");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn encoded_comparison_and_full_u32_size_execute() {
+        let engine = wasmtime::Engine::default();
+        for (wasm, export, expected) in [
+            (encode_validated(checked_comparison()).unwrap(), "f3", 1),
+            (encode_validated(checked_full_u32_size()).unwrap(), "f5", -1),
+        ] {
+            let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+            let function = instance.get_typed_func::<(), i32>(&mut store, export).unwrap();
+            assert_eq!(function.call(&mut store, ()).unwrap(), expected);
+        }
     }
 
     #[cfg(feature = "native")]
