@@ -2189,6 +2189,10 @@ mod tests {
                 kind: GuardKind::Bounds,
             })
             .expect("bounds guard is accepted");
+        checker
+            .state
+            .guards
+            .insert((ComparisonOperator::LessUnsigned, START, CAPACITY));
         let LayoutSize::Dynamic { base, stride } = layouts.get(list).unwrap().size() else {
             panic!("pointer list must be dynamic");
         };
