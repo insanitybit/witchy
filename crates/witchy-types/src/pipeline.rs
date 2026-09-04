@@ -21,6 +21,7 @@ use witchy_syntax::type_resolve::ResolvedDeclarations;
 use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
+use crate::canonical_abi::{self, CanonicalCallableAbiManifest};
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 
 /// The executable callable inventory produced by the canonical checked
@@ -31,6 +32,7 @@ use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 struct CanonicalCallableWitness {
     signatures: BTreeMap<String, witchy_syntax::ast::Type>,
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
+    abi_manifest: CanonicalCallableAbiManifest,
 }
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -42,6 +44,7 @@ struct CanonicalCallableWitness {
 pub struct CheckedSourceWitness {
     source_bundle_digest: [u8; 32],
     proper_tail_manifest_digest: [u8; 32],
+    callable_abi_manifest_digest: [u8; 32],
 }
 
 impl CheckedSourceWitness {
@@ -51,6 +54,10 @@ impl CheckedSourceWitness {
 
     pub fn proper_tail_manifest_digest(&self) -> [u8; 32] {
         self.proper_tail_manifest_digest
+    }
+
+    pub fn callable_abi_manifest_digest(&self) -> [u8; 32] {
+        self.callable_abi_manifest_digest
     }
 }
 
@@ -104,6 +111,12 @@ impl CanonicalCheckedSource {
         name: &str,
     ) -> Option<&crate::traits::LogicalSpecializationIdentity> {
         self.callable_witness.generic_instances.get(name)
+    }
+
+    /// Borrow the source-derived structural callable ABI manifest.
+    #[doc(hidden)]
+    pub fn callable_abi_manifest(&self) -> &CanonicalCallableAbiManifest {
+        &self.callable_witness.abi_manifest
     }
 }
 
@@ -528,6 +541,7 @@ fn attach_canonical_source(
         source_witness: CheckedSourceWitness {
             source_bundle_digest,
             proper_tail_manifest_digest: proper_tail_manifest.digest(),
+            callable_abi_manifest_digest: callable_witness.abi_manifest.digest(),
         },
         proper_tail_manifest,
         callable_witness,
@@ -554,6 +568,9 @@ fn bind_canonical_callable_witness(
     typed: &typeck::TypedModule,
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
 ) -> Result<CanonicalCallableWitness, PipelineError> {
+    let abi_manifest = canonical_abi::derive_manifest(typed).map_err(|error| {
+        PipelineError::Type(TypeError { message: error.to_string() })
+    })?;
     let functions = typed
         .module()
         .items
@@ -581,6 +598,7 @@ fn bind_canonical_callable_witness(
     Ok(CanonicalCallableWitness {
         signatures,
         generic_instances,
+        abi_manifest,
     })
 }
 
@@ -851,6 +869,25 @@ mod tests {
         let error = bind_canonical_callable_witness(&typed, instances)
             .expect_err("a specialization without a checked body must refuse");
         assert!(error.to_string().contains("forged_generic_instance"));
+    }
+
+    #[test]
+    fn canonical_source_witness_binds_callable_abi_manifest_digest() {
+        let checked = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn apply(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    apply(1)\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("source checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        assert_ne!(canonical.callable_abi_manifest().digest(), [0; 32]);
+        assert_eq!(
+            canonical.source_witness().callable_abi_manifest_digest(),
+            canonical.callable_abi_manifest().digest()
+        );
     }
 
     #[test]
