@@ -290,6 +290,29 @@ fn static_data_extent_matches(
             super::Extent::Counted { header_bytes, count, capacity, stride_bytes },
             crate::layout::LayoutSize::Dynamic { base, stride },
         ) => {
+            if matches!(
+                layouts.get(layout).map(|descriptor| descriptor.kind()),
+                Some(crate::layout::LayoutKind::RuntimeBuffer { element })
+                    if layouts.get(*element).is_some_and(|element| {
+                        element.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::RawByte)
+                    })
+            ) {
+                let Some(count) = constants.get(count) else { return false; };
+                let Some(capacity) = constants.get(capacity) else { return false; };
+                let Some(total) = usize::try_from(base)
+                    .ok()
+                    .and_then(|base| usize::try_from(*count).ok().and_then(|count| base.checked_add(count)))
+                else {
+                    return false;
+                };
+                return *header_bytes == base
+                    && *stride_bytes == stride
+                    && stride == 1
+                    && *count == *capacity
+                    && *count <= u64::from(u32::MAX)
+                    && bytes.len() == total
+                    && bytes.get(..4).is_some_and(|header| header == (*count as u32).to_le_bytes().as_slice());
+            }
             let crate::layout::HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, .. } = descriptor.header() else {
                 return false;
             };

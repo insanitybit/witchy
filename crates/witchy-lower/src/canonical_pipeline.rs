@@ -399,4 +399,54 @@ mod tests {
             &witchy_wir::layout::LayoutKind::Scalar(witchy_wir::layout::ScalarKind::RawByte)
         );
     }
+
+    #[test]
+    fn checked_utf8_string_literal_reaches_admitted_static_data_pointer() {
+        let source = "fn text() -> String:\n    \"h\u{00e9}llo\"\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("text".to_string(), source.as_bytes().to_vec())],
+            "text",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked UTF-8 String source");
+
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("derive String layout");
+        let candidate = lower_typed_module(canonical, layouts)
+            .expect("lower canonical UTF-8 String literal");
+        let segments = candidate.static_data_segments();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].id(), witchy_wir::canonical_safewir::StaticDataId::new(0));
+        assert_eq!(segments[0].bytes(), &[6, 0, 0, 0, b'h', 0xc3, 0xa9, b'l', b'l', b'o']);
+
+        let artifact = admit_checked_module(&checked).expect("admit UTF-8 String literal");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted UTF-8 String literal");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted UTF-8 String literal");
+        let main = instance
+            .get_typed_func::<(), i32>(&mut store, "f0")
+            .expect("String result export");
+        assert_eq!(main.call(&mut store, ()).expect("run String literal"), 16);
+    }
+
+    #[test]
+    fn repeated_string_literals_share_one_deterministic_static_segment() {
+        let source = "fn main() -> Int:\n    let first = \"same\"\n    let second = \"same\"\n    1\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked repeated String source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let layouts = derive_layout_bundle(canonical).expect("derive String layout");
+        let candidate = lower_typed_module(canonical, layouts)
+            .expect("lower repeated String literals");
+        assert_eq!(candidate.static_data_segments().len(), 1);
+        assert_eq!(candidate.static_data_segments()[0].id(), witchy_wir::canonical_safewir::StaticDataId::new(0));
+        assert_eq!(candidate.static_data_segments()[0].bytes(), &[4, 0, 0, 0, b's', b'a', b'm', b'e']);
+    }
 }

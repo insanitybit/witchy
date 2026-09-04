@@ -4,7 +4,7 @@
 //! deliberately fail-closed; every unsupported source operation is reported
 //! before a `LoweredCandidate` can be returned.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 
@@ -75,6 +75,19 @@ pub fn lower_typed_module(
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
+    let string_payloads = collect_string_payloads(typed.module());
+    let string_data_ids = string_payloads
+        .iter()
+        .enumerate()
+        .map(|(index, bytes)| {
+            Ok((
+                bytes.clone(),
+                witchy_wir::canonical_safewir::StaticDataId::new(
+                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
     let mut signatures = Vec::new();
     let mut functions_by_name = HashMap::new();
     for item in &typed.module().items {
@@ -126,10 +139,30 @@ pub fn lower_typed_module(
             typed.table(),
             &layouts,
             &layout_catalog,
+            &string_data_ids,
         )?);
     }
 
-    Ok(CanonicalModule::from_lowering(LoweredModuleParts {
+    let static_data_segments = string_payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            let length = u32::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+            let mut bytes = Vec::with_capacity(4 + payload.len());
+            bytes.extend_from_slice(&length.to_le_bytes());
+            bytes.extend_from_slice(payload);
+            Ok(witchy_wir::canonical_safewir::StaticDataSegment::new(
+                witchy_wir::canonical_safewir::StaticDataId::new(
+                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+                bytes,
+            ))
+        })
+        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+
+    refine_reference_result_contracts(&mut signatures, &functions)?;
+
+    Ok(CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest(
             source.source_witness().source_bundle_digest(),
@@ -139,7 +172,7 @@ pub fn lower_typed_module(
         imports: Vec::new(),
         functions,
         proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module())?,
-    }))
+    }, static_data_segments))
 }
 
 fn checked_signature(
@@ -236,6 +269,7 @@ fn lower_function(
     type_table: &TypeTable,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
@@ -253,6 +287,7 @@ fn lower_function(
         type_table,
         layout_bundle,
         layouts,
+        string_data_ids,
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     let parameters = lowerer.blocks[entry.get() as usize].parameters.clone();
@@ -309,6 +344,7 @@ struct FunctionLowerer<'a> {
     type_table: &'a TypeTable,
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
+    string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
 }
 
 impl FunctionLowerer<'_> {
@@ -900,7 +936,7 @@ impl FunctionLowerer<'_> {
             | Expr::LabeledMethodCall { .. }
             | Expr::MethodCall { .. }
             | Expr::Apply { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
-            Expr::Str(_) => Err(CanonicalLoweringError::UnsupportedExpression("string")),
+            Expr::Str(value) => self.lower_string_literal(value),
             Expr::List(items) => self.lower_list_literal(expression, items),
             Expr::Tuple(_) => Err(CanonicalLoweringError::UnsupportedExpression("tuple")),
             Expr::Ctor { .. } | Expr::AnonCtor { .. } => {
@@ -1015,6 +1051,40 @@ impl FunctionLowerer<'_> {
                 transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
             });
         }
+        Ok(object)
+    }
+
+    fn lower_string_literal(&mut self, value: &str) -> Result<ValueId, CanonicalLoweringError> {
+        let source_type = Type::Named("String".into(), Vec::new());
+        let layout = string_layout(&source_type, self.layout_bundle, self.layouts)?;
+        let payload = value.as_bytes();
+        let data = self
+            .string_data_ids
+            .get(payload)
+            .copied()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("unregistered string payload"))?;
+        let count = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: count,
+            value: u64::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: capacity,
+            value: u64::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::StaticData {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes: 4,
+                count,
+                capacity,
+                stride_bytes: 1,
+            },
+            data,
+        });
         Ok(object)
     }
 
@@ -1406,8 +1476,137 @@ fn source_value_type(
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             list_int_layout(source, layout_bundle, layouts).map(|(layout, _, _)| ValueType::Ref(layout))
         }
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+            string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
+        }
         _ => scalar_type(source),
     }
+}
+
+fn string_layout(
+    source: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+    let mut candidates = Vec::new();
+    for root in layout_bundle.roots() {
+        let Some(descriptor) = layouts.get(*root) else { continue };
+        let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { continue };
+        let Some(element_descriptor) = layouts.get(*element) else { continue };
+        if !matches!(element_descriptor.kind(), LayoutKind::Scalar(ScalarKind::RawByte)) {
+            continue;
+        }
+        if descriptor.size() != (LayoutSize::Dynamic { base: 4, stride: 1 }) {
+            continue;
+        }
+        candidates.push(*root);
+    }
+    match candidates.as_slice() {
+        [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
+        [candidate] => Ok(*candidate),
+        _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
+    }
+}
+
+fn collect_string_payloads(module: &witchy_syntax::ast::Module) -> Vec<Vec<u8>> {
+    let mut payloads = BTreeSet::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(module, &function.name) { continue; }
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let Expr::Str(value) = expression {
+                payloads.insert(value.as_bytes().to_vec());
+            }
+            Ok::<(), ()>(())
+        }).expect("string payload visitor cannot fail");
+    }
+    payloads.into_iter().collect()
+}
+
+fn refine_reference_result_contracts(
+    signatures: &mut [FunctionSignature],
+    functions: &[Function],
+) -> Result<(), CanonicalLoweringError> {
+    for _ in 0..=functions.len() {
+        let mut changed = false;
+        for function in functions {
+            let result_types = signatures
+                .get(function.signature.get() as usize)
+                .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(format!("signature {}", function.signature.get())))?
+                .results
+                .clone();
+            let mut replacements = Vec::new();
+            for (index, value_type) in result_types.into_iter().enumerate() {
+                let ValueType::Ref(_) = value_type else { continue; };
+                let Some(contract) = derived_result_contract(function, index, signatures) else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("unresolved reference result provenance"));
+                };
+                if signatures
+                    .get(function.signature.get() as usize)
+                    .and_then(|signature| signature.contract.results.get(index))
+                    != Some(&contract)
+                {
+                    replacements.push((index, contract));
+                }
+            }
+            if !replacements.is_empty() {
+                let signature = signatures
+                    .get_mut(function.signature.get() as usize)
+                    .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(format!("signature {}", function.signature.get())))?;
+                for (index, contract) in replacements {
+                    signature.contract.results[index] = contract;
+                    changed = true;
+                }
+            }
+        }
+        if !changed { return Ok(()); }
+    }
+    Err(CanonicalLoweringError::UnsupportedExpression("reference result contract did not converge"))
+}
+
+fn derived_result_contract(
+    function: &Function,
+    result_index: usize,
+    signatures: &[FunctionSignature],
+) -> Option<ResultContract> {
+    let mut origins = BTreeMap::new();
+    for block in &function.blocks {
+        for operation in &block.operations {
+            match operation {
+                Operation::Alloc { destination, layout, .. } => {
+                    origins.insert(*destination, ResultContract::Fresh { layout: *layout });
+                }
+                Operation::StaticData { destination, layout, .. } => {
+                    origins.insert(*destination, ResultContract::StaticData { layout: *layout });
+                }
+                Operation::Share { destination, source } => {
+                    let (ResultContract::Fresh { layout }
+                    | ResultContract::StaticData { layout }
+                    | ResultContract::Shared { layout }) = origins.get(source).cloned()? else { continue; };
+                    origins.insert(*destination, ResultContract::Shared { layout });
+                }
+                Operation::MoveValue { destination, source } => {
+                    if let Some(contract) = origins.get(source).cloned() { origins.insert(*destination, contract); }
+                }
+                Operation::Call { destinations, callee, .. } => {
+                    let signature = signatures.get(callee.get() as usize)?;
+                    for (destination, contract) in destinations.iter().zip(&signature.contract.results) {
+                        origins.insert(*destination, contract.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Terminator::Return { values } = &block.terminator {
+            let value = values.get(result_index)?;
+            return origins.get(value).cloned();
+        }
+        if let Terminator::TailCall { callee, .. } = &block.terminator {
+            let signature = signatures.get(callee.get() as usize)?;
+            return signature.contract.results.get(result_index).cloned();
+        }
+    }
+    None
 }
 
 fn list_int_layout(
