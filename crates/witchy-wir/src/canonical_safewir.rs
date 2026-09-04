@@ -328,6 +328,10 @@ pub enum ResultContract {
     /// it is never valid for an import or a validated module.
     BodyDerived(ValueType),
     Value(ValueType),
+    /// A reference-valued result guaranteed by the checked callable ABI.
+    /// It grants liveness and read access only; allocation class, mutation,
+    /// release, and reclaim authority remain unknown.
+    CheckedValue { layout: LayoutId },
     Fresh {
         layout: LayoutId,
         class: AllocationClass,

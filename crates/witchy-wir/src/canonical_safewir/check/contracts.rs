@@ -766,6 +766,11 @@ fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffe
 fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
     match (declared, derived) {
         (ResultContract::Value(expected), DerivedResult::Value(actual)) => expected == actual,
+        (ResultContract::CheckedValue { layout: expected }, DerivedResult::Fresh { layout: actual, .. })
+        | (ResultContract::CheckedValue { layout: expected }, DerivedResult::StaticData(actual))
+        | (ResultContract::CheckedValue { layout: expected }, DerivedResult::Shared(actual)) => {
+            expected == actual
+        }
         (
             ResultContract::Fresh { layout: expected_layout, class: expected_class, extent: expected_extent },
             DerivedResult::Fresh { layout: actual_layout, class: actual_class, extent: actual_extent },

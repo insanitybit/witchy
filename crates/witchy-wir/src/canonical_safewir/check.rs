@@ -181,6 +181,21 @@ fn install_body_derived_result_contracts(
                             signature: signature.id,
                         });
                     }
+                    super::ResultContract::CheckedValue { layout } => {
+                        let compatible = match derived {
+                            super::ResultContract::Fresh { layout: actual, .. }
+                            | super::ResultContract::Shared { layout: actual }
+                            | super::ResultContract::StaticData { layout: actual } => {
+                                layout == actual
+                            }
+                            _ => false,
+                        };
+                        if !compatible {
+                            return Err(InitialCheckError::CallableContractMismatch {
+                                signature: signature.id,
+                            });
+                        }
+                    }
                     explicit if explicit != derived => {
                         return Err(InitialCheckError::CallableContractMismatch {
                             signature: signature.id,
@@ -1150,7 +1165,8 @@ fn check_call(
         let contract_type = match contract {
             super::ResultContract::BodyDerived(value_type) => *value_type,
             super::ResultContract::Value(value_type) => *value_type,
-            super::ResultContract::Fresh { layout, .. }
+            super::ResultContract::CheckedValue { layout }
+            | super::ResultContract::Fresh { layout, .. }
             | super::ResultContract::Shared { layout }
             | super::ResultContract::StaticData { layout }
             | super::ResultContract::AliasesParameter { layout, .. }

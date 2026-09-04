@@ -545,6 +545,20 @@ impl<'a> MemoryChecker<'a> {
         for (destination, result) in destinations.iter().zip(results) {
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
+                ResultContract::CheckedValue { layout } => {
+                    self.require_ref_type(*destination, *layout)?;
+                    let extent = self.parameter_extent(*layout)?;
+                    self.state.objects.insert(
+                        *destination,
+                        ObjectState {
+                            identity: *destination,
+                            layout: *layout,
+                            extent,
+                            ownership: Ownership::Shared,
+                            allocation_class: None,
+                        },
+                    );
+                }
                 ResultContract::Fresh { layout, class, .. } => {
                     self.require_ref_type(*destination, *layout)?;
                     let extent = self.parameter_extent(*layout)?;
@@ -602,6 +616,17 @@ impl<'a> MemoryChecker<'a> {
         for (value, result) in values.iter().zip(results) {
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
+                ResultContract::CheckedValue { layout } => {
+                    let state = self.live_object(*value)?;
+                    if state.layout != *layout
+                        || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                }
                 ResultContract::Fresh { layout, class, extent } => {
                     let state = self.live_object(*value)?;
                     if state.layout != *layout

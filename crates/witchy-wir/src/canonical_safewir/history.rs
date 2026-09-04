@@ -701,6 +701,10 @@ impl CanonicalWriter {
                 self.u8(0);
                 self.value_type(*value_type);
             }
+            ResultContract::CheckedValue { layout } => {
+                self.u8(7);
+                self.layout_id(*layout);
+            }
             ResultContract::Fresh { layout, class, extent } => {
                 self.u8(1);
                 self.layout_id(*layout);

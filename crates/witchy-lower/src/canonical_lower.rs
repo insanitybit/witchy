@@ -386,7 +386,7 @@ fn signature_from_type(
     let result = source_value_type(result, layout_bundle, layouts, function_types)?;
     let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
     let result_contracts = results.iter().copied().map(|result| match result {
-        ValueType::Ref(_) => ResultContract::BodyDerived(result),
+        ValueType::Ref(layout) => ResultContract::CheckedValue { layout },
         result => ResultContract::Value(result),
     }).collect();
     Ok(FunctionSignature {
