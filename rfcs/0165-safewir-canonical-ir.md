@@ -1116,8 +1116,13 @@ An analysis result may be materialized into the IR only as a `Guard` whose
 predicate the checker re-establishes; materialization grants nothing. V1 has no
 implicit or undefined `Assert` operation.
 
-The dead `inline_direct_calls` and `inline_recursive_calls` passes are
-deleted, not gated: they are latent-unsound and have no assurance record.
+The legacy `inline_direct_calls` and `inline_recursive_calls` passes were not
+dead: the former shipped in the default release optimization set and the latter
+ran unconditionally. Both duplicated effectful call arguments by substituting
+argument expressions at every parameter use. They are sealed from production
+and retained only under `cfg(test)` for regression coverage until RFC-0165
+deletes them or replaces them with assured SafeWIR passes. Neither may regain a
+production caller.
 
 ### Normal and opt performance contract
 
@@ -1463,8 +1468,9 @@ trace relation. Final output or trap class alone is never parity evidence.
    runs through the ordinary production CLI. Additions, removals, renames,
    profile changes, and exclusions require an explicit manifest delta.
    Raw-entrypoint unreachability is a gate.
-2. **Freeze.** No new adapter heuristics. No new name-keyed contracts. Delete
-   the two dead inliners. Close any i32 capability import.
+2. **Freeze.** No new adapter heuristics. No new name-keyed contracts. Seal the
+   two active, unassured legacy inliners from production and retain them only
+   for regression coverage until deletion. Close any i32 capability import.
 3. **Specify.** This RFC's kernel, types, and judgments become
    `crates/witchy-wir/src/safewir/` as Rust types with private constructors.
    Existing `ObjectIdentity`, `Extent`, `Provenance`, `Ownership`,
@@ -1564,7 +1570,7 @@ evidence exists on current `master` with a terminal `merged` event.
 | A9 | The adapter-free vertical bundle covers dynamic index success/trap, loop join, `VarCall` success/trap, authenticated capability success/refusal, derived calls, one checked pass, and exact admission | normal/opt/de-opt production probes plus a stage trace excluding adapter and WIR optimizers |
 | A10 | A committed sorted manifest classifies the full source universe, immutably marks the adapter-admitted freeze baseline and its v1-direct/materialized/v2-required status, declares each exercised input/environment domain, and compares complete observation traces pointwise without claiming universal equivalence | digest-bound replay domains and traces, bidirectional nondeterministic coupling, materialization probes, host buffer/state/effect ordering, stack/peak-memory/no-copy resource observations, and compatibility gate |
 | A11 | An independent checked-AST walk proves manifest completeness and uniqueness; initial and final checkers prove a bijection with proper-tail operations; every refinement receipt preserves the tail-set digest; no optimization runs on `WasmIr`; every enabled pass contributes to admission history | omitted/duplicate/aliased-ID/unknown/`Call; Return`/optimizer-erasure refusals, RFC-0090 300,000-transition probes on both backends, route manifest, chain/zero-pass refusals, and per-pass relational artifacts |
-| A12 | The dead inliners are deleted | structural syntax-tree gate over the optimizer source manifest |
+| A12 | The production-active legacy inliners remain sealed and are deleted once their regression corpus is transferred to assured SafeWIR replacements or explicit non-replacement evidence | structural syntax-tree gate over the optimizer source manifest plus exactly-once effectful-argument regressions |
 | A13 | Pipeline fuzzing compares generated programs and random valid pass sequences with replayable failures | nightly production-path artifact recording generator version, seeds, valid-pass coverage, and candidate IDs; bug-finding evidence only |
 | A14 | The adapter, raw structure projection, and every `WirModule` constructor outside the backend are deleted | structural syntax-tree/call-graph gate; `WirModule` renamed |
 | A15 | The canonical operation list, conditional safety properties, complete TCB, and SafeWIR-to-WasmIR correspondence are exhaustive; nothing in the final checker infers semantics from instruction shape | structural operation/RuleId/correspondence bijection plus adversarially reviewed specification and backend artifacts |
