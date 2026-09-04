@@ -41,7 +41,10 @@ pub(crate) fn validate_checked_module(
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?;
-    let checked = check_initial_with_witness(candidate)
+    let checked = check_initial_with_witness(
+        candidate,
+        source.source_witness().proper_tail_manifest_digest(),
+    )
         .map_err(CanonicalPipelineError::InitialValidation)?;
     let initial_snapshot = checked.module().clone();
     let (initial, lowering_witness) = checked.into_parts();

@@ -22,6 +22,8 @@ pub use authority::{
     CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, ValidatedSafeWir,
     check_initial_with_witness, validate_final,
 };
+#[cfg(test)]
+pub(crate) use authority::check_initial_with_test_witness;
 mod history;
 mod optimization;
 mod refinement;

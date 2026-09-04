@@ -11792,6 +11792,34 @@ impl ProperTailSiteManifest {
         *blake3::hash(&self.canonical_bytes()).as_bytes()
     }
 
+    /// Retain the obligations belonging to the canonical function scope that
+    /// the current SafeWIR lowering consumes. This filtering is performed
+    /// while the frontend still owns the checked typed module; lowering only
+    /// transports the resulting witness and cannot choose its expected digest.
+    pub fn for_canonical_functions(&self, module: &Module) -> Self {
+        let Some(entry) = module.linked_entry.as_deref() else {
+            return self.clone();
+        };
+        Self {
+            sites: self
+                .sites
+                .iter()
+                .filter(|site| {
+                    module
+                        .items
+                        .get(site.key.callable.item as usize)
+                        .is_some_and(|item| match item {
+                            Item::Function(function) => {
+                                function.name == entry || function.name.starts_with(&format!("{entry}."))
+                            }
+                            _ => false,
+                        })
+                })
+                .cloned()
+                .collect(),
+        }
+    }
+
     fn canonical_bytes(&self) -> Vec<u8> {
         let mut bytes = b"witchy.proper-tail-manifest.v1".to_vec();
         put_u32(
@@ -11799,8 +11827,8 @@ impl ProperTailSiteManifest {
             u32::try_from(self.sites.len()).expect("validated proper-tail manifest site count"),
         );
         for site in &self.sites {
-            encode_site_key(&site.key, &mut bytes);
             bytes.extend_from_slice(&site.id.0);
+            put_u32(&mut bytes, site.key.callable.item);
         }
         bytes
     }

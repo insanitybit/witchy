@@ -1921,7 +1921,7 @@ mod tests {
         FunctionSignatureId,
         GuardKind,
         LoweredCandidate, LoweredModuleParts, ParameterContract, ParameterOwnership, Revision,
-        ResultContract, check_initial_with_witness, optimize_unreachable_blocks, validate_final,
+        ResultContract, check_initial_with_test_witness, optimize_unreachable_blocks, validate_final,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
@@ -1958,7 +1958,7 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         });
-        let checked = check_initial_with_witness(candidate).expect("scalar fixture is initially valid");
+        let checked = check_initial_with_test_witness(candidate).expect("scalar fixture is initially valid");
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).expect("scalar fixture optimizes");
@@ -2009,7 +2009,7 @@ mod tests {
     }
 
     fn finalize(candidate: CanonicalModule<LoweredCandidate>) -> ValidatedSafeWir {
-        let checked = check_initial_with_witness(candidate).expect("fixture is initially valid");
+        let checked = check_initial_with_test_witness(candidate).expect("fixture is initially valid");
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).expect("fixture optimizes");
@@ -2309,7 +2309,7 @@ mod tests {
             ],
             proper_tail_sites: if tail { vec![crate::canonical_safewir::ProperTailSite { id: tail_site, function: FunctionId::new(1) }] } else { Vec::new() },
         });
-        let checked = check_initial_with_witness(candidate).expect("direct scalar call is initially valid");
+        let checked = check_initial_with_test_witness(candidate).expect("direct scalar call is initially valid");
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).expect("direct scalar call optimizes");
@@ -2372,7 +2372,7 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         });
-        let checked = check_initial_with_witness(candidate).unwrap();
+        let checked = check_initial_with_test_witness(candidate).unwrap();
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).unwrap();
@@ -2416,7 +2416,7 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         });
-        let checked = check_initial_with_witness(candidate).unwrap();
+        let checked = check_initial_with_test_witness(candidate).unwrap();
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).unwrap();
@@ -2466,7 +2466,7 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         });
-        let checked = check_initial_with_witness(candidate).unwrap();
+        let checked = check_initial_with_test_witness(candidate).unwrap();
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).unwrap();

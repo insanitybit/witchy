@@ -555,6 +555,8 @@ pub fn link_checked_from_source_bundle(
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
+    let proper_tail_manifest =
+        proper_tail_manifest.for_canonical_functions(typed_source.module());
     attach_canonical_source(checked, typed_source, source_bundle_digest, proper_tail_manifest)
 }
 

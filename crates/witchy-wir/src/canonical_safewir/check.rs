@@ -68,6 +68,11 @@ pub enum InitialCheckError {
     },
     ArityMismatch { context: &'static str, expected: usize, actual: usize },
     DuplicateTailObligation(TailSiteId),
+    TailManifestDigestMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+        actual_site_count: usize,
+    },
     MissingTailObligation(TailSiteId),
     UnexpectedTailSite(TailSiteId),
     TailSiteFunctionMismatch {

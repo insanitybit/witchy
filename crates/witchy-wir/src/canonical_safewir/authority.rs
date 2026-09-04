@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::history::{HistoryError, ModuleDigest, module_digest};
+use super::history::{HistoryError, ModuleDigest, module_digest, tail_digest};
 use super::{
     CanonicalModule, CheckedSourceIdentity, InitialCheckError, InitialValid, LoweredCandidate,
     OptimizationHistoryWitness, OptimizationOutcome, OptimizedValid, Revision,
@@ -14,6 +14,7 @@ pub struct CheckedLoweringWitness {
     checked_source: CheckedSourceIdentity,
     revision: Revision,
     module_digest: ModuleDigest,
+    proper_tail_manifest_digest: ModuleDigest,
 }
 
 /// The only result of initial validation that carries both the checked module
@@ -70,6 +71,7 @@ impl ValidatedSafeWir {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinalValidationError {
     InitialModuleDoesNotMatchWitness,
+    InitialTailManifestDoesNotMatchWitness,
     OptimizedSourceDoesNotMatchInitial,
     Safety(InitialCheckError),
     History(HistoryError),
@@ -85,12 +87,23 @@ impl std::error::Error for FinalValidationError {}
 
 pub fn check_initial_with_witness(
     candidate: CanonicalModule<LoweredCandidate>,
+    expected_proper_tail_manifest_digest: [u8; 32],
 ) -> Result<CheckedInitialSafeWir, InitialCheckError> {
+    let expected = ModuleDigest::from_bytes(expected_proper_tail_manifest_digest);
     let module = super::check::check_initial(candidate)?;
+    let actual = tail_digest(&module);
+    if actual != expected {
+        return Err(InitialCheckError::TailManifestDigestMismatch {
+            expected: expected.bytes(),
+            actual: actual.bytes(),
+            actual_site_count: module.proper_tail_sites().len(),
+        });
+    }
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
         revision: module.revision(),
         module_digest: module_digest(&module),
+        proper_tail_manifest_digest: expected,
     };
     Ok(CheckedInitialSafeWir { module, witness })
 }
@@ -108,6 +121,9 @@ pub fn validate_final(
     {
         return Err(FinalValidationError::InitialModuleDoesNotMatchWitness);
     }
+    if checked_lowering.proper_tail_manifest_digest != tail_digest(initial) {
+        return Err(FinalValidationError::InitialTailManifestDoesNotMatchWitness);
+    }
 
     let (module, optimization_history) = optimized.into_parts();
     if module.checked_source() != initial.checked_source() {
@@ -123,6 +139,14 @@ pub fn validate_final(
         checked_lowering,
         optimization_history,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn check_initial_with_test_witness(
+    candidate: CanonicalModule<LoweredCandidate>,
+) -> Result<CheckedInitialSafeWir, InitialCheckError> {
+    let expected = tail_digest(&candidate).bytes();
+    check_initial_with_witness(candidate, expected)
 }
 
 #[cfg(test)]
@@ -172,7 +196,7 @@ mod tests {
 
     #[test]
     fn final_authority_requires_the_exact_initial_witness_and_history() {
-        let checked = check_initial_with_witness(candidate()).unwrap();
+        let checked = check_initial_with_test_witness(candidate()).unwrap();
         let initial_snapshot = checked.module().clone();
         let (initial, witness) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).unwrap();
@@ -183,7 +207,7 @@ mod tests {
 
     #[test]
     fn witness_from_another_checked_module_is_rejected() {
-        let checked = check_initial_with_witness(candidate()).unwrap();
+        let checked = check_initial_with_test_witness(candidate()).unwrap();
         let initial_snapshot = checked.module().clone();
         let (initial, _) = checked.into_parts();
         let optimized = optimize_unreachable_blocks(initial).unwrap();
@@ -191,10 +215,34 @@ mod tests {
         let mut other = candidate();
         other.functions[0].blocks[0].operations[0] =
             Operation::ConstInt { destination: ValueId::new(0), value: 4 };
-        let (_, wrong_witness) = check_initial_with_witness(other).unwrap().into_parts();
+        let (_, wrong_witness) = check_initial_with_test_witness(other).unwrap().into_parts();
         assert!(matches!(
             validate_final(&initial_snapshot, wrong_witness, optimized),
             Err(FinalValidationError::InitialModuleDoesNotMatchWitness)
         ));
+    }
+
+    #[test]
+    fn initial_checker_rejects_an_independent_tail_manifest_mismatch() {
+        let candidate = candidate();
+        assert!(matches!(
+            check_initial_with_witness(candidate, [0xff; 32]),
+            Err(InitialCheckError::TailManifestDigestMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn tail_manifest_digest_is_bound_into_zero_pass_history() {
+        let candidate = candidate();
+        let expected = tail_digest(&candidate).bytes();
+        let checked = check_initial_with_witness(candidate, expected).unwrap();
+        let initial_snapshot = checked.module().clone();
+        let (initial, witness) = checked.into_parts();
+        let optimized = super::super::optimize_unreachable_blocks(initial).unwrap();
+        let final_module = validate_final(&initial_snapshot, witness, optimized).unwrap();
+        assert_eq!(
+            final_module.optimization_history().proper_tail_manifest_digest().bytes(),
+            expected
+        );
     }
 }

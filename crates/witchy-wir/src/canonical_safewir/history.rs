@@ -21,6 +21,10 @@ const OBSERVATION_MODEL_VERSION: u32 = 1;
 pub struct ModuleDigest([u8; 32]);
 
 impl ModuleDigest {
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     pub const fn bytes(self) -> [u8; 32] {
         self.0
     }
@@ -84,6 +88,7 @@ impl RefinementReceipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptimizationHistoryBody {
     checked_lowering_revision_digest: ModuleDigest,
+    proper_tail_manifest_digest: ModuleDigest,
     ordered: Vec<RefinementReceipt>,
     final_safewir_revision_digest: ModuleDigest,
     optimizer_policy_and_route_digest: ModuleDigest,
@@ -93,6 +98,7 @@ impl OptimizationHistoryBody {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut writer = CanonicalWriter::new(HISTORY_SERIALIZATION_VERSION, HISTORY_DOMAIN);
         writer.module_digest(self.checked_lowering_revision_digest);
+        writer.module_digest(self.proper_tail_manifest_digest);
         writer.len(self.ordered.len());
         for receipt in &self.ordered {
             writer.receipt(receipt);
@@ -116,6 +122,7 @@ pub enum HistoryError {
     InvalidPass { index: usize },
     InvalidPolicyDigest,
     TailSetChanged { index: usize },
+    TailManifestDigestMismatch,
     FinalDigestMismatch,
     ZeroPassRevisionMismatch,
 }
@@ -149,6 +156,10 @@ impl OptimizationHistoryWitness {
         digest_bytes(HISTORY_DIGEST_DOMAIN, &self.canonical_bytes())
     }
 
+    pub fn proper_tail_manifest_digest(&self) -> ModuleDigest {
+        self.body.proper_tail_manifest_digest
+    }
+
     pub fn validate(
         &self,
         initial: &CanonicalModule<InitialValid>,
@@ -160,6 +171,12 @@ impl OptimizationHistoryWitness {
         let initial_digest = module_digest(initial);
         if self.body.checked_lowering_revision_digest != initial_digest {
             return Err(HistoryError::InitialDigestMismatch);
+        }
+        let initial_tail_digest = tail_digest(initial);
+        if self.body.proper_tail_manifest_digest != initial_tail_digest
+            || tail_digest(final_module) != initial_tail_digest
+        {
+            return Err(HistoryError::TailManifestDigestMismatch);
         }
 
         let mut expected_digest = initial_digest;
@@ -217,6 +234,7 @@ impl OptimizationHistoryWitness {
         Ok(Self {
             body: OptimizationHistoryBody {
                 checked_lowering_revision_digest: initial_digest,
+                proper_tail_manifest_digest: tail_digest(initial),
                 ordered: Vec::new(),
                 final_safewir_revision_digest: final_digest,
                 optimizer_policy_and_route_digest: policy_and_route_digest(),
@@ -240,6 +258,7 @@ impl OptimizationHistoryWitness {
         let witness = Self {
             body: OptimizationHistoryBody {
                 checked_lowering_revision_digest: module_digest(initial),
+                proper_tail_manifest_digest: tail_digest(initial),
                 ordered: receipts,
                 final_safewir_revision_digest: module_digest(final_module),
                 optimizer_policy_and_route_digest: policy_and_route_digest(),
@@ -303,10 +322,18 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
 
-fn tail_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> ModuleDigest {
-    let mut writer = CanonicalWriter::new(TAIL_SERIALIZATION_VERSION, TAIL_DOMAIN);
-    writer.tail_sites(module.proper_tail_sites());
-    digest_bytes(TAIL_DIGEST_DOMAIN, &writer.finish())
+pub(crate) fn tail_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> ModuleDigest {
+    let mut bytes = b"witchy.proper-tail-manifest.v1".to_vec();
+    bytes.extend_from_slice(
+        &u32::try_from(module.proper_tail_sites().len())
+            .expect("validated proper-tail site count")
+            .to_le_bytes(),
+    );
+    for site in module.proper_tail_sites() {
+        bytes.extend_from_slice(&site.id.digest());
+        bytes.extend_from_slice(&site.function.get().to_le_bytes());
+    }
+    ModuleDigest(*blake3::hash(&bytes).as_bytes())
 }
 
 fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
@@ -324,12 +351,9 @@ fn policy_and_route_digest() -> ModuleDigest {
 }
 
 const MODULE_SERIALIZATION_VERSION: u32 = 1;
-const TAIL_SERIALIZATION_VERSION: u32 = 1;
 const HISTORY_SERIALIZATION_VERSION: u32 = 1;
 const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v1";
 const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v1";
-const TAIL_DOMAIN: &[u8] = b"witchy/canonical-safewir/tail-sites/v1";
-const TAIL_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/tail-sites-sha256/v1";
 const HISTORY_DOMAIN: &[u8] = b"witchy/canonical-safewir/optimization-history/v1";
 const HISTORY_DIGEST_DOMAIN: &[u8] =
     b"witchy/canonical-safewir/optimization-history-sha256/v1";
