@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
-pub use check::{InitialCheckError, check_initial};
+pub use check::{InitialCheckError, check_initial, check_transform};
 
 macro_rules! id_type {
     ($name:ident, $inner:ty) => {
@@ -535,6 +535,21 @@ impl CanonicalModule<LoweredCandidate> {
     }
 
     fn into_initial_valid(self) -> CanonicalModule<InitialValid> {
+        CanonicalModule {
+            revision: self.revision,
+            checked_source: self.checked_source,
+            layouts: self.layouts,
+            signatures: self.signatures,
+            imports: self.imports,
+            functions: self.functions,
+            proper_tail_sites: self.proper_tail_sites,
+            stage: PhantomData,
+        }
+    }
+}
+
+impl CanonicalModule<TransformedCandidate> {
+    fn into_optimized_valid(self) -> CanonicalModule<OptimizedValid> {
         CanonicalModule {
             revision: self.revision,
             checked_source: self.checked_source,

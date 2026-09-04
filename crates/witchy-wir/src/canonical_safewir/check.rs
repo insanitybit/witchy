@@ -4,8 +4,9 @@ use std::fmt;
 
 use super::{
     BasicBlock, BlockId, CallArgument, CanonicalModule, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, InitialValid, LoweredCandidate, Operation, ParameterOwnership,
-    ProperTailSite, TailSiteId, Terminator, ValueId, ValueType,
+    FunctionSignatureId, InitialValid, LoweredCandidate, ModuleStage, Operation, OptimizedValid,
+    ParameterOwnership, ProperTailSite, TailSiteId, Terminator, TransformedCandidate, ValueId,
+    ValueType,
 };
 
 mod memory;
@@ -38,7 +39,6 @@ pub enum InitialCheckError {
     MissingSignature(FunctionSignatureId),
     MissingFunction(FunctionId),
     MissingBlock { function: FunctionId, block: BlockId },
-    UnreachableBlock { function: FunctionId, block: BlockId },
     MissingValueType { function: FunctionId, value: ValueId },
     UndeclaredValue { function: FunctionId, value: ValueId },
     ValueDoesNotDominateUse {
@@ -85,6 +85,20 @@ impl Error for InitialCheckError {}
 pub fn check_initial(
     candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    check_candidate(&candidate)?;
+    Ok(candidate.into_initial_valid())
+}
+
+pub fn check_transform(
+    candidate: CanonicalModule<TransformedCandidate>,
+) -> Result<CanonicalModule<OptimizedValid>, InitialCheckError> {
+    check_candidate(&candidate)?;
+    Ok(candidate.into_optimized_valid())
+}
+
+fn check_candidate<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+) -> Result<(), InitialCheckError> {
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
@@ -110,7 +124,7 @@ pub fn check_initial(
         }
     }
 
-    Ok(candidate.into_initial_valid())
+    Ok(())
 }
 
 fn index_signatures(
@@ -580,13 +594,6 @@ fn dominators(
             pending.extend(successors(&body.terminator));
         }
     }
-    if let Some(block) = all.difference(&reachable).next().copied() {
-        return Err(InitialCheckError::UnreachableBlock {
-            function: function.id,
-            block,
-        });
-    }
-
     let mut result = BTreeMap::new();
     for block in blocks.keys().copied() {
         result.insert(
@@ -1379,5 +1386,45 @@ mod tests {
                 signature: SIGNATURE,
             }
         );
+    }
+
+    #[test]
+    fn valid_unreachable_block_is_available_to_pruning() {
+        let dead = BlockId::new(1);
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: BTreeMap::new(),
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: Vec::new() },
+                    },
+                    BasicBlock {
+                        id: dead,
+                        parameters: Vec::new(),
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: Vec::new() },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+
+        assert!(check_initial(module).is_ok());
     }
 }
