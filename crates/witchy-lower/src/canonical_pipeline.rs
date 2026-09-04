@@ -827,6 +827,53 @@ mod tests {
     }
 
     #[test]
+    fn pointer_list_index_result_contract_is_body_derived_and_executes() {
+        let source = "fn pick() -> String:\n    let xs = [\"first\", \"second\"]\n    xs[1]\nfn main(console: Console):\n    console.print(pick())\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked pointer-list result source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit body-derived pointer-list result artifact");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted pointer-list result artifact");
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker
+            .func_wrap(
+                "witchy",
+                "print",
+                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(wasmtime::Extern::into_memory)
+                        .expect("canonical memory export");
+                    let start = usize::try_from(pointer).expect("non-negative print pointer");
+                    let length = usize::try_from(length).expect("non-negative print length");
+                    let bytes = memory.data(&caller)[start..start + length].to_vec();
+                    caller.data_mut().extend_from_slice(&bytes);
+                },
+            )
+            .expect("bind authenticated print ABI");
+        let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted pointer-list result artifact");
+        let main = instance
+            .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(
+                &mut store,
+                "f1",
+            )
+            .expect("canonical pointer-list result main export");
+        main.call(&mut store, None)
+            .expect("run canonical pointer-list result program");
+        assert_eq!(store.data(), b"second");
+    }
+
+    #[test]
     fn utf8_string_concat_reaches_admitted_execution() {
         let source = "fn main(console: Console):\n    console.print(\"hi\" + \"!\")\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

@@ -380,14 +380,25 @@ impl<'a> MemoryChecker<'a> {
                 }
             }
         }
-        if results.iter().any(|result| {
-            !matches!(result, ResultContract::Value(value) if !value.is_memory_bearing())
-        }) || destinations.iter().any(|destination| {
-            value_type(self.function, *destination)
-                .map(|value_type| value_type.is_memory_bearing())
-                .unwrap_or(true)
-        }) {
-            return self.unsupported("Call(memory result)");
+        for (destination, result) in destinations.iter().zip(results) {
+            match result {
+                ResultContract::Value(value_type) if !value_type.is_memory_bearing() => {}
+                ResultContract::Shared { layout } => {
+                    self.require_ref_type(*destination, *layout)?;
+                    let extent = self.parameter_extent(*layout)?;
+                    self.state.objects.insert(
+                        *destination,
+                        ObjectState {
+                            identity: *destination,
+                            layout: *layout,
+                            extent,
+                            ownership: Ownership::Shared,
+                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                        },
+                    );
+                }
+                _ => return self.unsupported("Call(memory result)"),
+            }
         }
         Ok(())
     }

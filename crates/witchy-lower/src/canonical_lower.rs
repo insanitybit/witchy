@@ -1208,45 +1208,7 @@ impl FunctionLowerer<'_> {
                 } else {
                     return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                 };
-                if let ValueType::Ref(layout) = self.values[&value]
-                    && string_layout(
-                        &Type::Named("String".into(), Vec::new()),
-                        self.layout_bundle,
-                        self.layouts,
-                    )
-                    .ok()
-                        == Some(layout)
-                    && !self.string_lengths.contains_key(&value)
-                {
-                    let length = self.fresh(ValueType::Size)?;
-                    self.push_operation(Operation::Load {
-                        destination: length,
-                        place: witchy_wir::canonical_safewir::Place::projected(
-                            value,
-                            Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length),
-                            ValueType::Size,
-                            AccessMode::Read,
-                        ),
-                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
-                    });
-                    let maximum_length = self.fresh(ValueType::Size)?;
-                    self.push_operation(Operation::ConstSize {
-                        destination: maximum_length,
-                        value: u64::from(u32::MAX - 4),
-                    });
-                    let length_fits = self.fresh(ValueType::Bool)?;
-                    self.push_operation(Operation::Compare {
-                        destination: length_fits,
-                        operator: ComparisonOperator::LessEqualUnsigned,
-                        left: length,
-                        right: maximum_length,
-                    });
-                    self.push_operation(Operation::Guard {
-                        condition: length_fits,
-                        kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-                    });
-                    self.string_lengths.insert(value, length);
-                }
+                self.ensure_string_extent(value)?;
                 Ok(value)
             }
             Expr::Call { name, args } if is_console_print(name) => Err(
@@ -1262,7 +1224,11 @@ impl FunctionLowerer<'_> {
                     self.lower_direct_call(name, args)?
                 };
                 match results.as_slice() {
-                    [value] => Ok(*value),
+                    [value] => {
+                        let value = *value;
+                        self.ensure_string_extent(value)?;
+                        Ok(value)
+                    }
                     [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
                     _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
                 }
@@ -1277,7 +1243,11 @@ impl FunctionLowerer<'_> {
                 };
                 let results = self.lower_indirect_call(callee, args, signature)?;
                 match results.as_slice() {
-                    [value] => Ok(*value),
+                    [value] => {
+                        let value = *value;
+                        self.ensure_string_extent(value)?;
+                        Ok(value)
+                    }
                     [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
                     _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
                 }
@@ -1328,6 +1298,53 @@ impl FunctionLowerer<'_> {
             .type_of(expression)
             .and_then(witchy_types::typeck::ty_to_ast)
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
+    }
+
+    fn ensure_string_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.values[&value] else {
+            return Ok(());
+        };
+        let Some(string_layout) = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            self.layout_bundle,
+            self.layouts,
+        )
+        .ok()
+        else {
+            return Ok(());
+        };
+        if layout != string_layout || self.string_lengths.contains_key(&value) {
+            return Ok(());
+        }
+        let length = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Load {
+            destination: length,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                value,
+                Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length),
+                ValueType::Size,
+                AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        });
+        let maximum_length = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize {
+            destination: maximum_length,
+            value: u64::from(u32::MAX - 4),
+        });
+        let length_fits = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: length_fits,
+            operator: ComparisonOperator::LessEqualUnsigned,
+            left: length,
+            right: maximum_length,
+        });
+        self.push_operation(Operation::Guard {
+            condition: length_fits,
+            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+        });
+        self.string_lengths.insert(value, length);
+        Ok(())
     }
 
     fn lower_console_print(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
