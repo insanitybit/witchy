@@ -4221,12 +4221,18 @@ fn admit_parts(
 }
 
 pub fn admit_canonical(validated: ValidatedSafeWir) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    validated.validate_pre_admission().map_err(|_| CanonicalAdmissionError::Correspondence)?;
     let source = validated.module().clone();
     let checked_source = validated.checked_source();
     let final_module_digest = validated.final_module_digest();
     let history_digest = validated.history_digest();
     let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
     let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let correspondence_digest = correspondence_digest(&receipt);
+    let authority_wir = validated.mint_authority_wir(correspondence_digest);
+    validated
+        .validate_authority_wir(&authority_wir, correspondence_digest)
+        .map_err(|_| CanonicalAdmissionError::Correspondence)?;
     let bytes = encode_validated(validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
     admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
 }
@@ -4236,12 +4242,18 @@ fn admit_canonical_with_bytes_for_test(
     validated: ValidatedSafeWir,
     bytes: Vec<u8>,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    validated.validate_pre_admission().map_err(|_| CanonicalAdmissionError::Correspondence)?;
     let source = validated.module().clone();
     let checked_source = validated.checked_source();
     let final_module_digest = validated.final_module_digest();
     let history_digest = validated.history_digest();
     let target = lower_validated(&validated).map_err(|_| CanonicalAdmissionError::Lowering)?;
     let receipt = check_correspondence(&source, &target).map_err(|_| CanonicalAdmissionError::Correspondence)?;
+    let correspondence_digest = correspondence_digest(&receipt);
+    let authority_wir = validated.mint_authority_wir(correspondence_digest);
+    validated
+        .validate_authority_wir(&authority_wir, correspondence_digest)
+        .map_err(|_| CanonicalAdmissionError::Correspondence)?;
     admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest)
 }
 #[cfg(test)]
@@ -4309,6 +4321,26 @@ mod tests {
         let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
         wasmparser::validate(&wasm).expect("encoded scalar module is structurally valid");
         assert!(wasm.windows(2).any(|window| window == [0x42, 9]));
+    }
+
+    #[test]
+    fn a3_zero_pass_candidate_admits_with_all_witnesses() {
+        let validated = checked_scalar();
+        assert!(validated.optimization_history().is_zero_pass());
+        let artifact = admit_canonical(validated).expect("zero-pass A3 witness chain admits");
+        wasmparser::validate(artifact.wasm()).expect("admitted bytes remain valid Wasm");
+    }
+
+    #[test]
+    fn a3_independently_constructed_authority_witness_cannot_cross_candidates() {
+        let first = checked_scalar();
+        let target = lower_validated(&first).unwrap();
+        let receipt = check_correspondence(first.module(), &target).unwrap();
+        let digest = correspondence_digest(&receipt);
+        let witness = first.mint_authority_wir(digest);
+
+        let other = checked_branch();
+        assert!(other.validate_authority_wir(&witness, digest).is_err());
     }
 
     fn scalar_signature(id: FunctionSignatureId) -> FunctionSignature {
