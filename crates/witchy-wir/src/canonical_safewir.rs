@@ -322,7 +322,7 @@ pub enum ResultContract {
     /// it is never valid for an import or a validated module.
     BodyDerived(ValueType),
     Value(ValueType),
-    Fresh { layout: LayoutId },
+    Fresh { layout: LayoutId, class: AllocationClass },
     Shared { layout: LayoutId },
     AliasesParameter { parameter: u32, layout: LayoutId },
     ReallocatesParameter { parameter: u32, layout: LayoutId },

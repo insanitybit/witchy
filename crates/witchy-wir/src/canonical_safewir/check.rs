@@ -1150,7 +1150,7 @@ fn check_call(
         let contract_type = match contract {
             super::ResultContract::BodyDerived(value_type) => *value_type,
             super::ResultContract::Value(value_type) => *value_type,
-            super::ResultContract::Fresh { layout }
+            super::ResultContract::Fresh { layout, .. }
             | super::ResultContract::Shared { layout }
             | super::ResultContract::StaticData { layout }
             | super::ResultContract::AliasesParameter { layout, .. }

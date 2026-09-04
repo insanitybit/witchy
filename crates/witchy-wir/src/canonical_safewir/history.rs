@@ -701,9 +701,10 @@ impl CanonicalWriter {
                 self.u8(0);
                 self.value_type(*value_type);
             }
-            ResultContract::Fresh { layout } => {
+            ResultContract::Fresh { layout, class } => {
                 self.u8(1);
                 self.layout_id(*layout);
+                self.allocation_class(*class);
             }
             ResultContract::Shared { layout } => {
                 self.u8(2);
