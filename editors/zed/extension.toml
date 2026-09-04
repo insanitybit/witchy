@@ -11,7 +11,7 @@ repository = "https://github.com/insanitybit/witchy"
 # local-dev form; update `rev` after committing grammar changes, then
 # reinstall the dev extension so Zed rebuilds the parser.
 repository = "file:///Users/cobrien/workspace/tree-sitter-witchy"
-rev = "30734726303c5e27592ff984e83f3920fcdcf293"
+rev = "747205d21a322895a504a898b0dde46db6a09c08"
 
 [language_servers.witchy]
 name = "Witchy LSP"

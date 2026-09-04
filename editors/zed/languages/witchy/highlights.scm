@@ -13,7 +13,7 @@
 (string) @string
 (escape_sequence) @string.escape
 
-; String interpolation `${ ... }`: clear @string over the interpolation and mark
+; String interpolation ${ ... }: clear @string over the interpolation and mark
 ; the delimiters, so the embedded expression picks up the normal code rules below
 ; (which, coming later, win over @string for their own ranges).
 (interpolation) @none
@@ -32,17 +32,24 @@
 ; ---- Keywords ------------------------------------------------------------
 
 [
-  "import" "type" "actor" "on"
+  "import" "from" "type" "actor" "on"
   "trait" "impl" "where"
-  "fn" "gen" "pub" "let" "var" "update" "spawn"
+  "fn" "gen" "async" "await"
+  "pub" "pure" "once" "let" "var" "update" "spawn"
   "return" "yield"
   "if" "else" "match"
   "for" "while" "in"
-  "own" "move"
+  "inout" "sink" "own" "move"
   "as" "retain" "without" "region"
   "comptime" "derive"
   "mode" "mut"
+  "sealed" "must" "grantable" "capability"
+  "dyn"
+  "unique" "frozen" "local"
+  "quote"
 ] @keyword
+
+(attribute) @attribute
 
 (lifetime) @type
 
@@ -60,7 +67,7 @@
   "&&" "||" "!"
   "&" "|" "^" "~" "<<" ">>"
   "=" "+=" "-=" "*=" "/=" "%="
-  "->" ".." "..=" "?"
+  "->" ".." "..=" "?" "??"
 ] @operator
 
 ["(" ")" "[" "]"] @punctuation.bracket
@@ -82,7 +89,8 @@
 (method_signature name: (identifier) @function)
 (handler name: (identifier) @function)
 
-; Traits, impls, and `where` bounds name types.
+; Traits, impls, capabilities, and `where` bounds name types.
+(capability_definition name: (identifier) @type)
 (trait_definition name: (identifier) @type)
 (impl_definition trait: (identifier) @type)
 (impl_definition type: (identifier) @type)
