@@ -2398,12 +2398,17 @@ impl FunctionLowerer<'_> {
             condition: old_count_fits,
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
-        let mut value = self.lower_expr(value)?;
+        let value_expression = value;
+        let mut value = self.lower_expr(value_expression)?;
         if self.values[&value] != element_type {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
         }
-        if pointer_elements {
+        if pointer_elements && self.string_lengths.contains_key(&value) {
             value = self.clone_string_for_storage(value)?;
+        } else if pointer_elements && !matches!(value_expression, Expr::List(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "non-literal nested list push needs explicit ownership",
+            ));
         }
 
         let increment_fits = self.fresh(ValueType::Bool)?;
@@ -3679,7 +3684,7 @@ mod tests {
     #[test]
     fn nested_list_literals_move_fresh_inner_aggregates() {
         let candidate = lower_with_derived_layouts(
-            "fn main() -> Int:\n    let nested = [[\"a\"], [\"b\"]]\n    0\n",
+            "fn main() -> Int:\n    let nested = [[\"a\"], [\"b\"]]\n    var more = []\n    more.push([\"c\"])\n    0\n",
         );
         assert!(candidate
             .functions()
