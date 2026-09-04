@@ -339,6 +339,97 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    pub(super) fn check_host_buffer(
+        &mut self,
+        place: &Place,
+        extent: &crate::canonical_safewir::HostBufferExtent,
+        import: crate::canonical_safewir::ImportId,
+        parameter: usize,
+    ) -> Result<(), InitialCheckError> {
+        let Projection::Slice { start, length } = place.projection() else {
+            return Err(InitialCheckError::UnsupportedHostBuffer {
+                function: self.function.id,
+                import,
+                parameter,
+            });
+        };
+        self.promote_header_extent(place.object())?;
+        let object = self.live_object(place.object())?.clone();
+        self.require_ref_type(place.object(), object.layout)?;
+        if place.value_type() != ValueType::Ref(object.layout) {
+            return Err(InitialCheckError::TypeMismatch {
+                function: self.function.id,
+                value: place.object(),
+                expected: ValueType::Ref(object.layout),
+                actual: place.value_type(),
+            });
+        }
+        if place.access() == AccessMode::Write {
+            if object.ownership != Ownership::Unique
+                || self.state.static_data_objects.contains(&place.object())
+            {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: place.object(),
+                });
+            }
+        }
+        self.require_type(*start, ValueType::Size)?;
+        self.require_type(*length, ValueType::Size)?;
+        let Extent::Counted { count, stride_bytes, .. } = object.extent else {
+            return Err(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: place.object(),
+            });
+        };
+        let logical_count = self
+            .state
+            .header_values
+            .get(&(place.object(), HeaderField::Length))
+            .copied()
+            .unwrap_or(count);
+        let starts_at_zero = self.state.constants.get(start) == Some(&0);
+        let whole_logical_body = starts_at_zero && *length == logical_count;
+        let constant_range = self
+            .state
+            .constants
+            .get(start)
+            .zip(self.state.constants.get(length))
+            .zip(self.state.constants.get(&logical_count))
+            .is_some_and(|((start, length), count)| {
+                start.checked_add(*length).is_some_and(|end| end <= *count)
+            });
+        if !whole_logical_body && !constant_range {
+            return Err(InitialCheckError::MissingBoundsGuard {
+                function: self.function.id,
+                index: *start,
+                count: logical_count,
+            });
+        }
+        let constant_bytes = self
+            .state
+            .constants
+            .get(length)
+            .and_then(|length| length.checked_mul(u64::from(stride_bytes)));
+        match extent {
+            crate::canonical_safewir::HostBufferExtent::Slice => {}
+            crate::canonical_safewir::HostBufferExtent::Exact(bytes)
+                if constant_bytes == Some(*bytes) => {}
+            crate::canonical_safewir::HostBufferExtent::AtLeast(bytes)
+                if constant_bytes.is_some_and(|actual| actual >= *bytes) => {}
+            crate::canonical_safewir::HostBufferExtent::Exact(_)
+            | crate::canonical_safewir::HostBufferExtent::AtLeast(_)
+            | crate::canonical_safewir::HostBufferExtent::Unknown => {
+                return Err(InitialCheckError::HostBufferExtentMismatch {
+                    function: self.function.id,
+                    import,
+                    parameter,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn check_call_borrow(
         &self,
         borrow: crate::canonical_safewir::CallBorrow,

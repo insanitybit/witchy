@@ -361,6 +361,10 @@ pub enum ImportContractIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostBufferExtent {
+    /// The host may access exactly the checked runtime slice passed at this
+    /// call site. The slice bounds remain part of SafeWIR and are independently
+    /// re-established by the memory checker.
+    Slice,
     Exact(u64),
     AtLeast(u64),
     Unknown,

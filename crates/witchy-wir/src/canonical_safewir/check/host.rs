@@ -185,15 +185,25 @@ fn check_argument(
         }
         (
             HostParameterRole::Buffer {
-                ..
+                value_type,
+                access,
+                extent,
             },
-            HostCallArgument::Buffer { .. },
+            HostCallArgument::Buffer {
+                place,
+                extent: supplied_extent,
+            },
         ) => {
-            return Err(InitialCheckError::UnsupportedHostBuffer {
-                function: function.id,
-                import,
-                parameter,
-            });
+            if place.value_type() != *value_type
+                || place.access() != *access
+                || supplied_extent != extent
+            {
+                return Err(InitialCheckError::HostBufferExtentMismatch {
+                    function: function.id,
+                    import,
+                    parameter,
+                });
+            }
         }
         _ => {
             let actual = match argument {

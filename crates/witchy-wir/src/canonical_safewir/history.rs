@@ -648,9 +648,10 @@ impl CanonicalWriter {
 
     fn host_buffer_extent(&mut self, extent: &HostBufferExtent) {
         match extent {
-            HostBufferExtent::Exact(bytes) => { self.u8(0); self.u64(*bytes); }
-            HostBufferExtent::AtLeast(bytes) => { self.u8(1); self.u64(*bytes); }
-            HostBufferExtent::Unknown => self.u8(2),
+            HostBufferExtent::Slice => self.u8(0),
+            HostBufferExtent::Exact(bytes) => { self.u8(1); self.u64(*bytes); }
+            HostBufferExtent::AtLeast(bytes) => { self.u8(2); self.u64(*bytes); }
+            HostBufferExtent::Unknown => self.u8(3),
         }
     }
 

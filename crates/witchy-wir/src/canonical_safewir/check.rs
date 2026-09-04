@@ -981,7 +981,28 @@ fn check_operation(
             check_call(function, destinations, arguments, signature, None)
         }
         Operation::HostCall { destinations, import, arguments } => {
-            host::check_call(function, *import, destinations, arguments, imports, signatures, catalog)
+            host::check_call(function, *import, destinations, arguments, imports, signatures, catalog)?;
+            let contract = imports
+                .get(import)
+                .copied()
+                .ok_or(InitialCheckError::MissingImportContract {
+                    function: function.id,
+                    import: *import,
+                })?;
+            for (parameter, (argument, role)) in arguments
+                .iter()
+                .zip(&contract.parameter_roles)
+                .enumerate()
+            {
+                if let (
+                    HostCallArgument::Buffer { place, extent },
+                    super::HostParameterRole::Buffer { .. },
+                ) = (argument, role)
+                {
+                    memory.check_host_buffer(place, extent, *import, parameter)?;
+                }
+            }
+            Ok(())
         }
         Operation::Alloc { .. } => unsupported_memory(function, "Alloc"),
         Operation::StaticData { .. } => unsupported_memory(function, "StaticData"),
@@ -1587,6 +1608,129 @@ mod tests {
         })
     }
 
+    fn allocated_host_buffer_module(
+        start_value: u64,
+        length_value: u64,
+        count_value: u64,
+        contract_extent: HostBufferExtent,
+        supplied_extent: HostBufferExtent,
+    ) -> (
+        CanonicalModule<super::super::LoweredCandidate>,
+        CanonicalAbiCatalog,
+    ) {
+        let (layouts, layout) = dynamic_u32_layout();
+        let start = ValueId::new(0);
+        let length = ValueId::new(1);
+        let count = ValueId::new(2);
+        let capacity = ValueId::new(3);
+        let capacity_ok = ValueId::new(4);
+        let object = ValueId::new(5);
+        let result = ValueId::new(6);
+        let import_signature_id = FunctionSignatureId::new(1);
+        let import = ImportContract {
+            id: ImportId::new(0),
+            signature: import_signature_id,
+            abi_identity: ImportContractIdentity::AuthenticatedAbi([9; 32]),
+            parameter_roles: vec![HostParameterRole::Buffer {
+                value_type: ValueType::Ref(layout),
+                access: AccessMode::Read,
+                extent: contract_extent,
+            }],
+            result_roles: vec![HostResultRole::Value(ValueType::Int)],
+            mutation: HostMutation::ReadOnly,
+            reentrancy: HostReentrancy::Forbidden,
+        };
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Int],
+                    contract: contract(vec![ResultContract::Value(ValueType::Int)]),
+                },
+                FunctionSignature {
+                    id: import_signature_id,
+                    parameters: vec![ValueType::Ref(layout)],
+                    results: vec![ValueType::Int],
+                    contract: CallableContract {
+                        parameters: vec![ParameterContract {
+                            value_type: ValueType::Ref(layout),
+                            ownership: ParameterOwnership::Value,
+                            non_escaping: true,
+                        }],
+                        results: vec![ResultContract::Value(ValueType::Int)],
+                        parameter_effects: BTreeMap::new(),
+                    },
+                },
+            ],
+            imports: vec![import.clone()],
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (start, ValueType::Size),
+                    (length, ValueType::Size),
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (capacity_ok, ValueType::Bool),
+                    (object, ValueType::Ref(layout)),
+                    (result, ValueType::Int),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: start, value: start_value },
+                        Operation::ConstSize { destination: length, value: length_value },
+                        Operation::ConstSize { destination: count, value: count_value },
+                        Operation::ConstSize { destination: capacity, value: count_value },
+                        Operation::Compare {
+                            destination: capacity_ok,
+                            operator: ComparisonOperator::LessEqualUnsigned,
+                            left: count,
+                            right: capacity,
+                        },
+                        Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
+                        Operation::Alloc {
+                            destination: object,
+                            layout,
+                            extent: Extent::Counted {
+                                header_bytes: 4,
+                                count,
+                                capacity,
+                                stride_bytes: 4,
+                            },
+                            class: AllocationClass::ReferenceCounted,
+                        },
+                        Operation::HostCall {
+                            destinations: vec![result],
+                            import: ImportId::new(0),
+                            arguments: vec![HostCallArgument::Buffer {
+                                place: Place::projected(
+                                    object,
+                                    Projection::Slice { start, length },
+                                    ValueType::Ref(layout),
+                                    AccessMode::Read,
+                                ),
+                                extent: supplied_extent,
+                            }],
+                        },
+                    ],
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
+        (module, catalog)
+    }
+
     fn host_import(
         parameter_role: HostParameterRole,
         result_role: HostResultRole,
@@ -1756,7 +1900,34 @@ mod tests {
         let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
         assert!(matches!(
             super::check_initial_with_catalog(module, &catalog),
-            Err(InitialCheckError::UnsupportedHostBuffer { .. })
+            Err(InitialCheckError::HostBufferExtentMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn authenticated_dynamic_host_slice_is_accepted() {
+        let (module, catalog) = allocated_host_buffer_module(
+            0,
+            4,
+            4,
+            HostBufferExtent::Slice,
+            HostBufferExtent::Slice,
+        );
+        assert!(super::check_initial_with_catalog(module, &catalog).is_ok());
+    }
+
+    #[test]
+    fn host_slice_outside_logical_length_is_rejected() {
+        let (module, catalog) = allocated_host_buffer_module(
+            1,
+            4,
+            4,
+            HostBufferExtent::Slice,
+            HostBufferExtent::Slice,
+        );
+        assert!(matches!(
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::MissingBoundsGuard { .. })
         ));
     }
 
