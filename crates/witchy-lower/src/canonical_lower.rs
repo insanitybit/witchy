@@ -938,7 +938,7 @@ mod tests {
         ) -> Result<witchy_syntax::origin::OriginTable, String> {
             if name == "main" {
                 module.items.extend(
-                    parse_module("fn expanded() -> Int:\n    42\n")
+                    parse_module("fn expanded(n: Int) -> Int:\n    return expanded(n)\n")
                         .expect("expanded fixture parses")
                         .items,
                 );
@@ -953,9 +953,22 @@ mod tests {
         )
         .expect("expanded source checks");
         let canonical = checked.canonical_source().expect("canonical source");
-        assert!(canonical.typed_module().module().items.iter().any(|item| {
-            matches!(item, Item::Function(function) if function.name.ends_with(".expanded"))
-        }));
+        let expanded_item = canonical
+            .typed_module()
+            .module()
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item, item_def)| {
+                matches!(item_def, Item::Function(function) if function.name.ends_with(".expanded"))
+                    .then_some(item as u32)
+            })
+            .expect("expanded function is in final typed source");
+        assert!(canonical
+            .proper_tail_manifest()
+            .sites()
+            .iter()
+            .any(|site| site.key.callable.item == expanded_item));
 
         let candidate = lower_typed_module(canonical, empty_layouts())
             .expect("canonical lowering includes expanded function");

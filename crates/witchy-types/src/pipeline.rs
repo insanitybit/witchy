@@ -538,10 +538,6 @@ pub fn link_checked_from_source_bundle(
             Ok((name.clone(), module))
         })
         .collect::<Result<Vec<_>, PipelineError>>()?;
-    let typed_source = typeck::annotate_checked(modules[0].1.clone())?;
-    let proper_tail_manifest = typed_source
-        .proper_tail_manifest()
-        .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     let (checked, typed_source) = link_checked_with(
         modules,
         entry,
@@ -556,6 +552,9 @@ pub fn link_checked_from_source_bundle(
             message: "canonical checked link did not return its typed source".to_string(),
         })
     })?;
+    let proper_tail_manifest = typed_source
+        .proper_tail_manifest()
+        .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     attach_canonical_source(checked, typed_source, source_bundle_digest, proper_tail_manifest)
 }
 
