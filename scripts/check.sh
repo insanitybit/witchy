@@ -511,6 +511,19 @@ if cargo nextest --version >/dev/null 2>&1; then
     if [[ " ${nextest_sel[*]} " == *" --test differential_fuzz "* ]]; then
         test_cmd+=(--ignore-default-filter --profile nightly)
     fi
+
+    # RFC-0165 A1: witchy-wir's native canonical/adapter tests must be part of
+    # the ordinary workspace gate.  The package feature is not enabled merely
+    # because the root package's default feature enables it as a dependency;
+    # without this explicit selector, #[cfg(feature = "native")] tests in the
+    # witchy-wir test target disappear while nextest can still report green.
+    # Keep focused package selections valid: typeck-only batches do not select
+    # witchy-wir, while workspace, lowerer, and WIR batches do.
+    case " ${nextest_sel[*]} " in
+        *" --workspace "* | *" -p witchy-wir "* | *" -p witchy-lower "*)
+            test_cmd+=(--features witchy-wir/native)
+            ;;
+    esac
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
     # above) because those fixtures run in their own isolated shard. So a diff
     # whose entire selection IS merge_queue -- any change to

@@ -64,7 +64,7 @@ jobs:
         with:
           tool: nextest
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets --features witchy-wir/native
       # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
       # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
       # still print but do not fail CI — a needless borrow is not a merge blocker.
@@ -73,11 +73,11 @@ jobs:
       # waste.
       - name: Clippy (bug lints)
         if: matrix.shard == 1
-        run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
+        run: cargo clippy --workspace --all-targets --features witchy-wir/native -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
       - name: Unit + integration tests (partition ${{ matrix.shard }}/4)
         env:
           SHARD: ${{ matrix.shard }}
-        run: cargo nextest run --workspace --profile ci --all-targets --partition "count:${SHARD}/4"
+        run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --partition "count:${SHARD}/4"
 
   # SBPL is undocumented and version-sensitive, and a preamble that an OS
   # upgrade invalidates fails as a SIGABRT in dyld with no stderr and no
