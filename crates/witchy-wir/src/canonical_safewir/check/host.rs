@@ -320,6 +320,8 @@ mod tests {
             id: IMPORT,
             signature: SIGNATURE,
             abi_identity: ImportContractIdentity::AuthenticatedAbi([4; 32]),
+            module: "test".to_string(),
+            name: "host".to_string(),
             parameter_roles: vec![role],
             result_roles: Vec::new(),
             mutation: HostMutation::ReadOnly,
