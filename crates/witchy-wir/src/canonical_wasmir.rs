@@ -282,8 +282,8 @@ impl TargetWasmWitness {
 /// on one exact SafeWIR/WasmIR pair. Unchecked `WasmIr` cannot cross the
 /// encoding boundary.
 struct CheckedWasmIr {
-    _source: CanonicalModule<OptimizedValid>,
-    _target: WasmIr,
+    source: CanonicalModule<OptimizedValid>,
+    target: WasmIr,
     receipt: CorrespondenceReceipt,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
@@ -5102,8 +5102,8 @@ fn correspondence_digest(receipt: &CorrespondenceReceipt) -> [u8; 32] {
 }
 
 fn admit_parts(
-    source: CanonicalModule<OptimizedValid>,
-    target: WasmIr,
+    _source: CanonicalModule<OptimizedValid>,
+    _target: WasmIr,
     receipt: CorrespondenceReceipt,
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
