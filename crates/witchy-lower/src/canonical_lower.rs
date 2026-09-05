@@ -15,7 +15,7 @@ mod owned;
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
 
-use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, UnOp};
+use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
@@ -87,6 +87,18 @@ pub fn lower_typed_module(
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let typed = source.typed_module();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if let Some(unsupported) = function
+            .params
+            .iter()
+            .filter_map(|parameter| parameter.ty.as_ref())
+            .chain(function.ret.iter())
+            .find(|ty| contains_deferred_v1_qualifier(ty))
+        {
+            return Err(CanonicalLoweringError::UnsupportedType(unsupported.clone()));
+        }
+    }
     let packed_records = typed.module().items.iter().filter_map(|item| match item {
         Item::Type(definition) if is_v1_packed_scalar_record(definition) => {
             Some((definition.name.clone(), definition))
@@ -411,6 +423,13 @@ fn signature_from_type(
     if conventions.len() != parameters.len() {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
     }
+    if let Some(unsupported) = parameters
+        .iter()
+        .chain(std::iter::once(result.as_ref()))
+        .find(|ty| contains_deferred_v1_qualifier(ty))
+    {
+        return Err(CanonicalLoweringError::UnsupportedType(unsupported.clone()));
+    }
     let mut value_parameters = Vec::with_capacity(parameters.len());
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
@@ -461,6 +480,32 @@ fn signature_from_type(
         results,
         contract: CallableContract { parameters: contract_parameters, results: result_contracts, parameter_effects },
     })
+}
+
+fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
+        Type::Qualified(
+            TypeQual::Unique
+            | TypeQual::LocalUnique
+            | TypeQual::Borrow(_)
+            | TypeQual::LegacyBorrow(_)
+            | TypeQual::BorrowMut(_),
+            _,
+        ) => true,
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
+            arguments.iter().any(contains_deferred_v1_qualifier)
+        }
+        Type::Slice(inner) => contains_deferred_v1_qualifier(inner),
+        Type::RecordCompose { base, fields } => {
+            contains_deferred_v1_qualifier(base)
+                || fields.iter().any(|(_, field)| contains_deferred_v1_qualifier(field))
+        }
+        Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(contains_deferred_v1_qualifier)
+                || contains_deferred_v1_qualifier(result)
+        }
+    }
 }
 
 /// v1 represents scalar consumption and one existing owned token for ordinary
@@ -4467,20 +4512,17 @@ mod tests {
     }
 
     #[test]
-    fn own_packed_and_var_parameters_stay_fail_closed() {
-        for program in [
+    fn unique_contracts_stay_fail_closed() {
+        let checked = checked(
             "fn consume(own value: unique List(Int)) -> Int:\n    value.length()\n",
-            "fn replace(var value: Int) -> Int:\n    value\n",
-        ] {
-            let checked = checked(program);
-            let source = checked.canonical_source().expect("canonical source");
-            let error = lower_typed_module(
-                source,
-                crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
-            )
-            .expect_err("unsupported ownership state must not be guessed");
-            assert!(matches!(error, CanonicalLoweringError::UnsupportedConvention { .. }));
-        }
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let error = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect_err("v1 must not silently erase a unique contract");
+        assert!(matches!(error, CanonicalLoweringError::UnsupportedType(_)));
     }
 
     #[test]
