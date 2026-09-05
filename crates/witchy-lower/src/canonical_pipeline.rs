@@ -361,6 +361,37 @@ mod tests {
         assert_eq!(main.call(&mut store, ()).expect("run public production Wasm"), 42);
     }
 
+    /// A library generic instantiated at a program type checks as source but
+    /// is outside canonical v1: checked-source construction succeeds and the
+    /// canonical route refuses at lowering, naming the specialization.
+    #[test]
+    fn library_specialization_checks_then_fails_closed_at_canonical_lowering() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![
+                (
+                    "main".to_string(),
+                    b"import util\n\nfn main() -> Int:\n    util.identity(1)\n".to_vec(),
+                ),
+                ("util".to_string(), b"pub fn identity(value: a) -> a:\n    value\n".to_vec()),
+            ],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source construction must not refuse a valid program");
+
+        match admit_checked_module(&checked) {
+            Err(CanonicalPipelineError::Lowering(
+                crate::canonical_lower::CanonicalLoweringError::UnsupportedCanonicalObligation(names),
+            )) => assert!(names.contains("generic specialization `util.identity__"), "{names}"),
+            Err(other) => panic!("expected a precise specialization refusal, got {other:?}"),
+            Ok(_) => panic!("expected a precise specialization refusal, got an admitted artifact"),
+        }
+        assert!(matches!(
+            crate::codegen::compile_checked_module_artifact(&checked),
+            crate::codegen::LoweringOutcome::Unsupported(_)
+        ));
+    }
+
     #[test]
     fn checked_scalar_direct_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    answer()\n";

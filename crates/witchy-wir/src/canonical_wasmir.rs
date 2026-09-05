@@ -1363,7 +1363,11 @@ impl AdmittedCanonicalArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalAdmissionError {
-    Lowering,
+    /// The reviewed SafeWIR-to-WasmIR mapping has no encoding for a construct
+    /// the checker accepted. The payload names it: a validated program that
+    /// the backend cannot encode is a backend gap to record, not a silent
+    /// refusal.
+    Lowering(String),
     Correspondence,
     SourceWitnessMismatch,
     WasmValidation,
@@ -5172,13 +5176,16 @@ pub fn admit_canonical(
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     let checked = authorize_wasm_ir(validated, source).map_err(|error| match error {
-        EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => CanonicalAdmissionError::Lowering,
+        EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => {
+            CanonicalAdmissionError::Lowering(format!("{error:?}"))
+        }
         EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
         EncodeError::SourceWitness => CanonicalAdmissionError::SourceWitnessMismatch,
         EncodeError::WasmValidation(_) => CanonicalAdmissionError::WasmValidation,
         _ => CanonicalAdmissionError::UnsupportedPlan,
     })?;
-    let bytes = encode_checked(&checked).map_err(|_| CanonicalAdmissionError::Lowering)?;
+    let bytes = encode_checked(&checked)
+        .map_err(|error| CanonicalAdmissionError::Lowering(format!("{error:?}")))?;
     let CheckedWasmIr {
         source,
         target,
@@ -5197,7 +5204,7 @@ pub fn admit_canonical(
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     let checked = authorize_wasm_ir_for_test(validated).map_err(|error| match error {
         EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => {
-            CanonicalAdmissionError::Lowering
+            CanonicalAdmissionError::Lowering(format!("{error:?}"))
         }
         EncodeError::Correspondence(_) => CanonicalAdmissionError::Correspondence,
         EncodeError::SourceWitness => CanonicalAdmissionError::SourceWitnessMismatch,

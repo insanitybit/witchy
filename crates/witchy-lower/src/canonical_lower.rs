@@ -49,6 +49,10 @@ pub enum CanonicalLoweringError {
     UnsupportedItem(&'static str),
     UnsupportedStatement(&'static str),
     UnsupportedExpression(&'static str),
+    /// Checked source recorded obligations canonical v1 cannot discharge
+    /// (library specializations, closure-witness or callable-ABI limits); the
+    /// payload lists them, semicolon separated.
+    UnsupportedCanonicalObligation(String),
     MissingProperTailSite(String),
     MissingBinding(String),
     DuplicateBinding(String),
@@ -87,6 +91,17 @@ pub fn lower_typed_module(
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let typed = source.typed_module();
+    // Checked source records what it could not bind as canonical authority
+    // (RFC-0165): library specializations, closures the v1 witness cannot
+    // authenticate, callable ABIs it cannot encode. Canonical v1 has no
+    // lowering for any of them, so the program fails closed here, naming
+    // them, rather than at checked-source construction or an unrelated call.
+    let obligations = source.obligations();
+    if !obligations.is_empty() {
+        return Err(CanonicalLoweringError::UnsupportedCanonicalObligation(
+            obligations.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+        ));
+    }
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(typed.module(), &function.name) {

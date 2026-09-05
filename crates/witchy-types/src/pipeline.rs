@@ -6,7 +6,7 @@
 //! destructive source lowering.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use std::fmt;
 
@@ -37,6 +37,60 @@ struct CanonicalCallableWitness {
     abi_manifest: CanonicalCallableAbiManifest,
     closed_abis: BTreeMap<String, CanonicalCallableAbi>,
     runtime_functions: Vec<String>,
+    /// Obligations this witness could not bind as authority; see
+    /// [`CanonicalObligation`].
+    obligations: BTreeSet<CanonicalObligation>,
+}
+
+/// Something the frontend proved present in a valid checked program that
+/// canonical v1 cannot bind as authority (RFC-0165).
+///
+/// An obligation is never dropped and never a type error: the program stays
+/// checked, the set is sorted and digest-bound into the source witness, and
+/// canonical lowering refuses a program whose set is non-empty, naming each
+/// entry. Forged or corrupted witness entries are not obligations; they refuse
+/// where they are detected.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CanonicalObligation {
+    /// A generated specialization outside the entry scope (a library generic
+    /// instantiated at a program type, such as `List.any` at a `task` type).
+    /// It is not a canonical runtime function and carries no signature or
+    /// ABI here.
+    Specialization(String),
+    /// The canonical closure witness could not authenticate every lambda in
+    /// the program; the payload is the witness's own diagnostic.
+    ClosureWitness(String),
+    /// The canonical callable ABI manifest could not encode every runtime
+    /// declaration; the payload is the manifest derivation's diagnostic.
+    CallableAbi(String),
+}
+
+impl CanonicalObligation {
+    fn tag(&self) -> u8 {
+        match self {
+            Self::Specialization(_) => 0,
+            Self::ClosureWitness(_) => 1,
+            Self::CallableAbi(_) => 2,
+        }
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::Specialization(detail)
+            | Self::ClosureWitness(detail)
+            | Self::CallableAbi(detail) => detail,
+        }
+    }
+}
+
+impl fmt::Display for CanonicalObligation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Specialization(name) => write!(f, "generic specialization `{name}`"),
+            Self::ClosureWitness(detail) => write!(f, "closure witness: {detail}"),
+            Self::CallableAbi(detail) => write!(f, "callable ABI: {detail}"),
+        }
+    }
 }
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -51,11 +105,19 @@ pub struct CheckedSourceWitness {
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
     launch_contract_digest: [u8; 32],
+    obligations_digest: [u8; 32],
 }
 
 impl CheckedSourceWitness {
     pub fn source_bundle_digest(&self) -> [u8; 32] {
         self.source_bundle_digest
+    }
+
+    /// Digest of the sorted [`CanonicalObligation`] set this checked source
+    /// recorded. Bound into SafeWIR authority so the set cannot be edited
+    /// between checked-source construction and canonical admission.
+    pub fn obligations_digest(&self) -> [u8; 32] {
+        self.obligations_digest
     }
 
     pub fn proper_tail_manifest_digest(&self) -> [u8; 32] {
@@ -92,6 +154,7 @@ pub struct CanonicalCheckedSource {
     closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
     launch_contract_payload: Vec<u8>,
+    obligations: BTreeSet<CanonicalObligation>,
 }
 
 impl CanonicalCheckedSource {
@@ -161,6 +224,14 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn launch_contract_payload(&self) -> &[u8] {
         &self.launch_contract_payload
+    }
+
+    /// What this checked source could not bind as canonical authority.
+    /// Canonical lowering must refuse a program whose set is non-empty;
+    /// nothing else may consume these entries.
+    #[doc(hidden)]
+    pub fn obligations(&self) -> &BTreeSet<CanonicalObligation> {
+        &self.obligations
     }
 }
 
@@ -581,6 +652,19 @@ fn launch_contract_digest(payload: &[u8]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+fn obligations_digest(obligations: &BTreeSet<CanonicalObligation>) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"witchy.checked-canonical-obligations.v1");
+    hasher.update(&(obligations.len() as u64).to_le_bytes());
+    for obligation in obligations {
+        hasher.update(&[obligation.tag()]);
+        let detail = obligation.detail();
+        hasher.update(&(detail.len() as u64).to_le_bytes());
+        hasher.update(detail.as_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
 fn attach_canonical_source(
     mut checked: CheckedModule,
     typed: typeck::TypedModule,
@@ -588,6 +672,7 @@ fn attach_canonical_source(
     proper_tail_manifest: ProperTailSiteManifest,
     closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
+    obligations: BTreeSet<CanonicalObligation>,
 ) -> Result<CheckedModule, PipelineError> {
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
@@ -599,11 +684,13 @@ fn attach_canonical_source(
             callable_abi_manifest_digest: callable_witness.abi_manifest.digest(),
             closure_witness_digest: closure_witness.digest(),
             launch_contract_digest,
+            obligations_digest: obligations_digest(&obligations),
         },
         proper_tail_manifest,
         closure_witness,
         callable_witness,
         launch_contract_payload,
+        obligations,
     });
     Ok(checked)
 }
@@ -628,15 +715,20 @@ fn bind_canonical_callable_witness(
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
 ) -> Result<CanonicalCallableWitness, PipelineError> {
     let linked_entry = typed.module().linked_entry.as_deref();
+    // The entry scope is the set of declarations canonical lowering treats as
+    // runtime functions: the entry itself and `entry.*`. An unlinked module
+    // (tests, direct binder callers) has no entry and everything is in scope.
+    let in_entry_scope = |name: &str| {
+        linked_entry.is_none_or(|entry| name == entry || name.starts_with(&format!("{entry}.")))
+    };
     let runtime_functions = typed
         .module()
         .items
         .iter()
         .filter_map(|item| match item {
             witchy_syntax::ast::Item::Function(function)
-                if linked_entry.is_none_or(|entry| {
-                    function.name == entry || function.name.starts_with(&format!("{entry}."))
-                }) && !function_has_free_signature_variables(function) => {
+                if in_entry_scope(&function.name)
+                    && !function_has_free_signature_variables(function) => {
                     Some(function.name.clone())
                 }
             _ => None,
@@ -652,18 +744,49 @@ fn bind_canonical_callable_witness(
         })?;
         signatures.insert(name.clone(), signature);
     }
+    // Generated instances split along the same entry scope. An instance inside
+    // the scope is a direct call target: it must carry an exact rechecked body
+    // and signature, and anything else is a forged or corrupted entry that
+    // refuses here. An instance outside the scope is a library specialization
+    // (`List.any` at a `task` type, `util.identity` at `Int`) that canonical
+    // v1 does not lower. It is not filtered away: it becomes a sorted,
+    // digest-bound obligation that `lower_typed_module` refuses precisely, so
+    // an unsupported family fails at canonical lowering instead of turning a
+    // valid checked program into a type error.
+    let mut obligations = BTreeSet::new();
     for name in generic_instances.keys() {
-        if !functions.contains(name.as_str()) || !signatures.contains_key(name) {
+        if functions.contains(name.as_str()) && signatures.contains_key(name) {
+            continue;
+        }
+        if in_entry_scope(name) {
             return Err(PipelineError::Type(TypeError {
                 message: format!(
                     "canonical generic specialization `{name}` lacks an exact checked concrete body or signature"
                 ),
             }));
         }
+        obligations.insert(CanonicalObligation::Specialization(name.clone()));
     }
-    let abi_manifest = canonical_abi::derive_manifest(typed, &runtime_functions).map_err(|error| {
-        PipelineError::Type(TypeError { message: error.to_string() })
-    })?;
+    // The manifest encodes every runtime declaration's ABI shape. A shape the
+    // canonical encoding does not cover yet (a rights-qualified capability
+    // type such as `Dir[Read]`, an unresolved nominal) is a v1 limit on a
+    // program the checker accepted, so it is an obligation, and the witness
+    // then binds no callable at all: an empty manifest and no closed ABIs,
+    // so nothing downstream can consume a partial inventory as authority.
+    let abi_manifest = match canonical_abi::derive_manifest(typed, &runtime_functions) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            obligations.insert(CanonicalObligation::CallableAbi(error.to_string()));
+            return Ok(CanonicalCallableWitness {
+                signatures,
+                generic_instances,
+                abi_manifest: CanonicalCallableAbiManifest::empty(),
+                closed_abis: BTreeMap::new(),
+                runtime_functions,
+                obligations,
+            });
+        }
+    };
     let closed_abis = runtime_functions
         .iter()
         .enumerate()
@@ -683,6 +806,7 @@ fn bind_canonical_callable_witness(
         abi_manifest,
         closed_abis,
         runtime_functions,
+        obligations,
     })
 }
 
@@ -763,10 +887,23 @@ fn link_checked_source_bundle_with(
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     let proper_tail_manifest =
         proper_tail_manifest.for_canonical_functions(typed_source.module());
-    let closure_witness = typed_source
-        .canonical_closure_witness()
-        .map_err(|error: ClosureWitnessError| PipelineError::Type(TypeError { message: error.to_string() }))?
-        .bind_source_bundle_digest(source_bundle_digest);
+    let mut obligations = callable_witness.obligations.clone();
+    // A closure the v1 witness cannot authenticate (a capture without an exact
+    // checked type, a lambda the table did not type, a borrowed capture) is a
+    // canonical limit on a checked program, so it is recorded as an obligation
+    // and the manifest binds no lambda at all. An internal inconsistency of
+    // the witness itself is not a limit and stays a type error.
+    let closure_witness = match typed_source.canonical_closure_witness() {
+        Ok(manifest) => manifest,
+        Err(error) if error.is_canonical_obligation() => {
+            obligations.insert(CanonicalObligation::ClosureWitness(error.to_string()));
+            ClosureWitnessManifest::default()
+        }
+        Err(error) => {
+            return Err(PipelineError::Type(TypeError { message: error.to_string() }));
+        }
+    }
+    .bind_source_bundle_digest(source_bundle_digest);
     attach_canonical_source(
         checked,
         typed_source,
@@ -774,6 +911,7 @@ fn link_checked_source_bundle_with(
         proper_tail_manifest,
         closure_witness,
         callable_witness,
+        obligations,
     )
 }
 
@@ -975,6 +1113,97 @@ mod tests {
         let error = bind_canonical_callable_witness(&typed, instances)
             .expect_err("a specialization without a checked body must refuse");
         assert!(error.to_string().contains("forged_generic_instance"));
+    }
+
+    /// A valid checked program that instantiates a library generic at a
+    /// program type is outside canonical v1, but that is a lowering refusal,
+    /// not a type error. Checked-source construction succeeds and records the
+    /// specialization as a digest-bound obligation.
+    #[test]
+    fn checked_source_records_library_specializations_as_obligations() {
+        let checked = link_checked_from_source_bundle(
+            vec![
+                (
+                    "main".to_string(),
+                    b"import util\n\nfn main() -> Int:\n    util.identity(1)\n".to_vec(),
+                ),
+                ("util".to_string(), b"pub fn identity(value: a) -> a:\n    value\n".to_vec()),
+            ],
+            "main",
+            no_expand,
+        )
+        .expect("a valid program outside the canonical subset still checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let obligations = canonical.obligations();
+        let [CanonicalObligation::Specialization(name)] = obligations.iter().collect::<Vec<_>>()[..] else {
+            panic!("exactly one library specialization expected, got {obligations:?}");
+        };
+        assert!(name.starts_with("util.identity__"), "{name}");
+        assert!(canonical.callable_signature(name).is_none(), "an obligation is not a runtime function");
+        assert_eq!(
+            canonical.source_witness().obligations_digest(),
+            obligations_digest(obligations)
+        );
+        assert_ne!(
+            canonical.source_witness().obligations_digest(),
+            obligations_digest(&BTreeSet::new()),
+            "the obligation set is bound into the source witness"
+        );
+    }
+
+    /// A rights-qualified capability parameter is outside the canonical ABI
+    /// encoding today. The program is valid, so it checks; the manifest binds
+    /// nothing and the limit is a digest-bound obligation.
+    #[test]
+    fn checked_source_records_callable_abi_limits_as_obligations() {
+        let checked = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn peek(dir: Dir[Read]) -> Int:\n    1\n\nfn main(dir: Dir) -> Int:\n    peek(dir)\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("a valid program with a rights-qualified capability still checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        assert!(
+            canonical.obligations().iter().any(|obligation| matches!(obligation, CanonicalObligation::CallableAbi(_))),
+            "{:?}",
+            canonical.obligations()
+        );
+        assert!(canonical.callable_abi_manifest().entries().is_empty(), "no partial inventory is bound");
+        assert!(canonical.closed_callable_abi("main").is_none());
+    }
+
+    /// The entry scope decides strictness: a bodyless instance inside it is a
+    /// forged direct call target and refuses; one outside it is an obligation.
+    #[test]
+    fn forged_entry_scope_specialization_refuses_while_library_names_become_obligations() {
+        let mut module = parse(
+            "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+        );
+        module.linked_entry = Some("main".to_string());
+        let (module, mut instances) =
+            crate::traits::lower_for_wasm_with_specializations(module).into_parts();
+        let typed = typeck::annotate_checked(module).expect("lowered generic source rechecks");
+        let identity = instances
+            .values()
+            .next()
+            .expect("generic instance identity")
+            .clone();
+        instances.insert("util.forged__Int".to_string(), identity.clone());
+        let witness = bind_canonical_callable_witness(&typed, instances.clone())
+            .expect("library-scope names are obligations, not type errors");
+        assert!(witness.obligations.contains(&CanonicalObligation::Specialization("util.forged__Int".to_string())));
+        assert!(witness.obligations.iter().any(|obligation| matches!(
+            obligation,
+            CanonicalObligation::Specialization(name) if name.starts_with("identity__")
+        )));
+
+        instances.insert("main.forged__Int".to_string(), identity);
+        let error = bind_canonical_callable_witness(&typed, instances)
+            .expect_err("a bodyless specialization inside the entry scope must refuse");
+        assert!(error.to_string().contains("main.forged__Int"));
     }
 
     #[test]

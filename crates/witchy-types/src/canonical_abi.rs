@@ -135,6 +135,16 @@ pub struct CanonicalCallableAbiManifest {
 }
 
 impl CanonicalCallableAbiManifest {
+    /// The manifest of a checked source whose runtime declarations could not
+    /// be encoded (an RFC-0165 obligation recorded by the pipeline). It binds
+    /// no callable and its digest is the digest of no entries, so nothing can
+    /// mistake it for a derived manifest of the same program.
+    pub fn empty() -> Self {
+        let entries = Vec::new();
+        let digest = manifest_digest(&entries);
+        Self { entries, digest }
+    }
+
     pub fn entries(&self) -> &[CanonicalCallableAbi] {
         &self.entries
     }

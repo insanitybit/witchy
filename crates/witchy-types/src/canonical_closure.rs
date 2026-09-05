@@ -114,6 +114,24 @@ pub enum ClosureWitnessError {
     DuplicateLambda,
 }
 
+impl ClosureWitnessError {
+    /// Whether this failure is a precision limit of the canonical v1 closure
+    /// witness on a program the type checker accepted (an RFC-0165 obligation
+    /// the pipeline records and canonical lowering refuses), as opposed to an
+    /// internal inconsistency of the witness itself, which stays a hard error.
+    pub fn is_canonical_obligation(&self) -> bool {
+        match self {
+            Self::MissingCallableType { .. }
+            | Self::CallableTypeNotFunction { .. }
+            | Self::BorrowedCapture { .. }
+            | Self::MissingCaptureType { .. }
+            | Self::UnresolvedCapture { .. }
+            | Self::UnsupportedType { .. } => true,
+            Self::PathOverflow | Self::DuplicateLambda => false,
+        }
+    }
+}
+
 impl fmt::Display for ClosureWitnessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -261,8 +279,16 @@ impl<'a> Builder<'a> {
         self.scopes.iter().rev().flat_map(|scope| scope.iter().rev()).find(|binding| binding.id.name == name)
     }
 
+    /// A name a closure body may mention without capturing anything: a checked
+    /// module function or constant, or a compiler-owned capability operation
+    /// (`__capop.print`, `__capop.listen_tls`, ...). Capability operations are
+    /// intrinsics keyed by the frontend's fixed table, not values in scope; the
+    /// authority they exercise arrives as the capability argument at the call,
+    /// so referencing one captures no environment. The cap-op table is the
+    /// frontend's, never a spelling the closure builder invents.
     fn is_authenticated_module_reference(&self, name: &str) -> bool {
         self.typed.table().function_type(name).is_some()
+            || witchy_syntax::cap_ops::is_op_name(name)
             || self.module.items.iter().any(|item| match item {
                 Item::Function(function) => function.name == name,
                 Item::Const { name: constant, .. } => constant == name,
@@ -493,6 +519,17 @@ mod tests {
             .resolve_capture("apply")
             .expect("authenticated module reference")
             .is_none());
+        // A capability operation is a frontend-owned intrinsic, not a capture:
+        // `__capop.print` inside an async lambda references no environment.
+        assert!(builder
+            .resolve_capture("__capop.print")
+            .expect("capability operations are authenticated module references")
+            .is_none());
+        assert!(matches!(
+            builder.resolve_capture("__capop.not_an_operation"),
+            Err(ClosureWitnessError::UnresolvedCapture { name })
+                if name == "__capop.not_an_operation"
+        ));
         assert!(matches!(
             builder.resolve_capture("missing_lexical_binding"),
             Err(ClosureWitnessError::UnresolvedCapture { name })
