@@ -263,7 +263,7 @@ fn validated_safewir_has_one_checker_owned_construction_surface() {
 
     assert_eq!(
         constructions,
-        vec![(authority, "validate_final".to_string())],
+        vec![(authority, "validate_final_inner".to_string())],
         "only final checking may construct ValidatedSafeWir"
     );
 }
