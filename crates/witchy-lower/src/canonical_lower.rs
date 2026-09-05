@@ -3609,7 +3609,7 @@ fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str)
 #[cfg(test)]
 mod tests {
     use super::{lower_typed_module, CanonicalLoweringError};
-    use witchy_syntax::ast::Item;
+    use witchy_syntax::ast::{Convention, Item};
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
         check_initial, check_initial_with_witness, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
@@ -4276,14 +4276,20 @@ mod tests {
     }
 
     #[test]
-    fn own_indirect_call_stays_fail_closed() {
+    fn var_indirect_call_stays_fail_closed() {
         let checked = checked(
-            "fn apply(f: fn(own Int) -> Int, value: Int) -> Int:\n    f(value)\n",
+            "fn apply(f: fn(var Int) -> Int, var value: Int) -> Int:\n    f(value)\n",
         );
         let source = checked.canonical_source().expect("canonical source");
         let error = lower_typed_module(source, empty_layouts())
-            .expect_err("indirect own calls need an explicit canonical convention carrier");
-        assert!(matches!(error, CanonicalLoweringError::UnsupportedExpression("own indirect tail call")));
+            .expect_err("indirect var calls remain unmodeled");
+        assert!(matches!(
+            error,
+            CanonicalLoweringError::UnsupportedConvention {
+                convention: Convention::Var,
+                ..
+            }
+        ));
     }
 
     #[test]
