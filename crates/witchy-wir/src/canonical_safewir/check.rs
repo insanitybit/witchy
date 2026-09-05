@@ -16,6 +16,10 @@ use memory::MemoryChecker;
 mod contracts;
 mod host;
 
+#[cfg(test)]
+#[path = "check/branch_width_tests.rs"]
+mod branch_width_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitialCheckError {
     InvalidLayoutBundle(String),

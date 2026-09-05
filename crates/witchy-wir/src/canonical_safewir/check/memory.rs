@@ -132,16 +132,24 @@ impl<'a> MemoryChecker<'a> {
         let comparison = self.state.comparisons.get(&condition)?;
         let left = *self.state.constants.get(&comparison.left)?;
         let right = *self.state.constants.get(&comparison.right)?;
+        let (signed_left, signed_right) = match value_type(self.function, comparison.left).ok()? {
+            ValueType::Size => (
+                i64::from(u32::try_from(left).ok()? as i32),
+                i64::from(u32::try_from(right).ok()? as i32),
+            ),
+            ValueType::Int => (left as i64, right as i64),
+            _ => return None,
+        };
         Some(match comparison.operator {
             ComparisonOperator::Equal => left == right,
             ComparisonOperator::NotEqual => left != right,
-            ComparisonOperator::LessSigned => (left as i64) < (right as i64),
+            ComparisonOperator::LessSigned => signed_left < signed_right,
             ComparisonOperator::LessUnsigned => left < right,
-            ComparisonOperator::LessEqualSigned => (left as i64) <= (right as i64),
+            ComparisonOperator::LessEqualSigned => signed_left <= signed_right,
             ComparisonOperator::LessEqualUnsigned => left <= right,
-            ComparisonOperator::GreaterSigned => (left as i64) > (right as i64),
+            ComparisonOperator::GreaterSigned => signed_left > signed_right,
             ComparisonOperator::GreaterUnsigned => left > right,
-            ComparisonOperator::GreaterEqualSigned => (left as i64) >= (right as i64),
+            ComparisonOperator::GreaterEqualSigned => signed_left >= signed_right,
             ComparisonOperator::GreaterEqualUnsigned => left >= right,
         })
     }
