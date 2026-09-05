@@ -388,10 +388,14 @@ pub(crate) fn run_checked_compiled(
     strict_dir: bool,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
-    let wasm = commands::compile::compile_checked_to_wasm_cached(checked)?;
+    let artifact = match codegen::compile_checked_module_artifact(checked) {
+        codegen::LoweringOutcome::Lowered(artifact) => artifact,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+    };
     run_compiled(
         checked.module(),
-        wasm,
+        CompiledWasm::Admitted(artifact),
         dir_roots,
         file_grants,
         net_allow,
@@ -435,7 +439,7 @@ pub(crate) fn run_checked_test_driver_compiled(
     };
     run_compiled(
         checked.module(),
-        wasm,
+        CompiledWasm::GeneratedDriver(wasm),
         dir_roots,
         file_grants,
         net_allow,
@@ -452,10 +456,15 @@ pub(crate) fn run_checked_test_driver_compiled(
     )
 }
 
+enum CompiledWasm {
+    Admitted(witchy_wir::AdmittedCanonicalArtifact),
+    GeneratedDriver(Vec<u8>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_compiled(
     linked: &ast::Module,
-    wasm: Vec<u8>,
+    wasm: CompiledWasm,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
@@ -614,9 +623,13 @@ fn run_compiled(
     }
     commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-    let mut vm = rt
-        .spawn(&wasm, caps, RUN_MEMORY_PAGES)
-        .map_err(|e| e.to_string())?;
+    let mut vm = match &wasm {
+        CompiledWasm::Admitted(artifact) => {
+            rt.spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
+        }
+        CompiledWasm::GeneratedDriver(bytes) => rt.spawn(bytes, caps, RUN_MEMORY_PAGES),
+    }
+    .map_err(|e| e.to_string())?;
     // Surface the *root cause*, not wasmtime's outer "error while executing at
     // wasm backtrace…" wrapper: a confinement violation then reads as the same
     // clean "`..` escapes the Dir capability" both backends print, and a genuine
