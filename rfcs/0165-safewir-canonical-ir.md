@@ -504,6 +504,8 @@ is not part of the simplified v1 critical path is preserved separately on
 
 The first milestone is an optimizer-free but useful SafeWIR compiler. It is
 complete only when all rows below are green on the cutover candidate.
+The live evidence and landing state for these rows is maintained in
+`0165-acceptance-ledger.md`; prose or branch-local probes do not complete a row.
 
 | ID | Requirement |
 |---|---|
