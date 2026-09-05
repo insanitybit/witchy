@@ -16,6 +16,8 @@ use crate::canonical_safewir::{
 };
 use crate::layout::LayoutId;
 
+const SIZE_MAX: u64 = u32::MAX as u64;
+
 /// A value observable at a SafeWIR function boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpreterValue {
@@ -253,7 +255,7 @@ impl<'a> Engine<'a> {
                 values.insert(*destination, InterpreterValue::Bool(*value));
             }
             Operation::ConstSize { destination, value } => {
-                values.insert(*destination, InterpreterValue::Size(*value));
+                values.insert(*destination, InterpreterValue::Size(self.size_from_u64(*value)?));
             }
             Operation::Arithmetic {
                 destination,
@@ -407,8 +409,13 @@ impl<'a> Engine<'a> {
                     .map(InterpreterValue::Int)
             }
             (InterpreterValue::Size(left), InterpreterValue::Size(right)) => {
-                self.size_arithmetic(operator, *left, *right, overflow)
-                    .map(InterpreterValue::Size)
+                self.size_arithmetic(
+                    operator,
+                    self.size_from_u64(*left)? as u32,
+                    self.size_from_u64(*right)? as u32,
+                    overflow,
+                )
+                .map(|value| InterpreterValue::Size(u64::from(value)))
             }
             (InterpreterValue::FloatBits(left), InterpreterValue::FloatBits(right)) => {
                 self.float_arithmetic(operator, *left, *right)
@@ -471,11 +478,16 @@ impl<'a> Engine<'a> {
     fn size_arithmetic(
         &self,
         operator: ArithmeticOperator,
-        left: u64,
-        right: u64,
+        left: u32,
+        right: u32,
         overflow: OverflowBehavior,
-    ) -> Result<u64, InterpretError> {
-        let checked = |value: Option<u64>| value.ok_or(InterpretError::ArithmeticTrap);
+    ) -> Result<u32, InterpretError> {
+        let checked = |value: Option<u32>| value.ok_or(InterpretError::ArithmeticTrap);
+        let signed_checked = |value: Option<i32>| {
+            value
+                .map(|value| value as u32)
+                .ok_or(InterpretError::ArithmeticTrap)
+        };
         match operator {
             ArithmeticOperator::Add => match overflow {
                 OverflowBehavior::Wrap => Ok(left.wrapping_add(right)),
@@ -489,18 +501,24 @@ impl<'a> Engine<'a> {
                 OverflowBehavior::Wrap => Ok(left.wrapping_mul(right)),
                 OverflowBehavior::Trap => checked(left.checked_mul(right)),
             },
-            ArithmeticOperator::DivideSigned | ArithmeticOperator::DivideUnsigned => {
-                checked(left.checked_div(right))
+            ArithmeticOperator::DivideSigned => {
+                signed_checked((left as i32).checked_div(right as i32))
             }
-            ArithmeticOperator::RemainderSigned | ArithmeticOperator::RemainderUnsigned => {
-                checked(left.checked_rem(right))
+            ArithmeticOperator::DivideUnsigned => checked(left.checked_div(right)),
+            ArithmeticOperator::RemainderSigned => {
+                signed_checked((left as i32).checked_rem(right as i32))
             }
+            ArithmeticOperator::RemainderUnsigned => checked(left.checked_rem(right)),
             ArithmeticOperator::BitAnd => Ok(left & right),
             ArithmeticOperator::BitOr => Ok(left | right),
             ArithmeticOperator::BitXor => Ok(left ^ right),
-            ArithmeticOperator::ShiftLeft => Ok(left.wrapping_shl((right as u32) & 63)),
+            ArithmeticOperator::ShiftLeft => Ok(left.wrapping_shl(right & 31)),
             ArithmeticOperator::ShiftRightSigned | ArithmeticOperator::ShiftRightUnsigned => {
-                Ok(left.wrapping_shr((right as u32) & 63))
+                if operator == ArithmeticOperator::ShiftRightSigned {
+                    Ok((left as i32).wrapping_shr(right & 31) as u32)
+                } else {
+                    Ok(left.wrapping_shr(right & 31))
+                }
             }
         }
     }
@@ -545,19 +563,22 @@ impl<'a> Engine<'a> {
                 ComparisonOperator::GreaterEqualSigned => left >= right,
                 ComparisonOperator::GreaterEqualUnsigned => (*left as u64) >= (*right as u64),
             }),
-            (InterpreterValue::Size(left), InterpreterValue::Size(right)) => Ok(match operator {
-                ComparisonOperator::Equal => left == right,
-                ComparisonOperator::NotEqual => left != right,
-                ComparisonOperator::LessSigned | ComparisonOperator::LessUnsigned => left < right,
-                ComparisonOperator::LessEqualSigned | ComparisonOperator::LessEqualUnsigned => {
-                    left <= right
-                }
-                ComparisonOperator::GreaterSigned | ComparisonOperator::GreaterUnsigned => {
-                    left > right
-                }
-                ComparisonOperator::GreaterEqualSigned
-                | ComparisonOperator::GreaterEqualUnsigned => left >= right,
-            }),
+            (InterpreterValue::Size(left), InterpreterValue::Size(right)) => {
+                let left = self.size_from_u64(*left)? as u32;
+                let right = self.size_from_u64(*right)? as u32;
+                Ok(match operator {
+                    ComparisonOperator::Equal => left == right,
+                    ComparisonOperator::NotEqual => left != right,
+                    ComparisonOperator::LessSigned => (left as i32) < (right as i32),
+                    ComparisonOperator::LessUnsigned => left < right,
+                    ComparisonOperator::LessEqualSigned => (left as i32) <= (right as i32),
+                    ComparisonOperator::LessEqualUnsigned => left <= right,
+                    ComparisonOperator::GreaterSigned => (left as i32) > (right as i32),
+                    ComparisonOperator::GreaterUnsigned => left > right,
+                    ComparisonOperator::GreaterEqualSigned => (left as i32) >= (right as i32),
+                    ComparisonOperator::GreaterEqualUnsigned => left >= right,
+                })
+            }
             (InterpreterValue::Bool(left), InterpreterValue::Bool(right)) => match operator {
                 ComparisonOperator::Equal => Ok(left == right),
                 ComparisonOperator::NotEqual => Ok(left != right),
@@ -758,9 +779,10 @@ impl<'a> Engine<'a> {
         if object_state.class != AllocationClass::ReferenceCounted {
             return Err(InterpretError::ObjectNotReferenceCounted(object));
         }
-        object_state.references = object_state
-            .references
-            .checked_add(1)
+        object_state.references = u32::try_from(object_state.references)
+            .ok()
+            .and_then(|references| references.checked_add(1))
+            .map(u64::from)
             .ok_or(InterpretError::ReferenceCountOverflow(object))?;
         Ok(())
     }
@@ -771,9 +793,10 @@ impl<'a> Engine<'a> {
             if object_state.class != AllocationClass::ReferenceCounted {
                 return Err(InterpretError::ObjectNotReferenceCounted(object));
             }
-            object_state.references = object_state
-                .references
-                .checked_sub(1)
+            object_state.references = u32::try_from(object_state.references)
+                .ok()
+                .and_then(|references| references.checked_sub(1))
+                .map(u64::from)
                 .ok_or(InterpretError::ReferenceCountUnderflow(object))?;
             object_state.references
         };
@@ -848,6 +871,14 @@ impl<'a> Engine<'a> {
             });
         }
         for (parameter, argument) in block.parameters.iter().zip(arguments) {
+            if parameter.value_type == crate::canonical_safewir::ValueType::Size {
+                match argument {
+                    InterpreterValue::Size(value) => {
+                        self.size_from_u64(value)?;
+                    }
+                    _ => return Err(InterpretError::TypeMismatch("Size")),
+                }
+            }
             values.insert(parameter.value, argument);
         }
         Ok(())
@@ -917,9 +948,16 @@ impl<'a> Engine<'a> {
         values: &BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<u64, InterpretError> {
         match self.value(id, values)? {
-            InterpreterValue::Size(value) => Ok(*value),
+            InterpreterValue::Size(value) => self.size_from_u64(*value),
             _ => Err(InterpretError::TypeMismatch("Size")),
         }
+    }
+
+    fn size_from_u64(&self, value: u64) -> Result<u64, InterpretError> {
+        if value > SIZE_MAX {
+            return Err(InterpretError::ArithmeticTrap);
+        }
+        Ok(value)
     }
 
     fn object_value(
@@ -1058,6 +1096,189 @@ mod tests {
             .expect("packed u32 list layout");
         let bundle = LayoutBundle::from_interner(&layouts, [list]).expect("layout bundle");
         (bundle, list)
+    }
+
+    fn size_arithmetic_module(
+        operator: ArithmeticOperator,
+        left_value: u64,
+        right_value: u64,
+        overflow: OverflowBehavior,
+    ) -> ValidatedSafeWir {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let result = ValueId::new(2);
+        validated(
+            empty_layouts(),
+            Vec::new(),
+            [
+                (left, ValueType::Size),
+                (right, ValueType::Size),
+                (result, ValueType::Size),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::ConstSize {
+                    destination: left,
+                    value: left_value,
+                },
+                Operation::ConstSize {
+                    destination: right,
+                    value: right_value,
+                },
+                Operation::Arithmetic {
+                    destination: result,
+                    operator,
+                    left,
+                    right,
+                    overflow,
+                },
+            ],
+            Terminator::Return {
+                values: vec![result],
+            },
+            vec![ValueType::Size],
+        )
+    }
+
+    #[test]
+    fn validated_size_arithmetic_uses_i32_width_and_signed_bits() {
+        let cases = [
+            (
+                ArithmeticOperator::Add,
+                u64::from(u32::MAX),
+                1,
+                OverflowBehavior::Wrap,
+                Ok(vec![InterpreterValue::Size(0)]),
+            ),
+            (
+                ArithmeticOperator::ShiftLeft,
+                1,
+                32,
+                OverflowBehavior::Wrap,
+                Ok(vec![InterpreterValue::Size(1)]),
+            ),
+            (
+                ArithmeticOperator::ShiftRightSigned,
+                u64::from(u32::MAX),
+                1,
+                OverflowBehavior::Wrap,
+                Ok(vec![InterpreterValue::Size(u64::from(u32::MAX))]),
+            ),
+            (
+                ArithmeticOperator::DivideSigned,
+                u64::from(u32::MAX - 1),
+                2,
+                OverflowBehavior::Wrap,
+                Ok(vec![InterpreterValue::Size(u64::from(u32::MAX))]),
+            ),
+        ];
+
+        for (operator, left, right, overflow, expected) in cases {
+            let module = size_arithmetic_module(operator, left, right, overflow);
+            assert_eq!(interpret(&module, FUNCTION, Vec::new()), expected);
+        }
+    }
+
+    #[test]
+    fn validated_size_arithmetic_traps_at_i32_boundary() {
+        let wrap_trap = size_arithmetic_module(
+            ArithmeticOperator::Add,
+            u64::from(u32::MAX),
+            1,
+            OverflowBehavior::Trap,
+        );
+        assert_eq!(
+            interpret(&wrap_trap, FUNCTION, Vec::new()),
+            Err(InterpretError::ArithmeticTrap)
+        );
+
+        let signed_division_trap = size_arithmetic_module(
+            ArithmeticOperator::DivideSigned,
+            u64::from(i32::MIN as u32),
+            u64::from(u32::MAX),
+            OverflowBehavior::Wrap,
+        );
+        assert_eq!(
+            interpret(&signed_division_trap, FUNCTION, Vec::new()),
+            Err(InterpretError::ArithmeticTrap)
+        );
+    }
+
+    #[test]
+    fn validated_size_values_reject_values_wider_than_i32() {
+        let input = ValueId::new(0);
+        let zero = ValueId::new(1);
+        let result = ValueId::new(2);
+        let module = validated(
+            empty_layouts(),
+            vec![BlockParameter {
+                value: input,
+                value_type: ValueType::Size,
+                ownership: None,
+            }],
+            [
+                (input, ValueType::Size),
+                (zero, ValueType::Size),
+                (result, ValueType::Size),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::ConstSize {
+                    destination: zero,
+                    value: 0,
+                },
+                Operation::Arithmetic {
+                    destination: result,
+                    operator: ArithmeticOperator::Add,
+                    left: input,
+                    right: zero,
+                    overflow: OverflowBehavior::Trap,
+                },
+            ],
+            Terminator::Return {
+                values: vec![result],
+            },
+            vec![ValueType::Size],
+        );
+
+        assert_eq!(
+            interpret(
+                &module,
+                FUNCTION,
+                vec![InterpreterValue::Size(SIZE_MAX + 1)],
+            ),
+            Err(InterpretError::ArithmeticTrap)
+        );
+    }
+
+    #[test]
+    fn reference_counts_trap_at_i32_maximum() {
+        let (layouts, layout) = packed_u32_layout();
+        let module = validated(
+            layouts,
+            Vec::new(),
+            BTreeMap::new(),
+            Vec::new(),
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+        );
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let object = engine
+            .allocate(
+                layout,
+                AllocationClass::ReferenceCounted,
+                RuntimeExtent::FixedBytes(0),
+                false,
+            )
+            .expect("allocate reference-counted object");
+        engine.object_mut(object).expect("object").references = SIZE_MAX;
+
+        assert_eq!(
+            engine.retain(object),
+            Err(InterpretError::ReferenceCountOverflow(object))
+        );
     }
 
     #[test]
