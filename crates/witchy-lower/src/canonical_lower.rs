@@ -64,6 +64,7 @@ pub enum CanonicalLoweringError {
     IndirectCalleeType(ValueType),
     UnsupportedIndirectResult(ValueType),
     UnsupportedCallOwnership { callee: String, parameter: usize, ownership: ParameterOwnership },
+    MissingCheckedCallConventions(FunctionSignatureId),
     IdOverflow,
     TailManifest(String),
     InvalidAuthenticatedAbiCatalog(String),
@@ -187,21 +188,7 @@ pub fn lower_typed_module(
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
     }
-    let own_parameters_by_name = functions_by_name
-        .keys()
-        .filter_map(|name| {
-            let Type::Fn(parameters, _, conventions, _) = source.callable_signature(name)?.unqualified() else {
-                return None;
-            };
-            let conventions = if conventions.is_empty() {
-                vec![Convention::Let; parameters.len()]
-            } else {
-                conventions.clone()
-            };
-            Some((name.clone(), conventions.into_iter().map(|convention| convention == Convention::Own).collect::<Vec<_>>()))
-        })
-        .collect::<HashMap<_, _>>();
-    let own_parameters_by_signature = callable_types
+    let checked_parameter_conventions = callable_types
         .iter()
         .filter_map(|ty| {
             let Type::Fn(parameters, _, conventions, _) = ty.unqualified() else {
@@ -212,7 +199,7 @@ pub fn lower_typed_module(
             } else {
                 conventions.clone()
             };
-            Some((function_types[ty], conventions.into_iter().map(|convention| convention == Convention::Own).collect::<Vec<_>>()))
+            Some((function_types[ty], conventions))
         })
         .collect::<HashMap<_, _>>();
     for item in &typed.module().items {
@@ -282,8 +269,7 @@ pub fn lower_typed_module(
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
             signature,
             &functions_by_name,
-            &own_parameters_by_name,
-            &own_parameters_by_signature,
+            &checked_parameter_conventions,
             &signatures,
             &tail_manifest,
             typed.table(),
@@ -501,8 +487,7 @@ fn lower_function(
     item: u32,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
-    own_parameters_by_name: &HashMap<String, Vec<bool>>,
-    own_parameters_by_signature: &HashMap<FunctionSignatureId, Vec<bool>>,
+    checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &[FunctionSignature],
     tail_manifest: &ProperTailSiteManifest,
     type_table: &TypeTable,
@@ -526,8 +511,7 @@ fn lower_function(
         current: BlockId::new(0),
         item,
         functions,
-        own_parameters_by_name,
-        own_parameters_by_signature,
+        checked_parameter_conventions,
         signatures,
         tail_manifest,
         type_table,
@@ -611,8 +595,7 @@ struct FunctionLowerer<'a> {
     current: BlockId,
     item: u32,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
-    own_parameters_by_name: &'a HashMap<String, Vec<bool>>,
-    own_parameters_by_signature: &'a HashMap<FunctionSignatureId, Vec<bool>>,
+    checked_parameter_conventions: &'a HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &'a [FunctionSignature],
     tail_manifest: &'a ProperTailSiteManifest,
     type_table: &'a TypeTable,
@@ -1806,7 +1789,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = self.lower_call_arguments(name, arguments, &signature, true)?;
+        let arguments = self.lower_call_arguments(name, arguments, signature_id, &signature, true)?;
         Ok(Terminator::TailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
             callee,
@@ -1829,7 +1812,7 @@ impl FunctionLowerer<'_> {
             .get(signature_id.get() as usize)
             .cloned()
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
-        let arguments = self.lower_call_arguments(name, arguments, &signature, false)?;
+        let arguments = self.lower_call_arguments(name, arguments, signature_id, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -1861,16 +1844,11 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "indirect tail-call signature",
             ))?;
-        if self.own_parameters_by_signature.get(&signature_id)
-            .is_some_and(|parameters| parameters.iter().any(|own| *own))
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression("own indirect tail call"));
-        }
         if signature
             .parameters
             .iter()
             .copied()
-            .any(|value_type| !is_indirect_scalar(value_type))
+            .any(|value_type| !is_indirect_result(value_type))
             || signature
                 .results
                 .iter()
@@ -1902,7 +1880,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = self.lower_call_arguments("<indirect tail>", arguments, &signature, true)?;
+        let arguments = self.lower_call_arguments("<indirect tail>", arguments, signature_id, &signature, true)?;
         Ok(Terminator::VarTailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
             callee,
@@ -1924,16 +1902,11 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "indirect call signature",
             ))?;
-        if self.own_parameters_by_signature.get(&signature_id)
-            .is_some_and(|parameters| parameters.iter().any(|own| *own))
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression("own indirect call"));
-        }
         if signature
             .parameters
             .iter()
             .copied()
-            .any(|value_type| !is_indirect_scalar(value_type))
+            .any(|value_type| !is_indirect_result(value_type))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "memory-bearing indirect call parameter",
@@ -1947,7 +1920,7 @@ impl FunctionLowerer<'_> {
         {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
-        let arguments = self.lower_call_arguments("<indirect>", arguments, &signature, false)?;
+        let arguments = self.lower_call_arguments("<indirect>", arguments, signature_id, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -1967,16 +1940,22 @@ impl FunctionLowerer<'_> {
         &mut self,
         callee: &str,
         arguments: &[Expr],
+        signature_id: FunctionSignatureId,
         signature: &FunctionSignature,
         tail: bool,
     ) -> Result<Vec<CallArgument>, CanonicalLoweringError> {
         let parameters = &signature.contract.parameters;
+        let conventions = self.checked_parameter_conventions.get(&signature_id)
+            .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(signature_id))?;
         if arguments.len() != parameters.len() {
             return Err(CanonicalLoweringError::CallArityMismatch {
                 callee: callee.to_owned(),
                 expected: parameters.len(),
                 actual: arguments.len(),
             });
+        }
+        if conventions.len() != parameters.len() {
+            return Err(CanonicalLoweringError::MissingCheckedCallConventions(signature_id));
         }
         arguments
             .iter()
@@ -1993,32 +1972,38 @@ impl FunctionLowerer<'_> {
                         actual,
                     });
                 }
-                match contract.ownership {
-                    ParameterOwnership::Value => Ok(CallArgument::Value(value)),
-                    ParameterOwnership::Shared if self.own_parameters_by_name
-                        .get(callee)
-                        .and_then(|parameters| parameters.get(parameter))
-                        .copied()
-                        .unwrap_or(false) => {
+                match conventions[parameter] {
+                    Convention::Own => match contract.ownership {
+                        ParameterOwnership::Value => Ok(CallArgument::Value(value)),
+                        ParameterOwnership::Shared => {
                         // The authenticated source `own` convention transfers
                         // this entry token to the callee.  Do not also append a
                         // local DropRef at this function's exit; the central
                         // release placer owns cleanup after the transfer.
                         self.owned_parameters.retain(|owned| *owned != value);
                         Ok(CallArgument::Move(value))
-                    }
-                    ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
-                    ParameterOwnership::Shared => {
-                        let destination = self.fresh(actual)?;
-                        self.push_operation(Operation::CloneRef { destination, source: value });
-                        Ok(CallArgument::Move(destination))
-                    }
-                    ParameterOwnership::Unique => Ok(CallArgument::Move(value)),
-                    ownership => Err(CanonicalLoweringError::UnsupportedCallOwnership {
-                        callee: callee.to_owned(),
-                        parameter,
-                        ownership,
-                    }),
+                        }
+                        ownership => Err(CanonicalLoweringError::UnsupportedCallOwnership {
+                            callee: callee.to_owned(), parameter, ownership,
+                        }),
+                    },
+                    Convention::Let => match contract.ownership {
+                        ParameterOwnership::Value => Ok(CallArgument::Value(value)),
+                        ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
+                        ParameterOwnership::Shared => {
+                            let destination = self.fresh(actual)?;
+                            self.push_operation(Operation::CloneRef { destination, source: value });
+                            Ok(CallArgument::Move(destination))
+                        }
+                        ownership => Err(CanonicalLoweringError::UnsupportedCallOwnership {
+                            callee: callee.to_owned(), parameter, ownership,
+                        }),
+                    },
+                    convention @ (Convention::Borrow | Convention::Var) => Err(
+                        CanonicalLoweringError::UnsupportedConvention {
+                            function: callee.to_owned(), parameter: parameter.to_string(), convention,
+                        },
+                    ),
                 }
             })
             .collect()

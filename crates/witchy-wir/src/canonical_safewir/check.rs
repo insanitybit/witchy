@@ -1090,7 +1090,7 @@ fn check_operation(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            reject_indirect_memory_arguments(function, arguments)?;
+            check_indirect_reference_arguments(function, arguments, signature)?;
             check_call(function, destinations, arguments, signature, Some(memory))
         }
         Operation::HostCall { destinations, import, arguments } => {
@@ -1208,20 +1208,29 @@ fn check_call(
     Ok(())
 }
 
-fn reject_indirect_memory_arguments(
+fn check_indirect_reference_arguments(
     function: &Function,
     arguments: &[CallArgument],
+    signature: &FunctionSignature,
 ) -> Result<(), InitialCheckError> {
-    if arguments.iter().any(|argument| {
+    if arguments.len() != signature.contract.parameters.len() {
+        return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+    }
+    if arguments.iter().zip(&signature.contract.parameters).any(|(argument, parameter)| {
         let value = match argument {
             CallArgument::Value(value)
             | CallArgument::Move(value)
             | CallArgument::Share(value) => *value,
             CallArgument::Borrow(borrow) => borrow.source(),
         };
-        value_type(function, value)
+        let value_type = value_type(function, value);
+        let memory_bearing = value_type.as_ref()
             .map(|value_type| value_type.is_memory_bearing())
-            .unwrap_or(true)
+            .unwrap_or(true);
+        memory_bearing && !matches!(
+            (argument, value_type, parameter.value_type, parameter.ownership),
+            (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Shared)
+        )
     }) {
         return Err(InitialCheckError::UnsupportedIndirectCall {
             function: function.id,
@@ -1270,8 +1279,8 @@ fn check_terminator(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            reject_indirect_memory_arguments(function, arguments)?;
-            check_tail_call(function, arguments, signature, current_signature, None)?;
+            check_indirect_reference_arguments(function, arguments, signature)?;
+            check_tail_call(function, arguments, signature, current_signature, Some(memory))?;
             memory.check_exit(&[])
         }
         Terminator::Branch { target, arguments } => {
@@ -1551,6 +1560,33 @@ mod tests {
             ],
             proper_tail_sites: tail_sites,
         })
+    }
+
+    #[test]
+    fn indirect_reference_value_argument_is_refused() {
+        let layout = LayoutId::from_bytes([0; 32]);
+        let function = Function {
+            id: FUNCTION,
+            signature: SIGNATURE,
+            entry: ENTRY,
+            value_types: [(VALUE, ValueType::Ref(layout))].into_iter().collect(),
+            blocks: Vec::new(),
+        };
+        let signature = FunctionSignature {
+            id: CALLEE_SIGNATURE,
+            parameters: vec![ValueType::Ref(layout)],
+            results: Vec::new(),
+            contract: call_contract(layout, ParameterOwnership::Shared, Vec::new(), BTreeMap::new()),
+        };
+
+        assert!(matches!(
+            super::check_indirect_reference_arguments(
+                &function,
+                &[super::super::CallArgument::Value(VALUE)],
+                &signature,
+            ),
+            Err(InitialCheckError::UnsupportedIndirectCall { function }) if function == FUNCTION
+        ));
     }
 
     fn allocated_list_with_header(

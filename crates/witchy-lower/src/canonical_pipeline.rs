@@ -441,6 +441,59 @@ mod tests {
     }
 
     #[test]
+    fn indirect_own_list_call_reaches_admitted_execution() {
+        let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn apply(f: fn(own List(Int)) -> List(Int), own xs: List(Int)) -> Int:\n    let ys = f(xs)\n    ys[0]\nfn main() -> Int:\n    apply(identity, [42])\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked indirect own List source");
+        let artifact = admit_checked_module(&checked).expect("admit indirect own List artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect own List artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect own List artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect own List main export");
+        assert_eq!(main.call(&mut store, ()).expect("run indirect own List main"), 42);
+    }
+
+    #[test]
+    fn indirect_let_list_call_reaches_admitted_execution() {
+        let source = "fn identity(xs: List(Int)) -> List(Int):\n    xs\nfn apply(f: fn(List(Int)) -> List(Int), xs: List(Int)) -> Int:\n    let ys = f(xs)\n    ys[0]\nfn main() -> Int:\n    apply(identity, [42])\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked indirect let List source");
+        let artifact = admit_checked_module(&checked).expect("admit indirect let List artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect let List artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect let List artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect let List main export");
+        assert_eq!(main.call(&mut store, ()).expect("run indirect let List main"), 42);
+    }
+
+    #[test]
+    fn indirect_own_list_tail_call_reaches_admitted_execution() {
+        let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn apply(f: fn(own List(Int)) -> List(Int), own xs: List(Int)) -> List(Int):\n    f(xs)\nfn main() -> Int:\n    apply(identity, [42])[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked indirect own List tail source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(canonical, derive_layout_bundle(canonical).expect("canonical layouts"))
+            .expect("lower indirect own List tail source");
+        assert!(matches!(candidate.functions()[1].blocks[0].terminator,
+            witchy_wir::canonical_safewir::Terminator::VarTailCall { .. }));
+        let artifact = admit_checked_module(&checked).expect("admit indirect own List tail artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect own List tail artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect own List tail artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect own List tail main export");
+        assert_eq!(main.call(&mut store, ()).expect("run indirect own List tail main"), 42);
+    }
+
+    #[test]
     fn checked_function_value_variable_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    let f = answer\n    f() + 1\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

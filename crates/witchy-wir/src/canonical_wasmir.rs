@@ -28,9 +28,9 @@ use crate::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, FunctionSignature, HeaderField,
     HostCallArgument, HostBufferExtent, HostMutation, HostParameterRole, HostResultRole,
-    ImportContract, ImportContractIdentity, ImportId, LoadTransfer, ModuleStage, Operation,
-    OptimizedValid, Place, Projection, StoreTransfer, Terminator, ValidatedSafeWir, ValueId,
-    ValueType,
+    ImportContract, ImportContractIdentity, ImportId, LoadTransfer, MemoryEffect, ModuleStage,
+    Operation, OptimizedValid, ParameterOwnership, Place, Projection, StoreTransfer, Terminator,
+    ValidatedSafeWir, ValueId, ValueType,
 };
 use crate::layout::{
     HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, RcHeader, ScalarKind,
@@ -646,6 +646,20 @@ fn is_indirect_result(value_type: ValueType) -> bool {
     is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
 }
 
+fn is_indirect_parameter(signature: &FunctionSignature, index: usize, value_type: ValueType) -> bool {
+    if is_indirect_scalar(value_type) {
+        return true;
+    }
+    matches!(value_type, ValueType::Ref(_))
+        && matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::Shared))
+        && signature.contract.parameter_effects.get(&(index as u32)).is_none_or(|effects| {
+            effects.iter().all(|effect| matches!(
+                effect,
+                MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release
+            ))
+        })
+}
+
 fn checked_table_index(
     function_indices: &BTreeMap<FunctionId, u32>,
     function: FunctionId,
@@ -788,7 +802,7 @@ fn lower_operation(
             if value_types.get(callee) != Some(&ValueType::Callable(*signature))
                 || signature_def.parameters.len() != arguments.len()
                 || signature_def.results.len() != destinations.len()
-                || signature_def.parameters.iter().copied().any(|value_type| !is_indirect_scalar(value_type))
+                || signature_def.parameters.iter().copied().enumerate().any(|(index, value_type)| !is_indirect_parameter(signature_def, index, value_type))
                 || signature_def.results.iter().copied().any(|value_type| !is_indirect_result(value_type))
             {
                 return Err(LoweringError::UnsupportedOperation {
@@ -809,6 +823,9 @@ fn lower_operation(
                         function,
                         operation: "VarCall argument type",
                     });
+                }
+                if matches!(expected, ValueType::Ref(_)) && !matches!(argument, CallArgument::Move(_)) {
+                    return Err(LoweringError::UnsupportedCallArgument { function });
                 }
             }
             for (destination, expected) in destinations.iter().zip(&signature_def.results) {
@@ -933,11 +950,13 @@ fn lower_terminator(
                 },
             )?;
             if function.value_types.get(callee) != Some(&ValueType::Callable(*signature))
+                || signature_def.parameters.len() != arguments.len()
                 || signature_def
                     .parameters
                     .iter()
                     .copied()
-                    .any(|value_type| !is_indirect_scalar(value_type))
+                    .enumerate()
+                    .any(|(index, value_type)| !is_indirect_parameter(signature_def, index, value_type))
                 || signature_def
                     .results
                     .iter()
@@ -948,6 +967,24 @@ fn lower_terminator(
                     function: function.id,
                     operation: "VarTailCall memory-bearing or mismatched signature",
                 });
+            }
+            for (argument, expected) in arguments.iter().zip(&signature_def.parameters) {
+                let value = match argument {
+                    CallArgument::Value(value) | CallArgument::Move(value) => *value,
+                    CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => borrow.source(),
+                    CallArgument::Share(_) | CallArgument::Borrow(_) => {
+                        return Err(LoweringError::UnsupportedCallArgument { function: function.id });
+                    }
+                };
+                if function.value_types.get(&value) != Some(expected) {
+                    return Err(LoweringError::UnsupportedOperation {
+                        function: function.id,
+                        operation: "VarTailCall argument type",
+                    });
+                }
+                if matches!(expected, ValueType::Ref(_)) && !matches!(argument, CallArgument::Move(_)) {
+                    return Err(LoweringError::UnsupportedCallArgument { function: function.id });
+                }
             }
             ScalarTerminator::VarTailCall {
                 site: *site,
@@ -4243,6 +4280,9 @@ fn expected_linear_function_plan(
             }
             Operation::UpdateCount { object, count } => {
                 push_update_count_plan(&mut plan, function, layouts, &layout, *object, *count)?;
+            }
+            Operation::CloneRef { destination, source } => {
+                push_share_plan(&mut plan, &layout, *destination, *source)?;
             }
             Operation::Reclaim { object } => {
                 push_reclaim_plan(&mut plan, &layout, *object)?;

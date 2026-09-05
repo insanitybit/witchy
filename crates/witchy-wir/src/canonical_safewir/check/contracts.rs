@@ -273,11 +273,13 @@ fn derive_summary(
                 if target.results.len() != summary.results.len()
                     || signature.results.len() != summary.results.len()
                     || target.results.iter().any(|result| !is_indirect_result(result))
-                    || signature
-                        .parameters
-                        .iter()
-                        .copied()
-                        .any(|value_type| value_type.is_memory_bearing())
+                    || signature.contract.parameters.iter().enumerate().any(|(index, parameter)| {
+                        matches!(parameter.value_type, ValueType::Ref(_))
+                            && (!matches!(parameter.ownership, ParameterOwnership::Shared)
+                                || signature.contract.parameter_effects.get(&(index as u32))
+                                    .is_some_and(|effects| effects.iter().any(|effect| !matches!(effect,
+                                        MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release))))
+                    })
                 {
                     return Err(InitialCheckError::UnsupportedIndirectCall {
                         function: function.id,
