@@ -1482,7 +1482,7 @@ fn local_layout(
             )?);
         }
     }
-    let mut scratch = vec![0; destructor_depth.saturating_mul(4).max(4)];
+    let mut scratch = vec![0; destructor_depth.saturating_mul(5).max(5)];
     for (slot, index) in scratch.iter_mut().enumerate() {
         *index = entry.parameters.len() as u32 + extra_types.len() as u32;
         extra_types.push(ValType::I32);
@@ -1999,8 +1999,8 @@ fn emit_drop_ref_local(
     object_layout: crate::layout::LayoutId,
     depth: usize,
 ) -> Result<(), EncodeError> {
-    let base = depth * 4;
-    if base + 3 >= layout.scratch.len() {
+    let base = depth * 5;
+    if base + 4 >= layout.scratch.len() {
         return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
     }
     emit_get_index(body, scratch_index(layout, base));
@@ -3882,8 +3882,8 @@ fn push_drop_ref_local_plan(
     object_layout: crate::layout::LayoutId,
     depth: usize,
 ) -> Result<(), CanonicalAdmissionError> {
-    let base = depth * 4;
-    if base + 3 >= layout.scratch.len() {
+    let base = depth * 5;
+    if base + 4 >= layout.scratch.len() {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
     plan.extend([

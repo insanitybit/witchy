@@ -1031,6 +1031,9 @@ impl<'a> MemoryChecker<'a> {
                 && range.element == element
                 && range.initialized
                 && range.zero_start
+        }) && !self.state.stored_objects.keys().any(|(stored_object, _)| {
+            self.state.objects.get(stored_object)
+                .is_some_and(|candidate| candidate.identity == allocation_identity)
         }) {
             return Ok(());
         }
@@ -2351,6 +2354,15 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         self.require_owned_slots_initialized(object, "Reclaim(uninitialized owned slot)")?;
+        let descriptor = self.descriptor(state.layout)?;
+        if descriptor.kind().packed_element_layout().is_some_and(|element| {
+            matches!(
+                self.layouts.get(element).map(|layout| layout.kind()),
+                Some(LayoutKind::RuntimePointerValueSlot { .. })
+            )
+        }) {
+            return self.unsupported("Reclaim(pointer-bearing layout requires DropRef)");
+        }
         if self.state.range_states.iter().any(|(range, state)| {
             range.object == object && state.initialized && !self.is_zero(range.length)
         }) {
@@ -3569,6 +3581,48 @@ mod tests {
                 checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
                 RangeState { element: pointer_element, ownership: Ownership::Consumed, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: false, zero_width: false, zero_start: true }
             );
+        });
+    }
+
+    #[test]
+    fn pointer_bearing_reclaim_requires_recursive_drop() {
+        with_pointer_slot_checker(|checker, list, _pointee| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
+            );
+            assert!(matches!(
+                checker.check(&Operation::Reclaim { object: SOURCE }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Reclaim(pointer-bearing layout requires DropRef)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot() {
+        with_pointer_slot_checker(|checker, list, _pointee| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.constants.remove(&COUNT);
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
+            );
+            let child = checker.live_object(CHILD).unwrap().clone();
+            checker.state.stored_objects.insert(
+                (SOURCE, SlotIdentity::Dynamic(ALIAS_LENGTH)),
+                child,
+            );
+            assert!(matches!(
+                checker.check(&Operation::DropRef { object: SOURCE }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "DropRef(uninitialized owned slot)",
+                    ..
+                })
+            ));
         });
     }
 
