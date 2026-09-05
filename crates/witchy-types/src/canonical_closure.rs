@@ -10,6 +10,7 @@ use std::fmt;
 
 use witchy_syntax::ast::{self, Block, Convention, Expr, Item, Pattern, Stmt, Type};
 
+use crate::canonical_abi;
 use crate::typeck::{self, ProperTailCallableId, ProperTailExprKind, ProperTailPathStep, Ty, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,6 +46,7 @@ pub enum ClosureCaptureTransfer {
 pub struct ClosureCaptureWitness {
     binding: ClosureBindingId,
     checked_type: Type,
+    checked_type_encoding: Vec<u8>,
     transfer: ClosureCaptureTransfer,
 }
 
@@ -58,6 +60,7 @@ impl ClosureCaptureWitness {
 pub struct ClosureWitness {
     id: ProperTailCallableId,
     signature: Ty,
+    signature_encoding: Vec<u8>,
     captures: Vec<ClosureCaptureWitness>,
 }
 
@@ -82,11 +85,11 @@ impl ClosureWitnessManifest {
         put_u32(&mut bytes, self.entries.len());
         for entry in &self.entries {
             encode_callable(&entry.id, &mut bytes);
-            put_debug(&mut bytes, &entry.signature);
+            put_bytes(&mut bytes, &entry.signature_encoding);
             put_u32(&mut bytes, entry.captures.len());
             for capture in &entry.captures {
                 encode_binding(&capture.binding, &mut bytes);
-                put_debug(&mut bytes, &capture.checked_type);
+                put_bytes(&mut bytes, &capture.checked_type_encoding);
                 bytes.push(capture.transfer as u8);
             }
         }
@@ -105,6 +108,8 @@ pub enum ClosureWitnessError {
     CallableTypeNotFunction { path: Vec<ProperTailPathStep>, ty: Ty },
     BorrowedCapture { name: String },
     MissingCaptureType { name: String },
+    UnresolvedCapture { name: String },
+    UnsupportedType { context: String },
     PathOverflow,
     DuplicateLambda,
 }
@@ -116,6 +121,8 @@ impl fmt::Display for ClosureWitnessError {
             Self::CallableTypeNotFunction { ty, .. } => write!(f, "canonical closure has non-callable checked type `{ty}`"),
             Self::BorrowedCapture { name } => write!(f, "canonical closure capture `{name}` carries an explicit reference and cannot be authenticated in v1"),
             Self::MissingCaptureType { name } => write!(f, "canonical closure capture `{name}` lacks an exact checked type"),
+            Self::UnresolvedCapture { name } => write!(f, "canonical closure capture `{name}` is not a resolved lexical binding or authenticated module reference"),
+            Self::UnsupportedType { context } => write!(f, "canonical closure contains an unsupported type: {context}"),
             Self::PathOverflow => f.write_str("canonical closure structural path exceeds u32 range"),
             Self::DuplicateLambda => f.write_str("canonical closure manifest contains a duplicate lambda identity"),
         }
@@ -136,10 +143,13 @@ fn put_u32(bytes: &mut Vec<u8>, value: usize) {
     bytes.extend_from_slice(&u32::try_from(value).expect("validated closure manifest size").to_le_bytes());
 }
 
-fn put_debug<T: fmt::Debug>(bytes: &mut Vec<u8>, value: &T) {
-    let text = format!("{value:?}");
-    put_u32(bytes, text.len());
-    bytes.extend_from_slice(text.as_bytes());
+fn put_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+    put_u32(bytes, value.len());
+    bytes.extend_from_slice(value);
+}
+
+fn put_str(bytes: &mut Vec<u8>, value: &str) {
+    put_bytes(bytes, value.as_bytes());
 }
 
 fn encode_callable(callable: &ProperTailCallableId, bytes: &mut Vec<u8>) {
@@ -159,7 +169,7 @@ fn encode_binding(binding: &ClosureBindingId, bytes: &mut Vec<u8>) {
             ClosureBindingPathStep::LoopVariable => bytes.push(3),
         }
     }
-    put_debug(bytes, &binding.name);
+    put_str(bytes, &binding.name);
 }
 
 fn put_path(path: &[ProperTailPathStep], bytes: &mut Vec<u8>) {
@@ -214,14 +224,10 @@ fn explicit_borrow(ty: &Type) -> bool {
 }
 
 fn is_capability(ty: &Type, module: &ast::Module) -> bool {
-    let Type::Qualified(_, inner) = ty else { return is_capability_unqualified(ty, module); };
-    is_capability(inner, module)
-}
-
-fn is_capability_unqualified(ty: &Type, module: &ast::Module) -> bool {
-    let Type::Named(name, _) = ty else { return false; };
-    matches!(name.as_str(), "Console" | "Clock" | "Rand" | "Env" | "Secret" | "Exec" | "Fetch" | "Dir" | "File" | "Net" | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec")
-        || module.items.iter().any(|item| matches!(item, Item::Type(def) if def.name == *name && def.is_capability))
+    let Type::Named(name, _) = ty.unqualified() else { return false; };
+    module.items.iter().any(|item| {
+        matches!(item, Item::Type(def) if def.name == *name && def.is_capability)
+    }) || witchy_cap_model::CapabilityKind::from_name(name).is_some()
 }
 
 fn capture_transfer(ty: &Type, convention: Convention, module: &ast::Module) -> ClosureCaptureTransfer {
@@ -253,6 +259,25 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     fn resolve(&self, name: &str) -> Option<&Binding> {
         self.scopes.iter().rev().flat_map(|scope| scope.iter().rev()).find(|binding| binding.id.name == name)
+    }
+
+    fn is_authenticated_module_reference(&self, name: &str) -> bool {
+        self.typed.table().function_type(name).is_some()
+            || self.module.items.iter().any(|item| match item {
+                Item::Function(function) => function.name == name,
+                Item::Const { name: constant, .. } => constant == name,
+                _ => false,
+            })
+    }
+
+    fn resolve_capture(&self, name: &str) -> Result<Option<&Binding>, ClosureWitnessError> {
+        if let Some(binding) = self.resolve(name) {
+            return Ok(Some(binding));
+        }
+        if self.is_authenticated_module_reference(name) {
+            return Ok(None);
+        }
+        Err(ClosureWitnessError::UnresolvedCapture { name: name.to_string() })
     }
 
     fn walk_callable(&mut self, body: &Block, callable: ProperTailCallableId, params: &[ast::Param], param_types: &[Type]) -> Result<(), ClosureWitnessError> {
@@ -317,15 +342,19 @@ impl<'a> Builder<'a> {
                 let id = ProperTailCallableId { lambda_path: path.clone(), ..callable.clone() };
                 let signature = self.typed.table().type_of(expr).cloned().ok_or_else(|| ClosureWitnessError::MissingCallableType { path: path.clone() })?;
                 if !matches!(signature, Ty::Fn(..)) { return Err(ClosureWitnessError::CallableTypeNotFunction { path: path.clone(), ty: signature }); }
+                let signature_encoding = canonical_abi::canonical_checked_ty_bytes(self.typed, &signature)
+                    .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
                 let captures = witchy_syntax::lambda_scan::scan_lambda(params, body).captures();
                 let mut capture_witnesses = Vec::with_capacity(captures.len());
                 for name in captures {
-                    let Some(binding) = self.resolve(&name).cloned() else { continue; };
+                    let Some(binding) = self.resolve_capture(&name)?.cloned() else { continue; };
                     let checked_type = binding.ty.clone().ok_or_else(|| ClosureWitnessError::MissingCaptureType { name: name.clone() })?;
                     if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
-                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, binding.convention, self.module), checked_type });
+                    let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
+                        .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
+                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, binding.convention, self.module), checked_type, checked_type_encoding });
                 }
-                self.entries.push(ClosureWitness { id: id.clone(), signature, captures: capture_witnesses });
+                self.entries.push(ClosureWitness { id: id.clone(), signature, signature_encoding, captures: capture_witnesses });
                 let param_types = match self.typed.table().type_of(expr) {
                     Some(Ty::Fn(inputs, _, _, _, _)) => inputs.iter().filter_map(typeck::ty_to_ast).collect::<Vec<_>>(),
                     _ => Vec::new(),
@@ -439,5 +468,35 @@ pub fn derive_closure_witness(typed: &TypedModule) -> Result<ClosureWitnessManif
 impl TypedModule {
     pub fn canonical_closure_witness(&self) -> Result<ClosureWitnessManifest, ClosureWitnessError> {
         derive_closure_witness(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_capture_is_rejected_but_checked_module_reference_is_not_a_capture() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn apply(value: Int) -> Int:\n    value\n\nfn main():\n    apply(1)\n",
+        )
+        .expect("parse");
+        let typed = typeck::annotate_checked(module).expect("type check");
+        let builder = Builder {
+            typed: &typed,
+            module: typed.module(),
+            entries: Vec::new(),
+            scopes: Vec::new(),
+        };
+
+        assert!(builder
+            .resolve_capture("apply")
+            .expect("authenticated module reference")
+            .is_none());
+        assert!(matches!(
+            builder.resolve_capture("missing_lexical_binding"),
+            Err(ClosureWitnessError::UnresolvedCapture { name })
+                if name == "missing_lexical_binding"
+        ));
     }
 }

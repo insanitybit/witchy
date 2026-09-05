@@ -1066,7 +1066,7 @@ mod tests {
             .expect("closure source checks")
         };
         let first = make(b"fn make(seed: Int):\n    let f = fn(): seed\n\nfn main():\n    make(1)\n");
-        let second = make(b"fn make(seed: Int):\n    let f = fn(): seed + 1\n\nfn main():\n    make(1)\n");
+        let second = make(b"fn make(seed: Float):\n    let f = fn(): seed\n\nfn main():\n    make(1.0)\n");
         let first_source = first.canonical_source().expect("first canonical source");
         let second_source = second.canonical_source().expect("second canonical source");
         assert_ne!(
@@ -1079,6 +1079,20 @@ mod tests {
         assert!(first_source
             .source_witness()
             .verifies_closure_witness(first_source.closure_witness()));
+
+        let first_same_bundle = first_source
+            .closure_witness()
+            .clone()
+            .bind_source_bundle_digest([7; 32]);
+        let second_same_bundle = second_source
+            .closure_witness()
+            .clone()
+            .bind_source_bundle_digest([7; 32]);
+        assert_ne!(
+            first_same_bundle.digest(),
+            second_same_bundle.digest(),
+            "manifest identity must include canonical structure, not only the source bundle digest"
+        );
     }
 
     #[test]

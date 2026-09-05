@@ -189,6 +189,26 @@ impl Context {
     }
 }
 
+pub(crate) fn canonical_checked_ty_bytes(
+    typed: &TypedModule,
+    ty: &Ty,
+) -> Result<Vec<u8>, CanonicalAbiError> {
+    let context = Context::from_module(typed.module());
+    let mut bytes = Vec::new();
+    encode_ty(ty, &context, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn canonical_ast_type_bytes(
+    typed: &TypedModule,
+    ty: &Type,
+) -> Result<Vec<u8>, CanonicalAbiError> {
+    let context = Context::from_module(typed.module());
+    let mut bytes = Vec::new();
+    encode_ast(ty, &context, &mut bytes)?;
+    Ok(bytes)
+}
+
 /// Derive the complete callable ABI manifest from the final checked module.
 /// Declarations contribute closed local targets. Concrete expression types
 /// contribute open ABI entries, including nested function types.
