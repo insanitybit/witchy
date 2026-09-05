@@ -89,6 +89,9 @@ pub fn lower_typed_module(
     let typed = source.typed_module();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
         if let Some(unsupported) = function
             .params
             .iter()
