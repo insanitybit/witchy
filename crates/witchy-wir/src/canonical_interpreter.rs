@@ -14,7 +14,7 @@ use crate::canonical_safewir::{
     OptimizedValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
     ValidatedSafeWir, ValueId,
 };
-use crate::layout::LayoutId;
+use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind};
 
 const SIZE_MAX: u64 = u32::MAX as u64;
 
@@ -113,7 +113,7 @@ enum CellKey {
     Element(u64),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum RuntimeExtent {
     FixedBytes(u64),
     HeaderPrefix(u32),
@@ -128,11 +128,17 @@ enum RuntimeExtent {
 #[derive(Debug)]
 struct Object {
     layout: LayoutId,
-    class: AllocationClass,
+    storage: RuntimeStorage,
     extent: RuntimeExtent,
     references: u64,
     immutable: bool,
     cells: BTreeMap<CellKey, InterpreterValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeStorage {
+    Allocation(AllocationClass),
+    StaticData,
 }
 
 struct Engine<'a> {
@@ -141,6 +147,7 @@ struct Engine<'a> {
     steps: u64,
     next_object: u64,
     objects: BTreeMap<u64, Object>,
+    static_objects: BTreeMap<crate::canonical_safewir::StaticDataId, u64>,
 }
 
 enum FunctionExit {
@@ -156,6 +163,7 @@ impl<'a> Engine<'a> {
             steps: 0,
             next_object: 0,
             objects: BTreeMap::new(),
+            static_objects: BTreeMap::new(),
         }
     }
 
@@ -310,8 +318,34 @@ impl<'a> Engine<'a> {
                 let object = self.allocate(*layout, *class, extent, false)?;
                 values.insert(*destination, InterpreterValue::ObjectRef(object));
             }
-            Operation::StaticData { .. } => {
-                return Err(InterpretError::UnsupportedOperation("StaticData"));
+            Operation::StaticData {
+                destination,
+                layout,
+                extent,
+                data,
+            } => {
+                let extent = self.runtime_extent(extent, values)?;
+                let bytes = self
+                    .module
+                    .static_data_segments()
+                    .iter()
+                    .find(|segment| segment.id() == *data)
+                    .map(|segment| segment.bytes())
+                    .ok_or(InterpretError::UnsupportedOperation("StaticData missing segment"))?;
+                let object = if let Some(object) = self.static_objects.get(data) {
+                    let existing = self.object(*object)?;
+                    if existing.layout != *layout || existing.extent != extent {
+                        return Err(InterpretError::UnsupportedOperation(
+                            "StaticData inconsistent segment reuse",
+                        ));
+                    }
+                    *object
+                } else {
+                    let object = self.allocate_static(*layout, extent, bytes)?;
+                    self.static_objects.insert(*data, object);
+                    object
+                };
+                values.insert(*destination, InterpreterValue::ObjectRef(object));
             }
             Operation::Load {
                 destination,
@@ -665,7 +699,7 @@ impl<'a> Engine<'a> {
             object,
             Object {
                 layout,
-                class,
+                storage: RuntimeStorage::Allocation(class),
                 extent,
                 references: 1,
                 immutable,
@@ -673,6 +707,83 @@ impl<'a> Engine<'a> {
             },
         );
         Ok(object)
+    }
+
+    fn allocate_static(
+        &mut self,
+        layout: LayoutId,
+        extent: RuntimeExtent,
+        bytes: &[u8],
+    ) -> Result<u64, InterpretError> {
+        let cells = self.materialize_static_cells(layout, &extent, bytes)?;
+        let object = self.next_object;
+        self.next_object = self
+            .next_object
+            .checked_add(1)
+            .ok_or(InterpretError::ArithmeticTrap)?;
+        self.objects.insert(
+            object,
+            Object {
+                layout,
+                storage: RuntimeStorage::StaticData,
+                extent,
+                references: 0,
+                immutable: true,
+                cells,
+            },
+        );
+        Ok(object)
+    }
+
+    fn materialize_static_cells(
+        &self,
+        layout: LayoutId,
+        extent: &RuntimeExtent,
+        bytes: &[u8],
+    ) -> Result<BTreeMap<CellKey, InterpreterValue>, InterpretError> {
+        let (_, layouts) = LayoutBundle::decode_canonical(&self.module.layouts().canonical_bytes())
+            .map_err(|_| InterpretError::UnsupportedOperation("StaticData layouts"))?;
+        let descriptor = layouts
+            .get(layout)
+            .ok_or(InterpretError::UnsupportedOperation("StaticData unknown layout"))?;
+        let (element, count, data_offset, stride) = match (descriptor.kind(), extent) {
+            (
+                LayoutKind::RuntimeBuffer { element },
+                RuntimeExtent::Counted {
+                    header_bytes,
+                    count,
+                    stride_bytes,
+                    ..
+                },
+            ) => (element, *count, u64::from(*header_bytes), *stride_bytes),
+            (
+                LayoutKind::PackedList { element, .. },
+                RuntimeExtent::Counted { count, stride_bytes, .. },
+            ) => {
+                let HeaderLayout::PackedList { data_offset, .. } = descriptor.header() else {
+                    return Err(InterpretError::UnsupportedOperation("StaticData packed-list header"));
+                };
+                (element, *count, u64::from(data_offset), *stride_bytes)
+            }
+            _ => return Err(InterpretError::UnsupportedOperation("StaticData layout")),
+        };
+        let element_descriptor = layouts
+            .get(*element)
+            .ok_or(InterpretError::UnsupportedOperation("StaticData element layout"))?;
+        let LayoutKind::Scalar(kind) = element_descriptor.kind() else {
+            return Err(InterpretError::UnsupportedOperation("StaticData non-scalar element"));
+        };
+        if u64::from(kind.size()) != u64::from(stride) {
+            return Err(InterpretError::UnsupportedOperation("StaticData element stride"));
+        }
+        let mut cells = BTreeMap::new();
+        for index in 0_u64..count {
+            let offset = data_offset
+                .checked_add(index.checked_mul(u64::from(stride)).ok_or(InterpretError::ArithmeticTrap)?)
+                .ok_or(InterpretError::ArithmeticTrap)?;
+            cells.insert(CellKey::Element(index), static_scalar(bytes, offset, *kind)?);
+        }
+        Ok(cells)
     }
 
     fn load(
@@ -792,8 +903,12 @@ impl<'a> Engine<'a> {
 
     fn retain(&mut self, object: u64) -> Result<(), InterpretError> {
         let object_state = self.object_mut(object)?;
-        if object_state.class != AllocationClass::ReferenceCounted {
-            return Err(InterpretError::ObjectNotReferenceCounted(object));
+        match object_state.storage {
+            RuntimeStorage::StaticData => return Ok(()),
+            RuntimeStorage::Allocation(AllocationClass::ReferenceCounted) => {}
+            RuntimeStorage::Allocation(_) => {
+                return Err(InterpretError::ObjectNotReferenceCounted(object));
+            }
         }
         object_state.references = u32::try_from(object_state.references)
             .ok()
@@ -806,8 +921,12 @@ impl<'a> Engine<'a> {
     fn release(&mut self, object: u64) -> Result<(), InterpretError> {
         let remaining = {
             let object_state = self.object_mut(object)?;
-            if object_state.class != AllocationClass::ReferenceCounted {
-                return Err(InterpretError::ObjectNotReferenceCounted(object));
+            match object_state.storage {
+                RuntimeStorage::StaticData => return Ok(()),
+                RuntimeStorage::Allocation(AllocationClass::ReferenceCounted) => {}
+                RuntimeStorage::Allocation(_) => {
+                    return Err(InterpretError::ObjectNotReferenceCounted(object));
+                }
             }
             object_state.references = u32::try_from(object_state.references)
                 .ok()
@@ -824,6 +943,13 @@ impl<'a> Engine<'a> {
 
     fn reclaim(&mut self, object: u64) -> Result<(), InterpretError> {
         let object_state = self.object(object)?;
+        match object_state.storage {
+            RuntimeStorage::StaticData => return Err(InterpretError::ImmutableObject(object)),
+            RuntimeStorage::Allocation(AllocationClass::ReferenceCounted) => {}
+            RuntimeStorage::Allocation(_) => {
+                return Err(InterpretError::ObjectNotReferenceCounted(object));
+            }
+        }
         if object_state.references != 1 {
             return Err(InterpretError::ReclaimWithAliases {
                 object,
@@ -1020,6 +1146,49 @@ impl<'a> Engine<'a> {
     }
 }
 
+fn static_scalar(
+    bytes: &[u8],
+    offset: u64,
+    kind: ScalarKind,
+) -> Result<InterpreterValue, InterpretError> {
+    let offset = usize::try_from(offset).map_err(|_| InterpretError::ArithmeticTrap)?;
+    let end = offset
+        .checked_add(kind.size() as usize)
+        .ok_or(InterpretError::ArithmeticTrap)?;
+    let bytes = bytes
+        .get(offset..end)
+        .ok_or(InterpretError::UnsupportedOperation("StaticData scalar bounds"))?;
+    let size = |width: usize| bytes.get(..width).ok_or(InterpretError::UnsupportedOperation("StaticData scalar width"));
+    match kind {
+        ScalarKind::Bool => match bytes {
+            [0] => Ok(InterpreterValue::Bool(false)),
+            [1] => Ok(InterpreterValue::Bool(true)),
+            _ => Err(InterpretError::UnsupportedOperation("StaticData bool encoding")),
+        },
+        ScalarKind::Int | ScalarKind::Duration => Ok(InterpreterValue::Int(i64::from_le_bytes(
+            size(8)?.try_into().expect("validated scalar width"),
+        ))),
+        ScalarKind::Float => Ok(InterpreterValue::FloatBits(u64::from_le_bytes(
+            size(8)?.try_into().expect("validated scalar width"),
+        ))),
+        ScalarKind::U32 | ScalarKind::Tag32 => Ok(InterpreterValue::Size(u64::from(u32::from_le_bytes(
+            size(4)?.try_into().expect("validated scalar width"),
+        )))),
+        ScalarKind::Tag16 => Ok(InterpreterValue::Size(u64::from(u16::from_le_bytes(
+            size(2)?.try_into().expect("validated scalar width"),
+        )))),
+        ScalarKind::Tag8 | ScalarKind::RawByte => Ok(InterpreterValue::Size(u64::from(bytes[0]))),
+        ScalarKind::BoolValueSlot => match u64::from_le_bytes(size(8)?.try_into().expect("validated scalar width")) {
+            0 => Ok(InterpreterValue::Bool(false)),
+            1 => Ok(InterpreterValue::Bool(true)),
+            _ => Err(InterpretError::UnsupportedOperation("StaticData bool slot encoding")),
+        },
+        ScalarKind::V128 => Ok(InterpreterValue::V128(
+            size(16)?.try_into().expect("validated scalar width"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,7 +1196,7 @@ mod tests {
         check_initial_with_test_witness, optimize_unreachable_blocks, validate_final, BasicBlock,
         AccessMode, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
         FunctionSignatureId, LoweredModuleParts, Operation, ParameterContract, ParameterOwnership,
-        ProperTailSite, ResultContract, Revision, TailSiteId, ValueType,
+        ProperTailSite, ResultContract, Revision, StaticDataId, TailSiteId, ValueType,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, RcHeader, ScalarKind};
 
@@ -1406,6 +1575,51 @@ mod tests {
             engine.retain(object),
             Err(InterpretError::ReferenceCountOverflow(object))
         );
+    }
+
+    #[test]
+    fn static_shared_clone_and_drop_do_not_touch_rc_state() {
+        let (layouts, layout) = packed_u32_layout();
+        let module = validated(
+            layouts,
+            Vec::new(),
+            BTreeMap::new(),
+            Vec::new(),
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+        );
+        let source = ValueId::new(0);
+        let clone = ValueId::new(1);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let mut values = BTreeMap::new();
+
+        let object = engine
+            .allocate_static(
+                layout,
+                RuntimeExtent::Counted {
+                    header_bytes: 0,
+                    count: 0,
+                    capacity: 0,
+                    stride_bytes: 4,
+                },
+                &[],
+            )
+            .expect("create static object");
+        values.insert(source, InterpreterValue::ObjectRef(object));
+        assert_eq!(engine.object(object).expect("static state").references, 0);
+
+        engine
+            .execute_operation(&Operation::CloneRef { destination: clone, source }, &mut values)
+            .expect("static clone is a no-op");
+        engine
+            .execute_operation(&Operation::DropRef { object: clone }, &mut values)
+            .expect("static clone drop is a no-op");
+        engine
+            .execute_operation(&Operation::DropRef { object: source }, &mut values)
+            .expect("static drop is a no-op");
+
+        assert_eq!(engine.object(object).expect("static state").references, 0);
+        assert_eq!(engine.reclaim(object), Err(InterpretError::ImmutableObject(object)));
     }
 
     #[test]
