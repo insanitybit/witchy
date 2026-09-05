@@ -370,21 +370,19 @@ fn candidate_signature_matches_source_inner(
     let convention_at = |index| conventions.get(index).copied().unwrap_or_default();
     if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
-        (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow)
+        (matches!(convention, witchy_syntax::ast::Convention::Let)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
             && value_type_matches_source(*actual, source, layouts, signatures, seen)
     }) { return false; }
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
-        if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow)
+        if !(matches!(convention, witchy_syntax::ast::Convention::Let)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Value),
-            (super::ValueType::Ref(_), _) => matches!(actual.ownership,
-                super::ParameterOwnership::CallBorrow { mode: super::BorrowMode::Read }
-                | super::ParameterOwnership::Shared),
+            (super::ValueType::Ref(_), _) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             _ => matches!(actual.ownership, super::ParameterOwnership::Value),
         }
     }) { return false; }
@@ -647,7 +645,6 @@ mod tests {
                 parameters: vec![super::super::ParameterContract {
                     value_type: ValueType::Int,
                     ownership: super::super::ParameterOwnership::Unique,
-                    non_escaping: false,
                 }],
                 results: vec![ResultContract::Value(ValueType::Int)],
                 parameter_effects: BTreeMap::new(),
@@ -718,8 +715,8 @@ mod tests {
             "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).unwrap();
         let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
-        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
-        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
+        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
+        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
         let mut candidate = candidate();
         candidate.signatures = vec![outer, inner];
         assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));
@@ -732,8 +729,8 @@ mod tests {
             "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).unwrap();
         let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
-        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![], parameter_effects: BTreeMap::new() } };
-        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![], parameter_effects: BTreeMap::new() } };
+        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value }], results: vec![], parameter_effects: BTreeMap::new() } };
+        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value }], results: vec![], parameter_effects: BTreeMap::new() } };
         let mut candidate = candidate();
         candidate.signatures = vec![outer, inner];
         assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));

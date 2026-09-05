@@ -682,13 +682,6 @@ fn check_entry_parameters(
                     });
                 }
             }
-            ParameterOwnership::CallBorrow { .. } => {
-                if parameter.ownership.is_some() {
-                    return Err(InitialCheckError::CallableContractMismatch {
-                        signature: signature.id,
-                    });
-                }
-            }
         }
     }
     Ok(())
@@ -834,10 +827,9 @@ fn argument_uses(arguments: &[CallArgument]) -> Vec<ValueId> {
     arguments
         .iter()
         .map(|argument| match argument {
-            CallArgument::Value(value) | CallArgument::Move(value) | CallArgument::Share(value) => {
+            CallArgument::Value(value) | CallArgument::Move(value) => {
                 *value
             }
-            CallArgument::Borrow(borrow) => borrow.source(),
         })
         .collect()
 }
@@ -1211,11 +1203,6 @@ fn check_call(
         let (value, ownership) = match argument {
             CallArgument::Value(value) => (*value, ParameterOwnership::Value),
             CallArgument::Move(value) => (*value, ParameterOwnership::Unique),
-            CallArgument::Share(value) => (*value, ParameterOwnership::Shared),
-            CallArgument::Borrow(borrow) => (
-                borrow.source(),
-                ParameterOwnership::CallBorrow { mode: borrow.mode() },
-            ),
         };
         require_type(function, value, expected.value_type)?;
         let accepted = match (expected.ownership, ownership) {
@@ -1223,14 +1210,7 @@ fn check_call(
             | (ParameterOwnership::Unique, ParameterOwnership::Unique)
             // Moving a unique token into a shared parameter is a safe
             // ownership weakening; the callee receives that token.
-            | (ParameterOwnership::Shared, ParameterOwnership::Unique)
-            | (ParameterOwnership::Shared, ParameterOwnership::Shared) => true,
-            (
-                ParameterOwnership::CallBorrow { mode: expected_mode },
-                ParameterOwnership::CallBorrow { mode: actual_mode },
-            ) => {
-                expected_mode == actual_mode && expected.non_escaping
-            }
+            | (ParameterOwnership::Shared, ParameterOwnership::Unique) => true,
             _ => false,
         };
         if !accepted {
@@ -1283,10 +1263,7 @@ fn check_indirect_reference_arguments(
     }
     if arguments.iter().zip(&signature.contract.parameters).any(|(argument, parameter)| {
         let value = match argument {
-            CallArgument::Value(value)
-            | CallArgument::Move(value)
-            | CallArgument::Share(value) => *value,
-            CallArgument::Borrow(borrow) => borrow.source(),
+            CallArgument::Value(value) | CallArgument::Move(value) => *value,
         };
         let value_type = value_type(function, value);
         let memory_bearing = value_type.as_ref()
@@ -1548,7 +1525,6 @@ mod tests {
             parameters: vec![ParameterContract {
                 value_type: ValueType::Ref(layout),
                 ownership,
-                non_escaping: matches!(ownership, ParameterOwnership::CallBorrow { .. }),
             }],
             results,
             parameter_effects,
@@ -1797,7 +1773,6 @@ mod tests {
                 parameters: vec![ParameterContract {
                     value_type: function_parameter,
                     ownership: ParameterOwnership::Value,
-                    non_escaping: false,
                 }],
                 results: vec![ResultContract::Value(ValueType::Int)],
                 parameter_effects: BTreeMap::new(),
@@ -1811,7 +1786,6 @@ mod tests {
                 parameters: vec![ParameterContract {
                     value_type: import_parameter,
                     ownership: ParameterOwnership::Value,
-                    non_escaping: false,
                 }],
                 results: vec![ResultContract::Value(ValueType::Int)],
                 parameter_effects: BTreeMap::new(),
@@ -1909,7 +1883,6 @@ mod tests {
                         parameters: vec![ParameterContract {
                             value_type: ValueType::Ref(layout),
                             ownership: ParameterOwnership::Value,
-                            non_escaping: true,
                         }],
                         results: vec![ResultContract::Value(ValueType::Int)],
                         parameter_effects: BTreeMap::new(),
@@ -3376,57 +3349,6 @@ mod tests {
     }
 
     #[test]
-    fn call_borrow_after_reclaim_is_rejected() {
-        let (layouts, layout) = dynamic_u32_layout();
-        let (values, mut operations) = allocated_list(layout);
-        let object = ValueId::new(2);
-        operations.extend([
-            Operation::Reclaim { object },
-            Operation::Call {
-                destinations: Vec::new(),
-                callee: CALLEE,
-                arguments: vec![super::super::CallArgument::Borrow(super::super::CallBorrow::new(
-                    object,
-                    super::super::BorrowMode::Read,
-                ))],
-            },
-        ]);
-        let module = call_module(
-            layouts,
-            values,
-            operations,
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-            [(ValueId::new(10), ValueType::Ref(layout))]
-                .into_iter()
-                .collect(),
-            Terminator::Return { values: Vec::new() },
-            call_contract(
-                layout,
-                ParameterOwnership::CallBorrow {
-                    mode: super::super::BorrowMode::Read,
-                },
-                Vec::new(),
-                BTreeMap::new(),
-            ),
-            Vec::new(),
-            vec![BlockParameter {
-                value: ValueId::new(10),
-                value_type: ValueType::Ref(layout),
-                ownership: None,
-            }],
-            Vec::new(),
-        );
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::UseAfterConsume {
-                function: FUNCTION,
-                object,
-            }
-        );
-    }
-
-    #[test]
     fn call_move_consumes_unique_and_later_use_is_rejected() {
         let (layouts, layout) = dynamic_u32_layout();
         let (values, mut operations) = allocated_list(layout);
@@ -3473,21 +3395,31 @@ mod tests {
     }
 
     #[test]
-    fn call_share_and_memory_value_are_fail_closed() {
+    fn shared_reference_cannot_be_moved_twice_without_clone() {
         let (layouts, layout) = dynamic_u32_layout();
-        let (values, mut operations) = allocated_list(layout);
+        let (mut values, mut operations) = allocated_list(layout);
         let object = ValueId::new(2);
-        operations.push(Operation::Call {
-            destinations: Vec::new(),
-            callee: CALLEE,
-            arguments: vec![super::super::CallArgument::Share(object)],
-        });
-        let share_module = call_module(
-            layouts.clone(),
-            values.clone(),
+        let clone = ValueId::new(13);
+        values.insert(clone, ValueType::Ref(layout));
+        operations.extend([
+            Operation::CloneRef { destination: clone, source: object },
+            Operation::Call {
+                destinations: Vec::new(),
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Move(clone)],
+            },
+            Operation::Call {
+                destinations: Vec::new(),
+                callee: CALLEE,
+                arguments: vec![super::super::CallArgument::Move(clone)],
+            },
+        ]);
+        let module = call_module(
+            layouts,
+            values,
             operations,
             Terminator::Return { values: Vec::new() },
-            Vec::new(),
+            vec![Operation::DropRef { object: ValueId::new(10) }],
             [(ValueId::new(10), ValueType::Ref(layout))]
                 .into_iter()
                 .collect(),
@@ -3496,7 +3428,7 @@ mod tests {
                 layout,
                 ParameterOwnership::Shared,
                 Vec::new(),
-                BTreeMap::new(),
+                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
             ),
             Vec::new(),
             vec![BlockParameter {
@@ -3507,14 +3439,19 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            check_initial(share_module).unwrap_err(),
-            InitialCheckError::UnsupportedMemoryOperation {
+            check_initial(module).unwrap_err(),
+            InitialCheckError::UseAfterConsume {
                 function: FUNCTION,
-                operation: "Call(Share)",
+                object: clone,
             }
         );
+    }
 
+    #[test]
+    fn memory_value_call_is_fail_closed() {
+        let (layouts, layout) = dynamic_u32_layout();
         let (values, mut operations) = allocated_list(layout);
+        let object = ValueId::new(2);
         operations.push(Operation::Call {
             destinations: Vec::new(),
             callee: CALLEE,
@@ -3554,122 +3491,21 @@ mod tests {
     }
 
     #[test]
-    fn nonescaping_read_borrow_can_read_a_parameter_header() {
-        let (layouts, layout) = packed_u32_layout();
-        let object = ValueId::new(2);
-        let destination = ValueId::new(12);
-        let (mut values, mut operations) = allocated_list_with_header(layout, 8);
-        values.insert(destination, ValueType::Size);
-        operations.push(Operation::Call {
-            destinations: vec![destination],
-            callee: CALLEE,
-            arguments: vec![super::super::CallArgument::Borrow(super::super::CallBorrow::new(
-                object,
-                super::super::BorrowMode::Read,
-            ))],
-        });
-        let parameter = ValueId::new(10);
-        let length = ValueId::new(11);
-        let module = call_module(
-            layouts,
-            values,
-            operations,
-            Terminator::Return { values: Vec::new() },
-            vec![Operation::Load {
-                destination: length,
-                place: Place::projected(
-                    parameter,
-                    Projection::Header(HeaderField::Length),
-                    ValueType::Size,
-                    AccessMode::Read,
-                ),
-                transfer: LoadTransfer::CopyScalar,
-            }],
-            [(parameter, ValueType::Ref(layout)), (length, ValueType::Size)]
-                .into_iter()
-                .collect(),
-            Terminator::Return { values: vec![length] },
-            call_contract(
-                layout,
-                ParameterOwnership::CallBorrow {
-                    mode: super::super::BorrowMode::Read,
-                },
-                vec![ResultContract::Value(ValueType::Size)],
-                [(0, vec![MemoryEffect::Read])].into_iter().collect(),
-            ),
-            vec![ValueType::Size],
-            vec![BlockParameter {
-                value: parameter,
-                value_type: ValueType::Ref(layout),
-                ownership: None,
-            }],
-            Vec::new(),
-        );
-        let result = check_initial(module);
-        assert_eq!(result.as_ref().map(|_| ()), Ok(()), "{result:?}");
-    }
-
-    #[test]
-    fn tail_call_borrow_and_share_use_memory_judgment() {
+    fn tail_call_after_release_is_rejected() {
         let (layouts, layout) = dynamic_u32_layout();
         let (values, mut operations) = allocated_list(layout);
         let object = ValueId::new(2);
         operations.push(Operation::Reclaim { object });
-        let borrow_module = call_module(
+        let moved_module = call_module(
             layouts.clone(),
             values.clone(),
             operations,
             Terminator::TailCall {
                 site: TAIL_SITE,
                 callee: CALLEE,
-                arguments: vec![super::super::CallArgument::Borrow(super::super::CallBorrow::new(
-                    object,
-                    super::super::BorrowMode::Read,
-                ))],
+                arguments: vec![super::super::CallArgument::Move(object)],
             },
-            Vec::new(),
-            [(ValueId::new(10), ValueType::Ref(layout))]
-                .into_iter()
-                .collect(),
-            Terminator::Return { values: Vec::new() },
-            call_contract(
-                layout,
-                ParameterOwnership::CallBorrow {
-                    mode: super::super::BorrowMode::Read,
-                },
-                Vec::new(),
-                BTreeMap::new(),
-            ),
-            Vec::new(),
-            vec![BlockParameter {
-                value: ValueId::new(10),
-                value_type: ValueType::Ref(layout),
-                ownership: None,
-            }],
-            vec![ProperTailSite {
-                id: TAIL_SITE,
-                function: FUNCTION,
-            }],
-        );
-        assert_eq!(
-            check_initial(borrow_module).unwrap_err(),
-            InitialCheckError::UseAfterConsume {
-                function: FUNCTION,
-                object,
-            }
-        );
-
-        let (values, operations) = allocated_list(layout);
-        let share_module = call_module(
-            layouts,
-            values,
-            operations,
-            Terminator::TailCall {
-                site: TAIL_SITE,
-                callee: CALLEE,
-                arguments: vec![super::super::CallArgument::Share(object)],
-            },
-            Vec::new(),
+            vec![Operation::DropRef { object: ValueId::new(10) }],
             [(ValueId::new(10), ValueType::Ref(layout))]
                 .into_iter()
                 .collect(),
@@ -3678,7 +3514,7 @@ mod tests {
                 layout,
                 ParameterOwnership::Shared,
                 Vec::new(),
-                BTreeMap::new(),
+                [(0, vec![MemoryEffect::Release])].into_iter().collect(),
             ),
             Vec::new(),
             vec![BlockParameter {
@@ -3692,12 +3528,13 @@ mod tests {
             }],
         );
         assert_eq!(
-            check_initial(share_module).unwrap_err(),
-            InitialCheckError::UnsupportedMemoryOperation {
+            check_initial(moved_module).unwrap_err(),
+            InitialCheckError::UseAfterConsume {
                 function: FUNCTION,
-                operation: "Call(Share)",
+                object,
             }
         );
+
     }
 
     #[test]

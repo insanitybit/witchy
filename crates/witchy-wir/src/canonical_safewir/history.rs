@@ -1,19 +1,19 @@
 use std::fmt;
 
+use std::collections::BTreeMap;
+
 use sha2::{Digest, Sha256};
 
 use crate::layout::LayoutBundle;
 
-use super::{AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BlockId, BorrowMode,
-    CallArgument, CallBorrow, CallableContract, CanonicalModule, ComparisonOperator, Extent,
+use super::{AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BlockId,
+    CallArgument, CallableContract, CanonicalModule, ComparisonOperator, Extent,
     Function, FunctionId, FunctionSignature, FunctionSignatureId, HostBufferExtent,
     HostCallArgument, HostMutation, HostParameterRole, HostReentrancy, HostResultRole,
     GuardKind, HeaderField, ImportContract, ImportContractIdentity, InitialValid, LoadTransfer, MemoryEffect, ModuleStage,
     Operation, OptimizedValid, Ownership, ParameterContract, ParameterOwnership,
     Place, Projection, ProperTailSite, ResultContract, Revision, StoreTransfer, Terminator,
     TransformedCandidate, ValueId, ValueType};
-
-use std::collections::BTreeMap;
 
 const OBSERVATION_MODEL_VERSION: u32 = 1;
 
@@ -574,18 +574,6 @@ impl CanonicalWriter {
         });
     }
 
-    fn borrow_mode(&mut self, mode: BorrowMode) {
-        self.u8(match mode {
-            BorrowMode::Read => 0,
-            BorrowMode::Write => 1,
-        });
-    }
-
-    fn call_borrow(&mut self, borrow: CallBorrow) {
-        self.value_id(borrow.source());
-        self.borrow_mode(borrow.mode());
-    }
-
     fn call_argument(&mut self, argument: &CallArgument) {
         match argument {
             CallArgument::Value(value) => {
@@ -595,14 +583,6 @@ impl CanonicalWriter {
             CallArgument::Move(value) => {
                 self.u8(1);
                 self.value_id(*value);
-            }
-            CallArgument::Share(value) => {
-                self.u8(2);
-                self.value_id(*value);
-            }
-            CallArgument::Borrow(borrow) => {
-                self.u8(3);
-                self.call_borrow(*borrow);
             }
         }
     }
@@ -638,17 +618,12 @@ impl CanonicalWriter {
             ParameterOwnership::Value => self.u8(0),
             ParameterOwnership::Unique => self.u8(1),
             ParameterOwnership::Shared => self.u8(2),
-            ParameterOwnership::CallBorrow { mode } => {
-                self.u8(3);
-                self.borrow_mode(mode);
-            }
         }
     }
 
     fn parameter_contract(&mut self, parameter: &ParameterContract) {
         self.value_type(parameter.value_type);
         self.parameter_ownership(parameter.ownership);
-        self.bool(parameter.non_escaping);
     }
 
     fn host_buffer_extent(&mut self, extent: &HostBufferExtent) {

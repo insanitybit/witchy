@@ -22,7 +22,7 @@ use witchy_types::typeck::{
     ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, TypeTable,
 };
 use witchy_wir::canonical_safewir::{
-    AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, BorrowMode,
+    AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter,
     CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
     FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
@@ -245,8 +245,9 @@ pub fn lower_typed_module(
             contract: CallableContract {
                 parameters: vec![ParameterContract {
                     value_type: ValueType::Ref(string_layout),
-                    ownership: ParameterOwnership::CallBorrow { mode: BorrowMode::Read },
-                    non_escaping: true,
+                    // Host buffer roles, not callable ownership, authorize this
+                    // import's read-only string access.
+                    ownership: ParameterOwnership::Value,
                 }],
                 results: Vec::new(),
                 parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read])]),
@@ -371,7 +372,7 @@ fn checked_signature(
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
-        if matches!(convention, Convention::Var)
+        if matches!(convention, Convention::Var | Convention::Borrow)
             || matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
@@ -422,12 +423,9 @@ fn signature_from_type(
             });
         }
         let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
-        let (ownership, non_escaping) = match (value_type, convention) {
-            (ValueType::Ref(_), Convention::Let | Convention::Borrow) =>
-                (ParameterOwnership::Shared, false),
-            (ValueType::Ref(_), Convention::Own) => (ParameterOwnership::Shared, false),
-            (_, Convention::Let | Convention::Borrow) => (ParameterOwnership::Value, false),
-            (_, Convention::Own) => (ParameterOwnership::Value, false),
+        let ownership = match (value_type, convention) {
+            (ValueType::Ref(_), Convention::Let | Convention::Own) => ParameterOwnership::Shared,
+            (_, Convention::Let | Convention::Own) => ParameterOwnership::Value,
             _ => unreachable!(),
         };
         if matches!(value_type, ValueType::Ref(_)) {
@@ -441,7 +439,7 @@ fn signature_from_type(
             );
         }
         value_parameters.push(value_type);
-        contract_parameters.push(ParameterContract { value_type, ownership, non_escaping });
+        contract_parameters.push(ParameterContract { value_type, ownership });
     }
     let result = source_value_type(result, layout_bundle, layouts, function_types)?;
     let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
@@ -536,7 +534,7 @@ fn lower_function(
         parameter.ownership = match contract.ownership {
             ParameterOwnership::Unique => Some(Ownership::Unique),
             ParameterOwnership::Shared => Some(Ownership::Shared),
-            ParameterOwnership::Value | ParameterOwnership::CallBorrow { .. } => None,
+            ParameterOwnership::Value => None,
         };
     }
     let parameters = lowerer.blocks[entry.get() as usize].parameters.clone();
@@ -4186,7 +4184,7 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_list_parameter_index_uses_loaded_length_for_bounds_guard() {
+    fn shared_list_parameter_index_uses_loaded_length_for_bounds_guard() {
         let checked = checked("fn first(xs: List(Int)) -> Int:\n    xs[0]\n");
         let candidate = lower_typed_module(
             checked.canonical_source().expect("canonical source"),
@@ -4253,7 +4251,7 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_list_parameter_index_promotes_authenticated_header_extent() {
+    fn shared_list_parameter_index_promotes_authenticated_header_extent() {
         let checked = checked("fn first(xs: List(Int)) -> Int:\n    xs[0]\n");
         let candidate = lower_typed_module(
             checked.canonical_source().expect("canonical source"),
@@ -4314,7 +4312,6 @@ mod tests {
             callee.contract.parameters[0].ownership,
             ParameterOwnership::Shared
         ));
-        assert!(!callee.contract.parameters[0].non_escaping);
 
         let call = candidate.functions()[1].blocks[0]
             .operations

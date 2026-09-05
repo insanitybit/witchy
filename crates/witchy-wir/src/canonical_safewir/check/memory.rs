@@ -7,7 +7,7 @@ use crate::layout::{
 
 use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
-    AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument,
+    AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, CallArgument,
     CallableContract, ComparisonOperator, Extent, Function, FunctionSignature, GuardKind,
     HeaderField, LoadTransfer, Operation, OverflowBehavior, Ownership, ParameterContract,
     ParameterOwnership, Place, Projection, ResultContract, ReturnedExtent, StoreTransfer, ValueId,
@@ -512,8 +512,6 @@ impl<'a> MemoryChecker<'a> {
             let ownership = match contract.ownership {
                 ParameterOwnership::Unique => Ownership::Unique,
                 ParameterOwnership::Shared => Ownership::Shared,
-                ParameterOwnership::CallBorrow { mode: BorrowMode::Read } => Ownership::Shared,
-                ParameterOwnership::CallBorrow { mode: BorrowMode::Write } => Ownership::Unique,
                 ParameterOwnership::Value => {
                     continue;
                 }
@@ -522,7 +520,6 @@ impl<'a> MemoryChecker<'a> {
             let (allocation_class, shared_immutable) = match contract.ownership {
                 ParameterOwnership::Unique => (Some(AllocationClass::ReferenceCounted), false),
                 ParameterOwnership::Shared => (None, true),
-                ParameterOwnership::CallBorrow { .. } => (None, false),
                 ParameterOwnership::Value => unreachable!(),
             };
             let initialized_owned_slots = matches!(
@@ -566,10 +563,7 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         for (argument, parameter) in arguments.iter().zip(parameters) {
             let value = match argument {
-                CallArgument::Value(value)
-                | CallArgument::Move(value)
-                | CallArgument::Share(value) => *value,
-                CallArgument::Borrow(borrow) => borrow.source(),
+                CallArgument::Value(value) | CallArgument::Move(value) => *value,
             };
             let actual = value_type(self.function, value)?;
             if !actual.is_linear_memory_ref() {
@@ -580,21 +574,9 @@ impl<'a> MemoryChecker<'a> {
             }
             match argument {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
-                CallArgument::Share(_) => return self.unsupported("Call(Share)"),
                 CallArgument::Move(value) => {
                     self.require_owned_slots_initialized(*value, "Call(uninitialized owned slot)")?;
                     self.consume_call_move(*value, parameter.ownership)?;
-                }
-                CallArgument::Borrow(borrow) => {
-                    if !matches!(
-                        parameter.ownership,
-                        ParameterOwnership::CallBorrow { mode } if mode == borrow.mode()
-                    ) {
-                        return Err(InitialCheckError::UnsupportedBorrowArgument {
-                            function: self.function.id,
-                        });
-                    }
-                    self.check_call_borrow(*borrow)?;
                 }
             }
         }
@@ -1325,25 +1307,6 @@ impl<'a> MemoryChecker<'a> {
             self.descriptor(*element)?.kind(),
             LayoutKind::Scalar(ScalarKind::RawByte)
         ))
-    }
-
-    fn check_call_borrow(
-        &self,
-        borrow: crate::canonical_safewir::CallBorrow,
-    ) -> Result<(), InitialCheckError> {
-        let state = self.live_object(borrow.source())?;
-        let permitted = match borrow.mode() {
-            BorrowMode::Read => matches!(state.ownership, Ownership::Unique | Ownership::Shared),
-            BorrowMode::Write => state.ownership == Ownership::Unique,
-        };
-        if permitted {
-            Ok(())
-        } else {
-            Err(InitialCheckError::InvalidOwnership {
-                function: self.function.id,
-                object: borrow.source(),
-            })
-        }
     }
 
     fn consume_call_move(

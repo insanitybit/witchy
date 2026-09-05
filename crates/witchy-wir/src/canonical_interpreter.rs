@@ -986,12 +986,6 @@ impl<'a> Engine<'a> {
                 CallArgument::Move(value) => values
                     .remove(value)
                     .ok_or(InterpretError::MissingValue(*value)),
-                CallArgument::Share(value) => {
-                    let object = self.object_value(*value, values)?;
-                    self.retain(object)?;
-                    Ok(InterpreterValue::ObjectRef(object))
-                }
-                CallArgument::Borrow(borrow) => Ok(self.value(borrow.source(), values)?.clone()),
             })
             .collect()
     }
@@ -1236,7 +1230,6 @@ mod tests {
             .map(|value_type| ParameterContract {
                 value_type,
                 ownership: ParameterOwnership::Value,
-                non_escaping: true,
             })
             .collect();
         let result_contracts = result_types
@@ -1996,7 +1989,6 @@ mod tests {
                     parameters: vec![ParameterContract {
                         value_type: ValueType::Int,
                         ownership: ParameterOwnership::Value,
-                        non_escaping: false,
                     }],
                     results: vec![ResultContract::Value(ValueType::Int)],
                     parameter_effects: BTreeMap::new(),

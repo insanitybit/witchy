@@ -24,15 +24,14 @@ pub(super) enum ReleasePlacementError {
     IncompatibleOwnedEdge(BlockId),
     UnresolvedResult(ValueId),
     HostMemoryResult(ValueId),
-    TailBorrowNeedsCaller(ValueId),
+    TailOwnedTokenNeedsTransfer(ValueId),
     EdgeArity(BlockId),
     BlockIdOverflow,
 }
 
 fn argument_value(argument: &CallArgument) -> ValueId {
     match argument {
-        CallArgument::Value(value) | CallArgument::Move(value) | CallArgument::Share(value) => *value,
-        CallArgument::Borrow(borrow) => borrow.source(),
+        CallArgument::Value(value) | CallArgument::Move(value) => *value,
     }
 }
 
@@ -283,7 +282,7 @@ pub(super) fn insert_releases(
                     }
                 }
                 if let Some(value) = owned.first() {
-                    return Err(ReleasePlacementError::TailBorrowNeedsCaller(*value));
+                    return Err(ReleasePlacementError::TailOwnedTokenNeedsTransfer(*value));
                 }
             }
             Terminator::Trap | Terminator::Unreachable => {

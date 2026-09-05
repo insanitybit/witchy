@@ -25,7 +25,7 @@ use wasm_encoder::{
 };
 
 use crate::canonical_safewir::{
-    AccessMode, ArithmeticOperator, BasicBlock, BorrowMode, CallArgument, CanonicalModule,
+    AccessMode, ArithmeticOperator, BasicBlock, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, FunctionSignature, HeaderField,
     HostCallArgument, HostBufferExtent, HostMutation, HostParameterRole, HostResultRole,
     ImportContract, ImportContractIdentity, ImportId, LoadTransfer, MemoryEffect, ModuleStage,
@@ -323,17 +323,13 @@ enum CorrespondenceError {
 }
 
 fn scalar_arguments(
-    function: FunctionId,
+    _function: FunctionId,
     arguments: &[CallArgument],
 ) -> Result<Vec<ValueId>, LoweringError> {
     arguments
         .iter()
         .map(|argument| match argument {
             CallArgument::Value(value) | CallArgument::Move(value) => Ok(*value),
-            CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Ok(borrow.source()),
-            CallArgument::Share(_) | CallArgument::Borrow(_) => {
-                Err(LoweringError::UnsupportedCallArgument { function })
-            }
         })
         .collect()
 }
@@ -804,7 +800,7 @@ fn lower_operation(
             // them from the order in which this backend visits instructions.
             ScalarInstruction::CloneRef { destination: *destination, source: *source }
         }
-        Operation::Release { object } | Operation::DropRef { object } | Operation::Reclaim { object } => {
+        Operation::Release { object: _ } | Operation::DropRef { object: _ } | Operation::Reclaim { object: _ } => {
             match operation {
                 Operation::Release { object } => ScalarInstruction::Release { object: *object },
                 Operation::DropRef { object } => ScalarInstruction::Release { object: *object },
@@ -836,10 +832,6 @@ fn lower_operation(
             for (argument, expected) in arguments.iter().zip(&signature_def.parameters) {
                 let value = match argument {
                     CallArgument::Value(value) | CallArgument::Move(value) => *value,
-                    CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => borrow.source(),
-                    CallArgument::Share(_) | CallArgument::Borrow(_) => {
-                        return Err(LoweringError::UnsupportedCallArgument { function });
-                    }
                 };
                 if value_types.get(&value) != Some(expected) {
                     return Err(LoweringError::UnsupportedOperation {
@@ -996,10 +988,6 @@ fn lower_terminator(
             for (argument, expected) in arguments.iter().zip(&signature_def.parameters) {
                 let value = match argument {
                     CallArgument::Value(value) | CallArgument::Move(value) => *value,
-                    CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => borrow.source(),
-                    CallArgument::Share(_) | CallArgument::Borrow(_) => {
-                        return Err(LoweringError::UnsupportedCallArgument { function: function.id });
-                    }
                 };
                 if function.value_types.get(&value) != Some(expected) {
                     return Err(LoweringError::UnsupportedOperation {
@@ -1190,10 +1178,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
 
 fn scalar_argument_values(arguments: &[CallArgument]) -> Option<Vec<ValueId>> {
     arguments.iter().map(|argument| match argument {
-        CallArgument::Value(value) => Some(*value),
-        CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Some(borrow.source()),
-        CallArgument::Move(value) => Some(*value),
-        CallArgument::Share(_) | CallArgument::Borrow(_) => None,
+        CallArgument::Value(value) | CallArgument::Move(value) => Some(*value),
     }).collect()
 }
 
@@ -3338,10 +3323,6 @@ fn push_set(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> 
 fn plan_call_argument(argument: &CallArgument) -> Result<ValueId, CanonicalAdmissionError> {
     match argument {
         CallArgument::Value(value) | CallArgument::Move(value) => Ok(*value),
-        CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Ok(borrow.source()),
-        CallArgument::Share(_) | CallArgument::Borrow(_) => {
-            Err(CanonicalAdmissionError::UnsupportedPlan)
-        }
     }
 }
 
@@ -5245,7 +5226,7 @@ mod tests {
             contract: CallableContract {
                 parameters: Vec::new(),
                 results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Int)],
-                parameter_effects: BTreeMap::new(),
+                parameter_effects: [(0, vec![MemoryEffect::Release])].into_iter().collect(),
             },
         };
         let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
@@ -5398,7 +5379,6 @@ mod tests {
                     .map(|value_type| ParameterContract {
                         value_type,
                         ownership: ParameterOwnership::Value,
-                        non_escaping: false,
                     })
                     .collect(),
                 results: results.into_iter().map(ResultContract::Value).collect(),
@@ -6095,7 +6075,7 @@ mod tests {
             .expect("parameterized scalar call is final-valid")
     }
 
-    fn checked_object_call_borrow() -> ValidatedSafeWir {
+    fn checked_object_call_move() -> ValidatedSafeWir {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
         let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
@@ -6104,6 +6084,7 @@ mod tests {
         let capacity = ValueId::new(41);
         let object = ValueId::new(42);
         let parameter = ValueId::new(43);
+        let clone = ValueId::new(44);
         let caller_signature = FunctionSignature {
             id: FunctionSignatureId::new(40),
             parameters: Vec::new(),
@@ -6117,11 +6098,10 @@ mod tests {
             contract: CallableContract {
                 parameters: vec![ParameterContract {
                     value_type: ValueType::Ref(layout),
-                    ownership: ParameterOwnership::CallBorrow { mode: BorrowMode::Read },
-                    non_escaping: true,
+                    ownership: ParameterOwnership::Shared,
                 }],
                 results: Vec::new(),
-                parameter_effects: BTreeMap::new(),
+                parameter_effects: [(0, vec![MemoryEffect::Release])].into_iter().collect(),
             },
         };
         finalize(CanonicalModule::from_lowering(LoweredModuleParts {
@@ -6135,7 +6115,7 @@ mod tests {
                     id: FunctionId::new(40),
                     signature: FunctionSignatureId::new(40),
                     entry: crate::canonical_safewir::BlockId::new(40),
-                    value_types: [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout))].into_iter().collect(),
+                    value_types: [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout)), (clone, ValueType::Ref(layout))].into_iter().collect(),
                     blocks: vec![BasicBlock {
                         id: crate::canonical_safewir::BlockId::new(40),
                         parameters: Vec::new(),
@@ -6148,12 +6128,13 @@ mod tests {
                                 extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 },
                                 class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
                             },
+                            Operation::CloneRef { destination: clone, source: object },
                             Operation::Call {
                                 destinations: Vec::new(),
                                 callee: FunctionId::new(41),
-                                arguments: vec![CallArgument::Borrow(crate::canonical_safewir::CallBorrow::new(object, BorrowMode::Read))],
+                                arguments: vec![CallArgument::Move(clone)],
                             },
-                            Operation::Reclaim { object },
+                            Operation::DropRef { object },
                         ],
                         terminator: Terminator::Return { values: Vec::new() },
                     }],
@@ -6165,8 +6146,8 @@ mod tests {
                     value_types: [(parameter, ValueType::Ref(layout))].into_iter().collect(),
                     blocks: vec![BasicBlock {
                         id: crate::canonical_safewir::BlockId::new(41),
-                        parameters: vec![BlockParameter { value: parameter, value_type: ValueType::Ref(layout), ownership: None }],
-                        operations: Vec::new(),
+                        parameters: vec![BlockParameter { value: parameter, value_type: ValueType::Ref(layout), ownership: Some(crate::canonical_safewir::Ownership::Shared) }],
+                        operations: vec![Operation::DropRef { object: parameter }],
                         terminator: Terminator::Return { values: Vec::new() },
                     }],
                 },
@@ -6225,8 +6206,8 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
-    fn admitted_object_call_borrow_executes_and_preserves_ownership() {
-        let artifact = admit_canonical(checked_object_call_borrow()).expect("read call borrow artifact admits");
+    fn admitted_owned_reference_call_executes_and_preserves_ownership() {
+        let artifact = admit_canonical(checked_object_call_move()).expect("owned reference call artifact admits");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());

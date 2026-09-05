@@ -742,7 +742,7 @@ fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &B
 }
 
 fn argument_value(argument: &CallArgument) -> ValueId {
-    match argument { CallArgument::Value(value) | CallArgument::Move(value) | CallArgument::Share(value) => *value, CallArgument::Borrow(borrow) => borrow.source() }
+    match argument { CallArgument::Value(value) | CallArgument::Move(value) => *value }
 }
 
 fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
@@ -777,7 +777,7 @@ fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Re
         let parameter = &signature.contract.parameters[index];
         let declared = signature.contract.parameter_effects.get(&(index as u32)).cloned().unwrap_or_default().into_iter().collect::<BTreeSet<_>>();
         let derived = summary.effects.get(&(index as u32)).cloned().unwrap_or_default();
-        if !derived.is_subset(&declared) || !ownership_supports(parameter, need) || (summary.escaped_parameters.contains(&(index as u32)) && parameter.non_escaping) { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+        if !derived.is_subset(&declared) || !ownership_supports(parameter, need) { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
     }
     Ok(())
 }
@@ -786,10 +786,6 @@ fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffe
     needs.iter().all(|need| match (parameter.ownership, need) {
         (ParameterOwnership::Unique, _) => true,
         (ParameterOwnership::Shared, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release) => true,
-        (ParameterOwnership::CallBorrow { mode }, MemoryEffect::Read) => {
-            matches!(mode, super::super::BorrowMode::Read | super::super::BorrowMode::Write)
-        }
-        (ParameterOwnership::CallBorrow { mode: super::super::BorrowMode::Write }, MemoryEffect::Write) => true,
         _ => false,
     })
 }
@@ -864,7 +860,6 @@ mod tests {
                 parameters: vec![ParameterContract {
                     value_type: ValueType::Int,
                     ownership: ParameterOwnership::Value,
-                    non_escaping: false,
                 }],
                 results: vec![ResultContract::Value(ValueType::Int)],
                 parameter_effects: BTreeMap::new(),
@@ -900,12 +895,10 @@ mod tests {
                     ParameterContract {
                         value_type: ValueType::Callable(target_signature.id),
                         ownership: ParameterOwnership::Value,
-                        non_escaping: false,
                     },
                     ParameterContract {
                         value_type: ValueType::Int,
                         ownership: ParameterOwnership::Value,
-                        non_escaping: false,
                     },
                 ],
                 results: vec![ResultContract::Value(ValueType::Int)],
@@ -969,7 +962,6 @@ mod tests {
                 parameters: vec![ParameterContract {
                     value_type: ValueType::Int,
                     ownership: ParameterOwnership::Value,
-                    non_escaping: false,
                 }],
                 results: vec![ResultContract::Value(ValueType::Int)],
                 parameter_effects: BTreeMap::new(),
@@ -984,12 +976,10 @@ mod tests {
                     ParameterContract {
                         value_type: ValueType::Callable(target_signature.id),
                         ownership: ParameterOwnership::Value,
-                        non_escaping: false,
                     },
                     ParameterContract {
                         value_type: ValueType::Int,
                         ownership: ParameterOwnership::Value,
-                        non_escaping: false,
                     },
                 ],
                 results: vec![ResultContract::Value(ValueType::Int)],
@@ -1081,12 +1071,10 @@ mod tests {
                 ParameterContract {
                     value_type: ValueType::Ref(container_layout),
                     ownership: ParameterOwnership::Shared,
-                    non_escaping: false,
                 },
                 ParameterContract {
                     value_type: ValueType::Size,
                     ownership: ParameterOwnership::Value,
-                    non_escaping: false,
                 },
             ],
             results: vec![ResultContract::Shared { layout: element_layout }],
@@ -1169,7 +1157,7 @@ mod tests {
     #[test]
     fn returning_a_parameter_derives_alias_result() {
         let object = ValueId::new(0); let layout = layout();
-        let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared, non_escaping: false }], results: vec![ResultContract::AliasesParameter { parameter: 0, layout }], parameter_effects: BTreeMap::new() };
+        let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared }], results: vec![ResultContract::AliasesParameter { parameter: 0, layout }], parameter_effects: BTreeMap::new() };
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Shared) }], operations: Vec::new(), terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
@@ -1186,7 +1174,6 @@ mod tests {
             parameters: vec![ParameterContract {
                 value_type: ValueType::Ref(layout),
                 ownership: ParameterOwnership::Shared,
-                non_escaping: false,
             }],
             results: vec![ResultContract::AliasesParameter { parameter: 0, layout }],
             parameter_effects: BTreeMap::new(),
@@ -1240,25 +1227,11 @@ mod tests {
     #[test]
     fn weaker_effect_declaration_is_rejected() {
         let object = ValueId::new(0); let layout = layout();
-        let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Unique, non_escaping: false }], results: Vec::new(), parameter_effects: BTreeMap::new() };
+        let contract = super::super::super::CallableContract { parameters: vec![ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Unique }], results: Vec::new(), parameter_effects: BTreeMap::new() };
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Unique) }], operations: vec![Operation::Reclaim { object }], terminator: Terminator::Return { values: Vec::new() } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: Vec::new(), contract };
         let (functions, signatures) = maps(function, signature);
         assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
     }
 
-    #[test]
-    fn call_borrow_cannot_hide_release_behind_a_read_need() {
-        let parameter = ParameterContract {
-            value_type: ValueType::Ref(layout()),
-            ownership: ParameterOwnership::CallBorrow {
-                mode: super::super::super::BorrowMode::Read,
-            },
-            non_escaping: true,
-        };
-        let needs = [MemoryEffect::Read, MemoryEffect::Release]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        assert!(!ownership_supports(&parameter, &needs));
-    }
 }

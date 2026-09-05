@@ -28,7 +28,6 @@ fn signature(id: u32, parameters: Vec<ValueType>, results: Vec<ValueType>) -> Fu
             parameters: parameters.iter().map(|ty| ParameterContract {
                 value_type: *ty,
                 ownership: if matches!(ty, ValueType::Ref(_)) { ParameterOwnership::Shared } else { ParameterOwnership::Value },
-                non_escaping: false,
             }).collect(),
             results: results.iter().map(|ty| match ty {
                 ValueType::Ref(layout) => ResultContract::Shared { layout: *layout },

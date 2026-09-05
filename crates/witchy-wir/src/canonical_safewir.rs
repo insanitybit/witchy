@@ -267,40 +267,10 @@ pub enum StoreTransfer {
     MoveUnique,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BorrowMode {
-    Read,
-    Write,
-}
-
-/// A call-scoped, non-escaping view. It can occur only inside a call argument
-/// and never becomes an SSA value, heap field, return value, or block argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CallBorrow {
-    source: ValueId,
-    mode: BorrowMode,
-}
-
-impl CallBorrow {
-    pub const fn new(source: ValueId, mode: BorrowMode) -> Self {
-        Self { source, mode }
-    }
-
-    pub const fn source(self) -> ValueId {
-        self.source
-    }
-
-    pub const fn mode(self) -> BorrowMode {
-        self.mode
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallArgument {
     Value(ValueId),
     Move(ValueId),
-    Share(ValueId),
-    Borrow(CallBorrow),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -308,14 +278,12 @@ pub enum ParameterOwnership {
     Value,
     Unique,
     Shared,
-    CallBorrow { mode: BorrowMode },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterContract {
     pub value_type: ValueType,
     pub ownership: ParameterOwnership,
-    pub non_escaping: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

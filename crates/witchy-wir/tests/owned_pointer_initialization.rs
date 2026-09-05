@@ -139,7 +139,6 @@ fn candidate(
                     parameters: vec![ParameterContract {
                         value_type: ValueType::Ref(root_layout),
                         ownership: ParameterOwnership::Unique,
-                        non_escaping: false,
                     }],
                     results: Vec::new(),
                     parameter_effects: BTreeMap::new(),

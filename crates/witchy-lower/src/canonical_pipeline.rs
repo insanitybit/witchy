@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_list_parameter_index_reaches_admitted_execution() {
+    fn shared_list_parameter_index_reaches_admitted_execution() {
         let source = "fn first(xs: List(Int)) -> Int:\n    xs[0]\nfn main() -> Int:\n    first([42])\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
@@ -799,6 +799,69 @@ mod tests {
             .expect("canonical main export");
 
         assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 42);
+    }
+
+    #[test]
+    fn non_tail_let_list_call_retains_the_caller_token() {
+        let source = "fn first(xs: List(Int)) -> Int:\n    xs[0]\nfn main() -> Int:\n    let xs = [41]\n    let observed = first(xs)\n    observed + xs[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked non-tail let List(Int) source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit non-tail let List(Int) artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile non-tail let List(Int) artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate non-tail let List(Int) artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical main export");
+        assert_eq!(main.call(&mut store, ()).expect("run non-tail let List(Int)"), 82);
+    }
+
+    #[test]
+    fn proper_tail_let_list_call_moves_the_entry_token() {
+        let source = "fn identity(xs: List(Int)) -> List(Int):\n    xs\nfn forward(xs: List(Int)) -> List(Int):\n    identity(xs)\nfn main() -> Int:\n    forward([42])[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked proper-tail let List(Int) source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            canonical,
+            derive_layout_bundle(canonical).expect("canonical layouts"),
+        )
+        .expect("lower proper-tail let List(Int) source");
+        let forward = candidate.functions().iter().find(|function| function.id.get() == 1)
+            .expect("forward function");
+        let entry_token = forward.blocks.iter().find(|block| block.id == forward.entry)
+            .and_then(|block| block.parameters.first())
+            .expect("forward entry parameter")
+            .value;
+        assert!(matches!(forward.blocks[0].terminator,
+            witchy_wir::canonical_safewir::Terminator::TailCall { ref arguments, .. }
+            if matches!(arguments.as_slice(), [witchy_wir::canonical_safewir::CallArgument::Move(value)] if *value == entry_token)));
+        assert!(!forward.blocks.iter().flat_map(|block| &block.operations).any(|operation| {
+            matches!(operation, witchy_wir::canonical_safewir::Operation::DropRef { object } if *object == entry_token)
+        }), "a tail-moved entry token cannot have residual caller cleanup");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit proper-tail let List(Int) artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile proper-tail let List(Int) artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate proper-tail let List(Int) artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f2")
+            .expect("canonical main export");
+        assert_eq!(main.call(&mut store, ()).expect("run proper-tail let List(Int)"), 42);
     }
 
     #[test]
