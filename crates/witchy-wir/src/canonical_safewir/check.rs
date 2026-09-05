@@ -210,6 +210,12 @@ fn install_body_derived_result_contracts(
                         }
                     }
                     explicit if explicit != derived => {
+                        if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                            eprintln!(
+                                "canonical contract mismatch: signature {:?} declared {explicit:?} derived {derived:?}",
+                                signature.id
+                            );
+                        }
                         return Err(InitialCheckError::CallableContractMismatch {
                             signature: signature.id,
                         });

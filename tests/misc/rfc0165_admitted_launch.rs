@@ -108,3 +108,11 @@ fn admitted_string_literals_cross_owned_parameters_and_returns() {
     );
     assert_eq!(output, vec!["hi x".to_string(), "hello".to_string(), "ok".to_string()]);
 }
+
+#[test]
+fn admitted_early_return_in_an_if_arm_runs() {
+    let output = run_admitted(
+        "pub fn clamp(n: Int) -> Int:\n    if n < 0:\n        return 0\n    n\n\nfn main(console: Console):\n    if clamp(-3) == 0 && clamp(7) == 7:\n        console.print(\"done\")\n",
+    );
+    assert_eq!(output, vec!["done".to_string()]);
+}

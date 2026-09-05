@@ -304,3 +304,17 @@ route is 0/107.
   holding a static result is safe, and the existing static-pointer pin stands.
 - Census: 60 of 163 check; `app`, `ownership`, and `strings` now run end to end
   (the first runnable examples to admit).
+
+## Progress (owner, 2026-09-05, fourth slice)
+
+- **B12 fixed**: an early `return` as the last statement of an `if` arm lowers;
+  the arm has no join edge and the other arm continues as the fall-through. The
+  structured encoder and the plan mirror accept the continuing side's block as
+  the merge when the other side only terminates.
+- **B14/B6 (`own`) fixed**: the contract derivation mapped a returned scalar
+  parameter to `Unknown` and marked scalar parameters as escaping with memory
+  effects; scalars carry no memory provenance, so both now derive `Value`. The
+  `own`-convention pin test is green.
+- Diagnostics: contract refusals name their judgment under
+  `WITCHY_CANONICAL_PLAN_DEBUG=1`.
+- Census: 60 of 163 check.

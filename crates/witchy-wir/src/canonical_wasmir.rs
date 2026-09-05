@@ -2777,7 +2777,13 @@ impl StructuredEmitter<'_> {
         let else_terminal = self.is_terminal(else_target)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
-            if candidate == current || candidate == then_target || candidate == else_target {
+            // When one side only terminates (`if c: return x` then fall through),
+            // the other side's first block is itself the merge: the structured
+            // form is `if c { ... } else { } end` followed by that block.
+            if candidate == current
+                || (candidate == then_target && !else_terminal)
+                || (candidate == else_target && !then_terminal)
+            {
                 continue;
             }
             let then_distance = match then_distances.get(&candidate) {
@@ -4670,7 +4676,13 @@ impl PlanEmitter<'_> {
         let else_terminal = self.is_terminal(else_target)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
-            if candidate == current || candidate == then_target || candidate == else_target {
+            // When one side only terminates (`if c: return x` then fall through),
+            // the other side's first block is itself the merge: the structured
+            // form is `if c { ... } else { } end` followed by that block.
+            if candidate == current
+                || (candidate == then_target && !else_terminal)
+                || (candidate == else_target && !then_terminal)
+            {
                 continue;
             }
             let then_distance = match then_distances.get(&candidate) {

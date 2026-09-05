@@ -89,7 +89,10 @@ impl Origin {
     fn result(self, value_type: ValueType) -> DerivedResult {
         match (self, value_type) {
             (Origin::Unseen, _) => DerivedResult::Unseen,
-            (Origin::Unknown, value_type) if is_scalar(value_type) => DerivedResult::Value(value_type),
+            // A scalar carries no memory provenance: wherever it came from
+            // (a constant, a parameter, arithmetic), the callable's result
+            // contract is just its value type. Only references need an origin.
+            (_, value_type) if is_scalar(value_type) => DerivedResult::Value(value_type),
             (Origin::Fresh { layout, class, extent }, ValueType::Ref(actual)) if layout == actual => {
                 DerivedResult::Fresh { layout, class, extent }
             }
@@ -135,9 +138,7 @@ pub(super) fn derive_result_contracts(
             .collect::<Result<Vec<_>, _>>()?;
         if let Some(previous) = contracts.insert(function.signature, results.clone()) {
             if previous != results {
-                return Err(InitialCheckError::CallableContractMismatch {
-                    signature: function.signature,
-                });
+                return Err(contract_mismatch(function.signature, "contracts.rs site 1"));
             }
         }
     }
@@ -312,13 +313,11 @@ fn derive_summary(
     for (index, declared) in signature.contract.results.iter().enumerate() {
         if let ResultContract::Shared { layout } = declared {
             if signature.results.get(index) != Some(&ValueType::Ref(*layout)) {
-                return Err(InitialCheckError::CallableContractMismatch {
-                    signature: signature.id,
-                });
+                return Err(contract_mismatch(signature.id, "contracts.rs site 2"));
             }
-            let result = summary.results.get_mut(index).ok_or(
-                InitialCheckError::CallableContractMismatch { signature: signature.id },
-            )?;
+            let result = summary.results.get_mut(index).ok_or_else(|| {
+                contract_mismatch(signature.id, "declared Shared result has no derived slot")
+            })?;
             *result = DerivedResult::Shared(*layout);
         }
     }
@@ -695,11 +694,11 @@ fn derive_call_needs(
         let need = callee_summary
             .needs
             .get(index)
-            .ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?;
+            .ok_or_else(|| contract_mismatch(functions[&callee].signature, "call argument beyond the callee's parameter needs"))?;
         let slot = summary
             .needs
             .get_mut(parameter as usize)
-            .ok_or(InitialCheckError::CallableContractMismatch { signature: functions[&callee].signature })?;
+            .ok_or_else(|| contract_mismatch(functions[&callee].signature, "argument origin names a parameter beyond the caller's needs"))?;
         slot.extend(need.iter().copied());
     }
     Ok(())
@@ -746,7 +745,9 @@ fn argument_value(argument: &CallArgument) -> ValueId {
 }
 
 fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
-    let (Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. }) = origin else { return; };
+    // Only a reference parameter has memory effects; a scalar parameter's
+    // origin (`layout: None`) carries no memory.
+    let (Origin::Parameter { parameter, layout: Some(_) } | Origin::ReallocatesParameter { parameter, .. }) = origin else { return; };
     summary.effects.entry(parameter).or_default().insert(effect);
     if let Some(slot) = summary.needs.get_mut(parameter as usize) {
         slot.insert(effect);
@@ -754,7 +755,9 @@ fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
 }
 
 fn mark_escape(summary: &mut BodySummary, origin: Origin) {
-    if let Origin::Parameter { parameter, .. } | Origin::ReallocatesParameter { parameter, .. } = origin {
+    // Returning or storing a scalar parameter is not an escape of memory: a
+    // value with no layout has nothing to read, retain, or release.
+    if let Origin::Parameter { parameter, layout: Some(_) } | Origin::ReallocatesParameter { parameter, .. } = origin {
         summary.escaped_parameters.insert(parameter);
         if let Some(need) = summary.needs.get_mut(parameter as usize) {
             need.insert(MemoryEffect::Read);
@@ -763,21 +766,21 @@ fn mark_escape(summary: &mut BodySummary, origin: Origin) {
 }
 
 fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Result<(), InitialCheckError> {
-    if signature.contract.parameters.len() != signature.parameters.len() || signature.contract.results.len() != signature.results.len() { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+    if signature.contract.parameters.len() != signature.parameters.len() || signature.contract.results.len() != signature.results.len() { return Err(contract_mismatch(signature.id, "contracts.rs site 6")); }
     for (parameter, value_type) in signature.contract.parameters.iter().zip(&signature.parameters) {
-        if parameter.value_type != *value_type { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+        if parameter.value_type != *value_type { return Err(contract_mismatch(signature.id, "contracts.rs site 7")); }
     }
     for (index, result) in signature.contract.results.iter().enumerate() {
-        if !result_matches(result, &summary.results[index]) { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+        if !result_matches(result, &summary.results[index]) { return Err(contract_mismatch(signature.id, "contracts.rs site 8")); }
     }
     for (parameter, effects) in &signature.contract.parameter_effects {
-        if *parameter as usize >= signature.parameters.len() || effects.iter().copied().collect::<BTreeSet<_>>().len() != effects.len() { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+        if *parameter as usize >= signature.parameters.len() || effects.iter().copied().collect::<BTreeSet<_>>().len() != effects.len() { return Err(contract_mismatch(signature.id, "contracts.rs site 9")); }
     }
     for (index, need) in summary.needs.iter().enumerate() {
         let parameter = &signature.contract.parameters[index];
         let declared = signature.contract.parameter_effects.get(&(index as u32)).cloned().unwrap_or_default().into_iter().collect::<BTreeSet<_>>();
         let derived = summary.effects.get(&(index as u32)).cloned().unwrap_or_default();
-        if !derived.is_subset(&declared) || !ownership_supports(parameter, need) { return Err(InitialCheckError::CallableContractMismatch { signature: signature.id }); }
+        if !derived.is_subset(&declared) || !ownership_supports(parameter, need) { return Err(contract_mismatch(signature.id, "contracts.rs site 10")); }
     }
     Ok(())
 }
@@ -807,6 +810,17 @@ fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
         (ResultContract::AliasesParameter { parameter, layout }, DerivedResult::AliasesParameter { parameter: actual_parameter, layout: actual_layout }) | (ResultContract::ReallocatesParameter { parameter, layout }, DerivedResult::ReallocatesParameter { parameter: actual_parameter, layout: actual_layout }) => parameter == actual_parameter && layout == actual_layout,
         _ => false,
     }
+}
+
+
+/// Every contract refusal in this module goes through here so a developer can
+/// see which judgment fired (`WITCHY_CANONICAL_PLAN_DEBUG=1`); the refusal
+/// itself is unchanged.
+fn contract_mismatch(signature: FunctionSignatureId, site: &'static str) -> InitialCheckError {
+    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+        eprintln!("canonical contract mismatch: signature {signature:?} at {site}");
+    }
+    InitialCheckError::CallableContractMismatch { signature }
 }
 
 fn is_scalar(value_type: ValueType) -> bool { matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128) }

@@ -27,8 +27,9 @@ Only `merged-green` completes a row.
 ## Known red tests on the branch (classified, not hidden)
 
 - `canonical_lower::tests::ordinary_own_identity_transfers_reference_without_clone_and_admits`
-  pins the two `own`-convention gaps in the census (checker `UnknownCallableContract`
-  for `own Int`, release placement for `own String`). Deliberately red.
+  was red for the two `own`-convention gaps; both are closed (scalar results and
+  scalar parameters carry no memory provenance in the contract derivation;
+  literal arguments materialize an owned copy) and it is green again.
 - `canonical_safewir::check::tests::raw_byte_slice_copy_is_accepted` and
   `canonical_safewir::check::tests::authenticated_dynamic_host_slice_is_accepted`
   fail on the committed branch before the current owner's changes (verified by

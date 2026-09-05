@@ -658,6 +658,7 @@ fn lower_function(
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
+        results: Vec::new(),
         write_back_parameters: Vec::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
@@ -750,6 +751,9 @@ struct FunctionLowerer<'a> {
     known_list_lengths: HashMap<ValueId, u64>,
     owned_parameters: Vec<ValueId>,
     write_back_parameters: Vec<String>,
+    /// The function's ordinary result types, so a `return` nested in a block
+    /// can build the same terminator the body tail does.
+    results: Vec<ValueType>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
@@ -771,6 +775,7 @@ impl FunctionLowerer<'_> {
         statements: &[Stmt],
         results: &[ValueType],
     ) -> Result<(), CanonicalLoweringError> {
+        self.results = results.to_vec();
         for (index, statement) in statements.iter().enumerate() {
             let final_statement = index + 1 == statements.len();
             match statement {
@@ -1049,8 +1054,19 @@ impl FunctionLowerer<'_> {
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
-                Stmt::Return(_) => {
-                    return Err(CanonicalLoweringError::UnsupportedStatement("return in block"));
+                Stmt::Return(value) => {
+                    // An early `return` ends this block's control flow. It is
+                    // admitted only as the block's last statement; anything
+                    // after it would be unreachable.
+                    if !std::ptr::eq(statement, block.stmts.last().expect("iterating a statement")) {
+                        return Err(CanonicalLoweringError::UnsupportedStatement("statements after return"));
+                    }
+                    let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
+                    let results = self.results.clone();
+                    let terminator = self.return_value(value, &results)?;
+                    self.finish_current(terminator)?;
+                    self.drop_bindings_except(&outer);
+                    return Ok(());
                 }
                 Stmt::LetPattern { .. } => {
                     return Err(CanonicalLoweringError::UnsupportedStatement("let pattern"));
@@ -1149,6 +1165,7 @@ impl FunctionLowerer<'_> {
         };
         let then_bindings = self.bindings.clone();
         let then_end = self.current;
+        let then_terminated = self.blocks[then_end.get() as usize].terminator.is_some();
 
         self.current = else_id;
         self.bindings = outer.clone();
@@ -1160,6 +1177,23 @@ impl FunctionLowerer<'_> {
         };
         let else_bindings = self.bindings.clone();
         let else_end = self.current;
+        let else_terminated = self.blocks[else_end.get() as usize].terminator.is_some();
+
+        // An arm that returned early has no edge into the join. With one arm
+        // gone the other simply continues as the fall-through; the `if` is a
+        // statement here, so it carries no value.
+        if then_terminated || else_terminated {
+            if with_value {
+                return Err(CanonicalLoweringError::UnsupportedExpression("return inside a valued if"));
+            }
+            if then_terminated && else_terminated {
+                return Err(CanonicalLoweringError::UnsupportedStatement("return in every if arm"));
+            }
+            let (end, bindings) = if then_terminated { (else_end, else_bindings) } else { (then_end, then_bindings) };
+            self.current = end;
+            self.bindings = bindings;
+            return Ok(None);
+        }
 
         let result_type = match (then_value, else_value) {
             (Some(then_value), Some(else_value)) => {
@@ -4759,7 +4793,9 @@ mod tests {
     }
 
     #[test]
-    fn no_else_value_is_rejected_fail_closed() {
+    fn if_without_else_with_an_early_return_lowers_as_an_effect() {
+        // Once a v1 refusal; a unit function's final `if` is an effect, and an
+        // arm that returns early simply has no join edge.
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), "fn bad(flag: Bool) -> Nil:\n    if flag:\n        return\n".as_bytes().to_vec())],
             "main",
@@ -4767,6 +4803,7 @@ mod tests {
         )
         .expect("checked source");
         let canonical = checked.canonical_source().expect("canonical source");
-        assert!(lower_typed_module(canonical, empty_layouts()).is_err());
+        let candidate = lower_typed_module(canonical, empty_layouts()).expect("lowers as an effect");
+        assert!(check_initial(candidate).is_ok());
     }
 }
