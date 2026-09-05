@@ -1,6 +1,6 @@
 # BUG: checker-accepted scalar `match` CFG is refused by the canonical encoder
 
-Status: open, fail-closed at admission on `impl/rfc0165-interpreter`
+Status: fixed on `impl/rfc0165-interpreter` (2026-09-05): the lowering owned it
 
 ## Finding
 
@@ -40,3 +40,17 @@ a guessed source pattern.
 ```sh
 /private/tmp/witchy-rfc0165-interpreter-target/debug/witchy check examples/signs/src/signs.witchy
 ```
+
+## Fix (2026-09-05)
+
+`lower_match` allocated a fallthrough block for every arm before knowing
+whether the pattern was refutable. For a wildcard arm the dispatch block
+branches unconditionally into the arm, so that fallthrough had no predecessor:
+a legitimate SafeWIR block by validation but unreachable from entry, which the
+structured backend correctly refuses rather than guessing it is dead. The
+lowering now creates a fallthrough only for an arm that can fail (a refutable
+pattern or a guard) and traps only when a refutable last arm exists.
+`examples/signs` runs end to end; `hello` and `compute` now stop at string
+interpolation, the next in-subset gap. A second encoder-side limit remains
+open: `if c then A else trap`, where one side of a `BranchIf` only terminates,
+finds no join (`find_join` requires a block reachable from both sides).

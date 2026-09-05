@@ -672,6 +672,11 @@ mod tests {
         candidate.checked_source = CheckedSourceIdentity::from_digest(
             source.source_witness().source_bundle_digest(),
         );
+        // A candidate bound to real source carries that source's launch
+        // payload; the initial checker compares the two, so a hand-built
+        // candidate without it is refused before any other judgment runs.
+        let mut candidate = candidate
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
         let source_abi = source.closed_callable_abi("main").expect("main ABI");
         let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
             panic!("main must have a closed target");

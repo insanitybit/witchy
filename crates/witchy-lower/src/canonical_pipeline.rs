@@ -416,6 +416,24 @@ mod tests {
         assert!(entry.export().starts_with('f'));
     }
 
+    /// A scalar `match` with a wildcard arm is inside the foundation subset.
+    /// The lowering once allocated a fallthrough block for the wildcard that
+    /// nothing branched to, and the structured backend refused the dead block
+    /// at admission (`hello`, `compute`, `signs`).
+    #[test]
+    fn scalar_match_with_wildcard_reaches_admission() {
+        let source = "fn step(direction: Int) -> Int:\n    match direction:\n        -1 -> 10\n        1 -> 20\n        _ -> 0\n\nfn main() -> Int:\n    step(-1) + step(1) + step(7)\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("signs".to_string(), source.as_bytes().to_vec())],
+            "signs",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let artifact = admit_checked_module(&checked).expect("a wildcard match admits");
+        wasmparser::validate(artifact.wasm()).expect("admitted bytes are valid Wasm");
+        assert!(artifact.entry().is_some());
+    }
+
     #[test]
     fn checked_scalar_direct_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    answer()\n";

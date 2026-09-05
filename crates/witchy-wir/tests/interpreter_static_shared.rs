@@ -125,7 +125,8 @@ fn authenticated_static_scalar_survives_shared_clone_and_drop() {
         },
         vec![StaticDataSegment::new(StaticDataId::new(0), bytes)],
     )
-    .with_source_abi_bindings(CandidateAbiBindings::new(vec![CandidateAbiBinding::new(function, 0)]));
+    .with_source_abi_bindings(CandidateAbiBindings::new(vec![CandidateAbiBinding::new(function, 0)]))
+    .with_launch_contract_payload(checked_source.launch_contract_payload().to_vec());
     let checked_initial = check_initial_with_witness(candidate, checked_source).expect("initial authority");
     let validated = validate_final(checked_initial, checked_source).expect("final authority");
 

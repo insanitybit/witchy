@@ -1257,25 +1257,37 @@ impl FunctionLowerer<'_> {
             None
         };
         let mut arm_results = Vec::with_capacity(arms.len());
-        let mut next = self.current;
+        // The dispatch block the next arm tests in. It is `None` once an
+        // irrefutable arm has ended dispatch: allocating a fallthrough block
+        // for an arm that cannot fail would leave a block no edge reaches, and
+        // the structured backend refuses an unreachable block rather than
+        // guessing it is dead (BUG-canonical-match-cfg-unstructured-block).
+        let mut next = Some(self.current);
 
         for arm in arms {
-            self.current = next;
+            let Some(current) = next else { break };
+            self.current = current;
             self.bindings = outer.clone();
             let arm_block = self.new_block(&[])?;
-            let next_block = self.new_block(&[])?;
             let pattern_binding = self.lower_match_pattern(scrutinee, &arm.pattern)?;
             if let Some((name, value)) = pattern_binding {
                 self.bindings.insert(name, value);
             }
             let arm_bindings = self.bindings.clone();
             let condition = self.match_pattern_condition(scrutinee, &arm.pattern)?;
+            // Only an arm that can fail (a refutable pattern or a guard) has a
+            // fallthrough successor.
+            let next_block = if condition.is_some() || arm.guard.is_some() {
+                Some(self.new_block(&[])?)
+            } else {
+                None
+            };
             if let Some(condition) = condition {
                 self.finish_current(Terminator::BranchIf {
                     condition,
                     then_target: arm_block,
                     then_arguments: Vec::new(),
-                    else_target: next_block,
+                    else_target: next_block.expect("a refutable arm has a fallthrough"),
                     else_arguments: Vec::new(),
                 })?;
             } else {
@@ -1300,7 +1312,7 @@ impl FunctionLowerer<'_> {
                     condition: guard,
                     then_target: body_block,
                     then_arguments: Vec::new(),
-                    else_target: next_block,
+                    else_target: next_block.expect("a guarded arm has a fallthrough"),
                     else_arguments: Vec::new(),
                 });
                 self.current = body_block;
@@ -1318,14 +1330,17 @@ impl FunctionLowerer<'_> {
             let body_end = self.current;
             let bindings = self.bindings.clone();
             arm_results.push((body_end, bindings, value));
-            self.current = next_block;
             self.bindings = outer.clone();
             next = next_block;
         }
 
-        self.current = next;
+        // Exhaustiveness is the type checker's judgment; a dispatch that falls
+        // off the last refutable arm is unreachable by that judgment and traps.
         self.bindings = outer.clone();
-        self.finish_current(Terminator::Trap)?;
+        if let Some(fallthrough) = next {
+            self.current = fallthrough;
+            self.finish_current(Terminator::Trap)?;
+        }
 
         let mut changed_names = outer
             .keys()
@@ -4164,16 +4179,19 @@ mod tests {
 
     #[test]
     fn shared_parameter_if_does_not_forge_a_shared_phi() {
-        let candidate = lower_with_derived_layouts(
+        // The join lane over two shared parameters cannot be given an owned
+        // token without forging one: releasing both parameter tokens at the
+        // join's return would release the value being returned. Lowering
+        // itself refuses, which is strictly stronger than the checker
+        // rejection this test once pinned; no such candidate reaches admission.
+        let checked = checked(
             "fn choose(flag: Bool, left: String, right: String) -> String:\n    if flag:\n        left\n    else:\n        right\n",
         );
-        let join = candidate.functions()[0].blocks.last().expect("if join");
-        assert_eq!(join.parameters[0].ownership, None);
+        let source = checked.canonical_source().expect("canonical source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts");
         assert!(matches!(
-            check_initial(candidate),
-            Err(witchy_wir::canonical_safewir::InitialCheckError::UnknownCallableContract {
-                ..
-            })
+            lower_typed_module(source, layouts),
+            Err(CanonicalLoweringError::OwnedReleasePlacement(_))
         ));
     }
 
@@ -4572,7 +4590,8 @@ mod tests {
             source,
             crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
         )
-        .expect("ordinary checked own calls lower");
+        .expect("ordinary checked own calls lower")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
         let caller = candidate.functions().iter().find(|function| function.id.get() == 2).expect("caller");
         assert!(caller.blocks[0].operations.iter().any(|operation| matches!(operation,
             Operation::Call { arguments, .. } if matches!(arguments.as_slice(), [CallArgument::Move(_)])
@@ -4580,7 +4599,8 @@ mod tests {
             Terminator::TailCall { arguments, .. } if matches!(arguments.as_slice(), [CallArgument::Move(_)])
         ));
         assert!(!caller.blocks[0].operations.iter().any(|operation| matches!(operation, Operation::CloneRef { .. })));
-        assert!(check_initial_with_witness(candidate, source).is_ok(), "source-bound own candidate admits");
+        let admitted = check_initial_with_witness(candidate, source);
+        assert!(admitted.is_ok(), "source-bound own candidate admits: {:?}", admitted.err());
     }
 
     #[test]

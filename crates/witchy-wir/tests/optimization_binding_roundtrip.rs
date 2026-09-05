@@ -50,7 +50,8 @@ fn zero_pass_final_validation_preserves_source_binding_and_scalar_behavior() {
                 },
             ],
         }],
-    }).with_source_abi_bindings(CandidateAbiBindings::new(vec![CandidateAbiBinding::new(function, 0)]));
+    }).with_source_abi_bindings(CandidateAbiBindings::new(vec![CandidateAbiBinding::new(function, 0)]))
+    .with_launch_contract_payload(source.launch_contract_payload().to_vec());
 
     let checked = check_initial_with_witness(candidate, source).unwrap();
     let validated = validate_final(checked, source).unwrap();
