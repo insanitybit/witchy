@@ -784,7 +784,7 @@ fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Re
 
 fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffect>) -> bool {
     needs.iter().all(|need| match (parameter.ownership, need) {
-        (ParameterOwnership::Unique, _) => true,
+        (ParameterOwnership::Unique | ParameterOwnership::WriteBack, _) => true,
         (ParameterOwnership::Shared, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release) => true,
         _ => false,
     })

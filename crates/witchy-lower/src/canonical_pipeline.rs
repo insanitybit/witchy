@@ -386,6 +386,30 @@ mod tests {
     }
 
     #[test]
+    fn var_list_write_back_replacement_reaches_admitted_execution() {
+        let source = "fn replace(var xs: List(Int)):\n    xs = [42]\n\nfn main() -> Int:\n    var xs = [1]\n    replace(xs)\n    xs[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked var write-back source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical var write-back artifact");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile canonical var write-back artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate canonical var write-back artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical var write-back main export");
+        assert_eq!(main.call(&mut store, ()).expect("run canonical var write-back main"), 42);
+    }
+
+    #[test]
     fn own_list_identity_reaches_admitted_execution() {
         let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn main() -> Int:\n    let xs = identity([42])\n    xs[0]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

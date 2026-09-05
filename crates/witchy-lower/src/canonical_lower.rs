@@ -372,8 +372,10 @@ fn checked_signature(
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
-        if matches!(convention, Convention::Var | Convention::Borrow)
+        if matches!(convention, Convention::Borrow)
             || matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
+            || matches!(convention, Convention::Var)
+                && !matches!(source_value_type(parameter, layout_bundle, layouts, function_types)?, ValueType::Ref(_))
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
@@ -413,8 +415,9 @@ fn signature_from_type(
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
     for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
-        if matches!(convention, Convention::Var)
-            || matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
+        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
+            || matches!(convention, Convention::Var)
+                && !matches!(source_value_type(parameter, layout_bundle, layouts, function_types)?, ValueType::Ref(_))
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: format!("signature {:?}", id),
@@ -425,6 +428,7 @@ fn signature_from_type(
         let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
         let ownership = match (value_type, convention) {
             (ValueType::Ref(_), Convention::Let | Convention::Own) => ParameterOwnership::Shared,
+            (ValueType::Ref(_), Convention::Var) => ParameterOwnership::WriteBack,
             (_, Convention::Let | Convention::Own) => ParameterOwnership::Value,
             _ => unreachable!(),
         };
@@ -442,11 +446,15 @@ fn signature_from_type(
         contract_parameters.push(ParameterContract { value_type, ownership });
     }
     let result = source_value_type(result, layout_bundle, layouts, function_types)?;
-    let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
-    let result_contracts = results.iter().copied().map(|result| match result {
+    let mut results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
+    let mut result_contracts = results.iter().copied().map(|result| match result {
         ValueType::Ref(layout) => ResultContract::Shared { layout },
         result => ResultContract::Value(result),
-    }).collect();
+    }).collect::<Vec<_>>();
+    for parameter in contract_parameters.iter().filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack) {
+        results.push(parameter.value_type);
+        result_contracts.push(ResultContract::BodyDerived(parameter.value_type));
+    }
     Ok(FunctionSignature {
         id,
         parameters: value_parameters,
@@ -468,6 +476,12 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+fn write_back_count(signature: &FunctionSignature) -> usize {
+    signature.contract.parameters.iter()
+        .filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack)
+        .count()
 }
 
 fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
@@ -513,6 +527,7 @@ fn lower_function(
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
+        write_back_parameters: Vec::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
@@ -533,7 +548,7 @@ fn lower_function(
     {
         parameter.ownership = match contract.ownership {
             ParameterOwnership::Unique => Some(Ownership::Unique),
-            ParameterOwnership::Shared => Some(Ownership::Shared),
+            ParameterOwnership::Shared | ParameterOwnership::WriteBack => Some(Ownership::Shared),
             ParameterOwnership::Value => None,
         };
     }
@@ -543,7 +558,7 @@ fn lower_function(
         .zip(&signature.contract.parameters)
         .filter_map(|(parameter, contract)| {
             (matches!(parameter.value_type, ValueType::Ref(_))
-                && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared))
+                && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
             .then_some(parameter.value)
         })
         .collect();
@@ -552,8 +567,13 @@ fn lower_function(
             return Err(CanonicalLoweringError::DuplicateBinding(source.name.clone()));
         }
     }
+    lowerer.write_back_parameters = function.params.iter().zip(&signature.contract.parameters)
+        .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
+        .map(|(parameter, _)| parameter.name.clone())
+        .collect();
 
-    lowerer.lower_body(&function.body.stmts, &signature.results)?;
+    let ordinary_results = &signature.results[..signature.results.len() - write_back_count(signature)];
+    lowerer.lower_body(&function.body.stmts, ordinary_results)?;
     let blocks = lowerer
         .blocks
         .into_iter()
@@ -598,6 +618,7 @@ struct FunctionLowerer<'a> {
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     owned_parameters: Vec<ValueId>,
+    write_back_parameters: Vec<String>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
@@ -1681,6 +1702,27 @@ impl FunctionLowerer<'_> {
     }
 
     fn finish_current(&mut self, terminator: Terminator) -> Result<(), CanonicalLoweringError> {
+        let terminator = match terminator {
+            Terminator::Return { mut values } => {
+                // Source `var` parameters are returned as affine replacement
+                // tokens after the source-level result lanes.  A source-level
+                // result that aliases the same token gets its own RC token.
+                for name in self.write_back_parameters.clone() {
+                    let value = *self.bindings.get(&name)
+                        .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                    if values.contains(&value) {
+                        let clone = self.fresh(self.values[&value])?;
+                        self.push_operation(Operation::CloneRef { destination: clone, source: value });
+                        for result in &mut values {
+                            if *result == value { *result = clone; }
+                        }
+                    }
+                    values.push(value);
+                }
+                Terminator::Return { values }
+            }
+            terminator => terminator,
+        };
         let transferred = match &terminator {
             Terminator::Return { values } => values.clone(),
             Terminator::TailCall { arguments, .. }
@@ -1820,7 +1862,7 @@ impl FunctionLowerer<'_> {
             .get(signature_id.get() as usize)
             .cloned()
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
-        let arguments = self.lower_call_arguments(name, arguments, signature_id, &signature, false)?;
+        let call_arguments = self.lower_call_arguments(name, arguments, signature_id, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -1830,9 +1872,10 @@ impl FunctionLowerer<'_> {
         self.push_operation(Operation::Call {
             destinations: destinations.clone(),
             callee,
-            arguments,
+            arguments: call_arguments,
         });
-        Ok(destinations)
+        self.rebind_write_backs(arguments, &signature, &destinations)?;
+        Ok(destinations[..destinations.len() - write_back_count(&signature)].to_vec())
     }
 
     fn lower_indirect_tail_call(
@@ -1928,7 +1971,7 @@ impl FunctionLowerer<'_> {
         {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
-        let arguments = self.lower_call_arguments("<indirect>", arguments, signature_id, &signature, false)?;
+        let call_arguments = self.lower_call_arguments("<indirect>", arguments, signature_id, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -1939,9 +1982,42 @@ impl FunctionLowerer<'_> {
             destinations: destinations.clone(),
             callee,
             signature: signature_id,
-            arguments,
+            arguments: call_arguments,
         });
-        Ok(destinations)
+        self.rebind_write_backs(arguments, &signature, &destinations)?;
+        Ok(destinations[..destinations.len() - write_back_count(&signature)].to_vec())
+    }
+
+    fn rebind_write_backs(
+        &mut self,
+        source_arguments: &[Expr],
+        signature: &FunctionSignature,
+        destinations: &[ValueId],
+    ) -> Result<(), CanonicalLoweringError> {
+        let ordinary_results = destinations.len() - write_back_count(signature);
+        let mut destination = ordinary_results;
+        for (parameter, contract) in signature.contract.parameters.iter().enumerate() {
+            if contract.ownership != ParameterOwnership::WriteBack {
+                continue;
+            }
+            let Expr::Var(name) = source_arguments.get(parameter).ok_or_else(|| {
+                CanonicalLoweringError::CallArityMismatch {
+                    callee: "write-back".to_owned(),
+                    expected: signature.contract.parameters.len(),
+                    actual: source_arguments.len(),
+                }
+            })? else {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "var write-back argument must be a bound variable",
+                ));
+            };
+            let replacement = *destinations.get(destination).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("missing var write-back destination"),
+            )?;
+            self.bindings.insert(name.clone(), replacement);
+            destination += 1;
+        }
+        Ok(())
     }
 
     fn lower_call_arguments(
@@ -2007,7 +2083,26 @@ impl FunctionLowerer<'_> {
                             callee: callee.to_owned(), parameter, ownership,
                         }),
                     },
-                    convention @ (Convention::Borrow | Convention::Var) => Err(
+                    Convention::Var => {
+                        if contract.ownership != ParameterOwnership::WriteBack
+                            || !matches!(actual, ValueType::Ref(_))
+                        {
+                            return Err(CanonicalLoweringError::UnsupportedCallOwnership {
+                                callee: callee.to_owned(), parameter, ownership: contract.ownership,
+                            });
+                        }
+                        let Expr::Var(name) = argument else {
+                            return Err(CanonicalLoweringError::UnsupportedExpression(
+                                "var write-back argument must be a bound variable",
+                            ));
+                        };
+                        self.owned_parameters.retain(|owned| *owned != value);
+                        if !self.bindings.contains_key(name) {
+                            return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                        }
+                        Ok(CallArgument::Move(value))
+                    }
+                    convention @ Convention::Borrow => Err(
                         CanonicalLoweringError::UnsupportedConvention {
                             function: callee.to_owned(), parameter: parameter.to_string(), convention,
                         },

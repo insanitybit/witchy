@@ -263,6 +263,9 @@ pub enum ParameterOwnership {
     Value,
     Unique,
     Shared,
+    /// An affine managed-reference token passed by source `var`. The ABI
+    /// returns one trailing replacement token per such parameter.
+    WriteBack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

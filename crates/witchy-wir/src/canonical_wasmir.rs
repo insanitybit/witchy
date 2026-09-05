@@ -651,13 +651,14 @@ fn is_indirect_parameter(signature: &FunctionSignature, index: usize, value_type
         return true;
     }
     matches!(value_type, ValueType::Ref(_))
-        && matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::Shared))
-        && signature.contract.parameter_effects.get(&(index as u32)).is_none_or(|effects| {
-            effects.iter().all(|effect| matches!(
-                effect,
-                MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release
-            ))
-        })
+        && matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::Shared | ParameterOwnership::WriteBack))
+        && (matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::WriteBack))
+            || signature.contract.parameter_effects.get(&(index as u32)).is_none_or(|effects| {
+                effects.iter().all(|effect| matches!(
+                    effect,
+                    MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release
+                ))
+            }))
 }
 
 fn checked_table_index(

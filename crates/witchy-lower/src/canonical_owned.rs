@@ -168,7 +168,23 @@ fn call_flow(
             if is_reference(function, *value) { consume(owned, *value)?; }
         }
     }
-    for (destination, contract) in destinations.iter().zip(&signature.contract.results) {
+    let write_back_count = signature.contract.parameters.iter()
+        .filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack)
+        .count();
+    if destinations.len() < write_back_count {
+        return Err(ReleasePlacementError::UnresolvedResult(
+            *destinations.first().unwrap_or(&ValueId::new(0)),
+        ));
+    }
+    let ordinary_results = destinations.len() - write_back_count;
+    for (index, (destination, contract)) in destinations.iter().zip(&signature.contract.results).enumerate() {
+        if index >= ordinary_results {
+            if !is_reference(function, *destination) {
+                return Err(ReleasePlacementError::UnresolvedResult(*destination));
+            }
+            owned.insert(*destination);
+            continue;
+        }
         match contract {
             ResultContract::Shared { .. }
             | ResultContract::Fresh { class: AllocationClass::ReferenceCounted, .. } => { owned.insert(*destination); }
@@ -239,7 +255,7 @@ pub(super) fn insert_releases(
     let entry = blocks.get(&function.entry).ok_or(ReleasePlacementError::MissingBlock(function.entry))?;
     let owned = entry.parameters.iter().zip(&signature.contract.parameters).filter_map(|(parameter, contract)| {
         (is_reference(function, parameter.value)
-            && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared))
+            && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
             .then_some(parameter.value)
     }).collect::<Values>();
     let live_in = liveness(function);

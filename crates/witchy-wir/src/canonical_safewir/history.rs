@@ -297,6 +297,7 @@ impl CanonicalWriter {
             ParameterOwnership::Value => self.u8(0),
             ParameterOwnership::Unique => self.u8(1),
             ParameterOwnership::Shared => self.u8(2),
+            ParameterOwnership::WriteBack => self.u8(3),
         }
     }
 

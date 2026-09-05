@@ -368,29 +368,39 @@ fn candidate_signature_matches_source_inner(
     let convention_at = |index| conventions.get(index).copied().unwrap_or_default();
     if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
-        (matches!(convention, witchy_syntax::ast::Convention::Let)
+        (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
             && value_type_matches_source(*actual, source, layouts, signatures, seen)
     }) { return false; }
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
-        if !(matches!(convention, witchy_syntax::ast::Convention::Let)
+        if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
+            (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
             (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Value),
             (super::ValueType::Ref(_), _) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             _ => matches!(actual.ownership, super::ParameterOwnership::Value),
         }
     }) { return false; }
     let result_is_unit = matches!(result.unqualified(), witchy_syntax::ast::Type::Named(name, arguments) if (name == "Nil" || name == "Unit") && arguments.is_empty());
-    (if result_is_unit { actual.results.is_empty() } else {
-        actual.results.len() == 1 && value_type_matches_source(actual.results[0], result, layouts, signatures, seen)
-    }) && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
-        matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_)))
-            && effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release))
-    })
+    let ordinary_results = usize::from(!result_is_unit);
+    let write_back_parameters = parameters.iter().enumerate()
+        .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
+        .collect::<Vec<_>>();
+    (actual.results.len() == ordinary_results + write_back_parameters.len()
+        && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, seen))
+        && write_back_parameters.iter().enumerate().all(|(offset, (parameter, source))| {
+            value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, seen)
+                && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack)
+        })
+        && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
+            matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_)))
+                && (matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::ParameterOwnership::WriteBack))
+                    || effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release)))
+        }))
 }
 
 fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {

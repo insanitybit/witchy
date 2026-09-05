@@ -668,7 +668,7 @@ fn check_entry_parameters(
                     });
                 }
             }
-            ParameterOwnership::Shared => {
+            ParameterOwnership::Shared | ParameterOwnership::WriteBack => {
                 if parameter.ownership != Some(super::Ownership::Shared) {
                     return Err(InitialCheckError::CallableContractMismatch {
                         signature: signature.id,
@@ -1201,6 +1201,7 @@ fn check_call(
         let accepted = match (expected.ownership, ownership) {
             (ParameterOwnership::Value, ParameterOwnership::Value)
             | (ParameterOwnership::Unique, ParameterOwnership::Unique)
+            | (ParameterOwnership::WriteBack, ParameterOwnership::Unique)
             // Moving a unique token into a shared parameter is a safe
             // ownership weakening; the callee receives that token.
             | (ParameterOwnership::Shared, ParameterOwnership::Unique) => true,
@@ -1264,7 +1265,7 @@ fn check_indirect_reference_arguments(
             .unwrap_or(true);
         memory_bearing && !matches!(
             (argument, value_type, parameter.value_type, parameter.ownership),
-            (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Shared)
+            (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Shared | ParameterOwnership::WriteBack)
         )
     }) {
         return Err(InitialCheckError::UnsupportedIndirectCall {

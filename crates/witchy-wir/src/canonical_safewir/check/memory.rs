@@ -511,7 +511,7 @@ impl<'a> MemoryChecker<'a> {
                 })?;
             let ownership = match contract.ownership {
                 ParameterOwnership::Unique => Ownership::Unique,
-                ParameterOwnership::Shared => Ownership::Shared,
+                ParameterOwnership::Shared | ParameterOwnership::WriteBack => Ownership::Shared,
                 ParameterOwnership::Value => {
                     continue;
                 }
@@ -519,12 +519,12 @@ impl<'a> MemoryChecker<'a> {
             let extent = self.parameter_extent(layout)?;
             let (allocation_class, shared_immutable) = match contract.ownership {
                 ParameterOwnership::Unique => (Some(AllocationClass::ReferenceCounted), false),
-                ParameterOwnership::Shared => (None, true),
+                ParameterOwnership::Shared | ParameterOwnership::WriteBack => (None, true),
                 ParameterOwnership::Value => unreachable!(),
             };
             let initialized_owned_slots = matches!(
                 contract.ownership,
-                ParameterOwnership::Unique | ParameterOwnership::Shared
+                ParameterOwnership::Unique | ParameterOwnership::Shared | ParameterOwnership::WriteBack
             );
             self.state.objects.insert(
                 parameter.value,
@@ -1317,7 +1317,7 @@ impl<'a> MemoryChecker<'a> {
         let state = self.live_object(source)?;
         let permitted = match parameter {
             ParameterOwnership::Unique => state.ownership == Ownership::Unique,
-            ParameterOwnership::Shared => {
+            ParameterOwnership::Shared | ParameterOwnership::WriteBack => {
                 matches!(state.ownership, Ownership::Unique | Ownership::Shared)
             }
             _ => false,
@@ -1328,7 +1328,8 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-        if parameter == ParameterOwnership::Shared && self.is_shared_immutable_storage(source, state) {
+        if matches!(parameter, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+            && self.is_shared_immutable_storage(source, state) {
             self.state.objects
                 .get_mut(&source)
                 .expect("live object exists")
