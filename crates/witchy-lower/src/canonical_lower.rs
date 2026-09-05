@@ -15,7 +15,7 @@ mod owned;
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
 
-use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type};
+use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, UnOp};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
@@ -2137,7 +2137,7 @@ impl FunctionLowerer<'_> {
             Expr::Ctor { .. } | Expr::AnonCtor { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
             }
-            Expr::Unary { .. } => Err(CanonicalLoweringError::UnsupportedExpression("unary")),
+            Expr::Unary { op, expr } => self.lower_unary(*op, expr),
             Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
             Expr::Field { .. } => Err(CanonicalLoweringError::UnsupportedExpression("field")),
             Expr::Lambda { .. } => Err(CanonicalLoweringError::UnsupportedExpression("lambda")),
@@ -2963,6 +2963,91 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::IdOverflow)?;
         self.values.insert(value, value_type);
         Ok(value)
+    }
+
+    fn lower_unary(
+        &mut self,
+        operator: UnOp,
+        operand: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let operand = self.lower_expr(operand)?;
+        let value_type = self.values[&operand];
+        match (operator, value_type) {
+            (UnOp::Neg, ValueType::Int) => {
+                let zero = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::ConstInt { destination: zero, value: 0 });
+                let destination = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::Arithmetic {
+                    destination,
+                    operator: ArithmeticOperator::Subtract,
+                    left: zero,
+                    right: operand,
+                    overflow: OverflowBehavior::Wrap,
+                });
+                Ok(destination)
+            }
+            (UnOp::Neg, ValueType::Float) => {
+                let zero = self.fresh(ValueType::Float)?;
+                self.push_operation(Operation::ConstFloat {
+                    destination: zero,
+                    bits: 0.0f64.to_bits(),
+                });
+                let destination = self.fresh(ValueType::Float)?;
+                self.push_operation(Operation::Arithmetic {
+                    destination,
+                    operator: ArithmeticOperator::Subtract,
+                    left: zero,
+                    right: operand,
+                    overflow: OverflowBehavior::Wrap,
+                });
+                Ok(destination)
+            }
+            (UnOp::Not, ValueType::Bool) => {
+                let false_value = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::ConstBool {
+                    destination: false_value,
+                    value: false,
+                });
+                let destination = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::Compare {
+                    destination,
+                    operator: ComparisonOperator::Equal,
+                    left: operand,
+                    right: false_value,
+                });
+                Ok(destination)
+            }
+            (UnOp::BitNot, ValueType::Int) => {
+                let mask = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::ConstInt {
+                    destination: mask,
+                    value: -1,
+                });
+                let destination = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::Arithmetic {
+                    destination,
+                    operator: ArithmeticOperator::BitXor,
+                    left: operand,
+                    right: mask,
+                    overflow: OverflowBehavior::Wrap,
+                });
+                Ok(destination)
+            }
+            (UnOp::Neg | UnOp::Not | UnOp::BitNot, _) => {
+                Err(CanonicalLoweringError::UnsupportedExpression("unary operand type"))
+            }
+            (UnOp::Borrow, _) => {
+                Err(CanonicalLoweringError::UnsupportedExpression("shared borrow"))
+            }
+            (UnOp::BorrowMut, _) => {
+                Err(CanonicalLoweringError::UnsupportedExpression("mutable borrow"))
+            }
+            (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference")),
+            (UnOp::Move, _) => {
+                Err(CanonicalLoweringError::UnsupportedExpression("explicit move"))
+            }
+            (UnOp::Await, _) => Err(CanonicalLoweringError::UnsupportedExpression("await")),
+        }
     }
 
     fn lower_binary(

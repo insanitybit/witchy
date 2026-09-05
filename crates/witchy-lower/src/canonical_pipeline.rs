@@ -263,6 +263,30 @@ mod tests {
     }
 
     #[test]
+    fn scalar_unary_source_reaches_admitted_execution() {
+        let source = "fn main() -> Int:\n    let x = -40\n    if !false:\n        -x + 2\n    else:\n        ~0\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked unary source");
+        let artifact = admit_checked_module(&checked).expect("admit canonical unary artifact");
+
+        wasmparser::validate(artifact.wasm()).expect("unary artifact is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile canonical unary artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate canonical unary artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical unary main export");
+        assert_eq!(main.call(&mut store, ()).expect("run unary main"), 42);
+    }
+
+    #[test]
     fn frozen_production_entry_remains_executable_during_migration() {
         let source = "fn main() -> Int:\n    40 + 2\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
