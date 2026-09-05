@@ -145,7 +145,9 @@ fn check_import(
     }
 
     for (role, expected) in import.parameter_roles.iter().zip(&signature.parameters) {
-        if role_type(role) != *expected {
+        if role_type(role) != *expected
+            || matches!(role, HostParameterRole::Value(value_type) if is_reference_like(*value_type))
+        {
             return Err(InitialCheckError::HostContractRoleMismatch { import: import.id });
         }
         if let HostParameterRole::Buffer { extent, .. } = role {
@@ -158,7 +160,9 @@ fn check_import(
         }
     }
     for (role, expected) in import.result_roles.iter().zip(&signature.results) {
-        if result_type(role) != *expected {
+        if result_type(role) != *expected
+            || matches!(role, HostResultRole::Value(value_type) if is_reference_like(*value_type))
+        {
             return Err(InitialCheckError::HostContractRoleMismatch { import: import.id });
         }
     }
@@ -275,7 +279,7 @@ fn require_type(
 }
 
 fn is_reference_like(value_type: ValueType) -> bool {
-    matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Callable(_))
+    matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Callable(_) | ValueType::Capability(_))
 }
 
 fn require_arity(
@@ -473,6 +477,40 @@ mod tests {
             assert!(matches!(
                 check(actual, role.clone(), HostCallArgument::Value(VALUE)),
                 Err(super::InitialCheckError::TypeMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn capability_cannot_be_declared_as_a_generic_host_value() {
+        let capability = ValueType::Capability(CapabilityKindId::new(4));
+        assert!(matches!(
+            check(capability, HostParameterRole::Value(capability), HostCallArgument::Value(VALUE)),
+            Err(super::InitialCheckError::HostContractRoleMismatch { .. })
+        ));
+        check(capability, HostParameterRole::Capability(CapabilityKindId::new(4)), HostCallArgument::Capability(VALUE))
+            .expect("the dedicated capability role remains supported");
+    }
+
+    #[test]
+    fn reference_results_cannot_be_declared_as_generic_host_values() {
+        for value_type in [
+            ValueType::Capability(CapabilityKindId::new(4)),
+            ValueType::Ref(LayoutId::from_bytes([3; 32])),
+            ValueType::Gc(GcTypeId::new(1)),
+            ValueType::Callable(SIGNATURE),
+        ] {
+            let role = HostParameterRole::Value(ValueType::Int);
+            let mut import = import(role.clone());
+            import.result_roles = vec![super::super::super::HostResultRole::Value(value_type)];
+            let mut signature = signature(&role);
+            signature.results = vec![value_type];
+            let catalog = super::super::super::CanonicalAbiCatalog::from_imports(vec![import.clone()]);
+            let imports = [(IMPORT, &import)].into_iter().collect();
+            let signatures = [(SIGNATURE, &signature)].into_iter().collect();
+            assert!(matches!(
+                check_imports(&imports, &signatures, Some(&catalog)),
+                Err(super::InitialCheckError::HostContractRoleMismatch { .. })
             ));
         }
     }
