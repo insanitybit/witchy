@@ -392,6 +392,30 @@ mod tests {
         ));
     }
 
+    /// The linker leaves `main` unqualified and qualifies the entry module's
+    /// other functions (`app.helper`). A program whose file is not named
+    /// `main` must still admit both, and the artifact must record a launch
+    /// entry, or the CLI cannot run any canonical program.
+    #[test]
+    fn non_main_module_keeps_bare_main_and_records_a_launch_entry() {
+        let source = "fn helper() -> Int:\n    41\n\nfn main() -> Int:\n    helper() + 1\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("app".to_string(), source.as_bytes().to_vec())],
+            "app",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        assert!(canonical.callable_signature("main").is_some(), "bare `main` is in the entry scope");
+        assert!(canonical.callable_signature("app.helper").is_some(), "qualified helpers are in the entry scope");
+
+        let artifact = admit_checked_module(&checked).expect("admitted canonical artifact");
+        let entry = artifact.entry().expect("a program with `main` records its launch entry");
+        assert!(entry.capabilities().is_empty());
+        assert_eq!(entry.result(), witchy_wir::CanonicalEntryResult::Int);
+        assert!(entry.export().starts_with('f'));
+    }
+
     #[test]
     fn checked_scalar_direct_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    answer()\n";

@@ -24,7 +24,8 @@ pub mod canonical_safewir;
 pub mod canonical_interpreter;
 mod canonical_wasmir;
 pub use canonical_wasmir::{
-    AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical,
+    AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,
+    CanonicalEntryResult, admit_canonical,
 };
 pub mod safewir;
 pub mod safewir_adapter;

@@ -7,7 +7,7 @@ use witchy_lower::codegen;
 use witchy_interp::interpreter;
 use witchy_runtime::runtime::{self, Runtime};
 use crate::{
-    commands, link_file_checked, linked_has_main, run_wasm_bytes,
+    commands, link_file_checked, linked_has_main, run_admitted_artifact, run_wasm_bytes,
     RUN_MEMORY_PAGES,
 };
 
@@ -175,8 +175,8 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
         unexpected!("`{path}` has no `main` to run");
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
-    let bytes = match codegen::compile_checked_module_binary(&checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+    let artifact = match codegen::compile_checked_module_artifact(&checked) {
+        codegen::LoweringOutcome::Lowered(artifact) => artifact,
         codegen::LoweringOutcome::Unsupported(reason) => {
             unexpected!("cannot compile to WASM: {reason}")
         }
@@ -210,7 +210,7 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
         .map_err(|e| e.to_string());
     let compiled = match &unmintable {
         Some(msg) => Err(witchy_syntax::diag::runtime_error("", 0, msg)),
-        None => run_wasm_bytes(&bytes).map(|mut lines| {
+        None => run_admitted_artifact(&artifact).map(|mut lines| {
             if main_returns_int {
                 lines.pop();
             }

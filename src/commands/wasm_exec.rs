@@ -421,6 +421,46 @@ pub(crate) fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     })
 }
 
+/// [`run_wasm_bytes`] for an admitted canonical artifact (RFC-0165). Same dev
+/// grants, same shared engine; the difference is the entry protocol: the
+/// runtime enters the validated launch entry recorded at admission instead of
+/// a `run` export, so the artifact-typed API is the only way in.
+pub(crate) fn run_admitted_artifact(
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+) -> Result<Vec<String>, String> {
+    use crate::runtime::{Capabilities, Runtime};
+    use std::cell::RefCell;
+    thread_local! {
+        static RUNTIME: RefCell<Runtime> = RefCell::new(Runtime::batch().expect("runtime"));
+    }
+    RUNTIME.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        let mut vm = rt
+            .spawn_admitted(
+                artifact,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    quiet: true,
+                    clock: true,
+                    rand: true,
+                    env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                RUN_MEMORY_PAGES,
+            )
+            .map_err(|e| e.to_string())?;
+        vm.run().map_err(|e| e.root_cause().to_string())?;
+        Ok(vm.output())
+    })
+}
+
 /// Run a compiled in-language test under exactly the authority a nullary test
 /// needs: captured output plus authority-free runtime support (`__witchy_abort`
 /// and heap guards are always linked by the runtime). No Clock/Rand/Env/Dir/File/

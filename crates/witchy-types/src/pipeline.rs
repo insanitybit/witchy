@@ -710,17 +710,27 @@ fn canonicalize_callable_instances(
     Ok((typed, callable_witness))
 }
 
+/// Whether a linked declaration belongs to the checked program's entry module
+/// and is therefore a canonical runtime function.
+///
+/// The linker leaves the entry module's `main` unqualified and qualifies its
+/// other declarations with the entry module name (`app.helper`); every other
+/// module's declarations are qualified with their own name. An unlinked module
+/// (tests, direct binder callers) has no entry and everything is in scope.
+/// This is the single definition: the ABI manifest, the proper-tail ordinal
+/// map, layout derivation, and canonical lowering must all agree on it, or a
+/// program's own `main` can be admitted away (see
+/// `BUG-canonical-entry-scope-drops-bare-main.md`).
+pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bool {
+    linked_entry.is_none_or(|entry| name == "main" || name.starts_with(&format!("{entry}.")))
+}
+
 fn bind_canonical_callable_witness(
     typed: &typeck::TypedModule,
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
 ) -> Result<CanonicalCallableWitness, PipelineError> {
     let linked_entry = typed.module().linked_entry.as_deref();
-    // The entry scope is the set of declarations canonical lowering treats as
-    // runtime functions: the entry itself and `entry.*`. An unlinked module
-    // (tests, direct binder callers) has no entry and everything is in scope.
-    let in_entry_scope = |name: &str| {
-        linked_entry.is_none_or(|entry| name == entry || name.starts_with(&format!("{entry}.")))
-    };
+    let in_entry_scope = |name: &str| is_canonical_entry_function(linked_entry, name);
     let runtime_functions = typed
         .module()
         .items
@@ -1149,6 +1159,16 @@ mod tests {
             obligations_digest(&BTreeSet::new()),
             "the obligation set is bound into the source witness"
         );
+    }
+
+    #[test]
+    fn bare_main_is_in_the_entry_scope_for_any_entry_module_name() {
+        assert!(is_canonical_entry_function(Some("app"), "main"));
+        assert!(is_canonical_entry_function(Some("app"), "app.helper"));
+        assert!(!is_canonical_entry_function(Some("app"), "list.any"));
+        assert!(!is_canonical_entry_function(Some("app"), "List__any__task_2eSlot"));
+        assert!(!is_canonical_entry_function(Some("app"), "app"), "the module is not a function");
+        assert!(is_canonical_entry_function(None, "anything"));
     }
 
     /// A rights-qualified capability parameter is outside the canonical ABI

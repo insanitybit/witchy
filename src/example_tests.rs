@@ -715,9 +715,9 @@
                             None
                         };
                         if parity_runnable {
-                            let bytes = codegen::compile_checked_module_binary(&checked)
+                            let artifact = codegen::compile_checked_module_artifact(&checked)
                                 .expect_lowered(&format!("{context} compiles to WASM"));
-                            let compiled = crate::run_wasm_bytes(&bytes)
+                            let compiled = crate::run_admitted_artifact(&artifact)
                                 .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
                             assert_eq!(
                                 interpreted.as_ref().expect("parity examples run"),

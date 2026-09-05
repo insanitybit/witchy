@@ -11,11 +11,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use wasmtime::{
-    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Linker, Memory,
-    Module, Result, Store, StoreLimits, StoreLimitsBuilder,
+    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, ExternRef, Linker, Memory,
+    Module, Result, Store, StoreLimits, StoreLimitsBuilder, Val,
 };
 use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
-use witchy_wir::AdmittedCanonicalArtifact;
+use witchy_wir::{
+    AdmittedCanonicalArtifact, CanonicalEntry, CanonicalEntryCapability, CanonicalEntryResult,
+};
 use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_POLICY_SECTION};
 use witchy_wir::wir_prelude::abi_import_info;
 
@@ -1364,18 +1366,41 @@ pub struct Vm {
     store: Store<VmState>,
     instance: wasmtime::Instance,
     aborted: bool,
+    /// Set for a VM spawned from an admitted canonical artifact: the validated
+    /// entry the launcher calls, with host-minted capability tokens. `None`
+    /// is the frozen compiler's parameterless `run` export protocol.
+    entry: Option<CanonicalEntry>,
 }
 
+/// The opaque host value behind a `Console` capability token minted at launch
+/// for a canonical entry. The `witchy.print` import is itself gated by the
+/// `print` grant, so the token carries identity, not extra authority; it
+/// exists so the guest's `Cap<Console>` is an unforgeable host reference and
+/// never an integer or a null.
+struct ConsoleCapability;
+
 impl Vm {
-    /// Call the VM's exported `run` function to completion.
+    /// Run the program to completion.
+    ///
+    /// A frozen-compiler module is entered through its parameterless `run`
+    /// export. An admitted canonical artifact is entered through the validated
+    /// entry recorded at admission: the host mints one capability token per
+    /// declared capability parameter and prints an `Int`/`Float` result under
+    /// the same exit-code convention the frozen `run` wrapper implemented.
     pub fn run(&mut self) -> Result<()> {
         if self.aborted {
             bail!("an aborted Witchy VM cannot be run again");
         }
-        let run = self
-            .instance
-            .get_typed_func::<(), ()>(&mut self.store, "run")?;
-        if let Err(error) = run.call(&mut self.store, ()) {
+        let outcome = match self.entry.clone() {
+            Some(entry) => self.call_canonical_entry(&entry),
+            None => {
+                let run = self
+                    .instance
+                    .get_typed_func::<(), ()>(&mut self.store, "run")?;
+                run.call(&mut self.store, ())
+            }
+        };
+        if let Err(error) = outcome {
             // A trap does not run guest cleanup. Make that terminal: retaining the
             // host handle is harmless, but no later call may observe a partially
             // unwound stack or abandoned guest roots.
@@ -1390,6 +1415,56 @@ impl Vm {
             if let Some(bytes) = self.region_copy_bytes() {
                 eprintln!("region copy-out: {bytes} byte(s)");
             }
+        }
+        Ok(())
+    }
+
+    fn call_canonical_entry(&mut self, entry: &CanonicalEntry) -> Result<()> {
+        let func = self
+            .instance
+            .get_func(&mut self.store, entry.export())
+            .ok_or_else(|| Error::msg(format!("admitted artifact lacks its entry export `{}`", entry.export())))?;
+        let mut params = Vec::with_capacity(entry.capabilities().len());
+        for capability in entry.capabilities() {
+            let token = match capability {
+                CanonicalEntryCapability::Console => {
+                    if !self.store.data().caps.print && !self.store.data().caps.console_read {
+                        bail!("the program's `main` requires a Console capability that was not granted");
+                    }
+                    ExternRef::new(&mut self.store, ConsoleCapability)?
+                }
+            };
+            params.push(Val::ExternRef(Some(token)));
+        }
+        let mut results = vec![
+            Val::I32(0);
+            match entry.result() {
+                CanonicalEntryResult::Unit => 0,
+                CanonicalEntryResult::Int | CanonicalEntryResult::Float => 1,
+            }
+        ];
+        func.call(&mut self.store, &params, &mut results)?;
+        let rendered = match (entry.result(), results.first()) {
+            (CanonicalEntryResult::Int, Some(Val::I64(n))) => Some(n.to_string()),
+            (CanonicalEntryResult::Float, Some(Val::F64(bits))) => {
+                Some(witchy_syntax::fmt::render_float(f64::from_bits(*bits)))
+            }
+            (CanonicalEntryResult::Unit, _) => None,
+            (kind, other) => bail!("entry result {other:?} does not match its validated kind {kind:?}"),
+        };
+        if let Some(text) = rendered {
+            // The frozen `run` wrapper printed `main`'s Int/Float result through
+            // the `print_int`/`print_float` imports; the host does the same
+            // rendering here so both routes agree on what a run shows.
+            let state = self.store.data();
+            if state.caps.live_output {
+                use std::io::Write;
+                println!("{text}");
+                let _ = std::io::stdout().flush();
+            } else if !state.caps.quiet {
+                println!("[vm {}] {text}", state.id);
+            }
+            state.output.lock().unwrap().push(text);
         }
         Ok(())
     }
@@ -1837,7 +1912,10 @@ impl Runtime {
         config.wasm_simd(true);
         config.wasm_relaxed_simd(true);
         config.wasm_multi_memory(false);
-        config.wasm_tail_call(false);
+        // Canonical SafeWIR lowers proper tail sites to `return_call`
+        // (RFC-0165); frozen modules never emit it, so admitting the proposal
+        // changes nothing for them. RFC-0090's resource probes still gate B4.
+        config.wasm_tail_call(true);
         config.wasm_memory64(false);
         config.profiler(profiler);
         if profiler != wasmtime::ProfilingStrategy::None {
@@ -1893,7 +1971,10 @@ impl Runtime {
         config.wasm_simd(true);
         config.wasm_relaxed_simd(true);
         config.wasm_multi_memory(false);
-        config.wasm_tail_call(false);
+        // Canonical SafeWIR lowers proper tail sites to `return_call`
+        // (RFC-0165); frozen modules never emit it, so admitting the proposal
+        // changes nothing for them. RFC-0090's resource probes still gate B4.
+        config.wasm_tail_call(true);
         config.wasm_memory64(false);
         // Support Cranelift profiling strategies for external profilers (Linux perf,
         // VTune, JIT symbol mapping). Configurable via WITCHY_PROFILE or WITCHY_PERF_MAP.
@@ -1979,7 +2060,7 @@ impl Runtime {
         // every hit and miss still enters Wasmtime through safe `Module::new`.
         let module = build_module(&self.engine, wasm, self.executable_cache)?;
 
-        self.instantiate_module(module, caps, memory_pages_max)
+        self.instantiate_module(module, caps, memory_pages_max, None)
     }
 
     /// Spawn a VM from an admitted canonical SafeWIR artifact.
@@ -1995,7 +2076,7 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let module = build_admitted_module(&self.engine, artifact.wasm())?;
-        self.instantiate_module(module, caps, memory_pages_max)
+        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned())
     }
 
     fn instantiate_module(
@@ -2003,6 +2084,7 @@ impl Runtime {
         module: Module,
         caps: Capabilities,
         memory_pages_max: usize,
+        entry: Option<CanonicalEntry>,
     ) -> Result<Vm> {
         let id = self.next_id;
 
@@ -2037,7 +2119,7 @@ impl Runtime {
 
         // Only commit the id once the VM actually came up.
         self.next_id += 1;
-        Ok(Vm { store, instance, aborted: false })
+        Ok(Vm { store, instance, aborted: false, entry })
     }
 
     /// Execute one compiled module under an inert deterministic fixture plan.
@@ -2092,6 +2174,7 @@ impl Runtime {
             store,
             instance,
             aborted: false,
+            entry: None,
         };
         let execution = vm.run();
         let output = vm.output();

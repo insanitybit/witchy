@@ -11812,9 +11812,7 @@ impl ProperTailSiteManifest {
         let mut ordinal = 0u32;
         for (item_index, item) in module.items.iter().enumerate() {
             let Item::Function(function) = item else { continue };
-            if entry.is_none_or(|entry| {
-                function.name == entry || function.name.starts_with(&format!("{entry}."))
-            }) {
+            if crate::pipeline::is_canonical_entry_function(entry, &function.name) {
                 let item_index = u32::try_from(item_index).expect("validated item index");
                 canonical_ordinals.insert(item_index, ordinal);
                 ordinal = ordinal.checked_add(1).expect("validated function count");

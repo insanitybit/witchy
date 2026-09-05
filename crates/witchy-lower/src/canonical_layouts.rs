@@ -314,10 +314,7 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
 }
 
 fn is_canonical_source_function(module: &ast::Module, name: &str) -> bool {
-    let Some(entry) = module.linked_entry.as_deref() else {
-        return true;
-    };
-    name == entry || name.starts_with(&format!("{entry}."))
+    witchy_types::pipeline::is_canonical_entry_function(module.linked_entry.as_deref(), name)
 }
 
 #[cfg(test)]

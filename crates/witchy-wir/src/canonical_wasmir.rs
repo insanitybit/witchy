@@ -1341,12 +1341,69 @@ pub struct AdmittedCanonicalArtifact {
     authority_digest: crate::canonical_safewir::ModuleDigest,
     correspondence_digest: [u8; 32],
     wasm_digest: [u8; 32],
+    entry: Option<CanonicalEntry>,
+}
+
+/// A capability parameter of the program entry, by host family.
+///
+/// The runtime mints the corresponding opaque host reference at launch. The
+/// variant set is exactly the families the canonical foundation lowers; an
+/// entry demanding any other capability kind is refused at admission rather
+/// than launched with a token the host cannot mint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalEntryCapability {
+    Console,
+}
+
+/// What the program entry returns, for the frozen exit-code convention: an
+/// `Int` or `Float` result is printed by the host, anything else is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalEntryResult {
+    Unit,
+    Int,
+    Float,
+}
+
+/// How a launcher enters an admitted canonical artifact.
+///
+/// Canonical modules export every function as `f<id>`; the frozen compiler's
+/// parameterless `run` wrapper does not exist because the authority `main`
+/// receives is minted by the host, not synthesized in the module. This
+/// descriptor is derived only inside admission from the validated SafeWIR
+/// signature of the checked entry declaration, so the runtime calls exactly
+/// the function the checker validated, with exactly the capability tokens its
+/// signature declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalEntry {
+    export: String,
+    capabilities: Vec<CanonicalEntryCapability>,
+    result: CanonicalEntryResult,
+}
+
+impl CanonicalEntry {
+    pub fn export(&self) -> &str {
+        &self.export
+    }
+
+    pub fn capabilities(&self) -> &[CanonicalEntryCapability] {
+        &self.capabilities
+    }
+
+    pub fn result(&self) -> CanonicalEntryResult {
+        self.result
+    }
 }
 
 impl AdmittedCanonicalArtifact {
     /// Borrow the exact admitted Wasm bytes without transferring ownership.
     pub fn wasm(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// The validated program entry, or `None` for a library artifact without
+    /// a checked `main`.
+    pub fn entry(&self) -> Option<&CanonicalEntry> {
+        self.entry.as_ref()
     }
 
     /// Refuse any byte sequence other than the exact artifact admitted from
@@ -1368,6 +1425,9 @@ pub enum CanonicalAdmissionError {
     /// the backend cannot encode is a backend gap to record, not a silent
     /// refusal.
     Lowering(String),
+    /// The checked entry's validated signature demands a parameter or result
+    /// the launch protocol cannot supply; the payload names it.
+    UnsupportedEntry(String),
     Correspondence,
     SourceWitnessMismatch,
     WasmValidation,
@@ -5155,6 +5215,7 @@ fn admit_parts(
     final_module_digest: crate::canonical_safewir::ModuleDigest,
     authority_digest: crate::canonical_safewir::ModuleDigest,
     target_witness: TargetWasmWitness,
+    entry: Option<CanonicalEntry>,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     if !target_witness.matches_bytes(&bytes) {
         return Err(CanonicalAdmissionError::PlanMismatch("target witness"));
@@ -5167,7 +5228,78 @@ fn admit_parts(
         authority_digest,
         correspondence_digest: correspondence_digest(&receipt),
         wasm_digest,
+        entry,
     })
+}
+
+/// Derive the launch entry from the validated SafeWIR signature of the checked
+/// entry declaration. Nothing here consults a function spelling: the entry
+/// declaration comes from checked source, its ordinal from the callable ABI
+/// manifest, its function from the candidate's validated ABI bindings, and its
+/// parameter kinds from the validated signature. A library without a checked
+/// entry has no launch entry.
+#[cfg(not(test))]
+fn derive_entry(
+    validated: &ValidatedSafeWir,
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+) -> Result<Option<CanonicalEntry>, CanonicalAdmissionError> {
+    use crate::canonical_safewir::{CapabilityKindId, ValueType};
+    use witchy_types::canonical_abi::CanonicalTargetPolicy;
+
+    // The linker leaves the program entry unqualified as `main` whatever the
+    // entry module is called; a library has no `main` and no launch entry.
+    let Some(abi) = source.closed_callable_abi("main") else {
+        return Ok(None);
+    };
+    let CanonicalTargetPolicy::ClosedLocal(target) = abi.target_policy else {
+        return Err(CanonicalAdmissionError::UnsupportedEntry("entry is not a closed local target".into()));
+    };
+    let module = validated.module();
+    let function_id = module
+        .source_abi_bindings()
+        .entries()
+        .iter()
+        .find(|binding| binding.source_declaration_ordinal() == target.function_ordinal)
+        .map(|binding| binding.function())
+        .ok_or_else(|| CanonicalAdmissionError::UnsupportedEntry("entry has no validated ABI binding".into()))?;
+    let function = module
+        .functions()
+        .iter()
+        .find(|function| function.id == function_id)
+        .ok_or_else(|| CanonicalAdmissionError::UnsupportedEntry("entry binding names no function".into()))?;
+    let signature = module
+        .signatures()
+        .iter()
+        .find(|signature| signature.id == function.signature)
+        .ok_or_else(|| CanonicalAdmissionError::UnsupportedEntry("entry function has no signature".into()))?;
+    let mut capabilities = Vec::with_capacity(signature.parameters.len());
+    for parameter in &signature.parameters {
+        match parameter {
+            ValueType::Capability(kind) if *kind == CapabilityKindId::new(0) => {
+                capabilities.push(CanonicalEntryCapability::Console);
+            }
+            other => {
+                return Err(CanonicalAdmissionError::UnsupportedEntry(format!(
+                    "entry parameter {other:?} cannot be supplied by the launch protocol"
+                )));
+            }
+        }
+    }
+    let result = match signature.results.as_slice() {
+        [] | [ValueType::Unit] => CanonicalEntryResult::Unit,
+        [ValueType::Int] => CanonicalEntryResult::Int,
+        [ValueType::Float] => CanonicalEntryResult::Float,
+        other => {
+            return Err(CanonicalAdmissionError::UnsupportedEntry(format!(
+                "entry result {other:?} has no launch convention"
+            )));
+        }
+    };
+    Ok(Some(CanonicalEntry {
+        export: format!("f{}", function_id.get()),
+        capabilities,
+        result,
+    }))
 }
 
 #[cfg(not(test))]
@@ -5175,6 +5307,7 @@ pub fn admit_canonical(
     validated: ValidatedSafeWir,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    let entry = derive_entry(&validated, source)?;
     let checked = authorize_wasm_ir(validated, source).map_err(|error| match error {
         EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => {
             CanonicalAdmissionError::Lowering(format!("{error:?}"))
@@ -5195,7 +5328,7 @@ pub fn admit_canonical(
         authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness)
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, entry)
 }
 
 #[cfg(test)]
@@ -5233,6 +5366,7 @@ pub fn admit_canonical(
         final_module_digest,
         authority_digest,
         target_witness,
+        None,
     )
 }
 
@@ -5251,7 +5385,7 @@ fn admit_canonical_with_bytes_for_test(
         authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness)
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, None)
 }
 #[cfg(test)]
 mod tests {

@@ -85,3 +85,5 @@ mod rfc0102_console;
 mod rfc0103_build_step_confinement;
 #[path = "misc/rfc0103_csp.rs"]
 mod rfc0103_csp;
+#[path = "misc/rfc0165_admitted_launch.rs"]
+mod rfc0165_admitted_launch;
