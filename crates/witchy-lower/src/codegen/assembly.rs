@@ -3356,14 +3356,11 @@ pub fn compile_checked_module_binary_with_deterministic_counters(
 /// source program only at `main`. Keeping this boundary distinct prevents the
 /// post-link rewrite from impersonating a production `CheckedModule`.
 pub fn compile_checked_test_driver_binary(
-    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+    _checked: &witchy_types::pipeline::CheckedTestDriverModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    compile_module_binary_mode(
-        checked.module(),
-        false,
-        checked.runtime_declaration_catalog(),
-        None,
-    )
+    public_outcome(unsupported(
+        "generated test drivers are not yet supported by canonical SafeWIR",
+    ))
 }
 
 /// A compiler-rewritten Glamour application and generated adapter that were
@@ -3415,19 +3412,21 @@ pub fn check_glamour_island_executable(
 /// Compile only a compiler-generated Glamour executable that crossed
 /// [`check_glamour_island_executable`].
 pub fn compile_checked_glamour_island_execution_binary(
-    executable: &CheckedGlamourExecutable,
+    _executable: &CheckedGlamourExecutable,
 ) -> LoweringOutcome<Vec<u8>> {
-    compile_module_binary_mode(
-        executable.checked.module(),
-        false,
-        Some(executable.checked.runtime_declaration_catalog()),
-        None,
-    )
+    public_outcome(unsupported(
+        "Glamour island execution is not yet supported by canonical SafeWIR",
+    ))
 }
 
 pub fn compile_checked_development_module(
-    checked: &witchy_types::pipeline::CheckedModule,
+    _checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<CompiledDevelopmentModule> {
+    return public_outcome(unsupported(
+        "Glamour development modules are not yet supported by canonical SafeWIR",
+    ));
+    #[allow(unreachable_code)]
+    let checked = _checked;
     let metadata = match checked_glamour_development_metadata(checked) {
         Ok(metadata) => metadata,
         Err(error) => return LoweringOutcome::Rejected(error),
@@ -8570,10 +8569,11 @@ pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
 
 /// Compile a build module that crossed the canonical linked type-check boundary.
 pub fn compile_checked_build_module(
-    checked: &witchy_types::pipeline::CheckedModule,
+    _checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    let runtime_catalog = checked.runtime_declaration_catalog().ok();
-    compile_build_module_mode(checked.module(), runtime_catalog.as_ref())
+    public_outcome(unsupported(
+        "build modules are not yet supported by canonical SafeWIR",
+    ))
 }
 
 fn compile_build_module_mode(
