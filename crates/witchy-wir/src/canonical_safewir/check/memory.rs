@@ -711,7 +711,12 @@ impl<'a> MemoryChecker<'a> {
                 }
                 ResultContract::Shared { layout } => {
                     let state = self.live_object(*value)?;
-                    if state.layout != *layout || state.ownership != Ownership::Shared {
+                    // Shared is an owned, possibly-aliased RC ABI. Returning a
+                    // unique RC token weakens its static privilege, not its
+                    // lifetime or physical reference count.
+                    if state.layout != *layout
+                        || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+                    {
                         return Err(InitialCheckError::InvalidOwnership {
                             function: self.function.id,
                             object: *value,
@@ -2997,6 +3002,23 @@ mod tests {
             assert!(matches!(
                 checker.check_return(&[SOURCE], &[ResultContract::Shared { layout: list }]),
                 Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn owned_result_contract_accepts_unique_rc_without_inventing_a_clone() {
+        with_checker(false, |checker, list| {
+            checker.drop_ref(DESTINATION).unwrap();
+            checker.check_return(&[SOURCE], &[ResultContract::Shared { layout: list }]).unwrap();
+            checker.check_exit(&[SOURCE]).unwrap();
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Unique);
+            assert!(matches!(
+                checker.check_return(&[SOURCE, SOURCE], &[
+                    ResultContract::Shared { layout: list },
+                    ResultContract::Shared { layout: list },
+                ]),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
         });
     }

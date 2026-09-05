@@ -297,6 +297,29 @@ fn derive_summary(
             Terminator::Branch { .. } | Terminator::BranchIf { .. } | Terminator::Trap | Terminator::Unreachable => {}
         }
     }
+    // An owned RC result is a local ABI invariant, not a whole-program origin
+    // prediction. Each body's Return is checked independently by MemoryChecker
+    // for layout, RC class, live ownership, and exactly-once token transfer.
+    // This supports recursive calls and different allocation origins without
+    // trusting an alias/freshness summary to grant memory authority. Preserve
+    // effect/non-escape inference and the checks for stronger legacy results.
+    let signature = signatures
+        .get(&function.signature)
+        .copied()
+        .ok_or(InitialCheckError::MissingSignature(function.signature))?;
+    for (index, declared) in signature.contract.results.iter().enumerate() {
+        if let ResultContract::Shared { layout } = declared {
+            if signature.results.get(index) != Some(&ValueType::Ref(*layout)) {
+                return Err(InitialCheckError::CallableContractMismatch {
+                    signature: signature.id,
+                });
+            }
+            let result = summary.results.get_mut(index).ok_or(
+                InitialCheckError::CallableContractMismatch { signature: signature.id },
+            )?;
+            *result = DerivedResult::Shared(*layout);
+        }
+    }
     Ok(summary)
 }
 

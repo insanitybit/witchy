@@ -8,6 +8,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 
+#[path = "canonical_owned.rs"]
+mod owned;
+
+#[cfg(test)]
+#[path = "canonical_owned_tests.rs"]
+mod owned_tests;
+
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
@@ -16,7 +23,7 @@ use witchy_types::typeck::{
 };
 use witchy_wir::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, BorrowMode,
-    CallArgument, CallBorrow, CallableContract, CanonicalAbiCatalog, CanonicalModule,
+    CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
     FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
     LoweredModuleParts, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
@@ -29,6 +36,7 @@ use witchy_wir::layout::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalLoweringError {
+    OwnedReleasePlacement(String),
     InvalidLayoutBundle(String),
     MissingLayout(Type),
     AmbiguousLayout(Type),
@@ -373,12 +381,19 @@ fn signature_from_type(
         let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
         let (ownership, non_escaping) = match (value_type, convention) {
             (ValueType::Ref(_), Convention::Let | Convention::Borrow) =>
-                (ParameterOwnership::CallBorrow { mode: BorrowMode::Read }, true),
+                (ParameterOwnership::Shared, false),
             (_, Convention::Let | Convention::Borrow) => (ParameterOwnership::Value, false),
             _ => unreachable!(),
         };
         if matches!(value_type, ValueType::Ref(_)) {
-            parameter_effects.insert(index as u32, vec![MemoryEffect::Read]);
+            parameter_effects.insert(
+                index as u32,
+                vec![
+                    MemoryEffect::Read,
+                    MemoryEffect::Retain,
+                    MemoryEffect::Release,
+                ],
+            );
         }
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract { value_type, ownership, non_escaping });
@@ -386,7 +401,7 @@ fn signature_from_type(
     let result = source_value_type(result, layout_bundle, layouts, function_types)?;
     let results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
     let result_contracts = results.iter().copied().map(|result| match result {
-        ValueType::Ref(layout) => ResultContract::CheckedValue { layout },
+        ValueType::Ref(layout) => ResultContract::Shared { layout },
         result => ResultContract::Value(result),
     }).collect();
     Ok(FunctionSignature {
@@ -437,6 +452,7 @@ fn lower_function(
         list_counts: HashMap::new(),
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
+        owned_parameters: Vec::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
@@ -450,7 +466,25 @@ fn lower_function(
         print_import,
     };
     let entry = lowerer.new_block(&signature.parameters)?;
+    for (parameter, contract) in lowerer.blocks[entry.get() as usize]
+        .parameters.iter_mut().zip(&signature.contract.parameters)
+    {
+        parameter.ownership = match contract.ownership {
+            ParameterOwnership::Unique => Some(Ownership::Unique),
+            ParameterOwnership::Shared => Some(Ownership::Shared),
+            ParameterOwnership::Value | ParameterOwnership::CallBorrow { .. } => None,
+        };
+    }
     let parameters = lowerer.blocks[entry.get() as usize].parameters.clone();
+    lowerer.owned_parameters = parameters
+        .iter()
+        .zip(&signature.contract.parameters)
+        .filter_map(|(parameter, contract)| {
+            (matches!(parameter.value_type, ValueType::Ref(_))
+                && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared))
+            .then_some(parameter.value)
+        })
+        .collect();
     for (source, parameter) in function.params.iter().zip(&parameters) {
         if lowerer.bindings.insert(source.name.clone(), parameter.value).is_some() {
             return Err(CanonicalLoweringError::DuplicateBinding(source.name.clone()));
@@ -472,13 +506,16 @@ fn lower_function(
             })
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-    Ok(Function {
+    let mut lowered = Function {
         id,
         signature: signature.id,
         entry,
         value_types: lowerer.values,
         blocks,
-    })
+    };
+    owned::insert_releases(&mut lowered, signature, signatures, functions)
+        .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
+    Ok(lowered)
 }
 
 struct BlockBuilder {
@@ -498,6 +535,7 @@ struct FunctionLowerer<'a> {
     list_counts: HashMap<ValueId, ValueId>,
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
+    owned_parameters: Vec<ValueId>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
@@ -551,12 +589,14 @@ impl FunctionLowerer<'_> {
                     if let Some(Expr::Call { name, args }) = value {
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
-                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if matches!(name.as_str(), "string.chars" | "string.__chars") {
                             let value = self.lower_string_chars(args)?;
-                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if is_console_print(name) {
@@ -617,19 +657,22 @@ impl FunctionLowerer<'_> {
                         return Ok(());
                     }
                     let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
-                    self.finish_current(self.return_value(value, results)?)?;
+                    let terminator = self.return_value(value, results)?;
+                    self.finish_current(terminator)?;
                     return Ok(());
                 }
                 Stmt::Expr(value) if final_statement => {
                     if let Expr::Call { name, args } = value {
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
-                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if matches!(name.as_str(), "string.chars" | "string.__chars") {
                             let value = self.lower_string_chars(args)?;
-                            self.finish_current(self.return_value(Some(value), results)?)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if is_console_print(name) {
@@ -695,7 +738,8 @@ impl FunctionLowerer<'_> {
                         return Ok(());
                     }
                     let value = self.lower_expr(value)?;
-                    self.finish_current(self.return_value(Some(value), results)?)?;
+                    let terminator = self.return_value(Some(value), results)?;
+                    self.finish_current(terminator)?;
                     return Ok(());
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
@@ -1573,6 +1617,29 @@ impl FunctionLowerer<'_> {
     }
 
     fn finish_current(&mut self, terminator: Terminator) -> Result<(), CanonicalLoweringError> {
+        let transferred = match &terminator {
+            Terminator::Return { values } => values.clone(),
+            Terminator::TailCall { arguments, .. }
+            | Terminator::VarTailCall { arguments, .. } => arguments
+                .iter()
+                .filter_map(|argument| match argument {
+                    CallArgument::Move(value) => Some(*value),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        if matches!(terminator, Terminator::Return { .. } | Terminator::TailCall { .. } | Terminator::VarTailCall { .. }) {
+            let drops = self
+                .owned_parameters
+                .iter()
+                .copied()
+                .filter(|parameter| !transferred.contains(parameter))
+                .collect::<Vec<_>>();
+            for object in drops {
+                self.push_operation(Operation::DropRef { object });
+            }
+        }
         let block = &mut self.blocks[self.current.get() as usize];
         if block.terminator.replace(terminator).is_some() {
             return Err(CanonicalLoweringError::UnsupportedStatement("duplicate block terminator"));
@@ -1666,7 +1733,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = self.lower_call_arguments(name, arguments, &signature)?;
+        let arguments = self.lower_call_arguments(name, arguments, &signature, true)?;
         Ok(Terminator::TailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
             callee,
@@ -1689,7 +1756,7 @@ impl FunctionLowerer<'_> {
             .get(signature_id.get() as usize)
             .cloned()
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
-        let arguments = self.lower_call_arguments(name, arguments, &signature)?;
+        let arguments = self.lower_call_arguments(name, arguments, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -1757,7 +1824,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = self.lower_call_arguments("<indirect tail>", arguments, &signature)?;
+        let arguments = self.lower_call_arguments("<indirect tail>", arguments, &signature, true)?;
         Ok(Terminator::VarTailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
             callee,
@@ -1797,7 +1864,7 @@ impl FunctionLowerer<'_> {
         {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
-        let arguments = self.lower_call_arguments("<indirect>", arguments, &signature)?;
+        let arguments = self.lower_call_arguments("<indirect>", arguments, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -1818,6 +1885,7 @@ impl FunctionLowerer<'_> {
         callee: &str,
         arguments: &[Expr],
         signature: &FunctionSignature,
+        tail: bool,
     ) -> Result<Vec<CallArgument>, CanonicalLoweringError> {
         let parameters = &signature.contract.parameters;
         if arguments.len() != parameters.len() {
@@ -1844,9 +1912,13 @@ impl FunctionLowerer<'_> {
                 }
                 match contract.ownership {
                     ParameterOwnership::Value => Ok(CallArgument::Value(value)),
-                    ParameterOwnership::CallBorrow { mode: BorrowMode::Read } => {
-                        Ok(CallArgument::Borrow(CallBorrow::new(value, BorrowMode::Read)))
+                    ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
+                    ParameterOwnership::Shared => {
+                        let destination = self.fresh(actual)?;
+                        self.push_operation(Operation::CloneRef { destination, source: value });
+                        Ok(CallArgument::Move(destination))
                     }
+                    ParameterOwnership::Unique => Ok(CallArgument::Move(value)),
                     ownership => Err(CanonicalLoweringError::UnsupportedCallOwnership {
                         callee: callee.to_owned(),
                         parameter,
@@ -3375,7 +3447,7 @@ mod tests {
     use witchy_syntax::ast::Item;
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
-        check_initial, BorrowMode, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
+        check_initial, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
         Ownership, ParameterOwnership, Projection, Terminator, ValueType,
     };
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind};
@@ -3568,7 +3640,8 @@ mod tests {
         assert_eq!(function.blocks.len(), 4);
         assert_eq!(function.blocks[3].parameters.len(), 1);
         assert!(matches!(function.blocks[0].terminator, Terminator::BranchIf { .. }));
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "owned-call candidate rejected: {result:?}");
     }
 
     #[test]
@@ -3624,7 +3697,8 @@ mod tests {
             Terminator::BranchIf { .. }
         )));
         assert_eq!(function.blocks.last().unwrap().parameters.len(), 1);
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "owned tail-call candidate rejected: {result:?}");
     }
 
     #[test]
@@ -3645,7 +3719,8 @@ mod tests {
             "fn nested(flag: Bool) -> Int:\n    if flag:\n        if flag:\n            1\n        else:\n            2\n    else:\n        3\n",
         );
         assert!(candidate.functions()[0].blocks.len() >= 4);
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "owned-call candidate rejected: {result:?}");
     }
 
     #[test]
@@ -3657,7 +3732,8 @@ mod tests {
         assert_eq!(function.blocks.len(), 4);
         assert_eq!(function.blocks[1].parameters.len(), 2);
         assert_eq!(function.blocks[3].parameters.len(), 2);
-        assert!(check_initial(candidate).is_ok());
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "owned tail-call candidate rejected: {result:?}");
     }
 
     #[test]
@@ -3940,7 +4016,7 @@ mod tests {
     }
 
     #[test]
-    fn reference_let_parameter_uses_a_non_escaping_read_call_borrow() {
+    fn reference_let_parameter_uses_an_owned_clone() {
         let checked = checked(
             "fn inspect(xs: List(Int)) -> Int:\n    7\nfn caller() -> Int:\n    let xs = [1]\n    let result = inspect(xs)\n    result\n",
         );
@@ -3956,9 +4032,9 @@ mod tests {
             .expect("object callee signature");
         assert!(matches!(
             callee.contract.parameters[0].ownership,
-            ParameterOwnership::CallBorrow { mode: BorrowMode::Read }
+            ParameterOwnership::Shared
         ));
-        assert!(callee.contract.parameters[0].non_escaping);
+        assert!(!callee.contract.parameters[0].non_escaping);
 
         let call = candidate.functions()[1].blocks[0]
             .operations
@@ -3968,15 +4044,16 @@ mod tests {
                 _ => None,
             })
             .expect("caller has a direct object call");
-        assert!(matches!(
-            call.as_slice(),
-            [CallArgument::Borrow(borrow)]
-                if borrow.mode() == BorrowMode::Read
-        ));
+        assert!(matches!(call.as_slice(), [CallArgument::Move(_)]));
+        assert!(candidate.functions()[1].blocks[0].operations.iter().any(|operation| {
+            matches!(operation, Operation::CloneRef { .. })
+        }));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "owned-call candidate rejected: {result:?}");
     }
 
     #[test]
-    fn reference_tail_call_uses_a_read_call_borrow() {
+    fn reference_tail_call_moves_the_owned_token() {
         let checked = checked("fn recurse(xs: List(Int)) -> Int:\n    return recurse(xs)\n");
         let candidate = lower_typed_module(
             checked.canonical_source().expect("canonical source"),
@@ -3987,11 +4064,12 @@ mod tests {
             Terminator::TailCall { arguments, .. } => arguments,
             other => panic!("expected tail call, got {other:?}"),
         };
-        assert!(matches!(
-            tail.as_slice(),
-            [CallArgument::Borrow(borrow)]
-                if borrow.mode() == BorrowMode::Read
-        ));
+        assert!(matches!(tail.as_slice(), [CallArgument::Move(_)]));
+        assert!(!candidate.functions()[0].blocks[0].operations.iter().any(|operation| {
+            matches!(operation, Operation::CloneRef { .. } | Operation::DropRef { .. })
+        }));
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "owned tail-call candidate rejected: {result:?}");
     }
 
     #[test]

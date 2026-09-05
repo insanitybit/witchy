@@ -325,9 +325,9 @@ fn scalar_arguments(
     arguments
         .iter()
         .map(|argument| match argument {
-            CallArgument::Value(value) => Ok(*value),
+            CallArgument::Value(value) | CallArgument::Move(value) => Ok(*value),
             CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Ok(borrow.source()),
-            CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
+            CallArgument::Share(_) | CallArgument::Borrow(_) => {
                 Err(LoweringError::UnsupportedCallArgument { function })
             }
         })
@@ -672,7 +672,6 @@ fn lower_operation(
     table_indices: &BTreeMap<FunctionId, u32>,
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
-    allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmInstruction, LoweringError> {
     let source = SourceItemId::Operation { function, block, index };
     let operation = match operation {
@@ -699,11 +698,6 @@ fn lower_operation(
         Operation::WidenSize { destination, value } => ScalarInstruction::WidenSize { destination: *destination, value: *value },
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },
         Operation::MoveValue { destination, source } => {
-            if matches!(value_types.get(source), Some(ValueType::Ref(_))) {
-                if let Some(class) = allocation_classes.remove(source) {
-                    allocation_classes.insert(*destination, class);
-                }
-            }
             ScalarInstruction::MoveValue { destination: *destination, source: *source }
         }
         Operation::FunctionValue { destination, function: target } => {
@@ -726,7 +720,6 @@ fn lower_operation(
             {
                 return Err(LoweringError::UnsupportedLayout { function, operation: "Alloc" });
             }
-            allocation_classes.insert(*destination, *class);
             ScalarInstruction::Alloc { destination: *destination, layout: *layout, extent: extent.clone(), class: *class }
         }
         Operation::StaticData { destination, data, .. } => {
@@ -768,17 +761,13 @@ fn lower_operation(
             ScalarInstruction::UpdateCount { object: *object, count: *count }
         }
         Operation::CloneRef { destination, source } => {
-            if allocation_classes.get(source) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
-                return Err(LoweringError::UnsupportedLayout { function, operation: "CloneRef" });
-            }
-            allocation_classes.insert(*destination, crate::canonical_safewir::AllocationClass::ReferenceCounted);
+            // Reachable only through lower_validated. RC class and affine
+            // ownership were established by the independent final checker,
+            // including at parameters, calls, and CFG joins. Do not reconstruct
+            // them from the order in which this backend visits instructions.
             ScalarInstruction::CloneRef { destination: *destination, source: *source }
         }
         Operation::Release { object } | Operation::DropRef { object } | Operation::Reclaim { object } => {
-            if allocation_classes.get(object) != Some(&crate::canonical_safewir::AllocationClass::ReferenceCounted) {
-                return Err(LoweringError::UnsupportedLayout { function, operation: operation_name(operation) });
-            }
-            allocation_classes.remove(object);
             match operation {
                 Operation::Release { object } => ScalarInstruction::Release { object: *object },
                 Operation::DropRef { object } => ScalarInstruction::Release { object: *object },
@@ -809,9 +798,9 @@ fn lower_operation(
             }
             for (argument, expected) in arguments.iter().zip(&signature_def.parameters) {
                 let value = match argument {
-                    CallArgument::Value(value) => *value,
+                    CallArgument::Value(value) | CallArgument::Move(value) => *value,
                     CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => borrow.source(),
-                    CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
+                    CallArgument::Share(_) | CallArgument::Borrow(_) => {
                         return Err(LoweringError::UnsupportedCallArgument { function });
                     }
                 };
@@ -980,13 +969,12 @@ fn lower_block(
     imports: &BTreeMap<ImportId, ImportContract>,
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
     table_indices: &BTreeMap<FunctionId, u32>,
-    allocation_classes: &mut BTreeMap<ValueId, crate::canonical_safewir::AllocationClass>,
 ) -> Result<WasmBlock, LoweringError> {
     let instructions = block
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, table_indices, layouts, imports, allocation_classes))
+        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, table_indices, layouts, imports))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(WasmBlock {
         id: block.id,
@@ -1002,7 +990,6 @@ fn lower_function(
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
     table_indices: &BTreeMap<FunctionId, u32>,
 ) -> Result<WasmFunction, LoweringError> {
-    let mut allocation_classes = allocation_classes_across_cfg(function);
     Ok(WasmFunction {
         id: function.id,
         signature: function.signature,
@@ -1010,65 +997,9 @@ fn lower_function(
         blocks: function
             .blocks
             .iter()
-            .map(|block| lower_block(function, block, layouts, imports, signatures, table_indices, &mut allocation_classes))
+            .map(|block| lower_block(function, block, layouts, imports, signatures, table_indices))
             .collect::<Result<Vec<_>, _>>()?,
     })
-}
-
-fn allocation_classes_across_cfg(
-    function: &Function,
-) -> BTreeMap<ValueId, crate::canonical_safewir::AllocationClass> {
-    let mut classes = BTreeMap::new();
-    for block in &function.blocks {
-        for operation in &block.operations {
-            match operation {
-                Operation::Alloc { destination, class, .. } => {
-                    classes.insert(*destination, *class);
-                }
-        Operation::MoveValue { destination, source } | Operation::CloneRef { destination, source } => {
-                    if let Some(class) = classes.get(source).copied() {
-                        classes.insert(*destination, class);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    // Block parameters are new SSA definitions.  Propagate the allocation
-    // class of edge arguments until loops reach a fixed point, so a valid
-    // object remains recognizable after a structured CFG transfer.
-    loop {
-        let mut changed = false;
-        for block in &function.blocks {
-            let edges = match &block.terminator {
-                Terminator::Branch { target, arguments } => vec![(*target, arguments.as_slice())],
-                Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. } => {
-                    vec![(*then_target, then_arguments.as_slice()), (*else_target, else_arguments.as_slice())]
-                }
-                Terminator::Return { .. }
-                | Terminator::TailCall { .. }
-                | Terminator::VarTailCall { .. }
-                | Terminator::Trap
-                | Terminator::Unreachable => Vec::new(),
-            };
-            for (target, arguments) in edges {
-                let Some(target_block) = function.blocks.iter().find(|candidate| candidate.id == target) else {
-                    continue;
-                };
-                for (parameter, argument) in target_block.parameters.iter().zip(arguments) {
-                    if let Some(class) = classes.get(argument).copied() {
-                        if classes.insert(parameter.value, class) != Some(class) {
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    classes
 }
 
 fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
@@ -1196,7 +1127,8 @@ fn scalar_argument_values(arguments: &[CallArgument]) -> Option<Vec<ValueId>> {
     arguments.iter().map(|argument| match argument {
         CallArgument::Value(value) => Some(*value),
         CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Some(borrow.source()),
-        CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => None,
+        CallArgument::Move(value) => Some(*value),
+        CallArgument::Share(_) | CallArgument::Borrow(_) => None,
     }).collect()
 }
 
@@ -3332,9 +3264,9 @@ fn push_set(plan: &mut Vec<PlanToken>, layout: &LocalLayout, value: ValueId) -> 
 
 fn plan_call_argument(argument: &CallArgument) -> Result<ValueId, CanonicalAdmissionError> {
     match argument {
-        CallArgument::Value(value) => Ok(*value),
+        CallArgument::Value(value) | CallArgument::Move(value) => Ok(*value),
         CallArgument::Borrow(borrow) if borrow.mode() == BorrowMode::Read => Ok(borrow.source()),
-        CallArgument::Move(_) | CallArgument::Share(_) | CallArgument::Borrow(_) => {
+        CallArgument::Share(_) | CallArgument::Borrow(_) => {
             Err(CanonicalAdmissionError::UnsupportedPlan)
         }
     }
