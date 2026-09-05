@@ -3304,20 +3304,31 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_module_binary_mode(module, false, None, None)
 }
 
-/// Compile a module that has crossed the canonical linked type-check boundary.
+/// Compile a module through the canonical SafeWIR production boundary.
 ///
-/// Production front ends should use this entrypoint. The raw-module variant is
-/// retained for lowerer unit tests and compiler-synthesized modules whose
-/// construction is intentionally below the source pipeline.
+/// The returned bytes are the exact bytes held by `AdmittedCanonicalArtifact`.
+/// Valid checked programs outside the foundation subset fail closed as
+/// `Unsupported`; malformed compiler output or failed admission is `Rejected`.
+/// Raw WIR remains available only through explicitly test-gated entrypoints.
 pub fn compile_checked_module_binary(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    // Checked source does not necessarily carry loader-authenticated package
-    // ownership. That is valid for programs with no catalog-dependent feature:
-    // Dynamic and Glamour construction reject independently when the catalog
-    // is absent. Do not turn this optional transport into forged authority.
-    let runtime_catalog = checked.runtime_declaration_catalog().ok();
-    compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref(), None)
+    match crate::canonical_pipeline::admit_checked_module(checked) {
+        Ok(artifact) => LoweringOutcome::Lowered(artifact.wasm().to_vec()),
+        Err(crate::canonical_pipeline::CanonicalPipelineError::Layout(error)) => {
+            LoweringOutcome::Unsupported(UnsupportedLowering {
+                message: error.to_string(),
+            })
+        }
+        Err(crate::canonical_pipeline::CanonicalPipelineError::Lowering(error)) => {
+            LoweringOutcome::Unsupported(UnsupportedLowering {
+            message: error.to_string(),
+            })
+        }
+        Err(error) => LoweringOutcome::Rejected(CodegenError {
+            message: error.to_string(),
+        }),
+    }
 }
 
 /// Compile a checked module with RFC-0030 deterministic sequence counters.

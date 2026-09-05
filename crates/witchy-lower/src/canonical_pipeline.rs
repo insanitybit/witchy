@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_production_entry_remains_executable_during_migration() {
+    fn production_entry_emits_only_admitted_canonical_bytes() {
         let source = "fn main() -> Int:\n    40 + 2\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
@@ -315,24 +315,13 @@ mod tests {
             .expect("configure public production Wasm engine");
         let module = wasmtime::Module::new(&engine, &bytes)
             .expect("compile public production Wasm");
-        let mut store = wasmtime::Store::new(&engine, None::<i64>);
-        let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print_int",
-                |mut caller: wasmtime::Caller<'_, Option<i64>>, value: i64| {
-                    *caller.data_mut() = Some(value);
-                },
-            )
-            .expect("bind frozen legacy print ABI");
-        let instance = linker.instantiate(&mut store, &module)
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
             .expect("instantiate public production Wasm");
-        let run = instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .expect("frozen public production run export");
-        run.call(&mut store, ()).expect("run public production Wasm");
-        assert_eq!(*store.data(), Some(42));
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical production main export");
+        assert_eq!(main.call(&mut store, ()).expect("run public production Wasm"), 42);
     }
 
     #[test]
