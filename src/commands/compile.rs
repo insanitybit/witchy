@@ -420,44 +420,14 @@ pub(crate) fn embedded_wasm_cached(
     name: &str,
     link: impl FnOnce() -> Result<pipeline::CheckedModule, String>,
 ) -> Result<Vec<u8>, String> {
-    let key = {
-        let mut h = blake3::Hasher::new();
-        h.update(name.as_bytes());
-        h.update(b"\0");
-        h.update(compiler_fingerprint().as_bytes());
-        h.update(b"\0");
-        h.update(active_opt_key().as_bytes());
-        h.finalize().to_hex().to_string()
-    };
-    let path = (|| -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
-            })?;
-        let dir = base.join("witchy").join("embedded");
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(format!("{key}.wasm")))
-    })();
-    if let Some(p) = &path {
-        if let Ok(bytes) = std::fs::read(p) {
-            if !bytes.is_empty() {
-                return Ok(bytes);
-            }
-        }
-    }
     let checked = link()?;
-    let wasm = match codegen::compile_checked_module_binary(&checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+    match codegen::compile_checked_module_binary(&checked) {
+        codegen::LoweringOutcome::Lowered(bytes) => Ok(bytes),
         codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("the embedded {name} {reason}"));
+            Err(format!("the embedded {name} {reason}"))
         }
-        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
-    };
-    if let Some(p) = &path {
-        publish_cache_file(p, &wasm);
+        codegen::LoweringOutcome::Rejected(error) => Err(error.to_string()),
     }
-    Ok(wasm)
 }
 
 /// Compile a checked production module with the proof wrapper, including
@@ -467,7 +437,10 @@ pub(crate) fn embedded_wasm_cached(
 pub(crate) fn compile_checked_to_wasm_cached(
     checked: &pipeline::CheckedModule,
 ) -> Result<Vec<u8>, String> {
-    compile_to_wasm_cached(checked, || compile_checked_to_wasm(checked))
+    // A detached cache file carries no admitted-artifact authority and can be
+    // modified independently. Re-enable this only with an authenticated cache
+    // format that verifies an admission receipt before returning bytes.
+    compile_checked_to_wasm(checked)
 }
 
 /// Compile a checked development module with a small process-local cache. The
@@ -477,62 +450,6 @@ pub(crate) fn compile_checked_to_development_wasm_cached(
     checked: &pipeline::CheckedModule,
 ) -> Result<codegen::CompiledDevelopmentModule, String> {
     compile_to_development_wasm_cached(checked, || compile_checked_to_development_wasm(checked))
-}
-
-fn compile_to_wasm_cached(
-    cache_input: &impl std::fmt::Debug,
-    compile: impl FnOnce() -> Result<Vec<u8>, String>,
-) -> Result<Vec<u8>, String> {
-    // The AST reaches the hasher STREAMING through a `fmt::Write` adapter: the
-    // Debug rendering of a std-linked module runs hundreds of KB, and `format!`
-    // used to materialize all of it as a heap String on EVERY run, warm or
-    // cold, just to be hashed and dropped. Each formatted fragment now goes
-    // straight into the hasher instead. blake3, not sha2: this key is an
-    // INTERNAL content-address — its soundness comes from what it depends on
-    // (AST + compiler fingerprint + opt set), not from adversarial collision
-    // resistance (the cache dir is user-writable anyway) — and blake3 hashes
-    // large inputs several times faster. Security-relevant hashing (crypto.*,
-    // signing, TUF) stays on sha2/aws-lc untouched.
-    struct HashWriter(blake3::Hasher);
-    impl std::fmt::Write for HashWriter {
-        fn write_str(&mut self, s: &str) -> std::fmt::Result {
-            self.0.update(s.as_bytes());
-            Ok(())
-        }
-    }
-    let key = {
-        use std::fmt::Write as _;
-        let mut w = HashWriter(blake3::Hasher::new());
-        // Infallible: the adapter never errors, and the AST's derived Debug has
-        // no failing formatter.
-        let _ = write!(w, "{cache_input:?}");
-        let mut h = w.0;
-        h.update(b"\0");
-        h.update(compiler_fingerprint().as_bytes());
-        h.update(b"\0");
-        h.update(active_opt_key().as_bytes());
-        h.finalize().to_hex().to_string()
-    };
-    let path = (|| -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
-            })?;
-        let dir = base.join("witchy").join("src");
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(format!("{key}.wasm")))
-    })();
-    if let Some(p) = &path {
-        if let Ok(bytes) = std::fs::read(p) {
-            return Ok(bytes);
-        }
-    }
-    let wasm = compile()?;
-    if let Some(p) = &path {
-        publish_cache_file(p, &wasm);
-    }
-    Ok(wasm)
 }
 
 fn development_wasm_cache() -> &'static Mutex<HashMap<String, codegen::CompiledDevelopmentModule>> {
