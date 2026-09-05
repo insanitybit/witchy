@@ -455,7 +455,15 @@ impl<'a> Engine<'a> {
                     Ok(((left as u64) / right) as i64)
                 }
             }
-            ArithmeticOperator::RemainderSigned => checked(left.checked_rem(right)),
+            ArithmeticOperator::RemainderSigned => {
+                if right == 0 {
+                    Err(InterpretError::ArithmeticTrap)
+                } else if left == i64::MIN && right == -1 {
+                    Ok(0)
+                } else {
+                    checked(left.checked_rem(right))
+                }
+            }
             ArithmeticOperator::RemainderUnsigned => {
                 let right = right as u64;
                 if right == 0 {
@@ -506,7 +514,15 @@ impl<'a> Engine<'a> {
             }
             ArithmeticOperator::DivideUnsigned => checked(left.checked_div(right)),
             ArithmeticOperator::RemainderSigned => {
-                signed_checked((left as i32).checked_rem(right as i32))
+                let left = left as i32;
+                let right = right as i32;
+                if right == 0 {
+                    Err(InterpretError::ArithmeticTrap)
+                } else if left == i32::MIN && right == -1 {
+                    Ok(0)
+                } else {
+                    signed_checked(left.checked_rem(right))
+                }
             }
             ArithmeticOperator::RemainderUnsigned => checked(left.checked_rem(right)),
             ArithmeticOperator::BitAnd => Ok(left & right),
@@ -1141,6 +1157,48 @@ mod tests {
         )
     }
 
+    fn int_arithmetic_module(
+        operator: ArithmeticOperator,
+        left_value: i64,
+        right_value: i64,
+    ) -> ValidatedSafeWir {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let result = ValueId::new(2);
+        validated(
+            empty_layouts(),
+            Vec::new(),
+            [
+                (left, ValueType::Int),
+                (right, ValueType::Int),
+                (result, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::ConstInt {
+                    destination: left,
+                    value: left_value,
+                },
+                Operation::ConstInt {
+                    destination: right,
+                    value: right_value,
+                },
+                Operation::Arithmetic {
+                    destination: result,
+                    operator,
+                    left,
+                    right,
+                    overflow: OverflowBehavior::Trap,
+                },
+            ],
+            Terminator::Return {
+                values: vec![result],
+            },
+            vec![ValueType::Int],
+        )
+    }
+
     #[test]
     fn validated_size_arithmetic_uses_i32_width_and_signed_bits() {
         let cases = [
@@ -1201,6 +1259,75 @@ mod tests {
         );
         assert_eq!(
             interpret(&signed_division_trap, FUNCTION, Vec::new()),
+            Err(InterpretError::ArithmeticTrap)
+        );
+    }
+
+    #[test]
+    fn signed_remainder_min_over_negative_one_returns_zero() {
+        let size_module = size_arithmetic_module(
+            ArithmeticOperator::RemainderSigned,
+            u64::from(i32::MIN as u32),
+            u64::from(u32::MAX),
+            OverflowBehavior::Trap,
+        );
+        assert_eq!(
+            interpret(&size_module, FUNCTION, Vec::new()),
+            Ok(vec![InterpreterValue::Size(0)])
+        );
+
+        let mut wasm = wasm_encoder::Module::new();
+        let mut types = wasm_encoder::TypeSection::new();
+        types.ty().function([], [wasm_encoder::ValType::I32]);
+        wasm.section(&types);
+        let mut functions = wasm_encoder::FunctionSection::new();
+        functions.function(0);
+        wasm.section(&functions);
+        let mut exports = wasm_encoder::ExportSection::new();
+        exports.export("remainder", wasm_encoder::ExportKind::Func, 0);
+        wasm.section(&exports);
+        let mut function = wasm_encoder::Function::new([]);
+        function.instruction(&wasm_encoder::Instruction::I32Const(i32::MIN));
+        function.instruction(&wasm_encoder::Instruction::I32Const(-1));
+        function.instruction(&wasm_encoder::Instruction::I32RemS);
+        function.instruction(&wasm_encoder::Instruction::End);
+        let mut code = wasm_encoder::CodeSection::new();
+        code.function(&function);
+        wasm.section(&code);
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, wasm.finish()).expect("emitted Wasm");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instance");
+        let remainder = instance
+            .get_typed_func::<(), i32>(&mut store, "remainder")
+            .expect("Size result")
+            .call(&mut store, ())
+            .expect("i32.rem_s does not trap for MIN % -1");
+        assert_eq!(remainder, 0);
+
+        let int_module = int_arithmetic_module(ArithmeticOperator::RemainderSigned, i64::MIN, -1);
+        assert_eq!(
+            interpret(&int_module, FUNCTION, Vec::new()),
+            Ok(vec![InterpreterValue::Int(0)])
+        );
+    }
+
+    #[test]
+    fn signed_remainder_by_zero_traps() {
+        let size_module = size_arithmetic_module(
+            ArithmeticOperator::RemainderSigned,
+            1,
+            0,
+            OverflowBehavior::Trap,
+        );
+        assert_eq!(
+            interpret(&size_module, FUNCTION, Vec::new()),
+            Err(InterpretError::ArithmeticTrap)
+        );
+
+        let int_module = int_arithmetic_module(ArithmeticOperator::RemainderSigned, 1, 0);
+        assert_eq!(
+            interpret(&int_module, FUNCTION, Vec::new()),
             Err(InterpretError::ArithmeticTrap)
         );
     }

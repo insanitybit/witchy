@@ -19,3 +19,10 @@ and execute `Size` arithmetic and reference counts with 32-bit semantics.
 
 The reference interpreter remains intentionally fail-closed for aggregate byte
 movement and host calls; this repair does not expand those operation semantics.
+
+## Related finding, not repaired here
+
+`MemoryChecker::constant_condition` casts `Size` constants to `i64` for signed
+comparisons. Because `Size` is an `i32` bit pattern, a value with bit 31 set
+must be interpreted as negative for signed comparisons. This can derive a
+wrong branch fact; the centralized checker owner is repairing that separately.
