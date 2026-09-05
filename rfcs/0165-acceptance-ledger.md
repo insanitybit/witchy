@@ -15,7 +15,7 @@ Only `merged-green` completes a row.
 | B2 | partial | Branch probes cover owned pointer-slot storage classes, initialized pointer-slot movement, recursive list destruction, RC/static sharing, and duplicate-owned-return refusal. | Complete clone/move/replace/drop/reclaim coverage for strings and scalar/string lists; overflow/underflow attacks; merged gate evidence. |
 | B3 | partial | List and UTF-8 string indexing emit runtime `Guard`s; out-of-bounds admitted Wasm traps; header/body confinement and length/capacity checks have focused tests. | Guard near-misses, mutable list length/capacity transitions, and merged gate evidence. |
 | B4 | candidate-green | Direct and indirect `let`/`own` reference calls execute; `var` uses a structural write-back result token; proper-tail calls move owned arguments without residual caller cleanup; CFG release placement handles branch cleanup and simultaneous loop permutations. | Complete compact supported-call manifest and merged gate evidence. The 300,000-transition stress campaign is post-foundation work. |
-| B5 | partial | Canonical host checking rejects generic value roles carrying references or capabilities and uses authenticated import contracts. | Focused refusal of integer/linear-memory values in every supported capability role, precise unsupported-API diagnostics, and merged gate evidence. |
+| B5 | candidate-green | Canonical host checking uses authenticated import contracts, rejects generic value roles carrying references or capabilities, and directly refuses integer and linear-memory-reference values disguised as `Cap<K>` arguments. Broader capability APIs are outside the foundation subset. | Merged gate evidence. |
 | B6 | partial | The independent interpreter agrees with admitted Wasm for focused scalar, signed-width, RC/static, list, string, and call probes. | Digest-bound foundation corpus, adversarial ownership/bounds cases, and merged gate evidence. |
 | B7 | partial | The canonical backend accepts validated authority and focused raw/mismatched forms reject. | Constructor/reachability mechanical gate, reviewed exhaustive SafeWIR-to-WasmIR mapping, removal of backend semantic rewrites, and merged gate evidence. |
 | B8 | candidate-green | Ordinary checked-source production compilation invokes no optional optimization: it lowers, validates initially, performs the mandatory tail-call legalization, validates finally, and admits. The optional optimization session was deleted from this path. | Mechanical registry evidence for mandatory legalization and merged gate evidence. |
@@ -46,6 +46,8 @@ Only `merged-green` completes a row.
 - `rfc0165_route_gate` (10/10)
 - `canonical_lower::tests::unique_contracts_stay_fail_closed`
 - `canonical_lower::tests::local_unique_ascriptions_stay_fail_closed`
+- `canonical_safewir::check::host::tests::integer_cannot_impersonate_a_capability_argument`
+- `canonical_safewir::check::host::tests::linear_memory_reference_cannot_impersonate_a_capability_argument`
 
 These probes establish only their named behavior on the implementation branch.
 They do not establish corpus coverage, backend correspondence, optimization
