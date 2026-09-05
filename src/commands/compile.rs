@@ -321,7 +321,9 @@ pub(super) fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Resu
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
-    Ok(artifact::embed_launch_contract(bytes, checked.module()))
+    // Canonical admission already emitted and authenticated `witchy.launch`.
+    // These exact admitted bytes must not be mutated by packaging.
+    Ok(bytes)
 }
 
 pub(super) fn compile_checked_to_development_wasm(

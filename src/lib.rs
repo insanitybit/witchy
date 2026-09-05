@@ -384,7 +384,8 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
-    Ok(artifact::embed_launch_contract(bytes, linked))
+    // Canonical admission already emitted and authenticated `witchy.launch`.
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -408,6 +409,21 @@ mod canonical_source_witness_tests {
         .source_bundle_digest();
 
         assert_ne!(digest, changed, "the witness must bind exact source bytes");
+    }
+
+    #[test]
+    fn browser_compile_preserves_the_single_admitted_launch_section() {
+        let wasm = super::compile_source("fn main() -> Int:\n    42\n")
+            .expect("canonical scalar source compiles");
+        let launch_sections = wasmparser::Parser::new(0)
+            .parse_all(&wasm)
+            .filter_map(|payload| match payload.expect("admitted Wasm parses") {
+                wasmparser::Payload::CustomSection(section)
+                    if section.name() == "witchy.launch" => Some(section.data().to_vec()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(launch_sections.len(), 1);
     }
 }
 
