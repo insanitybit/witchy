@@ -116,3 +116,19 @@ fn admitted_early_return_in_an_if_arm_runs() {
     );
     assert_eq!(output, vec!["done".to_string()]);
 }
+
+#[test]
+fn admitted_range_for_loops_run() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    for i in 0..3:\n        console.print(\"tick\")\n    for j in 1..=2:\n        console.print(\"tock\")\n",
+    );
+    assert_eq!(output, vec!["tick".to_string(), "tick".to_string(), "tick".to_string(), "tock".to_string(), "tock".to_string()]);
+}
+
+#[test]
+fn admitted_float_arithmetic_and_integer_division_run() {
+    let output = run_admitted(
+        "pub fn c(f: Float) -> Float:\n    (f - 32.0) * 5.0 / 9.0\n\nfn main() -> Int:\n    let x = c(212.0)\n    if x > 99.0 && x < 101.0:\n        17 % 5 + 17 / 5\n    else:\n        0\n",
+    );
+    assert_eq!(output, vec!["5".to_string()]);
+}

@@ -1626,12 +1626,132 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    /// `for i in lo..hi` (or `lo..=hi`) over integers as an explicit counted
+    /// loop: the same state tuple `lower_while` threads (every outer binding,
+    /// each tracked list's count/capacity lanes) plus the counter. The bound
+    /// is evaluated once before the loop; the counter is a fresh header lane
+    /// and the loop variable binds to it inside the body only.
+    fn lower_range_for(
+        &mut self,
+        variable: &str,
+        lo: &Expr,
+        hi: &Expr,
+        inclusive: bool,
+        body: &witchy_syntax::ast::Block,
+    ) -> Result<(), CanonicalLoweringError> {
+        let start = self.lower_expr(lo)?;
+        let bound = self.lower_expr(hi)?;
+        if self.values[&start] != ValueType::Int || self.values[&bound] != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression("non-integer range bounds"));
+        }
+        let outer = self.bindings.clone();
+        if outer.contains_key(variable) {
+            return Err(CanonicalLoweringError::DuplicateBinding(variable.to_owned()));
+        }
+        let mut names = outer.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        let list_names = names
+            .iter()
+            .filter_map(|name| {
+                let object = outer[name];
+                self.list_counts.contains_key(&object).then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        if list_names.iter().any(|name| !self.list_capacities.contains_key(&outer[name])) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
+        }
+        let mut state_types = names.iter().map(|name| self.values[&outer[name]]).collect::<Vec<_>>();
+        state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
+        state_types.push(ValueType::Int);
+        let header = self.new_block(&state_types)?;
+        let body_id = self.new_block(&state_types)?;
+        let exit = self.new_block(&state_types)?;
+        let header_values = self.blocks[header.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
+        for name in &list_names {
+            let object = outer[name];
+            entry_state.push(self.list_counts[&object]);
+            entry_state.push(self.list_capacities[&object]);
+        }
+        entry_state.push(start);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
+
+        let bind_state = |lowerer: &mut Self, values: &[ValueId]| {
+            lowerer.bindings = names.iter().zip(values).map(|(name, value)| (name.clone(), *value)).collect();
+            let mut metadata_index = names.len();
+            for name in &list_names {
+                let object = lowerer.bindings[name];
+                lowerer.list_counts.insert(object, values[metadata_index]);
+                lowerer.list_capacities.insert(object, values[metadata_index + 1]);
+                metadata_index += 2;
+            }
+        };
+
+        self.current = header;
+        bind_state(self, &header_values);
+        let counter = *header_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
+        let condition = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare {
+            destination: condition,
+            operator: if inclusive { ComparisonOperator::LessEqualSigned } else { ComparisonOperator::LessSigned },
+            left: counter,
+            right: bound,
+        });
+        self.finish_current(Terminator::BranchIf {
+            condition,
+            then_target: body_id,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values.clone(),
+        })?;
+
+        let body_values = self.blocks[body_id.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        self.current = body_id;
+        bind_state(self, &body_values);
+        let body_counter = *body_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
+        self.bindings.insert(variable.to_owned(), body_counter);
+        self.lower_block_effect(body)?;
+        self.bindings.remove(variable);
+        let body_bindings = self.bindings.clone();
+        let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
+        for name in &list_names {
+            let object = body_bindings[name];
+            carried.push(*self.list_counts.get(&object).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("for backedge list count state"),
+            )?);
+            carried.push(*self.list_capacities.get(&object).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("for backedge list capacity state"),
+            )?);
+        }
+        let one = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::ConstInt { destination: one, value: 1 });
+        let next = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::Arithmetic {
+            destination: next,
+            operator: ArithmeticOperator::Add,
+            left: body_counter,
+            right: one,
+            overflow: OverflowBehavior::Wrap,
+        });
+        carried.push(next);
+        let body_end = self.current;
+        self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch { target: header, arguments: carried });
+
+        let exit_values = self.blocks[exit.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        self.current = exit;
+        bind_state(self, &exit_values);
+        Ok(())
+    }
+
     fn lower_for(
         &mut self,
         variable: &str,
         iterable: &Expr,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
+        if let Expr::Range { lo, hi, inclusive } = iterable {
+            return self.lower_range_for(variable, lo, hi, *inclusive, body);
+        }
         let logical_type = self.expression_type(iterable)?;
         let (layout, element_type, header_bytes, stride_bytes) =
             list_layout(&logical_type, self.layout_bundle, self.layouts)?;
@@ -3510,7 +3630,7 @@ impl FunctionLowerer<'_> {
             _ => None,
         };
         if let Some(operator) = comparison {
-            if !matches!(left_type, ValueType::Int | ValueType::Bool) {
+            if !matches!(left_type, ValueType::Int | ValueType::Bool | ValueType::Float) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("comparison type"));
             }
             if left_type == ValueType::Bool
@@ -3523,6 +3643,24 @@ impl FunctionLowerer<'_> {
             return Ok(destination);
         }
 
+        if left_type == ValueType::Float {
+            let operator = match operator {
+                BinOp::Add => ArithmeticOperator::Add,
+                BinOp::Sub => ArithmeticOperator::Subtract,
+                BinOp::Mul => ArithmeticOperator::Multiply,
+                BinOp::Div => ArithmeticOperator::DivideSigned,
+                _ => return Err(CanonicalLoweringError::UnsupportedExpression("float operator")),
+            };
+            let destination = self.fresh(ValueType::Float)?;
+            self.push_operation(Operation::Arithmetic {
+                destination,
+                operator,
+                left,
+                right,
+                overflow: OverflowBehavior::Wrap,
+            });
+            return Ok(destination);
+        }
         if left_type != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer arithmetic"));
         }

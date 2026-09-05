@@ -1726,6 +1726,15 @@ fn emit_arithmetic(
             ArithmeticOperator::ShiftRightSigned => { body.instruction(&wasm_encoder::Instruction::I32ShrS); }
             ArithmeticOperator::ShiftRightUnsigned => { body.instruction(&wasm_encoder::Instruction::I32ShrU); }
         },
+        crate::canonical_safewir::ValueType::Float => match operator {
+            ArithmeticOperator::Add => { body.instruction(&wasm_encoder::Instruction::F64Add); }
+            ArithmeticOperator::Subtract => { body.instruction(&wasm_encoder::Instruction::F64Sub); }
+            ArithmeticOperator::Multiply => { body.instruction(&wasm_encoder::Instruction::F64Mul); }
+            ArithmeticOperator::DivideSigned | ArithmeticOperator::DivideUnsigned => {
+                body.instruction(&wasm_encoder::Instruction::F64Div);
+            }
+            _ => return Err(EncodeError::UnsupportedValueType { function: function.id, value: destination, value_type }),
+        },
         _ => return Err(EncodeError::UnsupportedValueType { function: function.id, value: destination, value_type }),
     }
     emit_set(body, layout, function.id, destination)
@@ -3356,6 +3365,31 @@ enum PlanToken {
     F64Le,
     F64Gt,
     F64Ge,
+    I64DivS,
+    I64DivU,
+    I64RemS,
+    I64RemU,
+    I64And,
+    I64Or,
+    I64Xor,
+    I64Shl,
+    I64ShrS,
+    I64ShrU,
+    I32DivS,
+    I32DivU,
+    I32RemS,
+    I32RemU,
+    I32And,
+    I32Or,
+    I32Xor,
+    I32Shl,
+    I32ShrS,
+    I32ShrU,
+    F64Add,
+    F64Sub,
+    F64Mul,
+    F64Div,
+    F64Const(u64),
     Block(String),
     Loop(String),
     If(String),
@@ -3431,6 +3465,31 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::F64Le => PlanToken::F64Le,
         wasmparser::Operator::F64Gt => PlanToken::F64Gt,
         wasmparser::Operator::F64Ge => PlanToken::F64Ge,
+        wasmparser::Operator::I64DivS => PlanToken::I64DivS,
+        wasmparser::Operator::I64DivU => PlanToken::I64DivU,
+        wasmparser::Operator::I64RemS => PlanToken::I64RemS,
+        wasmparser::Operator::I64RemU => PlanToken::I64RemU,
+        wasmparser::Operator::I64And => PlanToken::I64And,
+        wasmparser::Operator::I64Or => PlanToken::I64Or,
+        wasmparser::Operator::I64Xor => PlanToken::I64Xor,
+        wasmparser::Operator::I64Shl => PlanToken::I64Shl,
+        wasmparser::Operator::I64ShrS => PlanToken::I64ShrS,
+        wasmparser::Operator::I64ShrU => PlanToken::I64ShrU,
+        wasmparser::Operator::I32DivS => PlanToken::I32DivS,
+        wasmparser::Operator::I32DivU => PlanToken::I32DivU,
+        wasmparser::Operator::I32RemS => PlanToken::I32RemS,
+        wasmparser::Operator::I32RemU => PlanToken::I32RemU,
+        wasmparser::Operator::I32And => PlanToken::I32And,
+        wasmparser::Operator::I32Or => PlanToken::I32Or,
+        wasmparser::Operator::I32Xor => PlanToken::I32Xor,
+        wasmparser::Operator::I32Shl => PlanToken::I32Shl,
+        wasmparser::Operator::I32ShrS => PlanToken::I32ShrS,
+        wasmparser::Operator::I32ShrU => PlanToken::I32ShrU,
+        wasmparser::Operator::F64Add => PlanToken::F64Add,
+        wasmparser::Operator::F64Sub => PlanToken::F64Sub,
+        wasmparser::Operator::F64Mul => PlanToken::F64Mul,
+        wasmparser::Operator::F64Div => PlanToken::F64Div,
+        wasmparser::Operator::F64Const { value } => PlanToken::F64Const(value.bits()),
         wasmparser::Operator::Block { blockty } => PlanToken::Block(format!("{blockty:?}")),
         wasmparser::Operator::Loop { blockty } => PlanToken::Loop(format!("{blockty:?}")),
         wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
@@ -4270,33 +4329,34 @@ fn expected_linear_function_plan(
                         PlanToken::Unreachable,
                         PlanToken::End,
                     ]);
-                } else if *overflow != crate::canonical_safewir::OverflowBehavior::Wrap {
+                } else if !matches!(
+                    (function.value_types.get(destination), operator, overflow),
+                    (
+                        Some(ValueType::Int),
+                        ArithmeticOperator::DivideSigned | ArithmeticOperator::RemainderSigned,
+                        crate::canonical_safewir::OverflowBehavior::Trap,
+                    ) | (_, _, crate::canonical_safewir::OverflowBehavior::Wrap)
+                ) {
+                    // Mirror of `emit_checked_arithmetic`: signed division traps
+                    // natively; everything else must be `Wrap`.
                     return Err(CanonicalAdmissionError::UnsupportedPlan);
                 }
                 push_get(&mut plan, &layout, *left)?;
                 push_get(&mut plan, &layout, *right)?;
-                match (function.value_types.get(destination), operator) {
-                    (Some(ValueType::Int), ArithmeticOperator::Add) => {
-                        plan.push(PlanToken::I64Add)
-                    }
-                    (Some(ValueType::Int), ArithmeticOperator::Subtract) => {
-                        plan.push(PlanToken::I64Sub)
-                    }
-                    (Some(ValueType::Int), ArithmeticOperator::Multiply) => {
-                        plan.push(PlanToken::I64Mul)
-                    }
-                    (Some(ValueType::Size), ArithmeticOperator::Add) => {
-                        plan.push(PlanToken::I32Add)
-                    }
-                    (Some(ValueType::Size), ArithmeticOperator::Subtract) => {
-                        plan.push(PlanToken::I32Sub)
-                    }
-                    _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
-                }
+                let value_type = function
+                    .value_types
+                    .get(destination)
+                    .copied()
+                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+                plan.push(planned_arithmetic_token(value_type, *operator)?);
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::ConstBool { destination, value } => {
                 plan.push(PlanToken::I32Const(i32::from(*value)));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::ConstFloat { destination, bits } => {
+                plan.push(PlanToken::F64Const(*bits));
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::ConstSize { destination, value } => {
@@ -4875,6 +4935,55 @@ impl PlanEmitter<'_> {
 /// `Int` compares as i64, `Size` and `Bool` as i32, `Float` as f64; every
 /// operator is covered so the plan never refuses a comparison the encoder
 /// emits.
+/// The plan's arithmetic table, the exact mirror of `emit_arithmetic`.
+fn planned_arithmetic_token(
+    value_type: crate::canonical_safewir::ValueType,
+    operator: ArithmeticOperator,
+) -> Result<PlanToken, CanonicalAdmissionError> {
+    use crate::canonical_safewir::ValueType as V;
+    use ArithmeticOperator as A;
+    Ok(match value_type {
+        V::Int => match operator {
+            A::Add => PlanToken::I64Add,
+            A::Subtract => PlanToken::I64Sub,
+            A::Multiply => PlanToken::I64Mul,
+            A::DivideSigned => PlanToken::I64DivS,
+            A::DivideUnsigned => PlanToken::I64DivU,
+            A::RemainderSigned => PlanToken::I64RemS,
+            A::RemainderUnsigned => PlanToken::I64RemU,
+            A::BitAnd => PlanToken::I64And,
+            A::BitOr => PlanToken::I64Or,
+            A::BitXor => PlanToken::I64Xor,
+            A::ShiftLeft => PlanToken::I64Shl,
+            A::ShiftRightSigned => PlanToken::I64ShrS,
+            A::ShiftRightUnsigned => PlanToken::I64ShrU,
+        },
+        V::Size => match operator {
+            A::Add => PlanToken::I32Add,
+            A::Subtract => PlanToken::I32Sub,
+            A::Multiply => PlanToken::I32Mul,
+            A::DivideSigned => PlanToken::I32DivS,
+            A::DivideUnsigned => PlanToken::I32DivU,
+            A::RemainderSigned => PlanToken::I32RemS,
+            A::RemainderUnsigned => PlanToken::I32RemU,
+            A::BitAnd => PlanToken::I32And,
+            A::BitOr => PlanToken::I32Or,
+            A::BitXor => PlanToken::I32Xor,
+            A::ShiftLeft => PlanToken::I32Shl,
+            A::ShiftRightSigned => PlanToken::I32ShrS,
+            A::ShiftRightUnsigned => PlanToken::I32ShrU,
+        },
+        V::Float => match operator {
+            A::Add => PlanToken::F64Add,
+            A::Subtract => PlanToken::F64Sub,
+            A::Multiply => PlanToken::F64Mul,
+            A::DivideSigned | A::DivideUnsigned => PlanToken::F64Div,
+            _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+        },
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    })
+}
+
 fn planned_compare_token(
     value_type: crate::canonical_safewir::ValueType,
     operator: ComparisonOperator,

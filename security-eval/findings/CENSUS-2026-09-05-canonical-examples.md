@@ -318,3 +318,22 @@ route is 0/107.
 - Diagnostics: contract refusals name their judgment under
   `WITCHY_CANONICAL_PLAN_DEBUG=1`.
 - Census: 60 of 163 check.
+
+## Progress (owner, 2026-09-05, fifth slice)
+
+- **B15 fixed**: `for i in lo..hi` and `lo..=hi` range loops lower as a
+  counted loop over an `Int` cursor (`lower_range_for`); `q_forin` and the
+  launch test `admitted_range_for_loops_run` run through `spawn_admitted`.
+- **B13 fixed**: `Float` arithmetic (`+ - * / %`) and comparisons lower; the
+  checker's arithmetic judgment accepts `Float` operands for those five
+  operators only, and the plan mirror gained the `f64` arithmetic, comparison,
+  and `f64.const` tokens so the encoder's emitted body and the independent
+  plan still compare token for token. `admitted_float_arithmetic_and_integer_division_run`
+  pins Celsius conversion plus `/` and `%` on `Int`.
+- Plan-matcher totality: `planned_arithmetic_token` maps every arithmetic
+  operator for `Int` and `Float`, so an unmapped operator is a plan divergence
+  named under `WITCHY_CANONICAL_PLAN_DEBUG=1`, never a silent `UnsupportedPlan`.
+- Census: 60 of 163 check (unchanged). `temperature` now stops at
+  `MissingBinding("math.to_float")`, a std cross-module call outside the
+  compact subset, instead of `Float` arithmetic.
+

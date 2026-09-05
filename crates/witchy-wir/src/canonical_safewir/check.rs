@@ -1047,9 +1047,25 @@ fn check_operation(
         Operation::ConstSize { destination, .. } => {
             require_type(function, *destination, ValueType::Size)
         }
-        Operation::Arithmetic { destination, left, right, .. } => {
+        Operation::Arithmetic { destination, operator, left, right, .. } => {
             let result = value_type(function, *destination)?;
-            if !matches!(result, ValueType::Int | ValueType::Size) {
+            if !matches!(result, ValueType::Int | ValueType::Size | ValueType::Float) {
+                return Err(type_mismatch(function, *destination, ValueType::Int, result));
+            }
+            // Floats have no bit or shift operators; only the arithmetic four
+            // (and remainder) are meaningful and mapped by the backend.
+            if result == ValueType::Float
+                && !matches!(
+                    operator,
+                    crate::canonical_safewir::ArithmeticOperator::Add
+                        | crate::canonical_safewir::ArithmeticOperator::Subtract
+                        | crate::canonical_safewir::ArithmeticOperator::Multiply
+                        | crate::canonical_safewir::ArithmeticOperator::DivideSigned
+                        | crate::canonical_safewir::ArithmeticOperator::DivideUnsigned
+                        | crate::canonical_safewir::ArithmeticOperator::RemainderSigned
+                        | crate::canonical_safewir::ArithmeticOperator::RemainderUnsigned
+                )
+            {
                 return Err(type_mismatch(function, *destination, ValueType::Int, result));
             }
             require_type(function, *left, result)?;
