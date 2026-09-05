@@ -2706,6 +2706,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
         let pointer_elements = matches!(element_type, ValueType::Ref(_));
+        self.ensure_list_extent(old_object)?;
         let old_length = *self
             .list_counts
             .get(&old_object)
@@ -2846,13 +2847,13 @@ impl FunctionLowerer<'_> {
                 destination: witchy_wir::canonical_safewir::Place::projected(
                     new_object,
                     Projection::Slice { start: zero, length: old_length },
-                    ValueType::Ref(layout),
+                    element_type,
                     AccessMode::Write,
                 ),
                 source: witchy_wir::canonical_safewir::Place::projected(
                     old_object,
                     Projection::Slice { start: zero, length: old_length },
-                    ValueType::Ref(layout),
+                    element_type,
                     AccessMode::Read,
                 ),
                 count: old_length,

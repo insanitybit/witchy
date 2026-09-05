@@ -1008,7 +1008,10 @@ impl<'a> MemoryChecker<'a> {
         let Some(element) = descriptor.kind().packed_element_layout() else {
             return Ok(());
         };
-        if !self.value_type_for_layout(element)?.is_memory_bearing() {
+        // Scalar storage has no child reference tokens to account for. In
+        // particular RawByte and BoolValueSlot are storage layouts, not
+        // first-class SafeWIR scalar values. Do not interpret them as values.
+        if matches!(self.descriptor(element)?.kind(), LayoutKind::Scalar(_)) {
             return Ok(());
         }
         let Extent::Counted { count, .. } = state.extent else {
@@ -1117,14 +1120,6 @@ impl<'a> MemoryChecker<'a> {
         self.promote_header_extent(place.object())?;
         let state = self.live_object(place.object())?.clone();
         self.require_ref_type(place.object(), state.layout)?;
-        if place.value_type() != ValueType::Ref(state.layout) {
-            return Err(InitialCheckError::TypeMismatch {
-                function: self.function.id,
-                value: place.object(),
-                expected: ValueType::Ref(state.layout),
-                actual: place.value_type(),
-            });
-        }
         self.require_type(*start, ValueType::Size)?;
         self.require_type(*length, ValueType::Size)?;
         let Extent::Counted {
@@ -1143,6 +1138,24 @@ impl<'a> MemoryChecker<'a> {
         let Some(element) = descriptor.kind().packed_element_layout() else {
             return self.unsupported("range(non-packed-layout)");
         };
+        // A pointer transfer names the value stored in the authenticated slot,
+        // not a reference to the containing list. Scalar range copies retain
+        // their collection-view type; they carry no child ownership tokens.
+        let expected = if operation == "MoveRange"
+            && matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. })
+        {
+            ValueType::Ref(self.owned_pointer_slot_pointee(element)?)
+        } else {
+            ValueType::Ref(state.layout)
+        };
+        if place.value_type() != expected {
+            return Err(InitialCheckError::TypeMismatch {
+                function: self.function.id,
+                value: place.object(),
+                expected,
+                actual: place.value_type(),
+            });
+        }
         let LayoutSize::Dynamic { stride, .. } = descriptor.size() else {
             return Err(InitialCheckError::InvalidExtent {
                 function: self.function.id,
@@ -3496,11 +3509,25 @@ mod tests {
         });
     }
 
-    fn pointer_range_place(object: ValueId, list: crate::layout::LayoutId, count: ValueId, access: AccessMode) -> Place {
+    #[test]
+    fn pointer_move_range_rejects_container_as_element_type() {
+        with_pointer_slot_checker(|checker, list, _pointee| {
+            assert!(matches!(
+                checker.check(&Operation::MoveRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::TypeMismatch { .. })
+            ));
+        });
+    }
+
+    fn pointer_range_place(object: ValueId, pointee: crate::layout::LayoutId, count: ValueId, access: AccessMode) -> Place {
         Place::projected(
             object,
             Projection::Slice { start: START, length: count },
-            ValueType::Ref(list),
+            ValueType::Ref(pointee),
             access,
         )
     }
@@ -3521,8 +3548,8 @@ mod tests {
             );
             assert_eq!(
                 checker.check(&Operation::MoveRange {
-                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
-                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    destination: pointer_range_place(DESTINATION, pointee, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, pointee, COUNT, AccessMode::Read),
                     count: COUNT,
                 }),
                 Ok(true)
@@ -3540,11 +3567,11 @@ mod tests {
 
     #[test]
     fn pointer_move_range_rejects_uninitialized_source() {
-        with_pointer_slot_checker(|checker, list, _pointee| {
+        with_pointer_slot_checker(|checker, list, pointee| {
             assert!(matches!(
                 checker.check(&Operation::MoveRange {
-                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
-                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    destination: pointer_range_place(DESTINATION, pointee, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, pointee, COUNT, AccessMode::Read),
                     count: COUNT,
                 }),
                 Err(InitialCheckError::UnsupportedMemoryOperation {
@@ -3568,8 +3595,8 @@ mod tests {
                 RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true, zero_width: true, zero_start: true },
             );
             let operation = Operation::MoveRange {
-                destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
-                source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                destination: pointer_range_place(DESTINATION, pointee, COUNT, AccessMode::Write),
+                source: pointer_range_place(SOURCE, pointee, COUNT, AccessMode::Read),
                 count: COUNT,
             };
             assert_eq!(checker.check(&operation), Ok(true));
@@ -3593,8 +3620,8 @@ mod tests {
             );
             assert!(matches!(
                 checker.check(&Operation::MoveRange {
-                    destination: pointer_range_place(SOURCE, list, COUNT, AccessMode::Write),
-                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    destination: pointer_range_place(SOURCE, pointee, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, pointee, COUNT, AccessMode::Read),
                     count: COUNT,
                 }),
                 Err(InitialCheckError::UnsupportedMemoryOperation {
@@ -3619,8 +3646,8 @@ mod tests {
             );
             assert!(matches!(
                 checker.check(&Operation::MoveRange {
-                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
-                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    destination: pointer_range_place(DESTINATION, pointee, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, pointee, COUNT, AccessMode::Read),
                     count: COUNT,
                 }),
                 Err(InitialCheckError::UnsupportedMemoryOperation {
@@ -3645,11 +3672,11 @@ mod tests {
             );
             assert_eq!(
                 checker.check(&Operation::MoveRange {
-                    destination: pointer_range_place(DESTINATION, list, ALIAS_LENGTH, AccessMode::Write),
+                    destination: pointer_range_place(DESTINATION, pointee, ALIAS_LENGTH, AccessMode::Write),
                     source: Place::projected(
                         SOURCE,
                         Projection::Slice { start: ALIAS_START, length: ALIAS_LENGTH },
-                        ValueType::Ref(list),
+                        ValueType::Ref(pointee),
                         AccessMode::Read,
                     ),
                     count: ALIAS_LENGTH,
