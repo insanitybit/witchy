@@ -1000,7 +1000,6 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         }
         let state = self.live_object(object)?;
-        let allocation_identity = state.identity;
         if state.initialized_owned_slots {
             return Ok(());
         }
@@ -1021,7 +1020,11 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         }
         if self.state.range_states.iter().any(|(identity, range)| {
-            identity.object == allocation_identity
+            // Range facts follow the SSA token through an explicit CFG edge;
+            // `ObjectState::identity` remains the backing storage identity.
+            // A loop or var join therefore has a different token for the same
+            // allocation, and must use the token's own authenticated prefix.
+            identity.object == object
                 && self.same_scalar(identity.length, count)
                 && range.element == element
                 && range.initialized
@@ -1035,7 +1038,7 @@ impl<'a> MemoryChecker<'a> {
         let pointee = self.owned_pointer_slot_pointee(element)?;
         let mut initialized_slots = BTreeSet::new();
         for ((stored_object, slot), stored) in &self.state.stored_objects {
-            if *stored_object != allocation_identity {
+            if *stored_object != object {
                 continue;
             }
             let SlotIdentity::Constant(index) = slot else {
