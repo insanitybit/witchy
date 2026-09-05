@@ -52,7 +52,8 @@ pub(crate) fn validate_checked_module(
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
     let layouts = derive_layout_bundle(source).map_err(CanonicalPipelineError::Layout)?;
     let candidate = lower_typed_module(source, layouts)
-        .map_err(CanonicalPipelineError::Lowering)?;
+        .map_err(CanonicalPipelineError::Lowering)?
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
     let checked = check_initial_with_witness(candidate, source)
         .map_err(CanonicalPipelineError::InitialValidation)?;
     // RFC-0165 milestone one has no optional transformations. The final
@@ -80,6 +81,39 @@ mod tests {
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
         assert_eq!(validated.revision().get(), 0);
+    }
+
+    #[test]
+    fn admitted_artifact_carries_checked_launch_contract_and_refuses_mutation() {
+        let source = "fn main(console: Console):\n    console.print(\"ok\")\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let expected = checked
+            .canonical_source()
+            .expect("canonical source")
+            .launch_contract_payload()
+            .to_vec();
+        let artifact = admit_checked_module(&checked).expect("admitted canonical artifact");
+
+        let sections = wasmparser::Parser::new(0)
+            .parse_all(artifact.wasm())
+            .filter_map(|payload| match payload.expect("valid admitted Wasm") {
+                wasmparser::Payload::CustomSection(section) if section.name() == "witchy.launch" => {
+                    Some(section.data().to_vec())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sections, vec![expected], "the admitted bytes carry the checked launch payload exactly once");
+
+        let mut mutated = artifact.wasm().to_vec();
+        *mutated.last_mut().expect("canonical launch section is nonempty") ^= 1;
+        wasmparser::validate(&mutated).expect("single-byte payload mutation remains structurally valid Wasm");
+        assert!(artifact.verify_exact_bytes(&mutated).is_err(), "post-admission bytes must be refused");
     }
 
     #[test]

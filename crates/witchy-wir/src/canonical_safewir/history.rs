@@ -26,6 +26,7 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     let mut writer = CanonicalWriter::new(MODULE_SERIALIZATION_VERSION, MODULE_DOMAIN);
     writer.u64(module.revision().get());
     writer.fixed_bytes(&module.checked_source().digest());
+    writer.bytes(module.launch_contract_payload());
     writer.bytes(&module.layouts().canonical_bytes());
     writer.static_data_segments(module.static_data_segments());
     writer.signatures(module.signatures());
@@ -57,9 +58,9 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
     ModuleDigest(hasher.finalize().into())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 3;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v3";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v3";
+const MODULE_SERIALIZATION_VERSION: u32 = 4;
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v4";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v4";
 
 /// Deterministic, tagged serialization for the fields that define a
 /// CanonicalModule's identity. This deliberately does not use `Debug`: a

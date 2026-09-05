@@ -31,6 +31,7 @@ struct CheckedSourceWitness {
     proper_tail_manifest_digest: ModuleDigest,
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
+    launch_contract_digest: [u8; 32],
 }
 
 /// Evidence returned only by the independent final SafeWIR checker.
@@ -144,6 +145,9 @@ impl ValidatedSafeWir {
                 != self.checked_source_witness.callable_abi_manifest_digest
             || witness.closure_witness_digest()
                 != self.checked_source_witness.closure_witness_digest
+            || witness.launch_contract_digest()
+                != self.checked_source_witness.launch_contract_digest
+            || self.module.launch_contract_payload() != source.launch_contract_payload()
         {
             return Err(AdmissionWitnessMismatch::CheckedSource);
         }
@@ -218,6 +222,7 @@ impl std::error::Error for CandidateAbiBindingError {}
 pub enum InitialWitnessError {
     Safety(InitialCheckError),
     CandidateAbi(CandidateAbiBindingError),
+    LaunchContractMismatch,
 }
 
 impl fmt::Display for InitialWitnessError {
@@ -225,6 +230,7 @@ impl fmt::Display for InitialWitnessError {
         match self {
             Self::Safety(error) => error.fmt(formatter),
             Self::CandidateAbi(error) => error.fmt(formatter),
+            Self::LaunchContractMismatch => formatter.write_str("canonical SafeWIR launch contract does not match checked source"),
         }
     }
 }
@@ -247,6 +253,9 @@ pub fn check_initial_with_witness(
     let expected_source = source_digest;
     validate_candidate_abi_bindings(&candidate, source)
         .map_err(InitialWitnessError::CandidateAbi)?;
+    if candidate.launch_contract_payload() != source.launch_contract_payload() {
+        return Err(InitialWitnessError::LaunchContractMismatch);
+    }
     let module = super::check::check_initial(candidate).map_err(InitialWitnessError::Safety)?;
     if module.checked_source().digest() != expected_source {
         return Err(InitialWitnessError::Safety(InitialCheckError::CheckedSourceWitnessMismatch {
@@ -271,6 +280,7 @@ pub fn check_initial_with_witness(
         proper_tail_manifest_digest: expected,
         callable_abi_manifest_digest: source.callable_abi_manifest().digest(),
         closure_witness_digest: source.source_witness().closure_witness_digest(),
+        launch_contract_digest: source.source_witness().launch_contract_digest(),
     };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
@@ -509,6 +519,9 @@ fn validate_final_inner(
                 != source.callable_abi_manifest().digest()
             || checked_lowering.checked_source_witness.closure_witness_digest
                 != source.source_witness().closure_witness_digest()
+            || checked_lowering.checked_source_witness.launch_contract_digest
+                != source.source_witness().launch_contract_digest()
+            || module.launch_contract_payload() != source.launch_contract_payload()
         {
             return Err(FinalValidationError::SourceWitnessDoesNotMatchInitial);
         }
@@ -578,6 +591,7 @@ fn check_initial_with_expected_digest(
         proper_tail_manifest_digest: expected,
         callable_abi_manifest_digest: [0; 32],
         closure_witness_digest: [0; 32],
+        launch_contract_digest: [0; 32],
     };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),

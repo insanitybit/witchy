@@ -827,6 +827,7 @@ impl ModuleStage for InitialValid {}
 pub struct CanonicalModule<S: ModuleStage> {
     revision: Revision,
     checked_source: CheckedSourceIdentity,
+    launch_contract_payload: Vec<u8>,
     layouts: LayoutBundle,
     signatures: Vec<FunctionSignature>,
     imports: Vec<ImportContract>,
@@ -865,6 +866,7 @@ impl CanonicalModule<LoweredCandidate> {
         Self {
             revision: parts.revision,
             checked_source: parts.checked_source,
+            launch_contract_payload: Vec::new(),
             layouts: parts.layouts,
             signatures: parts.signatures,
             imports: parts.imports,
@@ -882,6 +884,13 @@ impl CanonicalModule<LoweredCandidate> {
         self
     }
 
+    /// Bind exact source-derived launch metadata before initial validation. It
+    /// becomes part of SafeWIR identity and cannot be appended after admission.
+    pub fn with_launch_contract_payload(mut self, payload: Vec<u8>) -> Self {
+        self.launch_contract_payload = payload;
+        self
+    }
+
     /// Attach the source-derived local ABI projection emitted by canonical
     /// lowering. Production source admission rejects a missing or incomplete
     /// projection; native hand-built test candidates retain the empty default.
@@ -894,6 +903,7 @@ impl CanonicalModule<LoweredCandidate> {
         CanonicalModule {
             revision: self.revision,
             checked_source: self.checked_source,
+            launch_contract_payload: self.launch_contract_payload,
             layouts: self.layouts,
             signatures: self.signatures,
             imports: self.imports,
@@ -914,6 +924,10 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub const fn checked_source(&self) -> CheckedSourceIdentity {
         self.checked_source
+    }
+
+    pub fn launch_contract_payload(&self) -> &[u8] {
+        &self.launch_contract_payload
     }
 
     pub const fn layouts(&self) -> &LayoutBundle {

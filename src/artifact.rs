@@ -49,17 +49,9 @@ const SECRET_RIGHTS: [(&str, u8); 2] = [("Reveal", 1 << 0), ("Seal", 1 << 1)];
 /// Imports remain the executable authority floor; this section preserves
 /// capability parameters that lowering can otherwise make operationally unused.
 pub fn embed_launch_contract(mut wasm: Vec<u8>, module: &ast::Module) -> Vec<u8> {
-    let caps = capabilities::run_grant(module);
-    let mut data = Vec::with_capacity(2 + caps.len() * 2);
-    data.push(LAUNCH_VERSION);
-    data.push(u8::try_from(caps.len()).expect("host capability count fits in one byte"));
-    for (name, rights) in caps {
-        data.push(cap_tag(name).expect("the capability analyzer emits known host capabilities"));
-        data.push(rights_mask(name, &rights));
-    }
     CustomSection {
         name: Cow::Borrowed(LAUNCH_SECTION),
-        data: Cow::Owned(data),
+        data: Cow::Owned(capabilities::launch_contract_payload(module)),
     }
     .append_to(&mut wasm);
     wasm

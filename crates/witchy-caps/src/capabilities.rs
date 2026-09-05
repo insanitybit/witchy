@@ -29,6 +29,58 @@ use witchy_syntax::ast::{Item, Module, Type};
 /// as `Clock` that have no refinable sub-verbs.
 pub type Rights = BTreeSet<&'static str>;
 
+/// The stable payload carried by an admitted Witchy artifact's `witchy.launch`
+/// section. This is source authority, not an import-derived approximation.
+/// Keep this wire format here so checked-source construction and legacy artifact
+/// packaging cannot silently encode different capability contracts.
+pub fn launch_contract_payload(module: &Module) -> Vec<u8> {
+    const VERSION: u8 = 1;
+    let caps = run_grant(module);
+    let mut payload = Vec::with_capacity(2 + caps.len() * 2);
+    payload.push(VERSION);
+    payload.push(u8::try_from(caps.len()).expect("host capability count fits in one byte"));
+    for (name, rights) in caps {
+        payload.push(launch_cap_tag(name).expect("the capability analyzer emits known host capabilities"));
+        payload.push(launch_rights_mask(name, &rights));
+    }
+    payload
+}
+
+fn launch_cap_tag(name: &str) -> Option<u8> {
+    match name {
+        "Console" => Some(0),
+        "Clock" => Some(1),
+        "Rand" => Some(2),
+        "Env" => Some(3),
+        "Secret" => Some(4),
+        "SecretStore" => Some(5),
+        "Dir" => Some(6),
+        "File" => Some(7),
+        "Net" => Some(8),
+        "Exec" => Some(9),
+        "Fetch" => Some(10),
+        _ => None,
+    }
+}
+
+fn launch_rights_mask(capability: &str, rights: &Rights) -> u8 {
+    let tags: &[(&str, u8)] = match capability {
+        "Console" | "Dir" | "File" => &[("Read", 1 << 0), ("Write", 1 << 1)],
+        "Net" => &[
+            ("Connect", 1 << 0),
+            ("Listen", 1 << 1),
+            ("Tcp", 1 << 2),
+            ("Udp", 1 << 3),
+            ("Uds", 1 << 4),
+        ],
+        "Secret" => &[("Reveal", 1 << 0), ("Seal", 1 << 1)],
+        _ => &[],
+    };
+    tags.iter()
+        .filter_map(|(right, bit)| rights.contains(right).then_some(*bit))
+        .fold(0, |mask, bit| mask | bit)
+}
+
 /// A capability footprint: each present capability mapped to the union of rights
 /// demanded for it. `Dir` ⇒ `{Read, Write}`, `Net` ⇒ `{Connect, Listen}`.
 pub type CapSet = BTreeMap<&'static str, Rights>;

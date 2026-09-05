@@ -14,11 +14,12 @@
 
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use sha2::{Digest, Sha256};
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection,
+    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, ExportKind, ExportSection,
     ElementSection, Elements, EntityType, Function as WasmFunctionEncoder, FunctionSection,
     GlobalSection, GlobalType, Ieee64, ImportSection, MemArg, MemorySection, MemoryType,
     Module as WasmModule, RefType, TableSection, TableType, TypeSection, ValType,
@@ -188,6 +189,7 @@ struct WasmFunction {
 struct WasmIr {
     revision: crate::canonical_safewir::Revision,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
+    launch_contract_payload: Vec<u8>,
     static_data: Vec<WasmStaticData>,
     imports: Vec<WasmImport>,
     table: Option<WasmTable>,
@@ -1079,6 +1081,7 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
     Ok(WasmIr {
         revision: module.revision(),
         checked_source: module.checked_source(),
+        launch_contract_payload: module.launch_contract_payload().to_vec(),
         static_data,
         imports: module.imports().iter().map(|import| WasmImport { id: import.id, signature: import.signature }).collect(),
         table: has_function_table.then(|| WasmTable {
@@ -1344,6 +1347,17 @@ impl AdmittedCanonicalArtifact {
     /// Borrow the exact admitted Wasm bytes without transferring ownership.
     pub fn wasm(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Refuse any byte sequence other than the exact artifact admitted from
+    /// final SafeWIR. Launchers use the artifact's immutable byte view; this
+    /// method makes attempted detached-byte substitution observable in focused
+    /// boundary tests and future receipt-bound sinks.
+    pub fn verify_exact_bytes(&self, bytes: &[u8]) -> Result<(), CanonicalAdmissionError> {
+        let digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[bytes]);
+        (digest == self.wasm_digest)
+            .then_some(())
+            .ok_or(CanonicalAdmissionError::PlanMismatch("admitted artifact bytes"))
     }
 }
 
@@ -3183,6 +3197,10 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     if !target.static_data.is_empty() {
         module.section(&data);
     }
+    module.section(&CustomSection {
+        name: Cow::Borrowed("witchy.launch"),
+        data: Cow::Borrowed(&target.launch_contract_payload),
+    });
     let bytes = module.finish();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
         .validate_all(&bytes)
@@ -4894,6 +4912,7 @@ fn decode_and_match_plan(
     let mut actual_data = Vec::new();
     let mut actual_table = None;
     let mut actual_elements = None;
+    let mut actual_launch_contract = None;
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
         match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
             wasmparser::Payload::Version { .. } => {}
@@ -4994,6 +5013,14 @@ fn decode_and_match_plan(
                     actual_data.push((offset, data.data.to_vec()));
                 }
             }
+            wasmparser::Payload::CustomSection(section) => {
+                if section.name() != "witchy.launch"
+                    || actual_launch_contract.replace(section.data().to_vec()).is_some()
+                {
+                    return Err(CanonicalAdmissionError::PlanMismatch("launch contract section"));
+                }
+                section_order.push(10);
+            }
             wasmparser::Payload::End(_) => {}
             _ => return Err(CanonicalAdmissionError::PlanMismatch("unexpected Wasm section")),
         }
@@ -5014,6 +5041,7 @@ fn decode_and_match_plan(
     if !target.static_data.is_empty() {
         expected_sections.push(9);
     }
+    expected_sections.push(10);
     let expected_data = expected_static_data.iter().map(|segment| (segment.offset, segment.bytes.clone())).collect::<Vec<_>>();
     if section_order != expected_sections {
         return Err(CanonicalAdmissionError::SectionOrderMismatch {
@@ -5029,6 +5057,9 @@ fn decode_and_match_plan(
     }
     if actual_data != expected_data {
         return Err(CanonicalAdmissionError::PlanMismatch("data contents"));
+    }
+    if actual_launch_contract.as_deref() != Some(target.launch_contract_payload.as_slice()) {
+        return Err(CanonicalAdmissionError::PlanMismatch("launch contract payload"));
     }
     match &target.table {
         Some(table) => {

@@ -17,6 +17,7 @@ use witchy_syntax::linker::{
 };
 use witchy_syntax::origin::OriginTable;
 use witchy_syntax::type_resolve::ResolvedDeclarations;
+use witchy_caps::capabilities;
 
 use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
@@ -49,6 +50,7 @@ pub struct CheckedSourceWitness {
     proper_tail_manifest_digest: [u8; 32],
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
+    launch_contract_digest: [u8; 32],
 }
 
 impl CheckedSourceWitness {
@@ -68,6 +70,10 @@ impl CheckedSourceWitness {
         self.closure_witness_digest
     }
 
+    pub fn launch_contract_digest(&self) -> [u8; 32] {
+        self.launch_contract_digest
+    }
+
     pub fn verifies_closure_witness(&self, manifest: &ClosureWitnessManifest) -> bool {
         self.closure_witness_digest == manifest.digest()
     }
@@ -85,6 +91,7 @@ pub struct CanonicalCheckedSource {
     proper_tail_manifest: ProperTailSiteManifest,
     closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
+    launch_contract_payload: Vec<u8>,
 }
 
 impl CanonicalCheckedSource {
@@ -147,6 +154,13 @@ impl CanonicalCheckedSource {
     pub fn closed_callable_signature(&self, ordinal: u32) -> Option<&witchy_syntax::ast::Type> {
         let name = self.callable_witness.runtime_functions.get(ordinal as usize)?;
         self.callable_witness.signatures.get(name)
+    }
+
+    /// Exact source-derived metadata that canonical admission must carry into
+    /// the artifact before final SafeWIR validation.
+    #[doc(hidden)]
+    pub fn launch_contract_payload(&self) -> &[u8] {
+        &self.launch_contract_payload
     }
 }
 
@@ -559,6 +573,14 @@ fn checked_source_digest(sources: &[(String, Vec<u8>)]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+fn launch_contract_digest(payload: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"witchy.checked-launch-contract.v1");
+    hasher.update(&(payload.len() as u64).to_le_bytes());
+    hasher.update(payload);
+    *hasher.finalize().as_bytes()
+}
+
 fn attach_canonical_source(
     mut checked: CheckedModule,
     typed: typeck::TypedModule,
@@ -567,6 +589,8 @@ fn attach_canonical_source(
     closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
 ) -> Result<CheckedModule, PipelineError> {
+    let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
+    let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     checked.canonical_source = Some(CanonicalCheckedSource {
         typed,
         source_witness: CheckedSourceWitness {
@@ -574,10 +598,12 @@ fn attach_canonical_source(
             proper_tail_manifest_digest: proper_tail_manifest.digest(),
             callable_abi_manifest_digest: callable_witness.abi_manifest.digest(),
             closure_witness_digest: closure_witness.digest(),
+            launch_contract_digest,
         },
         proper_tail_manifest,
         closure_witness,
         callable_witness,
+        launch_contract_payload,
     });
     Ok(checked)
 }
