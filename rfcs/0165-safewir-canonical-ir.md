@@ -482,15 +482,19 @@ compilers.
    route, with deterministic inputs and complete observable traces. Classify
    explicit lifetime and no-copy cases as v2 requirements rather than silently
    weakening them.
-7. Migrate source lowering by semantic family: scalars and control; strings and
-   bytes; scalar lists; pointer-bearing lists; records and sums; dictionaries;
-   closures and indirect calls; host capabilities; iterators, generators, and
-   async frames.
+7. Migrate the foundation subset: scalar control flow; UTF-8 strings; scalar
+   and string lists; runtime-checked indexing and list mutation; direct and
+   indirect top-level calls; `let`, `var`, and `own` through the owned-reference
+   ABI; loops and proper tails; and packed scalar records. Capturing closures,
+   general records and sums, tuples, dictionaries, comprehensions, generators,
+   async, complex patterns, loans, regions, escaping references, and `unique`
+   remain precise fail-closed follow-on work.
 8. Keep one end-to-end executable SafeWIR probe green for every completed
    family. Missing families fail explicitly in the development route.
-9. Cut production over atomically only when the frozen admitted manifest has
-   trace parity and required v2 cases are supported. There is no per-program
-   fallback.
+9. Cut production over atomically only when the digest-bound foundation corpus
+   passes end to end and every out-of-subset form has a precise canonical
+   diagnostic. Complete legacy-adapter parity is not a cutover prerequisite.
+   There is no per-program fallback after cutover.
 10. Delete the adapter, name-keyed contract authority, production raw encoders,
     and all WIR optimization after cutover. Rename the remaining private form
     WasmIR.
@@ -510,14 +514,14 @@ The live evidence and landing state for these rows is maintained in
 | ID | Requirement |
 |---|---|
 | B1 | The v1 operation list and checker judgments are exhaustive and independently reviewed. |
-| B2 | Reference-counted pointer-bearing aggregates recursively clone, move, replace, drop, and reclaim correctly; count overflow and underflow reject. |
-| B3 | Dynamic indexing keeps runtime guards; header bootstrap cannot authorize body access; logical length never exceeds capacity. |
+| B2 | Reference-counted strings and scalar/string lists recursively clone, move, replace, drop, and reclaim correctly; count overflow and underflow reject. |
+| B3 | String/list dynamic indexing keeps runtime guards; header bootstrap cannot authorize body access; logical length never exceeds capacity. |
 | B4 | Calls balance owned tokens locally; v1 has no `CallBorrow`; proper tail sites are complete and pass the 300,000-transition probes. |
-| B5 | Capabilities are opaque authenticated references; host buffers satisfy retention and reentrancy rules. |
-| B6 | The independent SafeWIR interpreter agrees with emitted Wasm for the frozen deterministic corpus and scripted host traces, including adversarial bounds and ownership probes. |
+| B5 | A capability role cannot be satisfied by an integer or linear-memory reference; unsupported capability APIs reject precisely. |
+| B6 | The independent SafeWIR interpreter agrees with emitted Wasm for the digest-bound foundation corpus, including adversarial bounds and ownership probes. |
 | B7 | WasmIR has no optimization and no production constructor except the reviewed backend mapping from validated SafeWIR. |
 | B8 | No optional SafeWIR optimization pass is enabled. Mandatory semantic legalization is explicit and separately evidenced. |
-| B9 | The frozen adapter-admitted manifest has complete trace parity; explicit opt lifetime/no-copy requirements are implemented or remain cutover blockers. |
+| B9 | The digest-bound foundation corpus covers scalars, control flow, UTF-8 strings, scalar/string lists, runtime indexing, mutation, direct/indirect top-level calls, `let`/`var`/`own`, loops, proper tails, reclamation, and packed scalar records. Every excluded family has a precise canonical refusal. |
 | B10 | The atomic cutover removes every production raw-WIR encoder, adapter authority, mixed helper path, and per-program fallback. |
 | B11 | Every executable, cached, published, or launched byte sequence is bound to the exact admitted artifact produced from the checked SafeWIR module. |
 | B12 | Native security suites compile and run as mandatory gates; a compile failure is red rather than silently skipping tests. |
@@ -561,10 +565,12 @@ performance results must not be reported as universal proofs.
 ## Drawbacks
 
 This remains a substantial source-lowering rewrite. The affine owned-reference
-model and interpreter reduce the trusted conceptual surface, but they do not
-remove work needed for records, closures, generators, host calls, recursive
-destruction, and opt-mode no-copy contracts. Until atomic cutover, the frozen
-compiler remains production while the development SafeWIR route expands.
+model and interpreter reduce the trusted conceptual surface, but the first
+milestone intentionally does not cover general records, tuples, dictionaries,
+capturing closures, comprehensions, generators, async, complex patterns,
+comprehensive host APIs, loans, regions, escaping references, `unique`, or
+opt-mode no-copy contracts. Until atomic cutover, the frozen compiler remains
+production while the development SafeWIR route proves the compact subset.
 
 The first cutover intentionally sacrifices optional optimization throughput to
 establish a defensible semantic baseline. Dynamic reference-count uniqueness
