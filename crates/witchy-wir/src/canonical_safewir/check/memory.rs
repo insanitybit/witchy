@@ -1661,7 +1661,7 @@ impl<'a> MemoryChecker<'a> {
         match transfer {
             LoadTransfer::CloneShared => {
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
-                    || stored.allocation_class != Some(AllocationClass::ReferenceCounted)
+                    || !Self::is_managed_storage(&stored)
                 {
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
@@ -1740,6 +1740,17 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         let mut stored = self.live_object(value)?.clone();
+        let source_is_static = self.state.static_data_objects.contains(&value);
+        if !self.is_shared_immutable_storage(value, &stored) {
+            return Err(InitialCheckError::InvalidAllocationClass {
+                function: self.function.id,
+                object: value,
+            });
+        }
+        // `static_data_objects` is SSA-local. Once stored, retain its managed
+        // immutable provenance in the slot state so a later load cannot turn a
+        // static child into unproven classless storage.
+        stored.shared_immutable |= source_is_static;
         match transfer {
             StoreTransfer::MoveUnique => {
                 if stored.ownership != Ownership::Unique {
@@ -1756,7 +1767,7 @@ impl<'a> MemoryChecker<'a> {
             }
             StoreTransfer::CloneShared => {
                 if stored.ownership != Ownership::Shared
-                    || stored.allocation_class != Some(AllocationClass::ReferenceCounted)
+                    || !Self::is_managed_storage(&stored)
                 {
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
@@ -2156,10 +2167,14 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn is_shared_immutable_storage(&self, object: ValueId, state: &ObjectState) -> bool {
+        Self::is_managed_storage(state) || self.state.static_data_objects.contains(&object)
+    }
+
+    fn is_managed_storage(state: &ObjectState) -> bool {
         match state.allocation_class {
             Some(AllocationClass::ReferenceCounted) => true,
             Some(AllocationClass::Bump | AllocationClass::Scratch) => false,
-            None => state.shared_immutable || self.state.static_data_objects.contains(&object),
+            None => state.shared_immutable,
         }
     }
 
