@@ -22,6 +22,7 @@ use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
 use crate::canonical_abi::{self, CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
+use crate::canonical_closure::{ClosureWitnessError, ClosureWitnessManifest};
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 
 /// The executable callable inventory produced by the canonical checked
@@ -47,6 +48,7 @@ pub struct CheckedSourceWitness {
     source_bundle_digest: [u8; 32],
     proper_tail_manifest_digest: [u8; 32],
     callable_abi_manifest_digest: [u8; 32],
+    closure_witness_digest: [u8; 32],
 }
 
 impl CheckedSourceWitness {
@@ -61,6 +63,14 @@ impl CheckedSourceWitness {
     pub fn callable_abi_manifest_digest(&self) -> [u8; 32] {
         self.callable_abi_manifest_digest
     }
+
+    pub fn closure_witness_digest(&self) -> [u8; 32] {
+        self.closure_witness_digest
+    }
+
+    pub fn verifies_closure_witness(&self, manifest: &ClosureWitnessManifest) -> bool {
+        self.closure_witness_digest == manifest.digest()
+    }
 }
 
 /// The canonical source product consumed by SafeWIR lowering.
@@ -73,6 +83,7 @@ pub struct CanonicalCheckedSource {
     typed: typeck::TypedModule,
     source_witness: CheckedSourceWitness,
     proper_tail_manifest: ProperTailSiteManifest,
+    closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
 }
 
@@ -93,6 +104,11 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn proper_tail_manifest(&self) -> &ProperTailSiteManifest {
         &self.proper_tail_manifest
+    }
+
+    #[doc(hidden)]
+    pub fn closure_witness(&self) -> &ClosureWitnessManifest {
+        &self.closure_witness
     }
 
     /// Return the exact rechecked callable signature for a final executable
@@ -548,6 +564,7 @@ fn attach_canonical_source(
     typed: typeck::TypedModule,
     source_bundle_digest: [u8; 32],
     proper_tail_manifest: ProperTailSiteManifest,
+    closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
 ) -> Result<CheckedModule, PipelineError> {
     checked.canonical_source = Some(CanonicalCheckedSource {
@@ -556,8 +573,10 @@ fn attach_canonical_source(
             source_bundle_digest,
             proper_tail_manifest_digest: proper_tail_manifest.digest(),
             callable_abi_manifest_digest: callable_witness.abi_manifest.digest(),
+            closure_witness_digest: closure_witness.digest(),
         },
         proper_tail_manifest,
+        closure_witness,
         callable_witness,
     });
     Ok(checked)
@@ -718,11 +737,16 @@ fn link_checked_source_bundle_with(
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     let proper_tail_manifest =
         proper_tail_manifest.for_canonical_functions(typed_source.module());
+    let closure_witness = typed_source
+        .canonical_closure_witness()
+        .map_err(|error: ClosureWitnessError| PipelineError::Type(TypeError { message: error.to_string() }))?
+        .bind_source_bundle_digest(source_bundle_digest);
     attach_canonical_source(
         checked,
         typed_source,
         source_bundle_digest,
         proper_tail_manifest,
+        closure_witness,
         callable_witness,
     )
 }
@@ -944,6 +968,117 @@ mod tests {
             canonical.source_witness().callable_abi_manifest_digest(),
             canonical.callable_abi_manifest().digest()
         );
+    }
+
+    #[test]
+    fn canonical_closure_witness_orders_captures_and_keeps_nested_bindings_distinct() {
+        let checked = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn factory(seed: Int, a: Int, b: Int):\n    let first = fn():\n        let value = seed\n        fn(): value\n    let second = fn():\n        let value = seed\n        fn(): value\n    let ordered = fn(): a + b\n\nfn main():\n    factory(0, 1, 2)\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("closure source checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let entries = canonical.closure_witness().entries();
+        assert_eq!(entries.len(), 5, "three outer and two inner lambdas");
+
+        let inner = entries
+            .iter()
+            .filter(|entry| entry.captures().iter().any(|capture| capture.binding().name() == "value"))
+            .collect::<Vec<_>>();
+        assert_eq!(inner.len(), 2);
+        assert_eq!(inner[0].captures()[0].binding().name(), "value");
+        assert_eq!(inner[1].captures()[0].binding().name(), "value");
+        assert_ne!(
+            inner[0].captures()[0].binding(),
+            inner[1].captures()[0].binding(),
+            "same-spelled nested locals need distinct checked binding identities"
+        );
+
+        let ordered = entries
+            .iter()
+            .find(|entry| entry.captures().iter().any(|capture| capture.binding().name() == "a"))
+            .expect("ordered capture lambda");
+        assert_eq!(
+            ordered
+                .captures()
+                .iter()
+                .map(|capture| capture.binding().name())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn canonical_closure_witness_reconciles_lambda_tail_identity() {
+        let checked = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn recur(n: Int) -> Int:\n    if n > 0:\n        recur(n - 1)\n    else:\n        0\n\nfn main():\n    let f = fn(): recur(1)\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("tail closure source checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let closure = canonical
+            .closure_witness()
+            .entries()
+            .iter()
+            .find(|entry| !entry.id().lambda_path.is_empty())
+            .expect("lambda witness");
+        assert!(
+            canonical
+                .proper_tail_manifest()
+                .sites()
+                .iter()
+                .any(|site| site.key.callable == *closure.id()),
+            "tail obligations inside a lambda must use its real structural identity"
+        );
+    }
+
+    #[test]
+    fn canonical_closure_witness_rejects_borrowed_capture_authentication() {
+        let error = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"mode opt\n\nfn make(xs: List(Int)):\n    let view = &xs\n    let f = fn(): view[0]\n\nfn main():\n    make([])\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect_err("borrowed closure capture must not enter the v1 witness");
+        assert!(error.to_string().contains("closure capture"), "{error}");
+        assert!(error.to_string().contains("explicit reference"), "{error}");
+    }
+
+    #[test]
+    fn canonical_closure_witness_digest_rejects_cross_source_substitution() {
+        let make = |source: &[u8]| {
+            link_checked_from_source_bundle(
+                vec![("main".to_string(), source.to_vec())],
+                "main",
+                no_expand,
+            )
+            .expect("closure source checks")
+        };
+        let first = make(b"fn make(seed: Int):\n    let f = fn(): seed\n\nfn main():\n    make(1)\n");
+        let second = make(b"fn make(seed: Int):\n    let f = fn(): seed + 1\n\nfn main():\n    make(1)\n");
+        let first_source = first.canonical_source().expect("first canonical source");
+        let second_source = second.canonical_source().expect("second canonical source");
+        assert_ne!(
+            first_source.source_witness().closure_witness_digest(),
+            second_source.source_witness().closure_witness_digest()
+        );
+        assert!(!first_source
+            .source_witness()
+            .verifies_closure_witness(second_source.closure_witness()));
+        assert!(first_source
+            .source_witness()
+            .verifies_closure_witness(first_source.closure_witness()));
     }
 
     #[test]
