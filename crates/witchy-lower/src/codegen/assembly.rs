@@ -3310,11 +3310,11 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
 /// Valid checked programs outside the foundation subset fail closed as
 /// `Unsupported`; malformed compiler output or failed admission is `Rejected`.
 /// Raw WIR remains available only through explicitly test-gated entrypoints.
-pub fn compile_checked_module_binary(
+pub fn compile_checked_module_artifact(
     checked: &witchy_types::pipeline::CheckedModule,
-) -> LoweringOutcome<Vec<u8>> {
+) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
     match crate::canonical_pipeline::admit_checked_module(checked) {
-        Ok(artifact) => LoweringOutcome::Lowered(artifact.wasm().to_vec()),
+        Ok(artifact) => LoweringOutcome::Lowered(artifact),
         Err(crate::canonical_pipeline::CanonicalPipelineError::Layout(error)) => {
             LoweringOutcome::Unsupported(UnsupportedLowering {
                 message: error.to_string(),
@@ -3328,6 +3328,18 @@ pub fn compile_checked_module_binary(
         Err(error) => LoweringOutcome::Rejected(CodegenError {
             message: error.to_string(),
         }),
+    }
+}
+
+pub fn compile_checked_module_binary(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> LoweringOutcome<Vec<u8>> {
+    match compile_checked_module_artifact(checked) {
+        LoweringOutcome::Lowered(artifact) => {
+            LoweringOutcome::Lowered(artifact.wasm().to_vec())
+        }
+        LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
+        LoweringOutcome::Rejected(error) => LoweringOutcome::Rejected(error),
     }
 }
 

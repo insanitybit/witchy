@@ -303,8 +303,11 @@ mod tests {
         )
         .expect("checked source");
 
+        let artifact = crate::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("public production entry must preserve admission authority");
         let bytes = crate::codegen::compile_checked_module_binary(&checked)
             .expect_lowered("public production entry must emit Wasm");
+        assert_eq!(bytes, artifact.wasm());
         wasmparser::validate(&bytes).expect("public production bytes must be valid Wasm");
 
         let mut config = wasmtime::Config::new();
