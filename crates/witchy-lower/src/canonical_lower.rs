@@ -404,8 +404,7 @@ fn checked_signature(
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
-        if matches!(convention, Convention::Borrow)
-            || matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
+        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
             || matches!(convention, Convention::Var)
                 && !matches!(source_value_type(parameter, layout_bundle, layouts, function_types)?, ValueType::Ref(_))
         {
@@ -465,11 +464,23 @@ fn signature_from_type(
             });
         }
         let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
+        // An explicit `let` (`Convention::Borrow`) has the default convention's
+        // observable semantics; its no-escape rule is the type checker's. Under
+        // the v1 owned-reference ABI it is one owned token like `let`/`own`.
         let ownership = match (value_type, convention) {
-            (ValueType::Ref(_), Convention::Let | Convention::Own) => ParameterOwnership::Shared,
+            (ValueType::Ref(_), Convention::Let | Convention::Borrow | Convention::Own) => {
+                ParameterOwnership::Shared
+            }
             (ValueType::Ref(_), Convention::Var) => ParameterOwnership::WriteBack,
-            (_, Convention::Let | Convention::Own) => ParameterOwnership::Value,
-            _ => unreachable!(),
+            (_, Convention::Let | Convention::Borrow | Convention::Own) => ParameterOwnership::Value,
+            (_, Convention::Var) => {
+                // Refused above: a `var` parameter must carry a managed reference.
+                return Err(CanonicalLoweringError::UnsupportedConvention {
+                    function: format!("signature {:?}", id),
+                    parameter: index.to_string(),
+                    convention,
+                });
+            }
         };
         if matches!(value_type, ValueType::Ref(_)) {
             parameter_effects.insert(
@@ -937,7 +948,12 @@ impl FunctionLowerer<'_> {
                         self.finish_current(terminator)?;
                         return Ok(());
                     }
-                    if results.is_empty() && matches!(value, Expr::While { .. } | Expr::For { .. }) {
+                    // A unit function's final expression is an effect, whatever
+                    // its shape: an `if` without `else`, an `if`/`match` whose
+                    // arms print, a loop, a block. Lowering it as a value would
+                    // refuse `if` without `else` and `console.print` in arms
+                    // (census B2/B3).
+                    if results.is_empty() {
                         self.lower_effect_expr(value)?;
                         self.finish_current(Terminator::Return { values: Vec::new() })?;
                         return Ok(());
@@ -2206,7 +2222,10 @@ impl FunctionLowerer<'_> {
                             callee: callee.to_owned(), parameter, ownership,
                         }),
                     },
-                    Convention::Let => match contract.ownership {
+                    // An explicit `let` (`Borrow`) is the default convention
+                    // spelled out: one owned token, cloned before a non-tail
+                    // call and moved at a tail edge.
+                    Convention::Let | Convention::Borrow => match contract.ownership {
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
                         ParameterOwnership::Shared => {
@@ -2237,11 +2256,6 @@ impl FunctionLowerer<'_> {
                         }
                         Ok(CallArgument::Move(value))
                     }
-                    convention @ Convention::Borrow => Err(
-                        CanonicalLoweringError::UnsupportedConvention {
-                            function: callee.to_owned(), parameter: parameter.to_string(), convention,
-                        },
-                    ),
                 }
             })
             .collect()
@@ -3339,6 +3353,65 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    /// `a && b` / `a || b` as explicit control flow: the right operand is
+    /// evaluated only when the left does not decide the result, and the two
+    /// arms meet in a join block whose single `Bool` parameter is the value.
+    /// No binding can change inside an operand, so the join carries nothing
+    /// else.
+    fn lower_short_circuit(
+        &mut self,
+        operator: BinOp,
+        left: &Expr,
+        right: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let left = self.lower_expr(left)?;
+        if self.values[&left] != ValueType::Bool {
+            return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
+        }
+        let bindings = self.bindings.clone();
+        let evaluate_right = self.new_block(&[])?;
+        let decided = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Bool])?;
+        let result = self.blocks[join.get() as usize].parameters[0].value;
+        // `&&`: a false left decides false, a true left evaluates the right.
+        // `||`: a true left decides true, a false left evaluates the right.
+        let (then_target, else_target) = match operator {
+            BinOp::And => (evaluate_right, decided),
+            BinOp::Or => (decided, evaluate_right),
+            _ => unreachable!("only `&&` and `||` short-circuit"),
+        };
+        self.finish_current(Terminator::BranchIf {
+            condition: left,
+            then_target,
+            then_arguments: Vec::new(),
+            else_target,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = decided;
+        let decided_value = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool {
+            destination: decided_value,
+            value: operator == BinOp::Or,
+        });
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![decided_value] })?;
+
+        self.current = evaluate_right;
+        self.bindings = bindings.clone();
+        let right = self.lower_expr(right)?;
+        if self.values[&right] != ValueType::Bool {
+            return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
+        }
+        if self.bindings != bindings {
+            return Err(CanonicalLoweringError::UnsupportedExpression("binding change inside short-circuit operand"));
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![right] })?;
+
+        self.current = join;
+        self.bindings = bindings;
+        Ok(result)
+    }
+
     fn lower_binary(
         &mut self,
         operator: BinOp,
@@ -3355,10 +3428,11 @@ impl FunctionLowerer<'_> {
         if operator == BinOp::Concat || (operator == BinOp::Add && string_operands) {
             return self.lower_string_concat(left, right);
         }
-        if matches!(operator, BinOp::And | BinOp::Or | BinOp::Coalesce) {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "short-circuit binary operation",
-            ));
+        if matches!(operator, BinOp::And | BinOp::Or) {
+            return self.lower_short_circuit(operator, left, right);
+        }
+        if operator == BinOp::Coalesce {
+            return Err(CanonicalLoweringError::UnsupportedExpression("option coalesce"));
         }
         let left = self.lower_expr(left)?;
         let right = self.lower_expr(right)?;

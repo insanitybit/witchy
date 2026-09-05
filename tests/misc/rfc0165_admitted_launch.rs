@@ -59,3 +59,42 @@ fn admitted_entry_without_a_console_grant_is_refused_before_it_runs() {
         .spawn_admitted(&artifact, Capabilities { quiet: true, ..Default::default() }, 256)
         .is_err());
 }
+
+#[test]
+fn admitted_loop_holding_a_capability_runs_every_iteration() {
+    // The checker once refused any loop in a function holding a capability:
+    // the header parameter carrying `console` had no linear-memory object
+    // state, and the edge check demanded one for every non-scalar parameter.
+    let output = run_admitted(
+        "fn main(console: Console):\n    var i = 0\n    while i < 3:\n        console.print(\"tick\")\n        i = i + 1\n",
+    );
+    assert_eq!(output, vec!["tick".to_string(); 3]);
+}
+
+#[test]
+fn admitted_explicit_let_parameters_run() {
+    let output = run_admitted(
+        "fn twice(let n: Int) -> Int:\n    n * 2\n\nfn main() -> Int:\n    twice(21)\n",
+    );
+    assert_eq!(output, vec!["42".to_string()]);
+}
+
+#[test]
+fn admitted_if_without_else_and_effect_arms_run() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    let a = 1\n    if a > 0:\n        console.print(\"yes\")\n",
+    );
+    assert_eq!(output, vec!["yes".to_string()]);
+    let output = run_admitted(
+        "fn main(console: Console):\n    let a = 7\n    if a > 5:\n        console.print(\"big\")\n    else:\n        console.print(\"small\")\n",
+    );
+    assert_eq!(output, vec!["big".to_string()]);
+}
+
+#[test]
+fn admitted_short_circuit_operators_run() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    let a = 1\n    if a > 0 && a < 5:\n        console.print(\"in\")\n    else:\n        console.print(\"out\")\n    if a > 3 || a == 1:\n        console.print(\"or\")\n",
+    );
+    assert_eq!(output, vec!["in".to_string(), "or".to_string()]);
+}

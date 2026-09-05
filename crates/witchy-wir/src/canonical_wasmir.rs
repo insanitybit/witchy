@@ -2769,13 +2769,26 @@ impl StructuredEmitter<'_> {
         }
         let then_distances = self.distances_from(then_target)?;
         let else_distances = self.distances_from(else_target)?;
+        // A side whose every path terminates (an exhaustive `match` whose
+        // fallthrough traps, `if c: a else: return`) never reaches the merge;
+        // `all_paths_reach_or_terminate` already permits that bypass, so such
+        // a side contributes distance zero instead of vetoing every candidate.
+        let then_terminal = self.is_terminal(then_target)?;
+        let else_terminal = self.is_terminal(else_target)?;
         let mut best = None;
-        for candidate in then_distances.keys().copied() {
+        for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             if candidate == current || candidate == then_target || candidate == else_target {
                 continue;
             }
-            let Some(else_distance) = else_distances.get(&candidate) else {
-                continue;
+            let then_distance = match then_distances.get(&candidate) {
+                Some(distance) => *distance,
+                None if then_terminal => 0,
+                None => continue,
+            };
+            let else_distance = match else_distances.get(&candidate) {
+                Some(distance) => *distance,
+                None if else_terminal => 0,
+                None => continue,
             };
             if !self.all_paths_reach_or_terminate(
                 then_target,
@@ -2788,7 +2801,7 @@ impl StructuredEmitter<'_> {
             )? {
                 continue;
             }
-            let score = (then_distances[&candidate] + else_distance, candidate);
+            let score = (then_distance + else_distance, candidate);
             if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
                 best = Some(score);
             }
@@ -3319,6 +3332,24 @@ enum PlanToken {
     F64Store { offset: u64, align: u8, memory: u32 },
     MemoryCopy { source: u32, destination: u32 },
     I64GtU,
+    I64Ne,
+    I64LeS,
+    I64GeS,
+    I64LtU,
+    I64LeU,
+    I64GeU,
+    I32Ne,
+    I32LtS,
+    I32LeS,
+    I32GtS,
+    I32GeS,
+    I32GeU,
+    F64Eq,
+    F64Ne,
+    F64Lt,
+    F64Le,
+    F64Gt,
+    F64Ge,
     Block(String),
     Loop(String),
     If(String),
@@ -3376,6 +3407,24 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
             destination: dst_mem,
         },
         wasmparser::Operator::I64GtU => PlanToken::I64GtU,
+        wasmparser::Operator::I64Ne => PlanToken::I64Ne,
+        wasmparser::Operator::I64LeS => PlanToken::I64LeS,
+        wasmparser::Operator::I64GeS => PlanToken::I64GeS,
+        wasmparser::Operator::I64LtU => PlanToken::I64LtU,
+        wasmparser::Operator::I64LeU => PlanToken::I64LeU,
+        wasmparser::Operator::I64GeU => PlanToken::I64GeU,
+        wasmparser::Operator::I32Ne => PlanToken::I32Ne,
+        wasmparser::Operator::I32LtS => PlanToken::I32LtS,
+        wasmparser::Operator::I32LeS => PlanToken::I32LeS,
+        wasmparser::Operator::I32GtS => PlanToken::I32GtS,
+        wasmparser::Operator::I32GeS => PlanToken::I32GeS,
+        wasmparser::Operator::I32GeU => PlanToken::I32GeU,
+        wasmparser::Operator::F64Eq => PlanToken::F64Eq,
+        wasmparser::Operator::F64Ne => PlanToken::F64Ne,
+        wasmparser::Operator::F64Lt => PlanToken::F64Lt,
+        wasmparser::Operator::F64Le => PlanToken::F64Le,
+        wasmparser::Operator::F64Gt => PlanToken::F64Gt,
+        wasmparser::Operator::F64Ge => PlanToken::F64Ge,
         wasmparser::Operator::Block { blockty } => PlanToken::Block(format!("{blockty:?}")),
         wasmparser::Operator::Loop { blockty } => PlanToken::Loop(format!("{blockty:?}")),
         wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
@@ -4303,47 +4352,15 @@ fn expected_linear_function_plan(
                 plan.push(PlanToken::I32Const(table_index as i32));
                 push_set(&mut plan, &layout, *destination)?;
             }
-            Operation::Compare {
-                destination,
-                operator: operator @ (ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned),
-                left,
-                right,
-            } => {
+            Operation::Compare { destination, operator, left, right } => {
+                let value_type = function
+                    .value_types
+                    .get(left)
+                    .copied()
+                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
                 push_get(&mut plan, &layout, *left)?;
                 push_get(&mut plan, &layout, *right)?;
-                plan.push(match operator {
-                    ComparisonOperator::LessUnsigned => PlanToken::I32LtU,
-                    ComparisonOperator::LessEqualUnsigned => PlanToken::I32LeU,
-                    _ => unreachable!("pattern restricts unsigned comparisons"),
-                });
-                push_set(&mut plan, &layout, *destination)?;
-            }
-            Operation::Compare {
-                destination,
-                operator: operator @ (ComparisonOperator::LessSigned | ComparisonOperator::GreaterSigned),
-                left,
-                right,
-            } if function.value_types.get(left) == Some(&ValueType::Int) => {
-                push_get(&mut plan, &layout, *left)?;
-                push_get(&mut plan, &layout, *right)?;
-                plan.push(match operator {
-                    ComparisonOperator::LessSigned => PlanToken::I64LtS,
-                    ComparisonOperator::GreaterSigned => PlanToken::I64GtS,
-                    _ => unreachable!("pattern restricts signed comparisons"),
-                });
-                push_set(&mut plan, &layout, *destination)?;
-            }
-            Operation::Compare {
-                destination,
-                operator: ComparisonOperator::Equal,
-                left,
-                right,
-            } if function.value_types.get(left) == Some(&ValueType::Int)
-                && function.value_types.get(right) == Some(&ValueType::Int) =>
-            {
-                push_get(&mut plan, &layout, *left)?;
-                push_get(&mut plan, &layout, *right)?;
-                plan.push(PlanToken::I64Eq);
+                plan.push(planned_compare_token(value_type, *operator)?);
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::Guard { condition, .. } => {
@@ -4647,20 +4664,31 @@ impl PlanEmitter<'_> {
         }
         let then_distances = self.distances_from(then_target)?;
         let else_distances = self.distances_from(else_target)?;
+        // Mirror of the encoder's rule: a terminal side bypasses the merge and
+        // contributes distance zero.
+        let then_terminal = self.is_terminal(then_target)?;
+        let else_terminal = self.is_terminal(else_target)?;
         let mut best = None;
-        for candidate in then_distances.keys().copied() {
+        for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             if candidate == current || candidate == then_target || candidate == else_target {
                 continue;
             }
-            let Some(else_distance) = else_distances.get(&candidate) else {
-                continue;
+            let then_distance = match then_distances.get(&candidate) {
+                Some(distance) => *distance,
+                None if then_terminal => 0,
+                None => continue,
+            };
+            let else_distance = match else_distances.get(&candidate) {
+                Some(distance) => *distance,
+                None if else_terminal => 0,
+                None => continue,
             };
             if !self.all_paths_reach_or_terminate(then_target, candidate, &mut BTreeSet::new())?
                 || !self.all_paths_reach_or_terminate(else_target, candidate, &mut BTreeSet::new())?
             {
                 continue;
             }
-            let score = (then_distances[&candidate] + else_distance, candidate);
+            let score = (then_distance + else_distance, candidate);
             if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
                 best = Some(score);
             }
@@ -4828,6 +4856,81 @@ impl PlanEmitter<'_> {
     }
 }
 
+/// One canonical spelling for a local's value type so the independently
+/// decoded body and the planned body compare kinds, not two libraries' `Debug`
+/// renderings (which agree for numerics and differ for reference types).
+/// The plan's comparison table. It must be the exact mirror of `emit_compare`:
+/// `Int` compares as i64, `Size` and `Bool` as i32, `Float` as f64; every
+/// operator is covered so the plan never refuses a comparison the encoder
+/// emits.
+fn planned_compare_token(
+    value_type: crate::canonical_safewir::ValueType,
+    operator: ComparisonOperator,
+) -> Result<PlanToken, CanonicalAdmissionError> {
+    use crate::canonical_safewir::ValueType as V;
+    Ok(match value_type {
+        V::Int => match operator {
+            ComparisonOperator::Equal => PlanToken::I64Eq,
+            ComparisonOperator::NotEqual => PlanToken::I64Ne,
+            ComparisonOperator::LessSigned => PlanToken::I64LtS,
+            ComparisonOperator::LessUnsigned => PlanToken::I64LtU,
+            ComparisonOperator::LessEqualSigned => PlanToken::I64LeS,
+            ComparisonOperator::LessEqualUnsigned => PlanToken::I64LeU,
+            ComparisonOperator::GreaterSigned => PlanToken::I64GtS,
+            ComparisonOperator::GreaterUnsigned => PlanToken::I64GtU,
+            ComparisonOperator::GreaterEqualSigned => PlanToken::I64GeS,
+            ComparisonOperator::GreaterEqualUnsigned => PlanToken::I64GeU,
+        },
+        V::Size | V::Bool => match operator {
+            ComparisonOperator::Equal => PlanToken::I32Eq,
+            ComparisonOperator::NotEqual => PlanToken::I32Ne,
+            ComparisonOperator::LessSigned => PlanToken::I32LtS,
+            ComparisonOperator::LessUnsigned => PlanToken::I32LtU,
+            ComparisonOperator::LessEqualSigned => PlanToken::I32LeS,
+            ComparisonOperator::LessEqualUnsigned => PlanToken::I32LeU,
+            ComparisonOperator::GreaterSigned => PlanToken::I32GtS,
+            ComparisonOperator::GreaterUnsigned => PlanToken::I32GtU,
+            ComparisonOperator::GreaterEqualSigned => PlanToken::I32GeS,
+            ComparisonOperator::GreaterEqualUnsigned => PlanToken::I32GeU,
+        },
+        V::Float => match operator {
+            ComparisonOperator::Equal => PlanToken::F64Eq,
+            ComparisonOperator::NotEqual => PlanToken::F64Ne,
+            ComparisonOperator::LessSigned | ComparisonOperator::LessUnsigned => PlanToken::F64Lt,
+            ComparisonOperator::LessEqualSigned | ComparisonOperator::LessEqualUnsigned => PlanToken::F64Le,
+            ComparisonOperator::GreaterSigned | ComparisonOperator::GreaterUnsigned => PlanToken::F64Gt,
+            ComparisonOperator::GreaterEqualSigned | ComparisonOperator::GreaterEqualUnsigned => PlanToken::F64Ge,
+        },
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    })
+}
+
+fn planned_local_kind(ty: ValType) -> String {
+    match ty {
+        ValType::I32 => "i32".to_owned(),
+        ValType::I64 => "i64".to_owned(),
+        ValType::F32 => "f32".to_owned(),
+        ValType::F64 => "f64".to_owned(),
+        ValType::V128 => "v128".to_owned(),
+        ValType::Ref(reference) if reference == wasm_encoder::RefType::EXTERNREF => "externref".to_owned(),
+        ValType::Ref(reference) if reference == wasm_encoder::RefType::FUNCREF => "funcref".to_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn decoded_local_kind(ty: wasmparser::ValType) -> String {
+    match ty {
+        wasmparser::ValType::I32 => "i32".to_owned(),
+        wasmparser::ValType::I64 => "i64".to_owned(),
+        wasmparser::ValType::F32 => "f32".to_owned(),
+        wasmparser::ValType::F64 => "f64".to_owned(),
+        wasmparser::ValType::V128 => "v128".to_owned(),
+        wasmparser::ValType::Ref(reference) if reference.is_extern_ref() => "externref".to_owned(),
+        wasmparser::ValType::Ref(reference) if reference.is_func_ref() => "funcref".to_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn expected_function_plan(
     function: &Function,
     signature: &FunctionSignature,
@@ -4974,7 +5077,7 @@ fn decode_and_match_plan(
                 .find(|signature| signature.id == function.signature)
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
             let local = local_layout(function, signature, &layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-            let locals = local.extra_types.iter().map(|ty| (1, format!("{ty:?}"))).collect();
+            let locals = local.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
             let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
             Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets)?))
         })
@@ -5056,7 +5159,7 @@ fn decode_and_match_plan(
                 let mut locals = Vec::new();
                 for _ in 0..locals_reader.get_count() {
                     let (count, ty) = locals_reader.read().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
-                    locals.push((count, format!("{ty:?}")));
+                    locals.push((count, decoded_local_kind(ty)));
                 }
                 let mut operators = body.get_operators_reader().map_err(|_| CanonicalAdmissionError::WasmValidation)?;
                 let mut plan = Vec::new();
@@ -5127,6 +5230,30 @@ fn decode_and_match_plan(
         return Err(CanonicalAdmissionError::PlanMismatch("function count"));
     }
     if actual != expected {
+        // Development diagnostic only: name the first token where the emitted
+        // body and the independently derived plan diverge. Nothing is admitted
+        // on this path; the refusal below is unchanged.
+        if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+            for (index, (emitted, planned)) in actual.iter().zip(&expected).enumerate() {
+                if emitted == planned {
+                    continue;
+                }
+                if emitted.0 != planned.0 {
+                    eprintln!("canonical plan mismatch: function {index} locals differ");
+                    eprintln!("  actual:   {:?}", emitted.0);
+                    eprintln!("  expected: {:?}", planned.0);
+                }
+                let divergence = emitted.1.iter().zip(&planned.1).position(|(a, e)| a != e).unwrap_or(emitted.1.len().min(planned.1.len()));
+                let window = |tokens: &[PlanToken]| tokens.iter().skip(divergence.saturating_sub(6)).take(14).map(|t| format!("{t:?}")).collect::<Vec<_>>().join(" ");
+                eprintln!("canonical plan mismatch: function {index} token {divergence} (actual {} / expected {})", emitted.1.len(), planned.1.len());
+                eprintln!("  actual:   {}", window(emitted.1.as_slice()));
+                eprintln!("  expected: {}", window(planned.1.as_slice()));
+                break;
+            }
+            if actual.len() != expected.len() {
+                eprintln!("canonical plan mismatch: {} functions emitted, {} planned", actual.len(), expected.len());
+            }
+        }
         return Err(CanonicalAdmissionError::PlanMismatch("function body"));
     }
     if actual_data != expected_data {

@@ -434,6 +434,38 @@ mod tests {
         assert!(artifact.entry().is_some());
     }
 
+    /// An explicit `let` parameter is the default convention spelled out; the
+    /// lowering once hit `unreachable!()` on it (`examples/regions`).
+    #[test]
+    fn explicit_let_parameter_lowers_like_the_default_convention() {
+        let source = "fn twice(let n: Int) -> Int:\n    n * 2\n\nfn first(let xs: List(Int)) -> Int:\n    xs.length()\n\nfn main() -> Int:\n    twice(20) + first([1, 2])\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("regions".to_string(), source.as_bytes().to_vec())],
+            "regions",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let artifact = admit_checked_module(&checked).expect("explicit `let` parameters admit");
+        wasmparser::validate(artifact.wasm()).expect("admitted bytes are valid Wasm");
+    }
+
+    /// An exhaustive `match` without a wildcard leaves a trapping fallthrough
+    /// as one side of the last `BranchIf`; the structured backend must treat
+    /// that terminal side as bypassing the join rather than vetoing every
+    /// candidate join.
+    #[test]
+    fn bool_match_without_wildcard_reaches_admission() {
+        let source = "fn choose(flag: Bool) -> Int:\n    match flag:\n        true -> 1\n        false -> 2\n\nfn main() -> Int:\n    choose(true) + choose(false)\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("choose".to_string(), source.as_bytes().to_vec())],
+            "choose",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+        let artifact = admit_checked_module(&checked).expect("an exhaustive match admits");
+        wasmparser::validate(artifact.wasm()).expect("admitted bytes are valid Wasm");
+    }
+
     #[test]
     fn checked_scalar_direct_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    answer()\n";

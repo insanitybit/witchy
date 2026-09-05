@@ -261,3 +261,33 @@ route is 0/107.
   callee fails `OwnedReleasePlacement("MissingToken(ValueId(n)))`.
 - The unit test `canonical_lower::tests::ordinary_own_identity_transfers_reference_without_clone_and_admits`
   pins exactly this pair and is left red on purpose; do not weaken it.
+
+## Progress (owner, 2026-09-05, second slice)
+
+- **B8 fixed**: an explicit `let` parameter (`Convention::Borrow`) is the default
+  convention spelled out; it is now accepted at the signature, the function
+  check, the call site, and the authority ABI comparator. `examples/regions`
+  no longer panics; it stops at string interpolation.
+- **B4 fixed**: the edge object-state check applies only to linear-memory
+  references; capabilities, GC references, and callables threaded through a
+  loop header carry no object state. The independent plan matcher also
+  compared local kinds by two libraries' `Debug` renderings, which disagree for
+  `externref`; both sides now normalize to one kind label. `while` loops in a
+  function holding `console` run end to end.
+- **B2/B3 fixed**: a unit function's final expression is lowered as an effect
+  whatever its shape; `if` without `else` and `if`/`match` whose arms print
+  now admit and run.
+- **B11 fixed**: `&&` and `||` lower to explicit control flow with a `Bool`
+  join parameter.
+- **B5 fixed** (lowering owned it, see `BUG-canonical-match-cfg-unstructured-block.md`);
+  the encoder's `find_join` additionally treats a terminating side as
+  bypassing the join, and the plan's comparison table is now the exact mirror
+  of the encoder's, so an exhaustive `match` without a wildcard admits.
+- **B10 partially addressed**: declarations qualified by a user library module
+  are in the canonical entry scope (std and playground modules are policy
+  exclusions; mangled names never qualify). `examples/app` now reaches the
+  B6 `String`-return release-placement gap instead of `MissingBinding`.
+- Diagnostics: `WITCHY_CANONICAL_PLAN_DEBUG=1` prints the first divergence
+  between the emitted body and the independently derived plan.
+- New in-subset gap observed: `for i in lo..hi` range loops are refused as
+  `UnsupportedExpression("range")` (`q_forin`). Not yet fixed.

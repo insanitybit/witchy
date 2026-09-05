@@ -385,13 +385,13 @@ fn candidate_signature_matches_source_inner(
     let convention_at = |index| conventions.get(index).copied().unwrap_or_default();
     if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
-        (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Var)
+        (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
             && value_type_matches_source(*actual, source, layouts, signatures, seen)
     }) { return false; }
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
-        if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Var)
+        if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
         match (actual.value_type, convention) {

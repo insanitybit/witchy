@@ -24,6 +24,22 @@ Only `merged-green` completes a row.
 | B11 | partial | Launch metadata is derived from checked source, included in SafeWIR identity, emitted before admission, matched exactly, and mutation-refused. Ordinary packaging no longer appends bytes; unauthenticated production Wasm caches are disabled. The admitted artifact records a validated launch entry (`CanonicalEntry`: export, capability parameters, result convention) derived inside admission from the checked `main` ABI and validated SafeWIR signature; `Runtime::spawn_admitted` enters it, minting one opaque host token per capability parameter and printing an `Int`/`Float` result under the frozen exit-code convention. Before 2026-09-05 no canonical program could run from the CLI: the runtime looked for a `run` export canonical modules never had. `tests/misc/rfc0165_admitted_launch.rs` runs admitted artifacts through the real runtime. | Bind the launch entry into the artifact digest and the on-disk `witchy.launch` payload so a Tier-1 `.wasm` file can be launched without the in-memory artifact; merged gate evidence. |
 | B12 | partial | The native `witchy-wir` test target compiles again after stale backend test callers were repaired; focused native tests execute. | Required CI/merge-queue jobs for native `witchy-wir` and `witchy-lower`, with compile failure treated as red, and terminal merged evidence. |
 
+## Known red tests on the branch (classified, not hidden)
+
+- `canonical_lower::tests::ordinary_own_identity_transfers_reference_without_clone_and_admits`
+  pins the two `own`-convention gaps in the census (checker `UnknownCallableContract`
+  for `own Int`, release placement for `own String`). Deliberately red.
+- `canonical_safewir::check::tests::raw_byte_slice_copy_is_accepted` and
+  `canonical_safewir::check::tests::authenticated_dynamic_host_slice_is_accepted`
+  fail on the committed branch before the current owner's changes (verified by
+  running them against `HEAD`'s `check/memory.rs`). They are checker acceptance
+  pins for byte-slice copies and authenticated host slices; root cause not yet
+  classified.
+- The untracked `crates/witchy-wir/tests/canonical_optimization_execution.rs`
+  references APIs the optimizer-free baseline removed and breaks
+  `cargo test -p witchy-wir --tests`; it predates the handoff and is preserved
+  unmodified by instruction.
+
 ## Current focused candidate evidence
 
 - `canonical_pipeline::tests::scalar_unary_source_reaches_admitted_execution`

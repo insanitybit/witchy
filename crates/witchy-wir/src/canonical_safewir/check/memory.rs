@@ -271,7 +271,12 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         for parameter in &target.parameters {
-            if parameter.value_type.is_memory_bearing() && !objects.contains_key(&parameter.value) {
+            // Only a linear-memory reference carries object state across an
+            // edge. Capabilities, GC references, and callables are opaque host
+            // or table references with no extent or ownership to rename, so a
+            // loop that threads `console` through its header is not a missing
+            // object (BUG: capability-in-loop refusal, census B4).
+            if matches!(parameter.value_type, ValueType::Ref(_)) && !objects.contains_key(&parameter.value) {
                 return Err(InitialCheckError::InvalidOwnership {
                     function: self.function.id,
                     object: parameter.value,
@@ -458,7 +463,12 @@ impl<'a> MemoryChecker<'a> {
             objects.insert(*value, current.clone());
         }
         for parameter in &block.parameters {
-            if parameter.value_type.is_memory_bearing() && !objects.contains_key(&parameter.value) {
+            // Only a linear-memory reference carries object state across an
+            // edge. Capabilities, GC references, and callables are opaque host
+            // or table references with no extent or ownership to rename, so a
+            // loop that threads `console` through its header is not a missing
+            // object (BUG: capability-in-loop refusal, census B4).
+            if matches!(parameter.value_type, ValueType::Ref(_)) && !objects.contains_key(&parameter.value) {
                 return Err(InitialCheckError::IncompatibleMemoryJoin {
                     function: self.function.id,
                     block: block.id,

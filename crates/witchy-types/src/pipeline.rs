@@ -722,7 +722,31 @@ fn canonicalize_callable_instances(
 /// program's own `main` can be admitted away (see
 /// `BUG-canonical-entry-scope-drops-bare-main.md`).
 pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bool {
-    linked_entry.is_none_or(|entry| name == "main" || name.starts_with(&format!("{entry}.")))
+    linked_entry.is_none_or(|entry| {
+        name == "main"
+            || name.starts_with(&format!("{entry}."))
+            || is_user_module_qualified(name)
+    })
+}
+
+/// A declaration qualified by a user library module (`strutil.shout`) is part
+/// of the checked program: the linker qualifies every non-entry module's
+/// declarations with that module's name, and only the standard library and
+/// the playground modules are outside canonical scope by policy. Mangled
+/// specializations and methods carry no `.` and never match here.
+fn is_user_module_qualified(name: &str) -> bool {
+    let Some((module, rest)) = name.split_once('.') else {
+        return false;
+    };
+    // A mangled trait-impl or specialization (`Show__duration.DurationParseError__show`)
+    // can carry a `.` inside a type segment; its `__` separators mark it as a
+    // mangled name, never a module qualifier.
+    !module.is_empty()
+        && !rest.is_empty()
+        && !module.contains("__")
+        && !rest.contains("__")
+        && !witchy_syntax::linker::STD_MODULES.contains(&module)
+        && !witchy_syntax::linker::PLAYGROUND_MODULES.contains(&module)
 }
 
 fn bind_canonical_callable_witness(
@@ -1166,6 +1190,10 @@ mod tests {
         assert!(is_canonical_entry_function(Some("app"), "main"));
         assert!(is_canonical_entry_function(Some("app"), "app.helper"));
         assert!(!is_canonical_entry_function(Some("app"), "list.any"));
+        assert!(is_canonical_entry_function(Some("app"), "strutil.shout"), "user library modules are in scope");
+        assert!(!is_canonical_entry_function(Some("app"), "glamour.render"), "playground modules are std policy");
+        assert!(!is_canonical_entry_function(Some("app"), "__capop.print"), "compiler intrinsics are not declarations");
+        assert!(!is_canonical_entry_function(Some("app"), "Show__duration.DurationParseError__show"), "a mangled impl is not module-qualified");
         assert!(!is_canonical_entry_function(Some("app"), "List__any__task_2eSlot"));
         assert!(!is_canonical_entry_function(Some("app"), "app"), "the module is not a function");
         assert!(is_canonical_entry_function(None, "anything"));
