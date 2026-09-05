@@ -98,8 +98,10 @@ pub fn lower_typed_module(
             .filter_map(|parameter| parameter.ty.as_ref())
             .chain(function.ret.iter())
             .find(|ty| contains_deferred_v1_qualifier(ty))
+            .cloned()
+            .or_else(|| deferred_v1_qualifier_in_block(&function.body))
         {
-            return Err(CanonicalLoweringError::UnsupportedType(unsupported.clone()));
+            return Err(CanonicalLoweringError::UnsupportedType(unsupported));
         }
     }
     let packed_records = typed.module().items.iter().filter_map(|item| match item {
@@ -509,6 +511,61 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
                 || contains_deferred_v1_qualifier(result)
         }
     }
+}
+
+fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<Type> {
+    if let Some(ty) = block.region.as_ref().and_then(|region| region.ty.as_ref())
+        && contains_deferred_v1_qualifier(ty)
+    {
+        return Some(ty.clone());
+    }
+    for statement in &block.stmts {
+        if let Stmt::Let { ty: Some(ty), .. } = statement
+            && contains_deferred_v1_qualifier(ty)
+        {
+            return Some(ty.clone());
+        }
+        let expression = match statement {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => Some(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => None,
+        };
+        let Some(expression) = expression else { continue };
+        let mut unsupported = None;
+        let result = witchy_syntax::ast::visit::visit_expr(expression, &mut |expression| {
+            let types: Vec<&Type> = match expression {
+                Expr::Lambda { params, ret, .. } => params
+                    .iter()
+                    .filter_map(|parameter| parameter.ty.as_ref())
+                    .chain(ret.iter())
+                    .collect(),
+                Expr::As { ty, .. }
+                | Expr::ExistentialPack { ty, .. }
+                | Expr::ExistentialUpcast { ty, .. }
+                | Expr::ExistentialCall { ty, .. } => vec![ty],
+                _ => Vec::new(),
+            };
+            if let Some(ty) = types.into_iter().find(|ty| contains_deferred_v1_qualifier(ty)) {
+                unsupported = Some(ty.clone());
+                return Err(());
+            }
+            if let Expr::Lambda { body, .. } | Expr::Block(body) = expression
+                && let Some(ty) = deferred_v1_qualifier_in_block(body)
+            {
+                unsupported = Some(ty);
+                return Err(());
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            return unsupported;
+        }
+    }
+    None
 }
 
 /// v1 represents scalar consumption and one existing owned token for ordinary
@@ -4525,6 +4582,20 @@ mod tests {
             crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
         )
         .expect_err("v1 must not silently erase a unique contract");
+        assert!(matches!(error, CanonicalLoweringError::UnsupportedType(_)));
+    }
+
+    #[test]
+    fn local_unique_ascriptions_stay_fail_closed() {
+        let checked = checked(
+            "fn main() -> Int:\n    let values: unique List(Int) = [1]\n    values.length()\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let error = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect_err("v1 must reject a local qualifier before type normalization erases it");
         assert!(matches!(error, CanonicalLoweringError::UnsupportedType(_)));
     }
 
