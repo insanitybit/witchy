@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
@@ -196,6 +197,43 @@ pub enum FinalValidationError {
     History(HistoryError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateAbiBindingError {
+    MissingBinding { source_declaration: u32 },
+    UnexpectedBinding { source_declaration: u32 },
+    DuplicateSourceDeclaration { source_declaration: u32 },
+    DuplicateCandidateFunction { function: super::FunctionId },
+    MissingCandidateFunction { function: super::FunctionId },
+    MissingCandidateSignature { function: super::FunctionId },
+    SourceAbiMismatch { source_declaration: u32 },
+    CandidateSignatureMismatch { function: super::FunctionId },
+}
+
+impl fmt::Display for CandidateAbiBindingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "canonical SafeWIR candidate ABI binding failed: {self:?}")
+    }
+}
+
+impl std::error::Error for CandidateAbiBindingError {}
+
+#[derive(Debug)]
+pub enum InitialWitnessError {
+    Safety(InitialCheckError),
+    CandidateAbi(CandidateAbiBindingError),
+}
+
+impl fmt::Display for InitialWitnessError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Safety(error) => error.fmt(formatter),
+            Self::CandidateAbi(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for InitialWitnessError {}
+
 impl fmt::Display for FinalValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "canonical SafeWIR final validation failed: {self:?}")
@@ -207,26 +245,28 @@ impl std::error::Error for FinalValidationError {}
 pub fn check_initial_with_witness(
     candidate: CanonicalModule<LoweredCandidate>,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
-) -> Result<CheckedInitialSafeWir, InitialCheckError> {
+) -> Result<CheckedInitialSafeWir, InitialWitnessError> {
     let source_digest = source.source_witness().source_bundle_digest();
     let expected_source = source_digest;
-    let module = super::check::check_initial(candidate)?;
+    validate_candidate_abi_bindings(&candidate, source)
+        .map_err(InitialWitnessError::CandidateAbi)?;
+    let module = super::check::check_initial(candidate).map_err(InitialWitnessError::Safety)?;
     if module.checked_source().digest() != expected_source {
-        return Err(InitialCheckError::CheckedSourceWitnessMismatch {
+        return Err(InitialWitnessError::Safety(InitialCheckError::CheckedSourceWitnessMismatch {
             expected: expected_source,
             actual: module.checked_source().digest(),
-        });
+        }));
     }
     let expected = ModuleDigest::from_bytes(
         source.source_witness().proper_tail_manifest_digest(),
     );
     let actual = tail_digest(&module);
     if actual != expected {
-        return Err(InitialCheckError::TailManifestDigestMismatch {
+        return Err(InitialWitnessError::Safety(InitialCheckError::TailManifestDigestMismatch {
             expected: expected.bytes(),
             actual: actual.bytes(),
             actual_site_count: module.proper_tail_sites().len(),
-        });
+        }));
     }
     let checked_source_witness = CheckedSourceWitness {
         checked_source: module.checked_source(),
@@ -242,6 +282,171 @@ pub fn check_initial_with_witness(
         checked_source_witness,
     };
     Ok(CheckedInitialSafeWir { module, witness })
+}
+
+fn validate_candidate_abi_bindings(
+    candidate: &CanonicalModule<LoweredCandidate>,
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+) -> Result<(), CandidateAbiBindingError> {
+    use witchy_types::canonical_abi::CanonicalTargetPolicy;
+
+    let source_entries = source.callable_abi_manifest().entries().iter().filter_map(|entry| {
+        let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
+        Some((target.function_ordinal, entry.key.as_bytes()))
+    }).collect::<BTreeMap<_, _>>();
+    let mut bindings = BTreeMap::new();
+    let mut bound_functions = BTreeMap::new();
+    for binding in candidate.source_abi_bindings().entries() {
+        if bindings.insert(binding.source_declaration_ordinal(), binding).is_some() {
+            return Err(CandidateAbiBindingError::DuplicateSourceDeclaration {
+                source_declaration: binding.source_declaration_ordinal(),
+            });
+        }
+        if bound_functions.insert(binding.function(), binding).is_some() {
+            return Err(CandidateAbiBindingError::DuplicateCandidateFunction { function: binding.function() });
+        }
+    }
+    for source_declaration in source_entries.keys() {
+        let Some(binding) = bindings.get(source_declaration) else {
+            return Err(CandidateAbiBindingError::MissingBinding { source_declaration: *source_declaration });
+        };
+        let _ = binding;
+    }
+    for source_declaration in bindings.keys() {
+        if !source_entries.contains_key(source_declaration) {
+            return Err(CandidateAbiBindingError::UnexpectedBinding { source_declaration: *source_declaration });
+        }
+    }
+    let mut functions = BTreeMap::new();
+    for function in candidate.functions() {
+        if functions.insert(function.id, function).is_some() {
+            return Err(CandidateAbiBindingError::DuplicateCandidateFunction { function: function.id });
+        }
+    }
+    for binding in candidate.source_abi_bindings().entries() {
+        let Some(function) = functions.get(&binding.function()) else {
+            return Err(CandidateAbiBindingError::MissingCandidateFunction { function: binding.function() });
+        };
+        let Some(signature) = candidate.signatures().iter().find(|signature| signature.id == function.signature) else {
+            return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.function() });
+        };
+        let Some(source_signature) = source.closed_callable_signature(binding.source_declaration_ordinal()) else {
+            return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
+        };
+        if !candidate_signature_matches_source(signature, source_signature, candidate) {
+            return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
+        }
+    }
+    if functions.len() != bound_functions.len() {
+        let function = functions.keys().find(|function| !bound_functions.contains_key(function))
+            .copied().unwrap_or_else(|| *bound_functions.keys().next().expect("nonempty mismatch"));
+        return Err(CandidateAbiBindingError::MissingCandidateFunction { function });
+    }
+    Ok(())
+}
+
+fn candidate_signature_matches_source(
+    actual: &super::FunctionSignature,
+    source: &witchy_syntax::ast::Type,
+    candidate: &CanonicalModule<LoweredCandidate>,
+) -> bool {
+    let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
+    let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
+    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut BTreeSet::new())
+}
+
+fn candidate_signature_matches_source_inner(
+    actual: &super::FunctionSignature,
+    parameters: &[witchy_syntax::ast::Type],
+    result: &witchy_syntax::ast::Type,
+    conventions: &[witchy_syntax::ast::Convention],
+    layouts: &crate::layout::LayoutInterner,
+    signatures: &[super::FunctionSignature],
+    seen: &mut BTreeSet<super::FunctionSignatureId>,
+) -> bool {
+    if actual.parameters.len() != parameters.len() || actual.contract.parameters.len() != parameters.len() {
+        return false;
+    }
+    let convention_at = |index| conventions.get(index).copied().unwrap_or_default();
+    if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| matches!(convention_at(index), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow) && value_type_matches_source(*actual, source, layouts, signatures, seen)) { return false; }
+    if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
+        if !matches!(convention_at(index), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow) || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
+        match actual.value_type {
+            super::ValueType::Ref(_) => matches!(actual.ownership,
+                super::ParameterOwnership::CallBorrow { mode: super::BorrowMode::Read }
+                | super::ParameterOwnership::Shared) && matches!(convention_at(index), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow),
+            _ => matches!(actual.ownership, super::ParameterOwnership::Value),
+        }
+    }) { return false; }
+    let result_is_unit = matches!(result.unqualified(), witchy_syntax::ast::Type::Named(name, arguments) if (name == "Nil" || name == "Unit") && arguments.is_empty());
+    (if result_is_unit { actual.results.is_empty() } else {
+        actual.results.len() == 1 && value_type_matches_source(actual.results[0], result, layouts, signatures, seen)
+    }) && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
+        matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_)))
+            && effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release))
+    })
+}
+
+fn value_type_matches_source(
+    actual: super::ValueType,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+    signatures: &[super::FunctionSignature],
+    seen: &mut BTreeSet<super::FunctionSignatureId>,
+) -> bool {
+    match source.unqualified() {
+        witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
+            "Int" | "Duration" => actual == super::ValueType::Int,
+            "Float" => actual == super::ValueType::Float,
+            "Bool" => actual == super::ValueType::Bool,
+            "Nil" | "Unit" => actual == super::ValueType::Unit,
+            // Canonical lowering assigns the authenticated prelude Console
+            // capability the fixed ABI kind 0; no candidate-selected kind is
+            // accepted at this source boundary.
+            "Console" => actual == super::ValueType::Capability(super::CapabilityKindId::new(0)),
+            "String" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
+            _ => false,
+        },
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
+        witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
+            super::ValueType::Callable(id) if seen.insert(id) => {
+                let matched = signatures.iter().find(|signature| signature.id == id).is_some_and(|signature| {
+                    let witchy_syntax::ast::Type::Fn(_, _, conventions, _) = source.unqualified() else { return false };
+                    candidate_signature_matches_source_inner(signature, parameters, result, conventions, layouts, signatures, seen)
+                });
+                seen.remove(&id);
+                matched
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn layout_matches_source(
+    layout: crate::layout::LayoutId,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
+    let Some(descriptor) = layouts.get(layout) else { return false };
+    match source.unqualified() {
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+            let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { return false };
+            layouts.get(*element).is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte)))
+        }
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return false };
+            let Some(element) = layouts.get(*element) else { return false };
+            match arguments[0].unqualified() {
+                witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
+                witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
+                witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::BoolValueSlot)),
+                inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if layout_matches_source(*pointee, inner, layouts)),
+            }
+        }
+        _ => false,
+    }
 }
 
 /// Recheck the exact final graph and verify both prior authority chains before
@@ -370,6 +575,131 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         })
+    }
+
+    fn source() -> witchy_types::pipeline::CheckedModule {
+        witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main() -> Int:\n    3\n".to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source")
+    }
+
+    fn candidate_bound_to_source(
+        checked: &witchy_types::pipeline::CheckedModule,
+    ) -> CanonicalModule<LoweredCandidate> {
+        let source = checked.canonical_source().expect("canonical source");
+        let mut candidate = candidate();
+        candidate.checked_source = CheckedSourceIdentity::from_digest(
+            source.source_witness().source_bundle_digest(),
+        );
+        let source_abi = source.closed_callable_abi("main").expect("main ABI");
+        let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
+            panic!("main must have a closed target");
+        };
+        let binding = super::super::CandidateAbiBinding::new(
+            FunctionId::new(0),
+            target.function_ordinal,
+        );
+        candidate.with_source_abi_bindings(super::super::CandidateAbiBindings::new(vec![binding]))
+    }
+
+    #[test]
+    fn checked_source_abi_binding_accepts_the_actual_matching_candidate() {
+        let checked = source();
+        assert!(check_initial_with_witness(candidate_bound_to_source(&checked), checked.canonical_source().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn checked_source_abi_binding_rejects_bool_substitution() {
+        let checked = source();
+        let mut candidate = candidate_bound_to_source(&checked);
+        candidate.signatures[0].results = vec![ValueType::Bool];
+        candidate.signatures[0].contract.results = vec![ResultContract::Value(ValueType::Bool)];
+        // Rebuild the complete identity-only binding after the substitution.
+        // No candidate-controlled ABI shape remains in it to bless the forgery.
+        let source_abi = checked.canonical_source().unwrap().closed_callable_abi("main").unwrap();
+        let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else { panic!("closed target") };
+        candidate.abi_bindings = super::super::CandidateAbiBindings::new(vec![
+            super::super::CandidateAbiBinding::new(FunctionId::new(0), target.function_ordinal),
+        ]);
+        assert!(matches!(
+            check_initial_with_witness(candidate, checked.canonical_source().unwrap()),
+            Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::CandidateSignatureMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn checked_source_abi_binding_rejects_an_extra_result_lane() {
+        let checked = source();
+        let mut candidate = candidate_bound_to_source(&checked);
+        candidate.signatures[0].results.push(ValueType::Bool);
+        candidate.signatures[0].contract.results.push(ResultContract::Value(ValueType::Bool));
+        assert!(matches!(
+            check_initial_with_witness(candidate, checked.canonical_source().unwrap()),
+            Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::CandidateSignatureMismatch { .. }))
+        ));
+    }
+
+    #[test]
+    fn source_console_requires_the_authenticated_capability_kind() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main(console: Console):\n    console.print(\"ok\")\n".to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).unwrap();
+        let source = checked.canonical_source().unwrap();
+        let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
+        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new()));
+        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new()));
+    }
+
+    #[test]
+    fn source_higher_order_callable_matches_the_actual_nested_signature() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("apply".to_string(), b"fn apply(f: fn(Int) -> Int) -> Int:\n    f(1)\n".to_vec())],
+            "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).unwrap();
+        let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
+        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
+        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
+        let mut candidate = candidate();
+        candidate.signatures = vec![outer, inner];
+        assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));
+    }
+
+    #[test]
+    fn source_higher_order_unit_callable_requires_zero_result_lanes() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("apply".to_string(), b"fn apply(f: fn(Int) -> Nil):\n    f(1)\n".to_vec())],
+            "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).unwrap();
+        let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
+        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![], parameter_effects: BTreeMap::new() } };
+        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value, non_escaping: false }], results: vec![], parameter_effects: BTreeMap::new() } };
+        let mut candidate = candidate();
+        candidate.signatures = vec![outer, inner];
+        assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));
+    }
+
+    #[test]
+    fn checked_source_abi_binding_rejects_missing_and_duplicate_entries() {
+        let checked = source();
+        let source = checked.canonical_source().unwrap();
+        let mut missing = candidate_bound_to_source(&checked);
+        missing.abi_bindings = super::super::CandidateAbiBindings::default();
+        assert!(matches!(
+            check_initial_with_witness(missing, source),
+            Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::MissingBinding { .. }))
+        ));
+
+        let candidate = candidate_bound_to_source(&checked);
+        let binding = candidate.source_abi_bindings().entries()[0].clone();
+        let mut duplicate = candidate;
+        duplicate.abi_bindings = super::super::CandidateAbiBindings::new(vec![binding.clone(), binding]);
+        assert!(matches!(
+            check_initial_with_witness(duplicate, source),
+            Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::DuplicateSourceDeclaration { .. }))
+        ));
     }
 
     #[test]

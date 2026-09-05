@@ -8,7 +8,7 @@ use std::fmt;
 
 use witchy_types::pipeline::CheckedModule;
 use witchy_wir::canonical_safewir::{
-    FinalValidationError, InitialCheckError, OptimizationError, OptimizationSession,
+    FinalValidationError, InitialWitnessError, OptimizationError, OptimizationSession,
     ValidatedSafeWir, check_initial_with_witness, validate_final,
 };
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
@@ -21,7 +21,7 @@ pub(crate) enum CanonicalPipelineError {
     MissingCheckedSourceWitness,
     Layout(CanonicalLayoutError),
     Lowering(CanonicalLoweringError),
-    InitialValidation(InitialCheckError),
+    InitialValidation(InitialWitnessError),
     Optimization(OptimizationError),
     FinalValidation(FinalValidationError),
     Admission(CanonicalAdmissionError),

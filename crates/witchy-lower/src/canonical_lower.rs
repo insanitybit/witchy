@@ -26,7 +26,7 @@ use witchy_wir::canonical_safewir::{
     CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
     FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
-    LoweredModuleParts, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
+    LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
     ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, Ownership, ValueId, ValueType,
 };
@@ -281,6 +281,22 @@ pub fn lower_typed_module(
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
 
+    let mut abi_bindings = functions_by_name
+        .iter()
+        .map(|(name, (function, _signature))| {
+            let source_abi = source.closed_callable_abi(name)
+                .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
+            let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.clone()));
+            };
+            Ok(CandidateAbiBinding::new(
+                *function,
+                target.function_ordinal,
+            ))
+        })
+        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    abi_bindings.sort_by_key(|binding| binding.source_declaration_ordinal());
+
     let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest(
@@ -291,7 +307,7 @@ pub fn lower_typed_module(
         imports,
         functions,
         proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module())?,
-    }, static_data_segments);
+    }, static_data_segments).with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings));
     Ok(match abi_catalog {
         Some(catalog) => candidate.with_abi_catalog(catalog),
         None => candidate,

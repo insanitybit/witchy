@@ -24,7 +24,7 @@ pub use assurance::{
 };
 mod authority;
 pub use authority::{
-    CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, ValidatedSafeWir,
+    CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, InitialWitnessError, ValidatedSafeWir,
     check_initial_with_witness, validate_final,
 };
 #[cfg(test)]
@@ -799,6 +799,36 @@ pub struct LoweredModuleParts {
     pub proper_tail_sites: Vec<ProperTailSite>,
 }
 
+/// A source declaration selected explicitly by lowering, never inferred from a
+/// backend function ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateAbiBinding {
+    function: FunctionId,
+    source_declaration_ordinal: u32,
+}
+
+impl CandidateAbiBinding {
+    pub fn new(
+        function: FunctionId,
+        source_declaration_ordinal: u32,
+    ) -> Self {
+        Self { function, source_declaration_ordinal }
+    }
+
+    pub const fn function(&self) -> FunctionId { self.function }
+    pub const fn source_declaration_ordinal(&self) -> u32 { self.source_declaration_ordinal }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CandidateAbiBindings {
+    entries: Vec<CandidateAbiBinding>,
+}
+
+impl CandidateAbiBindings {
+    pub fn new(entries: Vec<CandidateAbiBinding>) -> Self { Self { entries } }
+    pub fn entries(&self) -> &[CandidateAbiBinding] { &self.entries }
+}
+
 mod stage {
     pub trait Sealed {}
 }
@@ -838,6 +868,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     proper_tail_sites: Vec<ProperTailSite>,
     static_data_segments: Vec<StaticDataSegment>,
     abi_catalog: Option<CanonicalAbiCatalog>,
+    abi_bindings: CandidateAbiBindings,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -875,12 +906,21 @@ impl CanonicalModule<LoweredCandidate> {
             proper_tail_sites: parts.proper_tail_sites,
             static_data_segments,
             abi_catalog: None,
+            abi_bindings: CandidateAbiBindings::default(),
             stage: PhantomData,
         }
     }
 
     pub fn with_abi_catalog(mut self, catalog: CanonicalAbiCatalog) -> Self {
         self.abi_catalog = Some(catalog);
+        self
+    }
+
+    /// Attach the source-derived local ABI projection emitted by canonical
+    /// lowering. Production source admission rejects a missing or incomplete
+    /// projection; native hand-built test candidates retain the empty default.
+    pub fn with_source_abi_bindings(mut self, bindings: CandidateAbiBindings) -> Self {
+        self.abi_bindings = bindings;
         self
     }
 
@@ -895,6 +935,7 @@ impl CanonicalModule<LoweredCandidate> {
             proper_tail_sites: self.proper_tail_sites,
             static_data_segments: self.static_data_segments,
             abi_catalog: self.abi_catalog,
+            abi_bindings: self.abi_bindings,
             stage: PhantomData,
         }
     }
@@ -916,6 +957,7 @@ impl CanonicalModule<InitialValid> {
             proper_tail_sites: self.proper_tail_sites,
             static_data_segments: self.static_data_segments,
             abi_catalog: self.abi_catalog,
+            abi_bindings: self.abi_bindings,
             stage: PhantomData,
         }
     }
@@ -933,6 +975,7 @@ impl CanonicalModule<TransformedCandidate> {
             proper_tail_sites: self.proper_tail_sites,
             static_data_segments: self.static_data_segments,
             abi_catalog: self.abi_catalog,
+            abi_bindings: self.abi_bindings,
             stage: PhantomData,
         }
     }
@@ -973,5 +1016,9 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub(crate) fn abi_catalog(&self) -> Option<&CanonicalAbiCatalog> {
         self.abi_catalog.as_ref()
+    }
+
+    pub fn source_abi_bindings(&self) -> &CandidateAbiBindings {
+        &self.abi_bindings
     }
 }

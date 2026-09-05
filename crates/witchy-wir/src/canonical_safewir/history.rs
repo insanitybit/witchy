@@ -298,6 +298,7 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     writer.signatures(module.signatures());
     writer.imports(module.imports());
     writer.functions(module.functions());
+    writer.source_abi_bindings(module.source_abi_bindings());
     writer.tail_sites(module.proper_tail_sites());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
@@ -327,10 +328,10 @@ fn policy_and_route_digest() -> ModuleDigest {
     digest_bytes(POLICY_DIGEST_DOMAIN, &super::assurance::policy_digest_bytes())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 2;
+const MODULE_SERIALIZATION_VERSION: u32 = 3;
 const HISTORY_SERIALIZATION_VERSION: u32 = 1;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v2";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v2";
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v3";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v3";
 const HISTORY_DOMAIN: &[u8] = b"witchy/canonical-safewir/optimization-history/v1";
 const HISTORY_DIGEST_DOMAIN: &[u8] =
     b"witchy/canonical-safewir/optimization-history-sha256/v1";
@@ -1085,6 +1086,14 @@ impl CanonicalWriter {
         self.len(functions.len());
         for function in functions {
             self.function(function);
+        }
+    }
+
+    fn source_abi_bindings(&mut self, bindings: &super::CandidateAbiBindings) {
+        self.len(bindings.entries().len());
+        for binding in bindings.entries() {
+            self.u32(binding.function().get());
+            self.u32(binding.source_declaration_ordinal());
         }
     }
 

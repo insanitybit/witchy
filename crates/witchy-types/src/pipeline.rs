@@ -21,7 +21,7 @@ use witchy_syntax::type_resolve::ResolvedDeclarations;
 use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
-use crate::canonical_abi::{self, CanonicalCallableAbiManifest};
+use crate::canonical_abi::{self, CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 
 /// The executable callable inventory produced by the canonical checked
@@ -33,6 +33,8 @@ struct CanonicalCallableWitness {
     signatures: BTreeMap<String, witchy_syntax::ast::Type>,
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
     abi_manifest: CanonicalCallableAbiManifest,
+    closed_abis: BTreeMap<String, CanonicalCallableAbi>,
+    runtime_functions: Vec<String>,
 }
 
 /// Evidence that exact source bytes crossed the checked type-checking boundary.
@@ -117,6 +119,18 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn callable_abi_manifest(&self) -> &CanonicalCallableAbiManifest {
         &self.callable_witness.abi_manifest
+    }
+
+    /// Return the source ABI for this exact concrete runtime declaration.
+    #[doc(hidden)]
+    pub fn closed_callable_abi(&self, name: &str) -> Option<&CanonicalCallableAbi> {
+        self.callable_witness.closed_abis.get(name)
+    }
+
+    #[doc(hidden)]
+    pub fn closed_callable_signature(&self, ordinal: u32) -> Option<&witchy_syntax::ast::Type> {
+        let name = self.callable_witness.runtime_functions.get(ordinal as usize)?;
+        self.callable_witness.signatures.get(name)
     }
 }
 
@@ -605,10 +619,25 @@ fn bind_canonical_callable_witness(
     let abi_manifest = canonical_abi::derive_manifest(typed, &runtime_functions).map_err(|error| {
         PipelineError::Type(TypeError { message: error.to_string() })
     })?;
+    let closed_abis = runtime_functions
+        .iter()
+        .enumerate()
+        .map(|(ordinal, name)| {
+            let abi = abi_manifest.entries().iter().find(|entry| {
+                matches!(entry.target_policy, CanonicalTargetPolicy::ClosedLocal(target)
+                    if target.function_ordinal == ordinal as u32)
+            }).cloned().ok_or_else(|| PipelineError::Type(TypeError {
+                message: format!("canonical runtime function `{name}` lacks a closed callable ABI"),
+            }))?;
+            Ok((name.clone(), abi))
+        })
+        .collect::<Result<BTreeMap<_, _>, PipelineError>>()?;
     Ok(CanonicalCallableWitness {
         signatures,
         generic_instances,
         abi_manifest,
+        closed_abis,
+        runtime_functions,
     })
 }
 
