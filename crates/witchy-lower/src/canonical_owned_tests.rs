@@ -138,3 +138,66 @@ fn owned_releases_loop_temporary_before_backedge() {
     ] if *dropped == object));
     assert_eq!(function.blocks.len(), 3);
 }
+
+#[test]
+fn owned_releases_apply_loop_token_permutations_simultaneously() {
+    let ty = ValueType::Ref(LayoutId::from_bytes([1; 32]));
+    let condition = ValueId::new(0);
+    let left = ValueId::new(1);
+    let right = ValueId::new(2);
+    let loop_left = ValueId::new(3);
+    let loop_right = ValueId::new(4);
+    let loop_condition = ValueId::new(5);
+    let exit_left = ValueId::new(6);
+    let exit_right = ValueId::new(7);
+    let sig = signature(0, vec![ValueType::Bool, ty, ty], vec![ty, ty]);
+    let mut function = Function {
+        id: FunctionId::new(0),
+        signature: sig.id,
+        entry: BlockId::new(0),
+        value_types: BTreeMap::from([
+            (condition, ValueType::Bool),
+            (left, ty),
+            (right, ty),
+            (loop_left, ty),
+            (loop_right, ty),
+            (loop_condition, ValueType::Bool),
+            (exit_left, ty),
+            (exit_right, ty),
+        ]),
+        blocks: vec![
+            BasicBlock {
+                id: BlockId::new(0),
+                parameters: vec![parameter(0, ValueType::Bool), parameter(1, ty), parameter(2, ty)],
+                operations: Vec::new(),
+                terminator: Terminator::Branch {
+                    target: BlockId::new(1),
+                    arguments: vec![left, right, condition],
+                },
+            },
+            BasicBlock {
+                id: BlockId::new(1),
+                parameters: vec![parameter(3, ty), parameter(4, ty), parameter(5, ValueType::Bool)],
+                operations: Vec::new(),
+                terminator: Terminator::BranchIf {
+                    condition: loop_condition,
+                    then_target: BlockId::new(1),
+                    then_arguments: vec![loop_right, loop_left, loop_condition],
+                    else_target: BlockId::new(2),
+                    else_arguments: vec![loop_left, loop_right],
+                },
+            },
+            BasicBlock {
+                id: BlockId::new(2),
+                parameters: vec![parameter(6, ty), parameter(7, ty)],
+                operations: Vec::new(),
+                terminator: Terminator::Return { values: vec![exit_left, exit_right] },
+            },
+        ],
+    };
+
+    insert_releases(&mut function, &sig, &[sig.clone()], &HashMap::new())
+        .expect("a simultaneous loop permutation preserves both owned tokens");
+    assert_eq!(function.blocks.len(), 3);
+    assert!(function.blocks.iter().all(|block| block.operations.is_empty()));
+}

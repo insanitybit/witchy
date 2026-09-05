@@ -298,13 +298,18 @@ pub(super) fn insert_releases(
             // two destination lanes; that requires an explicit CloneRef.
             let mut moved = Values::new();
             let mut renamed = edge_owned.clone();
+            let mut transfers = Vec::new();
             for (argument, parameter) in arguments.iter().zip(&destination.parameters) {
                 if edge_owned.contains(argument) {
                     if !moved.insert(*argument) { return Err(ReleasePlacementError::MissingToken(*argument)); }
-                    renamed.remove(argument);
-                    renamed.insert(parameter.value);
+                    transfers.push((*argument, parameter.value));
                 }
             }
+            // Remove every source before inserting any destination. Applying
+            // renames one at a time loses a token for permutations such as
+            // `(left, right) -> (right, left)` on a loop backedge.
+            for (source, _) in &transfers { renamed.remove(source); }
+            for (_, destination) in transfers { renamed.insert(destination); }
             if let Some(previous) = incoming.get(&target) {
                 if previous != &renamed { return Err(ReleasePlacementError::IncompatibleOwnedEdge(target)); }
             } else {
