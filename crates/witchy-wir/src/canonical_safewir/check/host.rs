@@ -424,6 +424,32 @@ mod tests {
     }
 
     #[test]
+    fn integer_cannot_impersonate_a_capability_argument() {
+        let kind = CapabilityKindId::new(1);
+        assert!(matches!(
+            check(
+                ValueType::Int,
+                HostParameterRole::Capability(kind),
+                HostCallArgument::Capability(VALUE),
+            ),
+            Err(super::InitialCheckError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn linear_memory_reference_cannot_impersonate_a_capability_argument() {
+        let kind = CapabilityKindId::new(1);
+        assert!(matches!(
+            check(
+                ValueType::Ref(LayoutId::from_bytes([3; 32])),
+                HostParameterRole::Capability(kind),
+                HostCallArgument::Capability(VALUE),
+            ),
+            Err(super::InitialCheckError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn host_buffer_extent_mismatch_is_rejected() {
         let layout = LayoutId::from_bytes([2; 32]);
         let role = HostParameterRole::Buffer {
