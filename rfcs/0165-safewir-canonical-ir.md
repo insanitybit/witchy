@@ -11,6 +11,11 @@ tracking: impl/rfc0165-canonical-v1
 
 ## Summary
 
+Implementation amendment: [one memory model and checked opt boundaries](0165-memory-mode-boundary.md)
+records the 2026-09-04 decisions on normal/opt interoperability, managed read-only
+views, source `unique`, and deferred mutable-reference/region interfaces. It
+supersedes conflicting staging choices below, not safety or tail-call obligations.
+
 SafeWIR becomes the only representation on which Witchy performs semantic or
 memory-affecting optimization. It states language-level types, layouts,
 extents, ownership operations, runtime guards, call conventions, host
