@@ -187,6 +187,34 @@ pub fn lower_typed_module(
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
     }
+    let own_parameters_by_name = functions_by_name
+        .keys()
+        .filter_map(|name| {
+            let Type::Fn(parameters, _, conventions, _) = source.callable_signature(name)?.unqualified() else {
+                return None;
+            };
+            let conventions = if conventions.is_empty() {
+                vec![Convention::Let; parameters.len()]
+            } else {
+                conventions.clone()
+            };
+            Some((name.clone(), conventions.into_iter().map(|convention| convention == Convention::Own).collect::<Vec<_>>()))
+        })
+        .collect::<HashMap<_, _>>();
+    let own_parameters_by_signature = callable_types
+        .iter()
+        .filter_map(|ty| {
+            let Type::Fn(parameters, _, conventions, _) = ty.unqualified() else {
+                return None;
+            };
+            let conventions = if conventions.is_empty() {
+                vec![Convention::Let; parameters.len()]
+            } else {
+                conventions.clone()
+            };
+            Some((function_types[ty], conventions.into_iter().map(|convention| convention == Convention::Own).collect::<Vec<_>>()))
+        })
+        .collect::<HashMap<_, _>>();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(typed.module(), &function.name) {
@@ -254,6 +282,8 @@ pub fn lower_typed_module(
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
             signature,
             &functions_by_name,
+            &own_parameters_by_name,
+            &own_parameters_by_signature,
             &signatures,
             &tail_manifest,
             typed.table(),
@@ -348,7 +378,9 @@ fn checked_signature(
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
-        if !matches!(convention, Convention::Let | Convention::Borrow) {
+        if matches!(convention, Convention::Var)
+            || matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
+        {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
                 parameter: source.name.clone(),
@@ -387,7 +419,9 @@ fn signature_from_type(
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
     for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
-        if !matches!(convention, Convention::Let | Convention::Borrow) {
+        if matches!(convention, Convention::Var)
+            || matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
+        {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: format!("signature {:?}", id),
                 parameter: index.to_string(),
@@ -398,7 +432,9 @@ fn signature_from_type(
         let (ownership, non_escaping) = match (value_type, convention) {
             (ValueType::Ref(_), Convention::Let | Convention::Borrow) =>
                 (ParameterOwnership::Shared, false),
+            (ValueType::Ref(_), Convention::Own) => (ParameterOwnership::Shared, false),
             (_, Convention::Let | Convention::Borrow) => (ParameterOwnership::Value, false),
+            (_, Convention::Own) => (ParameterOwnership::Value, false),
             _ => unreachable!(),
         };
         if matches!(value_type, ValueType::Ref(_)) {
@@ -428,6 +464,21 @@ fn signature_from_type(
     })
 }
 
+/// v1 represents scalar consumption and one existing owned token for ordinary
+/// String and recursively supported List values. Explicit qualifier state,
+/// capabilities, and other reference state remain fail-closed.
+fn ordinary_own_type_supported(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, arguments) if arguments.is_empty() => {
+            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String")
+        }
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            ordinary_own_type_supported(&arguments[0])
+        }
+        _ => false,
+    }
+}
+
 fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
     let ty = ty.unqualified();
     match ty {
@@ -450,6 +501,8 @@ fn lower_function(
     item: u32,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    own_parameters_by_name: &HashMap<String, Vec<bool>>,
+    own_parameters_by_signature: &HashMap<FunctionSignatureId, Vec<bool>>,
     signatures: &[FunctionSignature],
     tail_manifest: &ProperTailSiteManifest,
     type_table: &TypeTable,
@@ -473,6 +526,8 @@ fn lower_function(
         current: BlockId::new(0),
         item,
         functions,
+        own_parameters_by_name,
+        own_parameters_by_signature,
         signatures,
         tail_manifest,
         type_table,
@@ -556,6 +611,8 @@ struct FunctionLowerer<'a> {
     current: BlockId,
     item: u32,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
+    own_parameters_by_name: &'a HashMap<String, Vec<bool>>,
+    own_parameters_by_signature: &'a HashMap<FunctionSignatureId, Vec<bool>>,
     signatures: &'a [FunctionSignature],
     tail_manifest: &'a ProperTailSiteManifest,
     type_table: &'a TypeTable,
@@ -1804,6 +1861,11 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "indirect tail-call signature",
             ))?;
+        if self.own_parameters_by_signature.get(&signature_id)
+            .is_some_and(|parameters| parameters.iter().any(|own| *own))
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("own indirect tail call"));
+        }
         if signature
             .parameters
             .iter()
@@ -1862,6 +1924,11 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "indirect call signature",
             ))?;
+        if self.own_parameters_by_signature.get(&signature_id)
+            .is_some_and(|parameters| parameters.iter().any(|own| *own))
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("own indirect call"));
+        }
         if signature
             .parameters
             .iter()
@@ -1928,6 +1995,18 @@ impl FunctionLowerer<'_> {
                 }
                 match contract.ownership {
                     ParameterOwnership::Value => Ok(CallArgument::Value(value)),
+                    ParameterOwnership::Shared if self.own_parameters_by_name
+                        .get(callee)
+                        .and_then(|parameters| parameters.get(parameter))
+                        .copied()
+                        .unwrap_or(false) => {
+                        // The authenticated source `own` convention transfers
+                        // this entry token to the callee.  Do not also append a
+                        // local DropRef at this function's exit; the central
+                        // release placer owns cleanup after the transfer.
+                        self.owned_parameters.retain(|owned| *owned != value);
+                        Ok(CallArgument::Move(value))
+                    }
                     ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
                     ParameterOwnership::Shared => {
                         let destination = self.fresh(actual)?;
@@ -3463,7 +3542,7 @@ mod tests {
     use witchy_syntax::ast::Item;
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
-        check_initial, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
+        check_initial, check_initial_with_witness, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
         Ownership, ParameterOwnership, Projection, Terminator, ValueType,
     };
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind};
@@ -4089,14 +4168,52 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_own_parameter_still_fails_closed() {
-        let checked = checked("fn consume(own value: Int) -> Int:\n    value\n");
-        let error = lower_typed_module(
-            checked.canonical_source().expect("canonical source"),
-            empty_layouts(),
+    fn ordinary_own_identity_transfers_reference_without_clone_and_admits() {
+        let checked = checked(
+            "fn scalar(own value: Int) -> Int:\n    value\nfn identity(own value: String) -> String:\n    value\nfn caller(number: Int, value: String) -> String:\n    let consumed = scalar(number)\n    identity(value)\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
         )
-        .expect_err("v1 canonical lowering does not guess move ownership");
-        assert!(matches!(error, CanonicalLoweringError::UnsupportedConvention { .. }));
+        .expect("ordinary checked own calls lower");
+        let caller = candidate.functions().iter().find(|function| function.id.get() == 2).expect("caller");
+        assert!(caller.blocks[0].operations.iter().any(|operation| matches!(operation,
+            Operation::Call { arguments, .. } if matches!(arguments.as_slice(), [CallArgument::Move(_)])
+        )) || matches!(&caller.blocks[0].terminator,
+            Terminator::TailCall { arguments, .. } if matches!(arguments.as_slice(), [CallArgument::Move(_)])
+        ));
+        assert!(!caller.blocks[0].operations.iter().any(|operation| matches!(operation, Operation::CloneRef { .. })));
+        assert!(check_initial_with_witness(candidate, source).is_ok(), "source-bound own candidate admits");
+    }
+
+    #[test]
+    fn own_packed_and_var_parameters_stay_fail_closed() {
+        for program in [
+            "fn consume(own value: unique List(Int)) -> Int:\n    value.length()\n",
+            "fn replace(var value: Int) -> Int:\n    value\n",
+        ] {
+            let checked = checked(program);
+            let source = checked.canonical_source().expect("canonical source");
+            let error = lower_typed_module(
+                source,
+                crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+            )
+            .expect_err("unsupported ownership state must not be guessed");
+            assert!(matches!(error, CanonicalLoweringError::UnsupportedConvention { .. }));
+        }
+    }
+
+    #[test]
+    fn own_indirect_call_stays_fail_closed() {
+        let checked = checked(
+            "fn apply(f: fn(own Int) -> Int, value: Int) -> Int:\n    f(value)\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let error = lower_typed_module(source, empty_layouts())
+            .expect_err("indirect own calls need an explicit canonical convention carrier");
+        assert!(matches!(error, CanonicalLoweringError::UnsupportedExpression("own indirect tail call")));
     }
 
     #[test]

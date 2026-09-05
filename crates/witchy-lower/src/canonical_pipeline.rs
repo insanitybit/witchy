@@ -355,6 +355,68 @@ mod tests {
     }
 
     #[test]
+    fn own_list_identity_reaches_admitted_execution() {
+        let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn main() -> Int:\n    let xs = identity([42])\n    xs[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked own List identity source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical own List identity artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted own List identity artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted own List identity artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical own List main export");
+        assert_eq!(main.call(&mut store, ()).expect("run canonical own List main"), 42);
+    }
+
+    #[test]
+    fn own_list_forwarded_entry_parameter_reaches_admitted_execution() {
+        let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn forward(own xs: List(Int)) -> Int:\n    let ys = identity(xs)\n    ys[0]\nfn main() -> Int:\n    forward([42])\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked forwarded own List source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            canonical,
+            derive_layout_bundle(canonical).expect("canonical layouts"),
+        )
+        .expect("lower forwarded own List source");
+        let forward = candidate.functions().iter().find(|function| function.id.get() == 1)
+            .expect("forward function");
+        let entry_token = forward.blocks.iter().find(|block| block.id == forward.entry)
+            .and_then(|block| block.parameters.first())
+            .expect("forward own entry parameter")
+            .value;
+        assert!(!forward.blocks.iter().flat_map(|block| &block.operations).any(|operation| {
+            matches!(operation, witchy_wir::canonical_safewir::Operation::DropRef { object } if *object == entry_token)
+        }), "a moved own entry token must not receive local cleanup");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical forwarded own List artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted forwarded own List artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted forwarded own List artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f2")
+            .expect("canonical forwarded own List main export");
+        assert_eq!(main.call(&mut store, ()).expect("run canonical forwarded own List main"), 42);
+    }
+
+    #[test]
     fn checked_function_value_variable_call_reaches_admitted_execution() {
         let source = "fn answer() -> Int:\n    42\nfn main() -> Int:\n    let f = answer\n    f() + 1\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

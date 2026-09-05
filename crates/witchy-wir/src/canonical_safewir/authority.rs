@@ -368,13 +368,23 @@ fn candidate_signature_matches_source_inner(
         return false;
     }
     let convention_at = |index| conventions.get(index).copied().unwrap_or_default();
-    if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| matches!(convention_at(index), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow) && value_type_matches_source(*actual, source, layouts, signatures, seen)) { return false; }
+    if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
+        let convention = convention_at(index);
+        (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow)
+            || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
+            && value_type_matches_source(*actual, source, layouts, signatures, seen)
+    }) { return false; }
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
-        if !matches!(convention_at(index), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow) || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
-        match actual.value_type {
-            super::ValueType::Ref(_) => matches!(actual.ownership,
+        let convention = convention_at(index);
+        if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow)
+            || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
+            || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
+        match (actual.value_type, convention) {
+            (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
+            (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Value),
+            (super::ValueType::Ref(_), _) => matches!(actual.ownership,
                 super::ParameterOwnership::CallBorrow { mode: super::BorrowMode::Read }
-                | super::ParameterOwnership::Shared) && matches!(convention_at(index), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow),
+                | super::ParameterOwnership::Shared),
             _ => matches!(actual.ownership, super::ParameterOwnership::Value),
         }
     }) { return false; }
@@ -385,6 +395,18 @@ fn candidate_signature_matches_source_inner(
         matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_)))
             && effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release))
     })
+}
+
+fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
+    match source {
+        witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => {
+            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String")
+        }
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            ordinary_own_source_type_supported(&arguments[0])
+        }
+        _ => false,
+    }
 }
 
 fn value_type_matches_source(
@@ -608,6 +630,42 @@ mod tests {
     fn checked_source_abi_binding_accepts_the_actual_matching_candidate() {
         let checked = source();
         assert!(check_initial_with_witness(candidate_bound_to_source(&checked), checked.canonical_source().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn source_own_scalar_rejects_a_unique_candidate_convention() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main(own value: Int) -> Int:\n    value\n".to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked source");
+        let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
+        let candidate = FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![ValueType::Int],
+            results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![super::super::ParameterContract {
+                    value_type: ValueType::Int,
+                    ownership: super::super::ParameterOwnership::Unique,
+                    non_escaping: false,
+                }],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        assert!(!candidate_signature_matches_source(
+            &candidate,
+            source,
+            &CanonicalModule::from_lowering(LoweredModuleParts {
+                revision: Revision::new(1),
+                checked_source: CheckedSourceIdentity::from_digest([0; 32]),
+                layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+                signatures: vec![candidate.clone()],
+                imports: Vec::new(),
+                functions: Vec::new(),
+                proper_tail_sites: Vec::new(),
+            }),
+        ));
     }
 
     #[test]
