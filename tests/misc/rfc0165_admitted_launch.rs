@@ -98,3 +98,13 @@ fn admitted_short_circuit_operators_run() {
     );
     assert_eq!(output, vec!["in".to_string(), "or".to_string()]);
 }
+
+#[test]
+fn admitted_string_literals_cross_owned_parameters_and_returns() {
+    // A literal has no reference-count token; passing or returning one under
+    // the owned ABI materializes a fresh copy rather than cloning static data.
+    let output = run_admitted(
+        "pub fn shout(name: String) -> String:\n    \"hi \" + name\n\nfn greet() -> String:\n    \"hello\"\n\nfn keep(own value: String) -> String:\n    value\n\nfn main(console: Console):\n    console.print(shout(\"x\"))\n    console.print(greet())\n    console.print(keep(\"ok\"))\n",
+    );
+    assert_eq!(output, vec!["hi x".to_string(), "hello".to_string(), "ok".to_string()]);
+}

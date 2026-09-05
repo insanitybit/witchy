@@ -291,3 +291,16 @@ route is 0/107.
   between the emitted body and the independently derived plan.
 - New in-subset gap observed: `for i in lo..hi` range loops are refused as
   `UnsupportedExpression("range")` (`q_forin`). Not yet fixed.
+
+## Progress (owner, 2026-09-05, third slice)
+
+- **B6 fixed for literals**: a string literal passed to an owned-token
+  parameter (`let`/`own`) was lowered as `CloneRef`/move of a static object,
+  which the release placer refuses (`MissingToken`) and the checker's
+  allocation-class rule forbids. The call site now materializes a fresh
+  reference-counted copy (`clone_string_for_storage`), source-unobservable
+  under value semantics. Returning a literal directly is unchanged: the
+  backend's `CloneRef`/`DropRef` skip pointers below the heap base, so a caller
+  holding a static result is safe, and the existing static-pointer pin stands.
+- Census: 60 of 163 check; `app`, `ownership`, and `strings` now run end to end
+  (the first runnable examples to admit).

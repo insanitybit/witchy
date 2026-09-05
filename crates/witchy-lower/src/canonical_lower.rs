@@ -1908,6 +1908,19 @@ impl FunctionLowerer<'_> {
         self.blocks[self.current.get() as usize].operations.push(operation);
     }
 
+    /// Whether `value` is a direct static-data object (a string literal). A
+    /// static carries no reference-count token: it cannot be cloned, moved into
+    /// a callee, or returned as an owned result. Where the ABI needs a token the
+    /// lowering materializes a fresh reference-counted copy, which is
+    /// source-unobservable under value semantics (RFC-0165 static class).
+    fn is_static_string(&self, value: ValueId) -> bool {
+        self.blocks.iter().any(|block| {
+            block.operations.iter().any(|operation| {
+                matches!(operation, Operation::StaticData { destination, .. } if *destination == value)
+            })
+        })
+    }
+
     fn known_shared_value(&self, value: ValueId) -> bool {
         self.blocks.iter().any(|block| {
             block.parameters.iter().any(|parameter| {
@@ -2211,6 +2224,12 @@ impl FunctionLowerer<'_> {
                     Convention::Own => match contract.ownership {
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         ParameterOwnership::Shared => {
+                        // A string literal has no token to transfer; give the
+                        // callee a fresh reference-counted copy instead.
+                        if self.is_static_string(value) {
+                            let owned = self.clone_string_for_storage(value)?;
+                            return Ok(CallArgument::Move(owned));
+                        }
                         // The authenticated source `own` convention transfers
                         // this entry token to the callee.  Do not also append a
                         // local DropRef at this function's exit; the central
@@ -2227,6 +2246,12 @@ impl FunctionLowerer<'_> {
                     // call and moved at a tail edge.
                     Convention::Let | Convention::Borrow => match contract.ownership {
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
+                        // A string literal cannot be cloned or moved as a token;
+                        // the callee receives a fresh reference-counted copy.
+                        ParameterOwnership::Shared if self.is_static_string(value) => {
+                            let owned = self.clone_string_for_storage(value)?;
+                            Ok(CallArgument::Move(owned))
+                        }
                         ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
                         ParameterOwnership::Shared => {
                             let destination = self.fresh(actual)?;
