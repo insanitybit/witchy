@@ -27,6 +27,10 @@ struct ObjectState {
     /// static data. This is deliberately distinct from an absent/unknown
     /// allocation class, which carries no authority.
     shared_immutable: bool,
+    /// A managed ABI entry parameter denotes a complete logical value even
+    /// though its dynamic extent is read at runtime rather than represented by
+    /// local slot facts.
+    initialized_owned_slots: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -517,6 +521,10 @@ impl<'a> MemoryChecker<'a> {
                 ParameterOwnership::CallBorrow { .. } => (None, false),
                 ParameterOwnership::Value => unreachable!(),
             };
+            let initialized_owned_slots = matches!(
+                contract.ownership,
+                ParameterOwnership::Unique | ParameterOwnership::Shared
+            );
             self.state.objects.insert(
                 parameter.value,
                 ObjectState {
@@ -526,6 +534,7 @@ impl<'a> MemoryChecker<'a> {
                     ownership,
                     allocation_class,
                     shared_immutable,
+                    initialized_owned_slots,
                 },
             );
         }
@@ -569,6 +578,7 @@ impl<'a> MemoryChecker<'a> {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Share(_) => return self.unsupported("Call(Share)"),
                 CallArgument::Move(value) => {
+                    self.require_owned_slots_initialized(*value, "Call(uninitialized owned slot)")?;
                     self.consume_call_move(*value, parameter.ownership)?;
                 }
                 CallArgument::Borrow(borrow) => {
@@ -599,6 +609,7 @@ impl<'a> MemoryChecker<'a> {
                             ownership: Ownership::Shared,
                             allocation_class: None,
                             shared_immutable: false,
+                            initialized_owned_slots: true,
                         },
                     );
                 }
@@ -614,6 +625,7 @@ impl<'a> MemoryChecker<'a> {
                             ownership: Ownership::Unique,
                             allocation_class: Some(*class),
                             shared_immutable: false,
+                            initialized_owned_slots: true,
                         },
                     );
                 }
@@ -629,6 +641,11 @@ impl<'a> MemoryChecker<'a> {
                             ownership: Ownership::Shared,
                             allocation_class: None,
                             shared_immutable: true,
+                            // A checked Shared result is a complete logical
+                            // value at the ABI boundary. This is distinct from
+                            // locally allocated or Fresh storage, which needs
+                            // slot/range evidence before it can escape.
+                            initialized_owned_slots: true,
                         },
                     );
                 }
@@ -644,6 +661,7 @@ impl<'a> MemoryChecker<'a> {
                             ownership: Ownership::Shared,
                             allocation_class: None,
                             shared_immutable: false,
+                            initialized_owned_slots: false,
                         },
                     );
                     self.state.static_data_objects.insert(*destination);
@@ -691,6 +709,7 @@ impl<'a> MemoryChecker<'a> {
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
                 ResultContract::CheckedValue { layout } => {
+                    self.require_owned_slots_initialized(*value, "Return(uninitialized owned slot)")?;
                     let state = self.live_object(*value)?;
                     if state.layout != *layout
                         || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
@@ -702,6 +721,7 @@ impl<'a> MemoryChecker<'a> {
                     }
                 }
                 ResultContract::Fresh { layout, class, extent } => {
+                    self.require_owned_slots_initialized(*value, "Return(uninitialized owned slot)")?;
                     let state = self.live_object(*value)?;
                     if state.layout != *layout
                         || state.ownership != Ownership::Unique
@@ -728,6 +748,7 @@ impl<'a> MemoryChecker<'a> {
                     }
                 }
                 ResultContract::Shared { layout } => {
+                    self.require_owned_slots_initialized(*value, "Return(uninitialized owned slot)")?;
                     let state = self.live_object(*value)?;
                     // Shared owns either an RC token or immutable static data.
                     // The union never grants mutation or reclamation authority.
@@ -982,6 +1003,69 @@ impl<'a> MemoryChecker<'a> {
             allocation_class = stored.allocation_class;
         }
         Ok(RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true, zero_width: self.is_zero(range.length), zero_start: self.is_zero(range.start) })
+    }
+
+    fn require_owned_slots_initialized(
+        &self,
+        object: ValueId,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        if self.state.static_data_objects.contains(&object) {
+            return Ok(());
+        }
+        let state = self.live_object(object)?;
+        let allocation_identity = state.identity;
+        if state.initialized_owned_slots {
+            return Ok(());
+        }
+        let descriptor = self.descriptor(state.layout)?;
+        let Some(element) = descriptor.kind().packed_element_layout() else {
+            return Ok(());
+        };
+        if !self.value_type_for_layout(element)?.is_memory_bearing() {
+            return Ok(());
+        }
+        let Extent::Counted { count, .. } = state.extent else {
+            return self.unsupported(operation);
+        };
+        if self.is_zero(count) {
+            return Ok(());
+        }
+        if self.state.range_states.iter().any(|(identity, range)| {
+            identity.object == allocation_identity
+                && self.same_scalar(identity.length, count)
+                && range.element == element
+                && range.initialized
+                && range.zero_start
+        }) {
+            return Ok(());
+        }
+        let Some(count) = self.state.constants.get(&count).copied() else {
+            return self.unsupported(operation);
+        };
+        let pointee = self.owned_pointer_slot_pointee(element)?;
+        let mut initialized_slots = BTreeSet::new();
+        for ((stored_object, slot), stored) in &self.state.stored_objects {
+            if *stored_object != allocation_identity {
+                continue;
+            }
+            let SlotIdentity::Constant(index) = slot else {
+                return self.unsupported(operation);
+            };
+            if *index >= count
+                || stored.layout != pointee
+                || stored.ownership == Ownership::Consumed
+                || !Self::is_managed_storage(stored)
+            {
+                return self.unsupported(operation);
+            }
+            initialized_slots.insert(*index);
+        }
+        if u64::try_from(initialized_slots.len()).ok() == Some(count) {
+            Ok(())
+        } else {
+            self.unsupported(operation)
+        }
     }
 
     fn require_destination_range_empty(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
@@ -1479,6 +1563,7 @@ impl<'a> MemoryChecker<'a> {
                 ownership: Ownership::Unique,
                 allocation_class: Some(class),
                 shared_immutable: false,
+                initialized_owned_slots: false,
             },
         );
         if let Some(element) = pointer_element {
@@ -1520,6 +1605,7 @@ impl<'a> MemoryChecker<'a> {
                 ownership: Ownership::Shared,
                 allocation_class: None,
                 shared_immutable: false,
+                initialized_owned_slots: false,
             },
         );
         self.state.static_data_objects.insert(destination);
@@ -1654,6 +1740,7 @@ impl<'a> MemoryChecker<'a> {
                 ownership: Ownership::Shared,
                 allocation_class: range.1.allocation_class,
                 shared_immutable: false,
+                initialized_owned_slots: false,
             };
             self.state.objects.insert(destination, stored);
             return Ok(());
@@ -2228,6 +2315,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
+        self.require_owned_slots_initialized(object, "Release(uninitialized owned slot)")?;
         self.state.objects
             .get_mut(&object)
             .expect("live object exists")
@@ -2243,6 +2331,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
+        self.require_owned_slots_initialized(object, "DropRef(uninitialized owned slot)")?;
         let descriptor = self.layouts.get(state.layout).ok_or(
             InitialCheckError::InvalidOwnership {
                 function: self.function.id,
@@ -2273,6 +2362,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
+        self.require_owned_slots_initialized(object, "Reclaim(uninitialized owned slot)")?;
         if self.state.range_states.iter().any(|(range, state)| {
             range.object == object && state.initialized && !self.is_zero(range.length)
         }) {
@@ -3736,6 +3826,7 @@ mod tests {
                     ownership: Ownership::Unique,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false,
+                    initialized_owned_slots: false,
                 },
             );
         }

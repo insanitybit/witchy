@@ -90,6 +90,20 @@ mod tests {
     }
 
     #[test]
+    fn shared_list_string_identity_reaches_final_safewir_authority() {
+        let source = "fn identity(xs: List(String)) -> List(String):\n    xs\n\nfn main() -> Int:\n    identity([\"x\"]).length()\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked source");
+
+        validate_checked_module(&checked)
+            .expect("shared List(String) identity return must be admitted");
+    }
+
+    #[test]
     fn checked_source_witness_cannot_substitute_between_modules() {
         let first = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), b"fn main() -> Int:\n    40 + 2\n".to_vec())],
