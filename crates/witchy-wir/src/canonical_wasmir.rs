@@ -29,7 +29,7 @@ use crate::canonical_safewir::{
     ComparisonOperator, Extent, Function, FunctionId, FunctionSignature, HeaderField,
     HostCallArgument, HostBufferExtent, HostMutation, HostParameterRole, HostResultRole,
     ImportContract, ImportContractIdentity, ImportId, LoadTransfer, MemoryEffect, ModuleStage,
-    Operation, OptimizedValid, ParameterOwnership, Place, Projection, StoreTransfer, Terminator,
+    Operation, InitialValid, ParameterOwnership, Place, Projection, StoreTransfer, Terminator,
     ValidatedSafeWir, ValueId, ValueType,
 };
 use crate::layout::{
@@ -286,12 +286,12 @@ impl TargetWasmWitness {
 /// on one exact SafeWIR/WasmIR pair. Unchecked `WasmIr` cannot cross the
 /// encoding boundary.
 struct CheckedWasmIr {
-    source: CanonicalModule<OptimizedValid>,
+    source: CanonicalModule<InitialValid>,
     target: WasmIr,
     receipt: CorrespondenceReceipt,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
-    history_digest: crate::canonical_safewir::ModuleDigest,
+    authority_digest: crate::canonical_safewir::ModuleDigest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1213,7 +1213,7 @@ fn expected_source_items<S: ModuleStage>(module: &CanonicalModule<S>) -> BTreeSe
 /// This matcher does not call the lowering functions above: it validates the
 /// source claim, position, semantic payload, and ownership rule directly.
 fn check_correspondence(
-    source: &CanonicalModule<OptimizedValid>,
+    source: &CanonicalModule<InitialValid>,
     target: &WasmIr,
 ) -> Result<CorrespondenceReceipt, CorrespondenceError> {
     if source.revision() != target.revision || source.checked_source() != target.checked_source {
@@ -1334,7 +1334,7 @@ pub struct AdmittedCanonicalArtifact {
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
-    history_digest: crate::canonical_safewir::ModuleDigest,
+    authority_digest: crate::canonical_safewir::ModuleDigest,
     correspondence_digest: [u8; 32],
     wasm_digest: [u8; 32],
 }
@@ -3047,7 +3047,7 @@ fn authorize_wasm_ir_inner(
     let source = validated.module().clone();
     let checked_source = validated.checked_source();
     let final_module_digest = validated.final_module_digest();
-    let history_digest = validated.history_digest();
+    let authority_digest = validated.authority_digest();
     let target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
     let receipt = check_correspondence(&source, &target).map_err(EncodeError::Correspondence)?;
     if receipt.mappings.len() != expected_source_items(&source).len() {
@@ -3064,7 +3064,7 @@ fn authorize_wasm_ir_inner(
         receipt,
         checked_source,
         final_module_digest,
-        history_digest,
+        authority_digest,
     })
 }
 
@@ -4770,7 +4770,7 @@ fn expected_function_plan(
 }
 
 fn expected_metadata_prefix(
-    source: &CanonicalModule<OptimizedValid>,
+    source: &CanonicalModule<InitialValid>,
     target: &WasmIr,
 ) -> Result<Vec<u8>, CanonicalAdmissionError> {
     let mut types = TypeSection::new();
@@ -4842,7 +4842,7 @@ fn expected_metadata_prefix(
 }
 
 fn decode_and_match_plan(
-    source: &CanonicalModule<OptimizedValid>,
+    source: &CanonicalModule<InitialValid>,
     target: &WasmIr,
     bytes: &[u8],
 ) -> Result<TargetWasmWitness, CanonicalAdmissionError> {
@@ -5101,13 +5101,13 @@ fn correspondence_digest(receipt: &CorrespondenceReceipt) -> [u8; 32] {
 }
 
 fn admit_parts(
-    _source: CanonicalModule<OptimizedValid>,
+    _source: CanonicalModule<InitialValid>,
     _target: WasmIr,
     receipt: CorrespondenceReceipt,
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
-    history_digest: crate::canonical_safewir::ModuleDigest,
+    authority_digest: crate::canonical_safewir::ModuleDigest,
     target_witness: TargetWasmWitness,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     if !target_witness.matches_bytes(&bytes) {
@@ -5118,7 +5118,7 @@ fn admit_parts(
         bytes,
         checked_source,
         final_module_digest,
-        history_digest,
+        authority_digest,
         correspondence_digest: correspondence_digest(&receipt),
         wasm_digest,
     })
@@ -5143,10 +5143,10 @@ pub fn admit_canonical(
         receipt,
         checked_source,
         final_module_digest,
-        history_digest,
+        authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest, target_witness)
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness)
 }
 
 #[cfg(test)]
@@ -5172,7 +5172,7 @@ pub fn admit_canonical(
         receipt,
         checked_source,
         final_module_digest,
-        history_digest,
+        authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
     admit_parts(
@@ -5182,7 +5182,7 @@ pub fn admit_canonical(
         bytes,
         checked_source,
         final_module_digest,
-        history_digest,
+        authority_digest,
         target_witness,
     )
 }
@@ -5199,10 +5199,10 @@ fn admit_canonical_with_bytes_for_test(
         receipt,
         checked_source,
         final_module_digest,
-        history_digest,
+        authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, history_digest, target_witness)
+    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness)
 }
 #[cfg(test)]
 mod tests {
@@ -5213,7 +5213,7 @@ mod tests {
         GuardKind,
         LoweredCandidate, LoweredModuleParts, OverflowBehavior, ParameterContract,
         ParameterOwnership, Revision, ResultContract, check_initial_with_test_witness,
-        optimize_unreachable_blocks, validate_final,
+        validate_final_for_test,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
@@ -5226,7 +5226,7 @@ mod tests {
             contract: CallableContract {
                 parameters: Vec::new(),
                 results: vec![ResultContract::Value(crate::canonical_safewir::ValueType::Int)],
-                parameter_effects: [(0, vec![MemoryEffect::Release])].into_iter().collect(),
+                parameter_effects: BTreeMap::new(),
             },
         };
         let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
@@ -5251,10 +5251,7 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         let checked = check_initial_with_test_witness(candidate).expect("scalar fixture is initially valid");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("scalar fixture optimizes");
-        validate_final(&initial_snapshot, witness, optimized).expect("scalar fixture is final-valid")
+        validate_final_for_test(checked).expect("scalar fixture is final-valid")
     }
 
     fn checked_int_subtraction() -> ValidatedSafeWir {
@@ -5310,11 +5307,7 @@ mod tests {
         });
         let checked =
             check_initial_with_test_witness(candidate).expect("subtraction fixture is valid");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("subtraction fixture optimizes");
-        validate_final(&initial_snapshot, witness, optimized)
-            .expect("subtraction fixture is final-valid")
+        validate_final_for_test(checked).expect("subtraction fixture is final-valid")
     }
 
     #[test]
@@ -5342,7 +5335,6 @@ mod tests {
     #[test]
     fn a3_zero_pass_candidate_admits_with_all_witnesses() {
         let validated = checked_scalar();
-        assert!(validated.optimization_history().is_zero_pass());
         let artifact = admit_canonical(validated).expect("zero-pass A3 witness chain admits");
         wasmparser::validate(artifact.wasm()).expect("admitted bytes remain valid Wasm");
     }
@@ -5389,10 +5381,7 @@ mod tests {
 
     fn finalize(candidate: CanonicalModule<LoweredCandidate>) -> ValidatedSafeWir {
         let checked = check_initial_with_test_witness(candidate).expect("fixture is initially valid");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("fixture optimizes");
-        validate_final(&initial_snapshot, witness, optimized).expect("fixture is final-valid")
+        validate_final_for_test(checked).expect("fixture is final-valid")
     }
 
     fn checked_size_add(
@@ -5980,10 +5969,7 @@ mod tests {
             proper_tail_sites: if tail { vec![crate::canonical_safewir::ProperTailSite { id: tail_site, function: FunctionId::new(1) }] } else { Vec::new() },
         });
         let checked = check_initial_with_test_witness(candidate).expect("direct scalar call is initially valid");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("direct scalar call optimizes");
-        validate_final(&initial_snapshot, witness, optimized).expect("direct scalar call is final-valid")
+        validate_final_for_test(checked).expect("direct scalar call is final-valid")
     }
 
     fn checked_parameterized_scalar_call() -> ValidatedSafeWir {
@@ -6067,12 +6053,7 @@ mod tests {
         });
         let checked = check_initial_with_test_witness(candidate)
             .expect("parameterized scalar call is initially valid");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial)
-            .expect("parameterized scalar call optimizes");
-        validate_final(&initial_snapshot, witness, optimized)
-            .expect("parameterized scalar call is final-valid")
+        validate_final_for_test(checked).expect("parameterized scalar call is final-valid")
     }
 
     fn checked_object_call_move() -> ValidatedSafeWir {
@@ -6289,10 +6270,7 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         let checked = check_initial_with_test_witness(candidate).unwrap();
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).unwrap();
-        validate_final(&initial_snapshot, witness, optimized).unwrap()
+        validate_final_for_test(checked).unwrap()
     }
 
     #[test]
@@ -6333,10 +6311,7 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         let checked = check_initial_with_test_witness(candidate).unwrap();
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).unwrap();
-        validate_final(&initial_snapshot, witness, optimized).unwrap()
+        validate_final_for_test(checked).unwrap()
     }
 
     fn checked_size_operation(operation: Operation, input: ValueId, result: ValueId) -> ValidatedSafeWir {
@@ -6428,10 +6403,7 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         let checked = check_initial_with_test_witness(candidate).unwrap();
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).unwrap();
-        validate_final(&initial_snapshot, witness, optimized).unwrap()
+        validate_final_for_test(checked).unwrap()
     }
 
     fn checked_packed_list_fixture(oob: bool) -> ValidatedSafeWir {

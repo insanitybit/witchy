@@ -11,7 +11,7 @@ use std::fmt;
 use crate::canonical_safewir::{
     AllocationClass, ArithmeticOperator, BasicBlock, BlockId, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, HeaderField, LoadTransfer, Operation,
-    OptimizedValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
+    InitialValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
     ValidatedSafeWir, ValueId,
 };
 use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind};
@@ -143,7 +143,7 @@ enum RuntimeStorage {
 }
 
 struct Engine<'a> {
-    module: &'a CanonicalModule<OptimizedValid>,
+    module: &'a CanonicalModule<InitialValid>,
     config: InterpreterConfig,
     steps: u64,
     next_object: u64,
@@ -157,7 +157,7 @@ enum FunctionExit {
 }
 
 impl<'a> Engine<'a> {
-    fn new(module: &'a CanonicalModule<OptimizedValid>, config: InterpreterConfig) -> Self {
+    fn new(module: &'a CanonicalModule<InitialValid>, config: InterpreterConfig) -> Self {
         Self {
             module,
             config,
@@ -1201,10 +1201,10 @@ fn static_scalar(
 mod tests {
     use super::*;
     use crate::canonical_safewir::{
-        check_initial_with_test_witness, optimize_unreachable_blocks, validate_final, BasicBlock,
+        check_initial_with_test_witness, validate_final_for_test, BasicBlock,
         AccessMode, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
         FunctionSignatureId, LoweredModuleParts, Operation, ParameterContract, ParameterOwnership,
-        ProperTailSite, ResultContract, Revision, StaticDataId, TailSiteId, ValueType,
+        ProperTailSite, ResultContract, Revision, TailSiteId, ValueType,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, RcHeader, ScalarKind};
 
@@ -1267,10 +1267,7 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         let checked = check_initial_with_test_witness(candidate).expect("initial validation");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("zero-risk optimization");
-        validate_final(&initial_snapshot, witness, optimized).expect("final validation")
+        validate_final_for_test(checked).expect("final validation")
     }
 
     fn empty_layouts() -> LayoutBundle {
@@ -1955,11 +1952,7 @@ mod tests {
             proper_tail_sites: Vec::new(),
         });
         let checked = check_initial_with_test_witness(candidate).expect("initial validation");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("zero-risk optimization");
-        let module =
-            validate_final(&initial_snapshot, witness, optimized).expect("final validation");
+        let module = validate_final_for_test(checked).expect("final validation");
 
         assert_eq!(
             interpret(&module, FUNCTION, Vec::new()),
@@ -2070,11 +2063,7 @@ mod tests {
             }],
         });
         let checked = check_initial_with_test_witness(candidate).expect("initial validation");
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).expect("zero-risk optimization");
-        let module =
-            validate_final(&initial_snapshot, witness, optimized).expect("final validation");
+        let module = validate_final_for_test(checked).expect("final validation");
 
         assert_eq!(
             interpret_with_config(

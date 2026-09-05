@@ -3,10 +3,10 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-use super::history::{HistoryError, ModuleDigest, module_digest, tail_digest};
+use super::identity::{ModuleDigest, module_digest, tail_digest};
 use super::{
     CanonicalModule, CheckedSourceIdentity, InitialCheckError, InitialValid, LoweredCandidate,
-    OptimizationHistoryWitness, OptimizationOutcome, OptimizedValid, Revision,
+    ModuleStage, Revision,
 };
 
 /// Evidence minted by the initial checker for one exact lowered SafeWIR
@@ -22,7 +22,7 @@ pub struct CheckedLoweringWitness {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CandidateId([u8; 32]);
+pub(crate) struct ExactModuleWitness([u8; 32]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CheckedSourceWitness {
@@ -30,12 +30,13 @@ struct CheckedSourceWitness {
     initial_module_digest: ModuleDigest,
     proper_tail_manifest_digest: ModuleDigest,
     callable_abi_manifest_digest: [u8; 32],
+    closure_witness_digest: [u8; 32],
 }
 
 /// Evidence returned only by the independent final SafeWIR checker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FinalSafeWirWitness {
-    candidate: CandidateId,
+    exact_module: ExactModuleWitness,
     final_module_digest: ModuleDigest,
     final_revision: Revision,
 }
@@ -56,32 +57,32 @@ impl CheckedInitialSafeWir {
         &self.witness
     }
 
-    pub fn into_parts(self) -> (CanonicalModule<InitialValid>, CheckedLoweringWitness) {
+    #[cfg(test)]
+    fn into_parts_for_test(self) -> (CanonicalModule<InitialValid>, CheckedLoweringWitness) {
         (self.module, self.witness)
     }
+
 }
 
 /// Final canonical SafeWIR authority. Its fields are private; only the final
 /// checker can mint it, and only the private backend may inspect its module.
 pub struct ValidatedSafeWir {
-    module: CanonicalModule<OptimizedValid>,
+    module: CanonicalModule<InitialValid>,
     checked_lowering: CheckedLoweringWitness,
-    optimization_history: OptimizationHistoryWitness,
-    candidate: CandidateId,
+    exact_module: ExactModuleWitness,
     checked_source_witness: CheckedSourceWitness,
     final_safety_witness: FinalSafeWirWitness,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionWitnessMismatch {
-    Candidate,
+    ExactModule,
     CheckedSource,
     FinalSafety,
-    ZeroPassRevision,
 }
 
 impl ValidatedSafeWir {
-    pub(crate) fn module(&self) -> &CanonicalModule<OptimizedValid> {
+    pub(crate) fn module(&self) -> &CanonicalModule<InitialValid> {
         &self.module
     }
 
@@ -93,10 +94,6 @@ impl ValidatedSafeWir {
         self.module.revision()
     }
 
-    pub fn optimization_history(&self) -> &OptimizationHistoryWitness {
-        &self.optimization_history
-    }
-
     pub fn checked_lowering(&self) -> &CheckedLoweringWitness {
         &self.checked_lowering
     }
@@ -105,16 +102,16 @@ impl ValidatedSafeWir {
         module_digest(&self.module)
     }
 
-    pub(crate) fn history_digest(&self) -> ModuleDigest {
-        self.optimization_history.identity_digest()
+    pub(crate) fn authority_digest(&self) -> ModuleDigest {
+        witness_digest(b"witchy-safewir-zero-pass-authority-v1", &[&self.exact_module.0])
     }
 
     pub(crate) fn validate_pre_admission(
         &self,
     ) -> Result<(), AdmissionWitnessMismatch> {
-        let expected_candidate = CandidateId::derive(&self.module, &self.optimization_history);
-        if self.candidate != expected_candidate {
-            return Err(AdmissionWitnessMismatch::Candidate);
+        let expected_exact_module = ExactModuleWitness::derive(&self.module, &self.checked_lowering);
+        if self.exact_module != expected_exact_module {
+            return Err(AdmissionWitnessMismatch::ExactModule);
         }
         if self.checked_source_witness != self.checked_lowering.checked_source_witness
             || self.checked_source_witness.checked_source != self.module.checked_source()
@@ -126,16 +123,11 @@ impl ValidatedSafeWir {
         {
             return Err(AdmissionWitnessMismatch::CheckedSource);
         }
-        if self.final_safety_witness.candidate != self.candidate
+        if self.final_safety_witness.exact_module != self.exact_module
             || self.final_safety_witness.final_module_digest != module_digest(&self.module)
             || self.final_safety_witness.final_revision != self.module.revision()
         {
             return Err(AdmissionWitnessMismatch::FinalSafety);
-        }
-        if self.optimization_history.is_zero_pass()
-            && self.checked_lowering.revision != self.module.revision()
-        {
-            return Err(AdmissionWitnessMismatch::ZeroPassRevision);
         }
         Ok(())
     }
@@ -150,6 +142,8 @@ impl ValidatedSafeWir {
                 != self.checked_lowering.proper_tail_manifest_digest.bytes()
             || witness.callable_abi_manifest_digest()
                 != self.checked_source_witness.callable_abi_manifest_digest
+            || witness.closure_witness_digest()
+                != self.checked_source_witness.closure_witness_digest
         {
             return Err(AdmissionWitnessMismatch::CheckedSource);
         }
@@ -157,18 +151,21 @@ impl ValidatedSafeWir {
     }
 }
 
-impl CandidateId {
+impl ExactModuleWitness {
     fn derive(
-        module: &CanonicalModule<OptimizedValid>,
-        history: &OptimizationHistoryWitness,
+        module: &CanonicalModule<InitialValid>,
+        checked_lowering: &CheckedLoweringWitness,
     ) -> Self {
         Self(
             witness_digest(
-                b"witchy-safewir-candidate-v1",
+                b"witchy-safewir-zero-pass-exact-module-v1",
                 &[
                     &module.checked_source().digest(),
                     &module_digest(module).bytes(),
-                    &history.identity_digest().bytes(),
+                    &checked_lowering.module_digest.bytes(),
+                    &checked_lowering.proper_tail_manifest_digest.bytes(),
+                    &checked_lowering.checked_source_witness.callable_abi_manifest_digest,
+                    &checked_lowering.checked_source_witness.closure_witness_digest,
                 ],
             )
             .bytes(),
@@ -192,9 +189,9 @@ fn witness_digest(domain: &[u8], parts: &[&[u8]]) -> ModuleDigest {
 pub enum FinalValidationError {
     InitialModuleDoesNotMatchWitness,
     InitialTailManifestDoesNotMatchWitness,
-    OptimizedSourceDoesNotMatchInitial,
+    SourceWitnessDoesNotMatchInitial,
     Safety(InitialCheckError),
-    History(HistoryError),
+    CandidateAbi(CandidateAbiBindingError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +270,7 @@ pub fn check_initial_with_witness(
         initial_module_digest: module_digest(&module),
         proper_tail_manifest_digest: expected,
         callable_abi_manifest_digest: source.callable_abi_manifest().digest(),
+        closure_witness_digest: source.source_witness().closure_witness_digest(),
     };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
@@ -284,8 +282,8 @@ pub fn check_initial_with_witness(
     Ok(CheckedInitialSafeWir { module, witness })
 }
 
-fn validate_candidate_abi_bindings(
-    candidate: &CanonicalModule<LoweredCandidate>,
+fn validate_candidate_abi_bindings<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<(), CandidateAbiBindingError> {
     use witchy_types::canonical_abi::CanonicalTargetPolicy;
@@ -345,10 +343,10 @@ fn validate_candidate_abi_bindings(
     Ok(())
 }
 
-fn candidate_signature_matches_source(
+fn candidate_signature_matches_source<S: ModuleStage>(
     actual: &super::FunctionSignature,
     source: &witchy_syntax::ast::Type,
-    candidate: &CanonicalModule<LoweredCandidate>,
+    candidate: &CanonicalModule<S>,
 ) -> bool {
     let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
@@ -469,48 +467,76 @@ fn layout_matches_source(
     }
 }
 
-/// Recheck the exact final graph and verify both prior authority chains before
-/// minting the only typestate accepted by the canonical backend.
+/// Consume the immutable initially-checked graph and recheck that exact graph
+/// independently before minting the only typestate accepted by the backend.
+/// There is intentionally no transform or history input in milestone one.
 pub fn validate_final(
-    initial: &CanonicalModule<InitialValid>,
-    checked_lowering: CheckedLoweringWitness,
-    optimized: OptimizationOutcome,
+    checked: CheckedInitialSafeWir,
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<ValidatedSafeWir, FinalValidationError> {
-    if checked_lowering.checked_source != initial.checked_source()
-        || checked_lowering.revision != initial.revision()
-        || checked_lowering.module_digest != module_digest(initial)
+    validate_final_inner(checked.module, checked.witness, Some(source))
+}
+
+fn validate_final_inner(
+    module: CanonicalModule<InitialValid>,
+    checked_lowering: CheckedLoweringWitness,
+    source: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
+) -> Result<ValidatedSafeWir, FinalValidationError> {
+    if checked_lowering.checked_source != module.checked_source()
+        || checked_lowering.revision != module.revision()
+        || checked_lowering.module_digest != module_digest(&module)
     {
         return Err(FinalValidationError::InitialModuleDoesNotMatchWitness);
     }
-    if checked_lowering.proper_tail_manifest_digest != tail_digest(initial) {
+    if checked_lowering.proper_tail_manifest_digest != tail_digest(&module) {
         return Err(FinalValidationError::InitialTailManifestDoesNotMatchWitness);
     }
-
-    let (module, optimization_history) = optimized.into_parts();
-    if module.checked_source() != initial.checked_source() {
-        return Err(FinalValidationError::OptimizedSourceDoesNotMatchInitial);
+    if let Some(source) = source {
+        if module.checked_source().digest() != source.source_witness().source_bundle_digest()
+            || checked_lowering.proper_tail_manifest_digest.bytes()
+                != source.source_witness().proper_tail_manifest_digest()
+            || checked_lowering.checked_source_witness.callable_abi_manifest_digest
+                != source.callable_abi_manifest().digest()
+            || checked_lowering.checked_source_witness.closure_witness_digest
+                != source.source_witness().closure_witness_digest()
+        {
+            return Err(FinalValidationError::SourceWitnessDoesNotMatchInitial);
+        }
+        validate_candidate_abi_bindings(&module, source)
+            .map_err(FinalValidationError::CandidateAbi)?;
     }
-    let candidate = CandidateId::derive(&module, &optimization_history);
     super::check::recheck_final(&module).map_err(FinalValidationError::Safety)?;
+    let exact_module = ExactModuleWitness::derive(&module, &checked_lowering);
     let final_safety_witness = FinalSafeWirWitness {
-        candidate,
+        exact_module,
         final_module_digest: module_digest(&module),
         final_revision: module.revision(),
     };
-    optimization_history
-        .validate(initial, &module)
-        .map_err(FinalValidationError::History)?;
 
     let checked_source_witness = checked_lowering.checked_source_witness.clone();
 
     Ok(ValidatedSafeWir {
         module,
         checked_lowering,
-        optimization_history,
-        candidate,
+        exact_module,
         checked_source_witness,
         final_safety_witness,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn validate_final_for_test(
+    checked: CheckedInitialSafeWir,
+) -> Result<ValidatedSafeWir, FinalValidationError> {
+    validate_final_inner(checked.module, checked.witness, None)
+}
+
+#[cfg(test)]
+fn validate_final_parts_for_test(
+    module: CanonicalModule<InitialValid>,
+    witness: CheckedLoweringWitness,
+) -> Result<ValidatedSafeWir, FinalValidationError> {
+    validate_final_inner(module, witness, None)
 }
 
 #[cfg(test)]
@@ -541,6 +567,7 @@ fn check_initial_with_expected_digest(
         initial_module_digest: module_digest(&module),
         proper_tail_manifest_digest: expected,
         callable_abi_manifest_digest: [0; 32],
+        closure_witness_digest: [0; 32],
     };
     let witness = CheckedLoweringWitness {
         checked_source: module.checked_source(),
@@ -560,7 +587,7 @@ mod tests {
     use crate::canonical_safewir::{
         BasicBlock, BlockId, CallableContract, Function, FunctionId, FunctionSignature,
         FunctionSignatureId, LoweredModuleParts, Operation, ResultContract, Terminator, ValueId,
-        ValueType, optimize_unreachable_blocks,
+        ValueType,
     };
     use crate::layout::{LayoutBundle, LayoutInterner};
 
@@ -633,7 +660,7 @@ mod tests {
     #[test]
     fn source_own_scalar_rejects_a_unique_candidate_convention() {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".to_string(), b"fn main(own value: Int) -> Int:\n    value\n".to_vec())],
+            vec![("main".to_string(), b"fn helper(own value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    helper(1)\n".to_vec())],
             "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).expect("checked source");
         let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
@@ -758,30 +785,52 @@ mod tests {
     }
 
     #[test]
-    fn final_authority_requires_the_exact_initial_witness_and_history() {
+    fn final_authority_requires_the_exact_initial_checked_module() {
         let checked = check_initial_with_test_witness(candidate()).unwrap();
         let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).unwrap();
-        let final_module = validate_final(&initial_snapshot, witness, optimized).unwrap();
+        let final_module = validate_final_for_test(checked).unwrap();
         assert_eq!(final_module.checked_source(), initial_snapshot.checked_source());
-        assert!(final_module.optimization_history().is_zero_pass());
     }
 
     #[test]
     fn witness_from_another_checked_module_is_rejected() {
         let checked = check_initial_with_test_witness(candidate()).unwrap();
-        let initial_snapshot = checked.module().clone();
-        let (initial, _) = checked.into_parts();
-        let optimized = optimize_unreachable_blocks(initial).unwrap();
+        let (initial, _) = checked.into_parts_for_test();
 
         let mut other = candidate();
         other.functions[0].blocks[0].operations[0] =
             Operation::ConstInt { destination: ValueId::new(0), value: 4 };
-        let (_, wrong_witness) = check_initial_with_test_witness(other).unwrap().into_parts();
+        let (_, wrong_witness) = check_initial_with_test_witness(other).unwrap().into_parts_for_test();
         assert!(matches!(
-            validate_final(&initial_snapshot, wrong_witness, optimized),
+            validate_final_parts_for_test(initial, wrong_witness),
             Err(FinalValidationError::InitialModuleDoesNotMatchWitness)
+        ));
+    }
+
+    #[test]
+    fn final_authority_refuses_a_candidate_mutated_after_initial_validation() {
+        let checked = check_initial_with_test_witness(candidate()).unwrap();
+        let (mut module, witness) = checked.into_parts_for_test();
+        module.functions[0].blocks[0].operations[0] =
+            Operation::ConstInt { destination: ValueId::new(0), value: 9 };
+
+        assert!(matches!(
+            validate_final_parts_for_test(module, witness),
+            Err(FinalValidationError::InitialModuleDoesNotMatchWitness)
+        ));
+    }
+
+    #[test]
+    fn final_authority_refuses_a_mismatched_closure_witness() {
+        let checked_source = source();
+        let source = checked_source.canonical_source().unwrap();
+        let mut checked = check_initial_with_witness(candidate_bound_to_source(&checked_source), source)
+            .expect("initial authority");
+        checked.witness.checked_source_witness.closure_witness_digest = [0xa5; 32];
+
+        assert!(matches!(
+            validate_final(checked, source),
+            Err(FinalValidationError::SourceWitnessDoesNotMatchInitial)
         ));
     }
 
@@ -795,17 +844,11 @@ mod tests {
     }
 
     #[test]
-    fn tail_manifest_digest_is_bound_into_zero_pass_history() {
+    fn tail_manifest_digest_is_bound_into_zero_pass_authority() {
         let candidate = candidate();
         let expected = tail_digest(&candidate).bytes();
         let checked = check_initial_with_expected_digest(candidate, expected).unwrap();
-        let initial_snapshot = checked.module().clone();
-        let (initial, witness) = checked.into_parts();
-        let optimized = super::super::optimize_unreachable_blocks(initial).unwrap();
-        let final_module = validate_final(&initial_snapshot, witness, optimized).unwrap();
-        assert_eq!(
-            final_module.optimization_history().proper_tail_manifest_digest().bytes(),
-            expected
-        );
+        let final_module = validate_final_for_test(checked).unwrap();
+        assert_eq!(final_module.checked_lowering().proper_tail_manifest_digest.bytes(), expected);
     }
 }

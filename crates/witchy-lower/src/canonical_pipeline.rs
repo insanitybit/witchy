@@ -8,7 +8,7 @@ use std::fmt;
 
 use witchy_types::pipeline::CheckedModule;
 use witchy_wir::canonical_safewir::{
-    FinalValidationError, InitialWitnessError, OptimizationError, OptimizationSession,
+    FinalValidationError, InitialWitnessError,
     ValidatedSafeWir, check_initial_with_witness, validate_final,
 };
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
@@ -22,7 +22,6 @@ pub(crate) enum CanonicalPipelineError {
     Layout(CanonicalLayoutError),
     Lowering(CanonicalLoweringError),
     InitialValidation(InitialWitnessError),
-    Optimization(OptimizationError),
     FinalValidation(FinalValidationError),
     Admission(CanonicalAdmissionError),
 }
@@ -56,15 +55,9 @@ pub(crate) fn validate_checked_module(
         .map_err(CanonicalPipelineError::Lowering)?;
     let checked = check_initial_with_witness(candidate, source)
         .map_err(CanonicalPipelineError::InitialValidation)?;
-    let initial_snapshot = checked.module().clone();
-    let (initial, lowering_witness) = checked.into_parts();
-    // RFC-0165 milestone 1 deliberately enables no optional optimization.
-    // Keep the zero-pass typestate transition until the simplified v1
-    // authority replaces OptimizationSession entirely.
-    let optimized = OptimizationSession::new(initial)
-        .finalize()
-        .map_err(CanonicalPipelineError::Optimization)?;
-    validate_final(&initial_snapshot, lowering_witness, optimized)
+    // RFC-0165 milestone one has no optional transformations. The final
+    // validator consumes and independently rechecks this exact sealed graph.
+    validate_final(checked, source)
         .map_err(CanonicalPipelineError::FinalValidation)
 }
 
@@ -86,7 +79,7 @@ mod tests {
         .expect("validate canonical scalar pipeline");
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
-        let _history = validated.optimization_history();
+        assert_eq!(validated.revision().get(), 0);
     }
 
     #[test]

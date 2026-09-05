@@ -16,32 +16,17 @@ use std::marker::PhantomData;
 use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
-pub use check::{InitialCheckError, check_initial, check_transform};
-mod assurance;
-pub use assurance::{
-    AssuranceError, OptimizationPassClass, PassAssurance, RefinementMechanism, SafetyRecheck,
-    production_registry,
-};
+pub use check::{InitialCheckError, check_initial};
 mod authority;
 pub use authority::{
     CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, InitialWitnessError, ValidatedSafeWir,
     check_initial_with_witness, validate_final,
 };
 #[cfg(test)]
-pub(crate) use authority::check_initial_with_test_witness;
-mod history;
-mod optimization;
-mod refinement;
-
-pub use history::{
-    DischargedObligation, HistoryError, ModuleDigest, OptimizationHistoryBody,
-    OptimizationHistoryWitness, OptimizationPassId, RefinementReceipt,
-};
-pub use optimization::{
-    OptimizationError, OptimizationOutcome, OptimizationSession, optimize_constant_folding,
-    optimize_unreachable_blocks,
-};
-pub use refinement::RefinementError;
+pub(crate) use authority::{check_initial_with_test_witness, validate_final_for_test};
+#[path = "canonical_safewir/history.rs"]
+mod identity;
+pub(crate) use identity::ModuleDigest;
 
 macro_rules! id_type {
     ($name:ident, $inner:ty) => {
@@ -829,19 +814,9 @@ impl stage::Sealed for LoweredCandidate {}
 impl ModuleStage for LoweredCandidate {}
 
 #[derive(Debug, Clone, Copy)]
-pub enum TransformedCandidate {}
-impl stage::Sealed for TransformedCandidate {}
-impl ModuleStage for TransformedCandidate {}
-
-#[derive(Debug, Clone, Copy)]
 pub enum InitialValid {}
 impl stage::Sealed for InitialValid {}
 impl ModuleStage for InitialValid {}
-
-#[derive(Debug, Clone, Copy)]
-pub enum OptimizedValid {}
-impl stage::Sealed for OptimizedValid {}
-impl ModuleStage for OptimizedValid {}
 
 /// One representation with typestate authority. Its fields are private so a
 /// validated module cannot be assembled or retagged outside this module.
@@ -913,46 +888,6 @@ impl CanonicalModule<LoweredCandidate> {
     }
 
     fn into_initial_valid(self) -> CanonicalModule<InitialValid> {
-        CanonicalModule {
-            revision: self.revision,
-            checked_source: self.checked_source,
-            layouts: self.layouts,
-            signatures: self.signatures,
-            imports: self.imports,
-            functions: self.functions,
-            proper_tail_sites: self.proper_tail_sites,
-            static_data_segments: self.static_data_segments,
-            abi_catalog: self.abi_catalog,
-            abi_bindings: self.abi_bindings,
-            stage: PhantomData,
-        }
-    }
-}
-
-impl CanonicalModule<InitialValid> {
-    pub(crate) fn into_transformed_candidate(
-        self,
-        revision: Revision,
-        functions: Vec<Function>,
-    ) -> CanonicalModule<TransformedCandidate> {
-        CanonicalModule {
-            revision,
-            checked_source: self.checked_source,
-            layouts: self.layouts,
-            signatures: self.signatures,
-            imports: self.imports,
-            functions,
-            proper_tail_sites: self.proper_tail_sites,
-            static_data_segments: self.static_data_segments,
-            abi_catalog: self.abi_catalog,
-            abi_bindings: self.abi_bindings,
-            stage: PhantomData,
-        }
-    }
-}
-
-impl CanonicalModule<TransformedCandidate> {
-    fn into_optimized_valid(self) -> CanonicalModule<OptimizedValid> {
         CanonicalModule {
             revision: self.revision,
             checked_source: self.checked_source,

@@ -276,15 +276,11 @@ fn a3_witness_and_digest_types_have_no_public_minting_surface() {
         "CheckedLoweringWitness",
         "CheckedInitialSafeWir",
         "ValidatedSafeWir",
-        "OptimizationHistoryBody",
-        "OptimizationHistoryWitness",
-        "RefinementReceipt",
     ];
     let protected_private_types = [
         "CheckedSourceWitness",
         "FinalSafeWirWitness",
-        "CandidateId",
-        "AuthorityWirWitness",
+        "ExactModuleWitness",
     ];
 
     for (path, source) in rust_sources(&source_root) {

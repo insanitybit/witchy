@@ -6,7 +6,7 @@ use witchy_wir::canonical_safewir::{
     CandidateAbiBinding, CandidateAbiBindings, CanonicalModule, CheckedSourceIdentity,
     ComparisonOperator, Extent,
     Function, FunctionId, FunctionSignature, FunctionSignatureId, LoweredModuleParts,
-    GuardKind, Operation, OptimizationSession, Place, ProperTailSite, ResultContract, Revision,
+    GuardKind, Operation, Place, ProperTailSite, ResultContract, Revision,
     StaticDataId, StaticDataSegment, Terminator, ValueId, ValueType,
 };
 use witchy_wir::layout::{HeaderLayout, LayoutBundle, LayoutInterner, RcHeader, ScalarKind};
@@ -127,10 +127,7 @@ fn authenticated_static_scalar_survives_shared_clone_and_drop() {
     )
     .with_source_abi_bindings(CandidateAbiBindings::new(vec![CandidateAbiBinding::new(function, 0)]));
     let checked_initial = check_initial_with_witness(candidate, checked_source).expect("initial authority");
-    let initial_snapshot = checked_initial.module().clone();
-    let (initial, witness) = checked_initial.into_parts();
-    let optimized = OptimizationSession::new(initial).finalize().expect("zero-pass optimization");
-    let validated = validate_final(&initial_snapshot, witness, optimized).expect("final authority");
+    let validated = validate_final(checked_initial, checked_source).expect("final authority");
 
     assert_eq!(interpret(&validated, function, Vec::new()), Ok(vec![InterpreterValue::Int(7)]));
 }

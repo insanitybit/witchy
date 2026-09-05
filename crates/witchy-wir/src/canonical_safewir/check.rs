@@ -6,8 +6,7 @@ use super::{
     BasicBlock, BlockId, CallArgument, CanonicalAbiCatalog, CanonicalModule, Function, FunctionId,
     FunctionSignature, FunctionSignatureId, GuardKind, HostCallArgument, ImportContract, ImportId, InitialValid,
     LoweredCandidate, ModuleStage, Operation,
-    OptimizedValid,
-    ParameterOwnership, ProperTailSite, TailSiteId, Terminator, TransformedCandidate, ValueId,
+    ParameterOwnership, ProperTailSite, TailSiteId, Terminator, ValueId,
     ValueType,
 };
 
@@ -149,6 +148,7 @@ pub fn check_initial(
     Ok(candidate.into_initial_valid())
 }
 
+#[cfg(test)]
 pub(crate) fn check_initial_with_catalog(
     mut candidate: CanonicalModule<LoweredCandidate>,
     catalog: &CanonicalAbiCatalog,
@@ -222,15 +222,8 @@ fn install_body_derived_result_contracts(
     Ok(())
 }
 
-pub fn check_transform(
-    candidate: CanonicalModule<TransformedCandidate>,
-) -> Result<CanonicalModule<OptimizedValid>, InitialCheckError> {
-    check_candidate(&candidate, candidate.abi_catalog())?;
-    Ok(candidate.into_optimized_valid())
-}
-
 pub(crate) fn recheck_final(
-    candidate: &CanonicalModule<OptimizedValid>,
+    candidate: &CanonicalModule<InitialValid>,
 ) -> Result<(), InitialCheckError> {
     check_candidate(candidate, candidate.abi_catalog())
 }
