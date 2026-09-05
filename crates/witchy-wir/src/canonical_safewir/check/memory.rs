@@ -398,6 +398,31 @@ impl<'a> MemoryChecker<'a> {
         incoming: &MemoryState,
     ) -> Result<MemoryState, InitialCheckError> {
         let mut objects = BTreeMap::new();
+        // Analysis facts may be intersected, but owned references are release
+        // obligations. An incoming edge must not erase a live affine token.
+        for (state, other) in [(existing, incoming), (incoming, existing)] {
+            for (value, object) in &state.objects {
+                if object.ownership != Ownership::Consumed
+                    && object.allocation_class == Some(AllocationClass::ReferenceCounted)
+                    && !other.objects.contains_key(value)
+                {
+                    return Err(InitialCheckError::IncompatibleMemoryJoin {
+                        function: self.function.id,
+                        block: block.id,
+                        object: *value,
+                    });
+                }
+            }
+            for (slot, object) in &state.stored_objects {
+                if other.stored_objects.get(slot) != Some(object) {
+                    return Err(InitialCheckError::IncompatibleMemoryJoin {
+                        function: self.function.id,
+                        block: block.id,
+                        object: slot.0,
+                    });
+                }
+            }
+        }
         for (value, current) in &existing.objects {
             let Some(next) = incoming.objects.get(value) else {
                 continue;
@@ -632,7 +657,19 @@ impl<'a> MemoryChecker<'a> {
         values: &[ValueId],
         results: &[ResultContract],
     ) -> Result<(), InitialCheckError> {
+        let mut transferred = BTreeSet::new();
         for (value, result) in values.iter().zip(results) {
+            // Each result lane transfers one token. Repeating an SSA reference
+            // does not execute CloneRef, even when both lanes claim Shared.
+            if matches!(value_type(self.function, *value)?, ValueType::Ref(_))
+                && !matches!(result, ResultContract::StaticData { .. })
+                && !transferred.insert(*value)
+            {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: *value,
+                });
+            }
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
                 ResultContract::CheckedValue { layout } => {
@@ -676,6 +713,12 @@ impl<'a> MemoryChecker<'a> {
                     let state = self.live_object(*value)?;
                     if state.layout != *layout || state.ownership != Ownership::Shared {
                         return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                    if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+                        return Err(InitialCheckError::InvalidAllocationClass {
                             function: self.function.id,
                             object: *value,
                         });
@@ -1212,7 +1255,23 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-                self.state.objects
+        // Owned parameters are initialized with RC authority in the callee.
+        // The caller must supply that same storage class, not just a label.
+        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+            return Err(InitialCheckError::InvalidAllocationClass {
+                function: self.function.id,
+                object: source,
+            });
+        }
+        if parameter == ParameterOwnership::Unique
+            && !self.is_sole_live_token(source, state.identity)
+        {
+            return Err(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object: source,
+            });
+        }
+        self.state.objects
             .get_mut(&source)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
@@ -2730,7 +2789,12 @@ mod tests {
         with_checker(false, |checker, list| {
             let phi = ValueId::new(99);
             let target = unique_phi_target(phi, list);
+            // Each incoming path allocates only its own forwarded object.
+            let initial = checker.snapshot();
+            checker.state.objects.remove(&DESTINATION);
             let left = checker.transfer_edge(&target, &[SOURCE]).expect("left unique phi");
+            checker.restore(initial);
+            checker.state.objects.remove(&SOURCE);
             let right = checker.transfer_edge(&target, &[DESTINATION]).expect("right unique phi");
 
             let joined = checker.meet(&target, &left, &right).expect("fresh identities join through phi");
@@ -2876,6 +2940,136 @@ mod tests {
                 ),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
+        });
+    }
+
+    #[test]
+    fn affine_boundary_rejects_duplicate_owned_return_lanes() {
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            let LayoutSize::Dynamic { base, stride } = checker.descriptor(list).unwrap().size() else {
+                panic!("dynamic list");
+            };
+            let fresh = ResultContract::Fresh {
+                layout: list,
+                class: AllocationClass::ReferenceCounted,
+                extent: ReturnedExtent::Counted { header_bytes: base, stride_bytes: stride },
+            };
+            assert!(matches!(
+                checker.check_return(&[SOURCE, SOURCE], &[fresh.clone(), fresh]),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+            checker.clone_ref(DESTINATION, SOURCE).unwrap();
+            let shared = ResultContract::Shared { layout: list };
+            assert!(matches!(
+                checker.check_return(&[SOURCE, SOURCE], &[shared.clone(), shared.clone()]),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+            checker.check_return(&[SOURCE, DESTINATION], &[shared.clone(), shared]).unwrap();
+        });
+    }
+
+    #[test]
+    fn affine_boundary_rejects_invented_call_storage_class() {
+        with_checker(false, |checker, _list| {
+            for class in [None, Some(AllocationClass::Bump), Some(AllocationClass::Scratch)] {
+                checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class = class;
+                for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared] {
+                    assert!(matches!(
+                        checker.consume_call_move(SOURCE, ownership),
+                        Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
+                    ));
+                }
+            }
+            checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class =
+                Some(AllocationClass::ReferenceCounted);
+            checker.consume_call_move(SOURCE, ParameterOwnership::Shared).unwrap();
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+        });
+    }
+
+    #[test]
+    fn affine_boundary_rejects_invented_shared_result_class() {
+        with_checker(false, |checker, list| {
+            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
+            source.ownership = Ownership::Shared;
+            source.allocation_class = Some(AllocationClass::Bump);
+            assert!(matches!(
+                checker.check_return(&[SOURCE], &[ResultContract::Shared { layout: list }]),
+                Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn affine_boundary_join_preserves_release_obligations_on_both_edges() {
+        with_checker(false, |checker, _list| {
+            let block = &checker.function.blocks[0];
+            let left = checker.snapshot();
+            let mut right = left.clone();
+            right.objects.remove(&SOURCE);
+            for (a, b) in [(&left, &right), (&right, &left)] {
+                assert!(matches!(
+                    checker.meet(block, a, b),
+                    Err(InitialCheckError::IncompatibleMemoryJoin { object: SOURCE, .. })
+                ));
+            }
+            checker.drop_ref(SOURCE).unwrap();
+            let consumed = checker.snapshot();
+            checker.meet(block, &consumed, &right).unwrap();
+        });
+    }
+
+    #[test]
+    fn affine_boundary_join_does_not_forget_owned_heap_slots() {
+        with_checker(false, |checker, _list| {
+            let block = &checker.function.blocks[0];
+            let left = checker.snapshot();
+            let mut right = left.clone();
+            right.stored_objects.insert(
+                (DESTINATION, SlotIdentity::Constant(0)),
+                right.objects[&SOURCE].clone(),
+            );
+            for (a, b) in [(&left, &right), (&right, &left)] {
+                assert!(matches!(
+                    checker.meet(block, a, b),
+                    Err(InitialCheckError::IncompatibleMemoryJoin { object: DESTINATION, .. })
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn affine_boundary_tail_call_requires_no_untransferred_tokens() {
+        with_checker(false, |checker, _list| {
+            use crate::canonical_safewir::{TailSiteId, Terminator};
+            let function = checker.function;
+            let signature = FunctionSignature {
+                id: function.signature,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new(),
+                },
+            };
+            let terminator = Terminator::TailCall {
+                site: TailSiteId::from_digest([0; 32]),
+                callee: function.id,
+                arguments: Vec::new(),
+            };
+            let signatures = BTreeMap::from([(signature.id, &signature)]);
+            let functions = BTreeMap::from([(function.id, function)]);
+            assert!(matches!(
+                super::super::check_terminator(
+                    function, &terminator, &signature, &signatures, &functions, &BTreeMap::new(), checker,
+                ),
+                Err(InitialCheckError::UnconsumedReference { .. })
+            ));
+            checker.drop_ref(SOURCE).unwrap();
+            checker.drop_ref(DESTINATION).unwrap();
+            super::super::check_terminator(
+                function, &terminator, &signature, &signatures, &functions, &BTreeMap::new(), checker,
+            ).unwrap();
         });
     }
 

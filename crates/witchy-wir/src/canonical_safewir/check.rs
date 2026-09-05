@@ -1256,7 +1256,8 @@ fn check_terminator(
                 .get(&callee.signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(callee.signature))?;
-            check_tail_call(function, arguments, signature, current_signature, Some(memory))
+            check_tail_call(function, arguments, signature, current_signature, Some(memory))?;
+            memory.check_exit(&[])
         }
         Terminator::VarTailCall { site, callee, signature, arguments } => {
             let _ = site;
@@ -1266,7 +1267,8 @@ fn check_terminator(
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
             reject_indirect_memory_arguments(function, arguments)?;
-            check_tail_call(function, arguments, signature, current_signature, None)
+            check_tail_call(function, arguments, signature, current_signature, None)?;
+            memory.check_exit(&[])
         }
         Terminator::Branch { target, arguments } => {
             check_branch(function, *target, arguments, blocks)
@@ -1318,6 +1320,13 @@ fn check_tail_call(
             context: "tail-call result signature",
             expected: caller.results.len(),
             actual: callee.results.len(),
+        });
+    }
+    // A tail edge forwards results without executing the caller's Return
+    // judgment. It must not turn a shared or opaque result into fresh storage.
+    if callee.contract.results != caller.contract.results {
+        return Err(InitialCheckError::CallableContractMismatch {
+            signature: caller.id,
         });
     }
     check_call(function, &[], arguments, &FunctionSignature {
