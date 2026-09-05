@@ -23,6 +23,10 @@ struct ObjectState {
     extent: Extent,
     ownership: Ownership,
     allocation_class: Option<AllocationClass>,
+    /// A `Shared` ABI boundary may carry either an RC object or immutable
+    /// static data. This is deliberately distinct from an absent/unknown
+    /// allocation class, which carries no authority.
+    shared_immutable: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -411,7 +415,8 @@ impl<'a> MemoryChecker<'a> {
         for (state, other) in [(existing, incoming), (incoming, existing)] {
             for (value, object) in &state.objects {
                 if object.ownership != Ownership::Consumed
-                    && object.allocation_class == Some(AllocationClass::ReferenceCounted)
+                    && (object.allocation_class == Some(AllocationClass::ReferenceCounted)
+                        || object.shared_immutable)
                     && !other.objects.contains_key(value)
                 {
                     return Err(InitialCheckError::IncompatibleMemoryJoin {
@@ -506,11 +511,10 @@ impl<'a> MemoryChecker<'a> {
                 }
             };
             let extent = self.parameter_extent(layout)?;
-            let allocation_class = match contract.ownership {
-                ParameterOwnership::Unique | ParameterOwnership::Shared => {
-                    Some(AllocationClass::ReferenceCounted)
-                }
-                ParameterOwnership::CallBorrow { .. } => None,
+            let (allocation_class, shared_immutable) = match contract.ownership {
+                ParameterOwnership::Unique => (Some(AllocationClass::ReferenceCounted), false),
+                ParameterOwnership::Shared => (None, true),
+                ParameterOwnership::CallBorrow { .. } => (None, false),
                 ParameterOwnership::Value => unreachable!(),
             };
             self.state.objects.insert(
@@ -521,6 +525,7 @@ impl<'a> MemoryChecker<'a> {
                     extent,
                     ownership,
                     allocation_class,
+                    shared_immutable,
                 },
             );
         }
@@ -593,6 +598,7 @@ impl<'a> MemoryChecker<'a> {
                             extent,
                             ownership: Ownership::Shared,
                             allocation_class: None,
+                            shared_immutable: false,
                         },
                     );
                 }
@@ -607,6 +613,7 @@ impl<'a> MemoryChecker<'a> {
                             extent,
                             ownership: Ownership::Unique,
                             allocation_class: Some(*class),
+                            shared_immutable: false,
                         },
                     );
                 }
@@ -620,7 +627,8 @@ impl<'a> MemoryChecker<'a> {
                             layout: *layout,
                             extent,
                             ownership: Ownership::Shared,
-                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                            allocation_class: None,
+                            shared_immutable: true,
                         },
                     );
                 }
@@ -635,6 +643,7 @@ impl<'a> MemoryChecker<'a> {
                             extent,
                             ownership: Ownership::Shared,
                             allocation_class: None,
+                            shared_immutable: false,
                         },
                     );
                     self.state.static_data_objects.insert(*destination);
@@ -648,7 +657,8 @@ impl<'a> MemoryChecker<'a> {
     pub(super) fn check_exit(&self, returned: &[ValueId]) -> Result<(), InitialCheckError> {
         for (object, state) in &self.state.objects {
             if state.ownership != Ownership::Consumed
-                && state.allocation_class == Some(AllocationClass::ReferenceCounted)
+                && (state.allocation_class == Some(AllocationClass::ReferenceCounted)
+                    || state.shared_immutable)
                 && !returned.contains(object)
             {
                 return Err(InitialCheckError::UnconsumedReference {
@@ -719,9 +729,8 @@ impl<'a> MemoryChecker<'a> {
                 }
                 ResultContract::Shared { layout } => {
                     let state = self.live_object(*value)?;
-                    // Shared is an owned, possibly-aliased RC ABI. Returning a
-                    // unique RC token weakens its static privilege, not its
-                    // lifetime or physical reference count.
+                    // Shared owns either an RC token or immutable static data.
+                    // The union never grants mutation or reclamation authority.
                     if state.layout != *layout
                         || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
                     {
@@ -730,7 +739,7 @@ impl<'a> MemoryChecker<'a> {
                             object: *value,
                         });
                     }
-                    if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+                    if !self.is_shared_immutable_storage(*value, state) {
                         return Err(InitialCheckError::InvalidAllocationClass {
                             function: self.function.id,
                             object: *value,
@@ -1268,8 +1277,14 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-        // Owned parameters are initialized with RC authority in the callee.
-        // The caller must supply that same storage class, not just a label.
+        if parameter == ParameterOwnership::Shared && self.is_shared_immutable_storage(source, state) {
+            self.state.objects
+                .get_mut(&source)
+                .expect("live object exists")
+                .ownership = Ownership::Consumed;
+            return Ok(());
+        }
+        // Unique ABI parameters remain concrete RC authority only.
         if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
             return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
@@ -1463,6 +1478,7 @@ impl<'a> MemoryChecker<'a> {
                 extent: extent.clone(),
                 ownership: Ownership::Unique,
                 allocation_class: Some(class),
+                shared_immutable: false,
             },
         );
         if let Some(element) = pointer_element {
@@ -1503,6 +1519,7 @@ impl<'a> MemoryChecker<'a> {
                 extent: extent.clone(),
                 ownership: Ownership::Shared,
                 allocation_class: None,
+                shared_immutable: false,
             },
         );
         self.state.static_data_objects.insert(destination);
@@ -1636,6 +1653,7 @@ impl<'a> MemoryChecker<'a> {
                 extent,
                 ownership: Ownership::Shared,
                 allocation_class: range.1.allocation_class,
+                shared_immutable: false,
             };
             self.state.objects.insert(destination, stored);
             return Ok(());
@@ -2137,6 +2155,14 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    fn is_shared_immutable_storage(&self, object: ValueId, state: &ObjectState) -> bool {
+        match state.allocation_class {
+            Some(AllocationClass::ReferenceCounted) => true,
+            Some(AllocationClass::Bump | AllocationClass::Scratch) => false,
+            None => state.shared_immutable || self.state.static_data_objects.contains(&object),
+        }
+    }
+
     fn clone_ref(
         &mut self,
         destination: ValueId,
@@ -2147,6 +2173,7 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("CloneRef(scalar)");
         };
         self.require_ref_type(destination, layout)?;
+        let source_is_static = self.state.static_data_objects.contains(&source);
         let mut state = self.live_object(source)?.clone();
         if !matches!(state.ownership, Ownership::Unique | Ownership::Shared) {
             return Err(InitialCheckError::InvalidOwnership {
@@ -2154,7 +2181,7 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+        if !self.is_shared_immutable_storage(source, &state) {
             return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
                 object: source,
@@ -2162,6 +2189,9 @@ impl<'a> MemoryChecker<'a> {
         }
         state.ownership = Ownership::Shared;
         self.state.objects.insert(destination, state);
+        if source_is_static {
+            self.state.static_data_objects.insert(destination);
+        }
         self.state.objects
             .get_mut(&source)
             .expect("live object exists")
@@ -2177,7 +2207,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+        if !self.is_shared_immutable_storage(object, state) {
             return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
                 object,
@@ -2192,7 +2222,7 @@ impl<'a> MemoryChecker<'a> {
 
     fn drop_ref(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let state = self.live_object(object)?;
-        if state.allocation_class != Some(AllocationClass::ReferenceCounted) {
+        if !self.is_shared_immutable_storage(object, state) {
             return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
                 object,
@@ -2876,6 +2906,50 @@ mod tests {
                 checker.clone_ref(DESTINATION, SOURCE),
                 Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
             ));
+        });
+    }
+
+    #[test]
+    fn shared_static_storage_clones_and_drops_without_mutation_authority() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            let source = checker.state.objects.get_mut(&SOURCE).expect("source");
+            source.ownership = Ownership::Shared;
+            source.allocation_class = None;
+            source.shared_immutable = false;
+            checker.state.static_data_objects.insert(SOURCE);
+
+            checker.clone_ref(DESTINATION, SOURCE).expect("static clone is a no-op token split");
+            assert!(checker.state.static_data_objects.contains(&DESTINATION));
+            assert!(matches!(
+                checker.reclaim(SOURCE),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+            assert!(matches!(
+                checker.update_count(SOURCE, LENGTH),
+                Err(InitialCheckError::WritableStaticData { object: SOURCE, .. })
+            ));
+            checker.drop_ref(SOURCE).expect("static drop is a no-op token consume");
+            checker.drop_ref(DESTINATION).expect("static clone drop is a no-op token consume");
+        });
+    }
+
+    #[test]
+    fn shared_boundary_union_allows_only_immutable_token_operations() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            let source = checker.state.objects.get_mut(&SOURCE).expect("source");
+            source.ownership = Ownership::Shared;
+            source.allocation_class = None;
+            source.shared_immutable = true;
+
+            checker.clone_ref(DESTINATION, SOURCE).expect("RC-or-static union clones safely");
+            assert!(matches!(
+                checker.reclaim(SOURCE),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+            checker.drop_ref(SOURCE).expect("union drop dispatches safely at runtime");
+            checker.drop_ref(DESTINATION).expect("union clone drop dispatches safely at runtime");
         });
     }
 
@@ -3646,6 +3720,7 @@ mod tests {
                     },
                     ownership: Ownership::Unique,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
+                    shared_immutable: false,
                 },
             );
         }
