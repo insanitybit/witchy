@@ -1954,6 +1954,11 @@ fn emit_clone_ref(
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, scratch_index(layout, 2));
     emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 2));
     body.instruction(&wasm_encoder::Instruction::I32Const(-1));
     body.instruction(&wasm_encoder::Instruction::I32Eq);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
@@ -3493,6 +3498,11 @@ fn push_share_plan(
         PlanToken::I32Sub,
         PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
         PlanToken::LocalSet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Eqz,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
         PlanToken::LocalGet(layout.scratch[2]),
         PlanToken::I32Const(-1),
         PlanToken::I32Eq,

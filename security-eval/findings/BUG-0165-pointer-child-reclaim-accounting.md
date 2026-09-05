@@ -18,6 +18,10 @@ while using five. Both the encoder and independent admission-plan mapping now
 use five-local frames. The old behavior failed closed during encoding or Wasm
 validation rather than emitting an unsafe artifact.
 
+As defense in depth, `CloneRef` now also traps when a physical RC header is
+zero. The checker exposes no accepted route to such a stale token, but the
+backend no longer resurrects one if a future boundary defect supplies it.
+
 Focused regressions:
 
 - `pointer_bearing_reclaim_requires_recursive_drop`
