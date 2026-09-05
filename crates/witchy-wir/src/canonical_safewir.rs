@@ -92,6 +92,9 @@ pub enum ValueType {
     Unit,
     Size,
     V128,
+    /// A fixed-layout scalar aggregate. This value has no address, ownership,
+    /// or ABI representation in v1; it exists only within one SSA block.
+    InlineAggregate(LayoutId),
     Ref(LayoutId),
     Gc(GcTypeId),
     Capability(CapabilityKindId),
@@ -555,6 +558,8 @@ pub enum CanonicalRuleId {
     CloneRange,
     UpdateCount,
     MoveValue,
+    MakeInlineAggregate,
+    ExtractInlineField,
     CloneRef,
     Retain,
     Release,
@@ -625,6 +630,19 @@ pub enum Operation {
     CloneRange { destination: Place, source: Place, count: ValueId },
     UpdateCount { object: ValueId, count: ValueId },
     MoveValue { destination: ValueId, source: ValueId },
+    /// Construct an authenticated fixed-layout scalar aggregate. It is an SSA
+    /// value, never a linear-memory object.
+    MakeInlineAggregate {
+        destination: ValueId,
+        layout: LayoutId,
+        fields: Vec<ValueId>,
+    },
+    /// Mechanically select one scalar lane from an inline aggregate.
+    ExtractInlineField {
+        destination: ValueId,
+        aggregate: ValueId,
+        index: u32,
+    },
     /// Create a second affine token for reference-counted storage. Both the
     /// source and destination become Shared and must be consumed separately.
     CloneRef { destination: ValueId, source: ValueId },
@@ -704,6 +722,8 @@ impl Operation {
             Self::CloneRange { .. } => CanonicalRuleId::CloneRange,
             Self::UpdateCount { .. } => CanonicalRuleId::UpdateCount,
             Self::MoveValue { .. } => CanonicalRuleId::MoveValue,
+            Self::MakeInlineAggregate { .. } => CanonicalRuleId::MakeInlineAggregate,
+            Self::ExtractInlineField { .. } => CanonicalRuleId::ExtractInlineField,
             Self::CloneRef { .. } => CanonicalRuleId::CloneRef,
             Self::Retain { .. } => CanonicalRuleId::Retain,
             Self::Release { .. } => CanonicalRuleId::Release,

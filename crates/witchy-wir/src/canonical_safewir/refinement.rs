@@ -253,6 +253,8 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
         | Operation::MoveValue { destination, .. }
+        | Operation::MakeInlineAggregate { destination, .. }
+        | Operation::ExtractInlineField { destination, .. }
         | Operation::CloneRef { destination, .. }
         | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. }

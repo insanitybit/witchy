@@ -467,6 +467,10 @@ impl CanonicalWriter {
                 self.u8(9);
                 self.u32(signature.get());
             }
+            ValueType::InlineAggregate(layout) => {
+                self.u8(10);
+                self.layout_id(layout);
+            }
         }
     }
 
@@ -928,6 +932,18 @@ impl CanonicalWriter {
                 self.u8(16);
                 self.value_id(*destination);
                 self.value_id(*source);
+            }
+            Operation::MakeInlineAggregate { destination, layout, fields } => {
+                self.u8(26);
+                self.value_id(*destination);
+                self.layout_id(*layout);
+                self.value_ids(fields);
+            }
+            Operation::ExtractInlineField { destination, aggregate, index } => {
+                self.u8(27);
+                self.value_id(*destination);
+                self.value_id(*aggregate);
+                self.u32(*index);
             }
             Operation::CloneRef { destination, source } => {
                 self.u8(17);

@@ -27,6 +27,7 @@ pub enum InterpreterValue {
     Size(u64),
     Unit,
     V128([u8; 16]),
+    InlineAggregate { layout: LayoutId, fields: Vec<InterpreterValue> },
     ObjectRef(u64),
     Function(FunctionId),
 }
@@ -264,6 +265,19 @@ impl<'a> Engine<'a> {
             }
             Operation::ConstSize { destination, value } => {
                 values.insert(*destination, InterpreterValue::Size(self.size_from_u64(*value)?));
+            }
+            Operation::MakeInlineAggregate { destination, layout, fields } => {
+                values.insert(*destination, InterpreterValue::InlineAggregate {
+                    layout: *layout,
+                    fields: self.read_values(fields, values)?,
+                });
+            }
+            Operation::ExtractInlineField { destination, aggregate, index } => {
+                let InterpreterValue::InlineAggregate { fields, .. } = self.value(*aggregate, values)? else {
+                    return Err(InterpretError::TypeMismatch("inline aggregate"));
+                };
+                let field = fields.get(*index as usize).cloned().ok_or(InterpretError::TypeMismatch("inline aggregate index"))?;
+                values.insert(*destination, field);
             }
             Operation::Arithmetic {
                 destination,

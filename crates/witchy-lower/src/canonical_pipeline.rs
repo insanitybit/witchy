@@ -703,6 +703,31 @@ mod tests {
     }
 
     #[test]
+    fn packed_scalar_record_field_reaches_admitted_executable_artifact() {
+        let source = "type Point packed:\n    x: Int\n    y: Int\n\nfn main() -> Int:\n    let point = Point(40, 2)\n    point.y\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked packed Point source");
+        let validated = validate_checked_module(&checked)
+            .expect("packed Point reaches final SafeWIR authority");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit packed Point artifact");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted packed Point artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiate admitted packed Point artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f0")
+            .expect("canonical Point main export");
+        assert_eq!(main.call(&mut store, ()).expect("run canonical Point main"), 2);
+        assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
+    }
+
+    #[test]
     fn normal_mode_list_push_reallocates_and_preserves_mutation_syntax() {
         let source = "fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[1]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(

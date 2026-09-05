@@ -78,6 +78,10 @@ enum ScalarInstruction {
     WidenSize { destination: ValueId, value: ValueId },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
     MoveValue { destination: ValueId, source: ValueId },
+    /// A source-level aggregate marker. It owns no Wasm local; construction is
+    /// erased and extraction is lowered from its checked scalar field map.
+    MakeInlineAggregate { destination: ValueId, layout: crate::layout::LayoutId, fields: Vec<ValueId> },
+    ExtractInlineField { destination: ValueId, aggregate: ValueId, index: u32, field: ValueId },
     FunctionValue { destination: ValueId, function: FunctionId, table_index: u32 },
     Alloc {
         destination: ValueId,
@@ -686,6 +690,7 @@ fn lower_operation(
     table_indices: &BTreeMap<FunctionId, u32>,
     layouts: &LayoutInterner,
     imports: &BTreeMap<ImportId, ImportContract>,
+    aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
 ) -> Result<WasmInstruction, LoweringError> {
     let source = SourceItemId::Operation { function, block, index };
     let operation = match operation {
@@ -713,6 +718,24 @@ fn lower_operation(
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },
         Operation::MoveValue { destination, source } => {
             ScalarInstruction::MoveValue { destination: *destination, source: *source }
+        }
+        Operation::MakeInlineAggregate { destination, layout, fields } => {
+            aggregates.insert(*destination, fields.clone());
+            ScalarInstruction::MakeInlineAggregate { destination: *destination, layout: *layout, fields: fields.clone() }
+        }
+        Operation::ExtractInlineField { destination, aggregate, index } => {
+            let fields = aggregates.get(aggregate).ok_or(LoweringError::UnsupportedOperation {
+                function, operation: "ExtractInlineField aggregate lifetime",
+            })?;
+            let field = *fields.get(*index as usize).ok_or(LoweringError::UnsupportedOperation {
+                function, operation: "ExtractInlineField index",
+            })?;
+            ScalarInstruction::ExtractInlineField {
+                destination: *destination,
+                aggregate: *aggregate,
+                index: *index,
+                field,
+            }
         }
         Operation::FunctionValue { destination, function: target } => {
             let table_index = table_indices.get(target).copied().ok_or(
@@ -908,6 +931,8 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::CloneRange { .. } => "CloneRange",
         Operation::UpdateCount { .. } => "UpdateCount",
         Operation::MoveValue { .. } => "MoveValue",
+        Operation::MakeInlineAggregate { .. } => "MakeInlineAggregate",
+        Operation::ExtractInlineField { .. } => "ExtractInlineField",
         Operation::FunctionValue { .. } => "FunctionValue",
         Operation::CloneRef { .. } => "CloneRef",
         Operation::Retain { .. } => "Retain",
@@ -1006,13 +1031,12 @@ fn lower_block(
     imports: &BTreeMap<ImportId, ImportContract>,
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
     table_indices: &BTreeMap<FunctionId, u32>,
+    aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
 ) -> Result<WasmBlock, LoweringError> {
-    let instructions = block
-        .operations
-        .iter()
-        .enumerate()
-        .map(|(index, operation)| lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, table_indices, layouts, imports))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut instructions = Vec::with_capacity(block.operations.len());
+    for (index, operation) in block.operations.iter().enumerate() {
+        instructions.push(lower_operation(function.id, block.id, index, operation, &function.value_types, signatures, table_indices, layouts, imports, aggregates)?);
+    }
     Ok(WasmBlock {
         id: block.id,
         instructions,
@@ -1027,6 +1051,7 @@ fn lower_function(
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
     table_indices: &BTreeMap<FunctionId, u32>,
 ) -> Result<WasmFunction, LoweringError> {
+    let mut aggregates = BTreeMap::new();
     Ok(WasmFunction {
         id: function.id,
         signature: function.signature,
@@ -1034,7 +1059,7 @@ fn lower_function(
         blocks: function
             .blocks
             .iter()
-            .map(|block| lower_block(function, block, layouts, imports, signatures, table_indices))
+            .map(|block| lower_block(function, block, layouts, imports, signatures, table_indices, &mut aggregates))
             .collect::<Result<Vec<_>, _>>()?,
     })
 }
@@ -1109,6 +1134,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
         Operation::NarrowSize { .. } | Operation::WidenSize { .. } => Some(CorrespondenceRule::ScalarConversion),
         Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
         Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
+        Operation::MakeInlineAggregate { .. } | Operation::ExtractInlineField { .. } => Some(CorrespondenceRule::ScalarMove),
         Operation::FunctionValue { .. } => Some(CorrespondenceRule::ScalarConstant),
         Operation::Alloc { .. } => Some(CorrespondenceRule::MemoryAlloc),
         Operation::StaticData { .. } => Some(CorrespondenceRule::MemoryStaticData),
@@ -1140,6 +1166,8 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::WidenSize { destination, value }, ScalarInstruction::WidenSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
         (Operation::Guard { condition, kind }, ScalarInstruction::Guard { condition: actual_condition, kind: actual_kind }) => condition == actual_condition && kind == actual_kind,
         (Operation::MoveValue { destination, source }, ScalarInstruction::MoveValue { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::MakeInlineAggregate { destination, layout, fields }, ScalarInstruction::MakeInlineAggregate { destination: actual_destination, layout: actual_layout, fields: actual_fields }) => destination == actual_destination && layout == actual_layout && fields == actual_fields,
+        (Operation::ExtractInlineField { destination, aggregate, index }, ScalarInstruction::ExtractInlineField { destination: actual_destination, aggregate: actual_aggregate, index: actual_index, .. }) => destination == actual_destination && aggregate == actual_aggregate && index == actual_index,
         (Operation::FunctionValue { destination, function }, ScalarInstruction::FunctionValue { destination: actual_destination, function: actual_function, .. }) => destination == actual_destination && function == actual_function,
         (Operation::Alloc { destination, layout, extent, class }, ScalarInstruction::Alloc { destination: actual_destination, layout: actual_layout, extent: actual_extent, class: actual_class }) => destination == actual_destination && layout == actual_layout && extent == actual_extent && class == actual_class,
         (Operation::StaticData { destination, data, .. }, ScalarInstruction::StaticData { destination: actual_destination, data: actual_data }) => destination == actual_destination && data == actual_data,
@@ -1367,6 +1395,9 @@ fn wasm_value_type(
         // SafeWIR never exposes this representation. The callable is an
         // authenticated table-index value only after private WasmIR lowering.
         crate::canonical_safewir::ValueType::Callable(_) => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::InlineAggregate(_) => {
+            Err(EncodeError::UnsupportedValueType { function, value, value_type })
+        }
         unsupported => Err(EncodeError::UnsupportedValueType { function, value, value_type: unsupported }),
     }
 }
@@ -1423,6 +1454,9 @@ fn local_layout(
     let mut extra_types = Vec::new();
     for (value, value_type) in &function.value_types {
         if indices.contains_key(value) {
+            continue;
+        }
+        if matches!(value_type, ValueType::InlineAggregate(_)) {
             continue;
         }
         let index = entry.parameters.len() as u32 + extra_types.len() as u32;
@@ -2425,6 +2459,8 @@ fn emit_instruction(
         }
         ScalarInstruction::Guard { condition, .. } => { emit_get(body, layout, function.id, *condition)?; body.instruction(&wasm_encoder::Instruction::I32Eqz); body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty)); body.instruction(&wasm_encoder::Instruction::Unreachable); body.instruction(&wasm_encoder::Instruction::End); }
         ScalarInstruction::MoveValue { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::MakeInlineAggregate { .. } => {}
+        ScalarInstruction::ExtractInlineField { destination, field, .. } => { emit_get(body, layout, function.id, *field)?; emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::FunctionValue { destination, table_index, .. } => {
             body.instruction(&wasm_encoder::Instruction::I32Const(*table_index as i32));
             emit_set(body, layout, function.id, *destination)?;
@@ -4077,6 +4113,7 @@ fn expected_linear_function_plan(
     let layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let block = &function.blocks[0];
     let mut plan = Vec::new();
+    let mut aggregates = BTreeMap::<ValueId, Vec<ValueId>>::new();
     for operation in &block.operations {
         match operation {
             Operation::ConstInt { destination, value } => {
@@ -4176,6 +4213,15 @@ fn expected_linear_function_plan(
             }
             Operation::MoveValue { destination, source } => {
                 push_get(&mut plan, &layout, *source)?;
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::MakeInlineAggregate { destination, fields, .. } => {
+                aggregates.insert(*destination, fields.clone());
+            }
+            Operation::ExtractInlineField { destination, aggregate, index } => {
+                let fields = aggregates.get(aggregate).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+                let field = *fields.get(*index as usize).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+                push_get(&mut plan, &layout, field)?;
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::FunctionValue { destination, function: target } => {
@@ -5755,6 +5801,7 @@ mod tests {
                 &BTreeMap::new(),
                 &LayoutInterner::new(),
                 &BTreeMap::new(),
+                &mut BTreeMap::new(),
             ),
             Err(LoweringError::UnsupportedOperation { .. })
         ));
@@ -7615,6 +7662,7 @@ mod tests {
                 &BTreeMap::new(),
                 &interner,
                 &BTreeMap::new(),
+                &mut BTreeMap::new(),
             ),
             Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
         ));
@@ -7675,6 +7723,7 @@ mod tests {
                     &BTreeMap::new(),
                     &interner,
                     &BTreeMap::new(),
+                    &mut BTreeMap::new(),
                 ),
                 Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
             ));

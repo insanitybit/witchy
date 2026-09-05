@@ -15,7 +15,7 @@ mod owned;
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
 
-use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, UnOp};
+use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, UnOp};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
@@ -87,6 +87,12 @@ pub fn lower_typed_module(
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let typed = source.typed_module();
+    let packed_records = typed.module().items.iter().filter_map(|item| match item {
+        Item::Type(definition) if is_v1_packed_scalar_record(definition) => {
+            Some((definition.name.clone(), definition))
+        }
+        _ => None,
+    }).collect::<HashMap<_, _>>();
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
@@ -277,6 +283,7 @@ pub fn lower_typed_module(
             &layout_catalog,
             &string_data_ids,
             print_import,
+            &packed_records,
         )?);
     }
 
@@ -495,6 +502,7 @@ fn lower_function(
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
     print_import: Option<witchy_wir::canonical_safewir::ImportId>,
+    packed_records: &HashMap<String, &TypeDef>,
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
@@ -519,6 +527,7 @@ fn lower_function(
         layouts,
         string_data_ids,
         print_import,
+        packed_records,
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     for (parameter, contract) in lowerer.blocks[entry.get() as usize]
@@ -603,6 +612,7 @@ struct FunctionLowerer<'a> {
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
     print_import: Option<witchy_wir::canonical_safewir::ImportId>,
+    packed_records: &'a HashMap<String, &'a TypeDef>,
 }
 
 impl FunctionLowerer<'_> {
@@ -2119,12 +2129,13 @@ impl FunctionLowerer<'_> {
             Expr::Str(value) => self.lower_string_literal(value),
             Expr::List(items) => self.lower_list_literal(expression, items),
             Expr::Tuple(_) => Err(CanonicalLoweringError::UnsupportedExpression("tuple")),
-            Expr::Ctor { .. } | Expr::AnonCtor { .. } => {
+            Expr::Ctor { name, args } => self.lower_packed_record_constructor(expression, name, args),
+            Expr::AnonCtor { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
             }
             Expr::Unary { op, expr } => self.lower_unary(*op, expr),
             Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
-            Expr::Field { .. } => Err(CanonicalLoweringError::UnsupportedExpression("field")),
+            Expr::Field { base, field } => self.lower_inline_aggregate_field(base, field),
             Expr::Lambda { .. } => Err(CanonicalLoweringError::UnsupportedExpression("lambda")),
             Expr::RecordUpdate { .. } | Expr::Record { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("record"))
@@ -2164,6 +2175,70 @@ impl FunctionLowerer<'_> {
             .type_of(expression)
             .and_then(witchy_types::typeck::ty_to_ast)
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
+    }
+
+    fn lower_packed_record_constructor(
+        &mut self,
+        expression: &Expr,
+        name: &str,
+        arguments: &[Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let definition = self.packed_records.get(name).copied().ok_or(
+            CanonicalLoweringError::UnsupportedExpression("non-packed record constructor"),
+        )?;
+        let fields = &definition.variants[0].fields;
+        if arguments.len() != fields.len() {
+            return Err(CanonicalLoweringError::CallArityMismatch {
+                callee: name.to_owned(), expected: fields.len(), actual: arguments.len(),
+            });
+        }
+        let source_type = self.expression_type(expression)?;
+        if !matches!(source_type.unqualified(), Type::Named(checked_name, arguments) if checked_name == name && arguments.is_empty()) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("checked packed record constructor type"));
+        }
+        let layout = packed_scalar_layout(fields, self.layout_bundle, self.layouts)?;
+        let mut values = Vec::with_capacity(arguments.len());
+        for (argument, field_type) in arguments.iter().zip(fields) {
+            let value = self.lower_expr(argument)?;
+            let expected = scalar_type(field_type)?;
+            let actual = self.values[&value];
+            if actual != expected {
+                return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                    callee: name.to_owned(), parameter: values.len(), expected, actual,
+                });
+            }
+            values.push(value);
+        }
+        let destination = self.fresh(ValueType::InlineAggregate(layout))?;
+        self.push_operation(Operation::MakeInlineAggregate { destination, layout, fields: values });
+        Ok(destination)
+    }
+
+    fn lower_inline_aggregate_field(
+        &mut self,
+        base: &Expr,
+        field: &str,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let base_type = self.expression_type(base)?;
+        let Type::Named(name, _) = base_type.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("field base"));
+        };
+        let definition = self.packed_records.get(name).copied().ok_or(
+            CanonicalLoweringError::UnsupportedExpression("non-packed record field"),
+        )?;
+        let index = definition.variants[0].field_names.iter().position(|candidate| candidate == field)
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
+        let aggregate = self.lower_expr(base)?;
+        let ValueType::InlineAggregate(layout) = self.values[&aggregate] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("inline aggregate field base"));
+        };
+        let result = self.fresh(scalar_type(&definition.variants[0].fields[index])?)?;
+        self.push_operation(Operation::ExtractInlineField {
+            destination: result,
+            aggregate,
+            index: u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        });
+        Ok(result)
     }
 
     fn ensure_string_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
@@ -3305,6 +3380,46 @@ fn source_value_type(
         }
         _ => scalar_type(source),
     }
+}
+
+fn packed_scalar_layout(
+    expected_fields: &[Type],
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+    let mut candidates = Vec::new();
+    for root in layout_bundle.roots() {
+        let Some(descriptor) = layouts.get(*root) else { continue };
+        let fields = match descriptor.kind() {
+            LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields,
+            _ => continue,
+        };
+        if fields.len() == expected_fields.len() && fields.iter().zip(expected_fields).all(|(field, expected)| {
+            let actual = match layouts.get(*field).map(|field| field.kind()) {
+                Some(LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration)) => ValueType::Int,
+                Some(LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
+                Some(LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
+                _ => return false,
+            };
+            scalar_type(expected).is_ok_and(|expected| expected == actual)
+        }) {
+            candidates.push(*root);
+        }
+    }
+    match candidates.as_slice() {
+        [layout] => Ok(*layout),
+        [] => Err(CanonicalLoweringError::UnsupportedExpression("packed scalar record layout")),
+        _ => Err(CanonicalLoweringError::UnsupportedExpression("ambiguous packed scalar record layout")),
+    }
+}
+
+fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
+    definition.packed
+        && definition.params.is_empty()
+        && definition.variants.len() == 1
+        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+        ))
 }
 
 fn is_indirect_scalar(value_type: ValueType) -> bool {

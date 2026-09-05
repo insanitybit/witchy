@@ -4,10 +4,10 @@
 //! witness. Callers cannot provide a second layout graph and cannot make a
 //! layout-bearing type appear supported by supplying a matching descriptor.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use witchy_syntax::ast::{self, Item, Type};
+use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
 use witchy_wir::layout::{
@@ -56,7 +56,11 @@ pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
     let typed = source.typed_module();
-    let mut projection = LayoutProjection::default();
+    let definitions = typed.module().items.iter().filter_map(|item| match item {
+        Item::Type(definition) => Some((definition.name.clone(), definition.clone())),
+        _ => None,
+    }).collect();
+    let mut projection = LayoutProjection { roots: Vec::new(), definitions };
 
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
@@ -108,6 +112,7 @@ pub(crate) fn derive_layout_bundle(
 #[derive(Default)]
 struct LayoutProjection {
     roots: Vec<Type>,
+    definitions: BTreeMap<String, TypeDef>,
 }
 
 impl LayoutProjection {
@@ -130,6 +135,10 @@ impl LayoutProjection {
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
                 "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" => Ok(()),
                 "String" | "Bytes" => {
+                    self.roots.push(ty.clone());
+                    Ok(())
+                }
+                _ if self.definitions.get(name).is_some_and(is_v1_packed_scalar_record) => {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
@@ -179,7 +188,7 @@ impl LayoutProjection {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
         for ty in self.roots {
-            let root = intern_v1_layout(&mut interner, &ty)?;
+            let root = intern_v1_layout(&mut interner, &ty, &self.definitions)?;
             roots.insert(root);
         }
         LayoutBundle::from_interner(&interner, roots)
@@ -190,6 +199,7 @@ impl LayoutProjection {
 fn intern_v1_layout(
     interner: &mut LayoutInterner,
     ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
         // String is `[u32 byte_length][UTF-8 bytes...]`. RawByte is
@@ -205,7 +215,7 @@ fn intern_v1_layout(
         && name == "List"
         && arguments.len() == 1
     {
-        let element = intern_v1_layout(interner, &arguments[0])?;
+        let element = intern_v1_layout(interner, &arguments[0], definitions)?;
         let element = if requires_owned_pointer_slot(&arguments[0]) {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
@@ -221,29 +231,30 @@ fn intern_v1_layout(
         && name == "Dict"
         && arguments.len() == 2
     {
-        let key = intern_dictionary_slot(interner, &arguments[0])?;
-        let value = intern_dictionary_slot(interner, &arguments[1])?;
+        let key = intern_dictionary_slot(interner, &arguments[0], definitions)?;
+        let value = intern_dictionary_slot(interner, &arguments[1], definitions)?;
         return interner
             .intern_runtime_dictionary_body(key, value)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     interner
-        .intern_type(ty, &V1Resolver)
+        .intern_type(ty, &V1Resolver { definitions })
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
 fn intern_dictionary_slot(
     interner: &mut LayoutInterner,
     ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
-        let pointee = intern_v1_layout(interner, ty)?;
+        let pointee = intern_v1_layout(interner, ty, definitions)?;
         return interner
             .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     interner
-        .intern_type(ty, &V1Resolver)
+        .intern_type(ty, &V1Resolver { definitions })
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
@@ -272,9 +283,11 @@ fn requires_owned_pointer_slot(ty: &Type) -> bool {
             if name == "List" && arguments.len() == 1)
 }
 
-struct V1Resolver;
+struct V1Resolver<'a> {
+    definitions: &'a BTreeMap<String, TypeDef>,
+}
 
-impl ClosedTypeResolver for V1Resolver {
+impl ClosedTypeResolver for V1Resolver<'_> {
     fn resolve_named<'a>(
         &'a self,
         name: &str,
@@ -286,9 +299,18 @@ impl ClosedTypeResolver for V1Resolver {
             "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
             "Bool" => Some(ResolvedNamed::Scalar(ScalarKind::Bool)),
             "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
-            _ => None,
+            name => self.definitions.get(name).filter(|definition| is_v1_packed_scalar_record(definition)).map(ResolvedNamed::PackedRecord),
         }
     }
+}
+
+fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
+    definition.packed
+        && definition.params.is_empty()
+        && definition.variants.len() == 1
+        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+        ))
 }
 
 fn is_canonical_source_function(module: &ast::Module, name: &str) -> bool {

@@ -123,6 +123,9 @@ pub enum InitialCheckError {
     UnsupportedMemorySignature { signature: FunctionSignatureId },
     CallableContractMismatch { signature: FunctionSignatureId },
     UnknownCallableContract { function: FunctionId },
+    UnsupportedInlineAggregateAbi { signature: FunctionSignatureId },
+    UnsupportedInlineAggregateControlFlow { function: FunctionId },
+    InvalidInlineAggregateLayout { function: FunctionId, layout: crate::layout::LayoutId },
 }
 
 impl fmt::Display for InitialCheckError {
@@ -159,6 +162,11 @@ fn install_body_derived_result_contracts(
     candidate: &mut CanonicalModule<LoweredCandidate>,
 ) -> Result<(), InitialCheckError> {
     let signatures = index_signatures(candidate.signatures())?;
+    for signature in signatures.values() {
+        if signature.parameters.iter().chain(&signature.results).any(|value| matches!(value, ValueType::InlineAggregate(_))) {
+            return Err(InitialCheckError::UnsupportedInlineAggregateAbi { signature: signature.id });
+        }
+    }
     let functions = index_functions(candidate.functions())?;
     let derived = contracts::derive_result_contracts(&functions, &signatures)?;
     for signature in &mut candidate.signatures {
@@ -483,6 +491,13 @@ fn check_function(
         })?;
     check_entry_parameters(function, entry, signature)?;
     check_value_definitions(function)?;
+    for block in &function.blocks {
+        if block.parameters.iter().any(|parameter| matches!(parameter.value_type, ValueType::InlineAggregate(_)))
+            || terminator_uses(&block.terminator).iter().any(|value| matches!(function.value_types.get(value), Some(ValueType::InlineAggregate(_))))
+        {
+            return Err(InitialCheckError::UnsupportedInlineAggregateControlFlow { function: function.id });
+        }
+    }
 
     let predecessors = predecessor_map(function, &blocks)?;
     let dominators = dominators(function, &blocks, &predecessors)?;
@@ -735,6 +750,8 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
         | Operation::MoveValue { destination, .. }
+        | Operation::MakeInlineAggregate { destination, .. }
+        | Operation::ExtractInlineField { destination, .. }
         | Operation::CloneRef { destination, .. }
         | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. }
@@ -773,6 +790,8 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::Release { object: value }
         | Operation::DropRef { object: value }
         | Operation::Reclaim { object: value } => vec![*value],
+        Operation::MakeInlineAggregate { fields, .. } => fields.clone(),
+        Operation::ExtractInlineField { aggregate, .. } => vec![*aggregate],
         Operation::Load { place, .. } => place_uses(place),
         Operation::Store { place, value, .. } => {
             let mut result = place_uses(place);
@@ -1061,10 +1080,40 @@ fn check_operation(
         Operation::Guard { condition, .. } => require_type(function, *condition, ValueType::Bool),
         Operation::MoveValue { destination, source } => {
             let source_type = value_type(function, *source)?;
-            if source_type.is_memory_bearing() {
+            if source_type.is_memory_bearing() || matches!(source_type, ValueType::InlineAggregate(_)) {
                 return unsupported_memory(function, "MoveValue");
             }
             require_type(function, *destination, source_type)
+        }
+        Operation::MakeInlineAggregate { destination, layout, fields } => {
+            require_type(function, *destination, ValueType::InlineAggregate(*layout))?;
+            let descriptor = memory.layouts().get(*layout).ok_or(InitialCheckError::InvalidInlineAggregateLayout {
+                function: function.id,
+                layout: *layout,
+            })?;
+            let (crate::layout::LayoutKind::PackedRecord { fields: expected }
+                | crate::layout::LayoutKind::Tuple { fields: expected }) = descriptor.kind()
+            else {
+                return Err(InitialCheckError::InvalidInlineAggregateLayout { function: function.id, layout: *layout });
+            };
+            if expected.len() != fields.len() {
+                return Err(InitialCheckError::ArityMismatch { context: "MakeInlineAggregate fields", expected: expected.len(), actual: fields.len() });
+            }
+            for (field, expected) in fields.iter().zip(expected) {
+                require_type(function, *field, inline_scalar_layout_type(memory.layouts(), *expected, function.id, *layout)?)?;
+            }
+            Ok(())
+        }
+        Operation::ExtractInlineField { destination, aggregate, index } => {
+            let ValueType::InlineAggregate(layout) = value_type(function, *aggregate)? else {
+                return Err(InitialCheckError::TypeMismatch { function: function.id, value: *aggregate, expected: ValueType::InlineAggregate(crate::layout::LayoutId::from_bytes([0; 32])), actual: value_type(function, *aggregate)? });
+            };
+            let descriptor = memory.layouts().get(layout).ok_or(InitialCheckError::InvalidInlineAggregateLayout { function: function.id, layout })?;
+            let (crate::layout::LayoutKind::PackedRecord { fields }
+                | crate::layout::LayoutKind::Tuple { fields }) = descriptor.kind()
+            else { return Err(InitialCheckError::InvalidInlineAggregateLayout { function: function.id, layout }); };
+            let field = fields.get(*index as usize).ok_or(InitialCheckError::InvalidInlineAggregateLayout { function: function.id, layout })?;
+            require_type(function, *destination, inline_scalar_layout_type(memory.layouts(), *field, function.id, layout)?)
         }
         Operation::FunctionValue { destination, function: target } => {
             let target = functions
@@ -1130,6 +1179,22 @@ fn check_operation(
         Operation::Release { .. } => unsupported_memory(function, "Release"),
         Operation::DropRef { .. } => unsupported_memory(function, "DropRef"),
         Operation::Reclaim { .. } => unsupported_memory(function, "Reclaim"),
+    }
+}
+
+fn inline_scalar_layout_type(
+    layouts: &crate::layout::LayoutInterner,
+    layout: crate::layout::LayoutId,
+    function: FunctionId,
+    parent: crate::layout::LayoutId,
+) -> Result<ValueType, InitialCheckError> {
+    let descriptor = layouts.get(layout).ok_or(InitialCheckError::InvalidInlineAggregateLayout { function, layout: parent })?;
+    match descriptor.kind() {
+        crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int | crate::layout::ScalarKind::Duration) => Ok(ValueType::Int),
+        crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Float) => Ok(ValueType::Float),
+        crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool) => Ok(ValueType::Bool),
+        crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::V128) => Ok(ValueType::V128),
+        _ => Err(InitialCheckError::InvalidInlineAggregateLayout { function, layout: parent }),
     }
 }
 

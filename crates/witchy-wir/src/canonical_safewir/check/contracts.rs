@@ -412,6 +412,10 @@ fn propagate_operation_origins(
             let origin = origin_of(origins, *source);
             join_origin(origins, *destination, origin);
         }
+        Operation::MakeInlineAggregate { destination, .. }
+        | Operation::ExtractInlineField { destination, .. } => {
+            join_origin(origins, *destination, Origin::Unknown);
+        }
         Operation::FunctionValue { .. } => {}
         Operation::Load {
             destination,
@@ -541,6 +545,8 @@ fn derive_operation(
             add_effect(summary, origin_of(origins, *source), MemoryEffect::Retain);
         }
         Operation::MoveValue { destination, source } => { origins.insert(*destination, origin_of(origins, *source)); }
+        Operation::MakeInlineAggregate { destination, .. }
+        | Operation::ExtractInlineField { destination, .. } => { origins.insert(*destination, Origin::Unknown); }
         Operation::FunctionValue { .. } => {}
         Operation::Load { destination, place, transfer } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);

@@ -103,6 +103,10 @@ pub(super) struct MemoryChecker<'a> {
 }
 
 impl<'a> MemoryChecker<'a> {
+    pub(super) const fn layouts(&self) -> &'a LayoutInterner {
+        self.layouts
+    }
+
     pub(super) fn new(
         function: &'a Function,
         layouts: &'a LayoutInterner,

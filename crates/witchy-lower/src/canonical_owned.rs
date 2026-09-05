@@ -44,6 +44,8 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
         | Operation::NarrowSize { destination, .. } | Operation::WidenSize { destination, .. }
         | Operation::Alloc { destination, .. } | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. } | Operation::MoveValue { destination, .. }
+        | Operation::MakeInlineAggregate { destination, .. }
+        | Operation::ExtractInlineField { destination, .. }
         | Operation::CloneRef { destination, .. } | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
@@ -67,6 +69,8 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
         Operation::UpdateCount { object, .. } | Operation::Retain { object }
         | Operation::Release { object } | Operation::DropRef { object } | Operation::Reclaim { object } => vec![*object],
         Operation::MoveValue { source, .. } | Operation::CloneRef { source, .. } => vec![*source],
+        Operation::MakeInlineAggregate { fields, .. } => fields.clone(),
+        Operation::ExtractInlineField { aggregate, .. } => vec![*aggregate],
         Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. } => {
             arguments.iter().map(argument_value).collect()
         }
