@@ -5715,7 +5715,6 @@ mod tests {
                 &BTreeMap::new(),
                 &LayoutInterner::new(),
                 &BTreeMap::new(),
-                &mut BTreeMap::new(),
             ),
             Err(LoweringError::UnsupportedOperation { .. })
         ));
@@ -7576,7 +7575,6 @@ mod tests {
                 &BTreeMap::new(),
                 &interner,
                 &BTreeMap::new(),
-                &mut BTreeMap::new(),
             ),
             Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
         ));
@@ -7637,7 +7635,6 @@ mod tests {
                     &BTreeMap::new(),
                     &interner,
                     &BTreeMap::new(),
-                    &mut BTreeMap::new(),
                 ),
                 Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
             ));
