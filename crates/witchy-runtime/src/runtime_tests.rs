@@ -55,6 +55,19 @@
         );
     }
 
+    #[test]
+    fn admitted_module_builder_validates_without_binaryen_or_byte_rewriting() {
+        let runtime = Runtime::batch().expect("runtime");
+        let wasm = BARE.as_bytes();
+        let module = build_admitted_module(&runtime.engine, wasm)
+            .expect("the exact admitted-byte path performs structural validation");
+        let mut runtime = runtime;
+        let mut vm = runtime
+            .instantiate_module(module, Capabilities::none(), 4)
+            .expect("the exact admitted-byte path uses the normal capability instantiation");
+        vm.run().expect("the exact admitted bytes execute without rewriting");
+    }
+
     fn wasm_with_host_import(name: &str) -> Vec<u8> {
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32, ValType::I32], []);

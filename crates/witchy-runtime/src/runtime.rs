@@ -15,6 +15,7 @@ use wasmtime::{
     Module, Result, Store, StoreLimits, StoreLimitsBuilder,
 };
 use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
+use witchy_wir::AdmittedCanonicalArtifact;
 use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_POLICY_SECTION};
 use witchy_wir::wir_prelude::abi_import_info;
 
@@ -836,6 +837,17 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
     build_module_with_binaryen(engine, opt_wasm, cacheable, required, || {
         resolve_binaryen_for_build(required)
     })
+}
+
+/// Build exactly the bytes supplied by an admitted canonical artifact.
+///
+/// This path deliberately does not inspect optimizer policy, consult the
+/// Binaryen configuration, read an optimized-module cache, or rewrite bytes.
+/// The artifact was already admitted by SafeWIR; Wasmtime's structural
+/// validation remains mandatory at this final runtime boundary.
+fn build_admitted_module(engine: &Engine, wasm: &[u8]) -> Result<Module> {
+    validate_layout_metadata(wasm)?;
+    Module::new(engine, wasm)
 }
 
 pub type VmId = u32;
@@ -1944,8 +1956,14 @@ impl Runtime {
         })
     }
 
-    /// Spawn a VM from WAT/wasm source, granting it exactly `caps` and
+    /// Spawn a VM from untrusted external WAT/wasm source, granting it exactly `caps` and
     /// capping its linear memory at `memory_pages_max` 64KiB pages.
+    ///
+    /// This is the compatibility entry point for externally supplied Wasm and
+    /// tests. It may apply the configured Binaryen policy before Wasmtime
+    /// instantiation. Canonical compiler output must use
+    /// [`Self::spawn_admitted`], whose artifact-typed API cannot be confused
+    /// with this raw-byte path and never performs a post-admission rewrite.
     ///
     /// The capability check is structural: a granted host function is linked,
     /// an ungranted one is absent, so a VM that imports an ungranted
@@ -1956,11 +1974,37 @@ impl Runtime {
         caps: Capabilities,
         memory_pages_max: usize,
     ) -> Result<Vm> {
-        let id = self.next_id;
         let wasm = wasm.as_ref();
         // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
         // every hit and miss still enters Wasmtime through safe `Module::new`.
         let module = build_module(&self.engine, wasm, self.executable_cache)?;
+
+        self.instantiate_module(module, caps, memory_pages_max)
+    }
+
+    /// Spawn a VM from an admitted canonical SafeWIR artifact.
+    ///
+    /// The runtime instantiates exactly [`AdmittedCanonicalArtifact::wasm`]
+    /// and performs no Binaryen optimization, cache lookup, or byte mutation.
+    /// `Module::new` still performs Wasmtime's structural validation before any
+    /// capability imports are linked.
+    pub fn spawn_admitted(
+        &mut self,
+        artifact: &AdmittedCanonicalArtifact,
+        caps: Capabilities,
+        memory_pages_max: usize,
+    ) -> Result<Vm> {
+        let module = build_admitted_module(&self.engine, artifact.wasm())?;
+        self.instantiate_module(module, caps, memory_pages_max)
+    }
+
+    fn instantiate_module(
+        &mut self,
+        module: Module,
+        caps: Capabilities,
+        memory_pages_max: usize,
+    ) -> Result<Vm> {
+        let id = self.next_id;
 
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)

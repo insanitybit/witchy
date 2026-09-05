@@ -6,6 +6,11 @@ Open. This is a blocker for the RFC-0165 production cutover, not evidence that
 the current development-only canonical route is already exploitable in
 production.
 
+The runtime-side repair is now bounded on this branch: `Runtime::spawn_admitted`
+accepts `AdmittedCanonicalArtifact` authority and instantiates its exact bytes
+through a Binaryen-free path. Compiler reachability and atomic production route
+cutover remain open.
+
 ## Finding
 
 Canonical admission produces an artifact whose bytes are bound to validated
@@ -38,4 +43,3 @@ result remains structurally valid Wasm.
   authority.
 - The ordinary admitted scalar/list program executes through the artifact-bound
   launch path with byte identity unchanged.
-
