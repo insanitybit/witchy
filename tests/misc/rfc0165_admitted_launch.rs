@@ -223,3 +223,17 @@ fn admitted_recursive_search_threads_a_list_parameter_through_loop_and_join() {
     );
     assert_eq!(output, vec!["8".to_string()]);
 }
+
+#[test]
+fn admitted_if_choosing_between_two_reference_parameters_runs() {
+    // Each arm clones the parameter it returns, so the join's result lane owns
+    // a token of its own and both parameters release at the return.
+    let output = run_admitted(
+        "pub fn choose(flag: Bool, left: String, right: String) -> String:\n    if flag:\n        left\n    else:\n        right\n\nfn main(console: Console):\n    console.print(choose(true, \"l\", \"r\") + choose(false, \"l\", \"r\"))\n",
+    );
+    assert_eq!(output, vec!["lr".to_string()]);
+    let output = run_admitted(
+        "pub fn choose(flag: Bool, left: List(Int), right: List(Int)) -> List(Int):\n    if flag:\n        left\n    else:\n        right\n\nfn main(console: Console):\n    let a = [1, 2]\n    let b = [3]\n    console.print(\"${choose(true, a, b).length()} ${choose(false, a, b).length()}\")\n",
+    );
+    assert_eq!(output, vec!["2 1".to_string()]);
+}

@@ -170,10 +170,19 @@ impl<'a> MemoryChecker<'a> {
     /// definition, so any count, capacity, header value, guard, or object state
     /// carried by an argument must be expressed in terms of that definition.
     pub(super) fn transfer_edge(
-        &self,
+        &mut self,
         target: &BasicBlock,
         arguments: &[ValueId],
     ) -> Result<MemoryState, InitialCheckError> {
+        // A shared phi needs the argument's counted extent, which promotion
+        // derives lazily from the header loads already in this state. Derive
+        // it now from the same facts; a promotion the facts do not justify is
+        // left alone and the extent rule below reports it.
+        for (argument, parameter) in arguments.iter().zip(&target.parameters) {
+            if parameter.ownership == Some(Ownership::Shared) && self.state.objects.contains_key(argument) {
+                let _ = self.promote_header_extent(*argument);
+            }
+        }
         let mut renames = BTreeMap::new();
         let mut unique_phi_rebases = BTreeMap::new();
         let mut shared_phi_rebases = BTreeMap::new();

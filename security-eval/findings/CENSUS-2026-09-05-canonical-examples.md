@@ -416,3 +416,27 @@ route is 0/107.
   call outside the compact subset. `listmatch` needs list patterns
   (`[]`, `[x, ..rest]`), not yet lowered.
 
+## Progress (owner, 2026-09-06, eighth slice)
+
+- **Join result lanes own their token**: an `if`/`match` arm whose value is a
+  reference some binding also holds (`if done: placed else: ...`, or
+  `if flag: left else: right` over two parameters) now clones that reference
+  for the result lane. The old pin that such a join must refuse is replaced:
+  the join is no forged token, each arm clones the parameter it returns, and
+  both parameter tokens release at the return. `queens` now lowers entirely
+  and stops at `list.at`, a std call outside the compact subset.
+- Loaded strings record their capacity lane (a byte buffer's authenticated
+  capacity is its count), so a join over two string parameters is a shared
+  phi; the checker promotes a shared-phi argument's header extent at the edge
+  from the facts already in the state instead of waiting for an element access.
+- **Named gap (next)**: a join whose arms contribute a parameter-derived
+  shared reference and a fresh unique allocation (`if xs.length() == n: xs
+  else: <var out = xs; out.push(n); out>`) is still refused
+  (`IncompatibleMemoryJoin`): the two object states differ in ownership
+  (`Shared` versus `Unique`), allocation class (`None` versus
+  `ReferenceCounted`), and the immutability flags. Admitting it needs a
+  reviewed ownership weakening (unique to shared at a shared phi) plus a join
+  rule for those three fields; that is a checker-model decision, not a
+  lowering fix, so it is recorded rather than pushed in.
+- Census unchanged at 68 of 163 check and 12 runnable examples with parity.
+

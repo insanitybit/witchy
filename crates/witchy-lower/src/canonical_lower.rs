@@ -1149,16 +1149,35 @@ impl FunctionLowerer<'_> {
         {
             return Ok(value);
         }
+        self.clone_reference_token(value)
+    }
+
+    /// A second token for a reference: a fresh copy of a static string, or a
+    /// `CloneRef` whose header is authenticated anew (the clone is a new
+    /// object to the checker; it does not inherit the source's count facts).
+    fn clone_reference_token(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         if self.is_static_string(value) {
             return self.clone_string_for_storage(value);
         }
         let clone = self.fresh(self.values[&value])?;
         self.push_operation(Operation::CloneRef { destination: clone, source: value });
-        // The clone is a new object to the checker: authenticate its own
-        // header rather than borrowing the source's count facts.
         self.ensure_list_extent(clone)?;
         self.ensure_string_extent(clone)?;
         Ok(clone)
+    }
+
+    /// The value an `if`/`match` arm contributes to its join. A reference that
+    /// is also a named binding's token (`if done: placed else: ...`) would
+    /// reach the join twice when that name is rebound in another arm, once as
+    /// the result lane and once as the binding lane; a token cannot feed two
+    /// lanes, so the result lane gets its own.
+    fn detach_bound_result(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        if !matches!(self.values[&value], ValueType::Ref(_))
+            || !self.bindings.values().any(|bound| *bound == value)
+        {
+            return Ok(value);
+        }
+        self.clone_reference_token(value)
     }
 
     fn drop_bindings_except(&mut self, names: &[String]) {
@@ -1190,7 +1209,8 @@ impl FunctionLowerer<'_> {
         self.current = then_id;
         self.bindings = outer.clone();
         let then_value = if with_value {
-            Some(self.lower_block_value(then_block)?)
+            let value = self.lower_block_value(then_block)?;
+            Some(self.detach_bound_result(value)?)
         } else {
             self.lower_block_effect(then_block)?;
             None
@@ -1202,7 +1222,8 @@ impl FunctionLowerer<'_> {
         self.current = else_id;
         self.bindings = outer.clone();
         let else_value = if with_value {
-            Some(self.lower_block_value(else_block)?)
+            let value = self.lower_block_value(else_block)?;
+            Some(self.detach_bound_result(value)?)
         } else {
             self.lower_block_effect(else_block)?;
             None
@@ -1415,6 +1436,7 @@ impl FunctionLowerer<'_> {
             }
             let value = if with_value {
                 let value = self.lower_expr(&arm.body)?;
+                let value = self.detach_bound_result(value)?;
                 if Some(self.values[&value]) != result_type {
                     return Err(CanonicalLoweringError::UnsupportedExpression("match arm types"));
                 }
@@ -2768,6 +2790,9 @@ impl FunctionLowerer<'_> {
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
         self.string_lengths.insert(value, length);
+        // A byte buffer's authenticated capacity is its count; record it so a
+        // join over two such strings has both extent lanes.
+        self.string_capacities.insert(value, length);
         Ok(())
     }
 
@@ -4775,21 +4800,23 @@ mod tests {
     }
 
     #[test]
-    fn shared_parameter_if_does_not_forge_a_shared_phi() {
-        // The join lane over two shared parameters cannot be given an owned
-        // token without forging one: releasing both parameter tokens at the
-        // join's return would release the value being returned. Lowering
-        // itself refuses, which is strictly stronger than the checker
-        // rejection this test once pinned; no such candidate reaches admission.
+    fn shared_parameter_if_gives_the_result_lane_its_own_token() {
+        // The join lane over two shared parameters is no forged token: each
+        // arm clones the parameter it returns, so the result owns a token of
+        // its own and both parameter tokens are released at the return.
         let checked = checked(
             "fn choose(flag: Bool, left: String, right: String) -> String:\n    if flag:\n        left\n    else:\n        right\n",
         );
         let source = checked.canonical_source().expect("canonical source");
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts");
-        assert!(matches!(
-            lower_typed_module(source, layouts),
-            Err(CanonicalLoweringError::OwnedReleasePlacement(_))
-        ));
+        let candidate = lower_typed_module(source, layouts).expect("shared parameter join lowers");
+        let clones = candidate.functions()[0]
+            .blocks
+            .iter()
+            .flat_map(|block| &block.operations)
+            .filter(|operation| matches!(operation, Operation::CloneRef { .. }))
+            .count();
+        assert_eq!(clones, 2, "each arm clones the parameter it returns");
     }
 
     #[test]
