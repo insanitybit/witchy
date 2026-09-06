@@ -653,6 +653,7 @@ fn lower_function(
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
+        parameter_names: BTreeMap::new(),
         results: Vec::new(),
         write_back_parameters: Vec::new(),
         blocks: Vec::new(),
@@ -693,6 +694,7 @@ fn lower_function(
         if lowerer.bindings.insert(source.name.clone(), parameter.value).is_some() {
             return Err(CanonicalLoweringError::DuplicateBinding(source.name.clone()));
         }
+        lowerer.parameter_names.insert(parameter.value, source.name.clone());
     }
     lowerer.write_back_parameters = function.params.iter().zip(&signature.contract.parameters)
         .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
@@ -722,9 +724,13 @@ fn lower_function(
         value_types: lowerer.values,
         blocks,
     };
+    let debug = std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some();
+    if debug {
+        eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
+    }
     owned::insert_releases(&mut lowered, signature, signatures, functions)
         .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
-    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+    if debug {
         eprintln!("canonical lowered `{}`:\n{lowered:#?}", function.name);
     }
     Ok(lowered)
@@ -748,6 +754,10 @@ struct FunctionLowerer<'a> {
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     owned_parameters: Vec<ValueId>,
+    /// Source name of each entry parameter, so an exit drop targets the
+    /// token under its current binding (a loop threads parameters through
+    /// block parameters) rather than the entry value.
+    parameter_names: BTreeMap<ValueId, String>,
     write_back_parameters: Vec<String>,
     /// The function's ordinary result types, so a `return` nested in a block
     /// can build the same terminator the body tail does.
@@ -777,8 +787,8 @@ impl FunctionLowerer<'_> {
         for (index, statement) in statements.iter().enumerate() {
             let final_statement = index + 1 == statements.len();
             match statement {
-                Stmt::Let { name, value, .. } => {
-                    let value = self.lower_expr(value)?;
+                Stmt::Let { name, mutable, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
                         return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
                     }
@@ -1027,8 +1037,8 @@ impl FunctionLowerer<'_> {
         let outer = self.bindings.keys().cloned().collect::<Vec<_>>();
         for statement in &block.stmts {
             match statement {
-                Stmt::Let { name, value, .. } => {
-                    let value = self.lower_expr(value)?;
+                Stmt::Let { name, mutable, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
                         return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
                     }
@@ -1091,8 +1101,8 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression("empty block"))?;
         for statement in statements {
             match statement {
-                Stmt::Let { name, value, .. } => {
-                    let value = self.lower_expr(value)?;
+                Stmt::Let { name, mutable, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
                         return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
                     }
@@ -1125,6 +1135,30 @@ impl FunctionLowerer<'_> {
         };
         self.drop_bindings_except(&outer);
         Ok(value)
+    }
+
+    /// The value a `let`/`var` binds. A `var` that aliases a reference another
+    /// binding still holds (`var next = placed`) needs its own token, or the
+    /// copy-on-write path would drop the other binding's. A static string
+    /// materializes an owned copy instead of cloning static data.
+    fn lower_let_value(&mut self, mutable: bool, value: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let value = self.lower_expr(value)?;
+        if !mutable
+            || !matches!(self.values[&value], ValueType::Ref(_))
+            || !self.bindings.values().any(|bound| *bound == value)
+        {
+            return Ok(value);
+        }
+        if self.is_static_string(value) {
+            return self.clone_string_for_storage(value);
+        }
+        let clone = self.fresh(self.values[&value])?;
+        self.push_operation(Operation::CloneRef { destination: clone, source: value });
+        // The clone is a new object to the checker: authenticate its own
+        // header rather than borrowing the source's count facts.
+        self.ensure_list_extent(clone)?;
+        self.ensure_string_extent(clone)?;
+        Ok(clone)
     }
 
     fn drop_bindings_except(&mut self, names: &[String]) {
@@ -1244,10 +1278,15 @@ impl FunctionLowerer<'_> {
         let mut else_arguments = Vec::with_capacity(parameter_types.len());
         let mut parameter_index = 0;
         let mut merged = outer;
+        let mut rebound_references = Vec::new();
         for name in changed_names {
             then_arguments.push(then_bindings[&name]);
             else_arguments.push(else_bindings[&name]);
-            merged.insert(name, join_parameters[parameter_index].value);
+            let parameter = join_parameters[parameter_index].value;
+            if matches!(self.values[&parameter], ValueType::Ref(_)) {
+                rebound_references.push(parameter);
+            }
+            merged.insert(name, parameter);
             parameter_index += 1;
         }
         let result = result_type.map(|(then_value, else_value, _)| {
@@ -1279,6 +1318,12 @@ impl FunctionLowerer<'_> {
             arguments: else_arguments,
         });
         self.current = join_id;
+        // A rebound list or string arrives without extent facts; a loop
+        // back edge or a later index needs them, so load the header once here.
+        for parameter in rebound_references {
+            self.ensure_list_extent(parameter)?;
+            self.ensure_string_extent(parameter)?;
+        }
         self.bindings = merged;
         Ok(result)
     }
@@ -1355,14 +1400,17 @@ impl FunctionLowerer<'_> {
                 // Replace the true edge with a dedicated body block. Keeping
                 // the guard and body separate is necessary: the false edge
                 // must not carry pattern bindings into the next arm.
+                // The guard expression may itself have split blocks (a
+                // short-circuit `&&`), so terminate the block it ended in,
+                // not the arm block it started in.
                 let body_block = self.new_block(&[])?;
-                self.blocks[arm_block.get() as usize].terminator = Some(Terminator::BranchIf {
+                self.finish_current(Terminator::BranchIf {
                     condition: guard,
                     then_target: body_block,
                     then_arguments: Vec::new(),
                     else_target: next_block.expect("a guarded arm has a fallthrough"),
                     else_arguments: Vec::new(),
-                });
+                })?;
                 self.current = body_block;
             }
             let value = if with_value {
@@ -2042,7 +2090,14 @@ impl FunctionLowerer<'_> {
             let drops = self
                 .owned_parameters
                 .iter()
-                .copied()
+                .map(|parameter| {
+                    self.parameter_names
+                        .get(parameter)
+                        .and_then(|name| self.bindings.get(name))
+                        .copied()
+                        .filter(|current| matches!(self.values.get(current), Some(ValueType::Ref(_))))
+                        .unwrap_or(*parameter)
+                })
                 .filter(|parameter| !transferred.contains(parameter))
                 .collect::<Vec<_>>();
             for object in drops {
@@ -3381,6 +3436,8 @@ impl FunctionLowerer<'_> {
         // `lower_expr(base)` has already authenticated the list header and
         // recorded the exact count definition related to its capacity. Do not
         // reload the header here: a new definition would discard that relation.
+        // An element of a nested list has no recorded extent yet; load it once.
+        self.ensure_list_extent(object)?;
         let logical_count = *self.list_counts.get(&object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list index extent"),
         )?;

@@ -178,3 +178,37 @@ fn admitted_early_return_inside_a_loop_over_a_list_parameter() {
     );
     assert_eq!(output, vec!["8 -1".to_string()]);
 }
+
+#[test]
+fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
+    // A loop threads list parameters through block parameters; the exit drop
+    // must target the current binding, not the entry value.
+    let output = run_admitted(
+        "pub fn dot(a: List(Int), b: List(Int)) -> Int:\n    var sum = 0\n    var i = 0\n    while i < a.length():\n        sum = sum + a[i] * b[i]\n        i = i + 1\n    sum\n\nfn main(console: Console):\n    let u = [1, 2, 3]\n    let v = [4, 5, 6]\n    console.print(\"dot = ${dot(u, v)}\")\n",
+    );
+    assert_eq!(output, vec!["dot = 32".to_string()]);
+}
+
+#[test]
+fn admitted_var_alias_of_a_list_parameter_copies_on_write() {
+    let output = run_admitted(
+        "pub fn grow(placed: List(Int), col: Int) -> Int:\n    var next = placed\n    next.push(col)\n    next.length()\n\nfn main(console: Console):\n    let base = [1, 2]\n    console.print(\"${grow(base, 3)} ${base.length()}\")\n",
+    );
+    assert_eq!(output, vec!["3 2".to_string()]);
+}
+
+#[test]
+fn admitted_guarded_match_arm_with_a_short_circuit_guard_runs() {
+    let output = run_admitted(
+        "pub fn cls(code: Int) -> String:\n    match code:\n        x if x >= 200 && x <= 299 -> \"success\"\n        _ -> \"unknown\"\n\nfn main(console: Console):\n    console.print(cls(204))\n    console.print(cls(600))\n",
+    );
+    assert_eq!(output, vec!["success".to_string(), "unknown".to_string()]);
+}
+
+#[test]
+fn admitted_nested_list_index_runs() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    let grid = [[1, 2, 3], [4, 5, 6]]\n    console.print(\"g = ${grid[1][2]}\")\n",
+    );
+    assert_eq!(output, vec!["g = 6".to_string()]);
+}

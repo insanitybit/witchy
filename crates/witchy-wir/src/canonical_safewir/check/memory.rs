@@ -460,7 +460,16 @@ impl<'a> MemoryChecker<'a> {
             // one side leaves that side as it was, so nothing is widened.
             let promoted_current = self.promoted_object(existing, *value).unwrap_or_else(|| current.clone());
             let promoted_next = self.promoted_object(incoming, *value).unwrap_or_else(|| next.clone());
-            let (current, next) = (&promoted_current, &promoted_next);
+            // A back edge may carry a counted extent whose count was loaded
+            // inside the loop body, which the entry edge cannot know. The
+            // header-prefix form is the weaker fact of the same object, so the
+            // join keeps it and the body re-derives the count from its own
+            // loads; nothing else about the object may differ.
+            let (current, next) = match demoted_pair(&promoted_current, &promoted_next) {
+                Some(pair) => pair,
+                None => (promoted_current, promoted_next),
+            };
+            let (current, next) = (&current, &next);
             if current != next {
                 if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
                     eprintln!(
@@ -511,6 +520,7 @@ impl<'a> MemoryChecker<'a> {
 
     /// `object`'s state in `state` after header-extent promotion, when the
     /// facts in `state` justify it.
+    // (see `demoted_pair` below for the inverse direction at a join)
     fn promoted_object(&self, state: &MemoryState, object: ValueId) -> Option<ObjectState> {
         if !matches!(state.objects.get(&object)?.extent, Extent::HeaderPrefix { .. }) {
             return None;
@@ -2697,6 +2707,28 @@ fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent
             stride_bytes: *stride_bytes,
         },
     }
+}
+
+/// When two states of one object differ only in that one side still holds
+/// the header-prefix extent the other has promoted to a counted extent with
+/// the same header size, both sides as the header-prefix form.
+fn demoted_pair(left: &ObjectState, right: &ObjectState) -> Option<(ObjectState, ObjectState)> {
+    let header_bytes = |extent: &Extent| match extent {
+        Extent::HeaderPrefix { minimum_bytes } => Some((*minimum_bytes, true)),
+        Extent::Counted { header_bytes, .. } => Some((*header_bytes, false)),
+        Extent::FixedBytes(_) => None,
+    };
+    let (left_bytes, left_prefix) = header_bytes(&left.extent)?;
+    let (right_bytes, right_prefix) = header_bytes(&right.extent)?;
+    if left_bytes != right_bytes || left_prefix == right_prefix {
+        return None;
+    }
+    let prefix = if left_prefix { left.extent.clone() } else { right.extent.clone() };
+    let mut demoted_left = left.clone();
+    let mut demoted_right = right.clone();
+    demoted_left.extent = prefix.clone();
+    demoted_right.extent = prefix;
+    Some((demoted_left, demoted_right))
 }
 
 fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(

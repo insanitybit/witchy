@@ -381,3 +381,36 @@ route is 0/107.
   after release placement; `WITCHY_CANONICAL_PLAN_DEBUG=1` now also prints the
   two object states at a refused memory join.
 
+## Progress (owner, 2026-09-06, seventh slice)
+
+- **Exit drops after loop rebinding fixed**: the lowering dropped owned
+  parameters at every exit by their entry value ids, but a loop threads list
+  parameters through block parameters, so the placer's token lived under the
+  current binding and the entry-id drop was a `MissingToken`. Exit drops now
+  resolve each parameter to its current binding.
+- **`var` alias of a shared reference fixed**: `var next = placed` bound the
+  parameter's token to a second name; the copy-on-write push then dropped a
+  token the parameter still owned. A `var` initialised from a reference another
+  binding holds now clones its own token (a static string materialises an owned
+  copy) and authenticates its own header.
+- **Guarded `match` arms with a short-circuit guard fixed**: the guard's
+  `BranchIf` was installed on the arm block the guard started in, overwriting
+  the `&&` lowering's terminator and leaving its join block unterminated
+  (`MissingReturn`). The guard now terminates the block it ended in.
+- **Nested list indexing fixed**: an element of a list of lists carried no
+  recorded extent; `lower_index` loads it once.
+- **`if` join of a rebound list fixed**: a list rebound in only one arm reached
+  the join without extent facts, so an enclosing `while` had no count lane at
+  its back edge; rebound references load their header at the join.
+- **Checker join (extent demotion)**: a back edge may carry a counted extent
+  whose count was loaded inside the loop body, which the entry edge cannot
+  know. When two states of one object differ only in that one side holds the
+  header-prefix form and the other the counted form with the same header size,
+  the join keeps the header-prefix form (the weaker fact of the same object);
+  the body re-derives the count from its own loads. Nothing else may differ.
+- Census: 68 of 163 check; 12 runnable examples admit and agree under parity
+  (`ranges` and `subscript` are new). `queens` now stops at a release-placement
+  `MissingToken` inside its recursive search and still needs `list.at`, a std
+  call outside the compact subset. `listmatch` needs list patterns
+  (`[]`, `[x, ..rest]`), not yet lowered.
+
