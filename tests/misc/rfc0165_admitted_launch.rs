@@ -237,3 +237,14 @@ fn admitted_if_choosing_between_two_reference_parameters_runs() {
     );
     assert_eq!(output, vec!["2 1".to_string()]);
 }
+
+#[test]
+fn admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack() {
+    // RFC-0090 resource evidence through the admitted launch path: 300,000
+    // self and mutual tail transitions inside `if`/`match` arms with a
+    // 256-slot budget.
+    let output = run_admitted(
+        "pub fn countdown(n: Int, acc: Int) -> Int:\n    if n == 0:\n        acc\n    else:\n        countdown(n - 1, acc + 1)\n\npub fn spin(n: Int, acc: Int) -> Int:\n    match n:\n        0 -> acc\n        _ -> spin(n - 1, acc + 2)\n\npub fn ping(n: Int) -> Int:\n    if n == 0:\n        0\n    else:\n        pong(n - 1)\n\npub fn pong(n: Int) -> Int:\n    if n == 0:\n        1\n    else:\n        ping(n - 1)\n\nfn main(console: Console):\n    console.print(\"${countdown(300000, 0)} ${spin(300000, 0)} ${ping(300001)}\")\n",
+    );
+    assert_eq!(output, vec!["300000 600000 1".to_string()]);
+}

@@ -842,8 +842,7 @@ impl FunctionLowerer<'_> {
                             let terminator = self.lower_direct_tail_call(
                                 name,
                                 args,
-                                index,
-                                ProperTailPathStep::ReturnValue,
+                                                                tail_path(index, ProperTailPathStep::ReturnValue)?,
                             )?;
                             self.finish_current(terminator)?;
                         } else {
@@ -857,8 +856,7 @@ impl FunctionLowerer<'_> {
                                 callee,
                                 args,
                                 signature,
-                                index,
-                                ProperTailPathStep::ReturnValue,
+                                                                tail_path(index, ProperTailPathStep::ReturnValue)?,
                                 ProperTailExprKind::Call,
                                 ProperTailDispatchKind::Direct,
                             )?;
@@ -877,13 +875,18 @@ impl FunctionLowerer<'_> {
                             callee,
                             args,
                             signature,
-                            index,
-                            ProperTailPathStep::ReturnValue,
+                                                        tail_path(index, ProperTailPathStep::ReturnValue)?,
                             ProperTailExprKind::Apply,
                             ProperTailDispatchKind::Indirect,
                         )?;
                         self.finish_current(terminator)?;
                         return Ok(());
+                    }
+                    if let Some(value) = value
+                        && matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_))
+                        && self.has_nested_tail_sites(&tail_path(index, ProperTailPathStep::ReturnValue)?)
+                    {
+                        return self.lower_tail_expr(value, tail_path(index, ProperTailPathStep::ReturnValue)?);
                     }
                     let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
                     let terminator = self.return_value(value, results)?;
@@ -918,8 +921,7 @@ impl FunctionLowerer<'_> {
                             let terminator = self.lower_direct_tail_call(
                                 name,
                                 args,
-                                index,
-                                ProperTailPathStep::Value,
+                                                                tail_path(index, ProperTailPathStep::Value)?,
                             )?;
                             self.finish_current(terminator)?;
                         } else {
@@ -933,8 +935,7 @@ impl FunctionLowerer<'_> {
                                 callee,
                                 args,
                                 signature,
-                                index,
-                                ProperTailPathStep::Value,
+                                                                tail_path(index, ProperTailPathStep::Value)?,
                                 ProperTailExprKind::Call,
                                 ProperTailDispatchKind::Direct,
                             )?;
@@ -953,8 +954,7 @@ impl FunctionLowerer<'_> {
                             callee,
                             args,
                             signature,
-                            index,
-                            ProperTailPathStep::Value,
+                                                        tail_path(index, ProperTailPathStep::Value)?,
                             ProperTailExprKind::Apply,
                             ProperTailDispatchKind::Indirect,
                         )?;
@@ -966,6 +966,14 @@ impl FunctionLowerer<'_> {
                     // arms print, a loop, a block. Lowering it as a value would
                     // refuse `if` without `else` and `console.print` in arms
                     // (census B2/B3).
+                    // A final `if`/`match`/block whose arms hold manifest
+                    // tail sites is lowered in tail context: each arm exits
+                    // the function, with proper tail calls at the sites.
+                    if matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_))
+                        && self.has_nested_tail_sites(&tail_path(index, ProperTailPathStep::Value)?)
+                    {
+                        return self.lower_tail_expr(value, tail_path(index, ProperTailPathStep::Value)?);
+                    }
                     if results.is_empty() {
                         self.lower_effect_expr(value)?;
                         self.finish_current(Terminator::Return { values: Vec::new() })?;
@@ -1021,7 +1029,7 @@ impl FunctionLowerer<'_> {
                 self.lower_if(cond, then_block, &empty, false).map(|_| ())
             }
             Expr::Match { scrutinee, arms } => {
-                self.lower_match(scrutinee, arms, false).map(|_| ())
+                self.lower_match(scrutinee, arms, false, None).map(|_| ())
             }
             _ => {
                 self.lower_expr(expression)?;
@@ -1178,6 +1186,185 @@ impl FunctionLowerer<'_> {
             return Ok(value);
         }
         self.clone_reference_token(value)
+    }
+
+    /// Whether the manifest marks a proper-tail site strictly inside the
+    /// expression at `prefix` (an arm of an `if`/`match`, a block's last
+    /// statement), as opposed to a call that is the expression itself.
+    fn has_nested_tail_sites(&self, prefix: &[ProperTailPathStep]) -> bool {
+        self.tail_manifest.sites().iter().any(|site| {
+            site.key.callable.item == self.item
+                && site.key.callable.method.is_none()
+                && site.key.callable.lambda_path.is_empty()
+                && site.key.path.starts_with(prefix)
+                && site.key.path.len() > prefix.len() + 1
+        })
+    }
+
+    fn has_tail_site(&self, path: &[ProperTailPathStep], node: ProperTailExprKind) -> bool {
+        self.tail_manifest.sites().iter().any(|site| {
+            site.key.callable.item == self.item
+                && site.key.callable.method.is_none()
+                && site.key.callable.lambda_path.is_empty()
+                && site.key.path.len() == path.len() + 1
+                && site.key.path.starts_with(path)
+                && site.key.path.last() == Some(&ProperTailPathStep::Node(node))
+        })
+    }
+
+    /// Lower an expression in tail position so that every leaf terminates the
+    /// function: a manifest-marked call becomes a proper tail call, an
+    /// `if`/`match`/block recurses into its arms along the manifest path, and
+    /// anything else returns its value (or, in a unit function, its effect).
+    fn lower_tail_expr(
+        &mut self,
+        expression: &Expr,
+        path: Vec<ProperTailPathStep>,
+    ) -> Result<(), CanonicalLoweringError> {
+        let results = self.results.clone();
+        match expression {
+            Expr::If { cond, then_block, else_block } => {
+                let condition = self.lower_expr(cond)?;
+                if self.values[&condition] != ValueType::Bool {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
+                }
+                let outer = self.bindings.clone();
+                let then_id = self.new_block(&[])?;
+                let else_id = self.new_block(&[])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition,
+                    then_target: then_id,
+                    then_arguments: Vec::new(),
+                    else_target: else_id,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = then_id;
+                self.bindings = outer.clone();
+                let mut then_path = path.clone();
+                then_path.extend([ProperTailPathStep::Node(ProperTailExprKind::If), ProperTailPathStep::Child(1)]);
+                self.lower_tail_block(then_block, then_path)?;
+                self.current = else_id;
+                self.bindings = outer;
+                match else_block {
+                    Some(else_block) => {
+                        let mut else_path = path;
+                        else_path.extend([ProperTailPathStep::Node(ProperTailExprKind::If), ProperTailPathStep::Child(2)]);
+                        self.lower_tail_block(else_block, else_path)
+                    }
+                    None if results.is_empty() => self.finish_current(Terminator::Return { values: Vec::new() }),
+                    None => Err(CanonicalLoweringError::UnsupportedExpression("valued if without else")),
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                let mut match_path = path;
+                match_path.push(ProperTailPathStep::Node(ProperTailExprKind::Match));
+                self.lower_match(scrutinee, arms, !results.is_empty(), Some(match_path)).map(|_| ())
+            }
+            Expr::Block(block) => {
+                let mut block_path = path;
+                block_path.push(ProperTailPathStep::Node(ProperTailExprKind::Block));
+                self.lower_tail_block(block, block_path)
+            }
+            Expr::Call { name, args }
+                if !self.bindings.contains_key(name)
+                    && self.functions.contains_key(name)
+                    && self.has_tail_site(&path, ProperTailExprKind::Call) =>
+            {
+                let terminator = self.lower_direct_tail_call(name, args, path)?;
+                self.finish_current(terminator)
+            }
+            Expr::Call { name, args }
+                if self.bindings.contains_key(name) && self.has_tail_site(&path, ProperTailExprKind::Call) =>
+            {
+                let callee = self.bindings[name];
+                let ValueType::Callable(signature) = self.values[&callee] else {
+                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                };
+                let terminator = self.lower_indirect_tail_call(
+                    callee, args, signature, path, ProperTailExprKind::Call, ProperTailDispatchKind::Direct,
+                )?;
+                self.finish_current(terminator)
+            }
+            Expr::Apply { func, args } if self.has_tail_site(&path, ProperTailExprKind::Apply) => {
+                let callee = self.lower_expr(func)?;
+                let ValueType::Callable(signature) = self.values[&callee] else {
+                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                };
+                let terminator = self.lower_indirect_tail_call(
+                    callee, args, signature, path, ProperTailExprKind::Apply, ProperTailDispatchKind::Indirect,
+                )?;
+                self.finish_current(terminator)
+            }
+            _ if results.is_empty() => {
+                self.lower_effect_expr(expression)?;
+                self.finish_current(Terminator::Return { values: Vec::new() })
+            }
+            _ => {
+                let value = self.lower_expr(expression)?;
+                let terminator = self.return_value(Some(value), &results)?;
+                self.finish_current(terminator)
+            }
+        }
+    }
+
+    /// A block in tail position: its leading statements are ordinary, its
+    /// last statement is the tail expression.
+    fn lower_tail_block(
+        &mut self,
+        block: &witchy_syntax::ast::Block,
+        mut path: Vec<ProperTailPathStep>,
+    ) -> Result<(), CanonicalLoweringError> {
+        let Some((last, leading)) = block.stmts.split_last() else {
+            if !self.results.is_empty() {
+                return Err(CanonicalLoweringError::UnsupportedExpression("empty valued block"));
+            }
+            return self.finish_current(Terminator::Return { values: Vec::new() });
+        };
+        for statement in leading {
+            match statement {
+                Stmt::Let { name, mutable, value, .. } => {
+                    let value = self.lower_let_value(*mutable, value)?;
+                    if self.bindings.insert(name.clone(), value).is_some() {
+                        return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
+                    }
+                }
+                Stmt::Assign { name, value } => {
+                    if !self.bindings.contains_key(name) {
+                        return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                    }
+                    if let Expr::Call { name: call, args } = value
+                        && matches!(call.as_str(), "list.push" | "list.__push")
+                    {
+                        self.lower_list_push(args)?;
+                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
+                            return Err(CanonicalLoweringError::UnsupportedExpression(
+                                "list.push assignment target",
+                            ));
+                        }
+                        continue;
+                    }
+                    let value = self.lower_expr(value)?;
+                    self.bindings.insert(name.clone(), value);
+                }
+                Stmt::Expr(value) => self.lower_effect_expr(value)?,
+                _ => return Err(CanonicalLoweringError::UnsupportedStatement("tail block statement")),
+            }
+        }
+        let index = u32::try_from(leading.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        match last {
+            Stmt::Expr(value) => {
+                path.extend([ProperTailPathStep::Statement(index), ProperTailPathStep::Value]);
+                self.lower_tail_expr(value, path)
+            }
+            Stmt::Return(Some(value)) => {
+                path.extend([ProperTailPathStep::Statement(index), ProperTailPathStep::ReturnValue]);
+                self.lower_tail_expr(value, path)
+            }
+            Stmt::Return(None) if self.results.is_empty() => {
+                self.finish_current(Terminator::Return { values: Vec::new() })
+            }
+            _ => Err(CanonicalLoweringError::UnsupportedStatement("tail block end")),
+        }
     }
 
     fn drop_bindings_except(&mut self, names: &[String]) {
@@ -1354,6 +1541,7 @@ impl FunctionLowerer<'_> {
         scrutinee: &Expr,
         arms: &[witchy_syntax::ast::MatchArm],
         with_value: bool,
+        tail: Option<Vec<ProperTailPathStep>>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         if arms.is_empty() {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
@@ -1378,7 +1566,7 @@ impl FunctionLowerer<'_> {
         // guessing it is dead (BUG-canonical-match-cfg-unstructured-block).
         let mut next = Some(self.current);
 
-        for arm in arms {
+        for (arm_index, arm) in arms.iter().enumerate() {
             let Some(current) = next else { break };
             self.current = current;
             self.bindings = outer.clone();
@@ -1434,6 +1622,19 @@ impl FunctionLowerer<'_> {
                 })?;
                 self.current = body_block;
             }
+            if let Some(tail) = &tail {
+                // Tail mode: every arm exits the function itself, so the
+                // match has no join.
+                let mut arm_path = tail.clone();
+                arm_path.extend([
+                    ProperTailPathStep::Arm(u32::try_from(arm_index).map_err(|_| CanonicalLoweringError::IdOverflow)?),
+                    ProperTailPathStep::Value,
+                ]);
+                self.lower_tail_expr(&arm.body, arm_path)?;
+                self.bindings = outer.clone();
+                next = next_block;
+                continue;
+            }
             let value = if with_value {
                 let value = self.lower_expr(&arm.body)?;
                 let value = self.detach_bound_result(value)?;
@@ -1458,6 +1659,10 @@ impl FunctionLowerer<'_> {
         if let Some(fallthrough) = next {
             self.current = fallthrough;
             self.finish_current(Terminator::Trap)?;
+        }
+        if tail.is_some() {
+            self.bindings = outer;
+            return Ok(None);
         }
 
         let mut changed_names = outer
@@ -2199,8 +2404,7 @@ impl FunctionLowerer<'_> {
         &mut self,
         name: &str,
         arguments: &[Expr],
-        statement: usize,
-        position: ProperTailPathStep,
+        path: Vec<ProperTailPathStep>,
     ) -> Result<Terminator, CanonicalLoweringError> {
         let (callee, signature_id) = self
             .functions
@@ -2212,18 +2416,15 @@ impl FunctionLowerer<'_> {
             .get(signature_id.get() as usize)
             .cloned()
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
-        let statement = u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let mut path = path;
+        path.push(ProperTailPathStep::Node(ProperTailExprKind::Call));
         let key = ProperTailSiteKey {
             callable: ProperTailCallableId {
                 item: self.item,
                 method: None,
                 lambda_path: Vec::new(),
             },
-            path: vec![
-                ProperTailPathStep::Statement(statement),
-                position,
-                ProperTailPathStep::Node(ProperTailExprKind::Call),
-            ],
+            path,
             dispatch: ProperTailDispatchKind::Direct,
         };
         let site = self
@@ -2276,8 +2477,7 @@ impl FunctionLowerer<'_> {
         callee: ValueId,
         arguments: &[Expr],
         signature_id: FunctionSignatureId,
-        statement: usize,
-        position: ProperTailPathStep,
+        path: Vec<ProperTailPathStep>,
         expression: ProperTailExprKind,
         dispatch: ProperTailDispatchKind,
     ) -> Result<Terminator, CanonicalLoweringError> {
@@ -2309,13 +2509,11 @@ impl FunctionLowerer<'_> {
                 method: None,
                 lambda_path: Vec::new(),
             },
-            path: vec![
-                ProperTailPathStep::Statement(
-                    u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                ),
-                position,
-                ProperTailPathStep::Node(expression),
-            ],
+            path: {
+                let mut path = path;
+                path.push(ProperTailPathStep::Node(expression));
+                path
+            },
             dispatch,
         };
         let site = self
@@ -2661,7 +2859,7 @@ impl FunctionLowerer<'_> {
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("if value")),
             Expr::If { .. } => Err(CanonicalLoweringError::UnsupportedExpression("if without else")),
             Expr::Match { scrutinee, arms } => self
-                .lower_match(scrutinee, arms, true)?
+                .lower_match(scrutinee, arms, true, None)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("match value")),
             Expr::Block(block) => self.lower_block_value(block),
             Expr::While { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while value")),
@@ -4546,23 +4744,58 @@ fn canonical_tail_sites(
         .collect()
 }
 
+/// A manifest site whose call is an intrinsic the lowering emits inline
+/// (a host print, a header read) is not a proper-tail obligation, wherever
+/// in the tail structure it sits.
 fn is_intrinsic_tail_site(
     site: &ProperTailSite,
     function: &witchy_syntax::ast::Function,
 ) -> bool {
-    let Some(statement) = site.key.path.iter().find_map(|step| match step {
-        ProperTailPathStep::Statement(index) => Some(*index as usize),
-        _ => None,
-    }) else {
-        return false;
-    };
-    match function.body.stmts.get(statement) {
-        Some(Stmt::Expr(Expr::Call { name, .. }))
-        | Some(Stmt::Return(Some(Expr::Call { name, .. })))
+    matches!(
+        expr_at_tail_path(&function.body, &site.key.path),
+        Some(Expr::Call { name, .. })
             if is_console_print(name)
-                || matches!(name.as_str(), "list.length" | "list.__length") => true,
-        _ => false,
+                || matches!(name.as_str(), "list.length" | "list.__length" | "string.chars" | "string.__chars")
+                || witchy_syntax::ast::is_render_intrinsic(name)
+    )
+}
+
+/// Follow a proper-tail manifest path (the grammar of the checker's
+/// `collect_block`) from a function body to the expression it names.
+fn expr_at_tail_path<'a>(
+    block: &'a witchy_syntax::ast::Block,
+    path: &[ProperTailPathStep],
+) -> Option<&'a Expr> {
+    let [ProperTailPathStep::Statement(index), rest @ ..] = path else { return None };
+    match (block.stmts.get(*index as usize)?, rest) {
+        (Stmt::Return(Some(value)), [ProperTailPathStep::ReturnValue, rest @ ..])
+        | (Stmt::Expr(value), [ProperTailPathStep::Value, rest @ ..]) => expr_in_tail_path(value, rest),
+        _ => None,
     }
+}
+
+fn expr_in_tail_path<'a>(expression: &'a Expr, path: &[ProperTailPathStep]) -> Option<&'a Expr> {
+    let [ProperTailPathStep::Node(_), rest @ ..] = path else { return None };
+    if rest.is_empty() {
+        return Some(expression);
+    }
+    match (expression, rest) {
+        (Expr::If { then_block, .. }, [ProperTailPathStep::Child(1), rest @ ..]) => expr_at_tail_path(then_block, rest),
+        (Expr::If { else_block: Some(else_block), .. }, [ProperTailPathStep::Child(2), rest @ ..]) => {
+            expr_at_tail_path(else_block, rest)
+        }
+        (Expr::Match { arms, .. }, [ProperTailPathStep::Arm(arm), ProperTailPathStep::Value, rest @ ..]) => {
+            expr_in_tail_path(&arms.get(*arm as usize)?.body, rest)
+        }
+        (Expr::Block(block), rest) => expr_at_tail_path(block, rest),
+        (Expr::Binary { rhs, .. }, [ProperTailPathStep::Child(1), rest @ ..]) => expr_in_tail_path(rhs, rest),
+        _ => None,
+    }
+}
+
+fn tail_path(statement: usize, position: ProperTailPathStep) -> Result<Vec<ProperTailPathStep>, CanonicalLoweringError> {
+    let statement = u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+    Ok(vec![ProperTailPathStep::Statement(statement), position])
 }
 
 fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str) -> bool {

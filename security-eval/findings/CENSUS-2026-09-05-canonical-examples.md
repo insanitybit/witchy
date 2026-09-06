@@ -440,3 +440,22 @@ route is 0/107.
   lowering fix, so it is recorded rather than pushed in.
 - Census unchanged at 68 of 163 check and 12 runnable examples with parity.
 
+## Progress (owner, 2026-09-06, ninth slice)
+
+- **Proper tail calls inside `if`/`match`/block arms fixed**: the lowering
+  recognised a proper-tail site only as the function's final statement, while
+  the manifest also marks calls in tail arms, so every tail-recursive function
+  written with an `if` or `match` was refused by the checker as
+  `MissingTailObligation`. A final `if`/`match`/block that contains nested
+  manifest sites is now lowered in tail context along the manifest path
+  (`Node(If)/Child(1|2)`, `Node(Match)/Arm(k)/Value`, block statements): each
+  arm exits the function, with a proper tail call at every marked site and a
+  direct return elsewhere; there is no join. Intrinsic sites (a host print, a
+  header read, a render) are exempted wherever they sit, by resolving the
+  manifest path to the expression it names.
+- RFC-0090 resource evidence now exists through `spawn_admitted`: 300,000 self
+  and mutual tail transitions inside `if`/`match` arms run with a 256-slot
+  budget (`admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack`),
+  and `tests/rfc0090/tail_positions.rs` passes on the canonical route.
+- Census unchanged at 68 of 163 check and 12 runnable examples with parity.
+
