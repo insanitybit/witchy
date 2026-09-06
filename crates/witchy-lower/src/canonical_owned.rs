@@ -179,10 +179,11 @@ fn call_flow(
     let ordinary_results = destinations.len() - write_back_count;
     for (index, (destination, contract)) in destinations.iter().zip(&signature.contract.results).enumerate() {
         if index >= ordinary_results {
-            if !is_reference(function, *destination) {
-                return Err(ReleasePlacementError::UnresolvedResult(*destination));
+            // A reference write-back lane is the replacement token; a scalar
+            // `var` lane is a plain value with nothing to release.
+            if is_reference(function, *destination) {
+                owned.insert(*destination);
             }
-            owned.insert(*destination);
             continue;
         }
         match contract {

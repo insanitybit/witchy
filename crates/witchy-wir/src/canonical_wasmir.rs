@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use sha2::{Digest, Sha256};
@@ -2623,6 +2624,9 @@ struct StructuredEmitter<'a> {
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
+    /// Memoized `is_loop_header` judgments; the dominance walk is quadratic
+    /// and the structuring queries ask about the same blocks repeatedly.
+    loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
 }
 
 impl StructuredEmitter<'_> {
@@ -2761,7 +2765,81 @@ impl StructuredEmitter<'_> {
         if *then_target == id || *else_target == id || then_target == else_target {
             return Ok(false);
         }
-        Ok(self.reaches(*then_target, id)? && !self.reaches(*else_target, id)?)
+        if let Some(known) = self.loop_headers.borrow().get(&id) {
+            return Ok(*known);
+        }
+        // A loop header is the target of a back edge (a predecessor it
+        // dominates) whose `then` side lies in that natural loop and whose
+        // `else` side does not. Plain reachability is not enough: an inner
+        // loop's exit reaches the inner header again through the enclosing
+        // loop's back edge, which is not a cycle of the inner loop.
+        let result = !self.back_edge_sources(id)?.is_empty()
+            && self.in_natural_loop(id, *then_target)?
+            && !self.in_natural_loop(id, *else_target)?;
+        self.loop_headers.borrow_mut().insert(id, result);
+        Ok(result)
+    }
+
+    /// Paths from `start` to `goal` that never enter `avoid`.
+    fn reaches_avoiding(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        goal: crate::canonical_safewir::BlockId,
+        avoid: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, EncodeError> {
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if id == avoid || !seen.insert(id) {
+                continue;
+            }
+            if id == goal {
+                return Ok(true);
+            }
+            pending.extend(self.successors(id)?);
+        }
+        Ok(false)
+    }
+
+    /// `dominator` lies on every path from the entry block to `node`.
+    fn dominates(
+        &self,
+        dominator: crate::canonical_safewir::BlockId,
+        node: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, EncodeError> {
+        Ok(node == dominator || !self.reaches_avoiding(self.target_function.entry, node, dominator)?)
+    }
+
+    /// Predecessors of `header` that it dominates: the sources of its back edges.
+    fn back_edge_sources(
+        &self,
+        header: crate::canonical_safewir::BlockId,
+    ) -> Result<Vec<crate::canonical_safewir::BlockId>, EncodeError> {
+        let mut sources = Vec::new();
+        for block in &self.target_function.blocks {
+            if block.id != header
+                && self.successors(block.id)?.contains(&header)
+                && self.dominates(header, block.id)?
+            {
+                sources.push(block.id);
+            }
+        }
+        Ok(sources)
+    }
+
+    /// `block` belongs to the natural loop of `header`: it reaches one of the
+    /// header's back-edge sources without passing through the header.
+    fn in_natural_loop(
+        &self,
+        header: crate::canonical_safewir::BlockId,
+        block: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, EncodeError> {
+        for source in self.back_edge_sources(header)? {
+            if block == source || self.reaches_avoiding(block, source, header)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn find_join(
@@ -3120,6 +3198,7 @@ fn encode_function(
         emitted: BTreeSet::new(),
         labels: Vec::new(),
         loops: Vec::new(),
+        loop_headers: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(entry, None)?;
     if emitter.emitted.len() != target_function.blocks.len() {
@@ -4294,6 +4373,7 @@ fn expected_linear_function_plan(
     imports: &BTreeMap<ImportId, ImportContract>,
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
+    aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
@@ -4301,7 +4381,6 @@ fn expected_linear_function_plan(
     let layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let block = &function.blocks[0];
     let mut plan = Vec::new();
-    let mut aggregates = BTreeMap::<ValueId, Vec<ValueId>>::new();
     for operation in &block.operations {
         match operation {
             Operation::ConstInt { destination, value } => {
@@ -4573,6 +4652,7 @@ fn expected_block_operations_plan(
     imports: &BTreeMap<ImportId, ImportContract>,
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
+    aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     // Reuse only the source-operation rules above.  The synthetic terminator
     // is never emitted; it exists solely to satisfy the operation-level
@@ -4604,6 +4684,7 @@ fn expected_block_operations_plan(
         imports,
         import_indices,
         static_data_offsets,
+        aggregates,
     )?;
     if plan.pop() != Some(PlanToken::End) || plan.pop() != Some(PlanToken::Return) {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
@@ -4625,6 +4706,11 @@ struct PlanEmitter<'a> {
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
+    /// Inline aggregates are SSA markers over field locals, so a field read
+    /// is valid anywhere the aggregate dominates: the map is function-wide,
+    /// as in the encoder.
+    aggregates: BTreeMap<ValueId, Vec<ValueId>>,
+    loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
 }
 
 impl PlanEmitter<'_> {
@@ -4716,7 +4802,54 @@ impl PlanEmitter<'_> {
         if *then_target == id || *else_target == id || then_target == else_target {
             return Ok(false);
         }
-        Ok(self.reaches(*then_target, id)? && !self.reaches(*else_target, id)?)
+        if let Some(known) = self.loop_headers.borrow().get(&id) {
+            return Ok(*known);
+        }
+        // Mirror of the encoder's rule: a back edge (a dominated predecessor)
+        // whose `then` side is in the natural loop and whose `else` side is not.
+        let result = !self.back_edge_sources(id)?.is_empty()
+            && self.in_natural_loop(id, *then_target)?
+            && !self.in_natural_loop(id, *else_target)?;
+        self.loop_headers.borrow_mut().insert(id, result);
+        Ok(result)
+    }
+
+    fn reaches_avoiding(&self, start: crate::canonical_safewir::BlockId, goal: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if id == avoid || !seen.insert(id) {
+                continue;
+            }
+            if id == goal {
+                return Ok(true);
+            }
+            pending.extend(self.successors(id)?);
+        }
+        Ok(false)
+    }
+
+    fn dominates(&self, dominator: crate::canonical_safewir::BlockId, node: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        Ok(node == dominator || !self.reaches_avoiding(self.source_function.entry, node, dominator)?)
+    }
+
+    fn back_edge_sources(&self, header: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        let mut sources = Vec::new();
+        for block in &self.source_function.blocks {
+            if block.id != header && self.successors(block.id)?.contains(&header) && self.dominates(header, block.id)? {
+                sources.push(block.id);
+            }
+        }
+        Ok(sources)
+    }
+
+    fn in_natural_loop(&self, header: crate::canonical_safewir::BlockId, block: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        for source in self.back_edge_sources(header)? {
+            if block == source || self.reaches_avoiding(block, source, header)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn find_join(
@@ -4842,6 +4975,7 @@ impl PlanEmitter<'_> {
             self.imports,
             self.import_indices,
             self.static_data_offsets,
+            &mut self.aggregates,
         )?);
         match block.terminator {
             Terminator::Branch { target, arguments } => {
@@ -4907,7 +5041,7 @@ impl PlanEmitter<'_> {
         self.plan.push(PlanToken::Loop("Empty".to_owned()));
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
-        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets)?);
+        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates)?);
         push_get(&mut self.plan, self.layout, *condition)?;
         self.plan.push(PlanToken::If("Empty".to_owned()));
         self.labels.push(StructuredLabel::If);
@@ -5077,6 +5211,8 @@ fn expected_function_plan(
         emitted: BTreeSet::new(),
         labels: Vec::new(),
         loops: Vec::new(),
+        aggregates: BTreeMap::new(),
+        loop_headers: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(function.entry, None)?;
     if emitter.emitted.len() != function.blocks.len() {

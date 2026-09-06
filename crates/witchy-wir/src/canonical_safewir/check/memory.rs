@@ -453,7 +453,21 @@ impl<'a> MemoryChecker<'a> {
             let Some(next) = incoming.objects.get(value) else {
                 continue;
             };
+            // Extent promotion is lazy (it happens at the first element or
+            // slice access), so a back edge may carry the counted extent the
+            // entry edge has not derived yet from the same header loads.
+            // Promote both sides before comparing; a promotion that fails on
+            // one side leaves that side as it was, so nothing is widened.
+            let promoted_current = self.promoted_object(existing, *value).unwrap_or_else(|| current.clone());
+            let promoted_next = self.promoted_object(incoming, *value).unwrap_or_else(|| next.clone());
+            let (current, next) = (&promoted_current, &promoted_next);
             if current != next {
+                if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                    eprintln!(
+                        "canonical memory join mismatch at {:?} for {value:?}:\n existing: {current:#?}\n incoming: {next:#?}",
+                        block.id
+                    );
+                }
                 return Err(InitialCheckError::IncompatibleMemoryJoin {
                     function: self.function.id,
                     block: block.id,
@@ -493,6 +507,17 @@ impl<'a> MemoryChecker<'a> {
                 .copied()
                 .collect(),
         })
+    }
+
+    /// `object`'s state in `state` after header-extent promotion, when the
+    /// facts in `state` justify it.
+    fn promoted_object(&self, state: &MemoryState, object: ValueId) -> Option<ObjectState> {
+        if !matches!(state.objects.get(&object)?.extent, Extent::HeaderPrefix { .. }) {
+            return None;
+        }
+        let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, state: state.clone() };
+        scratch.promote_header_extent(object).ok()?;
+        scratch.state.objects.get(&object).cloned()
     }
 
     fn initialize_parameters(

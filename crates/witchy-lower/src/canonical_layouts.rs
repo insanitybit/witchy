@@ -56,9 +56,17 @@ pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
     let typed = source.typed_module();
+    // The checker spells an entry-module type as `entry.Name` while the
+    // definition keeps its bare source name; key both spellings.
+    let entry_module = typed.module().linked_entry.as_deref();
     let definitions = typed.module().items.iter().filter_map(|item| match item {
-        Item::Type(definition) => Some((definition.name.clone(), definition.clone())),
+        Item::Type(definition) => Some(definition),
         _ => None,
+    }).flat_map(|definition| {
+        let qualified = entry_module
+            .filter(|_| !definition.name.contains('.'))
+            .map(|entry| (format!("{entry}.{}", definition.name), definition.clone()));
+        std::iter::once((definition.name.clone(), definition.clone())).chain(qualified)
     }).collect();
     let mut projection = LayoutProjection { roots: Vec::new(), definitions };
 

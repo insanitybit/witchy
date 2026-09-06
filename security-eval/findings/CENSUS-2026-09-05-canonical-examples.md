@@ -337,3 +337,47 @@ route is 0/107.
   `MissingBinding("math.to_float")`, a std cross-module call outside the
   compact subset, instead of `Float` arithmetic.
 
+## Progress (owner, 2026-09-06, sixth slice)
+
+- **B1 fixed**: `"${e}"` (the render intrinsic) lowers for `String` (identity)
+  and `Int`. An `Int` renders through a static `0123456789` table with
+  one-byte `CopyBytes` slices whose ends are trapping adds guarded against the
+  object's count, and a branch-free sign copy of zero or one bytes from a
+  static `-` table (`value >> 63` mask), so `Int::MIN` is never negated.
+  `Float`, `Bool`, and `Duration` renders refuse by name. The digit tables are
+  registered only when some render argument is checked as `Int`, because the
+  checker refuses an unreferenced static segment.
+- Checker fact discovered while doing so: a branch argument is renamed to its
+  block parameter in every fact table, so a value whose facts are needed after
+  a loop must never be passed as a loop argument; the renderer starts each loop
+  from a dedicated copy.
+- **Nested loops fixed (encoder)**: the loop-header test used global
+  reachability, and an inner loop's exit reaches the inner header again through
+  the enclosing back edge, so any loop nested in a loop was refused as an
+  irreducible `BranchIf`. Both the encoder and the plan mirror now recognise a
+  header by a dominated predecessor (a back edge) whose `then` side lies in the
+  natural loop and whose `else` side does not, memoized per function.
+- **B9 (qualified names) fixed**: the checker spells an entry-module type as
+  `entry.Point` while the definition keeps the bare name; the layout
+  projection and the packed-record map key both spellings. The plan mirror's
+  inline-aggregate field map was per block, unlike the encoder's, so a packed
+  field read after any block split failed admission; it is now function-wide.
+  Ordinary heap records (`type Point:` without `packed`) remain outside the
+  compact subset, and packed records as call parameters are not modelled.
+- **B7 fixed**: a scalar `var` parameter is a value in and a result lane out,
+  keeping the write-back marker: the parameter carries no memory token, the
+  call site passes a value, the callee's exit returns the current binding, and
+  the release placer skips scalar lanes. Direct and indirect calls both write
+  back; `examples/mutate` runs.
+- **Early `return` inside a loop over a list parameter fixed (checker)**: the
+  loop header refused to join because extent promotion is lazy: the entry edge
+  carried the list's header-prefix extent and the back edge the counted extent
+  promoted by the body's element read. The join now promotes both sides from
+  their own facts before comparing; nothing is widened. `examples/guard` runs.
+- Census: 66 of 163 check; 10 runnable examples admit and agree under
+  `witchy parity` (`app`, `compute`, `constants`, `fizzbuzz`, `guard`,
+  `hello`, `mutate`, `ownership`, `signs`, `strings`).
+- Diagnostics: `WITCHY_CANONICAL_LOWER_DEBUG=1` dumps each lowered function
+  after release placement; `WITCHY_CANONICAL_PLAN_DEBUG=1` now also prints the
+  two object states at a refused memory join.
+

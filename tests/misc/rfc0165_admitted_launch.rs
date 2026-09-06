@@ -132,3 +132,49 @@ fn admitted_float_arithmetic_and_integer_division_run() {
     );
     assert_eq!(output, vec!["5".to_string()]);
 }
+
+#[test]
+fn admitted_string_interpolation_renders_ints_and_strings() {
+    // `"${e}"` desugars to `lit + @render(e) + lit`. Ints render through the
+    // static digit table with an arithmetic sign; `Int::MIN` is never negated.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let n = 16\n    let who = \"witchy\"\n    console.print(\"8 doubled is ${n}\")\n    console.print(\"hi ${who}!\")\n    console.print(\"${0} ${-7} ${1234567890} ${-9223372036854775807 - 1} ${9223372036854775807}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "8 doubled is 16".to_string(),
+            "hi witchy!".to_string(),
+            "0 -7 1234567890 -9223372036854775808 9223372036854775807".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn admitted_scalar_var_parameters_write_back() {
+    // A scalar `var` parameter is a value in and a result lane out; the call
+    // site rebinds the variable to that lane.
+    let output = run_admitted(
+        "fn bump(var n: Int):\n    n = n + 1\n\nfn scale(var n: Int, by: Int) -> Int:\n    n = n * by\n    n + 1\n\nfn main(console: Console):\n    var k = 1\n    bump(k)\n    bump(k)\n    let r = scale(k, 10)\n    console.print(\"k=${k} r=${r}\")\n",
+    );
+    assert_eq!(output, vec!["k=30 r=31".to_string()]);
+}
+
+#[test]
+fn admitted_scalar_var_write_back_through_an_indirect_call() {
+    let output = run_admitted(
+        "fn bump(var n: Int) -> Int:\n    n = n + 5\n    n\n\nfn apply(f: fn(var Int) -> Int, var value: Int) -> Int:\n    let r = f(value)\n    r + value\n\nfn main(console: Console):\n    var v = 1\n    let r = apply(bump, v)\n    console.print(\"${r} ${v}\")\n",
+    );
+    assert_eq!(output, vec!["12 6".to_string()]);
+}
+
+#[test]
+fn admitted_early_return_inside_a_loop_over_a_list_parameter() {
+    // The loop header once refused to join: the entry edge carried the list's
+    // header-prefix extent while the back edge carried the counted extent
+    // promoted by the body's element read.
+    let output = run_admitted(
+        "pub fn first_even(xs: List(Int)) -> Int:\n    for x in xs:\n        if x % 2 == 0:\n            return x\n    0 - 1\n\nfn main(console: Console):\n    console.print(\"${first_even([1, 3, 8, 5])} ${first_even([1, 3, 5])}\")\n",
+    );
+    assert_eq!(output, vec!["8 -1".to_string()]);
+}

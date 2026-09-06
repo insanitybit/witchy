@@ -119,16 +119,22 @@ pub fn lower_typed_module(
             return Err(CanonicalLoweringError::UnsupportedType(unsupported));
         }
     }
+    // The checker spells an entry-module type as `entry.Name`; the definition
+    // keeps its bare source name. Key both spellings to the one definition.
+    let entry_module = typed.module().linked_entry.as_deref();
     let packed_records = typed.module().items.iter().filter_map(|item| match item {
-        Item::Type(definition) if is_v1_packed_scalar_record(definition) => {
-            Some((definition.name.clone(), definition))
-        }
+        Item::Type(definition) if is_v1_packed_scalar_record(definition) => Some(definition),
         _ => None,
+    }).flat_map(|definition| {
+        let qualified = entry_module
+            .filter(|_| !definition.name.contains('.'))
+            .map(|entry| (format!("{entry}.{}", definition.name), definition));
+        std::iter::once((definition.name.clone(), definition)).chain(qualified)
     }).collect::<HashMap<_, _>>();
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
-    let string_payloads = collect_string_payloads(typed.module());
+    let string_payloads = collect_string_payloads(typed.module(), typed.table());
     let string_data_ids = string_payloads
         .iter()
         .enumerate()
@@ -404,10 +410,7 @@ fn checked_signature(
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
-        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
-            || matches!(convention, Convention::Var)
-                && !matches!(source_value_type(parameter, layout_bundle, layouts, function_types)?, ValueType::Ref(_))
-        {
+        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter) {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
                 parameter: source.name.clone(),
@@ -453,10 +456,7 @@ fn signature_from_type(
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
     for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
-        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter)
-            || matches!(convention, Convention::Var)
-                && !matches!(source_value_type(parameter, layout_bundle, layouts, function_types)?, ValueType::Ref(_))
-        {
+        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter) {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: format!("signature {:?}", id),
                 parameter: index.to_string(),
@@ -471,16 +471,11 @@ fn signature_from_type(
             (ValueType::Ref(_), Convention::Let | Convention::Borrow | Convention::Own) => {
                 ParameterOwnership::Shared
             }
-            (ValueType::Ref(_), Convention::Var) => ParameterOwnership::WriteBack,
+            // A `var` parameter is written back as an extra result lane. For a
+            // reference that lane is the replacement token; for a scalar it is
+            // a plain value and the parameter carries no memory token at all.
+            (_, Convention::Var) => ParameterOwnership::WriteBack,
             (_, Convention::Let | Convention::Borrow | Convention::Own) => ParameterOwnership::Value,
-            (_, Convention::Var) => {
-                // Refused above: a `var` parameter must carry a managed reference.
-                return Err(CanonicalLoweringError::UnsupportedConvention {
-                    function: format!("signature {:?}", id),
-                    parameter: index.to_string(),
-                    convention,
-                });
-            }
         };
         if matches!(value_type, ValueType::Ref(_)) {
             parameter_effects.insert(
@@ -678,10 +673,10 @@ fn lower_function(
     for (parameter, contract) in lowerer.blocks[entry.get() as usize]
         .parameters.iter_mut().zip(&signature.contract.parameters)
     {
-        parameter.ownership = match contract.ownership {
-            ParameterOwnership::Unique => Some(Ownership::Unique),
-            ParameterOwnership::Shared | ParameterOwnership::WriteBack => Some(Ownership::Shared),
-            ParameterOwnership::Value => None,
+        parameter.ownership = match (contract.ownership, parameter.value_type) {
+            (ParameterOwnership::Unique, _) => Some(Ownership::Unique),
+            (ParameterOwnership::Shared | ParameterOwnership::WriteBack, ValueType::Ref(_)) => Some(Ownership::Shared),
+            (ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value, _) => None,
         };
     }
     let parameters = lowerer.blocks[entry.get() as usize].parameters.clone();
@@ -729,6 +724,9 @@ fn lower_function(
     };
     owned::insert_releases(&mut lowered, signature, signatures, functions)
         .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
+    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+        eprintln!("canonical lowered `{}`:\n{lowered:#?}", function.name);
+    }
     Ok(lowered)
 }
 
@@ -2015,7 +2013,7 @@ impl FunctionLowerer<'_> {
                 for name in self.write_back_parameters.clone() {
                     let value = *self.bindings.get(&name)
                         .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
-                    if values.contains(&value) {
+                    if values.contains(&value) && matches!(self.values[&value], ValueType::Ref(_)) {
                         let clone = self.fresh(self.values[&value])?;
                         self.push_operation(Operation::CloneRef { destination: clone, source: value });
                         for result in &mut values {
@@ -2417,9 +2415,7 @@ impl FunctionLowerer<'_> {
                         }),
                     },
                     Convention::Var => {
-                        if contract.ownership != ParameterOwnership::WriteBack
-                            || !matches!(actual, ValueType::Ref(_))
-                        {
+                        if contract.ownership != ParameterOwnership::WriteBack {
                             return Err(CanonicalLoweringError::UnsupportedCallOwnership {
                                 callee: callee.to_owned(), parameter, ownership: contract.ownership,
                             });
@@ -2429,10 +2425,15 @@ impl FunctionLowerer<'_> {
                                 "var write-back argument must be a bound variable",
                             ));
                         };
-                        self.owned_parameters.retain(|owned| *owned != value);
                         if !self.bindings.contains_key(name) {
                             return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                         }
+                        // A scalar `var` argument is a plain value; only a
+                        // reference transfers its token to the callee.
+                        if !matches!(actual, ValueType::Ref(_)) {
+                            return Ok(CallArgument::Value(value));
+                        }
+                        self.owned_parameters.retain(|owned| *owned != value);
                         Ok(CallArgument::Move(value))
                     }
                 }
@@ -2506,6 +2507,12 @@ impl FunctionLowerer<'_> {
             }
             Expr::Call { name, args } if matches!(name.as_str(), "string.chars" | "string.__chars") => {
                 self.lower_string_chars(args)
+            }
+            Expr::Call { name, args } if witchy_syntax::ast::is_render_intrinsic(name) => {
+                let [argument] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("render arity"));
+                };
+                self.lower_render(argument)
             }
             Expr::Call { name, args } => {
                 let results = if let Some(callee) = self.bindings.get(name).copied() {
@@ -2614,7 +2621,7 @@ impl FunctionLowerer<'_> {
             });
         }
         let source_type = self.expression_type(expression)?;
-        if !matches!(source_type.unqualified(), Type::Named(checked_name, arguments) if checked_name == name && arguments.is_empty()) {
+        if !matches!(source_type.unqualified(), Type::Named(checked_name, arguments) if same_record_name(checked_name, name) && arguments.is_empty()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("checked packed record constructor type"));
         }
         let layout = packed_scalar_layout(fields, self.layout_bundle, self.layouts)?;
@@ -3837,7 +3844,254 @@ impl FunctionLowerer<'_> {
         });
         Ok(())
     }
+
+    /// `"${e}"` desugars to the render intrinsic. The compact subset renders a
+    /// `String` as itself and an `Int` as decimal digits; every other operand
+    /// type is refused by name so the census attributes the gap to rendering
+    /// rather than to the call path.
+    fn lower_render(&mut self, argument: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let source_type = self.expression_type(argument)?;
+        let value = self.lower_expr(argument)?;
+        let Type::Named(name, arguments) = source_type.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("render type"));
+        };
+        if !arguments.is_empty() {
+            return Err(CanonicalLoweringError::UnsupportedExpression("render type"));
+        }
+        match (name.as_str(), self.values[&value]) {
+            ("String", ValueType::Ref(_)) => {
+                self.ensure_string_extent(value)?;
+                Ok(value)
+            }
+            ("Int", ValueType::Int) => self.lower_render_int(value),
+            ("Float", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Float")),
+            ("Bool", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Bool")),
+            ("Duration", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
+            _ => Err(CanonicalLoweringError::UnsupportedExpression("render type")),
+        }
+    }
+
+    /// Render an `Int` as a fresh reference-counted decimal string.
+    ///
+    /// The string layout's element is a raw byte with no SafeWIR value type, so
+    /// digits land through one-byte `CopyBytes` slices from the static
+    /// `0123456789` table. Each slice end is a trapping `Size` add followed by
+    /// an explicit `<=` guard against the object's count, which is exactly the
+    /// fact the checker's range rule consumes. The sign is an arithmetic mask
+    /// (`value >> 63`) turned into a zero- or one-byte copy from the static `-`
+    /// table, so no branch is needed and `Int::MIN` is never negated: digits
+    /// are taken from the still-negative remainder and multiplied by the sign.
+    /// Two loops: count the digits, then write them from the end.
+    fn lower_render_int(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            self.layout_bundle,
+            self.layouts,
+        )?;
+        let digits = self.lower_string_literal(RENDER_DIGIT_TABLE)?;
+        let minus = self.lower_string_literal(RENDER_MINUS_SIGN)?;
+        let digit_table_count = self.string_lengths[&digits];
+        let minus_count = self.string_lengths[&minus];
+
+        let zero_int = self.push_const_int(0)?;
+        let one_int = self.push_const_int(1)?;
+        let ten_int = self.push_const_int(10)?;
+        let sign_bit = self.push_const_int(63)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        // mask = -1 for a negative value, 0 otherwise.
+        let mask = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightSigned, value, sign_bit, OverflowBehavior::Wrap)?;
+        let twice_mask = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, mask, mask, OverflowBehavior::Wrap)?;
+        // sign = 1 + 2 * mask: -1 for a negative value, 1 otherwise.
+        let sign = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, one_int, twice_mask, OverflowBehavior::Wrap)?;
+        // sign_len = -mask: one byte for the `-`, or none.
+        let sign_len_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, zero_int, mask, OverflowBehavior::Wrap)?;
+        let sign_len = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: sign_len, value: sign_len_int });
+
+        // The checker renames a branch argument to its block parameter in
+        // every fact table, so a value whose facts are needed after the loop
+        // (`one`, `total`) must never be passed as a loop argument; each loop
+        // starts from a dedicated copy instead.
+        // Loop A: count the digits of |value| beyond the first.
+        let first_rest = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, value, ten_int, OverflowBehavior::Trap)?;
+        let initial_count = self.push_const_size(1)?;
+        let count_state = [ValueType::Int, ValueType::Size];
+        let count_header = self.new_block(&count_state)?;
+        let count_body = self.new_block(&count_state)?;
+        let count_exit = self.new_block(&count_state)?;
+        self.finish_current(Terminator::Branch { target: count_header, arguments: vec![first_rest, initial_count] })?;
+        let header_values = self.block_parameter_values(count_header);
+        self.current = count_header;
+        let more_digits = self.push_compare(ComparisonOperator::NotEqual, header_values[0], zero_int)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more_digits,
+            then_target: count_body,
+            then_arguments: header_values.clone(),
+            else_target: count_exit,
+            else_arguments: header_values.clone(),
+        })?;
+        let body_values = self.block_parameter_values(count_body);
+        self.current = count_body;
+        let next_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], one, OverflowBehavior::Wrap)?;
+        let next_rest = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, body_values[0], ten_int, OverflowBehavior::Trap)?;
+        self.finish_current(Terminator::Branch { target: count_header, arguments: vec![next_rest, next_count] })?;
+        let exit_values = self.block_parameter_values(count_exit);
+        self.current = count_exit;
+        let digit_count = exit_values[1];
+
+        // Allocate `digits + sign` bytes; the trapping add is the checker's
+        // exact-length fact and the guard is the allocation bound.
+        let total = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, digit_count, sign_len, OverflowBehavior::Trap)?;
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let total_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, maximum)?;
+        self.push_guard(total_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes: 4,
+                count: total,
+                capacity: total,
+                stride_bytes: 1,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::UpdateCount { object, count: total });
+
+        // Sign: copy `sign_len` bytes (zero or one) of `-` to the front.
+        let sign_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, sign_len, total)?;
+        self.push_guard(sign_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let sign_in_table = self.push_compare(ComparisonOperator::LessEqualUnsigned, sign_len, minus_count)?;
+        self.push_guard(sign_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, zero, minus, zero, sign_len, layout);
+
+        // Loop B: write digits from the end down to the sign.
+        let write_state = [ValueType::Int, ValueType::Size];
+        let write_header = self.new_block(&write_state)?;
+        let write_body = self.new_block(&write_state)?;
+        let write_exit = self.new_block(&[])?;
+        let start_position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, zero, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![value, start_position] })?;
+        let header_values = self.block_parameter_values(write_header);
+        self.current = write_header;
+        let more_positions = self.push_compare(ComparisonOperator::LessUnsigned, sign_len, header_values[1])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more_positions,
+            then_target: write_body,
+            then_arguments: header_values.clone(),
+            else_target: write_exit,
+            else_arguments: Vec::new(),
+        })?;
+        let body_values = self.block_parameter_values(write_body);
+        self.current = write_body;
+        let rest = body_values[0];
+        let position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, body_values[1], one, OverflowBehavior::Wrap)?;
+        let remainder = self.push_arithmetic(ValueType::Int, ArithmeticOperator::RemainderSigned, rest, ten_int, OverflowBehavior::Trap)?;
+        let digit_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, remainder, sign, OverflowBehavior::Wrap)?;
+        let digit = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int });
+        let digit_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, digit, one, OverflowBehavior::Trap)?;
+        let digit_in_table = self.push_compare(ComparisonOperator::LessEqualUnsigned, digit_end, digit_table_count)?;
+        self.push_guard(digit_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let position_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, position, one, OverflowBehavior::Trap)?;
+        let position_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, position_end, total)?;
+        self.push_guard(position_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, position, digits, digit, one, layout);
+        let next_rest = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, rest, ten_int, OverflowBehavior::Trap)?;
+        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![next_rest, position] })?;
+        self.current = write_exit;
+
+        self.string_lengths.insert(object, total);
+        Ok(object)
+    }
+
+    fn block_parameter_values(&self, block: BlockId) -> Vec<ValueId> {
+        self.blocks[block.get() as usize].parameters.iter().map(|parameter| parameter.value).collect()
+    }
+
+    fn push_const_int(&mut self, value: i64) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::ConstInt { destination, value });
+        Ok(destination)
+    }
+
+    fn push_const_size(&mut self, value: u64) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::ConstSize { destination, value });
+        Ok(destination)
+    }
+
+    fn push_arithmetic(
+        &mut self,
+        value_type: ValueType,
+        operator: ArithmeticOperator,
+        left: ValueId,
+        right: ValueId,
+        overflow: OverflowBehavior,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(value_type)?;
+        self.push_operation(Operation::Arithmetic { destination, operator, left, right, overflow });
+        Ok(destination)
+    }
+
+    fn push_compare(
+        &mut self,
+        operator: ComparisonOperator,
+        left: ValueId,
+        right: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Compare { destination, operator, left, right });
+        Ok(destination)
+    }
+
+    fn push_guard(&mut self, condition: ValueId, kind: witchy_wir::canonical_safewir::GuardKind) {
+        self.push_operation(Operation::Guard { condition, kind });
+    }
+
+    /// `destination[start..start+length] = source[source_start..+length]` over
+    /// raw bytes. The caller has already pushed the guards the checker's range
+    /// rule needs for both slices.
+    fn push_byte_copy(
+        &mut self,
+        destination: ValueId,
+        start: ValueId,
+        source: ValueId,
+        source_start: ValueId,
+        length: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) {
+        self.push_operation(Operation::CopyBytes {
+            destination: witchy_wir::canonical_safewir::Place::projected(
+                destination,
+                Projection::Slice { start, length },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            source: witchy_wir::canonical_safewir::Place::projected(
+                source,
+                Projection::Slice { start: source_start, length },
+                ValueType::Ref(layout),
+                AccessMode::Read,
+            ),
+            length,
+        });
+    }
 }
+
+/// A checked type name may carry the entry-module qualifier the constructor
+/// spelling lacks (`entry.Point` versus `Point`).
+fn same_record_name(checked: &str, constructor: &str) -> bool {
+    checked == constructor
+        || checked.strip_suffix(constructor).is_some_and(|prefix| prefix.ends_with('.'))
+        || constructor.strip_suffix(checked).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// Static payloads the `Int` renderer copies digits and the sign from.
+const RENDER_DIGIT_TABLE: &str = "0123456789";
+const RENDER_MINUS_SIGN: &str = "-";
 
 fn scalar_type(source: &Type) -> Result<ValueType, CanonicalLoweringError> {
     match source.unqualified() {
@@ -3958,16 +4212,27 @@ fn string_layout(
     }
 }
 
-fn collect_string_payloads(module: &witchy_syntax::ast::Module) -> Vec<Vec<u8>> {
+fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTable) -> Vec<Vec<u8>> {
     let mut literal_uses = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_inputs = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_outputs = BTreeSet::new();
+    let mut renders_int = false;
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(module, &function.name) { continue; }
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             if let Expr::Str(value) = expression {
                 *literal_uses.entry(value.as_bytes().to_vec()).or_default() += 1;
+            }
+            // Only an `Int` render reaches the digit tables; the checker
+            // refuses a registered segment no function references.
+            if let Expr::Call { name, args } = expression
+                && witchy_syntax::ast::is_render_intrinsic(name)
+                && let [argument] = args.as_slice()
+                && table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
+                    .is_some_and(|ty| matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Int" && arguments.is_empty()))
+            {
+                renders_int = true;
             }
             if let Expr::Call { name, args } = expression
                 && matches!(name.as_str(), "string.chars" | "string.__chars")
@@ -3983,6 +4248,10 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module) -> Vec<Vec<u8>> 
         }).expect("string payload visitor cannot fail");
     }
     let mut payloads = chars_outputs;
+    if renders_int {
+        payloads.insert(RENDER_DIGIT_TABLE.as_bytes().to_vec());
+        payloads.insert(RENDER_MINUS_SIGN.as_bytes().to_vec());
+    }
     for (payload, uses) in literal_uses {
         if uses > chars_inputs.get(&payload).copied().unwrap_or_default() {
             payloads.insert(payload);
@@ -4903,20 +5172,14 @@ mod tests {
     }
 
     #[test]
-    fn var_indirect_call_stays_fail_closed() {
+    fn scalar_var_indirect_call_lowers_as_a_write_back_lane() {
+        // A scalar `var` parameter is a value in and a result lane out, for
+        // direct and indirect calls alike; the call site rebinds the variable.
         let checked = checked(
             "fn apply(f: fn(var Int) -> Int, var value: Int) -> Int:\n    f(value)\n",
         );
         let source = checked.canonical_source().expect("canonical source");
-        let error = lower_typed_module(source, empty_layouts())
-            .expect_err("indirect var calls remain unmodeled");
-        assert!(matches!(
-            error,
-            CanonicalLoweringError::UnsupportedConvention {
-                convention: Convention::Var,
-                ..
-            }
-        ));
+        lower_typed_module(source, empty_layouts()).expect("scalar var indirect calls lower");
     }
 
     #[test]

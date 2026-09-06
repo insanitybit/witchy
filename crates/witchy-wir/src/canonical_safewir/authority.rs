@@ -396,7 +396,7 @@ fn candidate_signature_matches_source_inner(
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
-            (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
+            (_, witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
             (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Value),
             (super::ValueType::Ref(_), _) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             _ => matches!(actual.ownership, super::ParameterOwnership::Value),
