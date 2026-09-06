@@ -212,3 +212,14 @@ fn admitted_nested_list_index_runs() {
     );
     assert_eq!(output, vec!["g = 6".to_string()]);
 }
+
+#[test]
+fn admitted_recursive_search_threads_a_list_parameter_through_loop_and_join() {
+    // `placed` reaches the value join after the loop under two counted
+    // extents (the entry's header loads and the loop's carried lanes); the
+    // join forgets the count instead of refusing.
+    let output = run_admitted(
+        "pub fn count(n: Int, placed: List(Int)) -> Int:\n    if placed.length() == n:\n        1\n    else:\n        var total = 0\n        var col = 0\n        while col < n:\n            if col % 2 == 0:\n                var next = placed\n                next.push(col)\n                total = total + count(n, next)\n            col = col + 1\n        total\n\nfn main(console: Console):\n    console.print(\"${count(3, [])}\")\n",
+    );
+    assert_eq!(output, vec!["8".to_string()]);
+}

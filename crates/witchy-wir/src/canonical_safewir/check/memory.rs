@@ -2709,21 +2709,27 @@ fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent
     }
 }
 
-/// When two states of one object differ only in that one side still holds
-/// the header-prefix extent the other has promoted to a counted extent with
-/// the same header size, both sides as the header-prefix form.
+/// When two states of one object differ only in their dynamic extent facts
+/// (one side still holds the header-prefix form the other has promoted, or
+/// both hold counted forms whose count and capacity were loaded on different
+/// paths), both sides as the header-prefix form with that header size. Each
+/// side's count is a true fact about the same header on its own path; the
+/// join forgets it and later code re-derives it from its own loads.
 fn demoted_pair(left: &ObjectState, right: &ObjectState) -> Option<(ObjectState, ObjectState)> {
-    let header_bytes = |extent: &Extent| match extent {
-        Extent::HeaderPrefix { minimum_bytes } => Some((*minimum_bytes, true)),
-        Extent::Counted { header_bytes, .. } => Some((*header_bytes, false)),
+    let shape = |extent: &Extent| match extent {
+        Extent::HeaderPrefix { minimum_bytes } => Some((*minimum_bytes, None)),
+        Extent::Counted { header_bytes, stride_bytes, .. } => Some((*header_bytes, Some(*stride_bytes))),
         Extent::FixedBytes(_) => None,
     };
-    let (left_bytes, left_prefix) = header_bytes(&left.extent)?;
-    let (right_bytes, right_prefix) = header_bytes(&right.extent)?;
-    if left_bytes != right_bytes || left_prefix == right_prefix {
+    let (left_bytes, left_stride) = shape(&left.extent)?;
+    let (right_bytes, right_stride) = shape(&right.extent)?;
+    if left_bytes != right_bytes
+        || left.extent == right.extent
+        || matches!((left_stride, right_stride), (Some(l), Some(r)) if l != r)
+    {
         return None;
     }
-    let prefix = if left_prefix { left.extent.clone() } else { right.extent.clone() };
+    let prefix = Extent::HeaderPrefix { minimum_bytes: left_bytes };
     let mut demoted_left = left.clone();
     let mut demoted_right = right.clone();
     demoted_left.extent = prefix.clone();

@@ -407,7 +407,9 @@ route is 0/107.
   know. When two states of one object differ only in that one side holds the
   header-prefix form and the other the counted form with the same header size,
   the join keeps the header-prefix form (the weaker fact of the same object);
-  the body re-derives the count from its own loads. Nothing else may differ.
+  the body re-derives the count from its own loads. The same holds for two
+  counted forms whose count and capacity were loaded on different paths (the
+  entry's header loads versus a loop's carried lanes). Nothing else may differ.
 - Census: 68 of 163 check; 12 runnable examples admit and agree under parity
   (`ranges` and `subscript` are new). `queens` now stops at a release-placement
   `MissingToken` inside its recursive search and still needs `list.at`, a std
