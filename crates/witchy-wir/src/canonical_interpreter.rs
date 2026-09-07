@@ -1432,6 +1432,9 @@ fn static_scalar(
         ScalarKind::V128 => Ok(InterpreterValue::V128(
             size(16)?.try_into().expect("validated scalar width"),
         )),
+        // There are no static closures: a callable lane is only ever written
+        // by a `FunctionValue` at run time.
+        ScalarKind::Callable => Err(InterpretError::UnsupportedOperation("StaticData callable lane")),
     }
 }
 
@@ -2118,6 +2121,161 @@ mod tests {
         );
 
         assert_eq!(interpret(&module, FUNCTION, Vec::new()), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn validated_closure_record_calls_through_its_callable_slot() {
+        use crate::canonical_safewir::{
+            AllocationClass, CallArgument, Extent, LoadTransfer, MemoryEffect, Ownership,
+            Place, Projection, StoreTransfer,
+        };
+        use crate::layout::LayoutId as WirLayoutId;
+
+        let body_id = FunctionId::new(1);
+        let environment_signature = FunctionSignatureId::new(1);
+        let capture = ValueId::new(0);
+        let closure = ValueId::new(1);
+        let function_value = ValueId::new(2);
+        let loaded = ValueId::new(3);
+        let clone = ValueId::new(4);
+        let call_result = ValueId::new(5);
+        let environment = ValueId::new(6);
+        let capture_read = ValueId::new(7);
+
+        let mut layouts = LayoutInterner::new();
+        let callable = layouts.intern_scalar(ScalarKind::Callable).expect("callable lane");
+        let int = layouts.intern_scalar(ScalarKind::Int).expect("int lane");
+        let record: WirLayoutId = layouts
+            .intern_packed_record(vec![callable, int])
+            .expect("closure record");
+        let bundle = LayoutBundle::from_interner(&layouts, [record]).expect("layout bundle");
+
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([33; 32]),
+            layouts: bundle,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Int],
+                    contract: CallableContract {
+                        parameters: Vec::new(),
+                        results: vec![ResultContract::Value(ValueType::Int)],
+                        parameter_effects: BTreeMap::new(),
+                    },
+                },
+                FunctionSignature {
+                    id: environment_signature,
+                    parameters: vec![ValueType::Ref(record)],
+                    results: vec![ValueType::Int],
+                    contract: CallableContract {
+                        parameters: vec![ParameterContract {
+                            value_type: ValueType::Ref(record),
+                            ownership: ParameterOwnership::Shared,
+                        }],
+                        results: vec![ResultContract::Value(ValueType::Int)],
+                        parameter_effects: [(0, vec![MemoryEffect::Read, MemoryEffect::Release])]
+                            .into_iter()
+                            .collect(),
+                    },
+                },
+            ],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FUNCTION,
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types: [
+                        (capture, ValueType::Int),
+                        (closure, ValueType::Ref(record)),
+                        (function_value, ValueType::Callable(environment_signature)),
+                        (loaded, ValueType::Callable(environment_signature)),
+                        (clone, ValueType::Ref(record)),
+                        (call_result, ValueType::Int),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::Alloc {
+                                destination: closure,
+                                layout: record,
+                                extent: Extent::FixedBytes(16),
+                                class: AllocationClass::ReferenceCounted,
+                            },
+                            Operation::ConstInt { destination: capture, value: 7 },
+                            Operation::Store {
+                                place: Place::projected(closure, Projection::Field { index: 1 }, ValueType::Int, AccessMode::Write),
+                                value: capture,
+                                transfer: StoreTransfer::CopyScalar,
+                            },
+                            Operation::FunctionValue { destination: function_value, function: body_id },
+                            Operation::Store {
+                                place: Place::projected(closure, Projection::Field { index: 0 }, ValueType::Callable(environment_signature), AccessMode::Write),
+                                value: function_value,
+                                transfer: StoreTransfer::CopyScalar,
+                            },
+                            Operation::Load {
+                                destination: loaded,
+                                place: Place::projected(closure, Projection::Field { index: 0 }, ValueType::Callable(environment_signature), AccessMode::Read),
+                                transfer: LoadTransfer::CopyScalar,
+                            },
+                            Operation::CloneRef { destination: clone, source: closure },
+                            Operation::VarCall {
+                                destinations: vec![call_result],
+                                callee: loaded,
+                                signature: environment_signature,
+                                arguments: vec![CallArgument::Move(clone)],
+                            },
+                            Operation::DropRef { object: closure },
+                        ],
+                        terminator: Terminator::Return { values: vec![call_result] },
+                    }],
+                },
+                Function {
+                    id: body_id,
+                    signature: environment_signature,
+                    entry: ENTRY,
+                    value_types: [
+                        (environment, ValueType::Ref(record)),
+                        (capture_read, ValueType::Int),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: vec![BlockParameter {
+                            value: environment,
+                            value_type: ValueType::Ref(record),
+                            ownership: Some(Ownership::Shared),
+                        }],
+                        operations: vec![
+                            Operation::Load {
+                                destination: capture_read,
+                                place: Place::projected(environment, Projection::Field { index: 1 }, ValueType::Int, AccessMode::Read),
+                                transfer: LoadTransfer::CopyScalar,
+                            },
+                            Operation::DropRef { object: environment },
+                        ],
+                        terminator: Terminator::Return { values: vec![capture_read] },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        })
+        .with_closure_layouts([(record, environment_signature)].into_iter().collect());
+
+        let checked = check_initial_with_test_witness(candidate).expect("initial validation");
+        let module = validate_final_for_test(checked).expect("final validation");
+
+        assert_eq!(
+            interpret(&module, FUNCTION, Vec::new()),
+            Ok(vec![InterpreterValue::Int(7)])
+        );
     }
 
     #[test]

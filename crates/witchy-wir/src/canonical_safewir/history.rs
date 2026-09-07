@@ -34,6 +34,8 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     writer.functions(module.functions());
     writer.source_abi_bindings(module.source_abi_bindings());
     writer.closure_bindings(module.closure_bindings());
+    writer.adapter_bindings(module.adapter_bindings());
+    writer.closure_layouts(module.closure_layouts());
     writer.tail_sites(module.proper_tail_sites());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
@@ -785,6 +787,25 @@ impl CanonicalWriter {
         for binding in bindings.entries() {
             self.u32(binding.function().get());
             self.u32(binding.closure());
+        }
+    }
+
+    fn adapter_bindings(&mut self, bindings: &super::CandidateAdapterBindings) {
+        self.len(bindings.entries().len());
+        for binding in bindings.entries() {
+            self.u32(binding.adapter().get());
+            self.u32(binding.target().get());
+        }
+    }
+
+    fn closure_layouts(
+        &mut self,
+        layouts: &std::collections::BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+    ) {
+        self.len(layouts.len());
+        for (layout, signature) in layouts {
+            self.layout_id(*layout);
+            self.u32(signature.get());
         }
     }
 

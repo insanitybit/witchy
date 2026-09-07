@@ -1056,3 +1056,23 @@ push, or pass to a write-back parameter), as `for` did; every other outer bindin
 value and its token across the loop. A dictionary-typed signature matches the candidate
 ABI by its tuple shape. Newly agree: `maze`. Census: 122/163 check, 66 runnable
 three-legged parity, 0 disagree.
+
+## Slice 39 (2026-09-07): closures as records of code and `Int` captures
+
+Every `fn` value is a closure record: a reference-counted heap record whose slot 0 is a
+`Callable` lane (a new 4-byte scalar kind holding a function table index) and whose
+remaining slots hold `Int` captures. Every `fn` type used as a value gets one closure layout
+(distinct slot counts keep distinct signatures apart) and one closure signature: the
+declaration signature with the record prepended as a shared parameter. A lambda allocates
+a record with its captures' current values and its synthesized function reads them back
+from its leading parameter; a named function used as a value allocates a record whose code
+is an adapter (one forwarding call, then the record's drop), bound by a new
+`CandidateAdapterBinding` the authority validates structurally; a call through a `fn` value
+loads the code slot, clones the record, and passes the clone first (`VarCall`, or
+`VarTailCall` in tail position). The checker types a Callable slot only as the signature the
+module registered for its layout (`ClosureSlot` rule, `closure_layouts` in the digest);
+the candidate ABI matches a `fn`-typed parameter or result against its closure record; the
+closure witness admits `Int` captures that fit the record. Non-`Int` captures refuse by name.
+Newly agree: `higher_order`, `higher_order_sum`, `closures`. Census: 125/163 check, 69
+runnable three-legged parity, 0 disagree. `plugin_host` stays refused: a list of `fn` values
+and a lambda capturing a capability are both outside v1 by policy.

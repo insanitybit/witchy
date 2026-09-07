@@ -52,6 +52,7 @@ impl Codegen<'_> {
             ScalarKind::Float => "float",
             ScalarKind::Duration => "duration",
             ScalarKind::U32 => "u32",
+            ScalarKind::Callable => "callable",
             ScalarKind::Tag8 => "tag8",
             ScalarKind::Tag16 => "tag16",
             ScalarKind::Tag32 => "tag32",
@@ -402,7 +403,7 @@ impl Codegen<'_> {
             ScalarKind::Float => {
                 W::Load { ptr: Box::new(base), kind: Kind::F64, offset: 0 }
             }
-            ScalarKind::U32 | ScalarKind::Tag32 => {
+            ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => {
                 W::Load { ptr: Box::new(base), kind: Kind::I32, offset: 0 }
             }
         })

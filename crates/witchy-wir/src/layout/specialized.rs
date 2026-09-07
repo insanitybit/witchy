@@ -104,6 +104,12 @@ pub enum ScalarKind {
     BoolValueSlot,
     /// One opaque 128-bit SIMD lane. Its bytes carry no reference authority.
     V128,
+    /// The four-byte lane that carries a function-table index: slot 0 of a
+    /// closure object. It is an ordinary lane -- a plain typed load and store
+    /// reach it -- but its value type is not derivable from the lane alone:
+    /// the module's closure-layout registry names the signature the index
+    /// must have. It is never a list element in v1.
+    Callable,
 }
 
 impl ScalarKind {
@@ -122,7 +128,8 @@ impl ScalarKind {
             | Self::U32
             | Self::Tag8
             | Self::Tag16
-            | Self::Tag32 => true,
+            | Self::Tag32
+            | Self::Callable => true,
             Self::RawByte | Self::BoolValueSlot | Self::V128 => false,
         }
     }
@@ -131,7 +138,7 @@ impl ScalarKind {
         match self {
             Self::Bool | Self::Tag8 | Self::RawByte => 1,
             Self::Tag16 => 2,
-            Self::U32 | Self::Tag32 => 4,
+            Self::U32 | Self::Tag32 | Self::Callable => 4,
             Self::Int | Self::Float | Self::Duration | Self::BoolValueSlot => 8,
             Self::V128 => 16,
         }
@@ -1833,6 +1840,14 @@ fn build_descriptor<'a>(
             let element_descriptor =
                 lookup(*element).ok_or(LayoutError::UnknownLayout(*element))?;
             validate_source_inline_child(*element, element_descriptor)?;
+            // A closure lane is a record slot, never an element: v1 has no
+            // list of callables, and admitting one here would give the
+            // element ABI a value type the registry cannot name.
+            if element_descriptor.kind == LayoutKind::Scalar(ScalarKind::Callable) {
+                return Err(LayoutError::DescriptorInvariant(
+                    "a callable lane is a closure record slot, not a list element",
+                ));
+            }
             let element_size = match element_descriptor.size {
                 LayoutSize::Fixed(size) => size,
                 LayoutSize::Dynamic { .. } => {
@@ -1949,6 +1964,11 @@ fn build_descriptor<'a>(
                     "runtime buffer element must be an exact scalar layout",
                 ));
             };
+            if *element_scalar == ScalarKind::Callable {
+                return Err(LayoutError::DescriptorInvariant(
+                    "a callable lane is a closure record slot, not a buffer element",
+                ));
+            }
             let stride = element_scalar.size();
             Ok(LayoutDescriptor {
                 schema_version: LAYOUT_SCHEMA_VERSION,
@@ -2620,6 +2640,7 @@ impl Encoder {
             ScalarKind::RawByte => 8,
             ScalarKind::V128 => 9,
             ScalarKind::BoolValueSlot => 10,
+            ScalarKind::Callable => 11,
         });
     }
 
@@ -2941,6 +2962,7 @@ impl<'a> Decoder<'a> {
             8 => Ok(ScalarKind::RawByte),
             9 => Ok(ScalarKind::V128),
             10 => Ok(ScalarKind::BoolValueSlot),
+            11 => Ok(ScalarKind::Callable),
             _ => Err(LayoutError::Decode {
                 offset,
                 reason: "unknown scalar kind",
@@ -3349,6 +3371,7 @@ mod tests {
             ScalarKind::Tag8,
             ScalarKind::Tag16,
             ScalarKind::Tag32,
+            ScalarKind::Callable,
         ] {
             assert!(
                 ordinary.is_ordinary_lowering_target(),
@@ -3363,6 +3386,31 @@ mod tests {
                 "{representation_only:?} must be reached only through the checked place builder",
             );
         }
+    }
+
+    /// A callable lane is a closure record's slot 0 and nothing else: it
+    /// interns as a record field and refuses as a list or buffer element,
+    /// where the element ABI has no way to name the signature it must carry.
+    #[test]
+    fn callable_lane_is_a_record_slot_and_never_an_element() {
+        let mut interner = LayoutInterner::default();
+        let callable = interner.intern_scalar(ScalarKind::Callable).expect("callable lane");
+        let capture = interner.intern_scalar(ScalarKind::Int).expect("int lane");
+        let record = interner
+            .intern_packed_record(vec![callable, capture])
+            .expect("a callable lane is a valid record slot");
+        let descriptor = interner.get(record).expect("record descriptor");
+        assert_eq!(descriptor.fields()[0].kind(), FieldKind::Scalar(ScalarKind::Callable));
+        assert_eq!(descriptor.fields()[0].offset(), 0);
+        assert_eq!(descriptor.size(), LayoutSize::Fixed(16));
+        assert!(matches!(
+            interner.intern_packed_list(callable, RcHeader::Required),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
+        assert!(matches!(
+            interner.intern_runtime_buffer(callable),
+            Err(LayoutError::DescriptorInvariant(_))
+        ));
     }
 
     #[test]

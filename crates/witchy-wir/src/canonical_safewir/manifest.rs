@@ -34,6 +34,8 @@ pub enum EvidenceFile {
     Backend,
     /// `tests/misc/rfc0165_admitted_launch.rs` (end to end through the runtime)
     Launch,
+    /// `crates/witchy-wir/src/canonical_safewir/authority.rs`
+    Authority,
 }
 
 impl EvidenceFile {
@@ -44,6 +46,7 @@ impl EvidenceFile {
             Self::Interpreter => "crates/witchy-wir/src/canonical_interpreter.rs",
             Self::Backend => "crates/witchy-wir/src/canonical_wasmir.rs",
             Self::Launch => "tests/misc/rfc0165_admitted_launch.rs",
+            Self::Authority => "crates/witchy-wir/src/canonical_safewir/authority.rs",
         }
     }
 
@@ -54,6 +57,7 @@ impl EvidenceFile {
             Self::Interpreter => include_str!("../canonical_interpreter.rs"),
             Self::Backend => include_str!("../canonical_wasmir.rs"),
             Self::Launch => include_str!("../../../../tests/misc/rfc0165_admitted_launch.rs"),
+            Self::Authority => include_str!("authority.rs"),
         }
     }
 }
@@ -69,7 +73,7 @@ const fn t(file: EvidenceFile, name: &'static str) -> TestRef {
     TestRef { file, name }
 }
 
-use EvidenceFile::{Backend, Check, Interpreter, Launch, Memory};
+use EvidenceFile::{Authority, Backend, Check, Interpreter, Launch, Memory};
 
 /// One canonical rule's row.
 #[derive(Clone, Copy, Debug)]
@@ -259,6 +263,22 @@ pub const RULES: &[RuleEntry] = &[
             t(Memory, "pointer_slot_rejects_scalar_copy_transfer"),
             t(Memory, "store_cannot_overwrite_a_stored_reference"),
             t(Backend, "mutated_int_list_store_offset_fails_admission"),
+        ],
+    },
+    RuleEntry {
+        rule: CanonicalRuleId::ClosureSlot,
+        judgment: "check/memory.rs::MemoryChecker::closure_slot_type (from check_place)",
+        predicate: "slot 0 of a closure record is `Callable(sig)` where `sig` is the module's registered signature for that layout; a load copies the scalar and a store copies a `Callable(sig)` value (only `FunctionValue` produces one); a mismatched signature, a non-callable value type, or a layout absent from the registry refuses",
+        interpreter: "load/store (CopyScalar): copies the `Function` cell",
+        backend: Some(CorrespondenceRule::MemoryLoad),
+        admits: &[
+            t(Check, "closure_record_stores_loads_and_calls_its_callable_slot"),
+            t(Interpreter, "validated_closure_record_calls_through_its_callable_slot"),
+        ],
+        refuses: &[
+            t(Check, "closure_slot_rejects_an_integer_store"),
+            t(Check, "closure_slot_load_rejects_a_different_signature"),
+            t(Check, "closure_record_outside_the_registry_has_no_callable_slot"),
         ],
     },
     RuleEntry {
@@ -624,6 +644,7 @@ pub const CALLS: &[CallEntry] = &[
     CallEntry { form: "proper tail call", convention: "indirect", verdict: "admitted", evidence: &[t(Backend, "admitted_scalar_var_tail_call_executes_with_return_call_indirect")] },
     CallEntry { form: "proper tail call", convention: "site not in the checked manifest, or discharged twice", verdict: "refused", evidence: &[t(Check, "proper_tail_site_is_matched_exactly_once"), t(Check, "duplicate_tail_terminators_cannot_discharge_one_obligation"), t(Check, "ordinary_return_cannot_discharge_a_tail_obligation")] },
     CallEntry { form: "host call", convention: "authenticated import with a capability role", verdict: "admitted only for a capability value of the declared kind", evidence: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "integer_cannot_fill_capability_host_role"), t(Check, "wrong_capability_kind_is_rejected")] },
+    CallEntry { form: "closure value", convention: "named function used as a value (adapter binding)", verdict: "admitted only when the adapter's body is exactly one forwarding call to its target under the environment-taking signature", evidence: &[t(Authority, "adapter_binding_admits_the_forwarding_shape"), t(Authority, "adapter_binding_rejects_a_body_that_does_extra_work")] },
     CallEntry { form: "`CallBorrow`", convention: "any", verdict: "absent from v1: no such rule exists", evidence: &[] },
 ];
 
@@ -647,6 +668,7 @@ fn cite(tests: &[TestRef]) -> String {
                 Interpreter => "interpreter",
                 Backend => "backend",
                 Launch => "launch",
+                Authority => "authority",
             };
             format!("`{}` ({file})", test.name)
         })
@@ -669,6 +691,8 @@ pub fn render_markdown() -> String {
     out.push_str(Backend.path());
     out.push_str("`, launch = `");
     out.push_str(Launch.path());
+    out.push_str("`, authority = `");
+    out.push_str(Authority.path());
     out.push_str("`.\n\n");
     out.push_str("## B1/B7: canonical rules\n\n");
     out.push_str("| Rule | Checker judgment | Predicate | Interpreter | Backend | Admitting evidence | Refusing evidence |\n|---|---|---|---|---|---|---|\n");
@@ -703,8 +727,8 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
     use CanonicalRuleId as R;
     let ordered = [
         R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
-        R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::Store, R::CopyBytes, R::MoveRange, R::CloneRange,
-        R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
+        R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
+        R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
         R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
         R::TailCall, R::VarTailCall, R::Trap, R::Unreachable,
     ];
@@ -713,7 +737,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
         match rule {
             R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::Arithmetic | R::Compare | R::NarrowSize
             | R::WidenSize | R::FloatUnary | R::Guard | R::Alloc | R::StaticData | R::Load | R::Store | R::CopyBytes
-            | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
+            | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue
             | R::Call | R::VarCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
             | R::Trap | R::Unreachable => {}

@@ -570,6 +570,11 @@ pub enum CanonicalRuleId {
     StaticData,
     Load,
     Store,
+    /// Not an operation of its own: the extra judgment a `Load` or `Store` of
+    /// a closure object's callable lane must pass. It has a rule row because
+    /// the lane's value type comes from the module's closure-layout registry
+    /// rather than from the lane itself.
+    ClosureSlot,
     CopyBytes,
     MoveRange,
     CloneRange,
@@ -908,6 +913,35 @@ impl CandidateClosureBindings {
     pub fn entries(&self) -> &[CandidateClosureBinding] { &self.entries }
 }
 
+/// A lowered function that adapts one named source function to the
+/// environment-taking closure ABI: it takes the closure object as its leading
+/// parameter, ignores it, and forwards the rest to the target. The authority
+/// admits it only when the body is exactly that forwarding call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateAdapterBinding {
+    adapter: FunctionId,
+    target: FunctionId,
+}
+
+impl CandidateAdapterBinding {
+    pub fn new(adapter: FunctionId, target: FunctionId) -> Self {
+        Self { adapter, target }
+    }
+
+    pub const fn adapter(&self) -> FunctionId { self.adapter }
+    pub const fn target(&self) -> FunctionId { self.target }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CandidateAdapterBindings {
+    entries: Vec<CandidateAdapterBinding>,
+}
+
+impl CandidateAdapterBindings {
+    pub fn new(entries: Vec<CandidateAdapterBinding>) -> Self { Self { entries } }
+    pub fn entries(&self) -> &[CandidateAdapterBinding] { &self.entries }
+}
+
 mod stage {
     pub trait Sealed {}
 }
@@ -940,6 +974,11 @@ pub struct CanonicalModule<S: ModuleStage> {
     abi_catalog: Option<CanonicalAbiCatalog>,
     abi_bindings: CandidateAbiBindings,
     closure_bindings: CandidateClosureBindings,
+    adapter_bindings: CandidateAdapterBindings,
+    /// The signature every closure object of one layout carries in slot 0.
+    /// A `Load` or `Store` of that lane is typed from this registry alone; a
+    /// layout absent from it has no readable callable slot.
+    closure_layouts: BTreeMap<LayoutId, FunctionSignatureId>,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -980,6 +1019,8 @@ impl CanonicalModule<LoweredCandidate> {
             abi_catalog: None,
             abi_bindings: CandidateAbiBindings::default(),
             closure_bindings: CandidateClosureBindings::default(),
+            adapter_bindings: CandidateAdapterBindings::default(),
+            closure_layouts: BTreeMap::new(),
             stage: PhantomData,
         }
     }
@@ -1011,6 +1052,24 @@ impl CanonicalModule<LoweredCandidate> {
         self
     }
 
+    /// Attach the adapter bindings of the functions canonical lowering
+    /// synthesized for named functions used as values.
+    pub fn with_adapter_bindings(mut self, bindings: CandidateAdapterBindings) -> Self {
+        self.adapter_bindings = bindings;
+        self
+    }
+
+    /// Declare the closure-object layouts: each `PackedRecord` whose slot 0 is
+    /// the callable lane, mapped to the environment-taking signature that lane
+    /// holds. The checker types every callable slot from this map.
+    pub fn with_closure_layouts(
+        mut self,
+        closure_layouts: BTreeMap<LayoutId, FunctionSignatureId>,
+    ) -> Self {
+        self.closure_layouts = closure_layouts;
+        self
+    }
+
     fn into_initial_valid(self) -> CanonicalModule<InitialValid> {
         CanonicalModule {
             revision: self.revision,
@@ -1025,6 +1084,8 @@ impl CanonicalModule<LoweredCandidate> {
             abi_catalog: self.abi_catalog,
             abi_bindings: self.abi_bindings,
             closure_bindings: self.closure_bindings,
+            adapter_bindings: self.adapter_bindings,
+            closure_layouts: self.closure_layouts,
             stage: PhantomData,
         }
     }
@@ -1077,5 +1138,13 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn closure_bindings(&self) -> &CandidateClosureBindings {
         &self.closure_bindings
+    }
+
+    pub fn adapter_bindings(&self) -> &CandidateAdapterBindings {
+        &self.adapter_bindings
+    }
+
+    pub fn closure_layouts(&self) -> &BTreeMap<LayoutId, FunctionSignatureId> {
+        &self.closure_layouts
     }
 }

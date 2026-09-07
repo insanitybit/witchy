@@ -28,7 +28,7 @@ use witchy_wir::canonical_safewir::{
     CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
     FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
-    LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, CandidateClosureBinding, CandidateClosureBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
+    LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, CandidateAdapterBinding, CandidateAdapterBindings, CandidateClosureBinding, CandidateClosureBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
     ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, Ownership, ValueId, ValueType,
 };
@@ -136,6 +136,8 @@ pub fn lower_typed_module(
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
+    let closure_layouts = crate::canonical_layouts::closure_layouts(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     let string_data_ids = string_payloads
         .iter()
@@ -198,7 +200,7 @@ pub fn lower_typed_module(
         .iter()
         .map(|ty| {
             let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types, &definitions).map_err(|error| {
+            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions).map_err(|error| {
                 if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
                     eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
                 }
@@ -206,6 +208,37 @@ pub fn lower_typed_module(
             })
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    // Every `fn` type also has its closure signature: the declaration
+    // signature with the closure record prepended as a shared parameter.
+    // The code slot of a closure record holds a function of that shape.
+    let mut closure_signatures: HashMap<Type, FunctionSignatureId> = HashMap::new();
+    let mut closure_context = ClosureContext {
+        layouts: closure_layouts.clone(),
+        signature_by_layout: HashMap::new(),
+        declaration_by_layout: HashMap::new(),
+        lambda_captures: HashMap::new(),
+        adapters: HashMap::new(),
+    };
+    for ty in &callable_types {
+        let declaration_id = function_types[ty];
+        let key = crate::canonical_layouts::closure_key(ty);
+        // A `fn` type that is only ever a declaration's shape has no
+        // closure layout and needs no closure signature.
+        let Some(&layout) = closure_layouts.get(&key) else { continue };
+        if let Some(&id) = closure_signatures.get(&key) {
+            closure_signatures.insert(ty.clone(), id);
+            continue;
+        }
+        let id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        let declaration = signatures[declaration_id.get() as usize].clone();
+        signatures.push(closure_signature(id, layout, &declaration));
+        closure_signatures.insert(key, id);
+        closure_signatures.insert(ty.clone(), id);
+        closure_context.signature_by_layout.insert(layout, id);
+        closure_context.declaration_by_layout.insert(layout, declaration_id);
+    }
     let mut functions_by_name = HashMap::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else {
@@ -239,15 +272,16 @@ pub fn lower_typed_module(
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
     }
-    // Capture-free lambdas whose parameters and result are scalars become
-    // functions of their own, bound to their closure witness (RFC-0165 v1
-    // has no closure environments). Each is met again by node address when
-    // its function body is lowered.
+    // Lambdas become functions of their own, bound to their closure
+    // witness: the closure record is their leading parameter and every
+    // `Int` capture is loaded from it at entry. Each is met again by node
+    // address when its function body is lowered.
     let sites = lambda_sites(typed)
         .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
     let witnesses = source.closure_witness().entries();
     let mut lambda_names: HashMap<usize, String> = HashMap::new();
-    let mut lambda_functions: Vec<(witchy_syntax::ast::Function, &witchy_syntax::ast::Block, FunctionId, u32, Vec<ProperTailPathStep>, FunctionSignatureId, u32)> = Vec::new();
+    let mut lambda_functions: Vec<LambdaFunction<'_>> = Vec::new();
+    let source_function_names = functions_by_name.keys().cloned().collect::<HashSet<String>>();
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(typed.module(), &function.name) {
@@ -260,17 +294,20 @@ pub fn lower_typed_module(
             let address = expression as *const Expr as usize;
             let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
             let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
-            if !witnesses[witness_index].captures().is_empty() {
+            let captures = witnesses[witness_index].captures();
+            if captures.iter().any(|capture| !is_int_type(capture.checked_type())) {
                 return Ok(());
             }
+            let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
             let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
             let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
-            let Some(&signature_id) = function_types.get(fn_type.unqualified()) else { return Ok(()) };
+            let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::closure_key(&fn_type)) else { return Ok(()) };
             let name = format!("{}#lambda{}", function.name, lambda_functions.len());
-            let params = params
-                .iter()
-                .zip(parameter_types)
-                .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() })
+            let params = std::iter::once(closure_environment_param())
+                .chain(params
+                    .iter()
+                    .zip(parameter_types)
+                    .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() }))
                 .collect::<Vec<_>>();
             let synthesized = witchy_syntax::ast::Function {
                 line: 0,
@@ -295,6 +332,7 @@ pub fn lower_typed_module(
             };
             functions_by_name.insert(name.clone(), (function_id, signature_id));
             lambda_names.insert(address, name);
+            closure_context.lambda_captures.insert(address, capture_names.clone());
             let witness_index = match u32::try_from(witness_index) {
                 Ok(index) => index,
                 Err(_) => {
@@ -302,12 +340,52 @@ pub fn lower_typed_module(
                     return Err(());
                 }
             };
-            lambda_functions.push((synthesized, body, function_id, item_index, site.id.lambda_path.clone(), signature_id, witness_index));
+            lambda_functions.push(LambdaFunction {
+                synthesized,
+                body,
+                function_id,
+                item_index,
+                lambda_path: site.id.lambda_path.clone(),
+                signature_id,
+                witness_index,
+                captures: capture_names,
+            });
             Ok(())
         });
         if let Some(error) = visit_error {
             return Err(error);
         }
+    }
+    // A named function used as a value is a closure whose code is an
+    // adapter: the function's own signature behind the closure record.
+    let mut adapters: Vec<AdapterFunction> = Vec::new();
+    let mut adapter_function_names = HashSet::new();
+    let mut adapter_targets = BTreeSet::new();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let Expr::Var(name) = expression && source_function_names.contains(name) {
+                adapter_targets.insert(name.clone());
+            }
+            Ok(())
+        });
+    }
+    for target in adapter_targets {
+        let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
+        let Some(fn_type) = source.callable_signature(&target) else { continue };
+        let fn_type = crate::canonical_layouts::closure_key(fn_type);
+        let Some(&signature_id) = closure_signatures.get(&fn_type) else { continue };
+        let adapter_id = FunctionId::new(
+            u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        let adapter_name = format!("{target}#adapter");
+        functions_by_name.insert(adapter_name.clone(), (adapter_id, signature_id));
+        adapter_function_names.insert(adapter_name);
+        closure_context.adapters.insert(target.clone(), (adapter_id, signature_id, fn_type));
+        adapters.push(AdapterFunction { id: adapter_id, signature_id, target: target_id, target_signature });
     }
     let checked_parameter_conventions = callable_types
         .iter()
@@ -323,6 +401,13 @@ pub fn lower_typed_module(
             Some((function_types[ty], conventions))
         })
         .collect::<HashMap<_, _>>();
+    let mut checked_parameter_conventions = checked_parameter_conventions;
+    for ty in &callable_types {
+        let (Some(conventions), Some(&closure_signature)) = (checked_parameter_conventions.get(&function_types[ty]).cloned(), closure_signatures.get(ty)) else { continue };
+        let mut with_environment = vec![Convention::Let];
+        with_environment.extend(conventions);
+        checked_parameter_conventions.insert(closure_signature, with_environment);
+    }
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(typed.module(), &function.name) {
@@ -337,7 +422,7 @@ pub fn lower_typed_module(
             signature_id,
             &layouts,
             &layout_catalog,
-            &function_types,
+            &closure_layouts,
             &definitions,
         )?;
     }
@@ -438,6 +523,8 @@ pub fn lower_typed_module(
             host_imports,
             &packed_records,
             &definitions,
+            &closure_context,
+            &[],
         )?);
     }
 
@@ -459,14 +546,14 @@ pub fn lower_typed_module(
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
 
     let mut closure_bindings = Vec::new();
-    for (synthesized, body, function_id, item_index, lambda_path, signature_id, witness_index) in &lambda_functions {
-        let signature = &signatures[signature_id.get() as usize];
+    for lambda in &lambda_functions {
+        let signature = &signatures[lambda.signature_id.get() as usize];
         functions.push(lower_function(
-            synthesized,
-            body,
-            *function_id,
-            *item_index,
-            lambda_path.clone(),
+            &lambda.synthesized,
+            lambda.body,
+            lambda.function_id,
+            lambda.item_index,
+            lambda.lambda_path.clone(),
             &lambda_names,
             signature,
             &functions_by_name,
@@ -480,19 +567,26 @@ pub fn lower_typed_module(
             host_imports,
             &packed_records,
             &definitions,
+            &closure_context,
+            &lambda.captures,
         )?);
-        closure_bindings.push(CandidateClosureBinding::new(*function_id, *witness_index));
+        closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
+    }
+    let mut adapter_bindings = Vec::new();
+    for adapter in &adapters {
+        functions.push(synthesize_adapter(adapter, &signatures));
+        adapter_bindings.push(CandidateAdapterBinding::new(adapter.id, adapter.target));
     }
     let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
     let lambda_callables = lambda_functions
         .iter()
-        .map(|(_, _, function_id, item_index, lambda_path, _, _)| {
-            (ProperTailCallableId { item: *item_index, method: None, lambda_path: lambda_path.clone() }, *function_id)
+        .map(|lambda| {
+            (ProperTailCallableId { item: lambda.item_index, method: None, lambda_path: lambda.lambda_path.clone() }, lambda.function_id)
         })
         .collect::<HashMap<_, _>>();
     let mut abi_bindings = functions_by_name
         .iter()
-        .filter(|(name, _)| !lambda_function_names.contains(*name))
+        .filter(|(name, _)| !lambda_function_names.contains(*name) && !adapter_function_names.contains(*name))
         .map(|(name, (function, _signature))| {
             let source_abi = source.closed_callable_abi(name)
                 .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
@@ -519,11 +613,146 @@ pub fn lower_typed_module(
         proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module(), &lambda_callables)?,
     }, static_data_segments)
         .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
-        .with_closure_bindings(CandidateClosureBindings::new(closure_bindings));
+        .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
+        .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
+        .with_closure_layouts(closure_context.signature_by_layout.iter().map(|(layout, signature)| (*layout, *signature)).collect());
     Ok(match abi_catalog {
         Some(catalog) => candidate.with_abi_catalog(catalog),
         None => candidate,
     })
+}
+
+/// A lambda's synthesized function and the facts its lowering needs.
+struct LambdaFunction<'a> {
+    synthesized: witchy_syntax::ast::Function,
+    body: &'a witchy_syntax::ast::Block,
+    function_id: FunctionId,
+    item_index: u32,
+    lambda_path: Vec<ProperTailPathStep>,
+    signature_id: FunctionSignatureId,
+    witness_index: u32,
+    captures: Vec<String>,
+}
+
+/// A named function used as a value: its adapter forwards the closure
+/// signature to the function's own.
+struct AdapterFunction {
+    id: FunctionId,
+    signature_id: FunctionSignatureId,
+    target: FunctionId,
+    target_signature: FunctionSignatureId,
+}
+
+/// The closure facts a function's lowering reads: the closure layout of
+/// every `fn` type, the closure and declaration signatures behind each
+/// layout, each lambda's capture names, and each named function's adapter.
+struct ClosureContext {
+    layouts: HashMap<Type, witchy_wir::layout::LayoutId>,
+    signature_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
+    declaration_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
+    lambda_captures: HashMap<usize, Vec<String>>,
+    adapters: HashMap<String, (FunctionId, FunctionSignatureId, Type)>,
+}
+
+/// The leading parameter of a lambda's synthesized function: its closure
+/// record. The spelling is internal; the parameter's value type comes from
+/// the closure signature.
+fn closure_environment_param() -> witchy_syntax::ast::Param {
+    witchy_syntax::ast::Param {
+        name: "__closure".to_owned(),
+        ty: Some(Type::Named("__closure".into(), Vec::new())),
+        convention: Convention::Let,
+        default: None,
+    }
+}
+
+fn is_int_type(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Int" && arguments.is_empty())
+}
+
+/// The closure signature of a `fn` type: the declaration signature with
+/// the closure record prepended as a shared parameter.
+fn closure_signature(
+    id: FunctionSignatureId,
+    layout: witchy_wir::layout::LayoutId,
+    declaration: &FunctionSignature,
+) -> FunctionSignature {
+    let environment = ValueType::Ref(layout);
+    let mut parameters = vec![environment];
+    parameters.extend(declaration.parameters.iter().copied());
+    let mut contract_parameters = vec![ParameterContract { value_type: environment, ownership: ParameterOwnership::Shared }];
+    contract_parameters.extend(declaration.contract.parameters.iter().cloned());
+    let mut parameter_effects = BTreeMap::from([(0, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release])]);
+    parameter_effects.extend(declaration.contract.parameter_effects.iter().map(|(index, effects)| (index + 1, effects.clone())));
+    FunctionSignature {
+        id,
+        parameters,
+        results: declaration.results.clone(),
+        contract: CallableContract {
+            parameters: contract_parameters,
+            results: declaration.contract.results.clone(),
+            parameter_effects,
+        },
+    }
+}
+
+/// An adapter: one block that forwards the closure signature's parameters
+/// (past the closure record) to the target and returns its results, then
+/// drops the record it was handed.
+fn synthesize_adapter(adapter: &AdapterFunction, signatures: &[FunctionSignature]) -> Function {
+    let signature = &signatures[adapter.signature_id.get() as usize];
+    let mut value_types = BTreeMap::new();
+    let mut next = 0u32;
+    let mut fresh = |value_type: ValueType, value_types: &mut BTreeMap<ValueId, ValueType>| {
+        let value = ValueId::new(next);
+        next += 1;
+        value_types.insert(value, value_type);
+        value
+    };
+    let parameters = signature
+        .parameters
+        .iter()
+        .zip(&signature.contract.parameters)
+        .map(|(value_type, contract)| BlockParameter {
+            value: fresh(*value_type, &mut value_types),
+            value_type: *value_type,
+            ownership: match (contract.ownership, value_type) {
+                (ParameterOwnership::Unique, _) => Some(Ownership::Unique),
+                (ParameterOwnership::Shared | ParameterOwnership::WriteBack, ValueType::Ref(_)) => Some(Ownership::Shared),
+                _ => None,
+            },
+        })
+        .collect::<Vec<_>>();
+    let arguments = parameters[1..]
+        .iter()
+        .map(|parameter| if matches!(parameter.value_type, ValueType::Ref(_)) {
+            CallArgument::Move(parameter.value)
+        } else {
+            CallArgument::Value(parameter.value)
+        })
+        .collect::<Vec<_>>();
+    let destinations = signature
+        .results
+        .iter()
+        .map(|value_type| fresh(*value_type, &mut value_types))
+        .collect::<Vec<_>>();
+    let environment = parameters[0].value;
+    let _ = adapter.target_signature;
+    Function {
+        id: adapter.id,
+        signature: adapter.signature_id,
+        entry: BlockId::new(0),
+        value_types,
+        blocks: vec![BasicBlock {
+            id: BlockId::new(0),
+            parameters,
+            operations: vec![
+                Operation::Call { destinations: destinations.clone(), callee: adapter.target, arguments },
+                Operation::DropRef { object: environment },
+            ],
+            terminator: Terminator::Return { values: destinations },
+        }],
+    }
 }
 
 fn checked_signature(
@@ -532,7 +761,7 @@ fn checked_signature(
     id: FunctionSignatureId,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
-    function_types: &HashMap<Type, FunctionSignatureId>,
+    closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let checked = source
@@ -554,7 +783,7 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types, definitions).map_err(|error| {
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions).map_err(|error| {
         if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
             eprintln!("canonical signature refused for `{}`: {error}", function.name);
         }
@@ -588,7 +817,7 @@ fn signature_from_type(
     checked: &Type,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
-    function_types: &HashMap<Type, FunctionSignatureId>,
+    closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let Type::Fn(parameters, result, conventions, _) = checked.unqualified() else {
@@ -622,7 +851,7 @@ fn signature_from_type(
                 convention,
             });
         }
-        let value_type = source_value_type(parameter, layout_bundle, layouts, function_types, definitions)?;
+        let value_type = source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?;
         // An explicit `let` (`Convention::Borrow`) has the default convention's
         // observable semantics; its no-escape rule is the type checker's. Under
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
@@ -649,7 +878,7 @@ fn signature_from_type(
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract { value_type, ownership });
     }
-    let result = source_value_type(result, layout_bundle, layouts, function_types, definitions)?;
+    let result = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
     let mut results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
     let mut result_contracts = results.iter().copied().map(|result| match result {
         ValueType::Ref(layout) => ResultContract::Shared { layout },
@@ -819,6 +1048,8 @@ fn lower_function(
     host_imports: HostImports,
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
+    closures: &ClosureContext,
+    captures: &[String],
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
@@ -854,6 +1085,7 @@ fn lower_function(
         host_imports,
         packed_records,
         definitions,
+        closures,
         result_type: function.ret.clone(),
     };
     let entry = lowerer.new_block(&signature.parameters)?;
@@ -886,6 +1118,20 @@ fn lower_function(
         .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
         .map(|(parameter, _)| parameter.name.clone())
         .collect();
+    // A lambda's captures are the `Int` slots of its closure record, the
+    // leading parameter, bound by their source names.
+    if !captures.is_empty() {
+        let environment = parameters.first().map(|parameter| parameter.value).ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
+        })?;
+        for (index, capture) in captures.iter().enumerate() {
+            let slot = u32::try_from(index + 1).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+            let value = lowerer.load_record_field(environment, slot, ValueType::Int)?;
+            if lowerer.bindings.insert(capture.clone(), value).is_some() {
+                return Err(CanonicalLoweringError::DuplicateBinding(capture.clone()));
+            }
+        }
+    }
 
     let ordinary_results = &signature.results[..signature.results.len() - write_back_count(signature)];
     lowerer.lower_body(&body.stmts, ordinary_results)?;
@@ -1139,6 +1385,7 @@ struct FunctionLowerer<'a> {
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
     host_imports: HostImports,
+    closures: &'a ClosureContext,
     packed_records: &'a HashMap<String, &'a TypeDef>,
     /// Every type definition, keyed by bare and entry-qualified names; the
     /// scalar aggregate shapes (records, sums, scalar `Option`/`Result`)
@@ -1242,15 +1489,9 @@ impl FunctionLowerer<'_> {
                             self.finish_current(terminator)?;
                         } else {
                             let callee = self.bindings[name];
-                            let ValueType::Callable(signature) = self.values[&callee] else {
-                                return Err(CanonicalLoweringError::IndirectCalleeType(
-                                    self.values[&callee],
-                                ));
-                            };
                             let terminator = self.lower_indirect_tail_call(
                                 callee,
                                 args,
-                                signature,
                                                                 self.tail_path(index, ProperTailPathStep::ReturnValue)?,
                                 ProperTailExprKind::Call,
                                 ProperTailDispatchKind::Direct,
@@ -1261,15 +1502,9 @@ impl FunctionLowerer<'_> {
                     }
                     if let Some(Expr::Apply { func, args }) = value {
                         let callee = self.lower_expr(func)?;
-                        let ValueType::Callable(signature) = self.values[&callee] else {
-                            return Err(CanonicalLoweringError::IndirectCalleeType(
-                                self.values[&callee],
-                            ));
-                        };
                         let terminator = self.lower_indirect_tail_call(
                             callee,
                             args,
-                            signature,
                                                         self.tail_path(index, ProperTailPathStep::ReturnValue)?,
                             ProperTailExprKind::Apply,
                             ProperTailDispatchKind::Indirect,
@@ -1331,15 +1566,9 @@ impl FunctionLowerer<'_> {
                             self.finish_current(terminator)?;
                         } else {
                             let callee = self.bindings[name];
-                            let ValueType::Callable(signature) = self.values[&callee] else {
-                                return Err(CanonicalLoweringError::IndirectCalleeType(
-                                    self.values[&callee],
-                                ));
-                            };
                             let terminator = self.lower_indirect_tail_call(
                                 callee,
                                 args,
-                                signature,
                                                                 self.tail_path(index, ProperTailPathStep::Value)?,
                                 ProperTailExprKind::Call,
                                 ProperTailDispatchKind::Direct,
@@ -1350,15 +1579,9 @@ impl FunctionLowerer<'_> {
                     }
                     if let Expr::Apply { func, args } = value {
                         let callee = self.lower_expr(func)?;
-                        let ValueType::Callable(signature) = self.values[&callee] else {
-                            return Err(CanonicalLoweringError::IndirectCalleeType(
-                                self.values[&callee],
-                            ));
-                        };
                         let terminator = self.lower_indirect_tail_call(
                             callee,
                             args,
-                            signature,
                                                         self.tail_path(index, ProperTailPathStep::Value)?,
                             ProperTailExprKind::Apply,
                             ProperTailDispatchKind::Indirect,
@@ -1735,21 +1958,15 @@ impl FunctionLowerer<'_> {
                 if self.bindings.contains_key(name) && self.has_tail_site(&path, ProperTailExprKind::Call) =>
             {
                 let callee = self.bindings[name];
-                let ValueType::Callable(signature) = self.values[&callee] else {
-                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
-                };
                 let terminator = self.lower_indirect_tail_call(
-                    callee, args, signature, path, ProperTailExprKind::Call, ProperTailDispatchKind::Direct,
+                    callee, args, path, ProperTailExprKind::Call, ProperTailDispatchKind::Direct,
                 )?;
                 self.finish_current(terminator)
             }
             Expr::Apply { func, args } if self.has_tail_site(&path, ProperTailExprKind::Apply) => {
                 let callee = self.lower_expr(func)?;
-                let ValueType::Callable(signature) = self.values[&callee] else {
-                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
-                };
                 let terminator = self.lower_indirect_tail_call(
-                    callee, args, signature, path, ProperTailExprKind::Apply, ProperTailDispatchKind::Indirect,
+                    callee, args, path, ProperTailExprKind::Apply, ProperTailDispatchKind::Indirect,
                 )?;
                 self.finish_current(terminator)
             }
@@ -4039,28 +4256,40 @@ impl FunctionLowerer<'_> {
         Ok(destinations[..destinations.len() - write_back_count(&signature)].to_vec())
     }
 
+    /// A tail call through a closure record: the record's code slot is the
+    /// callee, a shared clone of the record travels as the leading
+    /// argument, and the source arguments follow under the declaration's
+    /// conventions.
     fn lower_indirect_tail_call(
         &mut self,
         callee: ValueId,
         arguments: &[Expr],
-        signature_id: FunctionSignatureId,
         path: Vec<ProperTailPathStep>,
         expression: ProperTailExprKind,
         dispatch: ProperTailDispatchKind,
     ) -> Result<Terminator, CanonicalLoweringError> {
-        let signature = self
+        let ValueType::Ref(layout) = self.values[&callee] else {
+            return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+        };
+        let (Some(&signature_id), Some(&declaration_id)) = (
+            self.closures.signature_by_layout.get(&layout),
+            self.closures.declaration_by_layout.get(&layout),
+        ) else {
+            return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+        };
+        let declaration = self
             .signatures
-            .get(signature_id.get() as usize)
+            .get(declaration_id.get() as usize)
             .cloned()
             .ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "indirect tail-call signature",
             ))?;
-        if signature
+        if declaration
             .parameters
             .iter()
             .copied()
             .any(|value_type| !is_indirect_result(value_type))
-            || signature
+            || declaration
                 .results
                 .iter()
                 .copied()
@@ -4089,13 +4318,130 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = self.lower_call_arguments("<indirect tail>", arguments, signature_id, &signature, true)?;
+        let mut arguments = self.lower_call_arguments("<indirect tail>", arguments, declaration_id, &declaration, true)?;
+        let code = self.load_record_field(callee, 0, ValueType::Callable(signature_id))?;
+        let environment = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::CloneRef { destination: environment, source: callee });
+        arguments.insert(0, CallArgument::Move(environment));
         Ok(Terminator::VarTailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
-            callee,
+            callee: code,
             signature: signature_id,
             arguments,
         })
+    }
+
+    /// A closure record for `function` with the given `Int` captures in its
+    /// slots (the remaining slots zero).
+    fn alloc_closure(
+        &mut self,
+        layout: witchy_wir::layout::LayoutId,
+        signature: FunctionSignatureId,
+        function: FunctionId,
+        captures: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let descriptor = self
+            .layouts
+            .get(layout)
+            .ok_or(CanonicalLoweringError::MissingLayout(Type::Named("__closure".into(), Vec::new())))?;
+        let LayoutSize::Fixed(bytes) = descriptor.size() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("closure layout size"));
+        };
+        let LayoutKind::PackedRecord { fields } = descriptor.kind() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("closure layout"));
+        };
+        let slots = fields.len().saturating_sub(1);
+        if captures.len() > slots {
+            return Err(CanonicalLoweringError::UnsupportedExpression("closure capture count"));
+        }
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::FixedBytes(u64::from(bytes)),
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        let code = self.fresh(ValueType::Callable(signature))?;
+        self.push_operation(Operation::FunctionValue { destination: code, function });
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Field { index: 0 },
+                ValueType::Callable(signature),
+                AccessMode::Write,
+            ),
+            value: code,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        for slot in 0..slots {
+            let value = match captures.get(slot) {
+                Some(value) => *value,
+                None => self.push_const_int(0)?,
+            };
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    Projection::Field { index: u32::try_from(slot + 1).map_err(|_| CanonicalLoweringError::IdOverflow)? },
+                    ValueType::Int,
+                    AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            });
+        }
+        Ok(object)
+    }
+
+    /// Call through a closure record: its code slot is the callee, a shared
+    /// clone of the record its leading argument, then the source arguments
+    /// under the declaration's conventions.
+    fn lower_closure_call(
+        &mut self,
+        closure: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+        arguments: &[Expr],
+    ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        let signature_id = *self.closures.signature_by_layout.get(&layout).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("closure signature"),
+        )?;
+        let declaration_id = *self.closures.declaration_by_layout.get(&layout).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("closure signature"),
+        )?;
+        let signature = self
+            .signatures
+            .get(signature_id.get() as usize)
+            .cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        let declaration = self
+            .signatures
+            .get(declaration_id.get() as usize)
+            .cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        if declaration.parameters.iter().copied().any(|value_type| !is_indirect_result(value_type)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("indirect call parameter outside the v1 value set"));
+        }
+        if let Some(result) = declaration.results.iter().copied().find(|value_type| !is_indirect_result(*value_type)) {
+            return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
+        }
+        let mut call_arguments = self.lower_call_arguments("<closure>", arguments, declaration_id, &declaration, false)?;
+        let code = self.load_record_field(closure, 0, ValueType::Callable(signature_id))?;
+        let environment = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::CloneRef { destination: environment, source: closure });
+        call_arguments.insert(0, CallArgument::Move(environment));
+        let destinations = signature
+            .results
+            .iter()
+            .copied()
+            .map(|value_type| self.fresh(value_type))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.push_operation(Operation::VarCall {
+            destinations: destinations.clone(),
+            callee: code,
+            signature: signature_id,
+            arguments: call_arguments,
+        });
+        self.rebind_write_backs(arguments, &declaration, &destinations)?;
+        Ok(destinations[..destinations.len() - write_back_count(&declaration)].to_vec())
     }
 
     fn lower_indirect_call(
@@ -4343,10 +4689,13 @@ impl FunctionLowerer<'_> {
             Expr::Var(name) => {
                 let value = if let Some(value) = self.bindings.get(name).copied() {
                     value
-                } else if let Some((function, signature)) = self.functions.get(name).copied() {
-                    let destination = self.fresh(ValueType::Callable(signature))?;
-                    self.push_operation(Operation::FunctionValue { destination, function });
-                    destination
+                } else if let Some((adapter, signature, fn_type)) = self.closures.adapters.get(name).cloned() {
+                    // A named function as a value: a closure whose code is
+                    // the function's adapter and whose environment is empty.
+                    let layout = *self.closures.layouts.get(&fn_type).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                    self.alloc_closure(layout, signature, adapter, Vec::new())?
+                } else if self.functions.contains_key(name) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("function value without adapter"));
                 } else {
                     return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                 };
@@ -4544,10 +4893,12 @@ impl FunctionLowerer<'_> {
             }
             Expr::Call { name, args } => {
                 let results = if let Some(callee) = self.bindings.get(name).copied() {
-                    let ValueType::Callable(signature) = self.values[&callee] else {
-                        return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
-                    };
-                    self.lower_indirect_call(callee, args, signature)?
+                    {
+                        let ValueType::Ref(layout) = self.values[&callee] else {
+                            return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                        };
+                        self.lower_closure_call(callee, layout, args)?
+                    }
                 } else {
                     self.lower_direct_call(name, args)?
                 };
@@ -4567,10 +4918,16 @@ impl FunctionLowerer<'_> {
             | Expr::MethodCall { .. } => Err(CanonicalLoweringError::UnsupportedExpression("call")),
             Expr::Apply { func, args } => {
                 let callee = self.lower_expr(func)?;
-                let ValueType::Callable(signature) = self.values[&callee] else {
+                let ValueType::Ref(layout) = self.values[&callee] else {
                     return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
                 };
-                let results = self.lower_indirect_call(callee, args, signature)?;
+                if !self.closures.signature_by_layout.contains_key(&layout) {
+                    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+                        eprintln!("canonical closure call: callee layout {layout:?} is not a closure layout; closure layouts: {:?}", self.closures.layouts);
+                    }
+                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                }
+                let results = self.lower_closure_call(callee, layout, args)?;
                 match results.as_slice() {
                     [value] => {
                         let value = *value;
@@ -4602,16 +4959,26 @@ impl FunctionLowerer<'_> {
             Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
             Expr::Field { base, field } => self.lower_record_field(base, field),
             Expr::Lambda { .. } => {
-                // A capture-free scalar lambda is the function value of its
-                // synthesized function (bound to its closure witness); any
-                // other lambda is outside the v1 subset.
-                let Some(name) = self.lambda_names.get(&(expression as *const Expr as usize)) else {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("lambda with captures"));
+                // A lambda is a closure record: the code slot holds its
+                // synthesized function (bound to its closure witness), the
+                // capture slots the current values of its `Int` captures.
+                let address = expression as *const Expr as usize;
+                let Some(name) = self.lambda_names.get(&address) else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("lambda with non-integer captures"));
                 };
                 let (function, signature) = *self.functions.get(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
-                let destination = self.fresh(ValueType::Callable(signature))?;
-                self.push_operation(Operation::FunctionValue { destination, function });
-                Ok(destination)
+                let fn_type = self.expression_type(expression)?;
+                let layout = *self.closures.layouts.get(&crate::canonical_layouts::closure_key(&fn_type)).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                let captures = self.closures.lambda_captures.get(&address).cloned().unwrap_or_default();
+                let mut values = Vec::with_capacity(captures.len());
+                for capture in &captures {
+                    let value = *self.bindings.get(capture).ok_or_else(|| CanonicalLoweringError::MissingBinding(capture.clone()))?;
+                    if self.values[&value] != ValueType::Int {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("closure capture type"));
+                    }
+                    values.push(value);
+                }
+                self.alloc_closure(layout, signature, function, values)
             }
             Expr::Record { name, fields, spread } => {
                 self.lower_record_literal(expression, name, fields, spread.as_deref())
@@ -8839,7 +9206,7 @@ fn source_value_type(
     source: &Type,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
-    function_types: &HashMap<Type, FunctionSignatureId>,
+    closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
     if let Some(shape) = scalar_aggregate_shape(source, definitions)
@@ -8851,18 +9218,18 @@ fn source_value_type(
         return aggregate_layout(&shape.fields, layout_bundle, layouts, definitions).map(ValueType::Ref);
     }
     match source.unqualified() {
-        Type::Fn(..) => function_types
-            .get(source)
-            .or_else(|| function_types.get(source.unqualified()))
+        // A `fn` value is a closure record.
+        Type::Fn(..) => closure_layouts
+            .get(&crate::canonical_layouts::closure_key(source))
             .copied()
-            .map(ValueType::Callable)
+            .map(ValueType::Ref)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             list_layout(source, layout_bundle, layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
         Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
             let tuple = dictionary_as_tuple(source).expect("a two-argument Dict has a tuple form");
-            source_value_type(&tuple, layout_bundle, layouts, function_types, definitions)
+            source_value_type(&tuple, layout_bundle, layouts, closure_layouts, definitions)
         }
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
             string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
@@ -9649,8 +10016,10 @@ mod tests {
 
     #[test]
     fn canonical_lowering_interns_structural_callable_parameter() {
-        let candidate = lower(
-            "fn positive(n: Int) -> Bool:\n    n > 0\n\nfn nonzero(n: Int) -> Bool:\n    n != 0\n\nfn apply(f: fn(Int) -> Bool, n: Int) -> Bool:\n    f(n)\n\nfn main() -> Int:\n    0\n",
+        // A `fn` value is a closure record, so the candidate needs the
+        // derived layouts.
+        let candidate = lower_with_derived_layouts(
+            "fn positive(n: Int) -> Bool:\n    n > 0\n\nfn nonzero(n: Int) -> Bool:\n    n != 0\n\nfn apply(f: fn(Int) -> Bool, n: Int) -> Bool:\n    f(n)\n\nfn main() -> Int:\n    if apply(positive, 3):\n        1\n    else:\n        0\n",
         );
         assert_eq!(candidate.functions()[0].signature, candidate.functions()[1].signature);
         let apply = &candidate.functions()[2];

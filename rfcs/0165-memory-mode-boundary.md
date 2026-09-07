@@ -110,6 +110,13 @@ its address alone, and the guest publishes the written length afterwards under
 its own capacity guard. The `float_to_str` render import is the one such import
 projected today.
 
+A `fn` value is a closure record: slot 0 is a `Callable` lane the checker types
+only as the signature the module registered for that layout, the remaining slots
+are `Int` captures, and the function in the slot takes the record as its shared
+leading parameter. No function index enters or leaves linear memory under any
+other type; a capability is never a capture; a call through a `fn` value is an
+indirect call whose target set is every function of the registered signature.
+
 ## IR information and optimizations
 
 SafeWIR carries actual types, layouts, projections, logical extents versus

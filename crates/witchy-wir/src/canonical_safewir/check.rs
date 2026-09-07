@@ -125,6 +125,10 @@ pub enum InitialCheckError {
     UnsupportedInlineAggregateAbi { signature: FunctionSignatureId },
     UnsupportedInlineAggregateControlFlow { function: FunctionId },
     InvalidInlineAggregateLayout { function: FunctionId, layout: crate::layout::LayoutId },
+    /// A callable lane was reached on an object whose layout the module's
+    /// closure registry does not name, or with a value type other than the
+    /// registered `Callable(sig)`.
+    InvalidClosureSlot { function: FunctionId, object: ValueId },
 }
 
 impl fmt::Display for InitialCheckError {
@@ -249,6 +253,7 @@ fn check_candidate<S: ModuleStage>(
     host::check_imports(&imports, &signatures, catalog)?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
     let mut observed_tail_sites = BTreeSet::new();
+    let closure_layouts = candidate.closure_layouts();
 
     for function in candidate.functions() {
         check_function(
@@ -260,6 +265,7 @@ fn check_candidate<S: ModuleStage>(
             &tail_obligations,
             &mut observed_tail_sites,
             &layouts,
+            closure_layouts,
         )?;
     }
 
@@ -466,6 +472,7 @@ fn index_tail_obligations(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_function(
     function: &Function,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
@@ -475,6 +482,7 @@ fn check_function(
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
     layouts: &crate::layout::LayoutInterner,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
 ) -> Result<(), InitialCheckError> {
     let signature = signatures
         .get(&function.signature)
@@ -502,7 +510,7 @@ fn check_function(
     let predecessors = predecessor_map(function, &blocks)?;
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
-    let memory = MemoryChecker::new(function, layouts, signature)?;
+    let memory = MemoryChecker::new(function, layouts, signature, closure_layouts)?;
     for block in &function.blocks {
         match &block.terminator {
             Terminator::TailCall { site, .. } | Terminator::VarTailCall { site, .. } => {
@@ -1595,7 +1603,260 @@ mod tests {
         Terminator, ValueId, ValueType,
     };
     use super::{InitialCheckError, check_initial};
+    use super::super::{CallArgument, StoreTransfer};
     use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, RcHeader, ScalarKind};
+
+    // The closure-object subset: one `PackedRecord` whose slot 0 is the
+    // callable lane and whose slot 1 is one Int capture. The driver builds
+    // one, stores a function value into the lane, loads it back, and calls
+    // through it with a shared clone of the object as the environment.
+    const ENV_SIGNATURE: FunctionSignatureId = FunctionSignatureId::new(2);
+    const CAPTURE: ValueId = ValueId::new(0);
+    const CLOSURE: ValueId = ValueId::new(1);
+    const FUNCTION_VALUE: ValueId = ValueId::new(2);
+    const LOADED_CALLABLE: ValueId = ValueId::new(3);
+    const CLOSURE_CLONE: ValueId = ValueId::new(4);
+    const CALL_RESULT: ValueId = ValueId::new(5);
+    const ENVIRONMENT: ValueId = ValueId::new(6);
+    const CAPTURE_READ: ValueId = ValueId::new(7);
+
+    fn closure_layout() -> (LayoutBundle, LayoutId) {
+        let mut layouts = LayoutInterner::new();
+        let callable = layouts
+            .intern_scalar(ScalarKind::Callable)
+            .expect("callable lane layout");
+        let capture = layouts.intern_scalar(ScalarKind::Int).expect("int layout");
+        let closure = layouts
+            .intern_packed_record(vec![callable, capture])
+            .expect("closure record layout");
+        let bundle = LayoutBundle::from_interner(&layouts, [closure]).expect("layout bundle");
+        (bundle, closure)
+    }
+
+    /// The closure module, with the driver's callable-lane places supplied by
+    /// the caller so a refusal test can perturb exactly one of them.
+    fn closure_module(
+        stored_place: Place,
+        stored_value: ValueId,
+        loaded_place: Place,
+        loaded_type: ValueType,
+        register_layout: bool,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        let (layouts, closure) = closure_layout();
+        let environment_signature = FunctionSignature {
+            id: ENV_SIGNATURE,
+            parameters: vec![ValueType::Ref(closure)],
+            results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Ref(closure),
+                    ownership: ParameterOwnership::Shared,
+                }],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: [(0, vec![MemoryEffect::Read, MemoryEffect::Release])]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+        let driver = Function {
+            id: FUNCTION,
+            signature: SIGNATURE,
+            entry: ENTRY,
+            value_types: [
+                (CAPTURE, ValueType::Int),
+                (CLOSURE, ValueType::Ref(closure)),
+                (FUNCTION_VALUE, ValueType::Callable(ENV_SIGNATURE)),
+                (LOADED_CALLABLE, loaded_type),
+                (CLOSURE_CLONE, ValueType::Ref(closure)),
+                (CALL_RESULT, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: Vec::new(),
+                operations: vec![
+                    Operation::Alloc {
+                        destination: CLOSURE,
+                        layout: closure,
+                        extent: Extent::FixedBytes(16),
+                        class: AllocationClass::ReferenceCounted,
+                    },
+                    Operation::ConstInt { destination: CAPTURE, value: 5 },
+                    Operation::Store {
+                        place: Place::projected(
+                            CLOSURE,
+                            Projection::Field { index: 1 },
+                            ValueType::Int,
+                            AccessMode::Write,
+                        ),
+                        value: CAPTURE,
+                        transfer: StoreTransfer::CopyScalar,
+                    },
+                    Operation::FunctionValue {
+                        destination: FUNCTION_VALUE,
+                        function: CALLEE,
+                    },
+                    Operation::Store {
+                        place: stored_place,
+                        value: stored_value,
+                        transfer: StoreTransfer::CopyScalar,
+                    },
+                    Operation::Load {
+                        destination: LOADED_CALLABLE,
+                        place: loaded_place,
+                        transfer: LoadTransfer::CopyScalar,
+                    },
+                    Operation::CloneRef {
+                        destination: CLOSURE_CLONE,
+                        source: CLOSURE,
+                    },
+                    Operation::VarCall {
+                        destinations: vec![CALL_RESULT],
+                        callee: LOADED_CALLABLE,
+                        signature: ENV_SIGNATURE,
+                        arguments: vec![CallArgument::Move(CLOSURE_CLONE)],
+                    },
+                    Operation::DropRef { object: CLOSURE },
+                ],
+                terminator: Terminator::Return { values: vec![CALL_RESULT] },
+            }],
+        };
+        let body = Function {
+            id: CALLEE,
+            signature: ENV_SIGNATURE,
+            entry: ENTRY,
+            value_types: [
+                (ENVIRONMENT, ValueType::Ref(closure)),
+                (CAPTURE_READ, ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![BlockParameter {
+                    value: ENVIRONMENT,
+                    value_type: ValueType::Ref(closure),
+                    ownership: Some(super::super::Ownership::Shared),
+                }],
+                operations: vec![
+                    Operation::Load {
+                        destination: CAPTURE_READ,
+                        place: Place::projected(
+                            ENVIRONMENT,
+                            Projection::Field { index: 1 },
+                            ValueType::Int,
+                            AccessMode::Read,
+                        ),
+                        transfer: LoadTransfer::CopyScalar,
+                    },
+                    Operation::DropRef { object: ENVIRONMENT },
+                ],
+                terminator: Terminator::Return { values: vec![CAPTURE_READ] },
+            }],
+        };
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Int],
+                    contract: contract(vec![ResultContract::Value(ValueType::Int)]),
+                },
+                environment_signature,
+            ],
+            imports: Vec::new(),
+            functions: vec![driver, body],
+            proper_tail_sites: Vec::new(),
+        });
+        if register_layout {
+            module.with_closure_layouts([(closure, ENV_SIGNATURE)].into_iter().collect())
+        } else {
+            module
+        }
+    }
+
+    fn callable_place(access: AccessMode, signature: FunctionSignatureId) -> Place {
+        Place::projected(
+            CLOSURE,
+            Projection::Field { index: 0 },
+            ValueType::Callable(signature),
+            access,
+        )
+    }
+
+    fn admitted_closure_module() -> CanonicalModule<super::super::LoweredCandidate> {
+        closure_module(
+            callable_place(AccessMode::Write, ENV_SIGNATURE),
+            FUNCTION_VALUE,
+            callable_place(AccessMode::Read, ENV_SIGNATURE),
+            ValueType::Callable(ENV_SIGNATURE),
+            true,
+        )
+    }
+
+    #[test]
+    fn closure_record_stores_loads_and_calls_its_callable_slot() {
+        assert!(check_initial(admitted_closure_module()).is_ok());
+    }
+
+    #[test]
+    fn closure_slot_rejects_an_integer_store() {
+        // The lane is typed by the registry, so a place claiming `Int` over
+        // it is a closure-slot refusal rather than an ordinary type mismatch.
+        let module = closure_module(
+            Place::projected(
+                CLOSURE,
+                Projection::Field { index: 0 },
+                ValueType::Int,
+                AccessMode::Write,
+            ),
+            CAPTURE,
+            callable_place(AccessMode::Read, ENV_SIGNATURE),
+            ValueType::Callable(ENV_SIGNATURE),
+            true,
+        );
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
+        );
+    }
+
+    #[test]
+    fn closure_slot_load_rejects_a_different_signature() {
+        let module = closure_module(
+            callable_place(AccessMode::Write, ENV_SIGNATURE),
+            FUNCTION_VALUE,
+            callable_place(AccessMode::Read, SIGNATURE),
+            ValueType::Callable(SIGNATURE),
+            true,
+        );
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
+        );
+    }
+
+    #[test]
+    fn closure_record_outside_the_registry_has_no_callable_slot() {
+        let module = closure_module(
+            callable_place(AccessMode::Write, ENV_SIGNATURE),
+            FUNCTION_VALUE,
+            callable_place(AccessMode::Read, ENV_SIGNATURE),
+            ValueType::Callable(ENV_SIGNATURE),
+            false,
+        );
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
+        );
+    }
 
     const FUNCTION: FunctionId = FunctionId::new(0);
     const CALLEE: FunctionId = FunctionId::new(1);

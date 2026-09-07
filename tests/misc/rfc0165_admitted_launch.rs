@@ -670,21 +670,21 @@ fn admitted_capture_free_scalar_lambdas_are_function_values_bound_to_their_witne
 }
 
 #[test]
-fn capturing_lambdas_and_reference_lambdas_are_refused_by_name() {
+fn lambdas_with_non_integer_captures_are_refused_by_name() {
     // v1 has no closure environments: a lambda that captures a binding, or
     // one whose parameters or result are references, is refused at
     // canonical lowering with the construct named; nothing falls back.
     for (label, source) in [
         (
-            "capture",
-            "pub fn adder(k: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + k\n\nfn main(console: Console):\n    console.print(\"${adder(2)(3)}\")\n",
+            "string capture",
+            "pub fn greeter(prefix: String) -> fn(String) -> String:\n    fn(name: String): prefix + name\n\nfn main(console: Console):\n    console.print(greeter(\"hi \")(\"you\"))\n",
         ),
     ] {
         let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
         match codegen::compile_checked_module_artifact(&checked) {
             codegen::LoweringOutcome::Unsupported(reason) => {
                 let text = reason.to_string();
-                assert!(text.contains("lambda with captures"), "{label}: {text}");
+                assert!(text.contains("lambda with non-integer captures"), "{label}: {text}");
             }
             codegen::LoweringOutcome::Lowered(_) => panic!("{label}: a lambda outside the v1 subset must be refused"),
             codegen::LoweringOutcome::Rejected(error) => panic!("{label}: refused for the wrong reason: {error}"),
@@ -804,4 +804,21 @@ fn admitted_inner_loops_thread_only_the_names_they_rebind() {
         "fn find(rows: List(String), m: String, width: Int) -> Int:\n    var pos = -1\n    var r = 0\n    for row in rows:\n        var c = 0\n        while c < width:\n            if row.substring(c, c + 1) == m:\n                pos = r * width + c\n            c = c + 1\n        r = r + 1\n    pos\n\nfn count(rows: List(String), m: String) -> Int:\n    var n = 0\n    for row in rows:\n        var c = 0\n        while c < row.length():\n            if row.substring(c, c + 1) == m:\n                n = n + 1\n            c = c + 1\n    n\n\nfn main(console: Console):\n    let rows = [\"ab\", \"cS\", \"SS\"]\n    console.print(\"${find(rows, \\\"S\\\", 2)} ${find(rows, \\\"z\\\", 2)} ${count(rows, \\\"S\\\")}\")\n",
     );
     assert_eq!(output, vec!["5 -1 3".to_string()]);
+}
+
+#[test]
+fn admitted_closures_are_records_of_code_and_int_captures() {
+    // Every `fn` value is a closure record: slot 0 holds the code (a
+    // function taking the record first), the remaining slots its `Int`
+    // captures. A lambda allocates one with its captures' current values,
+    // a named function used as a value one whose code is the function's
+    // adapter, and a call through a `fn` value loads the code slot and
+    // passes a shared clone of the record first (in tail position too).
+    let output = run_admitted(
+        "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn twice(f: fn(Int) -> Int, x: Int) -> Int:\n    f(f(x))\n\nfn make_adder(n: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + n\n\nfn reduce(xs: List(Int), f: fn(Int, Int) -> Int, init: Int) -> Int:\n    var acc = init\n    for x in xs:\n        acc = f(acc, x)\n    acc\n\nfn double(x: Int) -> Int:\n    x * 2\n\nfn main(console: Console):\n    let add10 = make_adder(10)\n    console.print(\"${apply(add10, 5)} ${apply(fn(x: Int): x * x, 9)} ${twice(add10, 1)}\")\n    let nums = [1, 2, 3, 4, 5]\n    console.print(\"${reduce(nums, fn(a: Int, b: Int): a + b, 0)} ${reduce(nums, fn(a: Int, b: Int): a * b, 1)}\")\n    let base = 100\n    let offset = 7\n    console.print(\"${apply(fn(x: Int): base + offset + x, 1)} ${nums.map(double)} ${nums.map(make_adder(base))}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["15 81 21", "15 120", "108 [2, 4, 6, 8, 10] [101, 102, 103, 104, 105]"].into_iter().map(str::to_string).collect::<Vec<_>>()
+    );
 }

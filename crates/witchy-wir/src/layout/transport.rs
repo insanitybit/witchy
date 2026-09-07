@@ -363,7 +363,12 @@ fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
                 .all(|child| visit(layouts, *child, active, memo)),
             Some(
                 LayoutKind::Scalar(
-                    ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::V128,
+                    ScalarKind::RawByte
+                    | ScalarKind::BoolValueSlot
+                    | ScalarKind::V128
+                    // A callable lane names a function, not data: no transport
+                    // adapter may read or write one as scalar storage.
+                    | ScalarKind::Callable,
                 )
                 | LayoutKind::RuntimeBuffer { .. }
                 | LayoutKind::ScratchBuffer { .. }

@@ -4,7 +4,7 @@
 //! witness. Callers cannot provide a second layout graph and cannot make a
 //! layout-bearing type appear supported by supplying a matching descriptor.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
@@ -56,6 +56,105 @@ impl std::error::Error for CanonicalLayoutError {}
 pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
+    project_layouts(source)?.finish()
+}
+
+/// The closure layout of every `fn` type the canonical functions reach: a
+/// heap record of the code slot and the environment's `Int` capture slots.
+/// Derived by the same projection the bundle comes from, so the ids agree
+/// with the bundle's roots (a layout id is its content digest).
+pub(crate) fn closure_layouts(
+    source: &CanonicalCheckedSource,
+) -> Result<HashMap<Type, witchy_wir::layout::LayoutId>, CanonicalLayoutError> {
+    let projection = project_layouts(source)?;
+    let mut map = HashMap::new();
+    for (fn_type, slots) in closure_slot_assignment(projection.closures.into_values().collect()) {
+        let mut interner = LayoutInterner::new();
+        map.insert(fn_type, intern_closure_layout(&mut interner, slots)?);
+    }
+    Ok(map)
+}
+
+/// The identity of a `fn` type for closure purposes: the declared
+/// conventions spelled out (an empty list means every parameter is `let`)
+/// and the callable qualifiers dropped, so `fn(Int) -> Int` written at a
+/// parameter, a lambda, and a declaration share one closure layout.
+pub(crate) fn closure_key(ty: &Type) -> Type {
+    match ty.unqualified() {
+        Type::Fn(parameters, result, conventions, _) => {
+            let conventions = if conventions.is_empty() {
+                vec![ast::Convention::Let; parameters.len()]
+            } else {
+                conventions.clone()
+            };
+            Type::Fn(
+                parameters.iter().map(closure_key).collect(),
+                Box::new(closure_key(result)),
+                conventions,
+                ast::CallableQualifiers::default(),
+            )
+        }
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(closure_key).collect()),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(closure_key).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The number of `Int` capture slots each `fn` type's closures need: the
+/// widest capture list among the lambdas of that type in the closure
+/// witness manifest (a type with no lambda needs none).
+fn closure_capture_slots(source: &CanonicalCheckedSource) -> HashMap<Type, usize> {
+    let mut slots: HashMap<Type, usize> = HashMap::new();
+    for witness in source.closure_witness().entries() {
+        let Some(fn_type) = typeck::ty_to_ast(witness.signature()) else { continue };
+        let entry = slots.entry(closure_key(&fn_type)).or_default();
+        *entry = (*entry).max(witness.captures().len());
+    }
+    slots
+}
+
+/// Give every `fn` type a distinct slot count, so distinct signatures never
+/// share a closure layout: in a fixed order, each type takes at least one
+/// slot more than the type before it.
+pub(crate) fn closure_slot_assignment(mut closures: Vec<(Type, usize)>) -> Vec<(Type, usize)> {
+    closures.sort_by_key(|(ty, _)| format!("{ty:?}"));
+    closures.dedup_by_key(|(ty, _)| format!("{ty:?}"));
+    let mut previous: Option<usize> = None;
+    closures
+        .into_iter()
+        .map(|(ty, slots)| {
+            let slots = match previous {
+                Some(previous) => slots.max(previous + 1),
+                None => slots,
+            };
+            previous = Some(slots);
+            (ty, slots)
+        })
+        .collect()
+}
+
+/// A closure record: slot 0 holds the code, slots 1..=`slots` the `Int`
+/// captures.
+pub(crate) fn intern_closure_layout(
+    interner: &mut LayoutInterner,
+    slots: usize,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
+    let code = interner
+        .intern_scalar(ScalarKind::Callable)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    let int = interner
+        .intern_scalar(ScalarKind::Int)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    let mut children = vec![code];
+    children.extend(std::iter::repeat(int).take(slots));
+    interner
+        .intern_packed_record(children)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
+}
+
+fn project_layouts(
+    source: &CanonicalCheckedSource,
+) -> Result<LayoutProjection, CanonicalLayoutError> {
     let typed = source.typed_module();
     // The checker spells an entry-module type as `entry.Name` while the
     // definition keeps its bare source name; key both spellings.
@@ -69,7 +168,12 @@ pub(crate) fn derive_layout_bundle(
             .map(|entry| (format!("{entry}.{}", definition.name), definition.clone()));
         std::iter::once((definition.name.clone(), definition.clone())).chain(qualified)
     }).collect();
-    let mut projection = LayoutProjection { roots: Vec::new(), definitions };
+    let mut projection = LayoutProjection {
+        roots: Vec::new(),
+        definitions,
+        closures: BTreeMap::new(),
+        capture_slots: closure_capture_slots(source),
+    };
 
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
@@ -85,7 +189,18 @@ pub(crate) fn derive_layout_bundle(
         let Some(signature) = source.callable_signature(&function.name).cloned() else {
             continue;
         };
-        projection.visit_type(&signature)?;
+        // The declaration's own `fn` type is how it is called, not a value:
+        // its parameters and result are roots, the type itself is not a
+        // closure. A `fn` type nested in them is.
+        match &signature {
+            Type::Fn(parameters, result, _, _) => {
+                for parameter in parameters {
+                    projection.visit_type(parameter)?;
+                }
+                projection.visit_type(result)?;
+            }
+            other => projection.visit_type(other)?,
+        }
 
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             let Some(checked) = typed.table().type_of(expression) else {
@@ -115,13 +230,17 @@ pub(crate) fn derive_layout_bundle(
         .map_err(|error| error)?;
     }
 
-    projection.finish()
+    Ok(projection)
 }
 
 #[derive(Default)]
 struct LayoutProjection {
     roots: Vec<Type>,
     definitions: BTreeMap<String, TypeDef>,
+    /// Every `fn` type reached, keyed by its rendering, with the capture
+    /// slots its closures need.
+    closures: BTreeMap<String, (Type, usize)>,
+    capture_slots: HashMap<Type, usize>,
 }
 
 impl LayoutProjection {
@@ -151,7 +270,12 @@ impl LayoutProjection {
                 self.roots.push(ty.clone());
                 Ok(())
             }
+            // A `fn` type's values are closure records; the type's
+            // parameters and result carry their own roots.
             Type::Fn(parameters, result, _, _) => {
+                let fn_type = closure_key(ty);
+                let slots = self.capture_slots.get(&fn_type).copied().unwrap_or(0);
+                self.closures.insert(format!("{fn_type:?}"), (fn_type, slots));
                 for parameter in parameters {
                     self.visit_type(parameter)?;
                 }
@@ -224,6 +348,9 @@ impl LayoutProjection {
         for ty in self.roots {
             let root = intern_v1_layout(&mut interner, &ty, &self.definitions)?;
             roots.insert(root);
+        }
+        for (_, slots) in closure_slot_assignment(self.closures.into_values().collect()) {
+            roots.insert(intern_closure_layout(&mut interner, slots)?);
         }
         LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))

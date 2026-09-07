@@ -212,9 +212,12 @@ pub enum CandidateAbiBindingError {
     MissingCandidateSignature { function: super::FunctionId },
     SourceAbiMismatch { source_declaration: u32 },
     CandidateSignatureMismatch { function: super::FunctionId },
+    MissingCanonicalLayouts,
     MissingClosureWitness { closure: u32 },
     CapturingClosureBinding { closure: u32 },
     ClosureSignatureMismatch { closure: u32 },
+    MissingClosureEnvironmentParameter { function: super::FunctionId },
+    AdapterShapeMismatch { adapter: super::FunctionId },
 }
 
 impl fmt::Display for CandidateAbiBindingError {
@@ -356,10 +359,16 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
-    // A function synthesized for a capture-free lambda is bound to that
-    // lambda's closure witness instead of a source declaration: the witness
-    // must exist, capture nothing, and carry the function's signature.
+    // A function synthesized for a lambda is bound to that lambda's closure
+    // witness instead of a source declaration: the witness must exist, its
+    // captures must be `Int` values copied into the closure record's slots
+    // (no more of them than the record holds), and it must carry the
+    // function's signature past the environment parameter.
     let closures = source.closure_witness().entries();
+    let (_, closure_layout_catalog) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
+        Ok(value) => value,
+        Err(_) => return Err(CandidateAbiBindingError::MissingCanonicalLayouts),
+    };
     let mut closure_bound = BTreeMap::new();
     for binding in candidate.closure_bindings().entries() {
         if bound_functions.contains_key(&binding.function())
@@ -370,29 +379,185 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(witness) = closures.get(binding.closure() as usize) else {
             return Err(CandidateAbiBindingError::MissingClosureWitness { closure: binding.closure() });
         };
-        if !witness.captures().is_empty() {
-            return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
-        }
         let Some(function) = functions.get(&binding.function()) else {
             return Err(CandidateAbiBindingError::MissingCandidateFunction { function: binding.function() });
         };
         let Some(signature) = candidate.signatures().iter().find(|signature| signature.id == function.signature) else {
             return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.function() });
         };
+        let capture_slots = match signature.parameters.first() {
+            Some(super::ValueType::Ref(layout)) => closure_layout_catalog
+                .get(*layout)
+                .and_then(|descriptor| match descriptor.kind() {
+                    crate::layout::LayoutKind::PackedRecord { fields } => Some(fields.len().saturating_sub(1)),
+                    _ => None,
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
+        let int_capture = |capture: &witchy_types::canonical_closure::ClosureCaptureWitness| {
+            matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
+                && matches!(capture.checked_type().unqualified(), witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty())
+        };
+        if witness.captures().len() > capture_slots || !witness.captures().iter().all(int_capture) {
+            return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
+        }
         let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         };
-        if !candidate_signature_matches_source_with_records(signature, &source_signature, candidate, &records) {
+        // The synthesized function takes the closure object first; only the
+        // remaining lanes correspond to the source lambda's own signature.
+        let Some(source_lanes) = strip_closure_environment(signature, candidate) else {
+            return Err(CandidateAbiBindingError::MissingClosureEnvironmentParameter { function: binding.function() });
+        };
+        if !candidate_signature_matches_source_with_records(&source_lanes, &source_signature, candidate, &records) {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         }
     }
-    if functions.len() != bound_functions.len() + closure_bound.len() {
+    // A function synthesized for a named function used as a value forwards to
+    // its target under the environment-taking ABI and does nothing else.
+    let mut adapter_bound = BTreeMap::new();
+    for binding in candidate.adapter_bindings().entries() {
+        if bound_functions.contains_key(&binding.adapter())
+            || closure_bound.contains_key(&binding.adapter())
+            || adapter_bound.insert(binding.adapter(), binding).is_some()
+        {
+            return Err(CandidateAbiBindingError::DuplicateCandidateFunction { function: binding.adapter() });
+        }
+        let Some(adapter) = functions.get(&binding.adapter()) else {
+            return Err(CandidateAbiBindingError::MissingCandidateFunction { function: binding.adapter() });
+        };
+        let Some(target) = functions.get(&binding.target()) else {
+            return Err(CandidateAbiBindingError::MissingCandidateFunction { function: binding.target() });
+        };
+        let Some(adapter_signature) = candidate.signatures().iter().find(|signature| signature.id == adapter.signature) else {
+            return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.adapter() });
+        };
+        let Some(target_signature) = candidate.signatures().iter().find(|signature| signature.id == target.signature) else {
+            return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.target() });
+        };
+        if strip_closure_environment(adapter_signature, candidate)
+            .is_none_or(|lanes| !signature_lanes_match(&lanes, target_signature))
+        {
+            return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
+        }
+        if !adapter_body_forwards(adapter, target.id, target_signature) {
+            return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
+        }
+    }
+    if functions.len() != bound_functions.len() + closure_bound.len() + adapter_bound.len() {
         let function = functions.keys()
-            .find(|function| !bound_functions.contains_key(function) && !closure_bound.contains_key(function))
+            .find(|function| !bound_functions.contains_key(function)
+                && !closure_bound.contains_key(function)
+                && !adapter_bound.contains_key(function))
             .copied().unwrap_or_else(|| *bound_functions.keys().next().expect("nonempty mismatch"));
         return Err(CandidateAbiBindingError::MissingCandidateFunction { function });
     }
     Ok(())
+}
+
+/// The signature that remains when the leading closure-environment parameter
+/// is removed. `None` when the first parameter is not a shared reference to a
+/// layout the module registered as carrying this very signature -- so a
+/// candidate cannot smuggle an arbitrary extra parameter past the comparison.
+fn strip_closure_environment<S: ModuleStage>(
+    signature: &super::FunctionSignature,
+    candidate: &CanonicalModule<S>,
+) -> Option<super::FunctionSignature> {
+    strip_closure_environment_with(signature, candidate.closure_layouts())
+}
+
+fn strip_closure_environment_with(
+    signature: &super::FunctionSignature,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+) -> Option<super::FunctionSignature> {
+    let super::ValueType::Ref(layout) = *signature.parameters.first()? else { return None };
+    if closure_layouts.get(&layout) != Some(&signature.id) {
+        return None;
+    }
+    let environment = signature.contract.parameters.first()?;
+    if environment.value_type != super::ValueType::Ref(layout)
+        || environment.ownership != super::ParameterOwnership::Shared
+    {
+        return None;
+    }
+    Some(super::FunctionSignature {
+        id: signature.id,
+        parameters: signature.parameters[1..].to_vec(),
+        results: signature.results.clone(),
+        contract: super::CallableContract {
+            parameters: signature.contract.parameters[1..].to_vec(),
+            results: signature.contract.results.clone(),
+            parameter_effects: signature
+                .contract
+                .parameter_effects
+                .iter()
+                .filter_map(|(parameter, effects)| {
+                    parameter.checked_sub(1).map(|shifted| (shifted, effects.clone()))
+                })
+                .collect(),
+        },
+    })
+}
+
+/// Two signatures carry the same lanes: the identity differs (an adapter has
+/// its own signature id) but every parameter, result, and contract does not.
+fn signature_lanes_match(
+    actual: &super::FunctionSignature,
+    expected: &super::FunctionSignature,
+) -> bool {
+    actual.parameters == expected.parameters
+        && actual.results == expected.results
+        && actual.contract.parameters == expected.contract.parameters
+        && actual.contract.results == expected.contract.results
+        && actual.contract.parameter_effects == expected.contract.parameter_effects
+}
+
+/// The adapter's body is exactly one forwarding call: one block, one `Call` to
+/// the target passing the adapter's parameters 1.. in order, optionally one
+/// release of the environment token it was handed, and a `Return` of the
+/// call's destinations. Anything else -- a second call, arithmetic, a
+/// reordered argument, a different terminator -- refuses.
+fn adapter_body_forwards(
+    adapter: &super::Function,
+    target: super::FunctionId,
+    target_signature: &super::FunctionSignature,
+) -> bool {
+    let [block] = adapter.blocks.as_slice() else { return false };
+    if block.id != adapter.entry {
+        return false;
+    }
+    let parameters = block.parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+    let Some((environment, forwarded)) = parameters.split_first() else { return false };
+    let (call, tail) = match block.operations.split_first() {
+        Some((call, tail)) => (call, tail),
+        None => return false,
+    };
+    let super::Operation::Call { destinations, callee, arguments } = call else { return false };
+    if *callee != target || arguments.len() != forwarded.len() {
+        return false;
+    }
+    // A reference lane is forwarded by moving the token; a scalar lane is
+    // passed by value. The convention is the target's, not the adapter's.
+    if !arguments.iter().zip(forwarded).enumerate().all(|(index, (argument, parameter))| {
+        match (argument, target_signature.parameters.get(index)) {
+            (super::CallArgument::Move(value), Some(super::ValueType::Ref(_))) => value == parameter,
+            (super::CallArgument::Value(value), Some(value_type)) => {
+                !matches!(value_type, super::ValueType::Ref(_)) && value == parameter
+            }
+            _ => false,
+        }
+    }) {
+        return false;
+    }
+    // At most one release of the environment token the adapter was handed.
+    match tail {
+        [] => {}
+        [super::Operation::Release { object } | super::Operation::DropRef { object }]
+            if object == environment => {}
+        _ => return false,
+    }
+    matches!(&block.terminator, super::Terminator::Return { values } if values == destinations)
 }
 
 /// The checked module's type definitions, keyed by bare and entry-qualified
@@ -417,7 +582,7 @@ fn candidate_signature_matches_source_with_records<S: ModuleStage>(
 ) -> bool {
     let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
-    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut BTreeSet::new(), records)
+    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut BTreeSet::new(), records, candidate.closure_layouts())
 }
 
 fn candidate_signature_matches_source_inner(
@@ -429,6 +594,7 @@ fn candidate_signature_matches_source_inner(
     signatures: &[super::FunctionSignature],
     seen: &mut BTreeSet<super::FunctionSignatureId>,
     records: &ScalarRecordFields,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
     if actual.parameters.len() != parameters.len() || actual.contract.parameters.len() != parameters.len() {
         return false;
@@ -438,13 +604,13 @@ fn candidate_signature_matches_source_inner(
         let convention = convention_at(index);
         (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
-            && value_type_matches_source(*actual, source, layouts, signatures, seen, records)
+            && value_type_matches_source(*actual, source, layouts, signatures, seen, records, closure_layouts)
     }) { return false; }
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
         if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
-            || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen, records) { return false; }
+            || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen, records, closure_layouts) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (_, witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
@@ -459,9 +625,9 @@ fn candidate_signature_matches_source_inner(
         .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
         .collect::<Vec<_>>();
     (actual.results.len() == ordinary_results + write_back_parameters.len()
-        && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, seen, records))
+        && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, seen, records, closure_layouts))
         && write_back_parameters.iter().enumerate().all(|(offset, (parameter, source))| {
-            value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, seen, records)
+            value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, seen, records, closure_layouts)
                 && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack)
         })
         && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
@@ -490,6 +656,7 @@ fn value_type_matches_source(
     signatures: &[super::FunctionSignature],
     seen: &mut BTreeSet<super::FunctionSignatureId>,
     records: &ScalarRecordFields,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
     match source.unqualified() {
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
@@ -523,12 +690,23 @@ fn value_type_matches_source(
             })
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
+        // A `fn` value is a closure record: a reference to a layout the
+        // module registered with a closure signature, which, past its
+        // environment parameter, is the source signature.
         witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
-            super::ValueType::Callable(id) if seen.insert(id) => {
-                let matched = signatures.iter().find(|signature| signature.id == id).is_some_and(|signature| {
-                    let witchy_syntax::ast::Type::Fn(_, _, conventions, _) = source.unqualified() else { return false };
-                    candidate_signature_matches_source_inner(signature, parameters, result, conventions, layouts, signatures, seen, records)
-                });
+            super::ValueType::Ref(layout) => {
+                let Some(&id) = closure_layouts.get(&layout) else { return false };
+                if !seen.insert(id) {
+                    return false;
+                }
+                let matched = signatures
+                    .iter()
+                    .find(|signature| signature.id == id)
+                    .and_then(|signature| strip_closure_environment_with(signature, closure_layouts))
+                    .is_some_and(|declaration| {
+                        let witchy_syntax::ast::Type::Fn(_, _, conventions, _) = source.unqualified() else { return false };
+                        candidate_signature_matches_source_inner(&declaration, parameters, result, conventions, layouts, signatures, seen, records, closure_layouts)
+                    });
                 seen.remove(&id);
                 matched
             }
@@ -759,6 +937,160 @@ mod tests {
         })
     }
 
+    /// One adapter over a target with an `Int` parameter, plus the closure
+    /// layout its environment lane names. The adapter's body is supplied so a
+    /// refusal test can perturb exactly it.
+    fn adapter_candidate(
+        operations: Vec<Operation>,
+        terminator: Terminator,
+    ) -> (CanonicalModule<LoweredCandidate>, FunctionId, FunctionId) {
+        use crate::canonical_safewir::{
+            BlockParameter, CandidateAdapterBinding, CandidateAdapterBindings,
+            ParameterContract, ParameterOwnership,
+        };
+        use crate::layout::ScalarKind;
+
+        let adapter_id = FunctionId::new(0);
+        let target_id = FunctionId::new(1);
+        let adapter_signature = FunctionSignatureId::new(0);
+        let target_signature = FunctionSignatureId::new(1);
+        let environment = ValueId::new(0);
+        let argument = ValueId::new(1);
+        let result = ValueId::new(2);
+
+        let mut layouts = LayoutInterner::new();
+        let callable = layouts.intern_scalar(ScalarKind::Callable).unwrap();
+        let closure = layouts.intern_packed_record(vec![callable]).unwrap();
+        let bundle = LayoutBundle::from_interner(&layouts, [closure]).unwrap();
+
+        let target_contract = CallableContract {
+            parameters: vec![ParameterContract {
+                value_type: ValueType::Int,
+                ownership: ParameterOwnership::Value,
+            }],
+            results: vec![ResultContract::Value(ValueType::Int)],
+            parameter_effects: BTreeMap::new(),
+        };
+        let mut adapter_contract = target_contract.clone();
+        adapter_contract.parameters.insert(0, ParameterContract {
+            value_type: ValueType::Ref(closure),
+            ownership: ParameterOwnership::Shared,
+        });
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(1),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: bundle,
+            signatures: vec![
+                FunctionSignature {
+                    id: adapter_signature,
+                    parameters: vec![ValueType::Ref(closure), ValueType::Int],
+                    results: vec![ValueType::Int],
+                    contract: adapter_contract,
+                },
+                FunctionSignature {
+                    id: target_signature,
+                    parameters: vec![ValueType::Int],
+                    results: vec![ValueType::Int],
+                    contract: target_contract,
+                },
+            ],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: adapter_id,
+                    signature: adapter_signature,
+                    entry: BlockId::new(0),
+                    value_types: [
+                        (environment, ValueType::Ref(closure)),
+                        (argument, ValueType::Int),
+                        (result, ValueType::Int),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    blocks: vec![BasicBlock {
+                        id: BlockId::new(0),
+                        parameters: vec![
+                            BlockParameter { value: environment, value_type: ValueType::Ref(closure), ownership: None },
+                            BlockParameter { value: argument, value_type: ValueType::Int, ownership: None },
+                        ],
+                        operations,
+                        terminator,
+                    }],
+                },
+                Function {
+                    id: target_id,
+                    signature: target_signature,
+                    entry: BlockId::new(0),
+                    value_types: [(argument, ValueType::Int)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: BlockId::new(0),
+                        parameters: vec![BlockParameter { value: argument, value_type: ValueType::Int, ownership: None }],
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: vec![argument] },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        })
+        .with_closure_layouts([(closure, adapter_signature)].into_iter().collect())
+        .with_adapter_bindings(CandidateAdapterBindings::new(vec![
+            CandidateAdapterBinding::new(adapter_id, target_id),
+        ]));
+        (module, adapter_id, target_id)
+    }
+
+    fn forwarding_body() -> (Vec<Operation>, Terminator) {
+        use crate::canonical_safewir::CallArgument;
+        (
+            vec![Operation::Call {
+                destinations: vec![ValueId::new(2)],
+                callee: FunctionId::new(1),
+                arguments: vec![CallArgument::Value(ValueId::new(1))],
+            }],
+            Terminator::Return { values: vec![ValueId::new(2)] },
+        )
+    }
+
+    fn adapter_shape_holds(module: &CanonicalModule<LoweredCandidate>, adapter: FunctionId, target: FunctionId) -> bool {
+        let functions = module.functions().iter().map(|function| (function.id, function)).collect::<BTreeMap<_, _>>();
+        let adapter_function = functions[&adapter];
+        let signature = |id| module.signatures().iter().find(|signature| signature.id == id).expect("signature");
+        let lanes = strip_closure_environment(signature(adapter_function.signature), module);
+        lanes.is_some_and(|lanes| signature_lanes_match(&lanes, signature(functions[&target].signature)))
+            && adapter_body_forwards(adapter_function, target, signature(functions[&target].signature))
+    }
+
+    #[test]
+    fn adapter_binding_admits_the_forwarding_shape() {
+        let (operations, terminator) = forwarding_body();
+        let (module, adapter, target) = adapter_candidate(operations, terminator);
+        assert!(adapter_shape_holds(&module, adapter, target));
+    }
+
+    #[test]
+    fn adapter_binding_admits_a_trailing_release_of_the_environment() {
+        let (mut operations, terminator) = forwarding_body();
+        operations.push(Operation::DropRef { object: ValueId::new(0) });
+        let (module, adapter, target) = adapter_candidate(operations, terminator);
+        assert!(adapter_shape_holds(&module, adapter, target));
+    }
+
+    #[test]
+    fn adapter_binding_rejects_a_body_that_does_extra_work() {
+        let (mut operations, terminator) = forwarding_body();
+        operations.push(Operation::ConstInt { destination: ValueId::new(3), value: 1 });
+        let (module, adapter, target) = adapter_candidate(operations, terminator);
+        assert!(!adapter_shape_holds(&module, adapter, target));
+    }
+
+    #[test]
+    fn adapter_binding_rejects_an_unregistered_environment_layout() {
+        let (operations, terminator) = forwarding_body();
+        let (module, adapter, target) = adapter_candidate(operations, terminator);
+        let module = module.with_closure_layouts(BTreeMap::new());
+        assert!(!adapter_shape_holds(&module, adapter, target));
+    }
+
     fn source() -> witchy_types::pipeline::CheckedModule {
         witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), b"fn main() -> Int:\n    3\n".to_vec())],
@@ -871,8 +1203,15 @@ mod tests {
         ).unwrap();
         let source = checked.canonical_source().unwrap();
         let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
-        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new()));
-        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new()));
+        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new()));
+        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new()));
+    }
+
+    /// A closure record of one code slot and no captures.
+    fn closure_record_layout() -> crate::layout::LayoutId {
+        let mut interner = LayoutInterner::new();
+        let code = interner.intern_scalar(crate::layout::ScalarKind::Callable).unwrap();
+        interner.intern_packed_record(vec![code]).unwrap()
     }
 
     #[test]
@@ -882,9 +1221,12 @@ mod tests {
             "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).unwrap();
         let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
-        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
-        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
-        let mut candidate = candidate();
+        // The `fn(Int) -> Int` parameter is a closure record whose registered
+        // signature takes the record first.
+        let closure = closure_record_layout();
+        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Ref(closure), ValueType::Int], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Ref(closure), ownership: super::super::ParameterOwnership::Shared }, super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
+        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(closure)], results: vec![ValueType::Int], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Ref(closure), ownership: super::super::ParameterOwnership::Shared }], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() } };
+        let mut candidate = candidate().with_closure_layouts([(closure, FunctionSignatureId::new(1))].into_iter().collect());
         candidate.signatures = vec![outer, inner];
         assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));
     }
@@ -896,9 +1238,10 @@ mod tests {
             "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).unwrap();
         let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
-        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Int], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value }], results: vec![], parameter_effects: BTreeMap::new() } };
-        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Callable(FunctionSignatureId::new(1))], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Callable(FunctionSignatureId::new(1)), ownership: super::super::ParameterOwnership::Value }], results: vec![], parameter_effects: BTreeMap::new() } };
-        let mut candidate = candidate();
+        let closure = closure_record_layout();
+        let inner = FunctionSignature { id: FunctionSignatureId::new(1), parameters: vec![ValueType::Ref(closure), ValueType::Int], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Ref(closure), ownership: super::super::ParameterOwnership::Shared }, super::super::ParameterContract { value_type: ValueType::Int, ownership: super::super::ParameterOwnership::Value }], results: vec![], parameter_effects: BTreeMap::new() } };
+        let outer = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(closure)], results: vec![], contract: CallableContract { parameters: vec![super::super::ParameterContract { value_type: ValueType::Ref(closure), ownership: super::super::ParameterOwnership::Shared }], results: vec![], parameter_effects: BTreeMap::new() } };
+        let mut candidate = candidate().with_closure_layouts([(closure, FunctionSignatureId::new(1))].into_iter().collect());
         candidate.signatures = vec![outer, inner];
         assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));
     }

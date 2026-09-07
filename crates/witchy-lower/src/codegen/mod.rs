@@ -405,7 +405,7 @@ fn push_packed_list_scalar_store(
         FieldKind::Scalar(ScalarKind::Float) => {
             nodes.push(N::SafeStore { place, value, kind: WK::F64 });
         }
-        FieldKind::Scalar(ScalarKind::U32 | ScalarKind::Tag32) => {
+        FieldKind::Scalar(ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable) => {
             nodes.push(N::SafeStore { place, value, kind: WK::I32 });
         }
         FieldKind::Scalar(ScalarKind::Tag16 | ScalarKind::BoolValueSlot | ScalarKind::V128)
@@ -439,7 +439,7 @@ fn push_packed_list_scalar_element_store(
         ScalarKind::Float => {
             nodes.push(N::SafeStore { place, value, kind: WK::F64 });
         }
-        ScalarKind::U32 | ScalarKind::Tag32 => {
+        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => {
             nodes.push(N::SafeStore { place, value, kind: WK::I32 });
         }
         ScalarKind::Tag16 | ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
@@ -6130,7 +6130,7 @@ impl<'types> Codegen<'types> {
             ScalarKind::Int | ScalarKind::Duration => Some(Kind::I64),
             ScalarKind::Float => Some(Kind::F64),
             ScalarKind::Bool | ScalarKind::U32 | ScalarKind::Tag8
-            | ScalarKind::Tag16 | ScalarKind::Tag32 => Some(Kind::I32),
+            | ScalarKind::Tag16 | ScalarKind::Tag32 | ScalarKind::Callable => Some(Kind::I32),
             ScalarKind::BoolValueSlot | ScalarKind::RawByte | ScalarKind::V128 => None,
         }
     }
@@ -6306,7 +6306,7 @@ impl<'types> Codegen<'types> {
                     kind: match scalar {
                         ScalarKind::Int | ScalarKind::Duration => WK::I64,
                         ScalarKind::Float => WK::F64,
-                        ScalarKind::U32 | ScalarKind::Tag32 => WK::I32,
+                        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => WK::I32,
                         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16
                         | ScalarKind::RawByte | ScalarKind::BoolValueSlot
                         | ScalarKind::V128 => unreachable!(),
@@ -7507,7 +7507,7 @@ impl<'types> Codegen<'types> {
                 kind: match scalar {
                     ScalarKind::Int | ScalarKind::Duration => WK::I64,
                     ScalarKind::Float => WK::F64,
-                    ScalarKind::U32 | ScalarKind::Tag32 => WK::I32,
+                    ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => WK::I32,
                     ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16
                     | ScalarKind::RawByte | ScalarKind::BoolValueSlot
                     | ScalarKind::V128 => unreachable!(),

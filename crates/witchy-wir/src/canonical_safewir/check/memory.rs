@@ -9,7 +9,7 @@ use super::{InitialCheckError, value_type};
 use crate::canonical_safewir::{
     AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, CallArgument,
     CallableContract, ComparisonOperator, Extent, Function, FunctionSignature, GuardKind,
-    HeaderField, LoadTransfer, Operation, OverflowBehavior, Ownership, ParameterContract,
+    FunctionSignatureId, HeaderField, LoadTransfer, Operation, OverflowBehavior, Ownership, ParameterContract,
     ParameterOwnership, Place, Projection, ResultContract, ReturnedExtent, StoreTransfer, ValueId,
     ValueType,
 };
@@ -99,6 +99,10 @@ enum SlotIdentity {
 pub(super) struct MemoryChecker<'a> {
     function: &'a Function,
     layouts: &'a LayoutInterner,
+    /// The module's closure-object registry: the signature slot 0 of each
+    /// closure layout carries. It is the only source of a callable lane's
+    /// value type, so a layout missing from it has no readable lane.
+    closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
     state: MemoryState,
 }
 
@@ -111,10 +115,12 @@ impl<'a> MemoryChecker<'a> {
         function: &'a Function,
         layouts: &'a LayoutInterner,
         signature: &FunctionSignature,
+        closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
     ) -> Result<Self, InitialCheckError> {
         let mut checker = Self {
             function,
             layouts,
+            closure_layouts,
             state: MemoryState {
                 objects: BTreeMap::new(),
                 shared_phi_origins: BTreeMap::new(),
@@ -598,7 +604,7 @@ impl<'a> MemoryChecker<'a> {
         if !matches!(state.objects.get(&object)?.extent, Extent::HeaderPrefix { .. }) {
             return None;
         }
-        let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, state: state.clone() };
+        let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
         scratch.promote_header_extent(object).ok()?;
         scratch.state.objects.get(&object).cloned()
     }
@@ -1900,6 +1906,16 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Load(access)");
         }
         let expected = self.check_place(place)?;
+        // A callable lane is memory-bearing in the ABI sense (it is not an
+        // ordinary scalar at a call boundary) but it holds a table index, so
+        // its load is a plain scalar copy like any other four-byte lane.
+        if let ValueType::Callable(_) = expected {
+            if transfer != LoadTransfer::CopyScalar {
+                return self.unsupported("Load(closure slot transfer)");
+            }
+            self.require_type(destination, expected)?;
+            return Ok(());
+        }
         if !expected.is_memory_bearing() {
             if transfer != LoadTransfer::CopyScalar {
                 return self.unsupported("Load(scalar transfer)");
@@ -2071,6 +2087,15 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         let expected = self.check_place(place)?;
+        // The only producer of a `Callable` value is `FunctionValue`, so a
+        // closure slot store copies a table index into the lane.
+        if let ValueType::Callable(_) = expected {
+            if transfer != StoreTransfer::CopyScalar {
+                return self.unsupported("Store(closure slot transfer)");
+            }
+            self.require_type(value, expected)?;
+            return Ok(());
+        }
         if !expected.is_memory_bearing() {
             if transfer != StoreTransfer::CopyScalar {
                 return self.unsupported("Store(scalar transfer)");
@@ -2297,7 +2322,22 @@ impl<'a> MemoryChecker<'a> {
                         object: place.object(),
                     },
                 )?;
-                self.value_type_for_field(field.kind())?
+                // The callable lane carries no value type of its own: the
+                // closure registry names the signature slot 0 must hold, and
+                // an unregistered layout has no readable lane at all.
+                match field.kind() {
+                    FieldKind::Scalar(ScalarKind::Callable) => {
+                        let derived = self.closure_slot_type(place.object(), object.layout)?;
+                        if place.value_type() != derived {
+                            return Err(InitialCheckError::InvalidClosureSlot {
+                                function: self.function.id,
+                                object: place.object(),
+                            });
+                        }
+                        derived
+                    }
+                    kind => self.value_type_for_field(kind)?,
+                }
             }
             Projection::Slice { .. } => return self.unsupported("Place(Slice)"),
         };
@@ -2993,6 +3033,23 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
+    /// The value type of a closure object's callable lane: the signature the
+    /// module registered for that exact layout. Fail-closed -- an unregistered
+    /// layout refuses rather than inventing a signature.
+    fn closure_slot_type(
+        &self,
+        object: ValueId,
+        layout: crate::layout::LayoutId,
+    ) -> Result<ValueType, InitialCheckError> {
+        self.closure_layouts
+            .get(&layout)
+            .map(|signature| ValueType::Callable(*signature))
+            .ok_or(InitialCheckError::InvalidClosureSlot {
+                function: self.function.id,
+                object,
+            })
+    }
+
     fn value_type_for_field(&self, field: FieldKind) -> Result<ValueType, InitialCheckError> {
         match field {
             FieldKind::Scalar(kind) => self.value_type_for_scalar(kind),
@@ -3010,7 +3067,9 @@ impl<'a> MemoryChecker<'a> {
                 Ok(ValueType::Size)
             }
             ScalarKind::V128 => Ok(ValueType::V128),
-            ScalarKind::RawByte | ScalarKind::BoolValueSlot => self.unsupported("layout scalar"),
+            ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::Callable => {
+                self.unsupported("layout scalar")
+            }
         }
     }
 
@@ -3402,7 +3461,8 @@ mod tests {
                 parameter_effects: BTreeMap::new(),
             },
         };
-        let mut checker = MemoryChecker::new(&function, &layouts, &signature)
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
             .expect("checker construction");
         for (destination, value) in [(COUNT, 1), (CAPACITY, 1), (START, 0), (LENGTH, 1), (LONG_LENGTH, 2)] {
             checker
@@ -3895,7 +3955,8 @@ mod tests {
                 parameter_effects: BTreeMap::new(),
             },
         };
-        let mut checker = MemoryChecker::new(&function, &layouts, &signature)
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
             .expect("checker construction");
         for (destination, value) in [
             (COUNT, 1),
@@ -4465,7 +4526,8 @@ mod tests {
                 parameter_effects: BTreeMap::new(),
             },
         };
-        let mut checker = MemoryChecker::new(&function, &layouts, &signature)
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
             .expect("checker construction");
         for object in [SOURCE, DESTINATION] {
             checker.state.objects.insert(

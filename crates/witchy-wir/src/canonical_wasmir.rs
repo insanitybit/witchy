@@ -1223,6 +1223,9 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> O
         Rule::Alloc => Some(CorrespondenceRule::MemoryAlloc),
         Rule::StaticData => Some(CorrespondenceRule::MemoryStaticData),
         Rule::Load => Some(CorrespondenceRule::MemoryLoad),
+        // The callable lane is an ordinary four-byte field: its load and
+        // store are the same i32 access every other 32-bit lane gets.
+        Rule::ClosureSlot => Some(CorrespondenceRule::MemoryLoad),
         Rule::Store => Some(CorrespondenceRule::MemoryStore),
         Rule::CopyBytes | Rule::CloneRange => Some(CorrespondenceRule::MemoryCopy),
         Rule::MoveRange | Rule::CloneRef | Rule::Release | Rule::DropRef | Rule::Reclaim => Some(CorrespondenceRule::MemoryOwnership),
@@ -2050,7 +2053,7 @@ fn emit_typed_load(
     match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Load8U(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Load16U(arg)),
-        ScalarKind::U32 | ScalarKind::Tag32 => body.instruction(&wasm_encoder::Instruction::I32Load(arg)),
+        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => body.instruction(&wasm_encoder::Instruction::I32Load(arg)),
         ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Load(arg)),
         ScalarKind::Float => body.instruction(&wasm_encoder::Instruction::F64Load(arg)),
         _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "scalar load" }),
@@ -2071,7 +2074,7 @@ fn emit_typed_store(
     match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Store8(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Store16(arg)),
-        ScalarKind::U32 | ScalarKind::Tag32 => body.instruction(&wasm_encoder::Instruction::I32Store(arg)),
+        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => body.instruction(&wasm_encoder::Instruction::I32Store(arg)),
         ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Store(arg)),
         ScalarKind::Float => body.instruction(&wasm_encoder::Instruction::F64Store(arg)),
         _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "scalar store" }),
@@ -4363,7 +4366,7 @@ fn push_memory_load_plan(
     plan.push(match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
         ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
-        ScalarKind::U32 | ScalarKind::Tag32 => memarg(0, 2, 0),
+        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => memarg(0, 2, 0),
         ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
         ScalarKind::Float => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
@@ -4386,7 +4389,7 @@ fn push_memory_store_plan(
     plan.push(match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
         ScalarKind::Tag16 => PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
-        ScalarKind::U32 | ScalarKind::Tag32 => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
         ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Store { offset: 0, align: 3, memory: 0 },
         ScalarKind::Float => PlanToken::F64Store { offset: 0, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
