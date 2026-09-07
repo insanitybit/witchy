@@ -991,7 +991,14 @@ impl<'a> MemoryChecker<'a> {
             self.require_source_range_complete(source)?;
             let moved = self.require_initialized_range(source, destination.element)?;
             self.require_destination_range_empty(destination)?;
-            self.state.stored_objects.retain(|(object, _), _| *object != source.object);
+            let source_object = source.object;
+            let consumed = self.state.stored_objects.keys()
+                .filter(|(object, _)| self.same_allocation(source_object, *object))
+                .copied()
+                .collect::<Vec<_>>();
+            for key in consumed {
+                self.state.stored_objects.remove(&key);
+            }
             self.state.range_states.retain(|identity, _| {
                 identity.object != source.object && identity.object != destination.object
             });
@@ -1059,7 +1066,7 @@ impl<'a> MemoryChecker<'a> {
         element: crate::layout::LayoutId,
     ) -> Result<RangeState, InitialCheckError> {
         if let Some(state) = self.state.range_states.iter().find_map(|(identity, state)| {
-            (identity.object == range.object
+            (self.same_allocation(range.object, identity.object)
                 && self.range_start_matches(identity, state, range.start)
                 && self.same_scalar(identity.length, range.length)
                 && state.element == element
@@ -1090,19 +1097,44 @@ impl<'a> MemoryChecker<'a> {
             operation: "MoveRange(uninitialized-source)",
         })?;
         let mut allocation_class = None;
+        let mut ownership = Ownership::Unique;
         for index in start..end {
-            let Some(stored) = self.state.stored_objects.get(&(range.object, SlotIdentity::Constant(index))) else {
+            // A slot fact may be keyed by an alias of this object (a clone
+            // of the same allocation); resolve it through the identity.
+            let Some(stored) = self.stored_slot_by_identity(range.object, SlotIdentity::Constant(index)) else {
                 return self.unsupported("MoveRange(uninitialized-source)");
             };
-            if stored.ownership != Ownership::Unique || stored.layout != pointee {
+            if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared) || stored.layout != pointee {
                 return self.unsupported("MoveRange(uninitialized-source)");
+            }
+            if stored.ownership == Ownership::Shared {
+                ownership = Ownership::Shared;
             }
             if allocation_class.is_some() && allocation_class != stored.allocation_class {
                 return self.unsupported("MoveRange(incompatible element storage)");
             }
             allocation_class = stored.allocation_class;
         }
-        Ok(RangeState { element, ownership: Ownership::Unique, allocation_class, initialized: true, zero_width: self.is_zero(range.length), zero_start: self.is_zero(range.start) })
+        Ok(RangeState { element, ownership, allocation_class, initialized: true, zero_width: self.is_zero(range.length), zero_start: self.is_zero(range.start) })
+    }
+
+    /// Whether `object` names the same allocation as `other` (an alias such
+    /// as a `CloneRef` of it, or the object itself).
+    fn same_allocation(&self, object: ValueId, other: ValueId) -> bool {
+        object == other
+            || match (self.state.objects.get(&object), self.state.objects.get(&other)) {
+                (Some(left), Some(right)) => left.identity == right.identity,
+                _ => false,
+            }
+    }
+
+    /// A stored slot fact of `object`'s allocation under any alias.
+    fn stored_slot_by_identity(&self, object: ValueId, slot: SlotIdentity) -> Option<&ObjectState> {
+        self.state
+            .stored_objects
+            .iter()
+            .find(|((stored_object, stored_slot), _)| *stored_slot == slot && self.same_allocation(object, *stored_object))
+            .map(|(_, stored)| stored)
     }
 
     fn require_owned_slots_initialized(
@@ -1221,12 +1253,6 @@ impl<'a> MemoryChecker<'a> {
         let source = self.check_typed_range(source, AccessMode::Read, "CloneRange")?;
         self.check_range_pair(destination, source, count, "CloneRange")?;
 
-        // CloneRange would need to retain every shared pointer element and
-        // roll back already-cloned elements on failure. Neither per-element
-        // ownership nor rollback is representable in the v1 operation, so
-        // pointer-bearing ranges fail closed until the typed transfer kernel
-        // exists. Scalar cloning is an ordinary value copy.
-        self.require_scalar_range_element(destination.element, "CloneRange")?;
         if destination.ownership != Ownership::Unique
             || self.state.static_data_objects.contains(&destination.object)
         {
@@ -1235,6 +1261,52 @@ impl<'a> MemoryChecker<'a> {
                 object: destination.object,
             });
         }
+        if self.value_type_for_layout(destination.element)?.is_memory_bearing() {
+            // Cloning a pointer-bearing prefix retains every element (the
+            // backend traps on a zero or saturated count, so a partial clone
+            // never survives). Both prefixes then share their elements.
+            let cloned = self.require_initialized_range(source, destination.element)?;
+            self.require_destination_range_empty(destination)?;
+            // A zero-width prefix fact carries no class of its own; the
+            // objects on both sides must be reference counted regardless.
+            if source.allocation_class != Some(AllocationClass::ReferenceCounted)
+                || destination.allocation_class != Some(AllocationClass::ReferenceCounted)
+            {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: source.object,
+                });
+            }
+            let shared = self.state.stored_objects.keys()
+                .filter(|(object, _)| self.same_allocation(source.object, *object))
+                .copied()
+                .collect::<Vec<_>>();
+            for key in shared {
+                self.state.stored_objects.get_mut(&key).expect("key exists").ownership = Ownership::Shared;
+            }
+            let shared_ranges = self.state.range_states.keys()
+                .filter(|identity| self.same_allocation(source.object, identity.object))
+                .copied()
+                .collect::<Vec<_>>();
+            for identity in shared_ranges {
+                self.state.range_states.get_mut(&identity).expect("range exists").ownership = Ownership::Shared;
+            }
+            self.state.range_states.retain(|identity, _| identity.object != destination.object);
+            self.state.range_states.insert(
+                RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
+                RangeState {
+                    element: destination.element,
+                    ownership: Ownership::Shared,
+                    allocation_class: cloned.allocation_class.or(source.allocation_class),
+                    initialized: true,
+                    zero_width: self.is_zero(count),
+                    zero_start: self.is_zero(destination.start),
+                },
+            );
+            return Ok(());
+        }
+        // Scalar cloning is an ordinary value copy.
+        self.require_scalar_range_element(destination.element, "CloneRange")?;
         Ok(())
     }
 
@@ -1848,7 +1920,8 @@ impl<'a> MemoryChecker<'a> {
                         LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
                         LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
                     };
-                    let child_complete = !self.fixed_pointer_fields(pointee)?.is_empty();
+                    // The child was stored complete (`Store` requires it),
+                    // so its own owned slots need no per-slot facts.
                     self.state.objects.insert(destination, ObjectState {
                         identity: destination,
                         layout: pointee,
@@ -1856,7 +1929,7 @@ impl<'a> MemoryChecker<'a> {
                         ownership: Ownership::Shared,
                         allocation_class: Some(AllocationClass::ReferenceCounted),
                         shared_immutable: false,
-                        initialized_owned_slots: child_complete,
+                        initialized_owned_slots: true,
                     });
                     return Ok(());
                 }
@@ -1893,6 +1966,8 @@ impl<'a> MemoryChecker<'a> {
                 LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
                 LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
             };
+            // Every element of an initialized prefix was stored complete
+            // (`Store` requires it), so the loaded element is complete.
             let stored = ObjectState {
                 identity: destination,
                 layout,
@@ -1900,7 +1975,7 @@ impl<'a> MemoryChecker<'a> {
                 ownership: Ownership::Shared,
                 allocation_class: range.1.allocation_class,
                 shared_immutable: false,
-                initialized_owned_slots: false,
+                initialized_owned_slots: true,
             };
             self.state.objects.insert(destination, stored);
             return Ok(());
@@ -1972,6 +2047,9 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Store(non-linear reference)");
         };
         self.require_ref_type(value, layout)?;
+        // A stored reference is complete: its own owned slots are initialized,
+        // so a later load or drop of it needs no per-slot facts.
+        self.require_owned_slots_initialized(value, "Store(uninitialized owned slot)")?;
         let key = self.reference_slot(place)?;
         if self.state.stored_objects.contains_key(&key) {
             return self.unsupported("Store(overwrite reference)");
@@ -3891,13 +3969,47 @@ mod tests {
                 source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
                 count: LENGTH,
             });
+            // A pointer-bearing clone needs an initialized source prefix
+            // whose elements it can retain; without one it fails closed.
             assert!(matches!(
                 result,
-                Err(InitialCheckError::UnsupportedMemoryOperation {
-                    operation: "CloneRange(pointer-bearing element)",
-                    ..
-                })
+                Err(InitialCheckError::UnsupportedMemoryOperation { .. })
             ));
+        });
+    }
+
+    #[test]
+    fn dynamic_pointer_clone_range_shares_initialized_elements() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            let pointer_element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: None, initialized: true, zero_width: true, zero_start: true },
+            );
+            checker.state.constants.remove(&COUNT);
+            checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY));
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
+            );
+            assert_eq!(
+                checker.check(&Operation::CloneRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Ok(true)
+            );
+            let _ = pointee;
+            // Both prefixes own their elements jointly from here on.
+            assert_eq!(
+                checker.state.range_states[&RangeIdentity { object: DESTINATION, start: START, length: COUNT }],
+                RangeState { element: pointer_element, ownership: Ownership::Shared, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true }
+            );
+            assert_eq!(
+                checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
+                RangeState { element: pointer_element, ownership: Ownership::Shared, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true }
+            );
         });
     }
 

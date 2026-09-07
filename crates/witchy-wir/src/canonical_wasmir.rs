@@ -963,8 +963,7 @@ fn lower_operation(
         Operation::CloneRange { destination, source, count } => {
             let destination_layout = resolve_collection_layout_for_values(function, value_types, layouts, destination.object())?;
             let source_layout = resolve_collection_layout_for_values(function, value_types, layouts, source.object())?;
-            if destination_layout.pointer_layout.is_some()
-                || destination_layout != source_layout
+            if destination_layout != source_layout
                 || !matches!(destination.projection(), Projection::Slice { length, .. } if *length == *count)
                 || !matches!(source.projection(), Projection::Slice { length, .. } if *length == *count)
             {
@@ -2659,7 +2658,7 @@ fn emit_clone_range(
 ) -> Result<(), EncodeError> {
     let destination_layout = resolve_collection_layout(function, layouts, destination.object()).map_err(EncodeError::Lowering)?;
     let source_layout = resolve_collection_layout(function, layouts, source.object()).map_err(EncodeError::Lowering)?;
-    if destination_layout.pointer_layout.is_some() || destination_layout != source_layout {
+    if destination_layout != source_layout {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "CloneRange" }));
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
@@ -2684,6 +2683,68 @@ fn emit_clone_range(
     body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
     body.instruction(&wasm_encoder::Instruction::I32Mul);
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    if destination_layout.pointer_layout.is_some() {
+        // The copied prefix now holds a second owner of every element:
+        // retain each one, mirroring `CloneRef` (static objects below the
+        // heap boundary carry no count; a zero or saturated count traps).
+        if layout.scratch.len() < 5 {
+            return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "CloneRange scratch depth" });
+        }
+        body.instruction(&wasm_encoder::Instruction::I32Const(0));
+        emit_set_index(body, scratch_index(layout, 0));
+        body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+        emit_get_index(body, scratch_index(layout, 0));
+        emit_get(body, layout, function.id, count)?;
+        body.instruction(&wasm_encoder::Instruction::I32LtU);
+        body.instruction(&wasm_encoder::Instruction::I32Eqz);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Br(2));
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get_index(body, scratch_index(layout, 2));
+        emit_get_index(body, scratch_index(layout, 0));
+        body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
+        body.instruction(&wasm_encoder::Instruction::I32Mul);
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+        emit_set_index(body, scratch_index(layout, 3));
+        emit_get_index(body, scratch_index(layout, 3));
+        body.instruction(&wasm_encoder::Instruction::GlobalGet(2));
+        body.instruction(&wasm_encoder::Instruction::I32LtU);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Else);
+        emit_get_index(body, scratch_index(layout, 3));
+        body.instruction(&wasm_encoder::Instruction::I32Const(8));
+        body.instruction(&wasm_encoder::Instruction::I32Sub);
+        body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+        emit_set_index(body, scratch_index(layout, 4));
+        emit_get_index(body, scratch_index(layout, 4));
+        body.instruction(&wasm_encoder::Instruction::I32Eqz);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get_index(body, scratch_index(layout, 4));
+        body.instruction(&wasm_encoder::Instruction::I32Const(-1));
+        body.instruction(&wasm_encoder::Instruction::I32Eq);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get_index(body, scratch_index(layout, 3));
+        body.instruction(&wasm_encoder::Instruction::I32Const(8));
+        body.instruction(&wasm_encoder::Instruction::I32Sub);
+        emit_get_index(body, scratch_index(layout, 4));
+        body.instruction(&wasm_encoder::Instruction::I32Const(1));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get_index(body, scratch_index(layout, 0));
+        body.instruction(&wasm_encoder::Instruction::I32Const(1));
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_set_index(body, scratch_index(layout, 0));
+        body.instruction(&wasm_encoder::Instruction::Br(0));
+        body.instruction(&wasm_encoder::Instruction::End);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
     Ok(())
 }
 
@@ -4654,7 +4715,7 @@ fn push_clone_range_plan(
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let source_layout = resolve_collection_layout(function, layouts, source.object())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    if destination_layout.pointer_layout.is_some() || destination_layout != source_layout {
+    if destination_layout != source_layout {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
@@ -4685,6 +4746,70 @@ fn push_clone_range_plan(
         PlanToken::I32Mul,
         PlanToken::MemoryCopy { source: 0, destination: 0 },
     ]);
+    if destination_layout.pointer_layout.is_some() {
+        if layout.scratch.len() < 5 {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        let load = PlanToken::I32Load { offset: 0, align: 2, memory: 0 };
+        plan.extend([
+            PlanToken::I32Const(0),
+            PlanToken::LocalSet(layout.scratch[0]),
+            PlanToken::Block("Empty".to_owned()),
+            PlanToken::Loop("Empty".to_owned()),
+            PlanToken::LocalGet(layout.scratch[0]),
+        ]);
+        push_get(plan, layout, count)?;
+        plan.extend([
+            PlanToken::I32LtU,
+            PlanToken::I32Eqz,
+            PlanToken::If("Empty".to_owned()),
+            PlanToken::Br(2),
+            PlanToken::End,
+            PlanToken::LocalGet(layout.scratch[2]),
+            PlanToken::LocalGet(layout.scratch[0]),
+            PlanToken::I32Const(destination_layout.stride as i32),
+            PlanToken::I32Mul,
+            PlanToken::I32Add,
+            load.clone(),
+            PlanToken::LocalSet(layout.scratch[3]),
+            PlanToken::LocalGet(layout.scratch[3]),
+            PlanToken::GlobalGet(2),
+            PlanToken::I32LtU,
+            PlanToken::If("Empty".to_owned()),
+            PlanToken::Else,
+            PlanToken::LocalGet(layout.scratch[3]),
+            PlanToken::I32Const(8),
+            PlanToken::I32Sub,
+            load,
+            PlanToken::LocalSet(layout.scratch[4]),
+            PlanToken::LocalGet(layout.scratch[4]),
+            PlanToken::I32Eqz,
+            PlanToken::If("Empty".to_owned()),
+            PlanToken::Unreachable,
+            PlanToken::End,
+            PlanToken::LocalGet(layout.scratch[4]),
+            PlanToken::I32Const(-1),
+            PlanToken::I32Eq,
+            PlanToken::If("Empty".to_owned()),
+            PlanToken::Unreachable,
+            PlanToken::End,
+            PlanToken::LocalGet(layout.scratch[3]),
+            PlanToken::I32Const(8),
+            PlanToken::I32Sub,
+            PlanToken::LocalGet(layout.scratch[4]),
+            PlanToken::I32Const(1),
+            PlanToken::I32Add,
+            PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+            PlanToken::End,
+            PlanToken::LocalGet(layout.scratch[0]),
+            PlanToken::I32Const(1),
+            PlanToken::I32Add,
+            PlanToken::LocalSet(layout.scratch[0]),
+            PlanToken::Br(0),
+            PlanToken::End,
+            PlanToken::End,
+        ]);
+    }
     Ok(())
 }
 
@@ -9129,7 +9254,7 @@ mod tests {
     }
 
     #[test]
-    fn pointer_bearing_clone_range_is_refused_by_canonical_backend() {
+    fn pointer_bearing_clone_range_lowers_in_canonical_backend() {
         let mut interner = LayoutInterner::new();
         let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
         let string = interner.intern_runtime_buffer(byte).unwrap();
@@ -9164,7 +9289,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert!(matches!(
+        assert!(
             lower_operation(
                 FunctionId::new(165),
                 crate::canonical_safewir::BlockId::new(165),
@@ -9176,9 +9301,9 @@ mod tests {
                 &interner,
                 &BTreeMap::new(),
                 &mut BTreeMap::new(),
-            ),
-            Err(LoweringError::UnsupportedLayout { operation: "CloneRange", .. })
-        ));
+            )
+            .is_ok()
+        );
     }
 
     #[test]

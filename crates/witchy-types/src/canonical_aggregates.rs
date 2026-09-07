@@ -75,29 +75,48 @@ pub fn is_scalar_type(ty: &Type) -> bool {
         if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool"))
 }
 
-/// A v1 list element: a scalar, a string, or a list of those.
-pub fn is_v1_list_element_type(ty: &Type) -> bool {
+/// A v1 list element: a scalar other than `Bool` (a boolean element slot
+/// is not a value type yet), a string, a list of those, or an aggregate.
+pub fn is_v1_list_element_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    !matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Bool" && arguments.is_empty())
+        && field_type_ok(ty, definitions, true)
+}
+
+/// A field an aggregate may carry: a scalar in its slot, or a string,
+/// list, tuple, or aggregate behind an owned pointer slot.
+pub fn is_v1_field_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    field_type_ok(ty, definitions, true)
+}
+
+/// `allow_nominal` admits one level of declared aggregates: a nominal
+/// field may not itself carry nominal fields, so no shape recurses.
+fn field_type_ok(ty: &Type, definitions: &BTreeMap<String, TypeDef>, allow_nominal: bool) -> bool {
     match ty.unqualified() {
-        Type::Named(name, arguments) if arguments.is_empty() => {
-            is_scalar_type(ty) || name == "String"
-        }
+        _ if is_scalar_type(ty) => true,
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => true,
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            is_v1_list_element_type(&arguments[0])
+            !matches!(arguments[0].unqualified(), Type::Named(name, inner) if name == "Bool" && inner.is_empty())
+                && field_type_ok(&arguments[0], definitions, allow_nominal)
+        }
+        Type::Named(name, arguments) if matches!(name.as_str(), "Option" | "Result") => {
+            !arguments.is_empty() && arguments.iter().all(|argument| field_type_ok(argument, definitions, false))
+        }
+        Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok(item, definitions, allow_nominal)),
+        Type::Named(name, arguments) if arguments.is_empty() && allow_nominal => {
+            definitions.get(name).is_some_and(|definition| definition_fields_ok(definition, definitions, false))
         }
         _ => false,
     }
 }
 
-/// A field an aggregate may carry: a scalar in its slot, or a string or
-/// list behind an owned pointer slot.
-pub fn is_v1_field_type(ty: &Type) -> bool {
-    is_scalar_type(ty)
-        || matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
-        || matches!(ty.unqualified(), Type::Named(name, arguments)
-            if name == "List" && arguments.len() == 1 && is_v1_list_element_type(&arguments[0]))
-        // A tuple field is a nested aggregate behind its own pointer slot;
-        // structural, so it cannot recurse.
-        || matches!(ty.unqualified(), Type::Tuple(items) if !items.is_empty() && items.iter().all(is_v1_field_type))
+fn definition_fields_ok(definition: &TypeDef, definitions: &BTreeMap<String, TypeDef>, allow_nominal: bool) -> bool {
+    definition.params.is_empty()
+        && !definition.is_capability
+        && !definition.variants.is_empty()
+        && definition
+            .variants
+            .iter()
+            .all(|variant| variant.fields.iter().all(|field| field_type_ok(field, definitions, allow_nominal)))
 }
 
 fn render_type(ty: &Type) -> Option<String> {
@@ -159,11 +178,8 @@ pub fn type_definitions(module: &Module) -> BTreeMap<String, TypeDef> {
 
 /// The shape of a user-declared type whose every variant carries only
 /// scalar fields, or `None` for any other definition.
-pub fn shape_from_definition(definition: &TypeDef) -> Option<ScalarAggregateShape> {
-    if !definition.params.is_empty() || definition.variants.is_empty() || definition.is_capability {
-        return None;
-    }
-    if !definition.variants.iter().all(|variant| variant.fields.iter().all(is_v1_field_type)) {
+pub fn shape_from_definition(definition: &TypeDef, definitions: &BTreeMap<String, TypeDef>) -> Option<ScalarAggregateShape> {
+    if !definition_fields_ok(definition, definitions, true) {
         return None;
     }
     let name = definition.name.rsplit('.').next().unwrap_or(&definition.name).to_owned();
@@ -194,7 +210,7 @@ pub fn scalar_aggregate_shape(
 ) -> Option<ScalarAggregateShape> {
     // A tuple is an anonymous one-variant record of its items.
     if let Type::Tuple(items) = ty.unqualified() {
-        if items.is_empty() || !items.iter().all(is_v1_field_type) {
+        if items.is_empty() || !items.iter().all(|item| is_v1_field_type(item, definitions)) {
             return None;
         }
         return Some(ScalarAggregateShape {
@@ -207,7 +223,7 @@ pub fn scalar_aggregate_shape(
     }
     let Type::Named(name, arguments) = ty.unqualified() else { return None };
     match (name.as_str(), arguments.as_slice()) {
-        ("Option", [payload]) if is_v1_field_type(payload) => Some(ScalarAggregateShape {
+        ("Option", [payload]) if is_v1_field_type(payload, definitions) => Some(ScalarAggregateShape {
             name: "Option".into(),
             fields: vec![int_type(), payload.clone()],
             variants: vec![
@@ -217,7 +233,7 @@ pub fn scalar_aggregate_shape(
             tagged: true,
             packed: false,
         }),
-        ("Result", [value, error]) if is_v1_field_type(value) && is_v1_field_type(error) => Some(ScalarAggregateShape {
+        ("Result", [value, error]) if is_v1_field_type(value, definitions) && is_v1_field_type(error, definitions) => Some(ScalarAggregateShape {
             name: "Result".into(),
             fields: vec![int_type(), value.clone(), error.clone()],
             variants: vec![
@@ -227,7 +243,7 @@ pub fn scalar_aggregate_shape(
             tagged: true,
             packed: false,
         }),
-        (_, []) => definitions.get(name).and_then(shape_from_definition),
+        (_, []) => definitions.get(name).and_then(|definition| shape_from_definition(definition, definitions)),
         _ => None,
     }
 }

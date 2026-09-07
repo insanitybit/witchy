@@ -467,24 +467,24 @@ fn value_type_matches_source(
             // capability the fixed ABI kind 0; no candidate-selected kind is
             // accepted at this source boundary.
             "Console" => actual == super::ValueType::Capability(super::CapabilityKindId::new(0)),
-            "String" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
+            "String" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
             // A scalar aggregate: one reference to a fixed layout whose slots
             // are exactly the shape's fields, in order.
             _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
             }),
         },
         witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Option" | "Result") => {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
             })
         }
         witchy_syntax::ast::Type::Tuple(_) => {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
             })
         }
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
         witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
             super::ValueType::Callable(id) if seen.insert(id) => {
                 let matched = signatures.iter().find(|signature| signature.id == id).is_some_and(|signature| {
@@ -504,6 +504,7 @@ fn record_layout_matches(
     layout: crate::layout::LayoutId,
     fields: &[witchy_syntax::ast::Type],
     layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
 ) -> bool {
     use crate::layout::{LayoutKind, ScalarKind};
     let Some(descriptor) = layouts.get(layout) else { return false };
@@ -518,12 +519,10 @@ fn record_layout_matches(
                     "Float" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Float)),
                     _ => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
                 },
-                // A string, list, or tuple field lives behind an owned pointer
-                // slot whose pointee is that value's own layout.
-                witchy_syntax::ast::Type::Tuple(items) => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::Owned }
-                    if record_layout_matches(*pointee, items, layouts)),
+                // A string, list, tuple, or aggregate field lives behind an
+                // owned pointer slot whose pointee is that value's own layout.
                 _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::Owned }
-                    if layout_matches_source(*pointee, field, layouts)),
+                    if layout_matches_source(*pointee, field, layouts, records)),
             }
         })
 }
@@ -532,9 +531,15 @@ fn layout_matches_source(
     layout: crate::layout::LayoutId,
     source: &witchy_syntax::ast::Type,
     layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
 ) -> bool {
     use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
     let Some(descriptor) = layouts.get(layout) else { return false };
+    // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
+    // record of its shape's slots.
+    if let Some(shape) = witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records) {
+        return record_layout_matches(layout, &shape.fields, layouts, records);
+    }
     match source.unqualified() {
         witchy_syntax::ast::Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
             let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { return false };
@@ -547,7 +552,7 @@ fn layout_matches_source(
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::BoolValueSlot)),
-                inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if layout_matches_source(*pointee, inner, layouts)),
+                inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if layout_matches_source(*pointee, inner, layouts, records)),
             }
         }
         _ => false,

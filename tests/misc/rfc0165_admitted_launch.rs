@@ -488,3 +488,27 @@ fn admitted_lists_of_strings_are_read_iterated_and_pushed() {
     );
     assert_eq!(output, vec!["abbccc".to_string(), "bb".to_string(), "2 3".to_string()]);
 }
+
+#[test]
+fn admitted_lists_of_aggregates_tuples_and_floats_are_built_read_and_grown() {
+    // Records, tuples, and floats as list elements: iteration with field
+    // reads, a record lane rebound from a loaded (shared) element, a `var`
+    // alias of a literal list grown by push, a `var` list passed to a callee
+    // and pushed afterwards (the callee receives a copy), tuple destructuring
+    // out of a list, and a float fold.
+    let output = run_admitted(
+        "type Account:\n    name: String\n    balance: Int\n\npub fn total(accounts: List(Account)) -> Int:\n    var sum = 0\n    for a in accounts:\n        sum = sum + a.balance\n    sum\n\npub fn richest(accounts: List(Account)) -> String:\n    var best = Account(\"nobody\", -1)\n    for a in accounts:\n        if a.balance > best.balance:\n            best = a\n    best.name\n\npub fn count(xs: List(String)) -> Int:\n    xs.length()\n\npub fn mean(xs: List(Float)) -> Float:\n    var sum = 0.0\n    for x in xs:\n        sum = sum + x\n    sum / math.to_float(xs.length())\n\nfn main(console: Console):\n    let accounts = [Account(\"alice\", 100), Account(\"bob\", 50)]\n    console.print(\"total = ${total(accounts)}\")\n    console.print(\"richest = ${richest(accounts)}\")\n    var more = accounts\n    more.push(Account(\"carol\", 250))\n    console.print(\"${total(more)} ${richest(more)} ${accounts.length()}\")\n    let pairs = [(1, \"one\"), (2, \"two\")]\n    var labels = []\n    for pair in pairs:\n        let (n, word) = pair\n        labels.push(\"${n}:\" + word)\n    console.print(labels.join(\" \"))\n    var seen = []\n    seen.push(\"x\")\n    console.print(\"${count(seen)}\")\n    seen.push(\"y\")\n    console.print(\"${count(seen)} ${seen.join(\",\")}\")\n    console.print(\"${mean([1.5, 2.5, 5.0]) > 2.9}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "total = 150".to_string(),
+            "richest = alice".to_string(),
+            "400 carol 2".to_string(),
+            "1:one 2:two".to_string(),
+            "1".to_string(),
+            "2 x,y".to_string(),
+            "true".to_string(),
+        ]
+    );
+}

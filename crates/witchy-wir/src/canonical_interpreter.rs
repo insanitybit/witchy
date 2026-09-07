@@ -609,6 +609,14 @@ impl<'a> Engine<'a> {
             };
             moved.push(cell.ok_or(InterpretError::UninitializedPlace)?);
         }
+        // A copied reference cell is a second owner of its object.
+        if matches!(transfer, RangeTransfer::Copy) {
+            for cell in &moved {
+                if let InterpreterValue::ObjectRef(object) = cell {
+                    self.retain(*object)?;
+                }
+            }
+        }
         let cells = &mut self.object_mut(destination_object)?.cells;
         for (offset, cell) in moved.into_iter().enumerate() {
             let key = CellKey::Element(destination_start.checked_add(offset as u64).ok_or(InterpretError::ArithmeticTrap)?);

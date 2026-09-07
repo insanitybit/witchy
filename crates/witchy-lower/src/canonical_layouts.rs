@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, scalar_aggregate_shape, shape_from_definition};
+use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -189,7 +189,7 @@ impl LayoutProjection {
                 Ok(())
             }
             Type::Named(name, arguments) if name == "List" => {
-                if arguments.len() != 1 || !is_v1_list_element_type(&arguments[0]) {
+                if arguments.len() != 1 || !is_v1_list_element_type(&arguments[0], &self.definitions) {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
                 self.visit_type(&arguments[0])?;
@@ -260,7 +260,7 @@ fn intern_v1_layout(
         && arguments.len() == 1
     {
         let element = intern_v1_layout(interner, &arguments[0], definitions)?;
-        let element = if requires_owned_pointer_slot(&arguments[0]) {
+        let element = if !is_scalar_type(&arguments[0]) {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
@@ -347,22 +347,6 @@ fn is_byte_buffer_type(ty: &Type) -> bool {
     )
 }
 
-fn is_v1_list_element_type(ty: &Type) -> bool {
-    match ty.unqualified() {
-        Type::Named(name, arguments)
-            if arguments.is_empty() && matches!(name.as_str(), "Int" | "String") => true,
-        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            is_v1_list_element_type(&arguments[0])
-        }
-        _ => false,
-    }
-}
-
-fn requires_owned_pointer_slot(ty: &Type) -> bool {
-    is_byte_buffer_type(ty)
-        || matches!(ty.unqualified(), Type::Named(name, arguments)
-            if name == "List" && arguments.len() == 1)
-}
 
 struct V1Resolver<'a> {
     definitions: &'a BTreeMap<String, TypeDef>,
@@ -381,7 +365,7 @@ impl<'a> V1Resolver<'a> {
             if definition.packed {
                 continue;
             }
-            if let Some(shape) = shape_from_definition(definition) {
+            if let Some(shape) = shape_from_definition(definition, definitions) {
                 let mut view = shape.packed_view();
                 view.name = name.clone();
                 packed_views.insert(name.clone(), view);

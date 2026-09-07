@@ -4,7 +4,7 @@
 //! deliberately fail-closed; every unsupported source operation is reported
 //! before a `LoweredCandidate` can be returned.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
@@ -661,6 +661,7 @@ fn lower_function(
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
         token_join_parameters: BTreeSet::new(),
+        mutable_bindings: HashSet::new(),
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
         write_back_parameters: Vec::new(),
@@ -845,6 +846,9 @@ struct FunctionLowerer<'a> {
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
+    /// Names bound by `var`: a later in-place mutation needs their token
+    /// unique, so a call receives a copy of such a value, never a clone.
+    mutable_bindings: HashSet<String>,
     string_lengths: HashMap<ValueId, ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
@@ -908,6 +912,9 @@ impl FunctionLowerer<'_> {
                     let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
                         return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
+                    }
+                    if *mutable {
+                        self.mutable_bindings.insert(name.clone());
                     }
                 }
                 Stmt::Assign { name, value } => {
@@ -2626,7 +2633,7 @@ impl FunctionLowerer<'_> {
         }
         let logical_type = self.expression_type(iterable)?;
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&logical_type, self.layout_bundle, self.layouts)?;
+            list_layout(&logical_type, self.layout_bundle, self.layouts, self.definitions)?;
         let source = self.lower_expr(iterable)?;
         if self.values[&source] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list object type"));
@@ -3091,11 +3098,18 @@ impl FunctionLowerer<'_> {
             .iter()
             .map(|name| {
                 let object = outer[name];
-                if !tracked.iter().any(|tracked| tracked == name) || !matches!(self.values[&object], ValueType::Ref(_)) {
+                // A fixed-layout aggregate lane (a record, tuple, Option)
+                // carries no extent lanes and is never pushed in place; it
+                // follows the general rule below.
+                let fixed_layout = matches!(self.values[&object], ValueType::Ref(layout)
+                    if self.layouts.get(layout).is_some_and(|descriptor| matches!(descriptor.size(), witchy_wir::layout::LayoutSize::Fixed(_))));
+                if !matches!(self.values[&object], ValueType::Ref(_))
+                    || (!fixed_layout && !tracked.iter().any(|tracked| tracked == name))
+                {
                     return None;
                 }
                 let is_string = Some(self.values[&object]) == string.map(ValueType::Ref);
-                if !is_string && mark_lists {
+                if !is_string && !fixed_layout && mark_lists {
                     // The `for` loop's rule: a unique phi over the canonical
                     // push templates.
                     return Some(Ownership::Unique);
@@ -3138,6 +3152,17 @@ impl FunctionLowerer<'_> {
     }
 
     fn known_shared_value(&self, value: ValueId) -> bool {
+        self.known_shared_value_via(value, &mut BTreeSet::new())
+    }
+
+    /// A value is known shared when it is a shared phi, a static datum, a
+    /// clone, a shared load, or an unspecified block parameter every one of
+    /// whose incoming arguments is itself known shared (a body block renames
+    /// a shared header lane without restating its ownership).
+    fn known_shared_value_via(&self, value: ValueId, visited: &mut BTreeSet<ValueId>) -> bool {
+        if !visited.insert(value) {
+            return false;
+        }
         self.blocks.iter().any(|block| {
             block.parameters.iter().any(|parameter| {
                 parameter.value == value && parameter.ownership == Some(Ownership::Shared)
@@ -3151,6 +3176,30 @@ impl FunctionLowerer<'_> {
                 } => *destination == value,
                 _ => false,
             })
+        }) || self.blocks.iter().any(|block| {
+            let Some(index) = block.parameters.iter().position(|parameter| {
+                parameter.value == value && parameter.ownership.is_none()
+            }) else {
+                return false;
+            };
+            let mut incoming = Vec::new();
+            for predecessor in &self.blocks {
+                match &predecessor.terminator {
+                    Some(Terminator::Branch { target, arguments }) if *target == block.id => {
+                        incoming.extend(arguments.get(index).copied());
+                    }
+                    Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
+                        if *then_target == block.id {
+                            incoming.extend(then_arguments.get(index).copied());
+                        }
+                        if *else_target == block.id {
+                            incoming.extend(else_arguments.get(index).copied());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            !incoming.is_empty() && incoming.iter().all(|argument| self.known_shared_value_via(*argument, visited))
         })
     }
 
@@ -3462,6 +3511,16 @@ impl FunctionLowerer<'_> {
                             Ok(CallArgument::Move(owned))
                         }
                         ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
+                        // A `var` binding may be mutated in place after the
+                        // call; a clone would leave its token shared, so the
+                        // callee receives an owned copy (value semantics).
+                        ParameterOwnership::Shared
+                            if matches!(argument, Expr::Var(name) if self.mutable_bindings.contains(name)) =>
+                        {
+                            let source_type = self.expression_type(argument)?;
+                            let owned = self.owned_for_storage(value, &source_type)?;
+                            Ok(CallArgument::Move(owned))
+                        }
                         ParameterOwnership::Shared => {
                             let destination = self.fresh(actual)?;
                             self.push_operation(Operation::CloneRef { destination, source: value });
@@ -4087,7 +4146,7 @@ impl FunctionLowerer<'_> {
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                 self.clone_list_value_for_storage(value, ty)
             }
-            Type::Tuple(_) => self.clone_aggregate_for_storage(value, ty),
+            _ if scalar_aggregate_shape(ty, self.definitions).is_some() => self.clone_aggregate_for_storage(value, ty),
             _ => Err(CanonicalLoweringError::UnsupportedType(ty.clone())),
         }
     }
@@ -4132,10 +4191,8 @@ impl FunctionLowerer<'_> {
             }
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                 let (layout, element_type, header_bytes, stride_bytes) =
-                    list_layout(ty, self.layout_bundle, self.layouts)?;
-                if matches!(element_type, ValueType::Ref(_)) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("empty list of references"));
-                }
+                    list_layout(ty, self.layout_bundle, self.layouts, self.definitions)?;
+                let _ = element_type;
                 let zero = self.push_const_size(0)?;
                 let object = self.fresh(ValueType::Ref(layout))?;
                 self.push_operation(Operation::Alloc {
@@ -4153,9 +4210,8 @@ impl FunctionLowerer<'_> {
                 self.list_capacities.insert(object, zero);
                 Ok(object)
             }
-            Type::Tuple(_) => {
-                let shape = scalar_aggregate_shape(ty, self.definitions)
-                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(ty.clone()))?;
+            _ if scalar_aggregate_shape(ty, self.definitions).is_some() => {
+                let shape = scalar_aggregate_shape(ty, self.definitions).expect("checked above");
                 let mut slots = Vec::with_capacity(shape.fields.len());
                 for field in &shape.fields {
                     slots.push(self.push_empty_value(field)?);
@@ -4172,7 +4228,7 @@ impl FunctionLowerer<'_> {
         field_types: &[Type],
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let layout = aggregate_layout(field_types, self.layout_bundle, self.layouts)?;
+        let layout = aggregate_layout(field_types, self.layout_bundle, self.layouts, self.definitions)?;
         let LayoutSize::Fixed(bytes) = self
             .layouts
             .get(layout)
@@ -4509,7 +4565,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(expression)?;
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&logical_type, self.layout_bundle, self.layouts)?;
+            list_layout(&logical_type, self.layout_bundle, self.layouts, self.definitions)?;
         let count = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ConstSize {
             destination: count,
@@ -4555,7 +4611,10 @@ impl FunctionLowerer<'_> {
                 if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;
                 } else if !matches!(item, Expr::List(_)) {
-                    value = self.clone_list_for_storage(value, item)?;
+                    let Type::Named(_, arguments) = logical_type.unqualified() else {
+                        return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
+                    };
+                    value = self.owned_for_storage(value, &arguments[0])?;
                 }
             }
             let index = self.fresh(ValueType::Size)?;
@@ -4706,14 +4765,9 @@ impl FunctionLowerer<'_> {
         source_type: &Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(source_type, self.layout_bundle, self.layouts)?;
+            list_layout(source_type, self.layout_bundle, self.layouts, self.definitions)?;
         if self.values.get(&source).copied() != Some(ValueType::Ref(layout)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("nested list element type"));
-        }
-        if matches!(element_type, ValueType::Ref(_)) {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "storing a list of references needs explicit ownership",
-            ));
         }
         self.ensure_list_extent(source)?;
         let (length, _) = self.tracked_lanes(source).ok_or(
@@ -4724,19 +4778,24 @@ impl FunctionLowerer<'_> {
         )?;
         let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, maximum)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        // A pointer-element list is allocated empty and grows to the cloned
+        // prefix once every element has been retained; a scalar list is
+        // allocated at its final count.
+        let pointer_elements = matches!(element_type, ValueType::Ref(_));
+        let zero = self.push_const_size(0)?;
+        let allocation_count = if pointer_elements { zero } else { length };
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: object,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes,
-                count: length,
+                count: allocation_count,
                 capacity: length,
                 stride_bytes,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
-        let zero = self.push_const_size(0)?;
         let in_bounds = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, length)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_operation(Operation::CloneRange {
@@ -4754,6 +4813,9 @@ impl FunctionLowerer<'_> {
             ),
             count: length,
         });
+        if pointer_elements {
+            self.push_operation(Operation::UpdateCount { object, count: length });
+        }
         self.list_counts.insert(object, length);
         self.list_capacities.insert(object, length);
         Ok(object)
@@ -4777,7 +4839,7 @@ impl FunctionLowerer<'_> {
         };
         let list_type = self.expression_type(&arguments[0])?;
         let (expected_layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&list_type, self.layout_bundle, self.layouts)?;
+            list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
@@ -4816,7 +4878,10 @@ impl FunctionLowerer<'_> {
         if pointer_elements && self.string_lengths.contains_key(&value) {
             value = self.clone_string_for_storage(value)?;
         } else if pointer_elements && !matches!(value_expression, Expr::List(_)) {
-            value = self.clone_list_for_storage(value, value_expression)?;
+            let Type::Named(_, arguments) = list_type.unqualified() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
+            };
+            value = self.owned_for_storage(value, &arguments[0])?;
         }
 
         let increment_fits = self.fresh(ValueType::Bool)?;
@@ -4917,22 +4982,25 @@ impl FunctionLowerer<'_> {
                 condition: move_fits,
                 kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
             });
-            self.push_operation(Operation::MoveRange {
+            // The grown list clones the old prefix (retaining every element)
+            // rather than moving it out: the old list may be shared with a
+            // callee or a stored copy, and its own drop releases the elements.
+            let _ = element_type;
+            self.push_operation(Operation::CloneRange {
                 destination: witchy_wir::canonical_safewir::Place::projected(
                     new_object,
                     Projection::Slice { start: zero, length: old_length },
-                    element_type,
+                    ValueType::Ref(layout),
                     AccessMode::Write,
                 ),
                 source: witchy_wir::canonical_safewir::Place::projected(
                     old_object,
                     Projection::Slice { start: zero, length: old_length },
-                    element_type,
+                    ValueType::Ref(layout),
                     AccessMode::Read,
                 ),
                 count: old_length,
             });
-            self.push_operation(Operation::UpdateCount { object: old_object, count: zero });
         } else {
             let zero = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
@@ -5033,7 +5101,7 @@ impl FunctionLowerer<'_> {
             vec![Type::Named("String".into(), Vec::new())],
         );
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&list_type, self.layout_bundle, self.layouts)?;
+            list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
         let characters = source.chars().collect::<Vec<_>>();
         let count = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ConstSize {
@@ -5106,7 +5174,7 @@ impl FunctionLowerer<'_> {
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(base)?;
         let (layout, element_type, _header_bytes, _stride_bytes) =
-            list_layout(&logical_type, self.layout_bundle, self.layouts)?;
+            list_layout(&logical_type, self.layout_bundle, self.layouts, self.definitions)?;
         let object = self.lower_expr(base)?;
         if self.values[&object] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
@@ -6804,7 +6872,7 @@ fn source_value_type(
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
         // the ABI does not carry (`scalar_type` refuses it below).
-        return aggregate_layout(&shape.fields, layout_bundle, layouts).map(ValueType::Ref);
+        return aggregate_layout(&shape.fields, layout_bundle, layouts, definitions).map(ValueType::Ref);
     }
     match source.unqualified() {
         Type::Fn(..) => function_types
@@ -6814,7 +6882,7 @@ fn source_value_type(
             .map(ValueType::Callable)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            list_layout(source, layout_bundle, layouts).map(|(layout, _, _, _)| ValueType::Ref(layout))
+            list_layout(source, layout_bundle, layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
         Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
             dictionary_layout(source, layout_bundle, layouts)
@@ -6836,6 +6904,7 @@ fn aggregate_layout(
     expected_fields: &[Type],
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let mut expected = Vec::with_capacity(expected_fields.len());
     for field in expected_fields {
@@ -6847,10 +6916,12 @@ fn aggregate_layout(
                     string_layout(field, layout_bundle, layouts)?
                 }
                 Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                    list_layout(field, layout_bundle, layouts)?.0
+                    list_layout(field, layout_bundle, layouts, definitions)?.0
                 }
-                Type::Tuple(items) => aggregate_layout(items, layout_bundle, layouts)?,
-                _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+                _ => match scalar_aggregate_shape(field, definitions) {
+                    Some(shape) if !shape.packed => aggregate_layout(&shape.fields, layout_bundle, layouts, definitions)?,
+                    _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+                },
             };
             (None, Some(pointee))
         };
@@ -7083,6 +7154,7 @@ fn list_layout(
     source: &Type,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<(witchy_wir::layout::LayoutId, ValueType, u32, u32), CanonicalLoweringError> {
     let Type::Named(name, arguments) = source.unqualified() else {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
@@ -7098,9 +7170,16 @@ fn list_layout(
             ValueType::Ref(string_layout(&arguments[0], layout_bundle, layouts)?)
         }
         Type::Named(element, _) if element == "List" => {
-            ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts)?.0)
+            ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, definitions)?.0)
         }
-        _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
+        // An aggregate element (a record, sum, tuple, scalar Option/Result)
+        // lives behind an owned pointer slot to its record layout.
+        _ => match scalar_aggregate_shape(&arguments[0], definitions) {
+            Some(shape) if !shape.packed => {
+                ValueType::Ref(aggregate_layout(&shape.fields, layout_bundle, layouts, definitions)?)
+            }
+            _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
+        },
     };
 
     let mut candidates = Vec::new();

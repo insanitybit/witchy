@@ -875,3 +875,21 @@ route is 0/107.
 - Pinned by `admitted_tuples_construct_index_destructure_and_nest`.
 - Census: 91 of 163 check; 35 runnable examples admit and agree under
   three-legged parity (`tuples`, `generics`, `calculator` are new).
+
+## Slice 27 (2026-09-07): lists of aggregates, tuples, and floats
+
+Element predicates are definitions-aware (`canonical_aggregates::is_v1_list_element_type`,
+`is_v1_field_type`, one nominal level, `Bool` elements still excluded); an aggregate element
+sits behind an owned pointer slot to its record layout (`list_layout`, `aggregate_layout`,
+authority `layout_matches_source`). New checker/encoder ground: pointer-bearing `CloneRange`
+(retains every element, mirroring `CloneRef`; both prefixes become shared; the plan mirror and
+the oracle retain too), loaded children and elements are complete (`Store` now requires the
+stored value complete), stored-slot and range facts resolve through the allocation identity so
+a `CloneRef` alias sees them. Lowering: list growth clones the old prefix instead of moving it
+(the old list may be shared), a `var`-bound reference passed to a callee is copied (its token
+stays unique for a later push), fixed-layout loop lanes follow the general shared/unique rule,
+and `known_shared_value` sees through unspecified body block parameters.
+
+Newly agree: `bank`, `display`, `stats`, `zip`, `toposort` (plus alias-of-literal pushes).
+Census: 97/163 check, 41 runnable three-legged parity, 0 disagree. Still refused: `largest`
+(nested constructor pattern), `inventory` (dict), `dijkstra` (Bool list).
