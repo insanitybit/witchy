@@ -261,9 +261,6 @@ pub fn lower_typed_module(
             }
             let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
             let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
-            if !parameter_types.iter().chain(std::iter::once(result_type.as_ref())).all(|ty| witchy_types::canonical_aggregates::is_scalar_type(ty)) {
-                return Ok(());
-            }
             let Some(&signature_id) = function_types.get(fn_type.unqualified()) else { return Ok(()) };
             let name = format!("{}#lambda{}", function.name, lambda_functions.len());
             let params = params
@@ -450,6 +447,12 @@ pub fn lower_typed_module(
         closure_bindings.push(CandidateClosureBinding::new(*function_id, *witness_index));
     }
     let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
+    let lambda_callables = lambda_functions
+        .iter()
+        .map(|(_, _, function_id, item_index, lambda_path, _, _)| {
+            (ProperTailCallableId { item: *item_index, method: None, lambda_path: lambda_path.clone() }, *function_id)
+        })
+        .collect::<HashMap<_, _>>();
     let mut abi_bindings = functions_by_name
         .iter()
         .filter(|(name, _)| !lambda_function_names.contains(*name))
@@ -476,7 +479,7 @@ pub fn lower_typed_module(
         signatures,
         imports,
         functions,
-        proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module())?,
+        proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module(), &lambda_callables)?,
     }, static_data_segments)
         .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
         .with_closure_bindings(CandidateClosureBindings::new(closure_bindings));
@@ -777,6 +780,7 @@ fn lower_function(
         mutable_bindings: HashSet::new(),
         loop_contexts: Vec::new(),
         lambda_names,
+        tail_prefix: if lambda_path.is_empty() { Vec::new() } else { lambda_path.iter().cloned().chain([ProperTailPathStep::Child(0)]).collect() },
         lambda_path,
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
@@ -1020,8 +1024,10 @@ struct FunctionLowerer<'a> {
     /// by the lambda expression's node address in the checked module.
     lambda_names: &'a HashMap<usize, String>,
     /// This function's lambda path when it implements a lambda (its tail
-    /// sites are keyed by the lambda's structural identity).
+    /// sites are keyed by the lambda's structural identity), and the path
+    /// prefix its body statements are addressed under.
     lambda_path: Vec<ProperTailPathStep>,
+    tail_prefix: Vec<ProperTailPathStep>,
     string_lengths: HashMap<ValueId, ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
@@ -1149,7 +1155,7 @@ impl FunctionLowerer<'_> {
                             let terminator = self.lower_direct_tail_call(
                                 name,
                                 args,
-                                                                tail_path(index, ProperTailPathStep::ReturnValue)?,
+                                                                self.tail_path(index, ProperTailPathStep::ReturnValue)?,
                             )?;
                             self.finish_current(terminator)?;
                         } else {
@@ -1163,7 +1169,7 @@ impl FunctionLowerer<'_> {
                                 callee,
                                 args,
                                 signature,
-                                                                tail_path(index, ProperTailPathStep::ReturnValue)?,
+                                                                self.tail_path(index, ProperTailPathStep::ReturnValue)?,
                                 ProperTailExprKind::Call,
                                 ProperTailDispatchKind::Direct,
                             )?;
@@ -1182,7 +1188,7 @@ impl FunctionLowerer<'_> {
                             callee,
                             args,
                             signature,
-                                                        tail_path(index, ProperTailPathStep::ReturnValue)?,
+                                                        self.tail_path(index, ProperTailPathStep::ReturnValue)?,
                             ProperTailExprKind::Apply,
                             ProperTailDispatchKind::Indirect,
                         )?;
@@ -1191,9 +1197,9 @@ impl FunctionLowerer<'_> {
                     }
                     if let Some(value) = value
                         && matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_))
-                        && self.has_nested_tail_sites(&tail_path(index, ProperTailPathStep::ReturnValue)?)
+                        && self.has_nested_tail_sites(&self.tail_path(index, ProperTailPathStep::ReturnValue)?)
                     {
-                        return self.lower_tail_expr(value, tail_path(index, ProperTailPathStep::ReturnValue)?);
+                        return self.lower_tail_expr(value, self.tail_path(index, ProperTailPathStep::ReturnValue)?);
                     }
                     let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
                     let terminator = self.return_value(value, results)?;
@@ -1238,7 +1244,7 @@ impl FunctionLowerer<'_> {
                             let terminator = self.lower_direct_tail_call(
                                 name,
                                 args,
-                                                                tail_path(index, ProperTailPathStep::Value)?,
+                                                                self.tail_path(index, ProperTailPathStep::Value)?,
                             )?;
                             self.finish_current(terminator)?;
                         } else {
@@ -1252,7 +1258,7 @@ impl FunctionLowerer<'_> {
                                 callee,
                                 args,
                                 signature,
-                                                                tail_path(index, ProperTailPathStep::Value)?,
+                                                                self.tail_path(index, ProperTailPathStep::Value)?,
                                 ProperTailExprKind::Call,
                                 ProperTailDispatchKind::Direct,
                             )?;
@@ -1271,7 +1277,7 @@ impl FunctionLowerer<'_> {
                             callee,
                             args,
                             signature,
-                                                        tail_path(index, ProperTailPathStep::Value)?,
+                                                        self.tail_path(index, ProperTailPathStep::Value)?,
                             ProperTailExprKind::Apply,
                             ProperTailDispatchKind::Indirect,
                         )?;
@@ -1287,9 +1293,9 @@ impl FunctionLowerer<'_> {
                     // tail sites is lowered in tail context: each arm exits
                     // the function, with proper tail calls at the sites.
                     if matches!(value, Expr::If { .. } | Expr::Match { .. } | Expr::Block(_))
-                        && self.has_nested_tail_sites(&tail_path(index, ProperTailPathStep::Value)?)
+                        && self.has_nested_tail_sites(&self.tail_path(index, ProperTailPathStep::Value)?)
                     {
-                        return self.lower_tail_expr(value, tail_path(index, ProperTailPathStep::Value)?);
+                        return self.lower_tail_expr(value, self.tail_path(index, ProperTailPathStep::Value)?);
                     }
                     if results.is_empty() {
                         self.lower_effect_expr(value)?;
@@ -2606,6 +2612,43 @@ impl FunctionLowerer<'_> {
         Ok(Some(condition))
     }
 
+    /// A tail-site path for the statement at `statement` of this function's
+    /// body. A lambda's body is addressed under the lambda's own path plus
+    /// `Child(0)`, as the checked manifest keys it.
+    fn tail_path(&self, statement: usize, position: ProperTailPathStep) -> Result<Vec<ProperTailPathStep>, CanonicalLoweringError> {
+        let statement = u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let mut path = self.tail_prefix.clone();
+        path.extend([ProperTailPathStep::Statement(statement), position]);
+        Ok(path)
+    }
+
+    /// A loop header lane that started unique but is carried a known-shared
+    /// value on a back edge (a call result, a clone) can only be a shared
+    /// phi; the exit takes the same demotion when it mirrors the header.
+    fn demote_unique_lanes_carrying_shared(&mut self, header: BlockId, exit: BlockId, carried: &[ValueId]) {
+        let demoted = carried
+            .iter()
+            .enumerate()
+            .filter(|(index, value)| {
+                matches!(self.values.get(value), Some(ValueType::Ref(_)))
+                    && self.known_shared_value(**value)
+                    && self.blocks[header.get() as usize]
+                        .parameters
+                        .get(*index)
+                        .is_some_and(|parameter| parameter.ownership == Some(Ownership::Unique))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        for index in demoted {
+            self.blocks[header.get() as usize].parameters[index].ownership = Some(Ownership::Shared);
+            if let Some(parameter) = self.blocks[exit.get() as usize].parameters.get_mut(index)
+                && parameter.ownership == Some(Ownership::Unique)
+            {
+                parameter.ownership = Some(Ownership::Shared);
+            }
+        }
+    }
+
     /// The state lanes a `break`/`continue` carries out of the current
     /// block: every loop-state binding's current value, then each tracked
     /// list's split count/capacity lanes.
@@ -2787,6 +2830,7 @@ impl FunctionLowerer<'_> {
         lowered?;
         if self.blocks[self.current.get() as usize].terminator.is_none() {
             let carried = self.loop_edge_arguments(&names, &list_names)?;
+            self.demote_unique_lanes_carrying_shared(header, exit, &carried);
             self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
         }
         self.restore_facts(facts, exit);
@@ -2907,6 +2951,7 @@ impl FunctionLowerer<'_> {
             carried.push(capacity);
         }
         let body_end = self.current;
+        self.demote_unique_lanes_carrying_shared(header, exit, &carried);
         self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
             target: header,
             arguments: carried,
@@ -3052,6 +3097,7 @@ impl FunctionLowerer<'_> {
         });
         carried.push(next);
         let body_end = self.current;
+        self.demote_unique_lanes_carrying_shared(header, exit, &carried);
         self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch { target: header, arguments: carried });
 
         let exit_values = self.blocks[exit.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
@@ -3283,6 +3329,7 @@ impl FunctionLowerer<'_> {
             back_state.push(capacity);
         }
         back_state.push(next_index);
+        self.demote_unique_lanes_carrying_shared(header, exit, &back_state);
         self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
 
         let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
@@ -3840,6 +3887,9 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression(
                 "indirect call signature",
             ))?;
+        // Reference parameters follow the direct-call conventions: a `let`
+        // reference is cloned before the call and moved into the callee's
+        // shared parameter, which the checker's indirect-call rule admits.
         if signature
             .parameters
             .iter()
@@ -3847,7 +3897,7 @@ impl FunctionLowerer<'_> {
             .any(|value_type| !is_indirect_result(value_type))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression(
-                "memory-bearing indirect call parameter",
+                "indirect call parameter outside the v1 value set",
             ));
         }
         if let Some(result) = signature
@@ -4320,7 +4370,7 @@ impl FunctionLowerer<'_> {
                 // synthesized function (bound to its closure witness); any
                 // other lambda is outside the v1 subset.
                 let Some(name) = self.lambda_names.get(&(expression as *const Expr as usize)) else {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("lambda with captures or non-scalar parameters"));
+                    return Err(CanonicalLoweringError::UnsupportedExpression("lambda with captures"));
                 };
                 let (function, signature) = *self.functions.get(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                 let destination = self.fresh(ValueType::Callable(signature))?;
@@ -4337,7 +4387,17 @@ impl FunctionLowerer<'_> {
                 self.lower_record_literal(expression, &name, fields, Some(base))
             }
             Expr::Try(inner) => self.lower_try(inner),
-            Expr::As { .. } => Err(CanonicalLoweringError::UnsupportedExpression("as")),
+            // `as` narrows a capability or ascribes an alias; at the value
+            // level both sides share one representation, so the cast is the
+            // value itself. A representation change is outside the subset.
+            Expr::As { expr, ty } => {
+                let value = self.lower_expr(expr)?;
+                let target = source_value_type(ty, self.layout_bundle, self.layouts, &HashMap::new(), self.definitions)?;
+                if self.values[&value] != target {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("as between different representations"));
+                }
+                Ok(value)
+            }
             Expr::ExistentialPack { .. }
             | Expr::ExistentialUpcast { .. }
             | Expr::ExistentialCall { .. } => {
@@ -8162,6 +8222,7 @@ const fn is_unit(value_type: ValueType) -> bool {
 fn canonical_tail_sites(
     manifest: &ProperTailSiteManifest,
     module: &witchy_syntax::ast::Module,
+    lambda_functions: &HashMap<ProperTailCallableId, FunctionId>,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
     manifest
         .sites()
@@ -8179,8 +8240,22 @@ fn canonical_tail_sites(
                 })
         })
         .map(|site| {
-            if site.key.callable.method.is_some() || !site.key.callable.lambda_path.is_empty() {
-                return Err(CanonicalLoweringError::UnsupportedExpression("method or closure tail site"));
+            if site.key.callable.method.is_some() {
+                return Err(CanonicalLoweringError::UnsupportedExpression("method tail site"));
+            }
+            // A site inside a lambda belongs to the function synthesized for
+            // that lambda; a lambda without one is outside the subset.
+            if !site.key.callable.lambda_path.is_empty() {
+                let function = lambda_functions.get(&site.key.callable).copied().ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("tail site inside a lambda outside the v1 subset"),
+                )?;
+                return Ok(witchy_wir::canonical_safewir::ProperTailSite {
+                    id: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
+                    // The checked manifest attributes the site to its owner;
+                    // the synthesized lambda function discharges it.
+                    function: FunctionId::new(site.canonical_function),
+                    discharged_by: Some(function),
+                });
             }
             let expected_function = module
                 .items
@@ -8209,7 +8284,7 @@ fn canonical_tail_sites(
             }
             Ok(witchy_wir::canonical_safewir::ProperTailSite {
                 id: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
-                function: FunctionId::new(site.canonical_function),
+                function: FunctionId::new(site.canonical_function), discharged_by: None,
             })
         })
         .collect()
@@ -8264,10 +8339,6 @@ fn expr_in_tail_path<'a>(expression: &'a Expr, path: &[ProperTailPathStep]) -> O
     }
 }
 
-fn tail_path(statement: usize, position: ProperTailPathStep) -> Result<Vec<ProperTailPathStep>, CanonicalLoweringError> {
-    let statement = u32::try_from(statement).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-    Ok(vec![ProperTailPathStep::Statement(statement), position])
-}
 
 fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str) -> bool {
     witchy_types::pipeline::in_canonical_scope(module, name)

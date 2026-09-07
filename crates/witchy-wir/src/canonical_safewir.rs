@@ -755,7 +755,13 @@ pub struct Function {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProperTailSite {
     pub id: TailSiteId,
+    /// The checked callable the site belongs to (the identity the checked
+    /// manifest digest is computed over).
     pub function: FunctionId,
+    /// The lowered function whose terminator discharges the site when it is
+    /// not `function` itself: the function synthesized for a lambda whose
+    /// body holds the site. `None` for an ordinary site.
+    pub discharged_by: Option<FunctionId>,
 }
 
 /// Immutable bytes installed by the canonical backend before heap allocation.

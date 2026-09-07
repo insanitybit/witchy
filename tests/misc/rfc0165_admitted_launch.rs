@@ -679,19 +679,29 @@ fn capturing_lambdas_and_reference_lambdas_are_refused_by_name() {
             "capture",
             "pub fn adder(k: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + k\n\nfn main(console: Console):\n    console.print(\"${adder(2)(3)}\")\n",
         ),
-        (
-            "reference parameter",
-            "pub fn apply(f: fn(String) -> Int, s: String) -> Int:\n    f(s)\n\nfn main(console: Console):\n    console.print(\"${apply(fn(s: String): s.length(), \\\"abc\\\")}\")\n",
-        ),
     ] {
         let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
         match codegen::compile_checked_module_artifact(&checked) {
             codegen::LoweringOutcome::Unsupported(reason) => {
                 let text = reason.to_string();
-                assert!(text.contains("lambda with captures or non-scalar parameters"), "{label}: {text}");
+                assert!(text.contains("lambda with captures"), "{label}: {text}");
             }
             codegen::LoweringOutcome::Lowered(_) => panic!("{label}: a lambda outside the v1 subset must be refused"),
             codegen::LoweringOutcome::Rejected(error) => panic!("{label}: refused for the wrong reason: {error}"),
         }
     }
+}
+
+#[test]
+fn admitted_lambdas_over_references_pass_through_indirect_calls_and_std_combinators() {
+    // A capture-free lambda over strings: its shared parameters follow the
+    // direct-call conventions through the indirect call (the checker's
+    // move-into-shared rule), and the std combinators specialize over it.
+    let output = run_admitted(
+        "pub fn apply(f: fn(String) -> String, s: String) -> String:\n    f(s)\n\npub fn count_if(xs: List(String), f: fn(String) -> Bool) -> Int:\n    var n = 0\n    for x in xs:\n        if f(x):\n            n = n + 1\n    n\n\nfn main(console: Console):\n    console.print(apply(fn(s: String): s + \"!\", \"abc\"))\n    let words = [\"pear\", \"fig\", \"plum\", \"kiwi\"]\n    console.print(\"${count_if(words, fn(w: String): w.length() == 4)}\")\n    let loud = words.map(fn(w: String): w + w)\n    console.print(loud.join(\",\"))\n    let long = words.filter(fn(w: String): w.length() > 3)\n    console.print(\"${long.length()} ${long[0]}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["abc!".to_string(), "3".to_string(), "pearpear,figfig,plumplum,kiwikiwi".to_string(), "3 pear".to_string()]
+    );
 }

@@ -2271,7 +2271,7 @@ mod tests {
             }],
             proper_tail_sites: vec![ProperTailSite {
                 id: site,
-                function: FUNCTION,
+                function: FUNCTION, discharged_by: None,
             }],
         });
         let checked = check_initial_with_test_witness(candidate).expect("initial validation");

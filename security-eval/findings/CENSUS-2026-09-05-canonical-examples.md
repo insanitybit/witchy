@@ -957,3 +957,17 @@ are refused by name. `ast::visit::visit_block`/`visit_expr` now hand the visitor
 with the block's lifetime. Newly agree: `list_pipeline`, `predicates`, `std_demo` (std `map`,
 `filter`, `fold`, `all`, `any` over `List(Int)` with lambdas). Census: 108/163 check, 52
 runnable three-legged parity, 0 disagree.
+
+## Slice 32 (2026-09-07): lambdas over references, `as`, tail sites inside lambdas
+
+Indirect calls accept reference arguments under the direct-call conventions (the checker's
+move-into-shared rule already admitted them; the lowering's refusal is lifted), so lambdas
+over strings and lists work, including through the std combinators. `as` is the value itself
+when both sides share one representation (capability narrowing, alias ascription). A tail
+site inside a lambda body is addressed under the lambda's path plus `Child(0)` and is
+attributed to its owner in the checked manifest while the synthesized function discharges it
+(`ProperTailSite::discharged_by`, outside the digest identity). A loop header lane that
+started unique but is carried a known-shared value on a back edge (a call result) becomes a
+shared phi. Newly agree: `aliases`, `anagram`. Census: 110/163 check, 54 runnable
+three-legged parity, 0 disagree. `text` still needs `string.to_upper` (an ASCII byte map in
+the interpreter; needs a raw-byte element store rule).

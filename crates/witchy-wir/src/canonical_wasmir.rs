@@ -7496,7 +7496,7 @@ mod tests {
             ],
             proper_tail_sites: vec![crate::canonical_safewir::ProperTailSite {
                 id: tail_site,
-                function: FunctionId::new(22),
+                function: FunctionId::new(22), discharged_by: None,
             }],
         }))
     }
@@ -7576,7 +7576,7 @@ mod tests {
                     blocks: vec![BasicBlock { id: crate::canonical_safewir::BlockId::new(2), parameters: Vec::new(), operations: vec![Operation::ConstInt { destination: callee_result, value: 17 }], terminator: Terminator::Return { values: vec![callee_result] } }],
                 },
             ],
-            proper_tail_sites: if tail { vec![crate::canonical_safewir::ProperTailSite { id: tail_site, function: FunctionId::new(1) }] } else { Vec::new() },
+            proper_tail_sites: if tail { vec![crate::canonical_safewir::ProperTailSite { id: tail_site, function: FunctionId::new(1), discharged_by: None }] } else { Vec::new() },
         });
         let checked = check_initial_with_test_witness(candidate).expect("direct scalar call is initially valid");
         validate_final_for_test(checked).expect("direct scalar call is final-valid")

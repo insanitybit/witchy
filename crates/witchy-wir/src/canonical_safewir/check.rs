@@ -458,7 +458,8 @@ fn index_tail_obligations(
 ) -> Result<BTreeMap<TailSiteId, FunctionId>, InitialCheckError> {
     let mut result = BTreeMap::new();
     for obligation in obligations {
-        if result.insert(obligation.id, obligation.function).is_some() {
+        let discharger = obligation.discharged_by.unwrap_or(obligation.function);
+        if result.insert(obligation.id, discharger).is_some() {
             return Err(InitialCheckError::DuplicateTailObligation(obligation.id));
         }
     }
@@ -2614,7 +2615,7 @@ mod tests {
             Vec::new(),
             vec![ProperTailSite {
                 id: TAIL_SITE,
-                function: FUNCTION,
+                function: FUNCTION, discharged_by: None,
             }],
         );
 
@@ -2634,7 +2635,7 @@ mod tests {
             Vec::new(),
             vec![ProperTailSite {
                 id: TAIL_SITE,
-                function: FUNCTION,
+                function: FUNCTION, discharged_by: None,
             }],
         );
         module.functions[0].blocks.push(BasicBlock {
@@ -2663,7 +2664,7 @@ mod tests {
             Vec::new(),
             vec![ProperTailSite {
                 id: TAIL_SITE,
-                function: FUNCTION,
+                function: FUNCTION, discharged_by: None,
             }],
         );
 
@@ -3620,7 +3621,7 @@ mod tests {
             }],
             vec![ProperTailSite {
                 id: TAIL_SITE,
-                function: FUNCTION,
+                function: FUNCTION, discharged_by: None,
             }],
         );
         assert_eq!(
@@ -3795,7 +3796,7 @@ mod tests {
                 value_type: ValueType::Ref(layout),
                 ownership: Some(super::super::Ownership::Shared),
             }],
-            vec![ProperTailSite { id: TAIL_SITE, function: FUNCTION }],
+            vec![ProperTailSite { id: TAIL_SITE, function: FUNCTION, discharged_by: None }],
         );
         assert!(check_initial(module).is_ok());
     }
