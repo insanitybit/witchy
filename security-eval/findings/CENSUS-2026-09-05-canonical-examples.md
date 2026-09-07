@@ -577,3 +577,28 @@ route is 0/107.
 - `list.at` lowers as the bounds-checked element read (`xs.at(i)` is `xs[i]`);
   `queens` now clears lowering and stops at a checker join in `solve`.
 
+## Progress (owner, 2026-09-06, fifteenth slice: canonical scope by reachability)
+
+- **Canonical scope follows reachability**: the scope is now the entry scope
+  plus every function reachable from it by exact name, transitively, through
+  standard-library bodies and monomorphized instances (call sites name their
+  instances after specialization). Generic templates reached by name are not
+  in scope (only their instances are), and a callee named like a compiler
+  intrinsic (`string.chars`, `list.push`) never pulls in the std wrapper of
+  the same name. One judgment (`witchy_types::pipeline::canonical_scope`,
+  memoized per module) feeds the proper-tail manifest, the callable witness,
+  the layouts, and the lowering, so their ordinals agree. The forged
+  judgment stays name-based: an instance claiming the entry scope's namespace
+  without an exact checked body still refuses; an unreachable library
+  instance is still a digest-bound obligation.
+- Consequence: reachable library specializations (`util.identity__Int`, a
+  std `math.max`) are runtime functions and lower; the pins that expected them
+  to be obligations now expect admission. Programs that used to stop at
+  `MissingBinding`/`UnsupportedCanonicalObligation` now stop, precisely, at
+  the first construct inside the reached std body the subset lacks:
+  `fail`, `string.length`, `int_to_duration`, `regex.match_spans`, lambdas in
+  `List.filter`/`map`, `Option` layouts. The census count is unchanged (69
+  check, 13 runnable) until those land.
+- **Oracle step budget** raised so long-running admitted programs are not
+  refused by the oracle's own limit.
+

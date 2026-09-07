@@ -365,7 +365,7 @@ mod tests {
     /// is outside canonical v1: checked-source construction succeeds and the
     /// canonical route refuses at lowering, naming the specialization.
     #[test]
-    fn library_specialization_checks_then_fails_closed_at_canonical_lowering() {
+    fn library_specialization_reachable_from_main_admits() {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![
                 (
@@ -379,16 +379,13 @@ mod tests {
         )
         .expect("checked source construction must not refuse a valid program");
 
-        match admit_checked_module(&checked) {
-            Err(CanonicalPipelineError::Lowering(
-                crate::canonical_lower::CanonicalLoweringError::UnsupportedCanonicalObligation(names),
-            )) => assert!(names.contains("generic specialization `util.identity__"), "{names}"),
-            Err(other) => panic!("expected a precise specialization refusal, got {other:?}"),
-            Ok(_) => panic!("expected a precise specialization refusal, got an admitted artifact"),
-        }
+        // The library instance is reachable from `main`, so it is part of the
+        // canonical scope and the program admits; an unreachable instance
+        // would still be a digest-bound obligation refused at lowering.
+        admit_checked_module(&checked).expect("a reachable library specialization lowers and admits");
         assert!(matches!(
             crate::codegen::compile_checked_module_artifact(&checked),
-            crate::codegen::LoweringOutcome::Unsupported(_)
+            crate::codegen::LoweringOutcome::Lowered(_)
         ));
     }
 

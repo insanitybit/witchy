@@ -729,6 +729,93 @@ pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bo
     })
 }
 
+/// The canonical scope of a linked module: the entry scope (`main`, the entry
+/// module's declarations, user library modules) plus every function reachable
+/// from it by name, transitively, through standard-library bodies and
+/// monomorphized instances. Reachability is by exact declaration name after
+/// monomorphization has renamed call sites to their instances, so a program
+/// carries exactly the library code it calls and nothing it does not; a
+/// reachable body outside the compact subset still refuses precisely at
+/// lowering. The scope is one judgment shared by the proper-tail manifest, the
+/// callable witness, the layouts, and the lowering, so their ordinals agree.
+pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
+    use std::hash::{Hash, Hasher};
+    thread_local! {
+        static SCOPE_CACHE: std::cell::RefCell<Option<(u64, std::sync::Arc<BTreeSet<String>>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    module.linked_entry.hash(&mut hasher);
+    for item in &module.items {
+        if let witchy_syntax::ast::Item::Function(function) = item {
+            function.name.hash(&mut hasher);
+            function.body.stmts.len().hash(&mut hasher);
+        }
+    }
+    let fingerprint = hasher.finish();
+    if let Some(scope) = SCOPE_CACHE.with(|cache| {
+        cache.borrow().as_ref().filter(|(key, _)| *key == fingerprint).map(|(_, scope)| scope.clone())
+    }) {
+        return scope;
+    }
+    let entry = module.linked_entry.as_deref();
+    let functions = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => Some((function.name.as_str(), function)),
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut scope = BTreeSet::new();
+    let mut pending = functions
+        .keys()
+        .filter(|name| is_canonical_entry_function(entry, name))
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    let seeds = pending.iter().cloned().collect::<BTreeSet<_>>();
+    while let Some(name) = pending.pop() {
+        let Some(function) = functions.get(name.as_str()) else { continue };
+        // A generic template reached by name has no concrete body to lower;
+        // only its monomorphized instances (which call sites name after
+        // specialization) join the scope. The entry scope keeps its templates
+        // as before, so its ordinals do not move.
+        if !seeds.contains(&name) && function_has_free_signature_variables(function) {
+            continue;
+        }
+        // A call named like a compiler intrinsic (`string.chars`, `list.push`)
+        // resolves to the compiler, never to the standard-library wrapper of
+        // the same name; that wrapper's body is not part of the program.
+        if !seeds.contains(&name) && witchy_syntax::intrinsics::lookup(&name).is_some() {
+            continue;
+        }
+        if !scope.insert(name.clone()) {
+            continue;
+        }
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            let callee = match expression {
+                witchy_syntax::ast::Expr::Call { name, .. } | witchy_syntax::ast::Expr::Var(name) => Some(name),
+                _ => None,
+            };
+            if let Some(callee) = callee
+                && functions.contains_key(callee.as_str())
+                && !scope.contains(callee)
+            {
+                pending.push(callee.clone());
+            }
+            Ok(())
+        });
+    }
+    let scope = std::sync::Arc::new(scope);
+    SCOPE_CACHE.with(|cache| *cache.borrow_mut() = Some((fingerprint, scope.clone())));
+    scope
+}
+
+/// Whether `name` is a canonical function of `module` (see [`canonical_scope`]).
+pub fn in_canonical_scope(module: &Module, name: &str) -> bool {
+    canonical_scope(module).contains(name)
+}
+
 /// A declaration qualified by a user library module (`strutil.shout`) is part
 /// of the checked program: the linker qualifies every non-entry module's
 /// declarations with that module's name, and only the standard library and
@@ -754,7 +841,8 @@ fn bind_canonical_callable_witness(
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
 ) -> Result<CanonicalCallableWitness, PipelineError> {
     let linked_entry = typed.module().linked_entry.as_deref();
-    let in_entry_scope = |name: &str| is_canonical_entry_function(linked_entry, name);
+    let scope = canonical_scope(typed.module());
+    let in_entry_scope = |name: &str| scope.contains(name);
     let runtime_functions = typed
         .module()
         .items
@@ -792,7 +880,10 @@ fn bind_canonical_callable_witness(
         if functions.contains(name.as_str()) && signatures.contains_key(name) {
             continue;
         }
-        if in_entry_scope(name) {
+        // The forged judgment stays name-based: an instance claiming the entry
+        // scope's namespace without an exact checked body is a forgery, whether
+        // or not anything reaches it.
+        if in_entry_scope(name) || is_canonical_entry_function(linked_entry, name) {
             return Err(PipelineError::Type(TypeError {
                 message: format!(
                     "canonical generic specialization `{name}` lacks an exact checked concrete body or signature"
@@ -1168,20 +1259,18 @@ mod tests {
         )
         .expect("a valid program outside the canonical subset still checks");
         let canonical = checked.canonical_source().expect("canonical source");
+        // The library instance is reachable from `main`, so it is a runtime
+        // function of the canonical scope, not an obligation; the obligation
+        // set is empty and its digest is still bound into the witness.
         let obligations = canonical.obligations();
-        let [CanonicalObligation::Specialization(name)] = obligations.iter().collect::<Vec<_>>()[..] else {
-            panic!("exactly one library specialization expected, got {obligations:?}");
-        };
-        assert!(name.starts_with("util.identity__"), "{name}");
-        assert!(canonical.callable_signature(name).is_none(), "an obligation is not a runtime function");
+        assert!(obligations.is_empty(), "reachable library instances lower, got {obligations:?}");
+        assert!(
+            canonical.callable_abi_manifest().entries().len() >= 2,
+            "the manifest covers `main` and the reachable instance"
+        );
         assert_eq!(
             canonical.source_witness().obligations_digest(),
-            obligations_digest(obligations)
-        );
-        assert_ne!(
-            canonical.source_witness().obligations_digest(),
-            obligations_digest(&BTreeSet::new()),
-            "the obligation set is bound into the source witness"
+            obligations_digest(&BTreeSet::new())
         );
     }
 
@@ -1243,7 +1332,10 @@ mod tests {
         let witness = bind_canonical_callable_witness(&typed, instances.clone())
             .expect("library-scope names are obligations, not type errors");
         assert!(witness.obligations.contains(&CanonicalObligation::Specialization("util.forged__Int".to_string())));
-        assert!(witness.obligations.iter().any(|obligation| matches!(
+        // The entry's own instance is reachable from `main`: a runtime
+        // function, never an obligation.
+        assert!(witness.runtime_functions.iter().any(|name| name.starts_with("identity__")), "{:?}", witness.runtime_functions);
+        assert!(!witness.obligations.iter().any(|obligation| matches!(
             obligation,
             CanonicalObligation::Specialization(name) if name.starts_with("identity__")
         )));

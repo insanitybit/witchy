@@ -11807,12 +11807,12 @@ impl ProperTailSiteManifest {
     /// while the frontend still owns the checked typed module; lowering only
     /// transports the resulting witness and cannot choose its expected digest.
     pub fn for_canonical_functions(&self, module: &Module) -> Self {
-        let entry = module.linked_entry.as_deref();
+        let scope = crate::pipeline::canonical_scope(module);
         let mut canonical_ordinals = HashMap::default();
         let mut ordinal = 0u32;
         for (item_index, item) in module.items.iter().enumerate() {
             let Item::Function(function) = item else { continue };
-            if crate::pipeline::is_canonical_entry_function(entry, &function.name) {
+            if scope.contains(&function.name) {
                 let item_index = u32::try_from(item_index).expect("validated item index");
                 canonical_ordinals.insert(item_index, ordinal);
                 ordinal = ordinal.checked_add(1).expect("validated function count");

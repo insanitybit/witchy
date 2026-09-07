@@ -1471,8 +1471,8 @@ impl FunctionLowerer<'_> {
         };
         let shared_result_extents = result_type.and_then(|(then_value, else_value, result_type)| {
             (matches!(result_type, ValueType::Ref(_))
-                && self.known_shared_value(then_value)
-                && self.known_shared_value(else_value))
+                && self.shared_phi_eligible(then_value)
+                && self.shared_phi_eligible(else_value))
             .then(|| {
                 Some((
                     self.dynamic_extent_lanes(then_value)?,
@@ -1726,7 +1726,7 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         let shared_result_extents = (result_type.is_some()
             && !result_values.is_empty()
-            && result_values.iter().all(|value| self.known_shared_value(*value)))
+            && result_values.iter().all(|value| self.shared_phi_eligible(*value)))
         .then(|| {
             result_values
                 .iter()
@@ -2680,6 +2680,14 @@ impl FunctionLowerer<'_> {
                 parameter.ownership = ownership;
             }
         }
+    }
+
+    /// A value may feed a shared phi when it is static data, a shared token,
+    /// or a token the checker may weaken to shared: a fresh allocation, a
+    /// call result, an owned parameter, or a block parameter every incoming
+    /// edge feeds from such a value (a loop exit carrying a rebound list).
+    fn shared_phi_eligible(&self, value: ValueId) -> bool {
+        self.known_shared_value(value) || self.carries_token(value)
     }
 
     fn known_shared_value(&self, value: ValueId) -> bool {
@@ -5144,7 +5152,7 @@ fn tail_path(statement: usize, position: ProperTailPathStep) -> Result<Vec<Prope
 }
 
 fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str) -> bool {
-    witchy_types::pipeline::is_canonical_entry_function(module.linked_entry.as_deref(), name)
+    witchy_types::pipeline::in_canonical_scope(module, name)
 }
 
 #[cfg(test)]

@@ -322,7 +322,7 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
 }
 
 fn is_canonical_source_function(module: &ast::Module, name: &str) -> bool {
-    witchy_types::pipeline::is_canonical_entry_function(module.linked_entry.as_deref(), name)
+    witchy_types::pipeline::in_canonical_scope(module, name)
 }
 
 #[cfg(test)]
