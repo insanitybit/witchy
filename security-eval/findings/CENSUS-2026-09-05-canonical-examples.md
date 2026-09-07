@@ -631,3 +631,26 @@ route is 0/107.
 - Census: 71 of 163 check; 15 runnable examples admit and agree under
   three-legged parity (`math_demo` and `regions` are new).
 
+
+## Progress (owner, 2026-09-06, seventeenth slice: structured loops with late exits)
+
+- **Loop headers are back-edge targets, not `while` shapes.** The encoder and
+  its plan mirror recognized a loop only when the header's own `BranchIf`
+  chose between body and exit. `while a && b` (and `||`) decides the exit in
+  a later block after a boolean phi, so `queens` was refused as an
+  "irreducible" branch. Now any dominated back edge names a header; a loop
+  has one exit (the `while` header's `else`, otherwise the one non-terminal
+  block the loop branches out to; `return` blocks are emitted inline); the
+  canonical `while` form keeps its established bytes, and any other header is
+  emitted structurally inside `block { loop { … } }` with branches back to
+  the header and out to the exit as `br`. A loop that only leaves by
+  returning is followed by `unreachable` so the function's result stack
+  stays valid. `all_paths_reach_or_terminate` takes a merge set so a body
+  path may end at the header or the exit.
+- **Index expression types**: typeck inferred `xs[i - 1]` through a cloned
+  transient, so the source index expression had no table entry and the
+  lowering refused it. The index is now inferred directly as well.
+- Pinned by `admitted_while_loops_with_short_circuit_conditions_run`
+  (`&&`, `||`, early return inside the loop, compound index).
+- Census: 72 of 163 check; 16 runnable examples admit and agree under
+  three-legged parity (`queens` is new).

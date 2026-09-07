@@ -180,6 +180,18 @@ fn admitted_early_return_inside_a_loop_over_a_list_parameter() {
 }
 
 #[test]
+fn admitted_while_loops_with_short_circuit_conditions_run() {
+    // `while a && b` decides the exit in a block after the loop header; the
+    // encoder emits the header structurally inside the loop and turns the
+    // later exit branch into a `br` out of it. `||` and an early return in
+    // the body take the same path.
+    let output = run_admitted(
+        "pub fn first_gap(xs: List(Int)) -> Int:\n    var i = 0\n    var found = false\n    while i < xs.length() && !found:\n        if xs[i] != i:\n            found = true\n        else:\n            i = i + 1\n    i\n\npub fn count_until(xs: List(Int), stop: Int) -> Int:\n    var i = 0\n    while i == 0 || xs[i - 1] != stop:\n        if i == xs.length():\n            return 0 - 1\n        i = i + 1\n    i\n\nfn main(console: Console):\n    console.print(\"${first_gap([0, 1, 5, 3])} ${first_gap([0, 1])} ${count_until([4, 7, 9], 7)} ${count_until([4, 7, 9], 2)}\")\n",
+    );
+    assert_eq!(output, vec!["2 2 2 -1".to_string()]);
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

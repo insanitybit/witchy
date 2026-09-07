@@ -9027,6 +9027,10 @@ impl Checker {
             // the ordinary function signature enforces index/key types and bounds.
             Expr::Index { base, index } => {
                 let base_ty = self.infer(base)?;
+                // The transient below types clones; the source index expression
+                // is inferred directly so the table carries its type for the
+                // canonical lowering (`xs[i - 1]` reads the subtraction's type).
+                let _ = self.infer(index)?;
                 let d = if matches!(base_ty, Ty::Named(ref name, _) if **name == *"Dict") {
                     Expr::Call {
                         name: intrinsics::DICT_AT.to_string(),

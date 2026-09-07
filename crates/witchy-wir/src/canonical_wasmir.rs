@@ -1391,9 +1391,6 @@ pub struct CanonicalEntry {
 /// by the artifact's Wasm digest like every other section. Reading it back
 /// from bytes lives in `canonical_entry`, outside this private encoder.
 pub(crate) const ENTRY_SECTION: &str = "witchy.entry";
-/// A merge no block has: `all_paths_reach_or_terminate` with this merge
-/// asks whether every path from a block terminates.
-const NO_MERGE: crate::canonical_safewir::BlockId = crate::canonical_safewir::BlockId::new(u32::MAX);
 /// Exported allocator globals of an admitted module: the bump pointer, the
 /// reclaimed-object free list head, and the heap base below which pointers
 /// name static data.
@@ -2729,9 +2726,13 @@ struct StructuredEmitter<'a> {
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
+    /// Enclosing loops' exit blocks with their `block` labels: a branch to one
+    /// leaves the loop with a `br`.
+    loop_exits: Vec<(crate::canonical_safewir::BlockId, usize)>,
     /// Memoized `is_loop_header` judgments; the dominance walk is quadratic
     /// and the structuring queries ask about the same blocks repeatedly.
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
+    loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
 }
 
 impl StructuredEmitter<'_> {
@@ -2817,8 +2818,9 @@ impl StructuredEmitter<'_> {
 
     /// A side only terminates when every path from it ends in a terminal
     /// block (structured loops included: their bodies return to their
-    /// headers and their exits terminate) and it shares no block with the
-    /// other side: such a side never reaches a merge and needs none.
+    /// headers or leave through their exits, and the exits terminate) and it
+    /// shares no block with the other side: such a side never reaches a merge
+    /// and needs none.
     fn only_terminates(
         &self,
         start: crate::canonical_safewir::BlockId,
@@ -2828,7 +2830,7 @@ impl StructuredEmitter<'_> {
         if reach.keys().any(|id| other_side.contains(id)) {
             return Ok(false);
         }
-        self.all_paths_reach_or_terminate(start, NO_MERGE, &mut BTreeSet::new())
+        self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())
     }
 
     fn is_terminal(
@@ -2845,41 +2847,43 @@ impl StructuredEmitter<'_> {
         ))
     }
 
-    /// Check finite paths to a proposed merge.  A terminal path is allowed to
-    /// bypass a merge, but a cycle that can avoid it is not.  Recognized loop
-    /// headers are treated as structured boundaries: their body must return to
-    /// the header (or terminate), and their exit must still reach the merge.
+    /// Check finite paths to a proposed merge (any of `merges`).  A terminal
+    /// path is allowed to bypass a merge, but a cycle that can avoid it is
+    /// not.  Recognized loop headers are treated as structured boundaries:
+    /// every path through the body must return to the header, leave through
+    /// the loop's exit, or terminate, and the exit must still reach the merge.
     fn all_paths_reach_or_terminate(
         &self,
         start: crate::canonical_safewir::BlockId,
-        merge: crate::canonical_safewir::BlockId,
+        merges: &[crate::canonical_safewir::BlockId],
         active: &mut BTreeSet<crate::canonical_safewir::BlockId>,
     ) -> Result<bool, EncodeError> {
-        if start == merge || self.is_terminal(start)? {
+        if merges.contains(&start) || self.is_terminal(start)? {
             return Ok(true);
         }
         if !active.insert(start) {
             return Ok(false);
         }
         let result = if self.is_loop_header(start)? {
-            let block = self.block(start)?;
-            let ScalarTerminator::BranchIf {
-                then_target,
-                else_target,
-                ..
-            } = &block.terminator.operation
-            else {
-                unreachable!("is_loop_header checked the terminator");
-            };
-            self.all_paths_reach_or_terminate(
-                *then_target,
-                start,
-                &mut BTreeSet::new(),
-            )? && self.all_paths_reach_or_terminate(*else_target, merge, active)?
+            let exit = self.loop_exit(start)?;
+            let mut body_merges = vec![start];
+            body_merges.extend(exit);
+            let mut result = true;
+            for successor in self.successors(start)? {
+                if !self.all_paths_reach_or_terminate(successor, &body_merges, &mut BTreeSet::new())? {
+                    result = false;
+                    break;
+                }
+            }
+            result
+                && match exit {
+                    Some(exit) => self.all_paths_reach_or_terminate(exit, merges, active)?,
+                    None => true,
+                }
         } else {
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, merge, active)? {
+                if !self.all_paths_reach_or_terminate(successor, merges, active)? {
                     result = false;
                     break;
                 }
@@ -2894,34 +2898,79 @@ impl StructuredEmitter<'_> {
         &self,
         id: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        let block = self.block(id)?;
-        let ScalarTerminator::BranchIf {
-            then_target,
-            else_target,
-            ..
-        } = &block.terminator.operation
-        else {
-            return Ok(false);
-        };
-        if *then_target == id || *else_target == id || then_target == else_target {
-            return Ok(false);
-        }
         if let Some(known) = self.loop_headers.borrow().get(&id) {
             return Ok(*known);
         }
-        // A loop header is the target of a back edge (a predecessor it
-        // dominates) whose `then` side lies in that natural loop and whose
-        // `else` side does not. Plain reachability is not enough: an inner
-        // loop's exit reaches the inner header again through the enclosing
-        // loop's back edge, which is not a cycle of the inner loop.
-        let result = !self.back_edge_sources(id)?.is_empty()
-            && self.in_natural_loop(id, *then_target)?
-            && !self.in_natural_loop(id, *else_target)?;
+        // A loop header is the target of a back edge: a predecessor it
+        // dominates. Plain reachability is not enough: an inner loop's exit
+        // reaches the inner header again through the enclosing loop's back
+        // edge, which is not a cycle of the inner loop.
+        let result = !self.back_edge_sources(id)?.is_empty();
         self.loop_headers.borrow_mut().insert(id, result);
         Ok(result)
     }
 
-    /// Paths from `start` to `goal` that never enter `avoid`.
+    /// The block a structured loop continues at: the one target outside the
+    /// header's natural loop that the loop's blocks branch to.  `None` when
+    /// the loop only leaves by terminating; several distinct exits are not a
+    /// shape the structured emitter accepts.
+    fn loop_exit(
+        &self,
+        header: crate::canonical_safewir::BlockId,
+    ) -> Result<Option<crate::canonical_safewir::BlockId>, EncodeError> {
+        if let Some(known) = self.loop_exit_targets.borrow().get(&header) {
+            return Ok(*known);
+        }
+        let mut members = vec![header];
+        for block in &self.target_function.blocks {
+            if block.id != header && self.in_natural_loop(header, block.id)? {
+                members.push(block.id);
+            }
+        }
+        // The canonical `while` header names its exit directly: its `else`
+        // side leaves the loop. Any other header continues at the one
+        // non-terminal block the loop's blocks branch out to; a `return`
+        // inside the body reaches a terminal block, which is emitted inline
+        // and is no continuation.
+        let classic_exit = match &self.block(header)?.terminator.operation {
+            ScalarTerminator::BranchIf { else_target, .. } if !members.contains(else_target) => Some(*else_target),
+            _ => None,
+        };
+        let exit = if classic_exit.is_some() {
+            classic_exit
+        } else {
+            let mut continuing = BTreeSet::new();
+            for member in &members {
+                for successor in self.successors(*member)? {
+                    if !members.contains(&successor) && !self.is_terminal(successor)? {
+                        continuing.insert(successor);
+                    }
+                }
+            }
+            if continuing.len() > 1 {
+                return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
+                    function: self.source_function.id,
+                    operation: "loop with several exits",
+                }));
+            }
+            continuing.into_iter().next()
+        };
+        self.loop_exit_targets.borrow_mut().insert(header, exit);
+        Ok(exit)
+    }
+
+    /// A branch that leaves structured emission with a plain `br`: back to an
+    /// enclosing loop's header (its loop label) or out to that loop's exit
+    /// (its block label).
+    fn escape_label(&self, target: crate::canonical_safewir::BlockId) -> Option<usize> {
+        self.loops
+            .iter()
+            .rev()
+            .find(|(header, _)| *header == target)
+            .or_else(|| self.loop_exits.iter().rev().find(|(exit, _)| *exit == target))
+            .map(|(_, label_index)| *label_index)
+    }
+
     fn reaches_avoiding(
         &self,
         start: crate::canonical_safewir::BlockId,
@@ -2988,12 +3037,24 @@ impl StructuredEmitter<'_> {
         current: crate::canonical_safewir::BlockId,
         then_target: crate::canonical_safewir::BlockId,
         else_target: crate::canonical_safewir::BlockId,
-    ) -> Result<crate::canonical_safewir::BlockId, EncodeError> {
+    ) -> Result<Option<crate::canonical_safewir::BlockId>, EncodeError> {
         if then_target == else_target {
             return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                 function: self.source_function.id,
                 operation: "non-distinct structured branches",
             }));
+        }
+        // A side that escapes to an enclosing loop's header or exit is a plain
+        // `br`: it never reaches a merge, and the other side's first block is
+        // where emission continues.
+        match (
+            self.escape_label(then_target).is_some(),
+            self.escape_label(else_target).is_some(),
+        ) {
+            (true, true) => return Ok(None),
+            (true, false) => return Ok(Some(else_target)),
+            (false, true) => return Ok(Some(then_target)),
+            (false, false) => {}
         }
         let then_distances = self.distances_from(then_target)?;
         let else_distances = self.distances_from(else_target)?;
@@ -3011,7 +3072,10 @@ impl StructuredEmitter<'_> {
             // When one side only terminates (`if c: return x` then fall through),
             // the other side's first block is itself the merge: the structured
             // form is `if c { ... } else { } end` followed by that block.
+            // An enclosing loop's header or exit is never a merge: emission
+            // reaches those only through `br`.
             if candidate == current
+                || self.escape_label(candidate).is_some()
                 || (candidate == then_target && !else_terminal)
                 || (candidate == else_target && !then_terminal)
             {
@@ -3029,11 +3093,11 @@ impl StructuredEmitter<'_> {
             };
             if !self.all_paths_reach_or_terminate(
                 then_target,
-                candidate,
+                &[candidate],
                 &mut BTreeSet::new(),
             )? || !self.all_paths_reach_or_terminate(
                 else_target,
-                candidate,
+                &[candidate],
                 &mut BTreeSet::new(),
             )? {
                 continue;
@@ -3043,7 +3107,7 @@ impl StructuredEmitter<'_> {
                 best = Some(score);
             }
         }
-        best.map(|(_, block)| block).ok_or(EncodeError::Lowering(
+        best.map(|(_, block)| Some(block)).ok_or(EncodeError::Lowering(
             LoweringError::UnsupportedControlFlow {
                 function: self.source_function.id,
                 operation: "irreducible or non-convergent BranchIf",
@@ -3097,6 +3161,11 @@ impl StructuredEmitter<'_> {
         start: crate::canonical_safewir::BlockId,
         stop: Option<crate::canonical_safewir::BlockId>,
     ) -> Result<(), EncodeError> {
+        if let Some(label_index) = self.escape_label(start) {
+            self.body
+                .instruction(&wasm_encoder::Instruction::Br(self.label_depth(label_index)));
+            return Ok(());
+        }
         if stop == Some(start) {
             return Ok(());
         }
@@ -3124,22 +3193,19 @@ impl StructuredEmitter<'_> {
                 self.layouts,
             )?;
         }
-        match block.terminator.operation {
+        self.emit_block_terminator(start, block.terminator.operation, stop)
+    }
+
+    fn emit_block_terminator(
+        &mut self,
+        start: crate::canonical_safewir::BlockId,
+        terminator: ScalarTerminator,
+        stop: Option<crate::canonical_safewir::BlockId>,
+    ) -> Result<(), EncodeError> {
+        match terminator {
             ScalarTerminator::Branch { target, arguments } => {
                 self.emit_branch_arguments(target, &arguments)?;
-                if let Some((_, label_index)) = self
-                    .loops
-                    .iter()
-                    .rev()
-                    .find(|(header, _)| *header == target)
-                {
-                    self.body
-                        .instruction(&wasm_encoder::Instruction::Br(self.label_depth(*label_index)));
-                } else if stop == Some(target) {
-                    return Ok(());
-                } else {
-                    self.emit_path(target, stop)?;
-                }
+                self.emit_path(target, stop)
             }
             ScalarTerminator::BranchIf {
                 condition,
@@ -3155,7 +3221,7 @@ impl StructuredEmitter<'_> {
                 else_target,
                 &else_arguments,
                 stop,
-            )?,
+            ),
             terminator => emit_terminator(
                 self.body,
                 self.source_function,
@@ -3163,9 +3229,8 @@ impl StructuredEmitter<'_> {
                 &terminator,
                 self.function_indices,
                 self.signature_indices,
-            )?,
+            ),
         }
-        Ok(())
     }
 
     fn emit_if(
@@ -3178,7 +3243,7 @@ impl StructuredEmitter<'_> {
         else_arguments: &[ValueId],
         stop: Option<crate::canonical_safewir::BlockId>,
     ) -> Result<(), EncodeError> {
-        if self.is_loop_header(current)? {
+        if self.is_loop_header(current)? && !self.loops.iter().any(|(header, _)| *header == current) {
             return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                 function: self.source_function.id,
                 operation: "loop header outside structured loop",
@@ -3189,13 +3254,16 @@ impl StructuredEmitter<'_> {
         self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         self.labels.push(StructuredLabel::If);
         self.emit_branch_arguments(then_target, then_arguments)?;
-        self.emit_path(then_target, Some(join))?;
+        self.emit_path(then_target, join)?;
         self.body.instruction(&wasm_encoder::Instruction::Else);
         self.emit_branch_arguments(else_target, else_arguments)?;
-        self.emit_path(else_target, Some(join))?;
+        self.emit_path(else_target, join)?;
         self.body.instruction(&wasm_encoder::Instruction::End);
         self.labels.pop();
-        self.emit_path(join, stop)
+        match join {
+            Some(join) => self.emit_path(join, stop),
+            None => Ok(()),
+        }
     }
 
     fn emit_loop(
@@ -3209,26 +3277,14 @@ impl StructuredEmitter<'_> {
                 operation: "loop header emitted twice",
             }));
         }
-        let block = self.block(header)?.clone();
-        let ScalarTerminator::BranchIf {
-            condition,
-            then_target,
-            then_arguments,
-            else_target,
-            else_arguments,
-        } = block.terminator.operation
-        else {
-            return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
-                function: self.source_function.id,
-                operation: "non-conditional loop header",
-            }));
-        };
         if !self.is_loop_header(header)? {
             return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                 function: self.source_function.id,
                 operation: "non-canonical loop shape",
             }));
         }
+        let block = self.block(header)?.clone();
+        let exit = self.loop_exit(header)?;
 
         self.body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
         let block_label = self.labels.len();
@@ -3250,24 +3306,57 @@ impl StructuredEmitter<'_> {
                 self.layouts,
             )?;
         }
-        emit_get(self.body, self.layout, self.source_function.id, condition)?;
-        self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-        self.labels.push(StructuredLabel::If);
         self.loops.push((header, loop_label));
-        self.emit_branch_arguments(then_target, &then_arguments)?;
-        self.emit_path(then_target, Some(header))?;
+        if let Some(exit) = exit {
+            self.loop_exits.push((exit, block_label));
+        }
+        match block.terminator.operation {
+            // The canonical `while` shape (the header tests the condition and
+            // its `else` is the loop's exit) keeps its established form: the
+            // body under `if`, the exit as `else { br block }`.
+            ScalarTerminator::BranchIf {
+                condition,
+                then_target,
+                then_arguments,
+                else_target,
+                else_arguments,
+            } if Some(else_target) == exit => {
+                emit_get(self.body, self.layout, self.source_function.id, condition)?;
+                self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+                self.labels.push(StructuredLabel::If);
+                self.emit_branch_arguments(then_target, &then_arguments)?;
+                self.emit_path(then_target, Some(header))?;
+                self.body.instruction(&wasm_encoder::Instruction::Else);
+                self.emit_branch_arguments(else_target, &else_arguments)?;
+                self.body
+                    .instruction(&wasm_encoder::Instruction::Br(self.label_depth(block_label)));
+                self.body.instruction(&wasm_encoder::Instruction::End);
+                self.labels.pop();
+            }
+            // Any other header (a short-circuit condition that decides the
+            // exit in a later block, a header that only leaves by returning)
+            // is emitted structurally inside the loop: branches back to the
+            // header and out to the exit become `br`.
+            terminator => self.emit_block_terminator(header, terminator, Some(header))?,
+        }
+        if exit.is_some() {
+            self.loop_exits.pop();
+        }
         self.loops.pop();
-        self.body.instruction(&wasm_encoder::Instruction::Else);
-        self.emit_branch_arguments(else_target, &else_arguments)?;
-        self.body
-            .instruction(&wasm_encoder::Instruction::Br(self.label_depth(block_label)));
         self.body.instruction(&wasm_encoder::Instruction::End);
         self.labels.pop();
         self.body.instruction(&wasm_encoder::Instruction::End);
         self.labels.pop();
-        self.body.instruction(&wasm_encoder::Instruction::End);
-        self.labels.pop();
-        self.emit_path(else_target, stop)
+        match exit {
+            Some(exit) => self.emit_path(exit, stop),
+            // A loop that only leaves by terminating never falls out of its
+            // block: the code after it is unreachable, and saying so keeps
+            // the function's result stack valid.
+            None => {
+                self.body.instruction(&wasm_encoder::Instruction::Unreachable);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -3342,7 +3431,9 @@ fn encode_function(
         emitted: BTreeSet::new(),
         labels: Vec::new(),
         loops: Vec::new(),
+        loop_exits: Vec::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
+        loop_exit_targets: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(entry, None)?;
     if emitter.emitted.len() != target_function.blocks.len() {
@@ -4896,7 +4987,9 @@ struct PlanEmitter<'a> {
     /// is valid anywhere the aggregate dominates: the map is function-wide,
     /// as in the encoder.
     aggregates: BTreeMap<ValueId, Vec<ValueId>>,
+    loop_exits: Vec<(crate::canonical_safewir::BlockId, usize)>,
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
+    loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
 }
 
 impl PlanEmitter<'_> {
@@ -4955,7 +5048,7 @@ impl PlanEmitter<'_> {
         if reach.keys().any(|id| other_side.contains(id)) {
             return Ok(false);
         }
-        self.all_paths_reach_or_terminate(start, NO_MERGE, &mut BTreeSet::new())
+        self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())
     }
 
     fn is_terminal(&self, id: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
@@ -4972,25 +5065,35 @@ impl PlanEmitter<'_> {
     fn all_paths_reach_or_terminate(
         &self,
         start: crate::canonical_safewir::BlockId,
-        merge: crate::canonical_safewir::BlockId,
+        merges: &[crate::canonical_safewir::BlockId],
         active: &mut BTreeSet<crate::canonical_safewir::BlockId>,
     ) -> Result<bool, CanonicalAdmissionError> {
-        if start == merge || self.is_terminal(start)? {
+        if merges.contains(&start) || self.is_terminal(start)? {
             return Ok(true);
         }
         if !active.insert(start) {
             return Ok(false);
         }
         let result = if self.is_loop_header(start)? {
-            let Terminator::BranchIf { then_target, else_target, .. } = &self.block(start)?.terminator else {
-                unreachable!("is_loop_header checked the terminator");
-            };
-            self.all_paths_reach_or_terminate(*then_target, start, &mut BTreeSet::new())?
-                && self.all_paths_reach_or_terminate(*else_target, merge, active)?
+            let exit = self.loop_exit(start)?;
+            let mut body_merges = vec![start];
+            body_merges.extend(exit);
+            let mut result = true;
+            for successor in self.successors(start)? {
+                if !self.all_paths_reach_or_terminate(successor, &body_merges, &mut BTreeSet::new())? {
+                    result = false;
+                    break;
+                }
+            }
+            result
+                && match exit {
+                    Some(exit) => self.all_paths_reach_or_terminate(exit, merges, active)?,
+                    None => true,
+                }
         } else {
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, merge, active)? {
+                if !self.all_paths_reach_or_terminate(successor, merges, active)? {
                     result = false;
                     break;
                 }
@@ -5002,22 +5105,61 @@ impl PlanEmitter<'_> {
     }
 
     fn is_loop_header(&self, id: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
-        let Terminator::BranchIf { then_target, else_target, .. } = &self.block(id)?.terminator else {
-            return Ok(false);
-        };
-        if *then_target == id || *else_target == id || then_target == else_target {
-            return Ok(false);
-        }
         if let Some(known) = self.loop_headers.borrow().get(&id) {
             return Ok(*known);
         }
-        // Mirror of the encoder's rule: a back edge (a dominated predecessor)
-        // whose `then` side is in the natural loop and whose `else` side is not.
-        let result = !self.back_edge_sources(id)?.is_empty()
-            && self.in_natural_loop(id, *then_target)?
-            && !self.in_natural_loop(id, *else_target)?;
+        // Mirror of the encoder's rule: a loop header is the target of a back
+        // edge, a predecessor it dominates.
+        let result = !self.back_edge_sources(id)?.is_empty();
         self.loop_headers.borrow_mut().insert(id, result);
         Ok(result)
+    }
+
+    /// Mirror of the encoder's `loop_exit`: the one target outside the natural
+    /// loop, `None` for a loop that only leaves by terminating.
+    fn loop_exit(&self, header: crate::canonical_safewir::BlockId) -> Result<Option<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        if let Some(known) = self.loop_exit_targets.borrow().get(&header) {
+            return Ok(*known);
+        }
+        let mut members = vec![header];
+        for block in &self.source_function.blocks {
+            if block.id != header && self.in_natural_loop(header, block.id)? {
+                members.push(block.id);
+            }
+        }
+        // Mirror of the encoder's rule: a `while` header's `else` side is the
+        // exit; otherwise the one non-terminal block the loop branches out to.
+        let classic_exit = match &self.block(header)?.terminator {
+            Terminator::BranchIf { else_target, .. } if !members.contains(else_target) => Some(*else_target),
+            _ => None,
+        };
+        let exit = if classic_exit.is_some() {
+            classic_exit
+        } else {
+            let mut continuing = BTreeSet::new();
+            for member in &members {
+                for successor in self.successors(*member)? {
+                    if !members.contains(&successor) && !self.is_terminal(successor)? {
+                        continuing.insert(successor);
+                    }
+                }
+            }
+            if continuing.len() > 1 {
+                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            }
+            continuing.into_iter().next()
+        };
+        self.loop_exit_targets.borrow_mut().insert(header, exit);
+        Ok(exit)
+    }
+
+    fn escape_label(&self, target: crate::canonical_safewir::BlockId) -> Option<usize> {
+        self.loops
+            .iter()
+            .rev()
+            .find(|(header, _)| *header == target)
+            .or_else(|| self.loop_exits.iter().rev().find(|(exit, _)| *exit == target))
+            .map(|(_, label_index)| *label_index)
     }
 
     fn reaches_avoiding(&self, start: crate::canonical_safewir::BlockId, goal: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
@@ -5063,9 +5205,20 @@ impl PlanEmitter<'_> {
         current: crate::canonical_safewir::BlockId,
         then_target: crate::canonical_safewir::BlockId,
         else_target: crate::canonical_safewir::BlockId,
-    ) -> Result<crate::canonical_safewir::BlockId, CanonicalAdmissionError> {
+    ) -> Result<Option<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
         if then_target == else_target {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
+        }
+        // Mirror of the encoder's rule: an escaping side is a plain `br` and
+        // the other side's first block is where emission continues.
+        match (
+            self.escape_label(then_target).is_some(),
+            self.escape_label(else_target).is_some(),
+        ) {
+            (true, true) => return Ok(None),
+            (true, false) => return Ok(Some(else_target)),
+            (false, true) => return Ok(Some(then_target)),
+            (false, false) => {}
         }
         let then_distances = self.distances_from(then_target)?;
         let else_distances = self.distances_from(else_target)?;
@@ -5082,6 +5235,7 @@ impl PlanEmitter<'_> {
             // the other side's first block is itself the merge: the structured
             // form is `if c { ... } else { } end` followed by that block.
             if candidate == current
+                || self.escape_label(candidate).is_some()
                 || (candidate == then_target && !else_terminal)
                 || (candidate == else_target && !then_terminal)
             {
@@ -5097,8 +5251,8 @@ impl PlanEmitter<'_> {
                 None if else_terminal => 0,
                 None => continue,
             };
-            if !self.all_paths_reach_or_terminate(then_target, candidate, &mut BTreeSet::new())?
-                || !self.all_paths_reach_or_terminate(else_target, candidate, &mut BTreeSet::new())?
+            if !self.all_paths_reach_or_terminate(then_target, &[candidate], &mut BTreeSet::new())?
+                || !self.all_paths_reach_or_terminate(else_target, &[candidate], &mut BTreeSet::new())?
             {
                 continue;
             }
@@ -5107,7 +5261,7 @@ impl PlanEmitter<'_> {
                 best = Some(score);
             }
         }
-        best.map(|(_, block)| block).ok_or(CanonicalAdmissionError::UnsupportedPlan)
+        best.map(|(_, block)| Some(block)).ok_or(CanonicalAdmissionError::UnsupportedPlan)
     }
 
     fn label_depth(&self, index: usize) -> u32 {
@@ -5164,6 +5318,10 @@ impl PlanEmitter<'_> {
     }
 
     fn emit_path(&mut self, start: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
+        if let Some(label_index) = self.escape_label(start) {
+            self.plan.push(PlanToken::Br(self.label_depth(label_index)));
+            return Ok(());
+        }
         if stop == Some(start) {
             return Ok(());
         }
@@ -5186,24 +5344,20 @@ impl PlanEmitter<'_> {
             self.static_data_offsets,
             &mut self.aggregates,
         )?);
-        match block.terminator {
+        self.emit_block_terminator(start, block.terminator, stop)
+    }
+
+    fn emit_block_terminator(&mut self, start: crate::canonical_safewir::BlockId, terminator: Terminator, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
+        match terminator {
             Terminator::Branch { target, arguments } => {
                 self.push_branch_arguments(target, &arguments)?;
-                if let Some((_, label_index)) = self.loops.iter().rev().find(|(header, _)| *header == target) {
-                    self.plan.push(PlanToken::Br(self.label_depth(*label_index)));
-                    return Ok(());
-                }
-                if stop == Some(target) {
-                    return Ok(());
-                }
-                self.emit_path(target, stop)?;
+                self.emit_path(target, stop)
             }
             Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
-                self.emit_if(start, condition, then_target, &then_arguments, else_target, &else_arguments, stop)?;
+                self.emit_if(start, condition, then_target, &then_arguments, else_target, &else_arguments, stop)
             }
-            terminator => self.push_terminator(&terminator)?,
+            terminator => self.push_terminator(&terminator),
         }
-        Ok(())
     }
 
     fn emit_if(
@@ -5216,7 +5370,7 @@ impl PlanEmitter<'_> {
         else_arguments: &[ValueId],
         stop: Option<crate::canonical_safewir::BlockId>,
     ) -> Result<(), CanonicalAdmissionError> {
-        if self.is_loop_header(current)? {
+        if self.is_loop_header(current)? && !self.loops.iter().any(|(header, _)| *header == current) {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }
         let join = self.find_join(current, then_target, else_target)?;
@@ -5224,26 +5378,27 @@ impl PlanEmitter<'_> {
         self.plan.push(PlanToken::If("Empty".to_owned()));
         self.labels.push(StructuredLabel::If);
         self.push_branch_arguments(then_target, then_arguments)?;
-        self.emit_path(then_target, Some(join))?;
+        self.emit_path(then_target, join)?;
         self.plan.push(PlanToken::Else);
         self.push_branch_arguments(else_target, else_arguments)?;
-        self.emit_path(else_target, Some(join))?;
+        self.emit_path(else_target, join)?;
         self.plan.push(PlanToken::End);
         self.labels.pop();
-        self.emit_path(join, stop)
+        match join {
+            Some(join) => self.emit_path(join, stop),
+            None => Ok(()),
+        }
     }
 
     fn emit_loop(&mut self, header: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
         if !self.emitted.insert(header) {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }
-        let block = self.block(header)?.clone();
-        let Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } = &block.terminator else {
-            return Err(CanonicalAdmissionError::UnsupportedPlan);
-        };
         if !self.is_loop_header(header)? {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }
+        let block = self.block(header)?.clone();
+        let exit = self.loop_exit(header)?;
         self.plan.push(PlanToken::Block("Empty".to_owned()));
         let block_label = self.labels.len();
         self.labels.push(StructuredLabel::Block);
@@ -5251,23 +5406,41 @@ impl PlanEmitter<'_> {
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
         self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates)?);
-        push_get(&mut self.plan, self.layout, *condition)?;
-        self.plan.push(PlanToken::If("Empty".to_owned()));
-        self.labels.push(StructuredLabel::If);
         self.loops.push((header, loop_label));
-        self.push_branch_arguments(*then_target, then_arguments)?;
-        self.emit_path(*then_target, Some(header))?;
+        if let Some(exit) = exit {
+            self.loop_exits.push((exit, block_label));
+        }
+        match block.terminator {
+            // Mirror of the encoder's canonical `while` form.
+            Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } if Some(else_target) == exit => {
+                push_get(&mut self.plan, self.layout, condition)?;
+                self.plan.push(PlanToken::If("Empty".to_owned()));
+                self.labels.push(StructuredLabel::If);
+                self.push_branch_arguments(then_target, &then_arguments)?;
+                self.emit_path(then_target, Some(header))?;
+                self.plan.push(PlanToken::Else);
+                self.push_branch_arguments(else_target, &else_arguments)?;
+                self.plan.push(PlanToken::Br(self.label_depth(block_label)));
+                self.plan.push(PlanToken::End);
+                self.labels.pop();
+            }
+            terminator => self.emit_block_terminator(header, terminator, Some(header))?,
+        }
+        if exit.is_some() {
+            self.loop_exits.pop();
+        }
         self.loops.pop();
-        self.plan.push(PlanToken::Else);
-        self.push_branch_arguments(*else_target, else_arguments)?;
-        self.plan.push(PlanToken::Br(self.label_depth(block_label)));
         self.plan.push(PlanToken::End);
         self.labels.pop();
         self.plan.push(PlanToken::End);
         self.labels.pop();
-        self.plan.push(PlanToken::End);
-        self.labels.pop();
-        self.emit_path(*else_target, stop)
+        match exit {
+            Some(exit) => self.emit_path(exit, stop),
+            None => {
+                self.plan.push(PlanToken::Unreachable);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -5420,8 +5593,10 @@ fn expected_function_plan(
         emitted: BTreeSet::new(),
         labels: Vec::new(),
         loops: Vec::new(),
+        loop_exits: Vec::new(),
         aggregates: BTreeMap::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
+        loop_exit_targets: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(function.entry, None)?;
     if emitter.emitted.len() != function.blocks.len() {
