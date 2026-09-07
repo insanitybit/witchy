@@ -15,7 +15,11 @@ const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
     // admission; the payload is computed by `witchy-caps`, which depends on
     // nothing above the syntax stage, so the graph stays acyclic.
     ("witchy-types", &["witchy-cap-model", "witchy-caps", "witchy-syntax"]),
-    ("witchy-wir", &["witchy-syntax"]),
+    // RFC-0165: the SafeWIR authority authenticates a lowered candidate
+    // against the checked source (`witchy_types::pipeline`) and shares the
+    // aggregate shape catalog with the lowering; `witchy-types` depends on
+    // nothing at or above the IR stage, so the graph stays acyclic.
+    ("witchy-wir", &["witchy-syntax", "witchy-types"]),
     ("witchy-caps", &["witchy-cap-model", "witchy-syntax"]),
     ("witchy-confinement", &[]),
     ("witchy-compiler-worker", &["witchy-confinement", "witchy-worker-protocol"]),
