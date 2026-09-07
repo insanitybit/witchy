@@ -7990,9 +7990,6 @@ impl FunctionLowerer<'_> {
         Ok(self.block_parameter_values(exit)[0])
     }
 
-    /// `string.find`: the character index of the first window matching the
-    /// needle, or `-1`.
-
     /// The lane shape of a list or string accumulator threaded through a
     /// kernel loop: the object owns its token; its count and capacity ride
     /// along as scalars.
