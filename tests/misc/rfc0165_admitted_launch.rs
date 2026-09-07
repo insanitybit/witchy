@@ -763,3 +763,15 @@ fn admitted_aggregates_render_structurally_as_the_interpreter_prints_them() {
             .into_iter().map(str::to_string).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn admitted_float_render_writes_through_the_authenticated_float_to_str_import() {
+    // `"${f}"` on a Float hands the authenticated `float_to_str` import a
+    // fresh 32-byte buffer (a write buffer of a declared minimum size); the
+    // host writes the shortest round-trip decimal and returns the length,
+    // which becomes the string's logical length behind a capacity guard.
+    let output = run_admitted(
+        "import math\n\nfn main(console: Console):\n    let tenth = 0.1\n    console.print(\"${math.sqrt(16.0)} ${tenth + 0.2} ${2.5} ${1.0 / 4.0} ${100000.0 * 100000.0}\")\n    console.print(\"${[1.5, 2.0]} ${Some(0.25)}\")\n",
+    );
+    assert_eq!(output, vec!["4.0 0.30000000000000004 2.5 0.25 10000000000.0".to_string(), "[1.5, 2.0] Some(0.25)".to_string()]);
+}

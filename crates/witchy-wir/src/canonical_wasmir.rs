@@ -417,7 +417,7 @@ fn validate_host_call_lowering(
     destinations: &[ValueId],
 ) -> Result<(), LoweringError> {
     if !matches!(import.abi_identity, ImportContractIdentity::AuthenticatedAbi(_))
-        || import.mutation != HostMutation::ReadOnly
+        || !matches!(import.mutation, HostMutation::ReadOnly | HostMutation::WriteBuffers)
     {
         return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall contract" });
     }
@@ -445,6 +445,21 @@ fn validate_host_call_lowering(
                     return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer type" });
                 }
                 let _ = runtime_byte_slice(function, value_types, layouts, argument)?;
+            }
+            // A write buffer of a declared minimum size: the host receives
+            // the checked slice's address only; the checker bounded the
+            // slice by the object's capacity.
+            (
+                HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Write, extent: HostBufferExtent::AtLeast(_) },
+                HostCallArgument::Buffer { place, extent: HostBufferExtent::AtLeast(_) },
+            ) => {
+                if place.value_type() != ValueType::Ref(*layout) {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer type" });
+                }
+                let Projection::Slice { length, .. } = place.projection() else {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
+                };
+                let _ = raw_byte_slice_place(function, value_types, layouts, place, AccessMode::Write, *length)?;
             }
             _ => return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall argument" }),
         }
@@ -475,6 +490,9 @@ fn host_import_wasm_signature(
             HostParameterRole::Capability(_) => parameters.push(ValType::EXTERNREF),
             HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Read, extent: HostBufferExtent::Slice } => {
                 parameters.extend([ValType::I32, ValType::I32]);
+            }
+            HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Write, extent: HostBufferExtent::AtLeast(_) } => {
+                parameters.push(ValType::I32);
             }
             _ => return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall import signature" }),
         }
@@ -2450,14 +2468,20 @@ fn emit_host_slice(
     layouts: &LayoutInterner,
     argument: &HostCallArgument,
 ) -> Result<(), EncodeError> {
-    let HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } = argument else {
-        return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer" }));
+    let (place, access, with_length) = match argument {
+        HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } => (place, AccessMode::Read, true),
+        // A write buffer of a declared minimum size passes its address only.
+        HostCallArgument::Buffer { place, extent: HostBufferExtent::AtLeast(_) } => (place, AccessMode::Write, false),
+        _ => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer" })),
     };
     let Projection::Slice { length, .. } = place.projection() else {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" }));
     };
-    emit_raw_byte_slice_address(body, layout, function, value_types, layouts, place, AccessMode::Read, *length)?;
-    emit_get(body, layout, function, *length)
+    emit_raw_byte_slice_address(body, layout, function, value_types, layouts, place, access, *length)?;
+    if with_length {
+        emit_get(body, layout, function, *length)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4450,27 +4474,20 @@ fn push_host_slice_plan(
     layouts: &LayoutInterner,
     argument: &HostCallArgument,
 ) -> Result<(), CanonicalAdmissionError> {
-    let (object, start, length) = runtime_byte_slice(function.id, &function.value_types, layouts, argument)
-        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    push_get(plan, layout, object)?;
-    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(4), PlanToken::I64Add]);
-    push_get(plan, layout, start)?;
-    plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Add]);
-    push_get(plan, layout, length)?;
-    plan.extend([
-        PlanToken::I64ExtendI32U,
-        PlanToken::I64Add,
-        PlanToken::I64Const(i64::from(u32::MAX)),
-        PlanToken::I64GtU,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Unreachable,
-        PlanToken::End,
-    ]);
-    push_get(plan, layout, object)?;
-    plan.extend([PlanToken::I32Const(4), PlanToken::I32Add]);
-    push_get(plan, layout, start)?;
-    plan.push(PlanToken::I32Add);
-    push_get(plan, layout, length)
+    let (place, access, with_length) = match argument {
+        HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } => (place, AccessMode::Read, true),
+        // A write buffer of a declared minimum size passes its address only.
+        HostCallArgument::Buffer { place, extent: HostBufferExtent::AtLeast(_) } => (place, AccessMode::Write, false),
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    };
+    let Projection::Slice { length, .. } = place.projection() else {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    };
+    push_raw_byte_slice_address_plan(plan, function, layout, layouts, place, access, *length)?;
+    if with_length {
+        push_get(plan, layout, *length)?;
+    }
+    Ok(())
 }
 
 fn push_host_call_plan(

@@ -104,6 +104,11 @@ Host buffer lifetimes are part of authenticated host contracts. Same-instance
 reentrancy requires pinned owners and cannot run while an unmodeled exclusive
 access is active. Isolated worker instances are not same-instance reentrancy.
 Host references to linear storage cannot outlive their retained owner tokens.
+A host write is admitted only through an authenticated write-buffer role: the
+slice lies inside the capacity of a unique, non-static object, the host receives
+its address alone, and the guest publishes the written length afterwards under
+its own capacity guard. The `float_to_str` render import is the one such import
+projected today.
 
 ## IR information and optimizations
 

@@ -914,7 +914,7 @@ impl<'a> MemoryChecker<'a> {
         }
         self.require_type(*start, ValueType::Size)?;
         self.require_type(*length, ValueType::Size)?;
-        let Extent::Counted { count, stride_bytes, .. } = object.extent else {
+        let Extent::Counted { count, capacity, stride_bytes, .. } = object.extent else {
             return Err(InitialCheckError::InvalidExtent {
                 function: self.function.id,
                 object: place.object(),
@@ -927,12 +927,22 @@ impl<'a> MemoryChecker<'a> {
                 parameter,
             });
         }
-        let logical_count = self
-            .state
-            .header_values
-            .get(&(place.object(), HeaderField::Length))
-            .copied()
-            .unwrap_or(count);
+        // A host read stays inside the logical length; a host write lands
+        // inside the capacity, and the guest publishes the written length
+        // afterwards under its own capacity guard.
+        let logical_count = if place.access() == AccessMode::Write {
+            self.state
+                .header_values
+                .get(&(place.object(), HeaderField::Capacity))
+                .copied()
+                .unwrap_or(capacity)
+        } else {
+            self.state
+                .header_values
+                .get(&(place.object(), HeaderField::Length))
+                .copied()
+                .unwrap_or(count)
+        };
         let starts_at_zero = self.state.constants.get(start) == Some(&0);
         let whole_logical_body = starts_at_zero && *length == logical_count;
         let constant_range = self

@@ -340,8 +340,10 @@ pub fn lower_typed_module(
 
     let mut imports = Vec::new();
     let mut abi_catalog = None;
-    let mut print_import = None;
-    if contains_console_print(typed.module()) {
+    let mut host_imports = HostImports::default();
+    let prints = contains_console_print(typed.module());
+    let floats = renders_float(typed.module(), typed.table());
+    if prints || floats {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -365,10 +367,41 @@ pub fn lower_typed_module(
                 parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read])]),
             },
         });
-        let catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, string_layout)
+        let float_signature_id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        signatures.push(FunctionSignature {
+            id: float_signature_id,
+            parameters: vec![ValueType::Float, ValueType::Ref(string_layout)],
+            results: vec![ValueType::Size],
+            contract: CallableContract {
+                parameters: vec![
+                    ParameterContract { value_type: ValueType::Float, ownership: ParameterOwnership::Value },
+                    ParameterContract {
+                        value_type: ValueType::Ref(string_layout),
+                        // The host buffer role, not callable ownership,
+                        // authorizes this import's bounded write.
+                        ownership: ParameterOwnership::Value,
+                    },
+                ],
+                results: vec![ResultContract::Value(ValueType::Size)],
+                parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
+            },
+        });
+        let catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, float_signature_id, string_layout)
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        print_import = catalog.imports().first().map(|import| import.id);
-        imports = catalog.imports();
+        // The module declares only the imports its functions reach; the
+        // catalog still authenticates each one it declares.
+        let projected = catalog
+            .imports()
+            .into_iter()
+            .filter(|import| (import.name == "print" && prints) || (import.name == "float_to_str" && floats))
+            .collect::<Vec<_>>();
+        host_imports = HostImports {
+            print: projected.iter().find(|import| import.name == "print").map(|import| import.id),
+            float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
+        };
+        imports = projected;
         abi_catalog = Some(catalog);
     }
 
@@ -398,7 +431,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &string_data_ids,
-            print_import,
+            host_imports,
             &packed_records,
             &definitions,
         )?);
@@ -440,7 +473,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &string_data_ids,
-            print_import,
+            host_imports,
             &packed_records,
             &definitions,
         )?);
@@ -761,7 +794,7 @@ fn lower_function(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
-    print_import: Option<witchy_wir::canonical_safewir::ImportId>,
+    host_imports: HostImports,
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<Function, CanonicalLoweringError> {
@@ -796,7 +829,7 @@ fn lower_function(
         layout_bundle,
         layouts,
         string_data_ids,
-        print_import,
+        host_imports,
         packed_records,
         definitions,
         result_type: function.ret.clone(),
@@ -1056,7 +1089,7 @@ struct FunctionLowerer<'a> {
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
-    print_import: Option<witchy_wir::canonical_safewir::ImportId>,
+    host_imports: HostImports,
     packed_records: &'a HashMap<String, &'a TypeDef>,
     /// Every type definition, keyed by bare and entry-qualified names; the
     /// scalar aggregate shapes (records, sums, scalar `Option`/`Result`)
@@ -5234,7 +5267,7 @@ impl FunctionLowerer<'_> {
         if self.values.get(&object).copied() != Some(ValueType::Ref(layout)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("console.print string"));
         }
-        let import = self.print_import.ok_or_else(|| {
+        let import = self.host_imports.print.ok_or_else(|| {
             CanonicalLoweringError::InvalidAuthenticatedAbiCatalog(
                 "console.print has no projected ABI import".into(),
             )
@@ -6438,7 +6471,7 @@ impl FunctionLowerer<'_> {
                 }
                 ("Int", [], ValueType::Int) => return self.lower_render_int(value),
                 ("Bool", [], ValueType::Bool) => return self.lower_render_bool(value),
-                ("Float", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Float")),
+                ("Float", [], ValueType::Float) => return self.lower_render_float(value),
                 ("Duration", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
                 ("List", [element], ValueType::Ref(_)) => return self.lower_render_list(value, ty, element),
                 _ => {}
@@ -6496,6 +6529,56 @@ impl FunctionLowerer<'_> {
         let join_values = self.block_parameter_values(join);
         self.track_accumulator_lanes(&join_values);
         Ok(join_values[0])
+    }
+
+    /// Render a `Float` through the authenticated `float_to_str` import: the
+    /// host writes the shortest round-trip decimal (the shared `render_float`
+    /// rule) into a fresh buffer of `FLOAT_RENDER_BUFFER_BYTES` and returns
+    /// the byte length, which becomes the string's logical length behind a
+    /// capacity guard.
+    fn lower_render_float(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let import = self.host_imports.float_to_str.ok_or_else(|| {
+            CanonicalLoweringError::InvalidAuthenticatedAbiCatalog("Float render has no projected ABI import".into())
+        })?;
+        let capacity = self.push_const_size(witchy_wir::canonical_safewir::FLOAT_RENDER_BUFFER_BYTES)?;
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes: 4,
+                count: capacity,
+                capacity,
+                stride_bytes: 1,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::UpdateCount { object, count: capacity });
+        let zero = self.push_const_size(0)?;
+        let length = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![length],
+            import,
+            arguments: vec![
+                HostCallArgument::Value(value),
+                HostCallArgument::Buffer {
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        object,
+                        Projection::Slice { start: zero, length: capacity },
+                        ValueType::Ref(layout),
+                        AccessMode::Write,
+                    ),
+                    extent: HostBufferExtent::AtLeast(witchy_wir::canonical_safewir::FLOAT_RENDER_BUFFER_BYTES),
+                },
+            ],
+        });
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, capacity)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::UpdateCount { object, count: length });
+        self.string_lengths.insert(object, length);
+        self.string_capacities.insert(object, capacity);
+        Ok(object)
     }
 
     /// One variant's render: its short constructor name (the type name for
@@ -8390,6 +8473,46 @@ fn string_layout(
         [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
         [candidate] => Ok(*candidate),
         _ => Err(CanonicalLoweringError::AmbiguousLayout(source.clone())),
+    }
+}
+
+/// The prelude imports the canonical ABI catalog projected for this module,
+/// by the role the lowering reaches them through.
+#[derive(Clone, Copy, Default)]
+struct HostImports {
+    print: Option<witchy_wir::canonical_safewir::ImportId>,
+    float_to_str: Option<witchy_wir::canonical_safewir::ImportId>,
+}
+
+/// Whether any canonical source function renders a `Float`, which reaches
+/// the `float_to_str` import.
+fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable) -> bool {
+    module.items.iter().any(|item| {
+        let Item::Function(function) = item else { return false };
+        if !is_canonical_source_function(module, &function.name) {
+            return false;
+        }
+        let mut found = false;
+        witchy_syntax::ast::visit::visit_block::<()>(&function.body, &mut |expression| {
+            if let Expr::Call { name, args } = expression
+                && witchy_syntax::ast::is_render_intrinsic(name)
+                && let [argument] = args.as_slice()
+                && let Some(ty) = table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
+            {
+                found |= type_renders_float(&ty);
+            }
+            Ok(())
+        }).expect("render visitor cannot fail");
+        found
+    })
+}
+
+/// Whether the structural render of `ty` reaches a `Float` anywhere inside.
+fn type_renders_float(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Named(name, arguments) => (name == "Float" && arguments.is_empty()) || arguments.iter().any(type_renders_float),
+        Type::Tuple(items) => items.iter().any(type_renders_float),
+        _ => false,
     }
 }
 

@@ -1009,3 +1009,15 @@ lowering) so the checker's unreferenced-segment rule stays exact. Newly agree: `
 disagree. `Float` render remains refused: the prelude's `witchy.float_to_str` import
 writes a guest buffer, and the v1 host-call rule admits read-only imports only, so
 admitting it is a memory-mode boundary decision, not a lowering slice.
+
+## Slice 36 (2026-09-07): `Float` render through the authenticated `float_to_str` import
+
+The prelude's `witchy.float_to_str` import is projected into the canonical ABI catalog beside
+`print`: a `Float` value and a write buffer of at least 32 bytes, returning the byte length.
+The checker admits a write buffer only on a unique, non-static raw-byte object and bounds
+the slice by the object's capacity (a read buffer stays bounded by the logical length); the
+guest then publishes the written length under its own capacity guard. The encoder passes the
+address alone for a write buffer (the plan mirror agrees), and the oracle interpreter runs
+the shared `render_float` rule into the buffer's cells. A module declares only the imports
+its functions reach. Newly agree: `floats`. Census: 119/163 check, 63 runnable three-legged
+parity, 0 disagree.

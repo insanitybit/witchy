@@ -456,10 +456,10 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::HostCall,
         judgment: "check.rs::check_operation (authenticated import contracts)",
-        predicate: "the import is authenticated; each argument fills its contract role: a capability only by a capability value of the right kind, a buffer by a raw-byte slice within its logical length under the declared access; mutation and reentrancy beyond the contract refuse",
+        predicate: "the import is authenticated; each argument fills its contract role: a capability only by a capability value of the right kind, a read buffer by a raw-byte slice within its logical length, a write buffer by a raw-byte slice within the capacity of a unique object (the guest publishes the written length under its own capacity guard); mutation and reentrancy beyond the contract refuse",
         interpreter: "execute_operation: the host fixture",
         backend: Some(CorrespondenceRule::HostCall),
-        admits: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "authenticated_dynamic_host_slice_is_accepted"), t(Launch, "admitted_console_program_runs_through_the_runtime_entry")],
+        admits: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "authenticated_dynamic_host_slice_is_accepted"), t(Launch, "admitted_console_program_runs_through_the_runtime_entry"), t(Launch, "admitted_float_render_writes_through_the_authenticated_float_to_str_import")],
         refuses: &[
             t(Check, "integer_cannot_fill_capability_host_role"),
             t(Check, "integer_cannot_be_wrapped_as_capability_host_argument"),

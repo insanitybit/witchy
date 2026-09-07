@@ -512,15 +512,17 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// The console print import is the one host call the oracle models: it
-    /// reads the buffer's bytes and records a line. Every other import is an
-    /// effect the oracle does not model and fails closed.
+    /// The two prelude imports are the host calls the oracle models: `print`
+    /// reads the buffer's bytes and records a line; `float_to_str` writes a
+    /// `Float`'s shortest round-trip decimal (the shared `render_float`
+    /// rule) into the buffer and returns the byte length. Every other import
+    /// is an effect the oracle does not model and fails closed.
     fn host_call(
         &mut self,
         import: crate::canonical_safewir::ImportId,
         destinations: &[ValueId],
         arguments: &[HostCallArgument],
-        values: &BTreeMap<ValueId, InterpreterValue>,
+        values: &mut BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<(), InterpretError> {
         let contract = self
             .module
@@ -528,7 +530,31 @@ impl<'a> Engine<'a> {
             .iter()
             .find(|contract| contract.id == import)
             .ok_or(InterpretError::UnsupportedOperation("HostCall unknown import"))?;
-        if contract.module != "witchy" || contract.name != "print" || !destinations.is_empty() {
+        if contract.module != "witchy" {
+            return Err(InterpretError::UnsupportedOperation("HostCall import"));
+        }
+        if contract.name == "float_to_str" {
+            let ([HostCallArgument::Value(value), HostCallArgument::Buffer { place, .. }], [destination]) = (arguments, destinations) else {
+                return Err(InterpretError::UnsupportedOperation("HostCall float_to_str arguments"));
+            };
+            let InterpreterValue::FloatBits(bits) = self.value(*value, values)? else {
+                return Err(InterpretError::TypeMismatch("float_to_str operand"));
+            };
+            let rendered = witchy_syntax::fmt::render_float(f64::from_bits(*bits)).into_bytes();
+            let (object, start, length) = self.slice_place(place, values)?;
+            self.check_range(object, start, length, true)?;
+            let written = u64::try_from(rendered.len()).map_err(|_| InterpretError::ArithmeticTrap)?;
+            if written > length {
+                return Err(InterpretError::IndexOutOfBounds { index: written, length });
+            }
+            let cells = &mut self.object_mut(object)?.cells;
+            for (offset, byte) in rendered.iter().enumerate() {
+                cells.insert(CellKey::Element(start + offset as u64), InterpreterValue::Size(u64::from(*byte)));
+            }
+            values.insert(*destination, InterpreterValue::Size(written));
+            return Ok(());
+        }
+        if contract.name != "print" || !destinations.is_empty() {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
         }
         let [HostCallArgument::Buffer { place, .. }] = arguments else {

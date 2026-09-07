@@ -421,69 +421,120 @@ pub struct CanonicalAbiCatalog {
     imports: BTreeMap<ImportId, ImportContract>,
 }
 
+/// The buffer a `Float` render hands the `float_to_str` import: an f64's
+/// shortest round-trip decimal never exceeds 24 bytes (`-1.2345678901234568e-308`),
+/// so 32 leaves the host no way to overrun it.
+pub const FLOAT_RENDER_BUFFER_BYTES: u64 = 32;
+
+/// One prelude import as an authenticated contract: the generated ABI must
+/// carry it with exactly the expected Wasm shape and as authority-free pure
+/// infrastructure; its identity digest binds the ABI version, linkage, and
+/// the authenticated metadata, never the candidate's own claims.
+fn authenticated_prelude_import(
+    name: &str,
+    params: &[crate::wir_prelude::WasmTy],
+    results: &[crate::wir_prelude::WasmTy],
+    signature: FunctionSignatureId,
+    parameter_roles: Vec<HostParameterRole>,
+    result_roles: Vec<HostResultRole>,
+    mutation: HostMutation,
+) -> Result<ImportContract, String> {
+    use crate::wir_prelude::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
+
+    let (index, import) = prelude()
+        .imports
+        .iter()
+        .enumerate()
+        .find(|(_, import)| import.module == "witchy" && import.name == name)
+        .ok_or_else(|| format!("generated ABI has no witchy.{name} import"))?;
+    if import.params != params || import.results != results {
+        return Err(format!("generated witchy.{name} ABI has an unexpected shape"));
+    }
+    let info = abi_import_info(&import.name)
+        .ok_or_else(|| format!("generated ABI witchy.{name} import has no authenticated metadata"))?;
+    if info.class != AbiImportClass::PureInfrastructure || !info.authorities.is_empty() {
+        return Err(format!("generated witchy.{name} ABI is authority-bearing"));
+    }
+
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"witchy.canonical-abi-import.v1");
+    digest.update(&WITCHY_ABI_VERSION.to_le_bytes());
+    digest.update(import.module.as_bytes());
+    digest.update(&[0]);
+    digest.update(import.name.as_bytes());
+    digest.update(&[0, import.params.len() as u8, import.results.len() as u8]);
+    for ty in import.params.iter().chain(&import.results) {
+        digest.update(&[match ty {
+            WasmTy::I32 => 0,
+            WasmTy::I64 => 1,
+            WasmTy::F32 => 2,
+            WasmTy::F64 => 3,
+            WasmTy::ExternRef => 4,
+        }]);
+    }
+    digest.update(info.class.label().as_bytes());
+    for authority in info.authorities {
+        digest.update(authority.label().as_bytes());
+        digest.update(&[0]);
+    }
+
+    let import_id = ImportId::new(u32::try_from(index).map_err(|_| "ABI import index overflow")?);
+    Ok(ImportContract {
+        id: import_id,
+        signature,
+        abi_identity: ImportContractIdentity::AuthenticatedAbi(*digest.finalize().as_bytes()),
+        module: import.module.clone(),
+        name: import.name.clone(),
+        parameter_roles,
+        result_roles,
+        mutation,
+        reentrancy: HostReentrancy::Forbidden,
+    })
+}
+
 impl CanonicalAbiCatalog {
-    /// Project the canonical `print` import from the generated prelude and its
-    /// authenticated ABI metadata. The canonical signature is semantic: the
-    /// backend representation remains an implementation detail.
+    /// Project the canonical host imports from the generated prelude and its
+    /// authenticated ABI metadata: `print`, a read-only byte sink, and
+    /// `float_to_str`, which renders a `Float` into a guest buffer of at
+    /// least [`FLOAT_RENDER_BUFFER_BYTES`] bytes and returns the byte length.
+    /// The canonical signatures are semantic: the backend representation
+    /// remains an implementation detail.
     pub fn from_authenticated_prelude(
-        signature: FunctionSignatureId,
+        print_signature: FunctionSignatureId,
+        float_to_str_signature: FunctionSignatureId,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
-
-        let (index, import) = prelude()
-            .imports
-            .iter()
-            .enumerate()
-            .find(|(_, import)| import.module == "witchy" && import.name == "print")
-            .ok_or_else(|| "generated ABI has no witchy.print import".to_string())?;
-        if import.params != [WasmTy::I32, WasmTy::I32] || !import.results.is_empty() {
-            return Err("generated witchy.print ABI is not a read-only byte sink".to_string());
-        }
-        let info = abi_import_info(&import.name)
-            .ok_or_else(|| "generated ABI print import has no authenticated metadata".to_string())?;
-        if info.class != AbiImportClass::PureInfrastructure || !info.authorities.is_empty() {
-            return Err("generated witchy.print ABI is authority-bearing".to_string());
-        }
-
-        let mut digest = blake3::Hasher::new();
-        digest.update(b"witchy.canonical-abi-import.v1");
-        digest.update(&WITCHY_ABI_VERSION.to_le_bytes());
-        digest.update(import.module.as_bytes());
-        digest.update(&[0]);
-        digest.update(import.name.as_bytes());
-        digest.update(&[0, import.params.len() as u8, import.results.len() as u8]);
-        for ty in import.params.iter().chain(&import.results) {
-            digest.update(&[match ty {
-                WasmTy::I32 => 0,
-                WasmTy::I64 => 1,
-                WasmTy::F32 => 2,
-                WasmTy::F64 => 3,
-                WasmTy::ExternRef => 4,
-            }]);
-        }
-        digest.update(info.class.label().as_bytes());
-        for authority in info.authorities {
-            digest.update(authority.label().as_bytes());
-            digest.update(&[0]);
-        }
-
-        let import_id = ImportId::new(u32::try_from(index).map_err(|_| "ABI import index overflow")?);
-        Ok(Self::from_imports(vec![ImportContract {
-            id: import_id,
-            signature,
-            abi_identity: ImportContractIdentity::AuthenticatedAbi(*digest.finalize().as_bytes()),
-            module: import.module.clone(),
-            name: import.name.clone(),
-            parameter_roles: vec![HostParameterRole::Buffer {
+        use crate::wir_prelude::WasmTy;
+        let print = authenticated_prelude_import(
+            "print",
+            &[WasmTy::I32, WasmTy::I32],
+            &[],
+            print_signature,
+            vec![HostParameterRole::Buffer {
                 value_type: ValueType::Ref(string_layout),
                 access: AccessMode::Read,
                 extent: HostBufferExtent::Slice,
             }],
-            result_roles: Vec::new(),
-            mutation: HostMutation::ReadOnly,
-            reentrancy: HostReentrancy::Forbidden,
-        }]))
+            Vec::new(),
+            HostMutation::ReadOnly,
+        )?;
+        let float_to_str = authenticated_prelude_import(
+            "float_to_str",
+            &[WasmTy::F64, WasmTy::I32],
+            &[WasmTy::I32],
+            float_to_str_signature,
+            vec![
+                HostParameterRole::Value(ValueType::Float),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(string_layout),
+                    access: AccessMode::Write,
+                    extent: HostBufferExtent::AtLeast(FLOAT_RENDER_BUFFER_BYTES),
+                },
+            ],
+            vec![HostResultRole::Value(ValueType::Size)],
+            HostMutation::WriteBuffers,
+        )?;
+        Ok(Self::from_imports(vec![print, float_to_str]))
     }
 
     pub fn imports(&self) -> Vec<ImportContract> {
