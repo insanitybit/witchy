@@ -548,6 +548,12 @@ fn check_memory_cfg(
         .saturating_mul(8)
         .max(64);
 
+    // A block checked against a not-yet-converged incoming state (a loop
+    // header seen from its entry edge only) may fail on facts the back edge
+    // will establish; its failure is held and cleared when a later state
+    // admits it. Only a failure that stands once every state has converged
+    // is reported (the earliest block's).
+    let mut failures: BTreeMap<BlockId, InitialCheckError> = BTreeMap::new();
     while let Some(block_id) = pending.pop_front() {
         iterations += 1;
         if iterations > maximum_iterations {
@@ -557,49 +563,89 @@ fn check_memory_cfg(
         }
         let block = blocks[&block_id];
         memory.restore(incoming[&block_id].clone());
-        for (operation_index, operation) in block.operations.iter().enumerate() {
-            check_uses_dominate(
-                function,
-                block.id,
-                operation_index,
-                operation_uses(operation),
-                definition_sites,
-                dominators,
-            )?;
-            check_operation(function, operation, signatures, imports, catalog, functions, &mut memory)?;
-        }
-        check_uses_dominate(
-            function,
-            block.id,
-            block.operations.len(),
-            terminator_uses(&block.terminator),
-            definition_sites,
-            dominators,
-        )?;
-        check_terminator(
-            function,
-            &block.terminator,
-            signature,
-            signatures,
-            functions,
-            blocks,
-            &mut memory,
-        )?;
-
-        for (target, arguments) in memory_successor_edges(&block.terminator, &memory) {
-            let target_block = blocks[&target];
-            let transferred = memory.transfer_edge(target_block, arguments)?;
-            let next = match incoming.get(&target) {
-                Some(current) => memory.meet(target_block, current, &transferred)?,
-                None => transferred,
-            };
+        let checked = check_block_flow(
+            function, block, signature, signatures, imports, catalog, functions, blocks,
+            definition_sites, dominators, &mut memory, &incoming,
+        );
+        let updates = match checked {
+            Ok(updates) => {
+                failures.remove(&block_id);
+                updates
+            }
+            Err(error) => {
+                failures.insert(block_id, error);
+                continue;
+            }
+        };
+        for (target, next) in updates {
             if incoming.get(&target) != Some(&next) {
                 incoming.insert(target, next);
                 pending.push_back(target);
             }
         }
     }
-    Ok(())
+    match failures.into_iter().next() {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Check one block against its incoming state and compute the states its
+/// edges carry to its successors.
+#[allow(clippy::too_many_arguments)]
+fn check_block_flow(
+    function: &Function,
+    block: &BasicBlock,
+    signature: &FunctionSignature,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    imports: &BTreeMap<ImportId, &ImportContract>,
+    catalog: Option<&CanonicalAbiCatalog>,
+    functions: &BTreeMap<FunctionId, &Function>,
+    blocks: &BTreeMap<BlockId, &BasicBlock>,
+    definition_sites: &BTreeMap<ValueId, DefinitionSite>,
+    dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    memory: &mut MemoryChecker<'_>,
+    incoming: &BTreeMap<BlockId, memory::MemoryState>,
+) -> Result<Vec<(BlockId, memory::MemoryState)>, InitialCheckError> {
+    for (operation_index, operation) in block.operations.iter().enumerate() {
+        check_uses_dominate(
+            function,
+            block.id,
+            operation_index,
+            operation_uses(operation),
+            definition_sites,
+            dominators,
+        )?;
+        check_operation(function, operation, signatures, imports, catalog, functions, memory)?;
+    }
+    check_uses_dominate(
+        function,
+        block.id,
+        block.operations.len(),
+        terminator_uses(&block.terminator),
+        definition_sites,
+        dominators,
+    )?;
+    check_terminator(
+        function,
+        &block.terminator,
+        signature,
+        signatures,
+        functions,
+        blocks,
+        memory,
+    )?;
+    let mut updates = Vec::new();
+    for (target, arguments) in memory_successor_edges(&block.terminator, memory) {
+        let target_block = blocks[&target];
+        let transferred = memory.transfer_edge(target_block, arguments)?;
+        let next = match incoming.get(&target) {
+            Some(current) => memory.meet(target_block, current, &transferred)?,
+            None => transferred,
+        };
+        updates.push((target, next));
+    }
+    Ok(updates)
 }
 
 fn memory_successor_edges<'a>(

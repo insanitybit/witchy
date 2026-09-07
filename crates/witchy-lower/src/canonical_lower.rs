@@ -1421,11 +1421,16 @@ impl FunctionLowerer<'_> {
                     else_target: else_id,
                     else_arguments: Vec::new(),
                 })?;
+                // Each arm ends in its own terminator, so no join merges
+                // their facts; a load cached inside the then arm does not
+                // dominate the else arm.
+                let facts = self.snapshot_facts();
                 self.current = then_id;
                 self.bindings = outer.clone();
                 let mut then_path = path.clone();
                 then_path.extend([ProperTailPathStep::Node(ProperTailExprKind::If), ProperTailPathStep::Child(1)]);
                 self.lower_tail_block(then_block, then_path)?;
+                self.restore_snapshot(facts);
                 self.current = else_id;
                 self.bindings = outer;
                 match else_block {
@@ -1602,11 +1607,27 @@ impl FunctionLowerer<'_> {
                 if fixed_layout {
                     break;
                 }
-                let Some((count, capacity)) = self.dynamic_extent_lanes(*value) else {
+                // An arm that never touched the value has not authenticated
+                // its extent; load it at the arm's end so the join carries
+                // both lanes. That load is the arm's own fact: it must not
+                // stay cached for code the arm does not dominate.
+                self.current = *end;
+                let authenticated = self.dynamic_extent_lanes(*value).is_some();
+                if !authenticated {
+                    self.ensure_list_extent(*value)?;
+                    self.ensure_string_extent(*value)?;
+                }
+                let lanes = self.dynamic_extent_lanes(*value);
+                if !authenticated {
+                    self.string_lengths.remove(value);
+                    self.string_capacities.remove(value);
+                    self.list_counts.remove(value);
+                    self.list_capacities.remove(value);
+                }
+                let Some((count, capacity)) = lanes else {
                     extents.clear();
                     break;
                 };
-                self.current = *end;
                 extents.push(self.split_lanes(count, capacity)?);
             }
             let phi = if eligible && (fixed_layout || extents.len() == values.len()) {
@@ -2493,8 +2514,8 @@ impl FunctionLowerer<'_> {
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
-            self.list_counts.insert(object, exit_parameters[metadata_index].value);
-            self.list_capacities.insert(object, exit_parameters[metadata_index + 1].value);
+            // A string lane's facts live in the string tables.
+            self.set_tracked_lanes(object, exit_parameters[metadata_index].value, exit_parameters[metadata_index + 1].value);
             metadata_index += 2;
         }
         Ok(())
@@ -2840,8 +2861,8 @@ impl FunctionLowerer<'_> {
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
-            self.list_counts.insert(object, exit_parameters[metadata_index].value);
-            self.list_capacities.insert(object, exit_parameters[metadata_index + 1].value);
+            // A string lane's facts live in the string tables.
+            self.set_tracked_lanes(object, exit_parameters[metadata_index].value, exit_parameters[metadata_index + 1].value);
             metadata_index += 2;
         }
         Ok(())
@@ -3160,8 +3181,11 @@ impl FunctionLowerer<'_> {
     /// whose incoming arguments is itself known shared (a body block renames
     /// a shared header lane without restating its ownership).
     fn known_shared_value_via(&self, value: ValueId, visited: &mut BTreeSet<ValueId>) -> bool {
+        // A value reached again is on a cycle of block parameters (a loop
+        // lane); it is shared exactly when the cycle's entries are, which
+        // the enclosing `all` still demands.
         if !visited.insert(value) {
-            return false;
+            return true;
         }
         self.blocks.iter().any(|block| {
             block.parameters.iter().any(|parameter| {
@@ -3174,6 +3198,11 @@ impl FunctionLowerer<'_> {
                     transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,
                     ..
                 } => *destination == value,
+                // A call's reference result is a shared token (its result
+                // contract), never a unique one.
+                Operation::Call { destinations, .. }
+                | Operation::VarCall { destinations, .. }
+                | Operation::HostCall { destinations, .. } => destinations.contains(&value),
                 _ => false,
             })
         }) || self.blocks.iter().any(|block| {
@@ -3740,6 +3769,23 @@ impl FunctionLowerer<'_> {
                     _ => self.lower_string_contains(object, needle),
                 }
             }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.split" | "string.__split") => {
+                let [receiver, separator] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.split arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                let separator = self.lower_expr(separator)?;
+                self.lower_string_split(object, separator)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.replace" | "string.__replace") => {
+                let [receiver, from, to] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.replace arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                let from = self.lower_expr(from)?;
+                let to = self.lower_expr(to)?;
+                self.lower_string_replace(object, from, to)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "string.find" | "string.__find") => {
                 let [receiver, needle] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.find arity"));
@@ -4193,7 +4239,10 @@ impl FunctionLowerer<'_> {
                 let (layout, element_type, header_bytes, stride_bytes) =
                     list_layout(ty, self.layout_bundle, self.layouts, self.definitions)?;
                 let _ = element_type;
+                // Distinct count and capacity ids, as the list literal
+                // allocates: a loop lane renames each to its own parameter.
                 let zero = self.push_const_size(0)?;
+                let capacity = self.push_const_size(0)?;
                 let object = self.fresh(ValueType::Ref(layout))?;
                 self.push_operation(Operation::Alloc {
                     destination: object,
@@ -4201,13 +4250,13 @@ impl FunctionLowerer<'_> {
                     extent: witchy_wir::canonical_safewir::Extent::Counted {
                         header_bytes,
                         count: zero,
-                        capacity: zero,
+                        capacity,
                         stride_bytes,
                     },
                     class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
                 });
                 self.list_counts.insert(object, zero);
-                self.list_capacities.insert(object, zero);
+                self.list_capacities.insert(object, capacity);
                 Ok(object)
             }
             _ if scalar_aggregate_shape(ty, self.definitions).is_some() => {
@@ -4834,12 +4883,44 @@ impl FunctionLowerer<'_> {
             .bindings
             .get(name)
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+        let list_type = self.expression_type(&arguments[0])?;
+        let (_, element_type, _, _) =
+            list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let pointer_elements = matches!(element_type, ValueType::Ref(_));
+        let value_expression = value;
+        let mut value = self.lower_expr(value_expression)?;
+        if self.values[&value] != element_type {
+            return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
+        }
+        if pointer_elements && self.string_lengths.contains_key(&value) {
+            value = self.clone_string_for_storage(value)?;
+        } else if pointer_elements && !matches!(value_expression, Expr::List(_)) {
+            let Type::Named(_, arguments) = list_type.unqualified() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
+            };
+            value = self.owned_for_storage(value, &arguments[0])?;
+        }
+
+        let new_object = self.push_owned_element(old_object, value, &list_type)?;
+        self.bindings.insert(name.clone(), new_object);
+        Ok(())
+    }
+
+    /// Append an owned element to a list value: a fresh list one longer
+    /// than `old_object` holding a clone of its prefix and `value`, with the
+    /// old list dropped. The canonical push template; `list.push` and the
+    /// list-building kernels (`string.chars`, `string.split`) share it.
+    fn push_owned_element(
+        &mut self,
+        old_object: ValueId,
+        value: ValueId,
+        list_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         let ValueType::Ref(layout) = self.values[&old_object] else {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver"));
         };
-        let list_type = self.expression_type(&arguments[0])?;
         let (expected_layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(list_type, self.layout_bundle, self.layouts, self.definitions)?;
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
@@ -4870,20 +4951,6 @@ impl FunctionLowerer<'_> {
             condition: old_count_fits,
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
-        let value_expression = value;
-        let mut value = self.lower_expr(value_expression)?;
-        if self.values[&value] != element_type {
-            return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
-        }
-        if pointer_elements && self.string_lengths.contains_key(&value) {
-            value = self.clone_string_for_storage(value)?;
-        } else if pointer_elements && !matches!(value_expression, Expr::List(_)) {
-            let Type::Named(_, arguments) = list_type.unqualified() else {
-                return Err(CanonicalLoweringError::UnsupportedListElement(list_type.clone()));
-            };
-            value = self.owned_for_storage(value, &arguments[0])?;
-        }
-
         let increment_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: increment_fits,
@@ -5060,11 +5127,10 @@ impl FunctionLowerer<'_> {
         });
         self.push_operation(Operation::UpdateCount { object: new_object, count: new_length });
         self.push_operation(Operation::DropRef { object: old_object });
-        self.bindings.insert(name.clone(), new_object);
         self.list_counts.insert(new_object, new_length);
         self.list_capacities.insert(new_object, capacity);
         self.known_list_lengths.remove(&new_object);
-        Ok(())
+        Ok(new_object)
     }
 
     fn lower_list_length(&mut self, arguments: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
@@ -5092,9 +5158,12 @@ impl FunctionLowerer<'_> {
     /// canonical kernel has an explicit checked UTF-8 decoder operation.
     fn lower_string_chars(&mut self, arguments: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         let [Expr::Str(source)] = arguments else {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "dynamic string.chars requires a canonical checked UTF-8 decoder",
-            ));
+            // A runtime string decodes in a canonical loop over its bytes.
+            let [receiver] = arguments else {
+                return Err(CanonicalLoweringError::UnsupportedExpression("string.chars arity"));
+            };
+            let object = self.lower_expr(receiver)?;
+            return self.lower_string_chars_dynamic(object);
         };
         let list_type = Type::Named(
             "List".into(),
@@ -5533,6 +5602,16 @@ impl FunctionLowerer<'_> {
     ) -> Result<ValueId, CanonicalLoweringError> {
         let left = self.lower_expr(left)?;
         let right = self.lower_expr(right)?;
+        self.concat_string_values(left, right)
+    }
+
+    /// A fresh string holding `left` followed by `right`; neither operand
+    /// is consumed.
+    fn concat_string_values(
+        &mut self,
+        left: ValueId,
+        right: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         let layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             self.layout_bundle,
@@ -6049,6 +6128,327 @@ impl FunctionLowerer<'_> {
 
     /// `string.find`: the character index of the first window matching the
     /// needle, or `-1`.
+
+    /// The lane shape of a list or string accumulator threaded through a
+    /// kernel loop: the object owns its token; its count and capacity ride
+    /// along as scalars.
+    fn accumulator_lanes(&mut self, object: ValueId) -> Result<(Vec<ValueId>, Vec<(ValueType, Option<Ownership>)>), CanonicalLoweringError> {
+        let ValueType::Ref(_) = self.values[&object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("kernel accumulator"));
+        };
+        self.ensure_list_extent(object)?;
+        self.ensure_string_extent(object)?;
+        let (count, capacity) = self.tracked_lanes(object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("kernel accumulator without extent lanes"),
+        )?;
+        // A fresh value's count and capacity are one id; the lanes must be
+        // distinct so the header renames each to its own parameter.
+        let (count, capacity) = self.split_lanes(count, capacity)?;
+        Ok((
+            vec![object, count, capacity],
+            vec![(self.values[&object], Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)],
+        ))
+    }
+
+    /// Split a folded accumulator's count and capacity lanes (a fresh
+    /// value aliases them) so a back edge renames each to its own parameter.
+    fn split_folded_lanes(&mut self, mut lanes: Vec<ValueId>) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        if lanes.len() < 3 {
+            return Err(CanonicalLoweringError::UnsupportedExpression("kernel accumulator lanes"));
+        }
+        let (count, capacity) = self.split_lanes(lanes[1], lanes[2])?;
+        lanes[1] = count;
+        lanes[2] = capacity;
+        Ok(lanes)
+    }
+
+    /// The byte length of the UTF-8 sequence whose lead byte is `byte`:
+    /// with `h = b >> 7`, `f = (b >> 5) & 1`, `e = (b >> 4) & 1`, it is
+    /// `1 + h + (h & f) + (h & f & e)`: 1 below 0x80, 2 for 0xC0..0xDF,
+    /// 3 for 0xE0..0xEF, and 4 above.
+    fn push_utf8_sequence_length(&mut self, byte: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let value = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: value, value: byte });
+        let one = self.push_const_int(1)?;
+        let four = self.push_const_int(4)?;
+        let five = self.push_const_int(5)?;
+        let seven = self.push_const_int(7)?;
+        let high = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, value, seven, OverflowBehavior::Wrap)?;
+        let shifted5 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, value, five, OverflowBehavior::Wrap)?;
+        let shifted4 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, value, four, OverflowBehavior::Wrap)?;
+        let bit5 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, shifted5, one, OverflowBehavior::Wrap)?;
+        let bit4 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, shifted4, one, OverflowBehavior::Wrap)?;
+        let third = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, high, bit5, OverflowBehavior::Wrap)?;
+        let fourth = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, third, bit4, OverflowBehavior::Wrap)?;
+        let sum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, one, high, OverflowBehavior::Wrap)?;
+        let sum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, sum, third, OverflowBehavior::Wrap)?;
+        let sum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, sum, fourth, OverflowBehavior::Wrap)?;
+        let length = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: length, value: sum });
+        Ok(length)
+    }
+
+    /// Establish `start + length <= total` (a trapping add and a bounds
+    /// guard, the shape `copy_string_slice` relies on) and copy that slice.
+    fn copy_checked_slice(
+        &mut self,
+        object: ValueId,
+        start: ValueId,
+        length: ValueId,
+        total: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start, length, OverflowBehavior::Trap)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, end, total)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.copy_string_slice(object, start, length, layout)
+    }
+
+    /// Loop over the UTF-8 sequences of `object`, folding an owned copy of
+    /// each into the accumulator lanes (`step` returns the new lanes). The
+    /// sequence length comes from the lead byte; a sequence past the end
+    /// traps (every string is valid UTF-8, so it never does).
+    fn lower_utf8_sequence_loop(
+        &mut self,
+        object: ValueId,
+        accumulator: ValueId,
+        mut step: impl FnMut(&mut Self, &[ValueId], ValueId) -> Result<Vec<ValueId>, CanonicalLoweringError>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let total = self.string_length_of(object)?;
+        let zero = self.push_const_size(0)?;
+        let (lanes, mut shapes) = self.accumulator_lanes(accumulator)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(zero);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        let header_values = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&header_values);
+        self.current = header;
+        let cursor = header_values[3];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..3].to_vec(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&body_values);
+        self.current = body;
+        let cursor = body_values[3];
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, cursor, layout)?;
+        let length = self.push_utf8_sequence_length(byte)?;
+        let piece = self.copy_checked_slice(object, cursor, length, total, layout)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, length, OverflowBehavior::Wrap)?;
+        let folded = step(self, &body_values[..3], piece)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        folded.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = exit;
+        let exit_values = self.block_parameter_values(exit);
+        self.track_accumulator_lanes(&exit_values);
+        Ok(exit_values[0])
+    }
+
+    /// Loop over the non-overlapping matches of a non-empty `needle` in
+    /// `object`, folding an owned copy of each piece between matches (and
+    /// finally the tail) into the accumulator lanes; `step` sees whether
+    /// another match follows the piece.
+    fn lower_match_scan_loop(
+        &mut self,
+        object: ValueId,
+        needle: ValueId,
+        accumulator: ValueId,
+        mut step: impl FnMut(&mut Self, &[ValueId], ValueId, bool) -> Result<Vec<ValueId>, CanonicalLoweringError>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let total = self.string_length_of(object)?;
+        let needle_length = self.string_length_of(needle)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let (lanes, mut shapes) = self.accumulator_lanes(accumulator)?;
+        // The tail block receives the lanes and the start of the tail piece.
+        shapes.push((ValueType::Size, None));
+        let tail = self.new_block_owned(&shapes)?;
+        // The header and body add the scan cursor.
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, needle_length, total)?;
+        let scan = self.new_block(&[])?;
+        let mut no_match = lanes.clone();
+        no_match.push(zero);
+        self.finish_current(Terminator::BranchIf {
+            condition: fits,
+            then_target: scan,
+            then_arguments: Vec::new(),
+            else_target: tail,
+            else_arguments: no_match,
+        })?;
+        self.current = scan;
+        let last_start = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, total, needle_length, OverflowBehavior::Wrap)?;
+        let mut entry = lanes.clone();
+        entry.extend([zero, zero]);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        let header_values = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&header_values);
+        self.current = header;
+        let cursor = header_values[4];
+        let more = self.push_compare(ComparisonOperator::LessEqualUnsigned, cursor, last_start)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: tail,
+            else_arguments: header_values[..4].to_vec(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&body_values);
+        self.current = body;
+        let start = body_values[3];
+        let cursor = body_values[4];
+        let matched = self.lower_string_range_equal(object, cursor, needle, zero, needle_length)?;
+        let found = self.new_block(&[])?;
+        let advance = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: matched,
+            then_target: found,
+            then_arguments: Vec::new(),
+            else_target: advance,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = found;
+        let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, cursor)?;
+        self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let piece_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, cursor, start, OverflowBehavior::Wrap)?;
+        let piece = self.copy_checked_slice(object, start, piece_length, total, layout)?;
+        let after = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, needle_length, OverflowBehavior::Trap)?;
+        let folded = step(self, &body_values[..3], piece, true)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        folded.extend([after, after]);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = advance;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        let mut unchanged = body_values[..4].to_vec();
+        unchanged.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: unchanged })?;
+        self.current = tail;
+        let tail_values = self.block_parameter_values(tail);
+        self.track_accumulator_lanes(&tail_values);
+        let start = tail_values[3];
+        let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, total)?;
+        self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let rest = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, total, start, OverflowBehavior::Wrap)?;
+        let piece = self.copy_checked_slice(object, start, rest, total, layout)?;
+        let folded = step(self, &tail_values[..3], piece, false)?;
+        Ok(folded[0])
+    }
+
+    /// `string.chars` over a runtime string: one owned string per UTF-8
+    /// sequence.
+    fn lower_string_chars_dynamic(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
+        let list = self.push_empty_value(&list_type)?;
+        self.lower_utf8_sequence_loop(object, list, |this, lanes, piece| {
+            let grown = this.push_owned_element(lanes[0], piece, &list_type)?;
+            let (count, capacity) = this.tracked_lanes(grown).expect("a pushed list has lanes");
+            Ok(vec![grown, count, capacity])
+        })
+    }
+
+    /// `string.split`: the pieces between non-overlapping matches of the
+    /// separator, the tail included. An empty separator yields the whole
+    /// string as its one piece (the interpreter's rule).
+    fn lower_string_split(&mut self, object: ValueId, separator: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
+        let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let separator_length = self.string_length_of(separator)?;
+        let zero = self.push_const_size(0)?;
+        let empty_separator = self.push_compare(ComparisonOperator::Equal, separator_length, zero)?;
+        let boundaries = self.new_block(&[])?;
+        let pieces = self.new_block(&[])?;
+        let join = self.new_block_owned(&[(ValueType::Ref(list_layout_id), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: empty_separator,
+            then_target: boundaries,
+            then_arguments: Vec::new(),
+            else_target: pieces,
+            else_arguments: Vec::new(),
+        })?;
+        let push = |this: &mut Self, lanes: &[ValueId], piece: ValueId| -> Result<Vec<ValueId>, CanonicalLoweringError> {
+            let grown = this.push_owned_element(lanes[0], piece, &list_type)?;
+            let (count, capacity) = this.tracked_lanes(grown).expect("a pushed list has lanes");
+            Ok(vec![grown, count, capacity])
+        };
+        self.current = boundaries;
+        let layout = self.string_layout_id()?;
+        let total = self.string_length_of(object)?;
+        let whole = self.copy_checked_slice(object, zero, total, total, layout)?;
+        let list = self.push_empty_value(&list_type)?;
+        let list = self.push_owned_element(list, whole, &list_type)?;
+        let (lanes, _) = self.accumulator_lanes(list)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = pieces;
+        let list = self.push_empty_value(&list_type)?;
+        let list = self.lower_match_scan_loop(object, separator, list, |this, lanes, piece, _| push(this, lanes, piece))?;
+        let (lanes, _) = self.accumulator_lanes(list)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = join;
+        let join_values = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&join_values);
+        Ok(join_values[0])
+    }
+
+    /// `string.replace`: every non-overlapping match of `from` replaced by
+    /// `to`. An empty `from` matches at every character boundary, so `to`
+    /// surrounds every character.
+    fn lower_string_replace(&mut self, object: ValueId, from: ValueId, to: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let from_length = self.string_length_of(from)?;
+        let to_length = self.string_length_of(to)?;
+        let zero = self.push_const_size(0)?;
+        let empty_from = self.push_compare(ComparisonOperator::Equal, from_length, zero)?;
+        let boundaries = self.new_block(&[])?;
+        let pieces = self.new_block(&[])?;
+        let join = self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: empty_from,
+            then_target: boundaries,
+            then_arguments: Vec::new(),
+            else_target: pieces,
+            else_arguments: Vec::new(),
+        })?;
+        let append = |this: &mut Self, lanes: &[ValueId], piece: ValueId, with_to: bool| -> Result<Vec<ValueId>, CanonicalLoweringError> {
+            let mut out = this.concat_string_values(lanes[0], piece)?;
+            if with_to {
+                out = this.concat_string_values(out, to)?;
+            }
+            let (count, capacity) = this.tracked_lanes(out).expect("a concatenation has lanes");
+            Ok(vec![out, count, capacity])
+        };
+        self.current = boundaries;
+        let out = self.copy_checked_slice(to, zero, to_length, to_length, layout)?;
+        let out = self.lower_utf8_sequence_loop(object, out, |this, lanes, piece| append(this, lanes, piece, true))?;
+        let (lanes, _) = self.accumulator_lanes(out)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = pieces;
+        let out = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
+        let out = self.lower_match_scan_loop(object, from, out, append)?;
+        let (lanes, _) = self.accumulator_lanes(out)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = join;
+        let join_values = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&join_values);
+        Ok(join_values[0])
+    }
+
     fn lower_string_find(&mut self, object: ValueId, needle: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let length = self.string_length_of(object)?;
         let needle_length = self.string_length_of(needle)?;
@@ -6498,8 +6898,13 @@ impl FunctionLowerer<'_> {
         length: ValueId,
         layout: witchy_wir::layout::LayoutId,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        // The copy's extent is its own value: sharing the caller's length
+        // id with the source's extent would rename both together at an
+        // edge that carries the copy's lanes.
+        let extent = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::MoveValue { destination: extent, source: length });
         let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
-        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, maximum)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, extent, maximum)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
@@ -6507,19 +6912,19 @@ impl FunctionLowerer<'_> {
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes: 4,
-                count: length,
-                capacity: length,
+                count: extent,
+                capacity: extent,
                 stride_bytes: 1,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
-        self.push_operation(Operation::UpdateCount { object, count: length });
+        self.push_operation(Operation::UpdateCount { object, count: extent });
         let zero = self.push_const_size(0)?;
-        let destination_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, length)?;
+        let destination_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, extent)?;
         self.push_guard(destination_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_byte_copy(object, zero, source, start, length, layout);
-        self.string_lengths.insert(object, length);
-        self.string_capacities.insert(object, length);
+        self.string_lengths.insert(object, extent);
+        self.string_capacities.insert(object, extent);
         Ok(object)
     }
 
@@ -6756,6 +7161,29 @@ impl FunctionLowerer<'_> {
         let slice_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, slice_end, length)?;
         self.push_guard(slice_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.copy_string_slice(object, start, byte_count, layout)
+    }
+
+    /// A block whose parameters carry the given ownership (a loop header
+    /// lane that owns a reference-count token is `Some(Unique)`).
+    fn new_block_owned(
+        &mut self,
+        parameters: &[(ValueType, Option<Ownership>)],
+    ) -> Result<BlockId, CanonicalLoweringError> {
+        let id = self.new_block(&parameters.iter().map(|(value_type, _)| *value_type).collect::<Vec<_>>())?;
+        for (parameter, (_, ownership)) in self.blocks[id.get() as usize].parameters.iter_mut().zip(parameters) {
+            parameter.ownership = *ownership;
+        }
+        Ok(id)
+    }
+
+    /// Record the extent lanes of an accumulator's block parameters: a list
+    /// or string lane is `[object, count, capacity]`.
+    fn track_accumulator_lanes(&mut self, values: &[ValueId]) {
+        if let [object, count, capacity, ..] = values
+            && matches!(self.values.get(object), Some(ValueType::Ref(_)))
+        {
+            self.set_tracked_lanes(*object, *count, *capacity);
+        }
     }
 
     fn block_parameter_values(&self, block: BlockId) -> Vec<ValueId> {

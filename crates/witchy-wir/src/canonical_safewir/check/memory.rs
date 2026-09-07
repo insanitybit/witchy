@@ -203,6 +203,9 @@ impl<'a> MemoryChecker<'a> {
                 if state.ownership != Ownership::Unique
                     || !self.is_sole_live_token(*argument, state.identity)
                 {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!("canonical unique phi refused at {:?}: argument {argument:?} state {state:#?}", target.id);
+                    }
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
                         object: *argument,
@@ -244,6 +247,9 @@ impl<'a> MemoryChecker<'a> {
             if self.state.objects.contains_key(argument)
                 && renames.insert(*argument, parameter.value).is_some_and(|previous| previous != parameter.value)
             {
+                if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                    eprintln!("canonical edge refused at {:?}: object {argument:?} is passed in two lanes", target.id);
+                }
                 return Err(InitialCheckError::InvalidOwnership {
                     function: self.function.id,
                     object: *argument,
@@ -288,6 +294,9 @@ impl<'a> MemoryChecker<'a> {
             }
             if let Some(previous) = objects.insert(value, state.clone()) {
                 if previous != state {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!("canonical edge refused at {:?}: {value:?} renamed from two objects: {previous:#?} vs {state:#?}", target.id);
+                    }
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
                         object: value,
@@ -497,7 +506,15 @@ impl<'a> MemoryChecker<'a> {
             // join keeps it and the body re-derives the count from its own
             // loads; nothing else about the object may differ.
             let (current, next) = match demoted_pair(&promoted_current, &promoted_next) {
-                Some(pair) => pair,
+                Some(pair) => {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!(
+                            "canonical memory join at {:?} demotes {value:?}: {:?} vs {:?}",
+                            block.id, promoted_current.extent, promoted_next.extent
+                        );
+                    }
+                    pair
+                }
                 None => (promoted_current, promoted_next),
             };
             let (current, next) = (&current, &next);
@@ -1956,6 +1973,9 @@ impl<'a> MemoryChecker<'a> {
             if !matches!(range.1.ownership, Ownership::Unique | Ownership::Shared)
                 || range.1.allocation_class != Some(AllocationClass::ReferenceCounted)
             {
+                if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                    eprintln!("canonical element load refused: object {:?} prefix {:?} {:?}", place.object(), range.0, range.1);
+                }
                 return Err(InitialCheckError::InvalidOwnership {
                     function: self.function.id,
                     object: place.object(),

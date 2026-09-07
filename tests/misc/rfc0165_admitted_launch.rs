@@ -512,3 +512,51 @@ fn admitted_lists_of_aggregates_tuples_and_floats_are_built_read_and_grown() {
         ]
     );
 }
+
+#[test]
+fn admitted_string_chars_split_and_replace_run_over_runtime_strings() {
+    // `string.chars`, `string.split`, and `string.replace` over runtime
+    // strings: a UTF-8 sequence loop and a match-scan loop feeding the
+    // canonical push and concatenation templates. Edge cases follow the
+    // interpreter: an empty separator yields the whole string, an empty
+    // `from` surrounds every character, trailing separators keep an empty
+    // tail piece, and matches never overlap.
+    let output = run_admitted(
+        "pub fn show(xs: List(String)) -> String:\n    \"[\" + xs.join(\"|\") + \"]\"\n\nfn main(console: Console):\n    let word = \"héllo→\"\n    console.print(show(word.chars()))\n    console.print(\"${word.chars().length()}\")\n    console.print(show(\"a,b,,c\".split(\",\")))\n    console.print(show(\"a,b,c,\".split(\",\")))\n    console.print(show(\"\".split(\",\")))\n    console.print(show(\"abc\".split(\"\")))\n    console.print(show(\"é→\".split(\"\")))\n    console.print(show((\"x\" + \"y\").split(\"\")))\n    console.print(show(\"no separators\".split(\"xyz\")))\n    console.print(show(\"aaa\".split(\"aa\")))\n    console.print(\"a-b-c\".replace(\"-\", \"+\"))\n    console.print(\"aaaa\".replace(\"aa\", \"b\"))\n    console.print(\"ab\".replace(\"\", \"-\"))\n    console.print(\"é→\".replace(\"\", \".\"))\n    console.print(\"keep\".replace(\"zz\", \"y\"))\n    console.print(\"hello world\".replace(\"o\", \"\"))\n    var acc = \"\"\n    for c in \"xyz\".chars():\n        acc = c + acc\n    console.print(acc)\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "[h|é|l|l|o|→]".to_string(),
+            "6".to_string(),
+            "[a|b||c]".to_string(),
+            "[a|b|c|]".to_string(),
+            "[]".to_string(),
+            "[abc]".to_string(),
+            "[é→]".to_string(),
+            "[xy]".to_string(),
+            "[no separators]".to_string(),
+            "[|a]".to_string(),
+            "a+b+c".to_string(),
+            "bb".to_string(),
+            "-a-b-".to_string(),
+            ".é.→.".to_string(),
+            "keep".to_string(),
+            "hell wrld".to_string(),
+            "zyx".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn admitted_element_reads_after_a_kernel_loop_wait_for_the_converged_prefix() {
+    // The checker's dataflow visits a kernel loop's exit with the entry
+    // state first (an empty prefix); a read the back edge alone justifies
+    // must be held until the states converge, not refused at once. The
+    // receiver is a parameter, so the loop bound is not a constant the
+    // checker could prune on.
+    let output = run_admitted(
+        "pub fn first(text: String) -> String:\n    let chars = text.chars()\n    chars.at(0)\n\npub fn encode(text: String) -> String:\n    let chars = text.chars()\n    let n = chars.length()\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let run_char = chars.at(i)\n        var count = 0\n        while i < n && chars.at(i) == run_char:\n            count = count + 1\n            i = i + 1\n        out = out + \"${count}\" + run_char\n    out\n\nfn main(console: Console):\n    console.print(first(\"xyz\"))\n    console.print(encode(\"aaabbc\"))\n",
+    );
+    assert_eq!(output, vec!["x".to_string(), "3a2b1c".to_string()]);
+}

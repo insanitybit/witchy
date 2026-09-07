@@ -893,3 +893,24 @@ and `known_shared_value` sees through unspecified body block parameters.
 Newly agree: `bank`, `display`, `stats`, `zip`, `toposort` (plus alias-of-literal pushes).
 Census: 97/163 check, 41 runnable three-legged parity, 0 disagree. Still refused: `largest`
 (nested constructor pattern), `inventory` (dict), `dijkstra` (Bool list).
+
+## Slice 28 (2026-09-07): dynamic `string.chars`, `string.split`, `string.replace`
+
+Two shared lowering kernels: a UTF-8 sequence loop (sequence length from the lead byte) and
+a non-overlapping match-scan loop, both folding owned pieces into an accumulator threaded as
+`[object, count, capacity]` lanes through owned block parameters (`new_block_owned`,
+`accumulator_lanes`, `split_folded_lanes`); the push template is now `push_owned_element`
+and concatenation `concat_string_values`. Semantics follow the interpreter: an empty
+separator yields the whole string; an empty `from` surrounds every character.
+
+Fixes surfaced on the way: fresh copies decouple their extent from the caller's length id
+(`copy_string_slice`), `push_empty_value` lists get distinct count/capacity ids, the while
+exit records string lanes in the string tables, a tail-position `if` scopes each arm's
+facts, a join lane authenticates an untouched arm's extent at that arm's end (scoped), call
+results count as shared for phi planning, and the shared-value trace treats a loop cycle as
+neutral. The checker's dataflow now holds a block's failure until its states converge and
+reports only a failure that stands afterwards (a kernel loop's exit is visited with the
+entry state first).
+
+Newly agree: `rle`, `rpn`, `wrap`, `regex_demo`. Census: 101/163 check, 45 runnable
+three-legged parity, 0 disagree. `anagram`/`text` now stop at lambdas; `wordcount` at dicts.
