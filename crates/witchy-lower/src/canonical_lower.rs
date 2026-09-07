@@ -1681,8 +1681,14 @@ impl FunctionLowerer<'_> {
                 self.lower_closure_call(callee, layout, args)?;
                 Ok(())
             }
-            Expr::Call { name, args } => {
+            Expr::Call { name, args } if self.functions.contains_key(name) => {
                 self.lower_direct_call(name, args)?;
+                Ok(())
+            }
+            // An intrinsic in statement position (`let _ = ys.length()`) is
+            // lowered as the expression it is; its value is discarded.
+            Expr::Call { .. } => {
+                self.lower_expr(expression)?;
                 Ok(())
             }
             Expr::If {
