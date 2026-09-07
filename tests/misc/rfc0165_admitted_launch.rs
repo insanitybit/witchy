@@ -584,3 +584,27 @@ fn admitted_for_over_a_loaded_row_and_a_var_copy_of_a_list_parameter_grow() {
     );
     assert_eq!(output, vec!["10".to_string(), "15 3 2".to_string()]);
 }
+
+#[test]
+fn admitted_break_and_continue_leave_and_advance_every_loop_kind() {
+    // `break` leaves through the loop's exit with the current state lanes
+    // (the exit takes the header lanes' phi authority when a body breaks);
+    // `continue` re-enters the header, advancing a `for` cursor or a range
+    // counter. A `while true` loop reaches its exit only through `break`.
+    let output = run_admitted(
+        "pub fn first_big(xs: List(Int), limit: Int) -> Int:\n    var found = -1\n    for x in xs:\n        if x > limit:\n            found = x\n            break\n    found\n\npub fn evens_until(n: Int) -> List(Int):\n    var out = []\n    var i = 0\n    while true:\n        i = i + 1\n        if i > n:\n            break\n        if i % 2 == 1:\n            continue\n        out.push(i)\n    out\n\npub fn skip_odd_sum(n: Int) -> Int:\n    var sum = 0\n    for i in 0..n:\n        if i % 2 == 1:\n            continue\n        sum = sum + i\n    sum\n\nfn main(console: Console):\n    console.print(\"${first_big([1, 5, 9, 3], 4)} ${first_big([1, 2], 4)}\")\n    var rendered = \"\"\n    for e in evens_until(7):\n        rendered = rendered + \"${e},\"\n    console.print(rendered)\n    console.print(\"${skip_odd_sum(7)}\")\n",
+    );
+    assert_eq!(output, vec!["5 -1".to_string(), "2,4,6,".to_string(), "12".to_string()]);
+}
+
+#[test]
+fn admitted_while_let_binds_nested_tuple_payloads_until_the_pattern_fails() {
+    // `while let` is a loop whose header binds the scrutinee (its own lane
+    // into the body) and tests the pattern; the source scrutinee and body
+    // are typed directly, so the lowering reads their types. A tuple
+    // payload inside the constructor pattern destructures through its slot.
+    let output = run_admitted(
+        "pub fn pop(xs: List(Int)) -> Option((Int, List(Int))):\n    match xs:\n        [] -> None\n        [h, ..t] -> Some((h, t))\n\nfn main(console: Console):\n    var stack = [1, 2, 3, 4]\n    var total = 0\n    while let Some((top, rest)) = pop(stack):\n        total = total + top\n        stack = rest\n    console.print(\"${total} ${stack.length()}\")\n    if let Some(x) = pop([7, 8, 9]):\n        let (head, _rest) = x\n        console.print(\"head is ${head}\")\n",
+    );
+    assert_eq!(output, vec!["10 0".to_string(), "head is 7".to_string()]);
+}

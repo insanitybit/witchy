@@ -95,8 +95,15 @@ aggregates; sum types and scalar `Option`/`Result` as a tag plus one slot per
 variant field (one shape shared by the layout catalog, the lowering, and the
 ABI authority); constructor patterns, `??`, `?`; `starts_with`/`ends_with`/
 `contains`/`find`/`to_int` and string ordering; a memo of proven path facts in
-the encoder. The census stands at 84 of 163 examples checking and 28 runnable
-examples agreeing under three-legged parity; 38 launch tests pin the slices. Two
+the encoder. On 2026-09-07 (slices 25-28): reference payloads in records and
+sums, tuples, lists of aggregates/tuples/floats behind owned pointer slots, a
+pointer-bearing `CloneRange` that retains every element (list growth clones the
+old prefix; a `var` passed to a callee is copied), dynamic `string.chars`/
+`string.split`/`string.replace` as two shared lowering kernels (a UTF-8
+sequence loop and a match-scan loop over owned accumulator lanes), and a
+checker dataflow that holds a block's failure until its incoming states
+converge. The census stands at 101 of 163 examples checking and 45 runnable
+examples agreeing under three-legged parity; 43 launch tests pin the slices. Two
 silent-wrong-answer lowering defects (a `for` loop dropping a binding rebound
 inside an arm; a header fact cached across arms) were caught by `witchy
 parity`, not by the oracle, which executes the same SafeWIR: independent

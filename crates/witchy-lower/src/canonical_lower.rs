@@ -662,6 +662,7 @@ fn lower_function(
         owned_parameters: Vec::new(),
         token_join_parameters: BTreeSet::new(),
         mutable_bindings: HashSet::new(),
+        loop_contexts: Vec::new(),
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
         write_back_parameters: Vec::new(),
@@ -764,6 +765,54 @@ struct FactSnapshot {
     known_list_lengths: HashMap<ValueId, u64>,
 }
 
+/// The loop a `break`/`continue` leaves or re-enters: its header and exit
+/// blocks, the state lanes both expect (every outer binding, then each
+/// tracked list's count/capacity), and how the loop advances.
+struct LoopContext {
+    header: BlockId,
+    exit: BlockId,
+    names: Vec<String>,
+    list_names: Vec<String>,
+    advance: LoopAdvance,
+}
+
+enum LoopAdvance {
+    /// A `while` loop: the header re-evaluates its condition.
+    Condition,
+    /// A `for` over a list: the body's cursor, incremented on `continue`;
+    /// the exit carries no cursor.
+    ListCursor(ValueId),
+    /// A range `for`: the body's counter, incremented on `continue` and
+    /// carried as is on `break` (the exit keeps the counter lane).
+    IntCounter(ValueId),
+}
+
+/// Whether a loop body leaves the loop early (a `break` outside any nested
+/// loop), so the exit block is a join of the header and the break edges.
+fn block_breaks_loop(block: &witchy_syntax::ast::Block) -> bool {
+    fn walk_block(block: &witchy_syntax::ast::Block) -> bool {
+        block.stmts.iter().any(|statement| match statement {
+            Stmt::Break => true,
+            Stmt::Expr(expression) => walk_expr(expression),
+            Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } | Stmt::Assign { value, .. } => walk_expr(value),
+            _ => false,
+        })
+    }
+    fn walk_expr(expression: &Expr) -> bool {
+        match expression {
+            Expr::If { cond, then_block, else_block } => {
+                walk_expr(cond) || walk_block(then_block) || else_block.as_ref().is_some_and(walk_block)
+            }
+            Expr::Match { arms, .. } => arms.iter().any(|arm| walk_expr(&arm.body)),
+            Expr::Block(block) => walk_block(block),
+            // A nested loop's `break` leaves that loop, not this one.
+            Expr::While { .. } | Expr::For { .. } | Expr::WhileLet { .. } => false,
+            _ => false,
+        }
+    }
+    walk_block(block)
+}
+
 fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
     fn walk_block(block: &witchy_syntax::ast::Block, out: &mut LoopRebindings) {
         for statement in &block.stmts {
@@ -849,6 +898,9 @@ struct FunctionLowerer<'a> {
     /// Names bound by `var`: a later in-place mutation needs their token
     /// unique, so a call receives a copy of such a value, never a clone.
     mutable_bindings: HashSet<String>,
+    /// The enclosing loops, innermost last: where `break` and `continue`
+    /// branch and which lanes they carry.
+    loop_contexts: Vec<LoopContext>,
     string_lengths: HashMap<ValueId, ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
@@ -1132,9 +1184,13 @@ impl FunctionLowerer<'_> {
                 Stmt::LetPattern { pattern, value } => {
                     self.lower_let_pattern(pattern, value)?;
                 }
-                Stmt::Break => return Err(CanonicalLoweringError::UnsupportedStatement("break")),
+                Stmt::Break => {
+                    self.lower_break()?;
+                    return Ok(());
+                }
                 Stmt::Continue => {
-                    return Err(CanonicalLoweringError::UnsupportedStatement("continue"));
+                    self.lower_continue()?;
+                    return Ok(());
                 }
                 Stmt::Yield(_) => return Err(CanonicalLoweringError::UnsupportedStatement("yield")),
             }
@@ -1149,6 +1205,7 @@ impl FunctionLowerer<'_> {
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
             Expr::While { cond, body } => self.lower_while(cond, body),
+            Expr::WhileLet { pattern, scrutinee, body } => self.lower_while_let(pattern, scrutinee, body),
             Expr::For { var, iter, body } => self.lower_for(var, iter, body),
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
@@ -1240,9 +1297,13 @@ impl FunctionLowerer<'_> {
                 Stmt::LetPattern { pattern, value } => {
                     self.lower_let_pattern(pattern, value)?;
                 }
-                Stmt::Break => return Err(CanonicalLoweringError::UnsupportedStatement("break")),
+                Stmt::Break => {
+                    self.lower_break()?;
+                    return Ok(());
+                }
                 Stmt::Continue => {
-                    return Err(CanonicalLoweringError::UnsupportedStatement("continue"));
+                    self.lower_continue()?;
+                    return Ok(());
                 }
                 Stmt::Yield(_) => return Err(CanonicalLoweringError::UnsupportedStatement("yield")),
             }
@@ -2206,6 +2267,16 @@ impl FunctionLowerer<'_> {
                             bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
                         }
                         Pattern::Wildcard | Pattern::Var(_) => {}
+                        // A tuple payload destructures through its own slot
+                        // load; only names and wildcards inside it.
+                        Pattern::Tuple(_) => {
+                            let slot = variant.first_field + offset;
+                            let field_type = shape.fields[slot].clone();
+                            let value_type = self.field_value_type(&field_type)?;
+                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
+                        }
                         _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern")),
                     }
                 }
@@ -2341,7 +2412,14 @@ impl FunctionLowerer<'_> {
                 if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"));
                 }
-                if args.iter().any(|argument| !matches!(argument, Pattern::Var(_) | Pattern::Wildcard)) {
+                // Names, wildcards, and irrefutable tuple payloads leave the
+                // tag test as the whole condition.
+                let irrefutable = |argument: &Pattern| match argument {
+                    Pattern::Var(_) | Pattern::Wildcard => true,
+                    Pattern::Tuple(items) => items.iter().all(|item| matches!(item, Pattern::Var(_) | Pattern::Wildcard)),
+                    _ => false,
+                };
+                if !args.iter().all(irrefutable) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern"));
                 }
                 let (index, _) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
@@ -2407,6 +2485,202 @@ impl FunctionLowerer<'_> {
         Ok(Some(condition))
     }
 
+    /// The state lanes a `break`/`continue` carries out of the current
+    /// block: every loop-state binding's current value, then each tracked
+    /// list's split count/capacity lanes.
+    fn loop_edge_arguments(&mut self, names: &[String], list_names: &[String]) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        let mut arguments = names
+            .iter()
+            .map(|name| self.bindings.get(name).copied().ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())))
+            .collect::<Result<Vec<_>, _>>()?;
+        for name in list_names {
+            let object = self.bindings[name];
+            let (count, capacity) = self.tracked_lanes(object).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("loop edge list count state"),
+            )?;
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            arguments.push(count);
+            arguments.push(capacity);
+        }
+        Ok(arguments)
+    }
+
+    /// `break`: leave the innermost loop through its exit block with the
+    /// current state lanes.
+    fn lower_break(&mut self) -> Result<(), CanonicalLoweringError> {
+        let Some(context) = self.loop_contexts.last() else {
+            return Err(CanonicalLoweringError::UnsupportedStatement("break outside a loop"));
+        };
+        let (exit, names, list_names) = (context.exit, context.names.clone(), context.list_names.clone());
+        let counter = match context.advance {
+            LoopAdvance::IntCounter(counter) => Some(counter),
+            _ => None,
+        };
+        let mut arguments = self.loop_edge_arguments(&names, &list_names)?;
+        arguments.extend(counter);
+        self.finish_current(Terminator::Branch { target: exit, arguments })
+    }
+
+    /// `continue`: re-enter the innermost loop's header with the current
+    /// state lanes and the advanced cursor.
+    fn lower_continue(&mut self) -> Result<(), CanonicalLoweringError> {
+        let Some(context) = self.loop_contexts.last() else {
+            return Err(CanonicalLoweringError::UnsupportedStatement("continue outside a loop"));
+        };
+        let (header, names, list_names) = (context.header, context.names.clone(), context.list_names.clone());
+        let advance = match context.advance {
+            LoopAdvance::Condition => None,
+            LoopAdvance::ListCursor(cursor) => {
+                let one = self.push_const_size(1)?;
+                Some(self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?)
+            }
+            LoopAdvance::IntCounter(counter) => {
+                let one = self.push_const_int(1)?;
+                Some(self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, counter, one, OverflowBehavior::Wrap)?)
+            }
+        };
+        let mut arguments = self.loop_edge_arguments(&names, &list_names)?;
+        arguments.extend(advance);
+        self.finish_current(Terminator::Branch { target: header, arguments })
+    }
+
+    /// A loop whose body breaks joins its exit from the header and from the
+    /// break edges: the exit lanes take the header lanes' phi authority so
+    /// a rebound list rebases there as it does at the header.
+    fn give_exit_header_ownership(&mut self, header: BlockId, exit: BlockId) {
+        let ownerships = self.blocks[header.get() as usize]
+            .parameters
+            .iter()
+            .map(|parameter| parameter.ownership)
+            .collect::<Vec<_>>();
+        for (parameter, ownership) in self.blocks[exit.get() as usize].parameters.iter_mut().zip(ownerships) {
+            parameter.ownership = ownership;
+        }
+    }
+
+    /// `while let PATTERN = SCRUTINEE: BODY` as a loop whose header binds
+    /// the scrutinee and tests the pattern; the body sees the pattern's
+    /// bindings. The state tuple is `lower_while`'s.
+    fn lower_while_let(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee: &Expr,
+        body: &witchy_syntax::ast::Block,
+    ) -> Result<(), CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
+        let outer = self.bindings.clone();
+        let mut names = outer.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        let list_names = names
+            .iter()
+            .filter_map(|name| {
+                let object = outer[name];
+                self.tracked_lanes(object).is_some().then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut state_types = names
+            .iter()
+            .map(|name| self.values[&outer[name]])
+            .collect::<Vec<_>>();
+        state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
+        let header = self.new_block(&state_types)?;
+        let exit = self.new_block(&state_types)?;
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
+        if block_breaks_loop(body) {
+            self.give_exit_header_ownership(header, exit);
+        }
+        let header_values = self.block_parameter_values(header);
+        let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
+        for name in &list_names {
+            let (count, capacity) = self.tracked_lanes(outer[name]).expect("tracked names have lanes");
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            entry_state.push(count);
+            entry_state.push(capacity);
+        }
+        self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
+        self.current = header;
+        self.bindings = names.iter().zip(&header_values).map(|(name, value)| (name.clone(), *value)).collect();
+        let mut metadata_index = names.len();
+        for name in &list_names {
+            let object = self.bindings[name];
+            self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
+            metadata_index += 2;
+        }
+        let scrutinee_type = self.expression_type(scrutinee)?;
+        let value = self.lower_expr(scrutinee)?;
+        let condition = self.match_pattern_condition(value, pattern, &scrutinee_type)?;
+        // The body sees the scrutinee through its own lane: the edge renames
+        // a lane value to the body's parameter, and a fresh value (a call
+        // result) travels as one more lane rather than crossing the edge
+        // unrenamed.
+        let lane_position = header_values.iter().position(|lane| *lane == value);
+        let mut body_types = state_types.clone();
+        if lane_position.is_none() {
+            body_types.push(self.values[&value]);
+        }
+        let body_id = self.new_block(&body_types)?;
+        let mut body_arguments = header_values.clone();
+        if lane_position.is_none() {
+            body_arguments.push(value);
+        }
+        match condition {
+            Some(condition) => self.finish_current(Terminator::BranchIf {
+                condition,
+                then_target: body_id,
+                then_arguments: body_arguments,
+                else_target: exit,
+                else_arguments: header_values.clone(),
+            })?,
+            None => self.finish_current(Terminator::Branch { target: body_id, arguments: body_arguments })?,
+        }
+        let body_values = self.block_parameter_values(body_id);
+        self.current = body_id;
+        self.bindings = names.iter().zip(&body_values).map(|(name, value)| (name.clone(), *value)).collect();
+        metadata_index = names.len();
+        for name in &list_names {
+            let object = self.bindings[name];
+            self.set_tracked_lanes(object, body_values[metadata_index], body_values[metadata_index + 1]);
+            metadata_index += 2;
+        }
+        let body_value = match lane_position {
+            Some(position) => body_values[position],
+            None => *body_values.last().expect("the scrutinee lane"),
+        };
+        if let Some(position) = lane_position
+            && let Some((count, capacity)) = self.tracked_lanes(header_values[position])
+        {
+            let _ = (count, capacity);
+        }
+        for (name, bound) in self.lower_match_pattern(body_value, pattern, &scrutinee_type)? {
+            self.bindings.insert(name, bound);
+        }
+        self.loop_contexts.push(LoopContext {
+            header,
+            exit,
+            names: names.clone(),
+            list_names: list_names.clone(),
+            advance: LoopAdvance::Condition,
+        });
+        let lowered = self.lower_block_effect(body);
+        self.loop_contexts.pop();
+        lowered?;
+        if self.blocks[self.current.get() as usize].terminator.is_none() {
+            let carried = self.loop_edge_arguments(&names, &list_names)?;
+            self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
+        }
+        self.restore_facts(facts, exit);
+        self.current = exit;
+        let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
+        self.bindings = names.iter().zip(exit_parameters.iter()).map(|(name, parameter)| (name.clone(), parameter.value)).collect();
+        metadata_index = names.len();
+        for name in &list_names {
+            let object = self.bindings[name];
+            self.set_tracked_lanes(object, exit_parameters[metadata_index].value, exit_parameters[metadata_index + 1].value);
+            metadata_index += 2;
+        }
+        Ok(())
+    }
+
     fn lower_while(
         &mut self,
         condition: &Expr,
@@ -2435,6 +2709,9 @@ impl FunctionLowerer<'_> {
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
+        if block_breaks_loop(body) {
+            self.give_exit_header_ownership(header, exit);
+        }
         let header_parameters = self.blocks[header.get() as usize].parameters.clone();
         let header_values = header_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
@@ -2487,7 +2764,16 @@ impl FunctionLowerer<'_> {
             self.set_tracked_lanes(object, body_values[metadata_index], body_values[metadata_index + 1]);
             metadata_index += 2;
         }
-        self.lower_block_effect(body)?;
+        self.loop_contexts.push(LoopContext {
+            header,
+            exit,
+            names: names.clone(),
+            list_names: list_names.clone(),
+            advance: LoopAdvance::Condition,
+        });
+        let lowered = self.lower_block_effect(body);
+        self.loop_contexts.pop();
+        lowered?;
         let body_bindings = self.bindings.clone();
         let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
         for name in &list_names {
@@ -2563,6 +2849,9 @@ impl FunctionLowerer<'_> {
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
+        if block_breaks_loop(body) {
+            self.give_exit_header_ownership(header, exit);
+        }
         let header_values = self.blocks[header.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
@@ -2608,7 +2897,16 @@ impl FunctionLowerer<'_> {
         bind_state(self, &body_values);
         let body_counter = *body_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
         self.bindings.insert(variable.to_owned(), body_counter);
-        self.lower_block_effect(body)?;
+        self.loop_contexts.push(LoopContext {
+            header,
+            exit,
+            names: names.clone(),
+            list_names: list_names.clone(),
+            advance: LoopAdvance::IntCounter(body_counter),
+        });
+        let lowered = self.lower_block_effect(body);
+        self.loop_contexts.pop();
+        lowered?;
         self.bindings.remove(variable);
         let body_bindings = self.bindings.clone();
         let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
@@ -2716,6 +3014,9 @@ impl FunctionLowerer<'_> {
         // allocated by a prior iteration.  Untracked/Shared references stay
         // unspecified and therefore cannot acquire phi authority.
         self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &rebound);
+        if block_breaks_loop(body) {
+            self.give_exit_header_ownership(header, exit);
+        }
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
@@ -2815,7 +3116,16 @@ impl FunctionLowerer<'_> {
         });
         self.ensure_string_extent(element)?;
         self.bindings.insert(variable.to_owned(), element);
-        self.lower_block_effect(body)?;
+        self.loop_contexts.push(LoopContext {
+            header,
+            exit,
+            names: names.clone(),
+            list_names: list_names.clone(),
+            advance: LoopAdvance::ListCursor(body_index),
+        });
+        let lowered = self.lower_block_effect(body);
+        self.loop_contexts.pop();
+        lowered?;
         let body_bindings = self.bindings.clone();
         let increment_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {

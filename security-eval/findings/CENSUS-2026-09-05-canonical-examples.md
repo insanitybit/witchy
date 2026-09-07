@@ -926,3 +926,19 @@ lane holding a known-shared value. Newly agree: `dijkstra`, `life`, `sudoku`. Ce
 104/163 check, 48 runnable three-legged parity, 0 disagree. Remaining in-subset: `while let`
 (needs `break` and type-table entries for the desugared scrutinee), `Float` render,
 `largest` (generic + trait bound).
+
+## Slice 30 (2026-09-07): `while let`, `break`, `continue`, nested tuple payloads
+
+Typeck infers a `while let`'s source scrutinee, pattern bindings, and body directly (the
+transient desugar keeps the loop's other checks), so the lowering reads their types. The
+lowering keeps a loop-context stack: `break` leaves through the exit with the state lanes
+(the exit takes the header lanes' phi authority when a body breaks), `continue` re-enters
+the header advancing a `for` cursor or range counter. `while let` is a loop whose header
+binds the scrutinee (threaded into the body as its own lane, or the lane's body parameter
+when the scrutinee is a lane) and tests the pattern; a tuple payload inside a constructor
+pattern destructures through its slot. Newly agree: `let_patterns`. Census: 105/163 check,
+49 runnable three-legged parity, 0 disagree.
+
+Known limit (not pursued: coverage expansion stops here per the plan correction): a `var`
+alias of a list threaded beside its source as loop lanes shares the source's extent ids,
+which the edge renaming cannot tell apart (`var rest = stack; while let [top, ..tail] = rest`).

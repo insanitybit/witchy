@@ -9145,6 +9145,20 @@ impl Checker {
             }
             // `while let` lowers to a `while true` over a match; type that.
             Expr::WhileLet { pattern, scrutinee, body } => {
+                // The source scrutinee, pattern bindings, and body are
+                // inferred directly so the table carries their types for the
+                // canonical lowering (the transient below types clones); the
+                // desugared `while true` over a `match` then keeps the loop's
+                // remaining checks.
+                let consumed_before = self.consumed.clone();
+                let scrutinee_ty = self.infer(scrutinee)?;
+                let must_before = self.must_live.clone();
+                self.push();
+                self.check_pattern(pattern, &scrutinee_ty)?;
+                self.infer_block(body)?;
+                self.pop();
+                self.reject_once_loop_backedge(&consumed_before, "a `while let` loop")?;
+                self.must_live = &must_before | &self.must_live;
                 let d = witchy_syntax::parser::desugar_while_let(
                     pattern.clone(),
                     (**scrutinee).clone(),
