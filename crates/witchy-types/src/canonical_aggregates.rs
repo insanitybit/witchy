@@ -1,0 +1,179 @@
+//! Scalar aggregate shapes shared by the canonical layout catalog, the
+//! canonical lowering, and the ABI authority.
+//!
+//! A scalar aggregate is a record or sum type whose payloads are all scalars
+//! (`Int`, `Float`, `Duration`, `Bool`). It lives behind one reference to a
+//! fixed layout with one slot per field. A sum type (`type Shape: Circle(Int)
+//! | Square(Int)`, `Option(Int)`, `Result(Int, Bool)`) carries an `Int` tag
+//! in slot 0 followed by every variant's fields in declaration order, so each
+//! payload has one static slot and a construction initializes every slot.
+//! Three consumers must agree on this shape byte for byte: the layout
+//! catalog derives the field layout from it, the lowering stores and loads
+//! its slots, and the ABI authority binds a nominal source type to a
+//! candidate reference whose layout carries exactly these fields.
+
+use std::collections::BTreeMap;
+
+use witchy_syntax::ast::{Item, Module, Type, TypeDef, Variant};
+
+/// One constructor of a scalar aggregate: its payload occupies `arity`
+/// consecutive slots starting at `first_field`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarVariant {
+    pub name: String,
+    pub first_field: usize,
+    pub arity: usize,
+}
+
+/// The slot layout of a scalar aggregate type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarAggregateShape {
+    /// The nominal name the layout resolver sees (`Point`, `Option`).
+    pub name: String,
+    /// Every slot's scalar type; slot 0 is the tag of a tagged shape.
+    pub fields: Vec<Type>,
+    pub variants: Vec<ScalarVariant>,
+    /// A sum type carries a tag; a one-variant record does not.
+    pub tagged: bool,
+    /// A `packed` one-variant record is an inline aggregate rather than a
+    /// heap object; its shape is the same.
+    pub packed: bool,
+}
+
+impl ScalarAggregateShape {
+    pub fn variant(&self, name: &str) -> Option<(usize, &ScalarVariant)> {
+        self.variants.iter().enumerate().find(|(_, variant)| variant.name == name)
+    }
+
+    /// The one-variant packed-record definition the layout interner accepts
+    /// for this shape.
+    pub fn packed_view(&self) -> TypeDef {
+        TypeDef {
+            name: self.name.clone(),
+            must_consume: false,
+            params: Vec::new(),
+            variants: vec![Variant {
+                name: self.name.clone(),
+                line: 0,
+                fields: self.fields.clone(),
+                field_names: (0..self.fields.len()).map(|index| format!("slot{index}")).collect(),
+                field_lines: vec![0; self.fields.len()],
+            }],
+            derives: Vec::new(),
+            sealed: false,
+            is_capability: false,
+            grantable: false,
+            packed: true,
+            partial_eq_derived: false,
+            public_state_derived: false,
+        }
+    }
+}
+
+pub fn is_scalar_type(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool"))
+}
+
+fn int_type() -> Type {
+    Type::Named("Int".into(), Vec::new())
+}
+
+/// The key a source type's aggregate shape is filed under: the bare name of
+/// a user type, or the name with its scalar arguments (`Option(Int)`).
+pub fn aggregate_key(ty: &Type) -> Option<String> {
+    let Type::Named(name, arguments) = ty.unqualified() else { return None };
+    if arguments.is_empty() {
+        return Some(name.clone());
+    }
+    let mut key = format!("{name}(");
+    for (index, argument) in arguments.iter().enumerate() {
+        let Type::Named(argument, inner) = argument.unqualified() else { return None };
+        if !inner.is_empty() || !is_scalar_type(&Type::Named(argument.clone(), Vec::new())) {
+            return None;
+        }
+        if index > 0 {
+            key.push_str(", ");
+        }
+        key.push_str(argument);
+    }
+    key.push(')');
+    Some(key)
+}
+
+/// The module's type definitions keyed by bare and entry-qualified names.
+pub fn type_definitions(module: &Module) -> BTreeMap<String, TypeDef> {
+    let mut definitions = BTreeMap::new();
+    for item in &module.items {
+        let Item::Type(definition) = item else { continue };
+        if let Some(entry) = module.linked_entry.as_deref()
+            && !definition.name.contains('.')
+        {
+            definitions.insert(format!("{entry}.{}", definition.name), definition.clone());
+        }
+        definitions.insert(definition.name.clone(), definition.clone());
+    }
+    definitions
+}
+
+/// The shape of a user-declared type whose every variant carries only
+/// scalar fields, or `None` for any other definition.
+pub fn shape_from_definition(definition: &TypeDef) -> Option<ScalarAggregateShape> {
+    if !definition.params.is_empty() || definition.variants.is_empty() || definition.is_capability {
+        return None;
+    }
+    if !definition.variants.iter().all(|variant| variant.fields.iter().all(is_scalar_type)) {
+        return None;
+    }
+    let name = definition.name.rsplit('.').next().unwrap_or(&definition.name).to_owned();
+    if definition.variants.len() == 1 {
+        let variant = &definition.variants[0];
+        return Some(ScalarAggregateShape {
+            name,
+            fields: variant.fields.clone(),
+            variants: vec![ScalarVariant { name: variant.name.clone(), first_field: 0, arity: variant.fields.len() }],
+            tagged: false,
+            packed: definition.packed,
+        });
+    }
+    let mut fields = vec![int_type()];
+    let mut variants = Vec::with_capacity(definition.variants.len());
+    for variant in &definition.variants {
+        variants.push(ScalarVariant { name: variant.name.clone(), first_field: fields.len(), arity: variant.fields.len() });
+        fields.extend(variant.fields.iter().cloned());
+    }
+    Some(ScalarAggregateShape { name, fields, variants, tagged: true, packed: false })
+}
+
+/// The shape of a source type: a scalar `Option`/`Result` instantiation or
+/// a declared scalar aggregate.
+pub fn scalar_aggregate_shape(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ScalarAggregateShape> {
+    let Type::Named(name, arguments) = ty.unqualified() else { return None };
+    match (name.as_str(), arguments.as_slice()) {
+        ("Option", [payload]) if is_scalar_type(payload) => Some(ScalarAggregateShape {
+            name: "Option".into(),
+            fields: vec![int_type(), payload.clone()],
+            variants: vec![
+                ScalarVariant { name: "Some".into(), first_field: 1, arity: 1 },
+                ScalarVariant { name: "None".into(), first_field: 2, arity: 0 },
+            ],
+            tagged: true,
+            packed: false,
+        }),
+        ("Result", [value, error]) if is_scalar_type(value) && is_scalar_type(error) => Some(ScalarAggregateShape {
+            name: "Result".into(),
+            fields: vec![int_type(), value.clone(), error.clone()],
+            variants: vec![
+                ScalarVariant { name: "Ok".into(), first_field: 1, arity: 1 },
+                ScalarVariant { name: "Err".into(), first_field: 2, arity: 1 },
+            ],
+            tagged: true,
+            packed: false,
+        }),
+        (_, []) => definitions.get(name).and_then(shape_from_definition),
+        _ => None,
+    }
+}

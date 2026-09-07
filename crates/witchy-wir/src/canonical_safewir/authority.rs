@@ -309,7 +309,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
-    let records = scalar_record_fields(source.typed_module().module());
+    let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
     let mut bindings = BTreeMap::new();
     let mut bound_functions = BTreeMap::new();
     for binding in candidate.source_abi_bindings().entries() {
@@ -361,34 +361,11 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     Ok(())
 }
 
-/// The scalar field types of every one-variant record the checked module
-/// declares, keyed by its bare and entry-qualified names. A nominal record
-/// parameter binds to a candidate reference whose layout carries exactly
-/// those fields.
-type ScalarRecordFields = BTreeMap<String, Vec<witchy_syntax::ast::Type>>;
-
-fn scalar_record_fields(module: &witchy_syntax::ast::Module) -> ScalarRecordFields {
-    let mut records = BTreeMap::new();
-    for item in &module.items {
-        let witchy_syntax::ast::Item::Type(definition) = item else { continue };
-        if !definition.params.is_empty() || definition.variants.len() != 1 {
-            continue;
-        }
-        let fields = definition.variants[0].fields.clone();
-        if !fields.iter().all(|field| matches!(field.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-            if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")))
-        {
-            continue;
-        }
-        if let Some(entry) = module.linked_entry.as_deref()
-            && !definition.name.contains('.')
-        {
-            records.insert(format!("{entry}.{}", definition.name), fields.clone());
-        }
-        records.insert(definition.name.clone(), fields);
-    }
-    records
-}
+/// The checked module's type definitions, keyed by bare and entry-qualified
+/// names. A nominal scalar aggregate (a record, a sum type, a scalar
+/// `Option`/`Result`) binds to a candidate reference whose layout carries
+/// exactly the slots `witchy_types::canonical_aggregates` derives for it.
+type ScalarRecordFields = BTreeMap<String, witchy_syntax::ast::TypeDef>;
 
 fn candidate_signature_matches_source<S: ModuleStage>(
     actual: &super::FunctionSignature,
@@ -491,12 +468,17 @@ fn value_type_matches_source(
             // accepted at this source boundary.
             "Console" => actual == super::ValueType::Capability(super::CapabilityKindId::new(0)),
             "String" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
-            // A heap record: one reference to a fixed layout whose fields are
-            // exactly the declared scalar fields, in order.
-            name => records.get(name).is_some_and(|fields| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, fields, layouts))
+            // A scalar aggregate: one reference to a fixed layout whose slots
+            // are exactly the shape's fields, in order.
+            _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
             }),
         },
+        witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Option" | "Result") => {
+            witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
+            })
+        }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
         witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
             super::ValueType::Callable(id) if seen.insert(id) => {

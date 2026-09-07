@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use witchy_types::canonical_aggregates::{aggregate_key, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -146,12 +147,21 @@ impl LayoutProjection {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
-                _ if self.definitions.get(name).is_some_and(is_v1_scalar_record) => {
+                _ if scalar_aggregate_shape(ty, &self.definitions).is_some() => {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
                 _ => Err(CanonicalLayoutError::UnsupportedType(name.clone())),
             },
+            // A scalar `Option`/`Result` instantiation is a tagged scalar
+            // aggregate behind one reference.
+            Type::Named(name, _)
+                if matches!(name.as_str(), "Option" | "Result")
+                    && scalar_aggregate_shape(ty, &self.definitions).is_some() =>
+            {
+                self.roots.push(ty.clone());
+                Ok(())
+            }
             Type::Named(name, arguments) if name == "List" => {
                 if arguments.len() != 1 || !is_v1_list_element_type(&arguments[0]) {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
@@ -245,8 +255,22 @@ fn intern_v1_layout(
             .intern_runtime_dictionary_body(key, value)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
+    if let Type::Named(name, arguments) = ty.unqualified()
+        && matches!(name.as_str(), "Option" | "Result")
+        && !arguments.is_empty()
+        && let Some(key) = aggregate_key(ty)
+        && scalar_aggregate_shape(ty, definitions).is_some()
+    {
+        // A scalar `Option`/`Result` instantiation is interned under its key
+        // as a nominal without arguments: the interner's packed-record rule
+        // takes no closed type arguments.
+        let keyed = Type::Named(key, Vec::new());
+        return interner
+            .intern_type(&keyed, &V1Resolver::new(definitions, ty))
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+    }
     interner
-        .intern_type(ty, &V1Resolver::new(definitions))
+        .intern_type(ty, &V1Resolver::new(definitions, ty))
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
@@ -262,7 +286,7 @@ fn intern_dictionary_slot(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     interner
-        .intern_type(ty, &V1Resolver::new(definitions))
+        .intern_type(ty, &V1Resolver::new(definitions, ty))
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
@@ -293,24 +317,60 @@ fn requires_owned_pointer_slot(ty: &Type) -> bool {
 
 struct V1Resolver<'a> {
     definitions: &'a BTreeMap<String, TypeDef>,
-    /// Scalar records viewed as packed: the interner accepts only a packed
-    /// one-variant definition for a record layout, and a heap record has the
-    /// same field layout behind its reference.
+    /// Scalar aggregates viewed as packed one-variant records: the interner
+    /// accepts only that definition form for a fixed field layout, and a
+    /// heap record or a tagged sum has the same slot layout behind its
+    /// reference. Keyed by [`aggregate_key`]; the view is named as the
+    /// resolver will be asked for it.
     packed_views: BTreeMap<String, TypeDef>,
 }
 
 impl<'a> V1Resolver<'a> {
-    fn new(definitions: &'a BTreeMap<String, TypeDef>) -> Self {
-        let packed_views = definitions
-            .iter()
-            .filter(|(_, definition)| is_v1_scalar_record(definition) && !definition.packed)
-            .map(|(name, definition)| {
-                let mut view = definition.clone();
-                view.packed = true;
-                (name.clone(), view)
-            })
-            .collect();
+    fn new(definitions: &'a BTreeMap<String, TypeDef>, ty: &Type) -> Self {
+        let mut packed_views = BTreeMap::new();
+        for (name, definition) in definitions {
+            if definition.packed {
+                continue;
+            }
+            if let Some(shape) = shape_from_definition(definition) {
+                let mut view = shape.packed_view();
+                view.name = name.clone();
+                packed_views.insert(name.clone(), view);
+            }
+        }
+        collect_builtin_views(ty, definitions, &mut packed_views);
         Self { definitions, packed_views }
+    }
+}
+
+/// Views for every scalar `Option`/`Result` instantiation inside `ty`.
+fn collect_builtin_views(ty: &Type, definitions: &BTreeMap<String, TypeDef>, views: &mut BTreeMap<String, TypeDef>) {
+    match ty {
+        Type::Qualified(_, inner) => collect_builtin_views(inner, definitions, views),
+        Type::Named(name, arguments) => {
+            if matches!(name.as_str(), "Option" | "Result")
+                && let Some(key) = aggregate_key(ty)
+                && let Some(shape) = scalar_aggregate_shape(ty, definitions)
+            {
+                // The interner resolves the instantiation by its key as a
+                // nominal without arguments (`Option(Int)`), so the view
+                // carries that name.
+                views.entry(key.clone()).or_insert_with(|| {
+                    let mut view = shape.packed_view();
+                    view.name = key;
+                    view
+                });
+            }
+            for argument in arguments {
+                collect_builtin_views(argument, definitions, views);
+            }
+        }
+        Type::Tuple(fields) => {
+            for field in fields {
+                collect_builtin_views(field, definitions, views);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -326,11 +386,16 @@ impl ClosedTypeResolver for V1Resolver<'_> {
             "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
             "Bool" => Some(ResolvedNamed::Scalar(ScalarKind::Bool)),
             "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
-            name => self
-                .packed_views
-                .get(name)
-                .or_else(|| self.definitions.get(name).filter(|definition| is_v1_scalar_record(definition)))
-                .map(ResolvedNamed::PackedRecord),
+            name => {
+                // A keyed instantiation (`Option(Int)`) arrives as its own
+                // name; a user type arrives bare.
+                let key = aggregate_key(&Type::Named(name.to_owned(), _arguments.to_vec()));
+                self.packed_views
+                    .get(name)
+                    .or_else(|| key.as_deref().and_then(|key| self.packed_views.get(key)))
+                    .or_else(|| self.definitions.get(name).filter(|definition| is_v1_scalar_record(definition)))
+                    .map(ResolvedNamed::PackedRecord)
+            }
         }
     }
 }

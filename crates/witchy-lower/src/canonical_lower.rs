@@ -16,6 +16,7 @@ mod owned;
 mod owned_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
+use witchy_types::canonical_aggregates::{scalar_aggregate_shape, ScalarAggregateShape};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
@@ -131,6 +132,7 @@ pub fn lower_typed_module(
             .map(|entry| (format!("{entry}.{}", definition.name), definition));
         std::iter::once((definition.name.clone(), definition)).chain(qualified)
     }).collect::<HashMap<_, _>>();
+    let definitions = witchy_types::canonical_aggregates::type_definitions(typed.module());
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
@@ -196,7 +198,7 @@ pub fn lower_typed_module(
         .iter()
         .map(|ty| {
             let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types, &packed_records)
+            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types, &definitions)
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     let mut functions_by_name = HashMap::new();
@@ -261,7 +263,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &function_types,
-            &packed_records,
+            &definitions,
         )?;
     }
 
@@ -324,6 +326,7 @@ pub fn lower_typed_module(
             &string_data_ids,
             print_import,
             &packed_records,
+            &definitions,
         )?);
     }
 
@@ -384,7 +387,7 @@ fn checked_signature(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
-    records: &HashMap<String, &TypeDef>,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let checked = source
         .callable_signature(&function.name)
@@ -405,7 +408,7 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types, records)?;
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types, definitions)?;
     let value_parameters = checked_signature.parameters;
     let contract_parameters = checked_signature.contract.parameters;
     let parameter_effects = checked_signature.contract.parameter_effects;
@@ -435,7 +438,7 @@ fn signature_from_type(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
-    records: &HashMap<String, &TypeDef>,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let Type::Fn(parameters, result, conventions, _) = checked.unqualified() else {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
@@ -466,7 +469,7 @@ fn signature_from_type(
                 convention,
             });
         }
-        let value_type = source_value_type(parameter, layout_bundle, layouts, function_types, records)?;
+        let value_type = source_value_type(parameter, layout_bundle, layouts, function_types, definitions)?;
         // An explicit `let` (`Convention::Borrow`) has the default convention's
         // observable semantics; its no-escape rule is the type checker's. Under
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
@@ -493,7 +496,7 @@ fn signature_from_type(
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract { value_type, ownership });
     }
-    let result = source_value_type(result, layout_bundle, layouts, function_types, records)?;
+    let result = source_value_type(result, layout_bundle, layouts, function_types, definitions)?;
     let mut results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
     let mut result_contracts = results.iter().copied().map(|result| match result {
         ValueType::Ref(layout) => ResultContract::Shared { layout },
@@ -644,6 +647,7 @@ fn lower_function(
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
     print_import: Option<witchy_wir::canonical_safewir::ImportId>,
     packed_records: &HashMap<String, &TypeDef>,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
@@ -673,6 +677,8 @@ fn lower_function(
         string_data_ids,
         print_import,
         packed_records,
+        definitions,
+        result_type: function.ret.clone(),
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     for (parameter, contract) in lowerer.blocks[entry.get() as usize]
@@ -869,16 +875,21 @@ struct FunctionLowerer<'a> {
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
     print_import: Option<witchy_wir::canonical_safewir::ImportId>,
     packed_records: &'a HashMap<String, &'a TypeDef>,
+    /// Every type definition, keyed by bare and entry-qualified names; the
+    /// scalar aggregate shapes (records, sums, scalar `Option`/`Result`)
+    /// are derived from it on demand.
+    definitions: &'a BTreeMap<String, TypeDef>,
+    /// The function's declared result type, for `?` to build its failure.
+    result_type: Option<Type>,
 }
 
 impl<'a> FunctionLowerer<'a> {
     /// The scalar-record definition a type or constructor name denotes; the
     /// checker's entry-qualified spelling and the bare source name both key it.
     fn record_definition(&self, name: &str) -> Option<&'a TypeDef> {
-        self.packed_records
+        self.definitions
             .get(name)
-            .or_else(|| name.rsplit('.').next().and_then(|bare| self.packed_records.get(bare)))
-            .copied()
+            .or_else(|| name.rsplit('.').next().and_then(|bare| self.definitions.get(bare)))
     }
 }
 
@@ -1709,6 +1720,20 @@ impl FunctionLowerer<'_> {
             })
             .flatten()
         });
+        // A fixed-layout result (a heap record or sum) joins through a phi
+        // without count/capacity lanes: unique when both arms hold their own
+        // fresh token, shared otherwise.
+        let fixed_result_phi = result_type.and_then(|(then_value, else_value, result_type)| {
+            let ValueType::Ref(layout) = result_type else { return None };
+            let fixed = matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
+            (fixed && self.shared_phi_eligible(then_value) && self.shared_phi_eligible(else_value)).then(|| {
+                if all_tokens && !self.known_shared_value(then_value) && !self.known_shared_value(else_value) {
+                    Ownership::Unique
+                } else {
+                    Ownership::Shared
+                }
+            })
+        });
         let mut names = outer.keys().cloned().collect::<Vec<_>>();
         names.sort();
         let changed_names = names
@@ -1735,6 +1760,8 @@ impl FunctionLowerer<'_> {
         if shared_result_extents.is_some() {
             self.blocks[join_id.get() as usize].parameters[binding_parameters].ownership =
                 Some(Ownership::Shared);
+        } else if let Some(phi) = fixed_result_phi {
+            self.blocks[join_id.get() as usize].parameters[binding_parameters].ownership = Some(phi);
         }
         let join_parameters = self.blocks[join_id.get() as usize].parameters.clone();
         let mut then_arguments = Vec::with_capacity(parameter_types.len());
@@ -1825,12 +1852,13 @@ impl FunctionLowerer<'_> {
         if arms.is_empty() {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
+        let scrutinee_type = self.expression_type(scrutinee)?;
         let scrutinee = self.lower_expr(scrutinee)?;
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let result_type = if with_value {
             let first = self.expression_type(&arms[0].body)?;
-            let first = source_value_type(&first, self.layout_bundle, self.layouts, &HashMap::new(), self.packed_records)?;
+            let first = source_value_type(&first, self.layout_bundle, self.layouts, &HashMap::new(), self.definitions)?;
             if is_unit(first) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("unit match value"));
             }
@@ -1858,7 +1886,7 @@ impl FunctionLowerer<'_> {
             self.current = current;
             self.bindings = outer.clone();
             let arm_block = self.new_block(&[])?;
-            let condition = self.match_pattern_condition(scrutinee, &arm.pattern)?;
+            let condition = self.match_pattern_condition(scrutinee, &arm.pattern, &scrutinee_type)?;
             // Only an arm that can fail (a refutable pattern or a guard) has a
             // fallthrough successor.
             let next_block = if condition.is_some() || arm.guard.is_some() {
@@ -1885,7 +1913,7 @@ impl FunctionLowerer<'_> {
             self.bindings = outer.clone();
             // Pattern bindings are emitted in the arm block: a list pattern's
             // element loads are guarded by the length test that reached it.
-            for (name, value) in self.lower_match_pattern(scrutinee, &arm.pattern)? {
+            for (name, value) in self.lower_match_pattern(scrutinee, &arm.pattern, &scrutinee_type)? {
                 self.bindings.insert(name, value);
             }
             if let Some(guard) = &arm.guard {
@@ -2001,11 +2029,28 @@ impl FunctionLowerer<'_> {
         if shared_result_extents.is_some() {
             parameter_types.extend([ValueType::Size, ValueType::Size]);
         }
+        let fixed_result_phi = result_type.and_then(|result_type| {
+            let ValueType::Ref(layout) = result_type else { return None };
+            let fixed = matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
+            (fixed && !result_values.is_empty() && result_values.iter().all(|value| self.shared_phi_eligible(*value))).then(|| {
+                if all_tokens && result_values.iter().all(|value| !self.known_shared_value(*value)) {
+                    Ownership::Unique
+                } else {
+                    Ownership::Shared
+                }
+            })
+        });
         let join = self.new_block(&parameter_types)?;
         let result_parameter_index = binding_parameters;
         if shared_result_extents.is_some() {
             self.blocks[join.get() as usize].parameters[result_parameter_index].ownership =
                 Some(Ownership::Shared);
+        } else if let Some(phi) = fixed_result_phi {
+            self.blocks[join.get() as usize].parameters[result_parameter_index].ownership = Some(phi);
+            if phi == Ownership::Unique {
+                let result = self.blocks[join.get() as usize].parameters[result_parameter_index].value;
+                self.token_join_parameters.insert(result);
+            }
         }
         let join_parameters = self.blocks[join.get() as usize].parameters.clone();
         let mut merged = outer;
@@ -2071,9 +2116,37 @@ impl FunctionLowerer<'_> {
         &mut self,
         scrutinee: ValueId,
         pattern: &Pattern,
+        scrutinee_type: &Type,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
         match pattern {
             Pattern::Var(name) if name != "_" => Ok(vec![(name.clone(), scrutinee)]),
+            Pattern::Ctor { name, args } => {
+                // Each named payload is a slot load in the arm the tag test
+                // reached; a nested pattern beyond a name or wildcard is not
+                // in the subset.
+                let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"),
+                )?;
+                let (_, variant) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                if args.len() != variant.arity {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("constructor pattern arity"));
+                }
+                let variant = variant.clone();
+                let mut bindings = Vec::new();
+                for (offset, argument) in args.iter().enumerate() {
+                    match argument {
+                        Pattern::Var(bound) if bound != "_" => {
+                            let slot = variant.first_field + offset;
+                            let value_type = scalar_type(&shape.fields[slot])?;
+                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                            bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
+                        }
+                        Pattern::Wildcard | Pattern::Var(_) => {}
+                        _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern")),
+                    }
+                }
+                Ok(bindings)
+            }
             Pattern::Wildcard
             | Pattern::Var(_)
             | Pattern::Int(_)
@@ -2191,8 +2264,29 @@ impl FunctionLowerer<'_> {
         &mut self,
         scrutinee: ValueId,
         pattern: &Pattern,
+        scrutinee_type: &Type,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let (value, expected_type) = match pattern {
+            Pattern::Ctor { name, args } => {
+                // A sum type's tag selects the arm; a one-variant record's
+                // constructor pattern always matches.
+                let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"),
+                )?;
+                if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"));
+                }
+                if args.iter().any(|argument| !matches!(argument, Pattern::Var(_) | Pattern::Wildcard)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern"));
+                }
+                let (index, _) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                if !shape.tagged {
+                    return Ok(None);
+                }
+                let tag = self.load_record_field(scrutinee, 0, ValueType::Int)?;
+                let expected = self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                return Ok(Some(self.push_compare(ComparisonOperator::Equal, tag, expected)?));
+            }
             Pattern::Int(value) | Pattern::Duration(value) => {
                 let destination = self.fresh(ValueType::Int)?;
                 self.push_operation(Operation::ConstInt { destination, value: *value });
@@ -3595,7 +3689,7 @@ impl FunctionLowerer<'_> {
                 };
                 self.lower_record_literal(expression, &name, fields, Some(base))
             }
-            Expr::Try(_) => Err(CanonicalLoweringError::UnsupportedExpression("try")),
+            Expr::Try(inner) => self.lower_try(inner),
             Expr::As { .. } => Err(CanonicalLoweringError::UnsupportedExpression("as")),
             Expr::ExistentialPack { .. }
             | Expr::ExistentialUpcast { .. }
@@ -3638,23 +3732,154 @@ impl FunctionLowerer<'_> {
         name: &str,
         arguments: &[Expr],
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let definition = self.record_definition(name).ok_or(
+        let source_type = self.expression_type(expression)?;
+        let shape = scalar_aggregate_shape(&source_type, self.definitions).ok_or(
             CanonicalLoweringError::UnsupportedExpression("non-record constructor"),
         )?;
-        if definition.packed {
+        if shape.packed {
             return self.lower_packed_record_constructor(expression, name, arguments);
         }
-        let fields = definition.variants[0].fields.clone();
-        if arguments.len() != fields.len() {
+        // A record's one constructor is named after the type; a sum type's
+        // constructors are its variants.
+        let (index, variant) = shape
+            .variant(name)
+            .or_else(|| (!shape.tagged).then(|| (0, &shape.variants[0])))
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.to_owned()))?;
+        if arguments.len() != variant.arity {
             return Err(CanonicalLoweringError::CallArityMismatch {
-                callee: name.to_owned(), expected: fields.len(), actual: arguments.len(),
+                callee: name.to_owned(), expected: variant.arity, actual: arguments.len(),
             });
         }
         let mut values = Vec::with_capacity(arguments.len());
         for argument in arguments {
             values.push(self.lower_expr(argument)?);
         }
-        self.lower_heap_record(name, &fields, values)
+        self.lower_aggregate(&shape, index, values)
+    }
+
+    /// Allocate an immutable reference-counted scalar aggregate holding
+    /// variant `index` with `payload`: the tag (for a sum type), the
+    /// variant's slots, and a zero in every other slot so the object is
+    /// fully initialized.
+    fn lower_aggregate(
+        &mut self,
+        shape: &ScalarAggregateShape,
+        index: usize,
+        payload: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let variant = &shape.variants[index];
+        let mut values = Vec::with_capacity(shape.fields.len());
+        for (slot, field) in shape.fields.iter().enumerate() {
+            let value = if shape.tagged && slot == 0 {
+                self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?
+            } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
+                payload[slot - variant.first_field]
+            } else {
+                self.push_zero(scalar_type(field)?)?
+            };
+            values.push(value);
+        }
+        self.lower_heap_record(&shape.name, &shape.fields, values)
+    }
+
+    fn push_zero(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(value_type)?;
+        match value_type {
+            ValueType::Int => self.push_operation(Operation::ConstInt { destination, value: 0 }),
+            ValueType::Float => self.push_operation(Operation::ConstFloat { destination, bits: 0 }),
+            ValueType::Bool => self.push_operation(Operation::ConstBool { destination, value: false }),
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("aggregate slot type")),
+        }
+        Ok(destination)
+    }
+
+    /// `option ?? default`: the payload when the tag is `Some`, otherwise
+    /// the default, evaluated only then.
+    fn lower_coalesce(&mut self, left: &Expr, right: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let left_type = self.expression_type(left)?;
+        let shape = scalar_aggregate_shape(&left_type, self.definitions)
+            .filter(|shape| shape.name == "Option")
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
+        let object = self.lower_expr(left)?;
+        let payload_type = scalar_type(&shape.fields[1])?;
+        let tag = self.load_record_field(object, 0, ValueType::Int)?;
+        let some_tag = self.push_const_int(0)?;
+        let is_some = self.push_compare(ComparisonOperator::Equal, tag, some_tag)?;
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let when_some = self.new_block(&[])?;
+        let when_none = self.new_block(&[])?;
+        let join = self.new_block(&[payload_type])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_some,
+            then_target: when_some,
+            then_arguments: Vec::new(),
+            else_target: when_none,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = when_some;
+        let payload = self.load_record_field(object, 1, payload_type)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![payload] })?;
+        self.current = when_none;
+        self.bindings = bindings.clone();
+        let default = self.lower_expr(right)?;
+        if self.values[&default] != payload_type {
+            return Err(CanonicalLoweringError::UnsupportedExpression("coalesce default type"));
+        }
+        if self.bindings != bindings {
+            return Err(CanonicalLoweringError::UnsupportedExpression("binding change inside coalesce default"));
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![default] })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        Ok(self.block_parameter_values(join)[0])
+    }
+
+    /// `value?` on a scalar `Option`/`Result`: continue with the payload, or
+    /// return the function's own failure (`None`, or `Err` carrying the
+    /// same error) from a terminal block.
+    fn lower_try(&mut self, inner: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let inner_type = self.expression_type(inner)?;
+        let shape = scalar_aggregate_shape(&inner_type, self.definitions)
+            .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("try operand"))?;
+        let result_type = self.result_type.clone().ok_or(
+            CanonicalLoweringError::UnsupportedExpression("try outside a result-returning function"),
+        )?;
+        let failure_shape = scalar_aggregate_shape(&result_type, self.definitions)
+            .filter(|failure| failure.name == shape.name)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("try in a function without a matching result"))?;
+        let object = self.lower_expr(inner)?;
+        let tag = self.load_record_field(object, 0, ValueType::Int)?;
+        let success_tag = self.push_const_int(0)?;
+        let is_success = self.push_compare(ComparisonOperator::Equal, tag, success_tag)?;
+        let proceed = self.new_block(&[])?;
+        let fail = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_success,
+            then_target: proceed,
+            then_arguments: Vec::new(),
+            else_target: fail,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = fail;
+        let failure_payload = if shape.name == "Result" {
+            let error_type = scalar_type(&shape.fields[2])?;
+            if error_type != scalar_type(&failure_shape.fields[2])? {
+                return Err(CanonicalLoweringError::UnsupportedExpression("try error type"));
+            }
+            vec![self.load_record_field(object, 2, error_type)?]
+        } else {
+            Vec::new()
+        };
+        let failure = self.lower_aggregate(&failure_shape, 1, failure_payload)?;
+        let results = self.results.clone();
+        let terminator = self.return_value(Some(failure), &results)?;
+        self.finish_current(terminator)?;
+        self.current = proceed;
+        let payload_type = scalar_type(&shape.fields[1])?;
+        self.load_record_field(object, 1, payload_type)
     }
 
     /// A named-field record literal, with the fields not named taken from the
@@ -3666,14 +3891,18 @@ impl FunctionLowerer<'_> {
         fields: &[(String, Expr)],
         spread: Option<&Expr>,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        let source_type = self.expression_type(expression)?;
+        let shape = scalar_aggregate_shape(&source_type, self.definitions)
+            .filter(|shape| !shape.tagged)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("non-record literal"))?;
+        if shape.packed {
+            return Err(CanonicalLoweringError::UnsupportedExpression("packed record literal"));
+        }
         let definition = self.record_definition(name).ok_or(
             CanonicalLoweringError::UnsupportedExpression("non-record literal"),
         )?;
-        if definition.packed {
-            return Err(CanonicalLoweringError::UnsupportedExpression("packed record literal"));
-        }
         let field_names = definition.variants[0].field_names.clone();
-        let field_types = definition.variants[0].fields.clone();
+        let field_types = shape.fields.clone();
         for (given, _) in fields {
             if !field_names.iter().any(|candidate| candidate == given) {
                 return Err(CanonicalLoweringError::MissingBinding(given.clone()));
@@ -3683,7 +3912,6 @@ impl FunctionLowerer<'_> {
             Some(base) => Some(self.lower_expr(base)?),
             None => None,
         };
-        let _ = expression;
         let mut values = Vec::with_capacity(field_names.len());
         for (index, field_name) in field_names.iter().enumerate() {
             if let Some((_, value)) = fields.iter().find(|(given, _)| given == field_name) {
@@ -3771,7 +3999,7 @@ impl FunctionLowerer<'_> {
         let definition = self.record_definition(name).ok_or(
             CanonicalLoweringError::UnsupportedExpression("non-record field"),
         )?;
-        if definition.packed {
+        if definition.packed && definition.variants.len() == 1 {
             return self.lower_inline_aggregate_field(base, field);
         }
         let index = definition.variants[0].field_names.iter().position(|candidate| candidate == field)
@@ -4866,7 +5094,7 @@ impl FunctionLowerer<'_> {
             return self.lower_short_circuit(operator, left, right);
         }
         if operator == BinOp::Coalesce {
-            return Err(CanonicalLoweringError::UnsupportedExpression("option coalesce"));
+            return self.lower_coalesce(left, right);
         }
         let left = self.lower_expr(left)?;
         let right = self.lower_expr(right)?;
@@ -5888,17 +6116,17 @@ fn source_value_type(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
-    records: &HashMap<String, &TypeDef>,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
+    if let Some(shape) = scalar_aggregate_shape(source, definitions)
+        && !shape.packed
+    {
+        // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
+        // owned reference; a packed record stays an inline aggregate, which
+        // the ABI does not carry (`scalar_type` refuses it below).
+        return packed_scalar_layout(&shape.fields, layout_bundle, layouts).map(ValueType::Ref);
+    }
     match source.unqualified() {
-        // A heap record is one owned reference; a packed record stays an
-        // inline aggregate, which the ABI does not carry (`scalar_type`
-        // refuses it below).
-        Type::Named(name, arguments)
-            if arguments.is_empty() && records.get(name).is_some_and(|definition| !definition.packed) =>
-        {
-            packed_scalar_layout(&records[name].variants[0].fields, layout_bundle, layouts).map(ValueType::Ref)
-        }
         Type::Fn(..) => function_types
             .get(source)
             .or_else(|| function_types.get(source.unqualified()))

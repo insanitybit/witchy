@@ -287,6 +287,21 @@ fn admitted_heap_records_construct_read_update_join_and_cross_calls() {
 }
 
 #[test]
+fn admitted_sum_types_option_and_result_over_scalars_run() {
+    // A sum type is a tag plus one slot per variant field behind a reference;
+    // scalar Option/Result share the shape. Constructor patterns select by
+    // tag and bind payload slots, `??` takes the payload or the default, and
+    // `?` returns the function's own failure from a terminal block.
+    let output = run_admitted(
+        "type Shape:\n    Circle(Int)\n    Square(Int)\n    Dot\n\npub fn area(s: Shape) -> Int:\n    match s:\n        Circle(r) -> 3 * r * r\n        Square(w) -> w * w\n        Dot -> 0\n\npub fn first(xs: List(Int)) -> Option(Int):\n    match xs:\n        [] -> None\n        [head, ..] -> Some(head)\n\npub fn half(n: Int) -> Result(Int, Int):\n    if n % 2 == 0:\n        Ok(n / 2)\n    else:\n        Err(n)\n\npub fn quarter(n: Int) -> Result(Int, Int):\n    let h = half(n)?\n    half(h)\n\npub fn second(xs: List(Int)) -> Option(Int):\n    let a = first(xs)?\n    Some(a + 1)\n\nfn main(console: Console):\n    console.print(\"${area(Circle(2))} ${area(Square(3))} ${area(Dot)}\")\n    console.print(\"${first([7, 8]) ?? 0} ${first([]) ?? 9} ${second([4]) ?? 0} ${second([]) ?? -1}\")\n    match quarter(12):\n        Ok(v) -> console.print(\"ok ${v}\")\n        Err(e) -> console.print(\"err ${e}\")\n    match quarter(6):\n        Ok(v) -> console.print(\"ok ${v}\")\n        Err(e) -> console.print(\"err ${e}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["12 9 0".to_string(), "7 9 5 -1".to_string(), "ok 3".to_string(), "err 3".to_string()]
+    );
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

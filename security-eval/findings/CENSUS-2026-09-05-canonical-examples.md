@@ -779,3 +779,27 @@ route is 0/107.
 - Census: 79 of 163 check; 23 runnable examples admit and agree under
   three-legged parity (`records`, `record_compiled` are new). `opt_mode`
   stays out: it declares a `unique` record, a deferred v1 qualifier.
+
+## Progress (owner, 2026-09-07, twenty-third slice: sum types, Option, Result over scalars)
+
+- **One scalar aggregate shape** (`witchy_types::canonical_aggregates`) now
+  serves the layout catalog, the lowering, and the ABI authority: a record
+  is its fields; a sum type is an `Int` tag in slot 0 followed by every
+  variant's fields in declaration order, so each payload has one static
+  slot and a construction initializes every slot (zeros elsewhere). Scalar
+  `Option(T)` and `Result(T, E)` are the same shape under the keys
+  `Option(Int)`, `Result(Int, Bool)`, interned as nominals without
+  arguments because the interner's packed-record rule takes none.
+- **Lowering.** Constructors allocate the aggregate; a constructor pattern
+  compares the tag (a one-variant record's pattern always matches) and
+  binds payload slots in the arm; `??` loads the payload or evaluates the
+  default in its own block; `?` returns the function's own failure (`None`,
+  or `Err` carrying the same scalar error) from a terminal block. A
+  fixed-layout `if`/`match` result joins through a phi without extent lanes,
+  unique when every arm holds a fresh token.
+- Pinned by `admitted_sum_types_option_and_result_over_scalars_run`.
+- Census: 83 of 163 check; 27 runnable examples admit and agree under
+  three-legged parity (`shapes`, `commands`, `list_more`, `option_std` are
+  new). Left in this family:
+  lists of aggregates (`equality`), `string.ends_with` (`parse_kv`), string
+  ordering (`rle`), unions with reference payloads (`rpn`, `bank`).
